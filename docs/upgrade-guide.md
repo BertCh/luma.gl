@@ -137,6 +137,74 @@ See [GPUFFT2D](./api-reference/experimental/gpu-core/gpu-fft2d) for the migratio
   `createWBOITResolveCompositeShaderPass()`. `WBOITRenderer.capture()` returns the accumulation and
   revealage bindings for inserting the WBOIT resolve into a larger shader-pass stack.
 
+**@luma.gl/experimental/gpu-spatial-analysis**
+
+The correctness pass changes several defaults to the statistically principled choice. Results differ
+from earlier alphas even where the API is unchanged.
+
+- Coordinates: every class that reads positions takes an optional `spatialContext`. Omitting it means
+  planar. A longitude/latitude context throws at construction unless the class has a lon/lat path, so
+  project to a planar frame first (`createGPULocalFrame`). The `coordinateSystem`, `radius`,
+  `sphereRadius` and ring-assembly `geographic` props are removed from `GPULineSegmentize`,
+  `GPULineChunk`, `GPUGreatCircleArcs`, `GPULinearReferencing`, `GPULineLocate`, `GPUShapeGenerator`,
+  `GPUOutlineGeometry`, `GPULineLengthPerPolygon` and `GPUSegmentRingAssembly`; pass
+  `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` instead.
+  `GPUSegmentRingAssembly` is planar by default. `GPU_SHAPE_GENERATOR_EARTH_RADIUS` and
+  `GPU_CELL_MEASURES_EARTH_RADIUS_KM` are removed; use the constants in `contracts/earth`.
+  `GPUCellMeasures` reports meters and m² unless `units: 'kilometers'`.
+- Inference: the default `alternative` is `'two-sided'` (was `'directed'`, which is anti-conservative).
+  `falseDiscoveryRate` is a deprecated alias of `multipleTesting: 'benjamini-hochberg'`, and
+  `getFalseDiscoveryRateNodes` is removed. The global permutation test draws with a new shuffle, so a
+  given seed gives different draws.
+- Spatial weights: rows without neighbors are excluded by default (`islands: 'exclude'`; pass
+  `islands: 'keep'` for esda parity). Zero-weight slots are not neighbors. The weights summary
+  `counts` output grows from 5 to 6 values and `globalStatistics` from 4 to 5. Hot spot `neighborCounts`
+  no longer counts the focal row. `GPUSpatialWeightsTransform` with `'kernel'` requires `bandwidth`,
+  and `'adaptive'` requires kNN weights. `GPUGlobalSpatialStatistics` accepts at most 2^24 rows.
+- Recipes: `addHotSpotAnalysisRecipe` points sources need `studyArea` and `cellCapacity`;
+  `neighborSearchParameters`, `gridSize` and `tableCapacity` are removed. It analyzes density per km²,
+  requires 8 neighbors and applies Benjamini-Hochberg by default, as does `addRateClusterMapRecipe`.
+  `addSpaceTimeHotSpotsRecipe` takes absolute `{step, interval, origin, count}` slices; cyclic fields
+  and `GPUSpaceTimeSliceField` are removed.
+- `GPUEmergingHotSpots` uses 95% confidence, Benjamini-Hochberg and a minimum of 10 trend slices by
+  default, and adds category 17 (`UNDETERMINED`), so palettes need 18 entries.
+- `GPUSpatialScanStatistic`: `GPU_SCAN_STATISTIC_MAXIMUM_WINDOW_ZONES` is removed. Windows default to
+  every zone, and time windows default to 50% of the period.
+- `GPUEmpiricalBayesRates` clamps the prior variance by default (`clampPriorVariance: false` for esda
+  parity). `GPULISAMarkov` is ungated by default and writes `0xffffffff` for rows outside the analysis.
+  `GPULocalOutlierFactor` has no default threshold. Knox and Mantel counts change for asymmetric pair
+  lists. Knox and Mantel permute with the swap-or-not shuffle, so a given seed gives different draws,
+  and they accept at most 2^24 - 1 events.
+- Point patterns and density: border-corrected Ripley's K is lower by a factor of (n−1)/n. Clark–Evans
+  defaults to the Donnelly correction and a two-sided test, and its output and the quadrat output grow
+  from 6 to 7 values. The IDW parameter length grows from 8 to 9.
+- Kriging averages duplicate positions and writes NaN for ill-conditioned cells and materially
+  negative variances. Intensive areal interpolation defaults to `denominator: 'overlap'`.
+  `GPUPycnophylactic.iterations` is now a maximum. `GPUZonalStatistics` densities in lon/lat need
+  caller-supplied `areas`.
+- `GPUPointInPolygonJoin` defaults to `boundaryRule: 'half-open'`: a point on a shared edge belongs to
+  exactly one polygon, and points on the outer right or top edge belong to none. Pass
+  `boundaryRule: 'closed'` for the old inclusive behavior.
+- Regression summaries grow and some slots change meaning: OLS 16 to 22 values, and
+  `BREUSCH_PAGAN` is now the classic Breusch-Pagan test (Koenker-Bassett moved to slots 9/10 as
+  `KOENKER_BASSETT`); regression diagnostics 12 to 13 (a failed OLS reports status 2, not 4); 2SLS 7 to 16;
+  `GPUSpatialErrorGM` 6 to 13; GWR 6 to 12. Size summaries with the exported `*_LENGTH` constants.
+- `GPUSpatialErrorGM` defaults to `estimator: 'homoskedastic'` (spreg `GM_Error_Hom`); pass
+  `'kelejian-prucha'` for the previous `GM_Error`. GWR runs bandwidth refinement passes by default, so
+  `selectedBandwidth` may lie between ladder entries, and its non-stationarity test draws with the
+  swap-or-not shuffle.
+- `GPUKMeans` initializes with `'kmeans++'` by default. `GPUMaxPRegions`, `GPUAZPRegions` and
+  `GPUWardRegions` standardize attributes by default (`standardize: true`) and symmetrize the adjacency;
+  the max-p status grows from 4 to 6 words and the partition evaluation summary from 8 to 9.
+- `GPULocationAllocation` runs a Teitz-Bart swap phase by default (`maximumSwapIterations` 100), its status
+  grows from 4 to 7 words, and unreachable demand is excluded from the objective and counted in
+  `uncoveredDemandCount`, with `assignedCosts` of +Infinity.
+- `GPUSegregation` writes NaN, not 0, for undefined indices. Relate outputs may carry
+  `GPU_SPATIAL_RELATE_UNCERTAIN_BIT`. Rings that enclose a pole or span about 180° measure as NaN.
+- `addDriveTimeCatchmentRecipe` with longitude/latitude positions snaps great-circle, so
+  `maxSnapDistance` is in meters (was degrees). `GPUMapMatching` `breaks` can be 2 (a route-budget
+  break), and `overflow` also reports route-table drops through the new `routeOverflow` output.
+
 ## Upgrading to v9.4
 
 **@luma.gl/core**

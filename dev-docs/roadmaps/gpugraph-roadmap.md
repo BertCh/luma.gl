@@ -636,6 +636,9 @@ graduated packages.
 
 ## Analysis contributors (initial versions)
 
+Algorithm-level review (optimal vs behind, GPU-only policy, ranked tranches P0-P3):
+[gpu-analysis-algorithms-roadmap.md](./gpu-analysis-algorithms-roadmap.md).
+
 Status: initial, experimental. Analysis contributors ship prebuilt command nodes for common map
 tasks, composed from the public primitives above, in the domain entry points
 `@luma.gl/experimental/gpu-terrain`, `gpu-network`, `gpu-spatial-analysis`, `gpu-raster`, `gpu-dataframe`,
@@ -945,7 +948,9 @@ Implemented (initial versions, node and headless WebGPU tests):
 Still open (re-audited against the working tree on 2026-10-06). Items that have shipped were removed
 from this list; they appear in the implemented list above or in "Status after the 2026-10-05 build
 round" below. Repeated items are listed once under "Cross-cutting", and per-contributor bullets list
-only what is specific to that contributor.
+only what is specific to that contributor. The 2026-10-13 review's correctness, consistency and
+performance findings are tracked in the [quality roadmap](./analysis-contributors-quality-roadmap.md)
+rather than repeated here.
 
 #### Under way
 
@@ -964,7 +969,9 @@ only what is specific to that contributor.
   cannot be both an indirect argument and storage-written. Current costs:
   - Hydrology: one gate per four rounds brought the drainage graph from 2,675 to 1,691 nodes, and
     each skipped round pair after convergence still costs about 50 µs. `GPUTerrainFlow` reports the
-    iterations it used (SF terrain: fill 14 of 256, accumulation 2 of 128).
+    iterations it used (SF terrain: fill 14 of 256, accumulation 2 of 128, measured before the defaults
+    became 512 and 64). Each gated round also compiles four pipelines, because the gate's group slot is
+    baked into the source (quality roadmap E-03).
   - `GPULineSimplification`: five nodes per round, about 320 nodes at the default 64 rounds, while
     NYC trips converge in 15. Deep shapes such as spirals need up to `n - 2` rounds.
   - `GPUClassBreaks` head/tail: three nodes per round. Weiszfeld in `GPUGeographicDistribution`:
@@ -1012,9 +1019,9 @@ only what is specific to that contributor.
     `createTransientUint32Rows`. They are imported by about 250 files and are not exported.
   - `gpu-raster/cost-distance/raster-relaxation.ts`: used by cost distance and eight hydrology
     files; move it out of `cost-distance/`.
-  - The Philox RNG (`permutation-inference/permutation-random.ts`): reused by scan statistics,
-    space-time tests and the GWR test, with separate copies in flow texture, particle advection
-    and dot density.
+  - The Philox RNG, now shared in `utils/philox-random.ts` (14 importers, no separate copies). Open:
+    purpose IDs collide across modules (purpose 1 is LIC noise, particle spawn and dot-density
+    remainder), so give them a central enum (quality roadmap B-22).
   - The exact integer summed-area table (`topographic-position/`): a gpgpu `GPUSummedAreaTable`
     or box-sum primitive (`GPUScanUint64` needs separate low and high buffers).
   - Polygon scan conversion, the exact distance transform and jump flooding, the two-word (64-bit

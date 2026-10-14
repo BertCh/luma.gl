@@ -100,8 +100,10 @@ forms, chosen by the view format:
   (`getInt64TimeWords`, or `makeArrowTemporalWordGPUVector` in `@luma.gl/arrow`). The window is
   then a `uint32` parameter buffer written with `getGPUTimeWindowWordParameterValues`, whose start
   and end are a `number` (with a sub-unit fraction for a smooth playhead) or a `bigint`. Kernels
-  subtract with a borrow before converting to float32, so acceptance is exact for any `Int64`
-  value with no epoch to choose; fade and clip differences are exact below 2^24 units.
+  order times lexicographically on the words and subtract with a borrow before converting to
+  float32, so acceptance is exact for every `Int64` value, including an `INT64_MIN`/`INT64_MAX`
+  "unbounded" window over pre-1970 rows, with no epoch to choose; fade and clip differences have the
+  right sign for any two values and are exact below 2^24 units.
 
 ```ts
 graph.add(new GPUTimeWindowFilter({
@@ -321,12 +323,23 @@ Pair statistics over planar points share one deterministic pair-histogram pass: 
 into a per-frame lattice whose cells are at least the per-frame `maximumDistance` wide, one thread
 per included row visits the 3x3 cell neighbourhood, and each pair adds integer amounts into
 per-workgroup shared-memory 64-bit accumulators that are then added into global 64-bit
-accumulators. Float terms are fixed point (each term's maximum maps to 2^24), so every result is
-exact or has a documented fixed-point bound, independent of scheduling, and bitwise reproducible.
+accumulators. Float terms are fixed point (a bounded term such as a distance maps its maximum to
+2^24; the variogram and correlogram unit comes from the typical term, see below, never from the
+maximum), so every result is exact or has a documented fixed-point bound, independent of
+scheduling, and bitwise reproducible. A 64-bit sum that would wrap raises an `overflow` word
+(`readPairOverflow`) instead of wrapping silently, and pair counts saturate at `0xffffffff`.
 When `maximumDistance` covers the extent the pass is a plain all-pairs loop. A row is included when
 its mask is nonzero, its value (if any) finite and its position finite and inside the per-frame
 `bounds`. Parameters (`[minX, minY, maxX, maxY, maximumDistance, ...]`) are per-frame; bin counts
 and the set of outputs are compile-time.
+
+All five classes (and `GPURipleyEnvelope`) take an optional `spatialContext` and are planar only:
+distances and window areas are Euclidean in the units of `positions`. Omitting it means native
+planar coordinates; a `longitude-latitude` context throws at construction ("project positions to a
+planar frame first"), because degrees give latitude-dependent distances, wrong areas and biased
+indices. The resolved context is exposed as `spatialContext`. The window is always the `bounds`
+rectangle: for an irregular study area the bounding box overstates the area and makes every
+pattern look clustered (polygon windows are not implemented).
 
 ```ts
 graph.add(
@@ -342,17 +355,60 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
 
 - `GPUVariogram`: Matheron semivariance, pair count, mean lag distance and Cressie-Hawkins robust
   semivariance per lag and optional azimuth sector (`directionCount` equal sectors over `[0, pi)`
-  from a per-frame `azimuthOffset`). Bin error is at most `(max - min)^2 * 2^-26`.
-  `fitVariogramModel` fits spherical, exponential or Gaussian models (practical-range convention)
-  with Cressie, pair-count or uniform weights on the CPU.
+  from a per-frame `azimuthOffset`). Matheron precision: a term `(z_i - z_j)^2 / 2` is scaled by
+  `2^24 / u` and rounded to an integer, where `u` is the robust variance `(IQR / 1.349)^2` of the
+  included values (exact quartiles), clamped to at most the population variance, so the absolute
+  error of a bin mean is at most `u * 2^-25` (never more than `variance * 2^-25`, itself below the
+  former `(max - min)^2 * 2^-26`) plus f32 rounding of the term. The former unit
+  `2^24 / (0.5 * (max - min)^2)` rounded every typical term to 0 once one outlier or sentinel
+  stretched the range (-83% at an isolated outlier of 2e4 standard deviations on 4000 points,
+  -100% at 1e5) with no status. Terms above 256 `u` (a difference beyond 22 standard deviations)
+  are added exactly in a second 64-bit channel at `2^12` units, with relative error at most
+  `2^-21`; the worst-case relative error of `gamma` per bin is `max(u * 2^-25 / gamma, 5e-7 +
+  2^-24)`. Capacity is `2^40 u` for the first channel and `2^52 u` for the second. The optional
+  `overflow` output is 1 when a sum, a clamped term (`2^51 u`) or a pair count (saturated at
+  `0xffffffff`; previously the count wrapped modulo 2^32 and became the `N_h` weight of the fit)
+  left its range. The Cressie-Hawkins channel scales with `sqrt(max - min)`. The pass uses 4
+  channels per bin (5 with `robustSemivariances`), so `lagCount * directionCount` is at most 512
+  (409 with the robust channel). Model fitting is CPU post-processing: `fitVariogramModel` runs on
+  the CPU over the read-back bins, fits spherical, exponential or Gaussian models
+  (practical-range convention) with Cressie, pair-count or uniform weights, and should be skipped
+  when `overflow` is 1.
 - `GPUSpatialCorrelogram`: global Moran's I per distance band (`'cumulative'` bands as PySAL
   `DistanceBand` / ArcGIS Incremental Spatial Autocorrelation, or `'annulus'`), with `E[I]`,
   normality or randomization variance (per-frame), z, p, unordered pair counts, and
   `[firstPeakBand, maximumBand]`. Variances lost to f32 cancellation (for example a band holding
-  every pair) are NaN.
+  every pair) are NaN. Pair products use the same typical-term unit as the variogram, `2^24 / u`
+  with `u` the robust variance (the former `2^24 / max|c|^2` rounded every product to 0, so `I` was
+  0, once one outlier or sentinel dominated), so `|I|` errs by at most `2^-25 * u / variance` plus
+  `2^-21` of the contribution of products above 256 `u`, which are summed exactly in a second
+  channel. The optional `overflow` output is 1 when a product sum, a clamped product or a band pair
+  count (saturated at `0xffffffff`) left its range.
 - `GPURipley`: K, L, L - r and an annulus pair-correlation estimate over `radiusCount` radii in a
-  rectangular window, with `'none'`, `'border'` (reduced sample, `lambda = (n - 1) / A`) or
-  `'isotropic'` (Ripley 1977 rectangle, weights capped at 100) edge correction switchable per frame.
+  rectangular window, with `'none'`, `'border'` (reduced sample, spatstat `Kest` border estimator
+  with `lambda = n / A`, so `K = A * numerator / (n * borderCount)`) or `'isotropic'` (Ripley 1977
+  rectangle, weights capped at 100 like spatstat `edge.Ripley` `maxweight`) edge correction
+  switchable per frame. Border `K` changed from `lambda = (n - 1) / A` to `n / A` to match spatstat,
+  which lowers it by the factor `(n - 1) / n`. The isotropic rectangle formula is exact at every
+  radius (checked against brute-force circle sampling), so there is no radius guard; the practical
+  limits are variance and the weight cap, which biases `K` low once less than 1% of a circle is
+  inside, so keep `maximumDistance` well below the shorter window side (spatstat's default `rmax` is
+  a quarter of it). The pair correlation is an unsmoothed annulus difference and is noisy.
+- `GPURipleyEnvelope`: Monte Carlo CSR envelopes of K, L or `L - r` (`statistic`, default
+  `'l-minus-r'`), with `simulationCount` (at most 199) binomial CSR patterns of the observed
+  included count `n`, drawn with Philox from the per-frame `seed` (`getGPURipleyParameterValues({..,
+  seed})`, an integer below 2^24) and measured by a full `GPURipley` pass each, with the same window,
+  radii and edge correction, without CPU readback. Outputs: `lower` / `upper` (pointwise: the
+  `rank`-th smallest / largest simulated value, spatstat `envelope(nrank)`, not simultaneous),
+  `globalLower` / `globalUpper` (Ripley 1981; Baddeley et al. 2014: `L(r) = r` plus or minus the
+  `rank`-th largest `max_r |L_j(r) - r|`, a simultaneous test of level `rank / (simulationCount + 1)`),
+  `theoretical`, and `statistics` `[n, validSimulationCount, observedMaximumDeviation,
+  criticalMaximumDeviation, pValue, rank]` with the maximum absolute deviation (MAD) Monte Carlo
+  p-value `(1 + #{T_j >= T_obs}) / (s + 1)` when `observedK` (the observed `GPURipley` `k`) is given.
+  Cost is `simulationCount + 1` times one K pass and about 25 graph nodes per simulation; the graph
+  aliases transient buffers across simulations. Radii where an estimate is NaN are skipped per
+  curve, so prefer `'isotropic'` or `'none'` for exact Monte Carlo validity. Cross-type K and
+  inhomogeneous K (Kinhom) are not implemented.
 - `GPURipleyDistanceFunctions`: the distance functions next to `GPURipley` (spatstat `Gest`, `Fest`,
   `Jest`). `G` is the nearest-neighbour distance function of the events, `F` the empty-space function
   over a `referenceGrid` lattice of reference locations, and `J = (1 - G) / (1 - F)` (below 1 is
@@ -371,8 +427,19 @@ const model = fitVariogramModel({distances, semivariances, pairCounts}, {model: 
   the default 16 KB of workgroup memory exactly). F depends on the reference lattice, so keep it coprime with the
   window so no reference location sits exactly on a radius.
 - `GPUPointPatternIndices`: exact nearest neighbour per row (ring search, ties to the smallest row),
-  Clark-Evans `[n, observed, expected, R, standardError, z]`, and quadrat counts with
-  `[m, mean, variance, varianceToMeanRatio, chiSquare, degreesOfFreedom]`.
+  Clark-Evans `[n, observed, expected, R, standardError, z, pValue]`, and quadrat counts with
+  `[m, mean, variance, varianceToMeanRatio, chiSquare, degreesOfFreedom, pValue]`. The per-frame
+  `clarkEvansCorrection` defaults to `'donnelly'` (Donnelly 1978 edge correction for the rectangular
+  window: `expected = 0.5 sqrt(A / n) + (0.0514 + 0.041 / sqrt(n)) P / n`, variance
+  `0.0703 A / n^2 + 0.037 P sqrt(A / n^5)`, `P` the perimeter; spatstat uses 0.0412 for the second
+  constant). The plain infinite-plane index (`'none'`, `0.5 sqrt(A / n)`, `0.26136 sqrt(A) / n`,
+  pointpats / ArcGIS) overstates clustering in small or elongated windows and is no longer the
+  default. The per-frame `alternative` (default `'two-sided'`; `'greater'` tests for regularity in
+  Clark-Evans and for clustering in the quadrat chi-square, `'lesser'` the opposite) sets the tail
+  of both p-values. The quadrat p-value is exact (regularized incomplete gamma) up to 100 degrees
+  of freedom and the Wilson-Hilferty approximation (absolute error below 2e-4) above; assume
+  expected counts of about 5 or more per quadrat. `GPU_CLARK_EVANS_LENGTH` and
+  `GPU_QUADRAT_STATISTICS_LENGTH` are now 7.
 
 Measured on an Apple M3 Pro (headless Chromium), `GPUVariogram` with 32 lags including the cell
 sort: 100k points with 54M pairs in range in 10 ms; 20k points all-pairs (200M pairs) in 12 ms.

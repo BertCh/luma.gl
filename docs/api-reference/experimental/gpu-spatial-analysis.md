@@ -55,17 +55,17 @@ The sections below group the contributors by task.
 
 | Section | Contributors |
 | --- | --- |
-| Spatial weights | `GPUNeighborSearch`, `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsTransform`, `GPUSpatialWeightsAlgebra`, `GPUSpatialWeightsSummary`, `GPUSpatialWeightsTranspose`, `GPUSpatialLag`, `GPUMapColoring` |
-| Spatial statistics | `GPUGlobalSpatialStatistics`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalGeary`, `GPUSpatialPearson`, `GPUGammaStatistic`, `GPURoseStatistic`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUKMeans`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, `GPUAZPRegions`, `GPUMaxPRegions`, `GPUWardRegions`, `GPULocationAllocation`, `GPURegionPartitionEvaluation`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics`, `GPUSimilarLocations` |
-| Distribution dynamics and space-time tests | `GPUClassAssignment`, `GPUClassificationFit`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`, `GPUKnoxTest`, `GPUMantelTest`, `GPUSpatialScanStatistic` |
+| Spatial weights | `GPUNeighborSearch`, `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsTransform`, `GPUSpatialWeightsAlgebra`, `GPUSpatialWeightsSummary`, `GPUSpatialWeightsTranspose`, `GPUSpatialWeightsValidation`, `GPUSpatialLag`, `GPUMapColoring` |
+| Spatial statistics | `GPUGlobalSpatialStatistics`, `GPUMultipleTestingAdjustment`, `GPUAssuncaoReisStandardization`, `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalGeary`, `GPUSpatialPearson`, `GPUGammaStatistic`, `GPURoseStatistic`, `GPULocalPermutationTest`, `GPUGlobalPermutationTest`, `GPUNeighborhoodSummary`, `GPUEmpiricalBayesRates`, `GPUSpatialEmpiricalBayesRates`, `GPUSpatialClustering`, `GPUKMeans`, `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, `GPUAZPRegions`, `GPUMaxPRegions`, `GPUWardRegions`, `GPULocationAllocation`, `GPURegionPartitionEvaluation`, `GPUGroupGeometry`, `GPUGroupConvexHull`, `GPUEmergingHotSpots`, `GPUGeographicDistribution`, `GPURegionStatistics`, `GPUZonalStatistics`, `GPUFocalStatistics`, `GPUSimilarLocations` |
+| Distribution dynamics and space-time tests | `GPUClassAssignment`, `GPUClassificationFit`, `GPUTransitionMatrix`, `GPUSpatialMarkov`, `GPULISAMarkov`, `GPUTransitionDiagnostics`, `GPUKnoxTest`, `GPUMantelTest`, `GPUSpatialScanStatistic` |
 | Accessibility and change of support | `GPUCatchmentAccessibility`, `GPUHuffTradeAreas`, `GPUArealInterpolation`, `GPUPycnophylactic`, `GPUSegregation` |
 | Spatial joins | `GPUSpatialPredicateJoin`, `GPUSpatialJoinPrepared`, `GPUSpatialJoinCandidates`, `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin`, `GPUNearestFeatureWeights`, `GPUBufferSelection` |
 | Geometry validity and topology | `GPUSegmentIntersection`, `GPUGeometryValidity`, `GPULineNoding`, `GPUPolygonize`, `GPUMakeValid`, `GPUPolygonOverlay`, `GPUBufferSurface` |
-| Density & interpolation | `GPUPointDensity`, `GPUInverseDistanceWeighting`, `GPUKriging`, `GPUDotDensity`, `GPURandomPointsInPolygon` |
+| Density & interpolation | `GPUPointDensity`, `GPUKernelDensity`, `GPUInverseDistanceWeighting`, `GPUKriging`, `GPUDotDensity`, `GPURandomPointsInPolygon` |
 | Cells (DGGS) | `GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`, `GPUCellLevelSelection`, `GPUPointToCell`, `GPUCellGeometry`, `GPUCellTopology`, `GPUCellCompaction`, `GPUCellCover`, `GPUCellSetOutline`, `GPUSegmentRingAssembly`, `GPUCellTableCompare` |
-| Lines & trajectories | `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`, `GPULineSplit`, `GPULineMerge`, `GPUGeometryMeasures`, `GPUGeodesicPairs`, `GPUGeodesicDestination`, `GPULinearReferencing`, `GPULineLocate`, `GPULineSimplification`, `GPUCoverageSimplification`, `GPUTrajectoryMetrics`, `GPUTrajectoryPlayhead`, `GPUTrajectoryResample`, `GPUZoneEvents`, `GPUTrajectoryEncounters`, `addClockEncounters`, `GPUTrackSimilarity` |
+| Lines & trajectories | `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`, `GPULineSplit`, `GPULineMerge`, `GPUGeometryMeasures`, `GPUGeodesicPairs`, `GPUGeodesicDestination`, `GPULocalFrameProjection`, `GPULinearReferencing`, `GPULineLocate`, `GPULineSimplification`, `GPUCoverageSimplification`, `GPUTrajectoryMetrics`, `GPUTrajectoryPlayhead`, `GPUTrajectoryResample`, `GPUZoneEvents`, `GPUTrajectoryEncounters`, `addClockEncounters`, `GPUTrackSimilarity` |
 | Geometry utilities and tessellation | `GPUOutlineGeometry`, `GPULabelPoint`, `GPUShapeDescriptors`, `GPULineDensity`, `GPULineLengthPerPolygon`, `GPUGridGenerator`, `GPUShapeGenerator`, `GPUHilbertKeys`, `GPURectangleClip`, `GPUDelaunayTessellation`, `GPUVoronoiDiagram` |
-| Regression | `GPUOrdinaryLeastSquares`, `GPUSpatialRegressionDiagnostics`, `GPUSpatialTwoStageLeastSquares`, `GPUSpatialErrorGM`, `GPUGeographicallyWeightedRegression`, `GPUGeographicallyWeightedRegressionNonstationarityTest` |
+| Regression | `GPUOrdinaryLeastSquares`, `GPUSpatialRegressionDiagnostics`, `GPUSpatialTwoStageLeastSquares`, `GPUSpatialErrorGM`, `GPUSpatialLagMaximumLikelihood`, `GPUSpatialErrorMaximumLikelihood`, `GPUSpatialWeightsTraces`, `GPUSpatialLagImpacts`, `GPUGeographicallyWeightedRegression`, `GPUGeographicallyWeightedRegressionNonstationarityTest` |
 | Recipes | `addHotSpotAnalysisRecipe` and eleven more prebuilt chains |
 | Cross-reference | turf, PostGIS, GeoPandas, PySAL, QGIS and ArcGIS tools mapped to contributors |
 
@@ -219,6 +219,34 @@ occupies slots `[offsets[i], offsets[i + 1])`; neighbor IDs are strictly ascendi
 self join never lists a row as its own neighbor (`w_ii = 0`); weights are finite and non-negative.
 Capacity overflow clamps offsets to `neighbors.length` and sets an `overflow` flag on the GPU.
 
+A `GPUSpatialWeights` is a first-class object, not only buffers. Every producer in this section
+(`GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsTransform`,
+`GPUSpatialWeightsAlgebra`, `GPUSpatialWeightsTranspose`) exposes `outputWeights`: the caller-owned
+views with `info` (`rowCount`, `transform` state `'raw' | 'binary' | 'row' | 'double' | 'variance' |
+'kernel' | 'symmetric' | 'unknown'`, `symmetric` as `true | false | 'unknown'` only where
+guaranteed, `hasSelfWeights`, `provenance` with source, criterion, `k`, `radius` and `order`) and
+`status` (`overflow` and, where the producer computes it exactly, `requiredCount`) attached. Pass
+`outputWeights` to consumers: statistics read `info.transform` (a `'row'` W is re-standardized over
+the neighbors that remain after masking) and gate on `status.overflow`. Uploaded weights may omit
+`info`, which reads as `'unknown'`. `validateGPUSpatialWeights` checks on the CPU what it can: view
+formats and lengths, `info.rowCount`, the declared transform and symmetry, and the status formats.
+
+One neighbor definition is used everywhere: a slot is an active neighbor when its weight is
+positive, its neighbor ID is below the row count and it is not the row itself. A zero-weight slot is
+listed but is not a neighbor. An island is a row with no active slot, whatever slots it lists.
+
+Uploaded CSR must satisfy the invariants above; consumers do not re-check them (a binary search
+over unsorted neighbors silently gives wrong `S1`, `S2` and symmetry counts). Run
+`GPUSpatialWeightsValidation` once after upload, and sort, merge duplicates and drop self slots on
+the CPU if it reports violations.
+
+Capacity grow loop: `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsAlgebra` and
+`GPUNeighborSearch` take a `totalNeighbors` view, published as `status.requiredCount`. Read
+`overflow` and `requiredCount` after a frame; when `requiredCount` exceeds the capacity, allocate
+`getGPUSpatialWeightsCapacity(requiredCount, capacity)` slots (the required count plus 25 percent
+headroom) and rebuild. Rows past the point of truncation are empty, so never use weights whose
+`overflow` is 1.
+
 | Producer | Neighborhood | PySAL equivalent |
 | --- | --- | --- |
 | `GPUNeighborSearch` | k nearest neighbors or distance band between points | `KNN`, `DistanceBand`, `Kernel` |
@@ -241,6 +269,10 @@ one output row per polygon; hole rings count. Flatten multipolygons to one row p
   the output is deterministic and symmetric.
 - A point shared by `m` polygons emits `m^2` candidate pairs, bounded by `pairCapacity` (default
   four times the neighbor capacity); exceeding it also sets `overflow`.
+- `totalNeighbors` is published as `outputWeights.status.requiredCount`. It is exact unless the pair
+  list overflowed `pairCapacity` (then a lower bound; growing the neighbor capacity grows
+  `pairCapacity` with it, so the rebuild loop converges). `outputWeights.info` is binary, symmetric,
+  with provenance `{source: 'GPUContiguityWeights', criterion}`.
 
 ```ts
 graph.add(new GPUContiguityWeights({
@@ -254,20 +286,35 @@ graph.add(new GPUContiguityWeights({
 Weights over a `width x height` grid with row-major IDs `y * width + x`. `criterion: 'rook'` uses
 Manhattan distance `<= radius`, `'queen'` Chebyshev distance `<= radius` (`radius` defaults to 1, at
 most 32). A zero in the optional `mask` removes the cell as a row and as a neighbor. With `cellSize`
-it also writes Euclidean `distances`, so kernel transforms apply.
+it also writes Euclidean `distances`, so kernel transforms apply. `totalNeighbors` is the exact
+`outputWeights.status.requiredCount`; `outputWeights.info` is binary and symmetric, with provenance
+`{criterion, order: radius}`.
 
 ### `GPUSpatialWeightsTransform`
 
 Rewrites weights in place or into a separate `output`. Chain several instances, for example a kernel
 followed by row standardization.
 
-- `'row'`: `w_ij / sum_j w_ij`; rows with a zero or non-finite sum become 0.
+- `'row'`: `w_ij / sum_j w_ij`. A row whose weights sum to zero (or to a non-finite value) stays all
+  zero: it has no active neighbor, so it is an island for every statistic (no uniform fallback).
+  To restore row standardization after masking or `'subgraph'` removed neighbors, apply `'row'` again
+  to the result.
 - `'binary'`: `w_ij > 0 ? 1 : 0`, keeping every slot.
 - `'kernel'`: `K(d_ij / h_i)` from `weights.distances`, with `kernel` one of `gaussian`
   (`exp(-z^2 / 2) / sqrt(2 pi)`), `triangular` (`max(1 - z, 0)`), `epanechnikov` (`3/4 max(1 - z^2, 0)`,
   PySAL quadratic), `bisquare` (`15/16 max(1 - z^2, 0)^2`, PySAL quartic) or `uniform` (`1/2` for
-  `z <= 1`). `bandwidth` is a fixed number or `'adaptive'` (default): the row's largest distance, which
-  is the k-th neighbor distance of a kNN row.
+  `z <= 1`). `bandwidth` is required (no default) and is either a positive number, the same `h` for
+  every row (PySAL fixed bandwidth; for distance-band weights pass the band radius), or `'adaptive'`:
+  PySAL's adaptive bandwidth, `h_i` = the distance to the k-th nearest neighbor times
+  `eps = 1.0000001` (`GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON`). On the CSR that is the row's
+  largest distance, but only for kNN rows, so `'adaptive'` requires
+  `weights.info.provenance.criterion === 'knn'` and throws otherwise. Because of `eps` the k-th
+  neighbor keeps a tiny positive weight, as in libpysal (in float32 `eps` rounds to `1 + 2^-23`, so
+  the tail weight is about 1e-7, never exactly 0). Only the stored neighbors take part, so the
+  Gaussian is truncated at the neighbor set. Weights never hold self slots, so `K(0)` is not
+  written: compute it with `getGPUSpatialWeightsKernelValue(kernel, 0)` and pass it as `selfWeight`
+  to `GPUHotSpotAnalysis` for a kernel Gi*. `getGPUSpatialWeightsKernelValue(kernel, z)` is the CPU
+  value of every profile.
 - `'double'`: `w_ij / S0`, with `S0` the sum of all weights, so the weights sum to 1 (PySAL `'D'`).
   `doubleSum: 'rows'` scales by `n / S0` instead, so the weights sum to `n`.
 - `'variance'`: `s_ij = w_ij / sqrt(sum_j w_ij^2)`, then `w'_ij = s_ij n / sum s` over the whole
@@ -279,7 +326,13 @@ followed by row standardization.
 
 `'double'` and `'variance'` compute a per-row partial, reduce it with `GPUReduction`, and apply it in
 a second pass, in place or into `output`. A zero or non-finite total gives zero weights. The
-operation, kernel and bandwidth are compile-time options.
+operation, kernel and bandwidth are compile-time options. `output`, when given, must have exactly
+`weights.neighbors.length` values.
+
+`outputWeights.info.transform` is the operation (`'symmetrize'` gives `'symmetric'`). `symmetric`
+is kept only where it is guaranteed: `'binary'`, `'double'`, `'symmetrize'` and a fixed-bandwidth
+`'kernel'` keep a `true` input flag; `'row'`, `'variance'` and an adaptive kernel give `'unknown'`
+(row standardization makes a symmetric pattern asymmetric unless all row sums are equal).
 
 ### `GPUSpatialLag`
 
@@ -305,7 +358,8 @@ graph.add(new GPUSpatialLag({weights, values, output: lag}));
 ### `GPUNeighborSearch`
 
 `GPUNeighborSearch` finds exact k nearest neighbors (`mode: 'knn'`, `k` up to 32) or every point
-within a distance band (`mode: 'radius'`) between planar points. A self join never lists a row as its
+within a distance band (`mode: 'radius'`) between planar points, or between longitude/latitude points
+with great-circle distances (see below). A self join never lists a row as its
 own neighbor; pass `queryPositions` for a cross join. It writes a `GPUSpatialWeights` CSR:
 `offsets` (`queryRows + 1`), `neighbors` (the slot capacity), `weights`, and optional `distances`.
 
@@ -315,26 +369,74 @@ own neighbor; pass `queryPositions` for a cross join. It writes a `GPUSpatialWei
   `radius` bounds the search. Fewer valid targets give a shorter row.
 - Weights: `binary`, `inverseDistance` (`max(d, distanceFloor)^-power`), or `kernel` (gaussian,
   triangular, epanechnikov, bisquare, uniform). The bandwidth is `radius` in radius mode and the
-  row's k-th neighbor distance in kNN mode (PySAL's adaptive bandwidth). `rowStandardize` divides
-  each row by its sum. Non-finite weights are written as 0.
+  row's k-th neighbor distance times 1.0000001 in kNN mode, which is libpysal `Kernel(fixed=False)`
+  with the self slot removed (a row with fewer than `k` neighbors uses its farthest listed
+  neighbor). `rowStandardize` divides each row by its sum. Non-finite weights are written as 0.
+  Rows never hold a self slot: the kernel's self weight `K(0)` is the consumer's `selfWeight`
+  (`getGPUSpatialWeightsKernelValue(kernel, 0)`). A zero-weight slot (for example a triangular
+  kernel at `d = radius`, or coincident points under inverse distance with no floor) is not a
+  neighbor: consumers skip slots whose weight is not positive.
 - Capacity: offsets are clamped to `neighbors.length`, so readers always see consistent, possibly
   truncated rows. `overflow` is set on the GPU, and `totalNeighbors` and `neighborCounts` stay
   unclamped.
 
 ```ts
+const searchParameters = {bounds, rowStandardize: true};
 const parameters = new GPUParameterBuffer(device, {
   id: 'knn', format: 'float32', length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  values: getGPUNeighborSearchParameterValues({bounds, rowStandardize: true})
+  values: getGPUNeighborSearchParameterValues(searchParameters)
 });
 graph.add(new GPUNeighborSearch({
   mode: 'knn', k: 8, gridSize: [256, 256], positions,
   parameters: parameters.importToGraph(graph),
-  weights: {offsets, neighbors, weights, distances}, overflow
+  weights: {offsets, neighbors, weights, distances}, overflow,
+  weightTransform: getGPUNeighborSearchWeightTransform(searchParameters)
 }));
 ```
 
-Targets and queries count only when their mask is nonzero, their coordinates are finite, and they
-lie inside the per-frame `bounds`. A self join applies `mask` to the query rows too. Bounds,
+**Spatial context.** `spatialContext` (compile-time) defaults to native planar coordinates. For
+longitude/latitude pass `{coordinateSpace: 'longitude-latitude', metric: 'great-circle', units?:
+'meters' | 'kilometers', sphereRadius?}` (`sphereRadius` in meters, default the mean Earth radius).
+Positions are `[longitude, latitude]` degrees, `bounds` are `[minLongitude, minLatitude,
+maxLongitude, maxLatitude]` degrees (longitude span at most 360, for example the world), and
+`radius`, `distanceFloor` and the output `distances` are great-circle distances in `units`
+(meters by default). Any other space or metric throws at construction (project to a planar frame
+first). Distances are f32 central angles on a sphere. The lattice stays in degrees: radius mode
+visits every cell that can hold a target in the cap (latitude span `radius / R`, longitude span the
+exact cap extent `asin(sin(a) / cos(latitude))`, the whole circle when the cap reaches a pole, and
+bands wrap across +-180), and kNN stops only when a conservative spherical lower bound of the
+distance to every unvisited cell exceeds the k-th distance, so results never depend on `gridSize`.
+The bound is deliberately loose near the poles, which only costs speed. Points with latitude beyond
++-90 are invalid.
+
+**Planar precision.** Planar f32 coordinates keep about seven digits: UTM northings (~4e6 m) and
+Web Mercator (~1e7) quantize to 0.5 to 1 m and make band edges and ties noisy. Project to a local
+frame with `createGPULocalFrame` (or subtract an origin) before upload; the node cannot recover
+digits lost in its inputs.
+
+**Row standardization.** The optional compile-time `rowStandardize` prop is the single source of truth
+when given: the weights kernel uses it as a constant and ignores the per-frame `rowStandardize`
+parameter. Consumers re-standardize rows over the neighbors left after masking only when
+`info.transform` is `'row'`, so set it for any row-standardized band. `rowStandardize: true` with a
+`weightTransform` other than `'row'`, or `false` with `'row'`, throws. When it is omitted, the per-frame
+field and the `weightTransform` declaration apply as before.
+
+**Output.** `outputWeights` is `weights` with `info` and `status` attached, for consumers:
+`rowCount`, `transform` (`'row'` when the compile-time `rowStandardize` prop is true, otherwise the
+optional compile-time `weightTransform`, else `'unknown'`, because weight kind and row standardization
+are per-frame parameters; derive it from the same parameters with
+`getGPUNeighborSearchWeightTransform`), `symmetric` (true only for a planar radius self join
+without `queryMask` and a declared non-row transform; otherwise `'unknown'`), `provenance`
+(`criterion` `'knn'` or `'distance-band'`, and `k`) and `status` (`overflow`, `requiredCount` =
+`totalNeighbors`, `invalidCount`). kNN output has criterion `'knn'`, which `bandwidth: 'adaptive'`
+kernel transforms require. PySAL's `min_threshold_distance` (the smallest band that leaves no
+island) is the maximum of the returned `distances` of a `k = 1` kNN run.
+
+**Dropped rows.** Targets and queries count only when their mask is nonzero, their coordinates are finite, and they
+lie inside the per-frame `bounds`; the others silently become isolates and never a neighbor.
+Pass the optional `invalidCount` (one uint32) to learn how many masked rows were dropped for a
+non-finite coordinate or for lying outside `bounds` (target rows, plus the query rows of a cross
+join). A self join applies `mask` to the query rows too. Bounds,
 radius, the weight function and row standardization are per-frame parameters, so changing them
 never rebuilds the graph. Targets are bucketed with `GPUGridIndex`, whose `boundsBuffer` carries the
 per-frame lattice (cells at least `radius` wide) without recompiling. kNN
@@ -368,8 +470,14 @@ offsets; it must not alias an input). `operation` is one of:
   sizes minus the row count.
 
 `overflow` (one `uint32`) is 1 when the capacity was too small, and the optional `totalNeighbors` holds
-the slots needed. On overflow the output is still a valid CSR: the leading rows are complete, one row is
-a prefix and the rest are empty. Output rows are sorted and unique with finite non-negative weights.
+the slots needed (published as `outputWeights.status.requiredCount`; omitted for `'higherOrder'` with
+`order > 1`, where an overflowing intermediate set would make it a lower bound, so raise
+`workCapacity` instead). On overflow the output is still a valid CSR: the leading rows are complete,
+one row is a prefix and the rest are empty. Output rows are sorted and unique with finite
+non-negative weights. `outputWeights.info` carries the transform state (`'binary'` for
+`weightRule: 'binary'`, `'higherOrder'` and `'block'`; an unscaled `'raw'` or `'binary'` input
+stays so; a row-standardized input becomes `'unknown'` because slots changed) and `symmetric: true`
+only when it follows from symmetric operands.
 
 ```ts
 graph.add(new GPUSpatialWeightsAlgebra({
@@ -381,10 +489,15 @@ graph.add(new GPUSpatialWeightsAlgebra({
 
 Summary statistics of a weights matrix. `statistics` (`float32`, at least 3) receives `S0`,
 `S1 = 1/2 sum (w_ij + w_ji)^2` and `S2 = sum_i (row_i + col_i)^2`, as in libpysal. `counts` (`uint32`,
-at least 5, see `GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT`) receives the used slots, the asymmetric slots,
-the isolates, and the minimum and maximum cardinality. The optional `cardinality` is the per-row neighbor
-count and `symmetryTolerance` (default 0) decides when two weights differ. Sums run in a fixed order.
-Isolates are empty rows; connected components are not computed. A pair of unequal weights counts as two
+at least 6, see `GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT`) receives the used slots, the asymmetric slots,
+the isolates, the minimum and maximum cardinality and the empty rows. The optional `cardinality` is the
+per-row active neighbor count and `symmetryTolerance` (default 0) decides when two weights differ. Sums
+run in a fixed order. Isolates are rows with no active slot, the one island definition of every
+statistic (libpysal `islands` for a W built without zero-weight entries); `emptyRows` counts rows with
+no slot at all. Cardinality counts active slots, so a zero-weight slot is not a neighbor: this deviates
+from libpysal `cardinalities`, which counts every listed neighbor, and agrees with it for a W built
+without zero-weight entries (pinned against libpysal in the specs). The used slots count stays the
+listed total. Connected components are not computed. A pair of unequal weights counts as two
 asymmetric slots, where libpysal `asymmetry()` returns pairs.
 
 ### `GPUSpatialWeightsTranspose`
@@ -404,7 +517,28 @@ twice and 0 means `W = W'`. Reference: libpysal 4.15 (no deviations; the check i
 graph.add(new GPUSpatialWeightsTranspose({weights, output: transposed, asymmetricSlots}));
 ```
 
+`outputWeights` carries the input `symmetric` flag (a transpose is symmetric exactly when `W` is) and
+the input `status` (a truncated `W` gives a truncated `W'`); a `'row'` or `'variance'` state becomes
+`'unknown'`.
+
+### `GPUSpatialWeightsValidation`
+
+Checks the `GPUSpatialWeights` invariants of weights that were built elsewhere and uploaded, on the GPU:
+`offsets[0] = 0`, non-decreasing offsets with `offsets[rows] <= neighbors.length`, every neighbor ID below
+the row count, strictly ascending neighbor IDs within each row (sorted and unique), no self slot, and
+finite non-negative weights. `invalidCount` (one `uint32`) receives the number of rows with at least one
+violation; the optional `flags` (one `uint32` per row) receives the bitmask of
+`GPU_SPATIAL_WEIGHTS_VIOLATION` (`offsets` 1, `neighborRange` 2, `order` 4, `self` 8, `weight` 16). Run it
+once after upload and before using the weights; there is no GPU sort or dedupe, so fix a failing CSR on the
+CPU. `outputWeights` is the checked weights with `status.invalidCount` attached.
+
+```ts
+graph.add(new GPUSpatialWeightsValidation({weights: uploaded, invalidCount, flags}));
+```
+
 ### `GPUMapColoring`
+
+Consumes an adjacency pattern only, so it takes no `spatialContext`.
 
 Greedy parallel graph coloring (Jones-Plassmann with seeded hashed priorities, lowest ID on ties) over a
 symmetric `GPUSpatialWeights` such as contiguity, for choropleth maps where neighbors need distinct
@@ -426,13 +560,14 @@ graph.add(new GPUMapColoring({weights, colors, conflictCount, converged}));
 ### `GPUGlobalSpatialStatistics`
 
 Global spatial autocorrelation from a `GPUSpatialWeights` CSR and a value column, each statistic with
-its analytic expectation, variance, z-score and two-sided normal p-value. Pick the statistics with
-`statistics` (compile-time). The `results` layout (`GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`) is fixed,
+its analytic expectation, variance, z-score and normal p-value (`alternative`, default two-sided).
+Pick the statistics with `statistics` (compile-time). The `results` layout (`GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`) is fixed,
 and blocks that were not requested hold NaN.
 
 - `moran`: Moran's I with esda's `VI_norm` and `VI_rand` (sample kurtosis).
 - `geary`: Geary's C with `VC_norm` and `VC_rand`.
-- `getisOrdG`: Getis-Ord General G (values should be non-negative). Its randomization variance
+- `getisOrdG`: Getis-Ord General G, which needs non-negative ratio-scale data: when any analysis
+  value is negative the whole G block is NaN. Its randomization variance
   equals esda's `VG`. It is evaluated in a centered form so that f32 does not lose it to the
   cancellation in `E[G^2] - E[G]^2`.
 - `bivariateMoran`: `(n / S0) sum w_ij zx_i zy_j / sqrt(sum zx^2 sum zy^2)`, which equals esda's
@@ -449,10 +584,34 @@ graph.add(new GPUGlobalSpatialStatistics({
 // results[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran + GPU_GLOBAL_SPATIAL_STATISTIC_FIELD.zRandomization]
 ```
 
-Weights are used as given, so apply row standardization in `GPUNeighborSearch` if wanted. A row is
-included when the optional mask is nonzero and every provided value is finite. Excluded rows are
-neither foci nor neighbors, and `n`, `S0`, `S1` and `S2` cover included pairs only. The summary block
-reports `n`, `S0`, `S1`, `S2`, the mean, the variance, the black count and the island count.
+Neighbors, islands and re-standardization follow the shared rules of the local statistics (see
+`GPUHotSpotAnalysis` and `GPULocalMoran`):
+
+- **Neighbors.** A neighbor is a slot with a positive weight to another analysis row. Zero-weight
+  slots, the row's own slot and out-of-range IDs are not neighbors.
+- **Re-standardization.** Weights are used as given, except when `weights.info.transform` is `'row'`:
+  each row is then divided by the sum of its active weights everywhere (`S0`, `S1`, `S2`, the reverse
+  weights `w'_ji` and the cross products), so masked, missing and island neighbors drop out and the
+  row still sums to 1 (esda on the subset `W`, re-row-standardized).
+- **Islands.** An island is an included row (mask nonzero, every value finite) with no active slot.
+  The rule looks at out-links only; for symmetric weights it equals the old in-or-out rule.
+  `islands: 'exclude'` (default, compile-time) removes islands from `n`, the moments, `S0`, `S1`,
+  `S2` and from the neighbors of other rows, in one pass with no cascade (a row whose only neighbors
+  were islands keeps its place in `n` and adds no weight). `islands: 'keep'` is esda's convention.
+  The summary `islandCount` reports the islands under either policy. esda parity needs `'keep'`.
+- **Truncated weights.** If `weights.status.overflow` is nonzero the weights are incomplete, so the
+  weight sums, the mean, the variance and every statistic block are NaN (`n` and `islandCount` stay;
+  the `joinCounts` view holds 0).
+- **`alternative`** (`'two-sided'` default, `'greater'`, `'lesser'`/`'less'`; compile-time) selects
+  the tail of every analytic p field, including the join counts: `'greater'` is the upper tail of z
+  (for example positive autocorrelation of Moran's I), `'lesser'` the lower tail. `'directed'` and
+  `'folded'` are permutation conventions and throw. `getInferenceMetadata()` returns a
+  `GPUInferenceMetadata` for a legend. Under non-Gaussian data prefer the randomization fields.
+
+The summary block reports `n`, `S0`, `S1`, `S2`, the mean, the variance, the black count and the
+island count. `n` is counted in `u32` and the mean gets a second-pass correction
+(`mean += sum(x - mean) / n`), so a large offset does not bias the variance; the row count must be
+below `2^24`, the limit of the local statistics, because degrees and counts are f32 columns.
 `w_ji` comes from a binary search of row `j`. Column sums come from a deterministic transpose: a
 stable sort of slots by neighbor. Per-row partials are reduced by fixed-shape workgroup trees, and
 join counts by u32 atomics. Results are bitwise reproducible, and values, weights and the mask
@@ -461,37 +620,83 @@ constant.
 
 ### `GPUHotSpotAnalysis` and `GPULocalMoran`
 
-Local spatial autocorrelation on caller-supplied square `weights`, used as given: build them with any
-producer above and apply binary, row or kernel weighting first. Rows count when their `mask` is
+Local spatial autocorrelation on caller-supplied square `weights`. Rows count when their `mask` is
 nonzero and their value is finite; excluded rows are neither foci nor neighbors. `n`, the mean `X`
-and the population standard deviation `S` are taken over included rows, or from per-frame
-`fixedMoments`. Sums run in slot order with fixed-order reductions, so outputs are bitwise
-reproducible.
+and the population standard deviation `S` are taken over the analysis rows (see islands below), or
+from per-frame `fixedMoments`. The mean gets a second-pass correction (`mean += sum(x - mean) / n`),
+so a large offset does not bias the variance, and `n` is counted in `u32`. Sums run in slot order
+with fixed-order reductions, so outputs are bitwise reproducible.
+
+Shared semantics (also `GPULocalGeary`):
+
+- **Neighbors.** A neighbor is a slot with a positive weight that points at another included row.
+  Zero-weight slots, the focal row's own slot and out-of-range IDs are not neighbors: they are not
+  counted in `neighborCounts` or `minimumNeighbors`. If `weights.status.overflow` is nonzero the
+  weights were truncated and every output is NaN.
+- **Re-standardization.** Weights are used as given, except when `weights.info.transform` is
+  `'row'`: then each row's weights are divided by their sum over the active neighbors, so masked or
+  missing neighbors drop out and the row still sums to 1 (esda on the subset `W`, re-row-standardized,
+  not a lag that shrinks toward 0). Without masking this changes nothing beyond rounding. Weights
+  with no declared transform are never rescaled.
+- **Islands.** An island is an included row with no neighbor among the included rows.
+  `islands: 'exclude'` (default, compile-time) removes islands from `n`, the mean and the variance and
+  writes NaN for every output. `islands: 'keep'` is the esda convention: islands stay in the moments;
+  their local statistic is the formula value (local I and the spatial lag are 0, local Geary is 0),
+  and z and p are NaN because they are not tested. The decision is one pass with no cascade: a row
+  whose only neighbors were islands has no neighbor among the analysis rows, gets NaN, and stays in
+  `n`. `globalStatistics` is `[n, mean, variance, sd, islandCount]` under either policy. esda
+  parity specs use `'keep'`.
+- **`minimumNeighbors`** (default 1, compile-time integer). Rows with fewer neighbors get NaN z and p
+  and bin or quadrant 0; the moments are unchanged. The default only rejects rows without a
+  neighbor, since no row can have a z-score from its own value. Esri recommends at least 8
+  neighbors for Gi* (pass `minimumNeighbors: 8`); the normal approximation of local Moran is poor
+  below about 4.
+- **`multipleTesting`** (`'none'` default, `'bonferroni'`, `'holm'`, `'benjamini-hochberg'`,
+  `'benjamini-yekutieli'`, compile-time) adjusts the two-sided p-values through
+  `GPUMultipleTestingAdjustment`; the family is every row with a defined z-score, independent of any
+  viewport. The optional `adjustedPValues` output holds the adjusted values (equal to `pValues` for
+  `'none'`). `falseDiscoveryRate: true` is a deprecated alias of `'benjamini-hochberg'`.
+  `getInferenceMetadata()` returns a `GPUInferenceMetadata` (two-sided, analytic, the method, the
+  tested-rows definition) for building a legend.
+- **Legend contract.** Bins and quadrants mean the same thing for every correction method. A Gi*
+  bin of level `L` means the adjusted p-value (the plain p-value for `'none'`) is at most `0.10`,
+  `0.05` or `0.01` for `L = 1, 2, 3`, and the sign is the sign of z. A local Moran quadrant is the
+  sign pair of the centered value and the lag, reported only where the adjusted p-value is at most
+  `significanceLevel`. With `'none'`, Gi* bins use the critical values `1.645, 1.960, 2.576`,
+  which is the same rule.
 
 - `GPUHotSpotAnalysis` writes the Getis-Ord Gi* z-score per row for arbitrary weights:
   `z_i = sum_j w_ij (x_j - X) / (S sqrt((n S1_i - W_i^2) / (n - 1)))`, with `W_i = sum_j w_ij` and
   `S1_i = sum_j w_ij^2`. The focal row enters through the compile-time `selfWeight` (default 1,
-  classic Gi*; 0 gives Gi), never through the matrix. The z-score is unchanged when every value is
-  shifted by a constant. It equals esda's `G_Local(star=True)` analytic `Zs` for positive data
-  (esda normalizes by the sum of values, which flips the sign when the mean is negative). Optional
-  outputs: the two-sided p-value, the neighbor count and a `sint32` confidence bin in `-3..3`
-  (99/95/90% hot or cold), with Benjamini-Hochberg correction when `falseDiscoveryRate: true`.
+  classic Gi*), never through the matrix; a row's own value alone never produces a z-score. The
+  z-score is unchanged when every value is shifted by a constant. It equals esda's
+  `G_Local(star=True)` analytic `Zs` for positive data (esda normalizes by the sum of values, which
+  flips the sign when the mean is negative). `selfWeight: 0` is the exact Ord-Getis Gi (esda
+  `G_Local(star=False)`), which standardizes with the mean and variance of the `n - 1` other
+  observations: `z_i = (sum_j w_ij x_j - W_i mu_i) / (s_i sqrt(((n - 1) S1_i - W_i^2) / (n - 2)))`.
+  With row-standardized weights `selfWeight: 1` weighs the focal row as much as all its neighbors,
+  so prefer `0` there. Optional outputs: the two-sided p-value, the adjusted p-value, the neighbor
+  count (the focal row not included) and a `sint32` confidence bin in `-3..3` (99/95/90% hot or cold).
 - `GPULocalMoran` writes the z-score of local Moran's I with the analytic moments of conditional
   randomization, the null esda's permutation test samples: `E[L_i] = W_i mu`,
   `Var[L_i] = sigma^2 (N S1_i - W_i^2) / (N - 1)` over the other `N = n - 1` rows. Optional outputs
   are `localI` (`(n - 1) c_i L_i / sum c^2`, esda's `Is`), the spatial lag `L_i = sum_j w_ij c_j`,
-  the p-value, the neighbor count and the esda quadrant code (1 HH, 2 LH, 3 LL, 4 HL; 0 when not
-  significant at the per-frame `significanceLevel`, optionally with BH-FDR).
+  the p-value, the adjusted p-value, the neighbor count and the esda quadrant code (1 HH, 2 LH, 3 LL,
+  4 HL; 0 when not significant at the per-frame `significanceLevel`).
   `quadrantGating` (`'analytic'` default or `'none'`, compile-time) chooses what `quadrants` holds. With
-  `'analytic'` it is nonzero only where the analytic p-value (or BH-FDR) is significant. With `'none'` it
+  `'analytic'` it is nonzero only where the analytic p-value (adjusted when `multipleTesting` is set) is
+  significant. With `'none'` it
   is the ungated quadrant from the signs of the centered value and the spatial lag, for every included
   row with a nonzero centered value and lag, and 0 otherwise, so another test can gate it, for example the
   `significant` mask of `GPULocalPermutationTest` (esda's `q` with `p_sim`). `zScores` and `pValues` do
-  not change. `'none'` cannot be combined with `falseDiscoveryRate` (the constructor throws).
+  not change. `'none'` cannot be combined with `multipleTesting` (the constructor throws).
+  Local Moran significance does not depend on `|c_i|`: a row near the mean can be significant.
 
 Checked against esda 2.10 on 200 points with 6-nearest-neighbor weights: `localI` matches `Is` to
 3e-7, the z-score tracks esda's 99,999-permutation `z_sim` (correlation 0.999997, largest gap 0.03),
-and Gi* matches `Zs` to 1e-7.
+and Gi* matches `Zs` to 1e-7. A 60-row fixture with an island and masked rows pins `G_Local` (star
+and non-star), `Moran_Local`, `Geary_Local` and the statsmodels adjustments for `islands: 'keep'`,
+`'exclude'` and the re-standardized masked case.
 
 ```ts
 graph.add(new GPUNeighborSearch({
@@ -503,68 +708,316 @@ graph.add(new GPULocalMoran({weights, values, parameters, zScores, quadrants}));
 searchParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: 500}));
 ```
 
+### `GPUAssuncaoReisStandardization`
+
+Empirical-Bayes standardized rates of Assuncao and Reis (1999), the transformation behind
+`esda.Moran_Rate` and `esda.Moran_Local_Rate`. It writes one standardized value per row and no
+spatial statistic; Moran statistics of rate data come from composing it with the existing nodes.
+Lives in `spatial-autocorrelation/gpu-rate-standardization`.
+
+```ts
+const standardization = new GPUAssuncaoReisStandardization({
+  events, // float32 view
+  populations, // float32 view, population at risk
+  mask, // optional uint32
+  standardizedRates, // float32 view, NaN for rows outside the analysis
+  statistics, // optional, [n, b, s2, a, totalPopulation]
+  invalidCount // optional uint32 scalar
+});
+```
+
+Definition (identical to `esda.smoothing.assuncao_rate`), over the `m` valid rows with rates
+`p_i = e_i / n_i`: `b = sum e / sum n`, `s2 = sum n_i (p_i - b)^2 / sum n`,
+`a = s2 - b / (sum n / m)`, `v_i = a + b / n_i` (replaced by `b / n_i` where `v_i < 0`), and
+`z_i = (p_i - b) / sqrt(v_i)`.
+
+- **Negative prior variance.** `a` is negative when the rates vary less than Poisson noise predicts.
+  esda does not clamp `a`: it keeps the negative `a` wherever `v_i` stays non-negative and falls
+  back to the pure Poisson variance `b / n_i` only for rows where `v_i < 0`. This node does the
+  same, for parity, and `statistics[3]` reports the unclamped `a`. The EB smoothing in
+  `rate-smoothing` clamps the prior variance at zero instead (a different, also standard
+  convention for shrinkage); the two are not meant to agree when `a < 0`.
+- **Missing rows.** A row is valid when it is unmasked, its events are finite and non-negative, and
+  its population is finite and positive. Other rows write NaN, are excluded from `b`, `s2`, `m`
+  and the mean population, and are excluded by the downstream statistic. `invalidCount` counts
+  the unmasked rows that were rejected. Rows where `v_i` is not positive (for example `b = 0`)
+  write NaN, as esda's 0 / 0 does.
+- **Precision.** `m` is a u32; sums are fixed-order two-level workgroup trees (no float atomics,
+  bitwise reproducible); `b` gets a second-pass correction and `s2` is formed from centered
+  deviations. Fewer than 2^24 rows.
+
+Composition (no statistic code is duplicated):
+
+```ts
+const standardizedRates = createTransientView(graph, 'rates', 'float32', rows);
+graph.add(new GPUAssuncaoReisStandardization({events, populations, standardizedRates}));
+
+// EB Moran's I (esda.Moran_Rate, transformation 'r'): row-standardized weights.
+graph.add(
+  new GPUGlobalSpatialStatistics({
+    weights, // weights.info.transform === 'row'
+    values: standardizedRates,
+    statistics: ['moran'],
+    islands: 'keep', // esda's convention
+    results
+  })
+);
+// EB local Moran (esda.Moran_Local_Rate): GPULocalMoran, or GPULocalPermutationTest('localMoran').
+graph.add(new GPULocalMoran({weights, values: standardizedRates, parameters, islands: 'keep', zScores, localI}));
+```
+
+`results[moran + statistic]`, `results[moran + expected]` and `results[moran + zRandomization]`
+equal `Moran_Rate.I`, `.EI` and `.z_rand` (esda recomputes the Moran of the standardized values and
+ignores the EB sampling variance); `localI` equals `Moran_Local_Rate.Is`. Row-standardized weights
+are re-standardized over the active neighbors, so NaN rows drop out of the neighborhoods of the
+rows that remain.
+
+### `GPUMultipleTestingAdjustment`
+
+Adjusts a column of per-row p-values for multiple testing on the GPU. `method` is `'none'`,
+`'bonferroni'`, `'holm'`, `'benjamini-hochberg'` or `'benjamini-yekutieli'`, and `adjustedPValues`
+holds the same numbers as statsmodels `multipletests` (`bonferroni`, `holm`, `fdr_bh`, `fdr_by`), in
+`[0, 1]`. `getMultipleTestingAdjustedPValues` is the float64 CPU reference with the same semantics.
+
+- **Family.** The family is every tested row: a row whose p-value is finite and in `[0, 1]`. NaN
+  rows are not tested and get NaN. There is no mask prop by design: run the statistic and this node
+  on the full analysis set and apply a viewport or display mask only when rendering, otherwise
+  panning changes the family size `m` and makes the visible rows look more or less significant.
+- **`minimumFamilySize`.** `m = max(testedRows, minimumFamilySize)`; rows without a p-value count as
+  `p = 1`. Use it to pin `m` when the tested set can shrink (for example an analysis mask that
+  follows the viewport). The optional `testedCount` output reports the `m` actually used.
+- **Which method.** Local statistics of neighboring rows share observations, so their p-values are
+  dependent. Benjamini-Hochberg only controls the false discovery rate under independence or
+  positive regression dependence; use `'benjamini-yekutieli'` (Benjamini-Hochberg times
+  `c(m) = sum 1/i`, a cost of about `ln m` in power) for controlled error under arbitrary
+  dependence. Holm controls the family-wise error rate and is uniformly more powerful than
+  Bonferroni.
+- **Significance.** For every method a row is significant at level `alpha` exactly when
+  `adjustedPValue <= alpha`, so 0.10 / 0.05 / 0.01 bins are consistent by construction. Tied
+  p-values get identical adjusted values.
+- **Cost.** `none` and Bonferroni are O(n). The step procedures add a 30-bit `GPUSort` plus a
+  deterministic cumulative maximum (Holm) or minimum (Benjamini) scan in workgroup memory, a few
+  linear kernels in all. Fewer than 2^24 rows (ranks are exact f32 integers); results are
+  independent of scheduling.
+
+```ts
+graph.add(new GPUMultipleTestingAdjustment({
+  pValues, method: 'benjamini-yekutieli', adjustedPValues
+}));
+// significant at 5%: adjustedPValues[i] <= 0.05
+```
+
 ### `GPULocalPermutationTest` and `GPUGlobalPermutationTest`
 
-Permutation inference (pseudo p-values) over a `GPUSpatialWeights` CSR, matching PySAL esda's
-`p_sim`. Both contributors read a uint32 parameter view written with `getGPUPermutationParameterValues`:
-`{seed, permutations, significanceLevel}`. Changing the seed, the permutation count (up to the
-compile-time `maximumPermutations`), the values or the weights never rebuilds the graph.
+Permutation inference (pseudo p-values) over a `GPUSpatialWeights` CSR, following PySAL esda's
+`p_sim` with the corrections below. Both contributors read a uint32 parameter view written with
+`getGPUPermutationParameterValues`: `{seed, permutations, significanceLevel}`. Changing the seed, the
+permutation count (up to the compile-time `maximumPermutations`), the values or the weights never
+rebuilds the graph.
 
-- `GPULocalPermutationTest` does conditional randomization for `localMoran`, `localGeary`, `localG` or
-  `localGStar` (a self weight of 1). For each tested row and permutation it draws an ordered sample
-  of `k_i` distinct other included rows (a partial Fisher-Yates over their compacted positions) and
-  assigns them to the row's weight slots. It counts simulated values `>= observed`, folds the count
-  as esda does, and writes `exceedances`, `pseudoPValues = (count + 1) / (P + 1)`, an optional
-  `observed` statistic, and a `significant` mask (`p <= level`, or Benjamini-Hochberg with
-  `falseDiscoveryRate: true`). Islands and rows with more than `maximumNeighbors` (64 at most)
-  neighbors are not tested; the latter set `overflow`.
-- `GPUGlobalPermutationTest` handles `moran`, `geary`, `getisOrdG` and `bivariateMoran` (`y`
-  permuted). Each permutation relabels the included values through a keyed Feistel bijection, so no
-  sort runs per permutation and nothing of size `P x n` is stored. `results`
-  (`GPU_GLOBAL_PERMUTATION_RESULT`) holds the observed statistic, `p_sim`, the folded count, the
-  simulated mean and standard deviation, `z_sim`, `p_z_sim`, and the minimum and maximum. Optional
-  outputs are the `referenceDistribution` and its `histogram` (GeoDa's permutation plot).
+- `GPULocalPermutationTest` does conditional randomization for `localMoran`, `localGeary`, `localG`,
+  `localGStar` (a self weight of 1), `localBivariateMoran`, `localLeeL`, `localJoinCount` and
+  `localBivariateJoinCount` (see **Bivariate, join-count and Lee statistics** below). For each tested row and permutation it draws an ordered sample
+  of `k_i` distinct other analysis rows (a partial Fisher-Yates over their compacted positions) and
+  assigns them to the row's weight slots. It writes `exceedances`, `pseudoPValues`, an optional
+  `observed` statistic, an optional `adjustedPValues`, and a `significant` mask. Rows with more than
+  `maximumNeighbors` (64 at most) neighbors are not tested and set `overflow`.
+- `GPUGlobalPermutationTest` handles `moran`, `geary`, `getisOrdG`, `bivariateMoran` (`y`
+  permuted) and `leesL` (Lee's spatial Pearson, `x` and `y` permuted together). `results` (`GPU_GLOBAL_PERMUTATION_RESULT`) holds the observed statistic, `p_sim`, the
+  exceedance count, the permutation count used, the simulated mean and standard deviation, `z_sim`,
+  `p_z_sim`, the minimum and maximum, and the island and analysis row counts (`islandCount`,
+  `analysisCount`). Optional outputs are the `referenceDistribution` and its `histogram` (GeoDa's
+  permutation plot).
+
+**Tail (`alternative`).** The type is the shared `GPUInferenceAlternative` (`GPUPermutationAlternative`
+remains as a deprecated alias) and the default is now `'two-sided'`: with `g = #{sim >= observed}`
+and `l = #{sim <= observed}`, `p = min(2 (min(g, l) + 1), P + 1) / (P + 1)`. A row (or a global
+statistic) whose simulations all tie the observed value has `g = l = P` and `p = 1`. `'directed'`
+(`p = (min(g, l) + 1) / (P + 1)`) is esda's legacy default and is anti-conservative: the tail is
+chosen from the data and not doubled, so under the null `p` is about twice too small. Its tie
+handling deviates from esda on purpose: esda uses `min(g, P - g)`, and `P - g` counts only
+simulations strictly below the observed value, so when simulations tie the observed value (discrete
+data, zero-inflated counts, a constant neighborhood) esda reports the smallest attainable
+`p = 1/(P+1)` (for 20 equal simulations: 0.0476 for a tied observed value), while `min(g, l)` reports
+1. The two agree whenever no simulation equals the observed value (pinned against esda 2.10.0).
+`'folded'` matches esda's undirected test exactly; `'greater'` and `'lesser'` (`'less'` alias)
+match esda's one-sided tests. Do not combine `'directed'` with `multipleTesting`.
+
+**Neighbors, islands and re-standardization.** One rule, shared with the other Stream A statistics:
+a neighbor slot is *active* when its neighbor is a valid row other than the row itself, its weight is
+positive, and the neighbor is an included row (mask nonzero, finite value). Zero-weight slots are not
+neighbors: they are not counted in `k_i` and are never drawn. An *island* is an included row with no
+active slot. `islands: 'exclude'` (default) drops islands from the analysis: NaN outputs, and they
+are not counted in `n`, the mean, the variance or `S0`, and not neighbors of other rows. There is no
+cascade: a row whose only neighbors were islands stays in `n` with no neighbor, so it is not tested
+(global tests add 0 to `S0` for it). `islands: 'keep'` reproduces esda: islands stay in `n` and the
+moments, their local statistic is the formula value with a zero lag (`observed`, for example local
+I = 0), but they are never tested (`exceedances` is `GPU_LOCAL_PERMUTATION_NOT_TESTED`, p-value NaN).
+Parity specs against esda use `islands: 'keep'`. Island counts are reported in the optional
+one-row `islandCount` output (local) or `results[GPU_GLOBAL_PERMUTATION_RESULT.islandCount]` (global).
+When `weights.info.transform` is `'row'`, each analysis row's active weights are re-standardized to
+sum to 1, in the lags and in `S0`, so a masked or missing neighbor drops out instead of shrinking
+the row sum below 1 (numerically identical when nothing is dropped); other transforms are used as
+given. If `weights.status.overflow` is nonzero the weights are truncated: no row is analyzed
+(statistics NaN), and the local test sets `overflow`. The mean is a fixed-order tree sum followed by a
+second-pass correction of the deviations, and `n` is an exact uint32, so large-offset data keep
+`sum(z) = 0` to f32 accuracy.
+
+**Permutation count.** The count is never clamped. A per-frame `permutations` outside
+`[1, maximumPermutations]` writes NaN p-values: the local test leaves every row untested and sets
+`overflow`; the global test writes NaN for `permutations`, the p-values and the simulated summaries
+(the observed statistic is still reported). Validate on the CPU with
+`getGPUPermutationParameterValues(parameters, {maximumPermutations})` or the contributor's
+`getParameterValues(parameters)`, both of which throw.
+
+**Multiple testing (local).** `multipleTesting` is `'none'` (default), `'bonferroni'`, `'holm'`,
+`'benjamini-hochberg'` or `'benjamini-yekutieli'`, run through `GPUMultipleTestingAdjustment` over the
+pseudo p-values of all tested rows (never a display mask). `adjustedPValues` receives the adjusted
+values, and `significant` is `adjustedPValue <= level`; with `'none'` it is the exact
+cross-multiplied integer comparison `p <= level`. `falseDiscoveryRate: true` is a deprecated alias of
+`multipleTesting: 'benjamini-hochberg'`. `getInferenceMetadata(parameters)` on either contributor
+returns a `GPUInferenceMetadata` (alternative, permutation count, seed, multiple-testing method,
+significance level and a `testedRowsDefinition` sentence) for legends.
+
+**Bivariate, join-count and Lee statistics.** Definitions below use `c = x - mean` over the analysis
+rows, `SS = sum c^2`, `n` analysis rows and the weights as given (re-standardized for `'row'`
+weights). Parity: statistics against esda 2.10 at f32 accuracy, p-values against the twin of the
+Philox draws, plus a Monte Carlo bound against esda `p_sim` (R = 9999).
+
+- `localBivariateMoran` (esda `Moran_Local_BV`, needs `secondValues`): `I_i = (n - 1) c^x_i sum_j
+  w_ij c^y_j / sqrt(SS_x SS_y)`; the focus keeps `x`, the drawn neighbors supply `y`. The optional
+  `quadrants` output is esda's `q` in the PySAL scheme (1 high-high, 2 low-high, 3 low-low, 4
+  high-low in `x_i` and the lag of `y`); it is not gated by significance.
+- `localLeeL` (esda `Spatial_Pearson_Local`, needs `secondValues`): `L_i = n (sum_j w_ij c^x_j)(sum_j
+  w_ij c^y_j) / sqrt(SS_x SS_y)`. A drawn row supplies both its `x` and its `y` (the pair stays
+  together), the focus value does not enter. For row-standardized weights the mean of the local
+  values is the global `L`. esda's own p-value is the `'directed'` one (anti-conservative); the
+  default here is `'two-sided'`.
+- `leesL` in `GPUGlobalPermutationTest` (esda `Spatial_Pearson`, element `[0, 1]`): `L = z'W'Wz /
+  1'W'W1 = n sum_i (sum_j w_ij c^x_j)(sum_j w_ij c^y_j) / (sqrt(SS_x SS_y) sum_i (sum_j w_ij)^2)`,
+  with the rows of `(x, y)` permuted together by the swap-or-not shuffle (esda permutes the rows of
+  `Z`). Note that esda's global version does not row-standardize `W`; here `'row'` weights are
+  re-standardized over active slots, others are used as given. The smoothing factors esda reports
+  at `[0, 0]` and `[1, 1]` are not exposed. (`GPUSpatialPearson` is a different statistic: the
+  weighted correlation across edges.)
+- `localJoinCount` (esda `Join_Counts_Local`, binary `values`): `LJC_i = x_i sum_j x_j` over the active
+  neighbors with binary weights (the weight values are ignored), where a value is a join only when
+  it is exactly 1. Only rows with `LJC_i > 0` are tested; the others get NaN p-values and
+  `GPU_LOCAL_PERMUTATION_NOT_TESTED`, as esda sets their `p_sim` to NaN. The tail that detects
+  clustering is `'greater'`. With ties (discrete statistics) esda's `'two-sided'` p-value
+  (percentile based) is not `2 min(g, l)`; the parity specs therefore use `'greater'`.
+- `localBivariateJoinCount` (esda `Join_Counts_Local_BV`, `joinCase`): `'CLC'` (co-location) counts
+  neighbors with `x_j = y_j = 1` for a focus with `x_i = y_i = 1`; `'BJC'` (no co-location) counts
+  neighbors with `x_j = 0, y_j = 1` for a focus with `x_i = 1, y_i = 0`. A drawn row supplies its `x`
+  and `y` together. **Deviation from esda for `'BJC'`:** esda observes the count above but
+  simulates `x_i sum_j y_j`, which ignores `y_i = 0` and `x_j = 0`, so its p-values do not test the
+  statistic it reports (on the specs' fixture they differ by up to 0.09 at R = 9999). This
+  implementation simulates the observed statistic; `'CLC'` is identical to esda.
+- `localGeary` classification (`classes` output, `GPU_LOCAL_GEARY_CLASS`; Anselin 2019, esda
+  `Geary_Local(labels=True)`): with `m` the mean of the local Geary values over the analysis rows, a
+  significant row (`p <= level`, or `adjustedPValue <= level` with `multipleTesting`) is 1
+  (high-high, positive association: `c_i < m` and `x_i` above the mean), 2 (low-low: `c_i < m`, `x_i`
+  below the mean) or 3 (negative association: `c_i > m`); an insignificant row is 4 and a row that
+  is not tested (NaN p-value), or exactly at a mean, is 0 (esda: NaN). esda's own docstring calls
+  codes 1 and 2 "outlier" and "cluster"; the numeric rule is ported, not the words. Small `c_i` means
+  similar neighbors, so the tail of clustering is `'lesser'` (also the tail declared by
+  `GPU_LOCAL_GEARY_PERMUTATION_ADAPTER`): with `'lesser'` class 3 is empty because negative
+  association never has a small lower-tail p-value, with `'greater'` classes 1 and 2 are empty, and
+  with the default `'two-sided'` both appear. The classification is not available analytically.
+
+**Global shuffle.** Each permutation relabels the analysis values through a keyed swap-or-not
+shuffle (Hoang, Morris and Rogaway 2012, `6 ceil(log2 n) + 6` rounds, round keys and salts from
+Philox 4x32-10 on the seed and the permutation index), so no sort runs per permutation and nothing
+of size `P x n` is stored. The earlier four-round Feistel network is no longer used by the global
+test because it is not uniform on small domains: with 400000 draws the marginal of `pi(0)` and the
+joint placement of fixed pairs reject uniformity far below the 0.1 percent level for domains of
+10 to 50 elements (joint chi-square p-values below 1e-100; marginal p-values from 4e-4 at `n = 50`
+down to 1e-139 at `n = 10`), while swap-or-not passes (all 150 chi-square p-values above 0.0023,
+none below 1e-3). At 20000 draws on rook lattices and random kNN graphs with `n` = 30 to 5000
+both shuffles reproduce the analytic randomization mean and variance of Moran's I (`E = -1/(n-1)`,
+esda `VI_rand`) to within about 2.7 standard errors, so the Feistel bias is a small-domain,
+joint-placement effect that the variance check alone does not see; it is removed rather than
+tolerated. The Knox and Mantel tests and the GWR non-stationarity test use the same swap-or-not
+shuffle.
 
 ```ts
 const parameters = new GPUParameterBuffer(device, {
   id: 'permutations', format: 'uint32', length: GPU_PERMUTATION_PARAMETER_LENGTH,
-  values: getGPUPermutationParameterValues({seed: 1, permutations: 99})
+  values: getGPUPermutationParameterValues({seed: 1, permutations: 99}, {maximumPermutations: 999})
 });
-graph.add(new GPULocalPermutationTest({
+const test = new GPULocalPermutationTest({
   weights, values, statistic: 'localMoran', parameters: parameters.importToGraph(graph),
-  maximumPermutations: 999, exceedances, pseudoPValues, significant, falseDiscoveryRate: true, overflow
-}));
+  maximumPermutations: 999, exceedances, pseudoPValues, significant, adjustedPValues,
+  multipleTesting: 'benjamini-yekutieli', islands: 'exclude', islandCount, overflow
+});
+graph.add(test);
 // Preview with 99 permutations, then refine on idle:
-parameters.write(getGPUPermutationParameterValues({seed: 1, permutations: 999}));
+parameters.write(test.getParameterValues({seed: 1, permutations: 999}));
+const metadata = test.getInferenceMetadata({seed: 1, permutations: 999});
 ```
 
 ### Additional spatial statistics and bounded optimization
 
 `GPULocalGeary` writes source-aligned `sum_j w_ij (z_i - z_j)^2` values through the shared
-`GPUInferenceResultPort`. `GPUSpatialPearson` is the weighted Pearson correlation across directed
-spatial edges `(x_i, y_j)`. `GPUGammaStatistic` reports the weighted mean centered cross-product,
-squared difference, or absolute difference over those edges. The local Geary, Pearson, and the two
-Gamma forms with an order-equivalent pair sum expose `GPUPermutationStatisticAdapter` descriptors
-for the existing permutation contributors; they do not duplicate permutation loops.
+`GPUInferenceResultPort`, with the neighbor, re-standardization and `islands` semantics of
+`GPULocalMoran` (an island is NaN under `'exclude'`, the default, and 0 under `'keep'`, esda's
+convention; a constant variable gives NaN). It has no analytic classification: use permutation
+inference (`GPULocalPermutationTest` with `statistic: 'localGeary'` and `classes` gives the Anselin
+2019 positive / negative association classes, see above). `GPU_LOCAL_GEARY_PERMUTATION_ADAPTER` declares the `'lesser'` tail, because small `c_i`
+means similar neighbors (a cluster). `GPUSpatialPearson` is the weighted Pearson correlation across
+directed spatial edges `(x_i, y_j)`. `GPUGammaStatistic` reports the weighted mean centered
+cross-product, squared difference, or absolute difference over those edges. Both skip the focal
+row's own slot and zero-weight slots. The local Geary, Pearson, and the two Gamma forms with an
+order-equivalent pair sum expose `GPUPermutationStatisticAdapter` descriptors for the existing
+permutation contributors; they do not duplicate permutation loops.
 
 `GPURoseStatistic` consumes planar line starts and ends. Its required
 `GPUCircularStatisticsContract` makes directional versus axial interpretation, radians, angular
 origin, and equal-width bin count explicit. It reports count, mean angle, resultant length,
 circular variance, Rayleigh z, and the weighted Rose bins for every group.
 
-`GPUAZPRegions` performs a bounded, deterministic local search from caller-supplied contiguous
-labels. Connectivity is preserved by leaf-only source moves and adjacent destination moves. The
-operator publishes the final within-region sum of squares plus packed iteration, convergence,
+`GPUAZPRegions` is a greedy steepest-descent AZP: a bounded, deterministic local search from
+caller-supplied contiguous labels with no tabu list, annealing or reactive escape, so it stops at the
+first local optimum and the result depends on `initialLabels` (for several starts, run several
+instances from different initial partitions and keep the smallest `objective`). Every candidate move
+is checked for exact source connectivity. The initial labels are checked on the GPU as well: a region
+that is not connected adds its extra components to `invalidCount` and the search does not run. The
+operator publishes the final within-region sum of squares (the same quantity as `withinSsd` of
+`GPURegionPartitionEvaluation` on the same table) plus packed iteration, convergence,
 iteration-limit, and invalid-count status. `seed` fixes tie order and records the reproducible
-initialization seed; `maximumIterations` is a hard compile-time bound.
+initialization seed; `maximumIterations` is a hard compile-time bound. Optional `extensiveValues` and
+`extensiveThreshold` forbid a move that would leave the source region below the threshold (the max-p
+constraint). A multi-start AZP is deferred: one instance already costs `maximumIterations` rounds of
+row-parallel candidate searches with a per-candidate reachability bitset, so parallel starts would
+multiply the private memory and the dispatch count rather than fill idle lanes.
+
+`GPUAZPRegions`, `GPUMaxPRegions` and `GPUWardRegions` share two input rules. **Attributes are
+standardized by default** (`standardize`, default true): each column becomes a z-score over its finite
+rows with the population standard deviation (divisor `n`, the `sklearn` `StandardScaler` convention),
+a constant column becomes zero, and `objective` is in z-score units. Pass `standardize: false` for the
+raw-unit behavior of earlier versions (a default change). **Adjacency is undirected**: row `i` is
+adjacent to `j` when either row lists the other, so directed (for example k-nearest-neighbor) weights
+are symmetrized inside the operator with `GPUSpatialWeightsTranspose`; weights whose `info.symmetric`
+is `true` skip that pass.
 
 `GPUWardRegions` begins with one region per row and repeatedly merges the adjacent pair with the
 smallest Ward increase in within-region squared error. `targetRegionCount` and `maximumIterations`
 bound the search; disconnected weights can stop it before the target, which is reported through the
-shared optimization status. `GPUMaxPRegions` greedily grows contiguous regions until their extensive
-value reaches a per-frame threshold. An under-threshold remainder is merged into an adjacent region
-when possible, and the status reports the region count and any infeasible remainder. It is a
-deterministic construction heuristic rather than a randomized multi-start Max-P search.
+shared optimization status. `GPUMaxPRegions` is a randomized multi-start greedy Max-P: `startCount`
+(compile time, default 16, at most 64) independent constructions run in one dispatch, one workgroup
+each with its own scratch labels, and each start grows contiguous regions until their extensive value
+reaches a per-frame threshold, drawing its seed rows in a random order from Philox 4x32-10 keyed by
+`(seed, start)`. An under-threshold remainder is merged into an adjacent region when possible. The
+returned start has the fewest under-threshold leftover regions, then the most regions, then the
+smallest within-region sum of squares, then the lowest start index; the status reports the region
+count, any infeasible remainder, the `selectedStart` and the `improvementMoveCount`. With
+`improvementIterations > 0` (default 0) the selected construction is then refined by greedy AZP moves
+that keep every region at or above the threshold, which lowers `objective` at the same region count
+(at most 65,536 rows); spopt's `MaxPHeuristic` anneals instead. The starts run side by side, so the
+single-construction watchdog limit (about 50k-100k rows) is unchanged, and scratch memory is
+`startCount * rows * (columnCount + 4) * 4` bytes. No `spopt` is installed in the oracle environment,
+so Max-P quality is checked against the CPU selection mirror and invariants (contiguity, threshold,
+`p` of 16 starts never below the first start) rather than against `spopt`.
 
 `GPULocationAllocation` consumes a row-major demand-by-facility cost matrix and implements bounded
 greedy p-median, maximum-coverage, and set-covering selection. Pair it with
@@ -572,6 +1025,32 @@ greedy p-median, maximum-coverage, and set-covering selection. Pair it with
 facility flags, nearest assignments, the objective, uncovered demand count, completion, and invalid
 input count. The contributor keeps selection on the GPU, but it does not claim the integer-programming
 optimum or application-specific facility constraints of a packaged solver.
+
+A `+Infinity` cost marks an unreachable demand-facility pair. Unreachable demand is never summed
+into the p-median objective: the objective is the weighted cost of the reachable rows, the
+unreachable rows are counted in `uncoveredDemandCount` (not `invalidCount`, which marks invalid input
+and stops the run), their assignment is `0xffffffff` and their `assignedCosts` entry is `+Infinity`.
+Greedy and swap steps compare p-median candidates lexicographically, first by the demand weight left
+unreachable and then by the reachable cost, so one unreachable row cannot swamp the float32 cost
+differences of the others.
+
+After the greedy construction, p-median and maximum coverage run a Teitz-Bart vertex-substitution
+(swap) phase, bounded by `maximumSwapIterations` (compile-time, integer 0 to 1000, default 100; 0 is
+pure greedy; set covering has no swap phase). Each iteration scores every (selected facility, unselected
+candidate) swap in parallel, applies the single best strictly improving swap (ties go to the lowest
+selected facility, then the lowest candidate) and stops when none improves. A swap must gain more than
+1e-6 of the objective scale, which keeps f32 summation noise from cycling. It needs
+`maximumFacilityCount * facilityCount <= 2^24` and costs `O(maximumFacilityCount * facilityCount *
+demandCount)` per iteration. The `status` output now has seven words: after the four earlier ones,
+`swapIterations` (swaps applied), `converged` (1 when no improving swap remains, so the result is a
+swap-local optimum) and `iterationLimitReached` (1 when the budget was used up, so local optimality is
+not verified); all three are 0 when the phase is off. Behavior change: swaps are on by default, so
+p-median and coverage results can differ from (and are never worse than) the old greedy result, and
+`output.status` must hold seven words. Greedy maximum coverage alone has the `(1 - 1/e)` guarantee
+relative to the optimum (Nemhauser, Wolsey and Fisher), which the swap phase preserves because it never
+lowers the covered weight; greedy p-median has no constant-factor guarantee. Either way the result is a
+local optimum, not the integer-programming optimum. It is checked against a brute-force optimum on small
+instances.
 
 `alternative` (compile-time; a change recompiles) selects the tail, with esda's definitions. With `R`
 permutations, `g` is the number of simulated values `>= observed` and `l` the number `<= observed`:
@@ -653,16 +1132,53 @@ because labels are canonical, `clusterCentroids` is bitwise reproducible across 
 and cluster sizes are exact either way. `'atomic'` skips the sorts but uses float atomics, so last bits vary
 between runs. Behavior change: last-bit differences versus the previous atomic default.
 
+`spatialContext` (optional) declares the coordinate space of `positions`. Omitted or planar, the search is
+Euclidean in position units. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` clusters
+`[longitude, latitude]` degrees with `epsilon` a great-circle distance in meters (kilometers with
+`units: 'kilometers'`, or any `sphereRadius`; the mean Earth radius by default). Then `bounds` are
+`[minLon, minLat, maxLon, maxLat]` degrees inside `[-180, 180] x [-90, 90]`. The neighbor test is the
+haversine term against `sin^2(epsilon / (2 R))`, and each encoding sizes its cells to
+`epsilon / R` of latitude by `2 asin(sin(epsilon / (2 R)) / cos(maxAbsLatitude))` of longitude (the whole
+extent in one column near a pole), so the 3x3 search stays exact. The search does not wrap at the
+antimeridian: a cluster straddling +-180 is split, so keep `bounds` on one side of it. `denseBoxShortcut`
+is planar only, and other metrics (rhumb, ellipsoidal) throw. Geographic results match scikit-learn
+`DBSCAN(metric='haversine')` on the test scene.
+Planar positions are float32, so the representable spacing near a coordinate of magnitude `M` is about
+`M * 1.2e-7`: UTM northings near 5e6 are only 0.5 m apart, and an `epsilon` below a few such spacings
+(a few metres) is unreliable. Subtract a local origin from the coordinates (and from `bounds`) before
+upload so the spacing stays far below `epsilon`. Float32 longitudes near 180 degrees have about 1 m spacing.
+
 ### `GPUKMeans`
 
 Deterministic k-means over planar points (scikit-learn `KMeans`, PostGIS `ST_ClusterKMeans`). Props:
-`positions`, `k` (1 to 256), `iterations` (1 to 64, a maximum), `tolerance`, `initialization`
-(`'first-valid'` by default, or `'kmeans++'` with `seed`) and the outputs `labels` (cluster or noise),
-`centers` (`k` rows), optional `sizes` and `squaredDistances` (the explain column; its sum is the
-inertia) and `convergence`. Each point goes to the nearest center with lowest-ID ties, means are fixed-order sorted
-segmented sums, and an empty center keeps its position. Results are bitwise reproducible per seed.
-Each iteration adds a sort, so memory grows with `iterations * points`. `'kmeans++'` uses `log`,
-which WGSL does not pin down across devices.
+`positions`, optional planar `spatialContext` (a longitude/latitude context throws; project first), `k`
+(1 to 256), `iterations` (1 to 64, a maximum), `tolerance`, `initialization` (`'kmeans++'` by default with
+`seed`, or `'first-valid'`), `restartCount` (1 to 32, default 1) and the outputs `labels` (cluster or
+noise), `centers` (`k` rows), optional `sizes`, `squaredDistances` (the explain column), `inertia` (a
+one-row `float32`: the total inertia, the sum of `squaredDistances`) and `convergence`.
+Behavior change: the default `initialization` was `'first-valid'`, which is order dependent and can place
+centers next to each other; `'kmeans++'` matches scikit-learn. Each point goes to the nearest center with lowest-ID ties, means are fixed-order chunked
+reductions (no sort). Results are bitwise reproducible per seed. `'kmeans++'` uses `log`, which WGSL does not
+pin down across devices.
+
+Behavior change (empty clusters): a center that receives no point is no longer left in place. After every
+assignment step the empty clusters (lowest ID first) are relocated like scikit-learn's
+`_relocate_empty_clusters_dense`: they take the points with the largest squared distance to their assigned
+center, farthest first, and the donor clusters' counts and sums lose those points before the means are
+taken. Ties in distance go to the lowest row. scikit-learn's `argpartition` leaves the order among the
+relocated points unspecified; here it is always descending distance. If every point sits on its center
+nothing is relocated, and a cluster that is still empty (or whose only member was taken) moves to the mean of
+the largest cluster (lowest ID on ties). A center that is NaN because it could not be initialized (fewer valid
+points than `k`) is never relocated. The selection is a single-workgroup iterated argmax with no atomics and
+no readback; it costs `O(n E)` for `E` empty clusters and nothing when none is empty.
+
+`restartCount` runs that many independent seeded initializations, each with its own Lloyd iterations, and
+returns the one with the lowest total inertia (a fixed-order compensated sum; a tie goes to the lowest
+restart index). Restart `r` uses the seed `getKMeansRestartSeed(seed, r)` (restart 0 uses `seed`), so any
+single restart can be reproduced with `restartCount: 1` and that seed. The default of 1 matches
+scikit-learn's `n_init='auto'` for k-means++. Restarts are separate node chains in the graph, so graph size
+and GPU time grow linearly with `restartCount`; `convergence` and `inertia` describe the returned restart.
+`restartCount` above 1 needs `'kmeans++'` (`'first-valid'` has no randomness).
 
 ```ts
 graph.add(new GPUKMeans({positions, k: 8, iterations: 20, initialization: 'kmeans++', seed: 3,
@@ -675,7 +1191,7 @@ Lloyd fixed point, so a tolerance relative to the data extent is enough. `tolera
 iteration whose shift is at most `tolerance`, the later assign and update kernels return early, so the
 result equals running every iteration when `tolerance` is 0 (an exact fixed point). The optional
 `convergence` output is two `uint32` rows, `[iterationsUsed, converged]`. There is no GPU loop exit yet,
-so the per-iteration sorts still run: the saving is kernel work, not dispatches.
+so the per-iteration dispatches still run: the saving is kernel work, not dispatches.
 
 ### `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, and `GPURegionPartitionEvaluation`
 
@@ -683,7 +1199,9 @@ Spatially constrained regionalization over a contiguity graph (PySAL spopt `Span
 Assuncao et al. 2006).
 
 - `GPUSpatialWeightsMinimumSpanningTree`: Boruvka minimum spanning forest over a symmetric
-  `GPUSpatialWeights`. The edge cost is the squared Euclidean distance between (optionally standardized)
+  `GPUSpatialWeights` (every link in both rows; for directed weights build the union with
+  `GPUSpatialWeightsTranspose` first, unlike the AZP, Max-P and Ward operators, which symmetrize
+  themselves because the tree's edge IDs are the caller's CSR slots). The edge cost is the squared Euclidean distance between (optionally standardized)
   attribute rows. A total order of `(cost, lower-row CSR slot)` makes the forest unique and equal to
   Kruskal under that order, with integer atomics and no float races. Outputs are `treeEdgeFlags` (per
   CSR slot), `componentLabels` (the minimum row of each tree) and, optionally, a compact `edges` list with
@@ -697,11 +1215,16 @@ Assuncao et al. 2006).
   with k + 1. Outputs are `labels` (the row index of each region's top), `regionCount`, `cutEdges` and
   `cutGains`. The partitions equal spopt `SpanningForest` (squared-Euclidean metric) exactly, including
   floors and islands; spopt's `islands='increase'` adds the tree count to `n_clusters`, while here the
-  target counts every region.
+  target counts every region. SKATER does not center attributes itself: the tree's `standardize`
+  (default true) does, and `standardizedValues` should be passed as the SKATER `values` so the cuts and
+  the tree share a metric and the f32 subtree-sum subtraction stays well conditioned.
 - `GPURegionPartitionEvaluation`: scores any label column (SKATER, `GPUSpatialClustering`, `GPUKMeans`):
   region count, within, between and total sum of squared deviations, smallest and largest region, the
   fraction of weights-graph links that cross regions (a compactness proxy) and the number of ignored
-  rows, plus per-label sizes and within-region deviations. The cost is `O(labelCapacity * rows)`.
+  rows, plus per-label sizes and within-region deviations. The summary also holds `pseudoF`, the
+  Calinski-Harabasz statistic `(between / (k - 1)) / (within / (n - k))`, pinned against
+  `sklearn.metrics.calinski_harabasz_score` (NaN where undefined, 1 when the within-region dispersion
+  is zero, as sklearn). The cost is `O(labelCapacity * rows)`.
 
 ```ts
 graph.add(new GPUSpatialWeightsMinimumSpanningTree({weights, attributes, attributeCount: 3, treeEdgeFlags, componentLabels}));
@@ -714,6 +1237,10 @@ Cost: the publish and apply kernels are single-threaded and each SKATER step is
 rows or more.
 
 ### `GPUGroupGeometry`
+
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude context
+throws at construction (project first with `createGPULocalFrame` and `GPULocalFrameProjection`).
+Geographic group centroids live in `GPUGeometryMeasures`.
 
 Per-label summaries over a `uint32` label column, for example the output of `GPUSpatialClustering`:
 count, bounds `[minX, minY, maxX, maxY]`, mean center, weighted center, weight sum, medoid, standard
@@ -743,6 +1270,9 @@ graph.add(new GPUGroupGeometry({
 
 ### `GPUGroupConvexHull`
 
+Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
+`createGPULocalFrame` and `GPULocalFrameProjection`.
+
 Convex hull per label (Andrew monotone chain), for cluster and hot-region outlines and trajectory
 footprints (PostGIS `ST_ConvexHull` per group, `GeoSeries.convex_hull`). Props: `positions`, `labels`,
 `groupCount`, optional `noiseLabel`, `maximumVerticesPerGroup` (at least 3), `totalCapacity` and
@@ -769,9 +1299,14 @@ capacity ran out).
 
 Per-row summaries of a neighborhood over a `GPUSpatialWeights` CSR (momepy `describe`, generalized and
 categorical spatial lag). The members of row `i`, in fixed order, are the focal row (with
-`includeFocal`, weight `focalWeight`, default 1) and then the CSR slots in slot order. A listed self
-slot, out-of-range slots, zero-mask neighbors and, for numeric statistics, non-finite values are
-skipped. A masked-out focal row gives `count` 0 and NaN elsewhere. With `k` members, weights `w` and
+`includeFocal`, weight `focalWeight`, default 1) and then the active CSR slots in slot order. A slot
+is active when its weight is positive; zero-weight slots, a listed self slot, out-of-range slots,
+zero-mask neighbors and, for numeric statistics, non-finite values are skipped. Zero-weight slots are
+therefore not members (`count`, `min`, `max`, `median` and the categorical outputs ignore them),
+which differs from libpysal `lag_spatial` and momepy when zero weights are listed. When
+`weights.info.transform` is `'row'` the slot weights are divided by the sum of the active slot
+weights, so `sum` (the lag) stays a weighted average when neighbors are masked or non-finite (the
+focal weight is unchanged). If `weights.status.overflow` is nonzero every output is NaN. A masked-out focal row gives `count` 0 and NaN elsewhere. With `k` members, weights `w` and
 values `x`:
 
 - `count` is `k`, `weightSum` is `W`, `sum` is `sum w x` (the lag) and `mean` is `sum / W` (NaN when
@@ -805,10 +1340,15 @@ row is excluded): `y = e / b`, `m = sum e / sum b`, `s2 = sum b (y - m)^2 / sum 
 
 - `standardizedRates`: `z = (y - m) / sqrt(v)` with `v = a + m / b`, replaced by `m / b` when negative
   (esda's guard).
-- `smoothedRates`: `r = w y + (1 - w) m` with `w = a / (a + m / b)`. esda does not clamp `a`, so `w` can
-  leave `[0, 1]` when `a < 0`.
+- `smoothedRates`: `r = w y + (1 - w) m` with `w = a / (a + m / b)`. By default (`clampPriorVariance: true`)
+  `a` is clamped at 0 (Marshall 1991, GeoDa), so `w` stays in `[0, 1]` and `a <= 0` (counts no more dispersed
+  than Poisson, common for small `n` or low counts) shrinks every rate fully to `m`. esda `Empirical_Bayes`
+  does not clamp, so with `a < 0` its `w` leaves `[0, 1]` and rates are pushed away from `m`, possibly below
+  zero. Pass `clampPriorVariance: false` for exact esda parity. This is a default change.
+- `standardizedRates` never clamps `a`; it keeps esda's `assuncao_rate` guard (`v = m / b` when `a + m / b < 0`).
 - Optional `rawRates` and `summary` (`GPU_EMPIRICAL_BAYES_SUMMARY`, 8 floats: count, event sum,
-  population sum, pooled rate, weighted rate variance, prior variance).
+  population sum, pooled rate, weighted rate variance, prior variance, clamped prior variance). The
+  `priorVariance` slot stays unclamped (esda `ebi_a`); `clampedPriorVariance` is `max(a, 0)`.
 
 Sums are fixed-order two-level trees, so results are bitwise reproducible. Excluded rows are NaN, which
 `GPULocalMoran`, `GPUGlobalSpatialStatistics` and the permutation tests exclude. Write
@@ -832,8 +1372,11 @@ weights). The neighborhood of an included row `i` is `i` plus its listed neighbo
 `smoothedRates`, `priorMeans` and `priorVariances` (NaN for excluded rows). One invocation reduces each row
 over its ascending slots, so results are bitwise reproducible. Isolates smooth to their own rate.
 
-The spec pins esda 2.10.0 on a 6x6 queen lattice (spatial rate within 1e-5 relative, smoothed within 2e-4 in
-f32). Deviations: a neighborhood with no events gives `0 / 0 = NaN` in esda and 0 here; rows excluded by the
+esda 2.10.0 `Spatial_Empirical_Bayes` itself sets `r_var[r_var < 0] = 0`, so the clamp matches esda and needs
+no option (unlike the global `Empirical_Bayes`, which does not clamp; see
+[`GPUEmpiricalBayesRates`](#gpuempiricalbayesrates)). The spec pins esda 2.10.0 on a 6x6 queen lattice (spatial
+rate within 1e-5 relative, smoothed within 2e-4 in f32) and on low-dispersion counts where the local `a`
+clamps. Deviations: a neighborhood with no events gives `0 / 0 = NaN` in esda and 0 here; rows excluded by the
 mask or a non-positive population are skipped as neighbors instead of raising; a neighbor ID equal to the
 focus row is skipped, where esda would count it twice.
 
@@ -863,7 +1406,14 @@ graph.add(hotSpots);
 parameterBuffer.write(
   getGPUEmergingHotSpotParameterValues({radius: 2, temporalWindow: 3, confidenceLevel: 0.95})
 );
+console.log(hotSpots.getInferenceMetadata());
+// {alternative: 'two-sided', permutationCount: 0, multipleTesting: 'benjamini-hochberg',
+//  testedRowsDefinition: 'valid space-time bins'}
 ```
+
+Defaults changed: `multipleTesting` is `'benjamini-hochberg'` (it was no correction), `confidenceLevel` is 0.95
+(it was 0.9), the trend level is `1 - confidenceLevel`, `minimumTrendSliceCount` is 10, and
+`finalSlice` is `'require'`. Pass `multipleTesting: 'none'` for the previous rule.
 
 Passes (deterministic, no float atomics):
 
@@ -871,26 +1421,97 @@ Passes (deterministic, no float atomics):
 2. Space-time Gi* per bin: the spatial neighbors (lattice cells with `dx^2 + dy^2 <= radius^2`, or
    the cell's weights row plus the cell itself at `selfWeight`) over the current and `temporalWindow`
    previous slices, `z = sum w (x - X) / (S sqrt((n S1 - W^2) / (n - 1)))` over valid bins.
-3. Per-cell Mann-Kendall on the finite z series: exact integer `S`, tie-corrected variance
+3. Two-sided normal p-values `erfc(|z| / sqrt(2))` of every valid Gi* bin, adjusted by
+   `GPUMultipleTestingAdjustment` over the whole family of valid bins of the cube (never a display
+   mask). A bin is hot or cold when its adjusted p-value is at most `1 - confidenceLevel`, with the
+   sign of z. With `multipleTesting: 'none'` the rule is `|z| >= criticalZ` with the same two-sided
+   critical values, and the p-value passes are skipped unless `pValues` or `adjustedPValues` is
+   requested. Bins within a temporal window overlap and neighboring cells share observations, so the
+   tests are dependent: Benjamini-Hochberg is only guaranteed under positive dependence, and
+   `'benjamini-yekutieli'` controls the false discovery rate under arbitrary dependence at a cost in
+   power of about `ln m`. The correction needs fewer than 2^24 bins.
+4. Per-cell Mann-Kendall on the finite z series: exact integer `S`, tie-corrected variance
    `[n(n-1)(2n+5) - sum t(t-1)(2t+5)] / 18` (ties by exact f32 equality), continuity-corrected z, and a
-   two-sided p-value from the Numerical Recipes `erfcc` fit.
-4. Classification into the 17 `GPU_EMERGING_HOT_SPOT_CATEGORIES` (0 = no pattern, hot 1..8, cold 9..16:
-   new, consecutive, intensifying, persistent, diminishing, sporadic, oscillating, historical).
+   two-sided p-value from the Numerical Recipes `erfcc` fit. Consecutive Gi* values share
+   `temporalWindow` slices, so the series is serially correlated and this p-value is anti-conservative
+   (ESRI has the same property): treat the trend level as a screening threshold. Cells with fewer
+   than `minimumTrendSliceCount` finite slices (default 10, ESRI guidance) get NaN `trendZ` and
+   `trendP`.
+5. Classification into the 17 `GPU_EMERGING_HOT_SPOT_CATEGORIES` (0 = no pattern, hot 1..8, cold 9..16:
+   new, consecutive, intensifying, persistent, diminishing, sporadic, oscillating, historical) plus
+   `UNDETERMINED` (17).
 
-Per-frame parameters (radius, temporal window, critical z or confidence level, trend significance,
-persistence fraction) live in a parameter buffer and never rebuild the graph. Compile-time:
-`gridWidth`, `gridHeight`, `sliceCount` (at most 256), `maximumRadius` (at most 32), value format,
-optional views. Outputs are caller-owned: `giZScores` (per bin), `trendZ`, `trendP`, `trendS`,
-`category`, `hotSliceCount`, `coldSliceCount` (per cell) and optional `globalStatistics`
-`[n, mean, variance, standardDeviation]`.
+`UNDETERMINED` marks a cell whose category cannot be decided: with `finalSlice: 'require'` (the
+default) a cell with data whose last slice is missing, and a cell that is persistent in one direction
+(Intensifying, Persistent or Diminishing, hot or cold) but has fewer finite slices than
+`minimumTrendSliceCount`. It is never silently reported as Persistent. `finalSlice: 'last-valid'`
+keeps the old behavior, where the last finite slice stands in for the final slice, so a stale cell can
+be labelled New or Persistent for a period it has no data in. Cells without any finite slice stay
+`NO_PATTERN`. The optional `lastValidSlice` output gives each cell's last finite slice index
+(`GPU_EMERGING_HOT_SPOT_NO_SLICE`, `0xffffffff`, for none).
+
+Legend contract: category codes never change meaning with `multipleTesting`, `confidenceLevel` or
+`finalSlice`; those options only change which bins are hot or cold and which cells are undetermined.
+`getInferenceMetadata()` returns a plain `GPUInferenceMetadata` for the legend (it omits
+`significanceLevel`, which is the per-frame `1 - confidenceLevel`).
+
+`criticalZ` is only accepted with `multipleTesting: 'none'` (the parameter packer throws otherwise).
+Without a correction `confidenceLevel` must be 0.9, 0.95 or 0.99 or `criticalZ` must be given; with a
+correction any level in `(0, 1)` works.
+
+Per-frame parameters (radius, temporal window, confidence level, critical z, trend significance,
+persistence fraction, minimum trend length) live in a parameter buffer and never rebuild the graph.
+Compile-time: `gridWidth`, `gridHeight`, `sliceCount` (at most 256), `maximumRadius` (at most 32),
+`multipleTesting`, `finalSlice`, value format, optional views. Outputs are caller-owned: `giZScores`
+(per bin), `trendZ`, `trendP`, `trendS`, `category`, `hotSliceCount`, `coldSliceCount` (per cell),
+optional `pValues` and `adjustedPValues` (per bin), optional `lastValidSlice` (per cell) and optional
+`globalStatistics` `[n, mean, variance, standardDeviation]`.
+
+### `addSpaceTimeHotSpotsRecipe`
+
+Timestamped events to an emerging hot spot map: `GPUCalendarBuckets` decodes the event times, an
+adapter bins every event into a dense `cell * sliceCount + slice` cube, `GPUEmergingHotSpots`
+classifies it and an ordinal `GPUColorScale` colors the categories (18 palette entries, 0 to 17).
+
+Slices are absolute time steps, the ArcGIS "time step interval", so the Mann-Kendall trend runs over
+a monotone axis:
+
+```ts
+addSpaceTimeHotSpotsRecipe(graph, {
+  timestamps, calendarParameters, cells, parameters,
+  slices: {step: 'month', interval: 3, origin: {year: 2022, month: 11}, count: 12},
+  multipleTesting: 'benjamini-yekutieli'
+});
+```
+
+Slice `floor((stepIndex(t) - stepIndex(origin)) / (interval * stepsPerUnit))` holds the events at
+local time `t` (the same UTC-offset semantics as `GPUCalendarBuckets`). `stepIndex` counts whole
+steps: `year`, `year * 4 + quarter - 1`, `year * 12 + month - 1`, days since the epoch for `'day'` and
+`'week'` (a week is 7 days anchored to the origin day), hours since the epoch for `'hour'`. It is
+integer arithmetic on the GPU (Hinnant's `days_from_civil`) and on the CPU
+(`getSpaceTimeSliceIndex`). Events before the origin or past the last slice are skipped and counted
+in the `slice-range` status stage (`invalidCount`, or the `skippedEventCount` output).
+
+Cyclic fields (month of year, weekday, hour of day, day of year) are no longer accepted: `month = 1`
+would pool every January of a multi-year range, and a trend over hour or weekday is meaningless.
+Cyclic profiles belong in a non-trend summary such as `GPUCalendarBuckets` `hourWeekdayCounts`.
+
+`multipleTesting` (default `'benjamini-hochberg'`) and `finalSlice` (default `'require'`) pass through
+to `GPUEmergingHotSpots`; write the `parameters` buffer with the same `multipleTesting`. The result
+carries a plain `inference: GPUInferenceMetadata` object, and optional `pValues`, `adjustedPValues`
+and `lastValidSlice` outputs.
 
 ### `GPUGeographicDistribution`
 
 `GPUGeographicDistribution` computes the ArcGIS "Measuring Geographic Distributions" statistics
 over planar points, per group or per masked selection: counts, weight sums, mean centre, Weiszfeld
 median centre, standard distance, standard deviational ellipse, linear directional mean, and
-polygon rings for the ellipse and the standard-distance circle. Project longitude/latitude first:
-every statistic is Euclidean.
+polygon rings for the ellipse and the standard-distance circle. Every statistic is Euclidean:
+`spatialContext` (default native planar) rejects `longitude-latitude` at construction with a
+"project positions to a planar frame first" error, and `GPURoseStatistic` does the same. A
+spherical mean centre (normalised mean of 3D unit vectors) and a great-circle standard distance are
+deferred, because they need a second implementation of every reduction pass in both the chunked and
+the sorted path.
 
 ```ts
 const parameters = new GPUParameterBuffer(device, {
@@ -917,7 +1538,9 @@ parameters.write(
   float32 stability), `standardDeviations`, `ellipseConvention` (`'arcgis'` scales the axes by
   `sqrt(2)`, `'standard'` does not), `orientationOnly`, `medianTolerance`.
 - Divisors are the weight sum, as in ArcGIS (not `n - 1`). Second moments are central (a mean
-  pass, then a pass about the mean), never `E[x^2] - E[x]^2`.
+  pass, then a pass about the mean), never `E[x^2] - E[x]^2`. No small-sample degrees-of-freedom
+  correction is applied, so for small `n` the spread is biased low by `sqrt((n - 1) / n)`; there is
+  no confidence interval or significance test.
 - `ellipses` holds `[angle, sigmaX, sigmaY]` per group. As in ArcGIS the "y" axis is the long one
   (`sigmaY >= sigmaX`). `angle` is counter-clockwise from +x of the short x axis, so the long axis
   points at `angle + pi / 2`; a ring vertex is `M + R(angle) (sigmaX cos t, sigmaY sin t)`.
@@ -951,6 +1574,14 @@ graph.add(new GPURegionStatistics({
 }));
 ```
 
+Coordinates: `spatialContext` defaults to native planar. Rectangle, lasso and pick selections are
+topological tests and also accept `longitude-latitude` (metric `'none'`): edges are straight lines
+in degree space and the antimeridian is not handled. A `'radius'` selection is a planar distance in
+position units, so it throws at construction in `longitude-latitude` (the selection kind is
+compile-time); project positions to a planar frame first, or use a rectangle or lasso. Geographic
+metrics are rejected. `GPURegionMask` takes the same `spatialContext`; `GPUPickRegionMask` reads no
+positions and has none.
+
 An optional `spatialIndex: {kind: 'grid', index, candidateCapacity}` takes a caller-built
 `GPUGridIndex` over the same positions and reduces only candidates from the cells a world-space
 rectangle, circle, or lasso touches. Results match the full scan except for float reassociation in
@@ -969,6 +1600,12 @@ Choropleth aggregation. Each point is joined to the polygon feature that contain
 reduced per feature to count, valid-value count, sum, weighted sum and weight sum, mean, minimum,
 maximum, density (count divided by a caller area or a GPU shoelace area), and a feature-value
 `[min, max]` extent for color scales.
+
+Boundary points follow `boundaryRule` (passed to the join). The default `'half-open'` counts a point
+on an edge or vertex shared by coverage features exactly once, whatever the feature row order; points
+on the outer right or top edge of the coverage are counted by no feature. `'closed'` counts every
+boundary point (smallest containing row wins) and `'open'` only strict interiors. The legacy
+`includeBoundary: true | false` means `'closed'` / `'open'`.
 
 The output views you pass select the statistics at compile time. Empty features give a sum of 0 and
 NaN for the mean, minimum and maximum. `sumOrder: 'sorted'` stably sorts points by feature and
@@ -990,11 +1627,33 @@ graph.add(new GPUZonalStatistics({
 value means some points could not be classified and the per-feature statistics may be low. It is
 always 0 for caller-supplied feature rows.
 
+- Variance. `output.variances` and `output.standardDeviations` are the unbiased estimates in two
+  passes (mean first, then `sum w (v - m)^2`), so there is no `E[v^2] - E[v]^2` cancellation. Unweighted it
+  is `ddof = 1` (`numpy.var(v, ddof=1)`). With `weights`, which act as reliability weights, it is
+  `sum w (v - m)^2 / (V1 - V2 / V1)` with `V1 = sum w`, `V2 = sum w^2`, equal to
+  `numpy.cov(v, aweights=w, ddof=1)`. A feature with fewer than two valid rows, or a non-positive
+  denominator, gives NaN, never 0. Variances need packed point views (not chunked vectors) and follow
+  `sumOrder`. Checked against numpy in `zonal_variance.py`.
+- Weighted density. `output.weightedDensities` is `weightSums / area` (needs `weights`); the area rules
+  of `densities` apply (finite and positive, else NaN).
+- Coordinates. `spatialContext` accepts planar (default) or `longitude-latitude` with any metric.
+  Membership runs `GPUPointInPolygonJoin` with a containment-only context derived from `spatialContext`
+  (metric `'none'`), so in degrees it is topological with straight edges (not geodesics) and polygons
+  crossing the antimeridian must be split. The shoelace area of degrees is
+  wrong, so a longitude-latitude context rejects GPU areas (`densities`, `weightedDensities`,
+  `featureAreas` without `areas`) at construction: pass spherical `areas` in square meters, for example
+  from `GPUGeometryMeasures`. Counts, sums, means, extrema and variances need no area.
+- Not provided: median and quantiles (they need a per-feature sort of the values), weighted minima and
+  maxima, fractional polygon coverage (a point belongs to a feature or it does not).
+
 ### `GPUFocalStatistics`
 
 Moving-window statistics over a float32 raster, like ArcGIS `FocalStatistics` and GRASS
 `r.neighbors`: mean, sum, min, max, range, population standard deviation, and the count of valid
 cells. The radius, window shape, minimum count, and center nodata policy are per-frame.
+The operator is raster-only: it reads a lattice of values and never positions, so it takes no
+`spatialContext`, and its radius is in cells, not ground units. Cell size and shape (for example
+lon/lat cells that shrink with latitude) are the caller's concern.
 
 ```ts
 graph.add(
@@ -1048,8 +1707,16 @@ Local Outlier Factor (Breunig 2000; geo `OutlierDetection`, scikit-learn `LocalO
 `kDistance` (the largest neighbor distance), `localReachabilityDensity = 1 / (mean max(kDistance_j, d_ij) +
 densityFloor)` and `lof = mean(lrd_j) / lrd_i`, which equals `-negative_outlier_factor_`. Optional outputs
 are an `outlier` mask (`lof > threshold`) and a one-row `outlierCount` (integer atomics, deterministic).
-`parameters` (`getGPULocalOutlierFactorParameterValues({threshold = 1.5, densityFloor = 1e-10})`) change per
-frame without recompiling. The floor keeps coincident clusters finite at density `1 / densityFloor`, and
+`parameters` (`getGPULocalOutlierFactorParameterValues({threshold, densityFloor = 1e-10})`) change per
+frame without recompiling. There is no default `threshold`: LOF has no null distribution, so no cut is
+calibrated (the former hidden 1.5 is gone). Omit it and the mask and count are all 0 while `lof` is
+unaffected; otherwise pick a cut from the score distribution. LOF is exploratory, not inferential: no
+p-value, nothing "significant". Choose `k` (the neighbor count of the table) of at least 10 and larger than
+the smallest group that should count as a cluster rather than as outliers (Breunig 2000), and compare
+scores only at the same `k`. The input must be a true kNN list; with ties at the k-th distance a list cut
+at exactly `k` entries changes the k-distance neighborhood (as in scikit-learn). The class reads only
+distances, so it has no `spatialContext`: build the table from projected planar coordinates (raw lon/lat
+degrees distort with latitude). The floor keeps coincident clusters finite at density `1 / densityFloor`, and
 points whose neighbors are such duplicates score enormous values, as in scikit-learn, so use a `k` above
 the duplicate count or a larger floor. A row with no neighbors gets kDistance 0, density 0 and lof 1 and is
 never flagged. A radius-mode table works, but the k-distance is then the largest in-band distance. Against
@@ -1099,6 +1766,26 @@ Markov transition counts between classes of consecutive periods (giddy `Markov`)
 - `counts` holds exact `uint32` counts at `(c * K + from) * K + to` for `t = 0 .. T - lag - 1`
   (integer atomics, independent of order). `probabilities` are the row-normalized floats, 0 for empty
   rows. `rowTotals` and `ignored` are explain columns.
+- Optional diagnostics (also available on their own as `GPUTransitionDiagnostics`, taking the `counts`
+  tensor): `output.homogeneity` (needs `conditionCount > 1`; five rows `Q`, `Q_p_value`, `LR`,
+  `LR_p_value`, `dof`, indexed by `GPU_TRANSITION_HOMOGENEITY`), `output.steadyStates` (ergodic
+  distribution of the pooled chain, then one per condition, `chains * K` rows), `output.stateSparsity`
+  (two rows, `GPU_TRANSITION_STATE_SPARSITY`: states with 0 < n < `minimumTransitions`, and states with
+  n = 0) and `output.status.converged`. `minimumTransitions` defaults to 5. The steady-state solver keeps
+  its elimination matrix in a storage scratch buffer the class allocates (`chains * K^2` floats), so 64
+  classes fit the 8,192-byte private memory limit of core WebGPU.
+- Homogeneity follows giddy's `homogeneity` (Bickenbach and Bode 2003): Q and LR compare each conditional
+  matrix with the pooled one and are chi-square with `sum_i (b_i - 1)(A_i - 1)` degrees of freedom. A
+  from-state with no transitions adds 0 degrees of freedom; giddy adds 1 for it, so `dof` differs from
+  `dof_hom` by the number of empty pooled rows. The p-values are upper-tail chi-square (`'greater'`) from
+  an f32 incomplete gamma (relative error below 6e-5 for p above 1e-6); `dof = 0` gives NaN. The test is
+  asymptotic: with sparse rows (see `stateSparsity`) it is unreliable.
+- Steady states use a direct Grassmann-Taksar-Heyman solve per chain. States with no transition in or out
+  are dropped (probability 0, as giddy's `Markov` drops classes absent from the data); the remaining
+  states must have an outgoing transition and form one communicating class, otherwise the whole chain is
+  NaN (giddy raises or returns several distributions). `converged` is one when every chain that has
+  transitions got a steady state. The solver is direct, so `iterationLimitReached` is never written.
+  A periodic chain is solved (its stationary distribution, not a limit of powers).
 
 ```ts
 graph.add(new GPUClassAssignment({values, breaks, classCount: 5, output: classes}));
@@ -1116,68 +1803,148 @@ graph.add(new GPUTransitionMatrix({classes, rows, periods, classCount: 5, output
   `probabilities`, `rowTotals`, `ignored`, `lagValues` and `lagClasses`. For each period it runs `GPUSpatialLag` (row-standardized by default,
   `normalize`), classifies the lag with one pooled `GPUClassBreaks`, assigns the lag classes, and builds a
   transition matrix conditioned on the lag class at the start period. `counts` is
-  `lagMaximumClassCount x K x K`; slices past the produced `lagClassCount` stay zero.
+  `lagMaximumClassCount x K x K`; slices past the produced `lagClassCount` stay zero. The `output` also
+  takes the `GPUTransitionMatrix` diagnostics (`homogeneity`, `steadyStates`, `stateSparsity`,
+  `status.converged`) and `minimumTransitions`: `homogeneity` is giddy's `Q`, `Q_p_value`, `LR`,
+  `LR_p_value`, `dof_hom` across the lag classes; `steadyStates` is giddy's `s` (rows `0..K-1`, pooled) and
+  `S` (rows `(1 + c) * K ..`), NaN where a chain is not ergodic. The pooled chain here sums the counted
+  transitions over the lag classes, so it excludes rows without a lag class. A small `Q_p_value` says the
+  spatial lag matters; a large one says the conditional matrices cannot be told apart from the pooled one.
+  `getInferenceMetadata()` describes the tests (analytic, `'greater'`, no correction).
 - `GPULISAMarkov` (giddy `LISA_Markov`): props `values`, `weights`, `periods` (at least `periodLag + 1`),
   optional `periodLag`, `parameters` (the `GPULocalMoran` view from
-  `getGPUSpatialAutocorrelationParameterValues`, which carries the significance level), optional `mask`
-  and an `output` of `counts` and the optional `probabilities`, `rowTotals`, `ignored` and `quadrants`. It runs `GPULocalMoran` per
-  period and counts moves between the five states (`GPU_LISA_MARKOV_STATE_COUNT`: 0 not significant, 1 HH,
-  2 LH, 3 LL, 4 HL). Significance is the analytic z-test, not esda permutations. A row with a non-finite
-  value or no neighbors is state 0 and is counted; masked rows are not. `quadrants` (`rows * periods`) is
-  optional.
+  `getGPUSpatialAutocorrelationParameterValues`, which carries the significance level), optional `mask`,
+  `gating` and an `output` of `counts` and the optional `probabilities`, `rowTotals`, `ignored`,
+  `steadyStates`, `stateSparsity` and `quadrants`. It runs `GPULocalMoran` per period and counts moves
+  between the five states (`GPU_LISA_MARKOV_STATE_COUNT`: 0 not significant, 1 HH, 2 LH, 3 LL, 4 HL). The
+  layout is the same for both `gating` modes, so a legend never changes with the option.
+  - `gating: 'none'` (default, giddy `LISA_Markov` parity): every valid row is in its quadrant, the signs of
+    the centered value and of the lag; state 0 stays empty and the chain is a four-state chain. A row at
+    exactly the mean or with an exactly zero lag has no quadrant (esda would call it low) and is ignored.
+  - `gating: 'significance'`: rows whose analytic local Moran p-value is above the per-frame significance
+    level are state 0. The test is the per-period analytic z at an uncorrected level, not esda
+    permutations, and each period is gated on its own, so a transition into or out of state 0 can be a
+    threshold crossing rather than a change of the local pattern. Treat it as a map of significant
+    clusters, not as a test of dynamics. `getInferenceMetadata(significanceLevel)` describes it and
+    returns `undefined` for `'none'`.
+  - Quadrant numbering is esda's default (`geoda_quads=False`): 1 HH, 2 LH, 3 LL, 4 HL. With
+    `geoda_quads=True` esda swaps 2 and 3 (1 HH, 2 LL, 3 LH, 4 HL).
+  - Missing data: a row-period that is masked, non-finite, or has no neighbor among the finite unmasked
+    rows of that period is not a state. It is written as `0xffffffff` (`GPU_CLASS_ASSIGNMENT_NO_CLASS`) in
+    `quadrants`, and every transition with such an end is counted in `ignored`, never as state 0. Each
+    period excludes its invalid rows from the mean and the neighbor sums (`islands: 'exclude'`).
+    giddy has no missing-data handling; parity is on the complete rows. `quadrants` (`rows * periods`)
+    is optional.
 
-Both emit one node chain per period, which suits periods in the tens. Goodness-of-fit tests (giddy `Q`,
-`LR`) take the `counts` tensor on the CPU; they are not provided. giddy `relative` rescaling is not built
-in: divide each period before classifying.
+Both emit one node chain per period, which suits periods in the tens. giddy `relative` rescaling, mean first
+passage times and the permutation test `x2_rpvalue` are not built in: divide each period before
+classifying.
 
 ### `GPUKnoxTest` and `GPUMantelTest`
 
 Space-time interaction tests over the pairs of a self-join `GPUSpatialWeights` (typically radius-mode
-`GPUNeighborSearch`): the entries `j > i` of each row are the spatial pairs. Knox pairs are only as
-complete as the pair list; the capacity overflow flag lives on `GPUNeighborSearch`.
+`GPUNeighborSearch`): every unordered pair listed in either direction is a spatial pair and is counted
+exactly once (a symmetric list takes it from the lower row, a pair listed only from the higher row, as in a
+kNN list, is taken from that row; duplicate and self entries are ignored; lists need not be sorted). Results
+are only as complete as the pair list; the capacity overflow flag lives on `GPUNeighborSearch`.
 
 - `GPUKnoxTest({pairs, times, parameters, maximumPermutations, statistics, summary})` counts the pairs
   that are close in space and have `|t_i - t_j| <= timeThreshold`, then runs a Monte Carlo (modified Knox)
-  test over `P` Feistel-permuted time assignments. Counts are exact integers, and the expected value comes
-  from the exact count of time-close pairs. `statistics` is `uint32` with `P + 1` entries. The CPU function
-  `getKnoxPoissonPValue(observed, expected)` gives the classic Poisson upper tail.
+  test over `P` permuted time assignments. Counts are exact integers, and the expected value comes
+  from the exact count of time-close pairs. `statistics` is `uint32` with `P + 1` entries. Knox's
+  hypothesis is one-sided (an excess of close pairs), so the Knox p-value is `pseudoPGreater`.
+  `getInferenceMetadata()` returns the CPU-side `GPUInferenceMetadata` (alternative `'greater'`, Monte Carlo,
+  no multiple-testing correction). `getKnoxPoissonPValue(observed, expected)` gives the classic Poisson
+  upper tail, but it assumes Poisson variance, ignores ties and ignores the Mantel-Kulldorff variance
+  inflation, so it is anti-conservative; prefer the Monte Carlo p-value.
 - `GPUMantelTest({pairs, ...})` (the weights need `distances`) is the Pearson correlation between pair
   distances and `|t_i - t_j|`, with permuted times. Sums are f32 shifted partials, within about 1e-4 of a
-  double-precision oracle.
+  double-precision oracle. The statistic runs over the listed pairs only, so with a distance band it is a
+  band-truncated Mantel `r` (pairs beyond the band are absent) that differs from the full Mantel `r`;
+  report the band with the result. `getInferenceMetadata()` states alternative `'greater'`: the interaction
+  hypothesis is a positive space-time correlation, the upper-tail convention of pointpats `mantel`
+  (`pseudoPTwoSided` is also in the summary if repulsion matters).
 
 `timeThreshold`, `seed` and `permutations` are per-frame, written with
 `getGPUSpaceTimeParameterValues({seed, permutations, timeThreshold})` (`uint32[4]`). `times` must be
-finite. `summary` (`float32`, 12 entries, `GPU_SPACE_TIME_SUMMARY`) holds the observed statistic, pair
+finite and are float32, so raw epoch seconds (about 1.7e9) are spaced 128 s apart and epoch milliseconds
+are unusable. Subtract an origin on the CPU with `getGPUSpaceTimeRelativeTimes(times, origin?,
+requiredResolution?)`, which subtracts a float64 origin (default the minimum), returns
+`{times, origin, resolution}` and throws if the span is too coarse for `requiredResolution`; the float32
+spacing at a span `S` is `2^(floor(log2 S) - 23)` (about 0.5 ms for an hour, 1 s for 4.6 months of
+seconds). `timeThreshold` is in the same relative units. `summary` (`float32`, 12 entries, `GPU_SPACE_TIME_SUMMARY`) holds the observed statistic, pair
 count, time-close pair count, expected value, permutation mean and variance, greater and lesser counts,
 the pseudo p-values (greater, lesser, two-sided, `(1 + count) / (P + 1)`) and the z-score. The Kulldorff
-space-time scan is not provided.
+space-time scan is `GPUSpatialScanStatistic` with `timeBuckets > 1`.
+
+Both tests permute the times with the keyed swap-or-not shuffle of `GPUGlobalPermutationTest`, which is
+uniform on small domains (permutation 0 is the identity, permutation `k` is slot `k`). Permuted counts and
+p-values for a given seed differ from earlier versions, which used a Feistel bijection that was measurably
+non-uniform on small domains. At most `2^24 - 1` events are supported.
 
 ### `GPUSpatialScanStatistic`
 
-Kulldorff's Poisson scan statistic (SaTScan, CARTO `DETECT_SPACETIME_ANOMALIES`) over zones, which are
-cells or points, with `cases` (`uint32`) and a `baseline` (population or expected counts) per zone and
-optional time bucket (`zone * timeBuckets + bucket`). The null model is a Poisson process with
-`E[cases] = baseline * C / sum(baseline)`.
+Kulldorff's scan statistic (SaTScan, CARTO `DETECT_SPACETIME_ANOMALIES`) over zones, which are cells or
+points, with `cases` (`uint32`) per zone and optional time bucket (`zone * timeBuckets + bucket`). The
+compile-time `model` selects the null:
 
-- Windows: the `k` nearest zones of every center (the `'circle'` shape never splits equidistant zones;
-  `'nearest'` is plain k-nearest), up to `maximumWindowZones` (at most 32) and a population share. With
-  `timeBuckets > 1` each window is a cylinder over every run of up to `maximumTimeBuckets` buckets.
-- Outputs: the most likely cluster plus greedy, non-overlapping secondary clusters (no shared zone) in
-  `clusterIndices` (`GPU_SCAN_STATISTIC_CLUSTER_INDEX`) and `clusterStatistics`
-  (`GPU_SCAN_STATISTIC_CLUSTER`: LLR, observed, expected, p, radius, ratio); `statistics` (the observed
-  maximum then the maximum of every Monte Carlo replicate), `summary` (`GPU_SCAN_STATISTIC_SUMMARY`) and
-  an optional per-zone best LLR `zoneStatistics`.
-- Monte Carlo: cases are redistributed multinomially in proportion to the baseline with the Philox
-  streams of the permutation contributors, and `p = (1 + #{max_rep >= LLR}) / (P + 1)`; secondary clusters
-  use the same replicate maxima. The result is deterministic (integer atomics, fixed-order reductions).
-  Limits, the seed and the replicate count are per-frame parameters
-  (`getGPUSpatialScanParameterValues`), up to the compile-time `maximumPermutations` (at most 16384).
-- Limits: only the Poisson model for high rates. Bernoulli and ordinal models, low-rate and
-  both-direction scans, elliptic windows and Gumbel p-values are not provided. The replicate table needs
-  `(maximumPermutations + 1) * zones * timeBuckets <= 2^25` words and the cost is about
-  `(P + 1) * zones * maximumWindowZones * timeBuckets^2`. Draws use `mulhigh`, so replicate maxima match
-  an f64 oracle almost always but not bit-exactly; LLR below about 1e-3 is approximate in f32; `baseline`
-  must be finite and non-negative.
+- `'poisson'` (default): needs `baseline` (population or expected counts); `E[cases] = baseline * C /
+  sum(baseline)`. LLR `c ln(c/e) + (C - c) ln((C - c)/(C - e))`.
+- `'bernoulli'`: needs `controls` (`uint32`, same layout); the population of a cell is `cases + controls`.
+  LLR of Kulldorff (1997), computed as the sum of `o ln(o/e)` over the inside/outside x case/control
+  table. Monte Carlo permutes the case labels over the fixed population (conditioning on the total
+  cases), by drawing individuals without replacement. Window populations are f32 (exact below 2^24).
+- `'space-time-permutation'` (Kulldorff et al. 2005): no baseline or population. The expectation of a
+  cylinder is `(sum of its zones' totals over all buckets) * (sum of its buckets' totals over all zones) /
+  C`, the Poisson LLR is applied to it, and Monte Carlo permutes the case times over the case locations
+  (both margins fixed). A trend or seasonal cycle shared by every zone is therefore not a cluster, which
+  the Poisson model with a static population would report as an "emerging cluster". Needs
+  `timeBuckets > 1` to be meaningful.
+
+Windows and defaults:
+
+- Spatial: the `k` nearest zones of every center (the `'circle'` shape never splits equidistant zones;
+  `'nearest'` is plain k-nearest), kept while they hold at most `maximumPopulationFraction` of the total
+  population (default 0.5, as in SaTScan). The population share governs: the per-center neighbor
+  tables hold up to the compile-time `maximumWindowZones` zones, which defaults to every zone while
+  `zones^2 <= 2^24` (4096 zones) and otherwise to the largest capacity that fits
+  (`GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS`; use `getGPUSpatialScanLayout` to see it). Selecting the
+  neighbors costs about `zones^2 * capacity / 32` per frame, so lower the capacity for large zone sets.
+  A window the capacity cut short while the population fraction would still allow it is never silent:
+  `summary.overflow` counts the affected centers and the cluster record carries
+  `truncatedByZoneCap` (0 or 1). The per-frame `maximumWindowZones` may lower the capacity.
+- Temporal: with `timeBuckets > 1` each window is a cylinder over every run of up to
+  `maximumTimeBuckets` buckets. The default is 50% of the study period, `max(1, floor(timeBuckets / 2))`
+  (SaTScan's default), no longer all buckets: with a global trend, pure-spatial windows over the whole
+  period would otherwise dominate.
+- Direction: per-frame `rateDirection` `'high'` (default, `c > e`), `'low'` (`c < e`) or `'both'`.
+  Windows of the other direction score 0.
+- Defaults: `maximumPopulationFraction` 0.5, `maximumWindowZones` every zone (bounded), `maximumTimeBuckets`
+  50% of the study period, `windowShape` `'circle'`, `rateDirection` `'high'`, `maximumClusters` 8.
+
+Outputs: the most likely cluster plus greedy, non-overlapping secondary clusters (no shared zone, time
+ignored, same maximum distribution, as SaTScan) in `clusterIndices` (`GPU_SCAN_STATISTIC_CLUSTER_INDEX`)
+and `clusterStatistics` (`GPU_SCAN_STATISTIC_CLUSTER`: LLR, observed, expected, p, radius, ratio,
+`truncatedByZoneCap`); `statistics` (the observed maximum then the maximum of every Monte Carlo
+replicate), `summary` (`GPU_SCAN_STATISTIC_SUMMARY`: cluster count, total cases, permutations,
+`overflow`) and an optional per-zone best LLR `zoneStatistics`.
+
+Inference: `p = (1 + #{max_rep >= LLR}) / (P + 1)`, a Monte Carlo maximum over every window, so it already
+accounts for the search; no further correction applies. `getInferenceMetadata(parameters?)` returns the
+CPU-side `GPUInferenceMetadata` (alternative `'greater'` for high rates, `'lesser'` for low and
+`'two-sided'` for both, permutation count, `multipleTesting: 'none'`, the tested-window definition).
+Poisson replicates are multinomial draws from an integer cumulative table (Philox streams of the
+permutation contributors); the Bernoulli and space-time permutation draws run one invocation per
+replicate (about `C` sequential draws, times `timeBuckets` for the latter). The result is deterministic
+(fixed-order reductions, integer atomics, ties to the lowest index). Limits, the seed and the replicate
+count are per-frame parameters (`getGPUSpatialScanParameterValues`), up to the compile-time
+`maximumPermutations` (at most 16384).
+
+Limits: ordinal and normal models, elliptic windows and Gumbel p-values are not provided. The replicate
+table needs `(maximumPermutations + 1) * zones * timeBuckets <= 2^25` words and the cost is about
+`(P + 1) * zones * windowZones * timeBuckets^2`. LLR below about 1e-3 is approximate in f32; `baseline`
+must be finite and non-negative. No kernel binds more than 8 storage buffers, so the scan runs on `'core'`
+WebGPU devices.
 
 ## Accessibility & change of support
 
@@ -1203,6 +1970,9 @@ outputs `accessibility`, `ratios` and `reachableFacilities`.
   default `demandWeights = facilityWeights` satisfies the condition for symmetric self-join weights.
   3SFCA differs in what `A_i` means, a selection-weighted average of the `R_j`, not in conservation.
 
+The operator reads weights, not positions, so it has no `spatialContext`; distance units and the coordinate
+space (planar, or great-circle meters) are those of the weights' producer.
+
 Network accessibility over a cost matrix is [`GPUNetworkAccessibility`](/docs/api-reference/experimental/gpu-network).
 
 ### `GPUHuffTradeAreas`
@@ -1215,7 +1985,8 @@ one row per facility), `demandWeights` (row `i` lists the facilities of demand `
 caller-owned `tradeArea` (`uint32` per demand row, required). Optional outputs are `probabilities` (one
 per `demandWeights` slot, aligned with `demandWeights.neighbors`), `tradeAreaProbability` (per demand row)
 and `expectedDemand`, `expectedDemand_j = sum_i P_i p_ij`, which needs `facilityWeights` (the transpose
-of `demandWeights`) and `demand`.
+of `demandWeights`) and `demand`. Like `GPUCatchmentAccessibility` it reads weights only and has no
+`spatialContext`.
 
 ### `GPUArealInterpolation`
 
@@ -1225,9 +1996,8 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
 
 - Props: `sourceZones`, `targetZones` (`uint32`, same length; a value at or above the count means no
   zone), `sourceCount`, `targetCount`, optional `cellWeights` (a dasymetric raster; area becomes a sum of
-  weights, and non-finite or non-positive cells carry no area), `denominator` (`'zone'` by default, the
-  whole-zone area as in tobler, or `'overlap'`, only the part overlapping the other system, which
-  conserves mass), `mode` (`'extensive'` by default or `'intensive'`, which selects `weights.weights`),
+  weights, and non-finite or non-positive cells carry no area), `denominator` (per kind, see below),
+  `mode` (`'extensive'` by default or `'intensive'`, which selects `weights.weights`),
   `weights` (a caller-owned CSR with `targetCount + 1` offsets; the neighbor capacity is the maximum
   number of pairs), `alternateWeights` (the other normalization, from the same run), `areas` (raw overlap
   area per slot), `overflow`, `totalPairs` and `categories` (`{sourceCategories, categoryCount, output}`,
@@ -1235,6 +2005,29 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
 - The cell weight `m` (1, or `cellWeights`) summed per source `s` and target `t` gives `a_st`. Extensive:
   `w_ts = a_st / A_s`. Intensive: `w_ts = a_st / B_t`. `A_s` and `B_t` are the zone or overlap areas.
   Rows are targets and neighbors are sources, so the CSR invariants hold; it is a cross weights matrix.
+- Denominators (default change). `denominator` is one value for both kinds or
+  `{extensive?, intensive?}`, and the default is `{extensive: 'zone', intensive: 'overlap'}`. `'zone'`
+  divides by the whole zone (tobler): the part of a source that falls outside the target system is not
+  moved onto the targets, and is now reported (below). `'overlap'` divides by the part overlapping the
+  other system. The intensive default is `'overlap'` because a target only partly covered by sources
+  should be the mean of what covers it, not diluted toward zero; earlier versions used `'zone'` for both.
+  Pass `denominator: 'zone'` to restore the old intensive result.
+- Mass-conservation diagnostics. `sourceAreas` (`sourceCount` rows) is the raster area of each source
+  (0 when it rasterized to no cell), `sourceTransferredFractions` is the overlap area over the extensive
+  denominator (`1 - f` of the extensive mass is lost; with `'zone'`, the share of the source that lies
+  in the target system; NaN without raster area), and `invalidCount` (one `uint32`) counts sources with no
+  raster area, whose mass is lost. They are exact for the rasterized zones, not for the polygons.
+- Sources smaller than a cell. `sourceAnchorCells` (`sourceCount` cell indices; out of range means none)
+  gives a zone without cells a fallback cell, for example the cell containing its label point. The claim
+  is made in a transient copy of `sourceZones`, in ascending source order, and succeeds only if the cell
+  belongs to no source or to one that keeps another cell. Remaining empty sources stay in `invalidCount`.
+- Coordinates. Planar by default (areas are cell counts or `cellWeights` sums, which is an equal-share
+  only on an equal-area raster). With `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
+  'great-circle'}` (or `'none'`), `extent` (the rasterization extent `[originLongitude, originLatitude,
+  cellWidth, cellHeight]` in degrees, row 0 at the smallest latitude) and `width`, each cell weighs its
+  spherical area `R^2 dLon (sin(top) - sin(bottom))` in square meters, times `cellWeights`, with `R` the
+  WGS84 authalic radius or `context.sphereRadius`. Pair `areas` and `sourceAreas` are then square meters.
+  Other spaces throw. Checked against a numeric integral of `R^2 cos(lat)` (`spherical_cell_area.py`).
 - Categorical share `(t, k)` is the overlap area with sources of class `k` divided by the area of `t`
   covered by any source, so it sums to 1 where covered.
 - On overflow the offsets clamp to capacity, `overflow` is 1 and `totalPairs` gives the size needed.
@@ -1264,12 +2057,35 @@ graph.add(new GPUSpatialLag({
 Tobler pycnophylactic interpolation on a raster. Props: `width`, `height`, `zones` (`uint32`; a value at or
 above `zoneCount` is outside), `zoneCount`, `totals` (per zone), `iterations` (0 to 512, compile-time),
 `kernel` (`'rook'`, the default 4-neighbor mean, or `'box'`, a 3x3 mean including the cell) and `output`
-(mass per cell). Each cell starts at `total / cells`. Each iteration takes the focal mean over in-area
+(mass per cell). Each cell starts at `total / area(zone)`. Each iteration takes the focal mean over in-area
 neighbors, restores the zone total additively, clamps negatives to 0 and rescales multiplicatively to the
 total; zero-sum zones fill uniformly. Totals hold to f32 accuracy and values are non-negative after every
 iteration. Zone sums are fixed-order segmented sums over cells sorted once by zone. There is no ancillary
-initial surface, no convergence criterion and no barrier. `'rook'` on a checkerboard has a -1 eigenmode
-(Tobler's original); `'box'` is smoother.
+initial surface and no barrier. `'rook'` on a checkerboard has a -1 eigenmode (Tobler's original); `'box'`
+is smoother. Reference: Tobler (1979), JASA 74(367).
+
+- Deviation from Tobler (1979). The restoring step is additive, then clamped, then multiplicative.
+  Tobler alternates smoothing with a volume-restoring adjustment; the multiplicative step is kept
+  because it is the only variant here that keeps exact totals and non-negativity together, but where
+  the additive step clamped it can leave flat plateaus, and an additive-only variant would go negative
+  next to much larger zones.
+- Convergence. `iterations` is now the maximum. A one-row `tolerance` (per frame) compares, after each
+  iteration, the largest `|new - old| / (total / area(zone))` over all cells with it. Once at or below
+  the tolerance the surface is final and every remaining compiled iteration is a no-op (deterministic).
+  `converged` and `iterationLimitReached` (one `uint32` each; they need `tolerance`) report which
+  happened; with 0 iterations both are 0. A NaN or negative tolerance never converges.
+- Zones without cells. A zone smaller than a cell has no raster cell and its total used to vanish
+  silently. `zoneAnchorCells` (`zoneCount` cell indices) lets such a zone claim a fallback cell (see
+  `GPUArealInterpolation.sourceAnchorCells`; ascending zone order, the cell's owner must keep one cell),
+  and `invalidCount` counts zones that still have no cell or no area.
+- Coordinates. With a `longitude-latitude` `spatialContext` plus `extent` (as above) the smoothed
+  quantity is the density per square meter and the totals are enforced on density times the spherical
+  cell area, so `output` is mass per cell (density times area) and the optional `density` view is the
+  surface itself. Without it every cell counts the same, which is only right on an equal-area raster.
+  The focal mean is still by cell index, so away from the equator it is anisotropic on the ground.
+- Limits. Counts are f32 sums, exact to 2^24 cells per zone; a larger zone loses count precision (the
+  mass still holds to f32 accuracy). Oracles: a float64 numpy reimplementation of the documented
+  algorithm including tolerance and anchors (`pycnophylactic.py`).
 
 ### `GPUSegregation`
 
@@ -1291,23 +2107,41 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
   `D_g = sum_i t_i |pi_ig - P_g| / (2 T P_g (1 - P_g))`; isolation `xPx_g = sum_i (x_ig / X_g) pi_ig`;
   interaction `xPy_gh = sum_i (x_ig / X_g) pi_ih`; Atkinson
   `A_g = 1 - P / (1 - P) |sum_i (1 - pi_ig)^(1 - b) pi_ig^b t_i / (P T)|^(1 / (1 - b))`. Undefined indices
-  are 0.
+  are NaN, never 0 (0 means perfectly even): H and the diversity with an empty total, H also with a single
+  present group (`E = 0`, while `E` itself is the defined 0), D with an empty total or `I = 0`, `D_g` and
+  `A_g` for a group with zero or all of the population, and isolation and interaction of a group with no
+  population. A unit with an empty environment (no population in it or its neighbors) has NaN local values
+  and contributes nothing to the sums, so use a NaN-skipping sum to add the local outputs up to the global
+  indices; unit contributions to `D_g` and H are also NaN when that global index is undefined. Behavior
+  change: these were 0.
+- Small-sample bias: the indices are not bias corrected. `D` and `H` are biased upward when units hold
+  few people, because sampling noise alone makes unit compositions differ from the global one even under
+  random allocation (Cortese, Falk and Cohen 1976; Winship 1977; Carrington and Troske 1997). Compare
+  units of similar size, or against a random-allocation null, before reading a small `D` or `H` as
+  segregation. Isolation and interaction are less affected but depend on the group share.
+- Float32 counts and totals are integer exact only up to 2^24 = 16,777,216 total population; above that
+  `T` and `X_m` round (about 6e-8 relative per addition).
 - Sums are f32, within 1e-5 to 2e-4 relative of float64 and of PySAL on the test fixtures. Memory is
   `O(units * K^2)` per scale. The boundary-based `SpatialDissim` and permutation inference are not
-  provided. `atkinsonB` and `selfWeight` are compile-time.
+  provided: PySAL's evenness null redraws every person's unit from the unit sizes (a binomial or
+  multinomial draw per unit) and reruns the whole index pipeline per simulation, whereas the permutation
+  operators here shuffle values across rows of an existing weights structure, so it needs its own
+  count-table resampling kernel. `atkinsonB` and `selfWeight` are compile-time.
 
 ## Spatial joins
 
 ### `GPUSpatialPredicateJoin`
 
-Joins two sets of planar features by a spatial predicate, like GeoPandas `sjoin` or PostGIS
-`ST_Intersects`, `ST_Contains`, `ST_Within` and `ST_DWithin`. Either side is
+Joins two sets of features by a spatial predicate, like GeoPandas `sjoin` or PostGIS
+`ST_Intersects`, `ST_Contains`, `ST_Within` and `ST_DWithin`. Coordinates are planar by default; a
+longitude/latitude `spatialContext` selects great-circle `dwithin` in meters (see
+[Spatial context](#spatial-context-of-gpuspatialpredicatejoin)). Either side is
 `{kind: 'points', positions}`, `{kind: 'lines', positions, lineOffsets}` (one linestring per
 feature) or `{kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets}`
 (multipolygons, holes as later rings, GeoArrow layout); all nine combinations are supported.
 
-`predicate` is `'intersects'`, `'contains'`, `'within'`, `'dwithin'` (with an inclusive planar
-`distance`), `'covers'`, `'coveredBy'`, `'touches'`, `'crosses'`, `'overlaps'`, `'equals'`,
+`predicate` is `'intersects'`, `'contains'`, `'within'`, `'dwithin'` (with an inclusive
+`distance`: planar in coordinate units, or meters with a great-circle `spatialContext`), `'covers'`, `'coveredBy'`, `'touches'`, `'crosses'`, `'overlaps'`, `'equals'`,
 `'containsProperly'` or `'relate'` (with a DE-9IM `pattern`). Boundaries follow OGC / DE-9IM: a point has no boundary, a linestring's boundary is its
 endpoints unless it is closed, and a polygon's boundary is its rings.
 
@@ -1328,7 +2162,7 @@ endpoints unless it is closed, and a polygon's boundary is its rings.
 The pipeline is upstream primitives end to end: per-feature bounds into a `GPUBVH` over the right
 side, a count pass, `GPUScan` and an ordered write of candidate pairs, the exact predicate per
 candidate (point-polygon pairs use `GPUPairwisePointInPolygon`; points on an edge it reports as
-uncertain are decided by an f32 test and counted in `uncertainCount`), then a scan and a
+uncertain are decided by the f32 kernel and counted in `uncertainCount`), then a scan and a
 capacity-bounded scatter. Output `pairs` (`leftIds`, `rightIds`, `count`, `overflow`, optional
 `requiredCount`) are unique and sorted by `(left, right)`. On overflow the output is a sorted subset and
 `requiredCount` and `candidateCount` give the sizes to resize to.
@@ -1348,8 +2182,8 @@ Lines are single linestrings with the OGC endpoint boundary (multilinestrings an
 modeled). The matrix kernel is `O(n * m)` per pair, which suits small features and is not tuned for large
 polygons.
 
-Predicates other than point-in-polygon run in f32, so recenter or project coordinates before
-joining near-degenerate geometry. Polygons must be valid.
+Orientation tests are exact but distances and edge piece midpoints run in f32, so recenter or project
+coordinates before measuring near-degenerate geometry. Polygons must be valid.
 
 ```ts
 graph.add(new GPUSpatialPredicateJoin({
@@ -1365,7 +2199,9 @@ graph.add(new GPUSpatialPredicateJoin({
 holds the matrix of `(leftIds[k], rightIds[k])`. Each of the nine cells (order II IB IE BI BB BE EI EB EE,
 row-major, left parts then right parts) takes 2 bits at `[2k, 2k + 1]` with value `dimension + 1` (0
 empty, 1 point, 2 line, 3 area). `formatGPUSpatialRelate(value)` decodes it on the CPU to a string such as
-`'FF2F11212'`. It is not available for `dwithin`.
+`'FF2F11212'`. Bit 31 (`GPU_SPATIAL_RELATE_UNCERTAIN_BIT`) of a slot is set when an orientation of that pair
+had no sign (see **Exactness**); `formatGPUSpatialRelate` ignores it, and `value & 0x3ffff` is the matrix alone.
+It is not available for `dwithin`.
 
 ```ts
 graph.add(new GPUSpatialPredicateJoin({
@@ -1379,16 +2215,25 @@ ascending order (`pairs`, `weights` and `relate` are not allowed with it). When 
 anti output is incomplete in the unsafe direction, because rows whose candidates were dropped look
 unmatched, so check `unmatched.overflow`.
 
-**Exactness.** Relate orientation signs are exact: an f32 filter decides the clear cases and the rest
-fall back to exact integer arithmetic (256-bit), so touches, crosses, covers and the other DE-9IM
-predicates do not depend on f32 rounding of the orientation test. `uncertainCount` counts only pairs with
-non-finite input or an exponent span above 200 bits, and zero means every pair was decided. Edge piece
-midpoints and break parameters are still computed in f32: the orientation signs are exact, the location of
-a piece shorter than about one ulp is not, so a line starting one ulp outside a polygon edge can have its
-`crosses` piece classified as boundary. Point/polygon pairs use the robust double-single classifier alone
-(they do not get the exact re-decision of `GPUPointInPolygonJoin`), and pairs it cannot certify are
-counted in `uncertainCount`. The legacy kernels for pairs other than point/polygon do not track
-uncertainty and report 0.
+**Exactness.** Every orientation sign is exact, in the short-circuiting kernels (`engine: 'fast'`) and in
+the relate engine alike: an f32 filter decides the clear cases and the rest fall back to exact integer
+arithmetic (256-bit), with one inlined copy per kernel. So touches, crosses, covers, `intersects`,
+`contains` and the other predicates do not depend on f32 rounding of the orientation test, and the result
+does not depend on the engine or on the feature size that `engine: 'auto'` looks at, including
+shared-edge and collinear configurations. The exactness is with respect to the f32 vertices; edge piece
+midpoints, break parameters and distances are computed in f32: the location of a piece shorter than about
+one ulp is not exact, so a line starting one ulp outside a polygon edge can have its `crosses` piece
+classified as boundary.
+
+**Uncertain pairs.** A pair is uncertain when an orientation has no sign: a non-finite coordinate, or
+product exponents spanning more than 200 bits. It is never dropped silently. The undecidable orientation is
+treated as collinear (sign 0) and the predicate is evaluated with that value, so the pair can come out
+wrong in either direction, and it is counted in `uncertainCount` (zero means every decision is certified).
+Matched uncertain pairs are identifiable per pair through bit 31 of the `relate` output. Point/polygon
+pairs use the robust double-single classifier (they do not get the exact re-decision of
+`GPUPointInPolygonJoin`); pairs it cannot certify are decided by the f32 kernel and counted. Not tracked
+(reported as 0): the workgroup `dwithin` kernel, and the short-circuiting kernel of a polygon/polygon pair,
+whose eight storage bindings leave no room for the counter.
 
 **Per-frame distance and pattern.** `distance` is a `number` or a `GraphDataView<'float32'>`, and `pattern`
 is a `GPUSpatialRelatePattern` or a `GraphDataView<'uint32'>`. A view is read from a parameter buffer, so
@@ -1427,7 +2272,42 @@ contents are per-frame. Defaults are unchanged.
 
 Requesting `relate` output always uses the relate engine. Every engine uses the exact orientation sign, so
 shared boundaries give the same answers on all three. Measured cost is about 10 ms for 100 pairs of 600 x 175
-vertices. A pair with hundreds of shared edges costs 5–10 ms.
+vertices. A pair with hundreds of shared edges costs 5–10 ms. A great-circle `dwithin` always uses the
+short-circuiting kernel (`'relate'` throws, `'auto'` picks `'fast'`).
+
+#### Spatial context of `GPUSpatialPredicateJoin`
+
+`spatialContext` (omitted: native planar) selects how positions are read. It is validated at construction and
+exposed as the readonly field `spatialContext`; unsupported combinations throw.
+
+| Context | Predicates | Meaning |
+|---|---|---|
+| planar (default) | all | Euclidean plane; `dwithin` `distance` in coordinate units. |
+| `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` | `dwithin` only | positions are longitude/latitude degrees; `distance` is meters on the mean Earth sphere (`sphereRadius` overrides the radius; `units: 'kilometers'` throws). |
+| `{coordinateSpace: 'longitude-latitude', metric: 'none'}` | every predicate except `dwithin` | topology in the degree plane, as GEOS and PostGIS `geometry` do for coordinates in degrees; no distances. |
+
+Great-circle `dwithin`: the candidate stage widens each left box by the angular radius in latitude and by the
+longitude reach of that radius at the box's far latitude (`2 asin(sin(r/2) / cos(lat))`, every longitude when
+the radius reaches a pole), and a box that crosses the antimeridian also probes its copy shifted by 360
+degrees, with a 0.1% plus 1e-5 degree margin so rounding never drops a candidate. The exact kernel measures
+the central angle from a vertex to an edge with `geodesicSegmentFraction` and `geodesicSegmentDistance`
+(`GEODESIC_WGSL`): edges are straight in longitude/latitude with the longitude difference wrapped at +-180,
+the fraction of the nearest point is found in the local equirectangular frame of the point, and the
+distance is the haversine of coordinate differences, which keeps meter-scale offsets well conditioned in f32.
+The same edge model is used by the intersection and containment tests (exact orientation in degrees, as the
+planar kernels) and by the network snapping contributors, so there is one convention rather than two. The
+foot is exact to first order for edges of road length, so densify long edges. Distances are accurate to f32
+rounding across the antimeridian and over a pole, up to about 8000 km (a larger compile-time distance throws,
+a larger per-frame value selects nothing). Pairs whose geometries intersect in the degree plane count as
+distance 0. Polygons that span the antimeridian are not split. Oracle: numpy haversine and
+`pyproj.Geod(a=R, f=0)` for point pairs, shapely distances in the azimuthal equidistant projection for
+polygons (see the spec fixtures).
+
+The topological predicates take `metric: 'none'`; `metric: 'great-circle'` with them throws, and `dwithin`
+with `metric: 'none'` throws, so the intent is explicit. `GPUSpatialJoinCandidates` and `GPUPointInPolygonJoin`
+are planar only and throw for longitude/latitude with a hint to project first; `GPUNearestFeatureJoin` and
+`GPUBufferSelection` also take `metric: 'great-circle'` (see their section); `GPUSpatialJoinPrepared` and `GPUNearestFeatureWeights` take no positions with a metric
+(a prepared tree is a bounding-box tree and may serve a great-circle join) and have no context.
 
 ### `GPUSpatialJoinPrepared`
 
@@ -1459,7 +2339,9 @@ boxes overlap, with the left box optionally expanded by `distance`. The output i
 It is conservative: no intersecting pair is missed, and some candidates do not intersect. It has no
 `excludeSameRow`.
 
-`distance` may be a compile-time number or a one-row `GraphDataView<'float32'>`. The view is read every
+`distance` is planar in coordinate units (`spatialContext` defaults to native planar coordinates and a
+`longitude-latitude` context throws; use `GPUSpatialPredicateJoin` `dwithin` for great-circle candidates).
+It may be a compile-time number or a one-row `GraphDataView<'float32'>`. The view is read every
 encoding, so an interactive distance join can reuse one compiled graph. Size the pair capacity for the
 largest distance that the application permits. Negative, NaN and infinite view values act as zero; invalid
 compile-time numbers throw.
@@ -1486,21 +2368,76 @@ compiled.encode(commandEncoder, {parameters: undefined});
 ### `GPUPointInPolygonJoin` and `GPUNearestFeatureJoin`
 
 Spatial joins over a `GPUBVH` built from feature bounds every encoding. `GPUPointInPolygonJoin`
-refines candidates with the robust `GPUPairwisePointInPolygon` predicate and assigns each point the
-containing feature with the smallest row; `GPUNearestFeatureJoin` measures candidates with
+classifies each (point, feature) candidate with the shared exact orientation sign (even-odd rings, union
+polygons) and assigns each point the containing feature with the smallest row (see the boundary rule
+below); `GPUNearestFeatureJoin` measures candidates with
 `GPUPairwisePointSegmentDistance` and keeps the nearest point or segment feature within a per-frame
 radius. Both write per-point feature IDs, per-feature counts, optional compact matches, and one
-overflow flag covering BVH leaf, candidate, and match capacity.
+overflow flag covering BVH leaf, candidate, and match capacity. `GPUPointInPolygonJoin` takes planar
+coordinates (the default) or `{coordinateSpace: 'longitude-latitude', metric: 'none'}`. Containment is
+topological with straight edges in degrees, as in GeoJSON, and gives the same result as planar. A
+longitude/latitude context with a metric such as `'great-circle'` throws at construction, because the join
+has no geodesic edges ("project positions to a planar frame first"). `GPUNearestFeatureJoin` also takes the
+great-circle context below.
 
-A candidate pair whose containment the double-single predicate cannot prove (a point within its error
-envelope of an edge that can affect the result) is re-decided by an `exact` node between `classify` and
-`resolve`: the shared exact orientation sign with even-odd rings, union polygons and boundary on an
-exact zero, so near-degenerate points get the right answer instead of being dropped. Edges strictly
-above, below, or to one side of the point are decided exactly from coordinate signs. Only candidates
-that no arithmetic can decide stay `uncertain`: non-finite input, malformed offsets, or rings with fewer
-than three vertices. Uncertain pairs are never assigned. They are counted in the optional
-`uncertainCount`, so such a point stays unassigned visibly rather than silently. The extra node adds no
-measurable cost, because its kernel returns at once for candidates that are not `uncertain`.
+**Great-circle nearest features (`GPUNearestFeatureJoin`, `GPUBufferSelection`).** With
+`spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` positions are longitude and
+latitude in degrees and every distance (`radius`, `maxDistance`, `nearestDistances`, `neighborDistances`,
+`GPUBufferSelection` `distance` and `distances`) is meters on a sphere of radius
+`GPU_EARTH_MEAN_RADIUS_METERS` (`sphereRadius` of the context overrides it; `units: 'kilometers'`, a
+`longitude-latitude` context with another metric, and planar contexts with `great-circle` throw at
+construction). Both output modes use the branch-and-bound BVH traversal of the neighbors mode (nearest-feature
+mode is the `k = 1` traversal followed by the nearest-feature columns, counts and matches), so
+`candidateCapacity` is not used on this path (it is accepted and ignored, `candidateCount` reads 0, and
+`GPUBufferSelection` still validates it). The traversal orders and bounds by central angle. A node is pruned
+with a lower bound of the great-circle distance between its box and the query box,
+`hav(d) = hav(dlat) + cos^2(max |lat|) hav(dlon)`, with the latitude gap, the circular longitude gap (through
+the antimeridian when that is shorter) and the cosine of the latitude farthest from the equator over both
+boxes, which never overestimates; a box 180 degrees or wider in longitude (a feature across the antimeridian)
+counts as covering every longitude, and a box touching a pole has cosine 0. Edges are straight in
+longitude/latitude with wrapped longitude differences, so the vertex boxes bound them exactly. Point to edge
+distance uses `geodesicSegmentFraction` and `geodesicSegmentDistance`; a crossing or containment is decided
+in the degree plane with the exact orientation sign after the second edge is shifted by a multiple of 360
+degrees to overlap the first, and counts as distance 0. Foot points and query points are on the edges with
+longitude wrapped to +-180. The mixed convention of the planar-in-degrees tests is therefore one edge model;
+densify edges longer than a few kilometers, because the foot is exact to first order in the local frame of the
+query. A polygon that spans the antimeridian is not split. Positions are float32, so a distance carries the
+quantization of the coordinates (about 1 m at longitude 100). The planar kernels are unchanged and compile
+none of this code. Oracle: `geodesic-nearest-fixtures.ts` (numpy 2.5.4 haversine of the edge densified in
+longitude/latitude, `pyproj` 3.8.0 `Geod(a=R, f=0)` cross-check), scenes at the equator, latitude 60, across
+the antimeridian and next to the pole. `GPUNearestFeatureWeights` is an adapter over the join's outputs and has
+no context: its distances, `distanceFloor` and inverse-distance weights are in meters when the join is
+great-circle.
+
+**Exact orientation.** The classifier and the nearest-feature kernels use the same exact orientation sign
+(an f32 filter with an exact 256-bit integer fallback), so "on the edge" means the same thing in the
+point-in-polygon join, the predicate join and the nearest-feature join: a point exactly on an edge is
+distance 0 in all three, and polygon containment (distance 0 inside a polygon) is decided with the exact
+sign too. Distances and foot points stay f32. Only candidates that no arithmetic can decide stay
+`uncertain`: non-finite input or malformed offsets. In `GPUPointInPolygonJoin` an empty polygon part
+or a ring with fewer than three vertices contains nothing and is skipped, as in shapely, so the
+feature's other parts still classify the point. Uncertain
+pairs are never assigned. They are counted in the optional `uncertainCount`, so such a point stays
+unassigned visibly rather than silently.
+
+**Boundary rule (`GPUPointInPolygonJoin`).** `boundaryRule` decides a point exactly on a polygon
+boundary:
+
+| Rule | Boundary point | Notes |
+|---|---|---|
+| `'half-open'` (default) | belongs to exactly one feature of a valid coverage, independent of row order | The owner is the feature containing the point after an infinitesimal move toward +x and +y (+y dominates): left and bottom boundaries are included, right and top boundaries are excluded. A horizontal edge belongs to the feature above it, a vertical edge to the feature on its right, a vertex to the feature whose interior touches its upper right. Points on the outer right or top boundary of a coverage belong to no feature. |
+| `'closed'` | contained by every feature it touches, then the smallest row wins | Nothing is lost on the outer boundary; the owner of a shared-boundary point depends on the row order. This was the behavior before the rule existed. |
+| `'open'` | belongs to no feature | Only strict interior counts; boundary points are lost, not half-assigned. |
+
+`includeBoundary` is the legacy boolean: `true` is `boundaryRule: 'closed'`, `false` is `'open'`, and it throws
+when it disagrees with an explicit `boundaryRule`. It is not a switch for the half-open rule: with neither
+prop set the join is half-open. The half-open decision is the crossing-number convention made exact: a
+supporting-line tie is broken by the sign of dx (the epsilon term of the move), or of -dy for a vertical
+edge, so the result follows from the exact orientation signs and the vertex order does not matter. Overlapping
+features (an invalid coverage) still resolve to the smallest containing row. Oracle: shapely
+`Polygon.contains(Point(x + 1e-9, y + 1e-6))` on integer scenes, 24 row permutations, in the specs.
+`GPUZonalStatistics` and the recipes that pass no `boundaryRule` use the half-open default, so a coverage's
+counts partition the points.
 
 ```ts
 graph.add(new GPUNearestFeatureJoin({
@@ -1567,7 +2504,7 @@ join's `neighborIds`, `neighborCounts`, optional `neighborDistances` and its `ne
 `slotCapacity`. Per row it keeps the first `k` valid slots in the join's distance order, drops padding and
 (with `excludeSelf`, for self-joins run with `k + 1`) the row's own ID, then sorts the IDs ascending. Short rows
 stay short. `weightType` is `'binary'` (default) or `'inverse-distance'` (`1 / max(d, distanceFloor)^power`),
-and `weights.distances` is filled when present. The output is directed, so for `'symmetrize'` or symmetric
+and `weights.distances` is filled when present (in the units of the join: meters for a great-circle join, so `distanceFloor` is meters there). The output is directed, so for `'symmetrize'` or symmetric
 statistics take the union of the weights and their `GPUSpatialWeightsTranspose`. `excludeSelf` compares IDs to
 the query row, so do not use `featureIds` with it.
 
@@ -1597,7 +2534,8 @@ nearest, buffer selection). The prepared join and `GPUZoneEvents` have no curve 
 
 ### `GPUPairGather`, `GPUOffsetExpansion`, and `GPUBoundsFilter`
 
-Dataframe joints around the joins.
+Dataframe joints around the joins. `GPUPairGather` consumes join row indices and columns, so it takes no
+`spatialContext`.
 
 - **`GPUPairGather`** merges join output with attribute columns (GeoPandas `sjoin` and `sjoin_nearest`
   merges, `distance_col`). The input is `pairs` (a `GPUSpatialPredicateJoin` pair output) or `neighbors`
@@ -1613,7 +2551,8 @@ Dataframe joints around the joins.
   (`explode`, `get_coordinates(return_index=True)`, `get_parts(return_index=True)`) by binary search per row.
   Empty ranges yield no rows, `ownerMap` chains levels (vertex to ring to polygon to feature), and the
   output is bounded with `count`, `overflow` and `requiredCount`. Offsets monotonicity is not checked.
-- **`GPUBoundsFilter`** is a `.cx`-style mask and compaction over `float32x4` feature bounds with a
+- **`GPUBoundsFilter`** (`spatialContext`: planar, or longitude/latitude with metric `'none'`, treated
+  as plain coordinates with no antimeridian wrap, so a box needs `minX <= maxX`) is a `.cx`-style mask and compaction over `float32x4` feature bounds with a
   per-frame box (`getGPUBoundsFilterParameterValues`). Modes are `'intersects'`, `'within'` and
   `'contains'`, with closed comparisons and non-finite bounds rejected. It is bounds-level only, and OGC
   `envelope.within(box)` rejects bounds that only touch the border where this accepts them, so refine
@@ -1629,7 +2568,10 @@ polyline is passed as consecutive segment rows. The contributor composes `GPUNea
 the join's unordered `matches`, it writes a source-aligned 0/1 mask and stable IDs in ascending row
 order, with a clamped count and overflow that covers both the output capacity and the join.
 `output.drawInstanceCount` (one `uint32` row, requires `output`) receives the clamped selected count
-from the publish node, so it can be bound as an indirect draw instance count.
+from the publish node, so it can be bound as an indirect draw instance count. The distance is planar in
+coordinate units by default; with `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
+'great-circle'}` it is a great-circle distance in meters (forwarded to `GPUNearestFeatureJoin`, whose section
+lists the edge model, the sphere radius and the rejected combinations), and `candidateCapacity` is ignored.
 
 ```ts
 graph.add(new GPUBufferSelection({
@@ -1642,6 +2584,8 @@ graph.add(new GPUBufferSelection({
 ## Geometry validity & intersections
 
 ### `GPUSegmentIntersection`
+
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). Orientation signs are exact.
 
 Finds every intersecting pair of line segments between two geometries (`left`, `right`) or within one
 (`left` only), like turf `lineIntersect` and `kinks`, self-intersection tests and noding points. Each side
@@ -1679,6 +2623,8 @@ graph.add(new GPUSegmentIntersection({
 
 ### `GPUGeometryValidity`
 
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). Orientation signs are exact.
+
 A per-feature validity bitmask for polygons and multipolygons (`GPUSpatialJoinPolygons` layout), like
 PostGIS `ST_IsValidDetail` and Shapely `explain_validity` as a filterable mask. Repair stays on the CPU.
 
@@ -1711,6 +2657,8 @@ graph.add(new GPUGeometryValidity({polygons, mask, overflow, intersectionCapacit
 
 ### `GPUGeometryPredicates`
 
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`).
+
 Per-feature columns for points, linestrings or polygons (Shapely `is_simple`, `is_ring`, `is_closed`,
 `is_ccw`, `get_num_points`, `count_coordinates`, `get_num_interior_rings`, `get_num_geometries`,
 `extract_unique_points`, `equals_exact`, `equals_identical`). Each output is optional and `uint32` (0 or 1
@@ -1731,6 +2679,9 @@ for booleans): `isSimple`, `isRing`, `isClosed`, `isCcw`, `numPoints`, `numCoord
   `equals_exact(normalize=True)`, multilinestring and multipoint layouts.
 
 ### `GPUMinimumClearance`
+
+Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
+`createGPULocalFrame` and `GPULocalFrameProjection`.
 
 Per-feature `shapely.minimum_clearance` and `minimum_clearance_line` for linestrings and
 (multi)polygons: the smallest distance one vertex could move to make the feature invalid, as the minimum
@@ -1756,7 +2707,11 @@ T-junction touch counts, and a gap is endpoints within `gapWidth` plus a mutual 
 than `gapWidth` (strict). It agreed with Shapely on 28 scenes with 40 gap cases and on 158 of 160 random
 jitter cases. The misses are a vertex of an overlapping neighbor within `gapWidth` of an edge, which GEOS
 flags and this does not, and a matched edge lying inside a third polygon, which is not flagged (that
-polygon's own segments are).
+polygon's own segments are). Every orientation sign is exact for the f32 vertices, including the winding
+number of the interior probe (`orientSign`), so a probe point exactly on a neighbor's edge is never
+misclassified by rounding; the probe is the f32 midpoint of the segment. A pair with no decidable orientation
+(non-finite input) sets the `uncertain` bit. The operator is planar: `spatialContext` defaults to native
+planar coordinates and `longitude-latitude` throws (project first).
 
 ## Density & interpolation
 
@@ -1768,6 +2723,15 @@ its `[min, max]` extent, a histogram, and an optional `r32float` texture. Bounds
 may be GPU views; the field can be smoothed with a per-frame `GPUConvolution` kernel. Instead of a full
 `kernel`, pass a separable `separableKernel: {horizontal, vertical}` (one of the two is required), which smooths
 in two 1D passes.
+
+**This is binned counting, not a kernel density estimate.** `output.values` is the count (or weight
+sum or mean) per cell, so it changes with `gridSize` and is not an intensity per unit area or a
+probability density. Optional `smoothing` convolves that field with a kernel whose radius and sigma
+are in **cells**, not ground units, using a zero boundary: kernel mass leaks out of the domain, so the
+field is underestimated within about two sigma of the border, and a grid whose cells are not square on
+the ground smooths anisotropically. For intensity per unit area, a bandwidth in ground units, a
+choice of kernels, and edge correction use [`GPUKernelDensity`](#gpukerneldensity). `spatialContext`
+is planar/native only (omitted means planar/native); longitude/latitude throws, so project first.
 
 Weighted sums default to `sumAccumulation: 'auto'`. The static heuristic uses workgroup
 pre-aggregation only for at least 1,024 input rows, at most 256 cells, and at least 32 input rows per
@@ -1799,6 +2763,79 @@ columns.
 `getGPUPointDensityHexagonGridSize` sizes a hexagon lattice that covers given bounds, and
 `GPU_POINT_DENSITY_HEXAGON_WGSL` lets render shaders place hexagon bins.
 
+### `GPUKernelDensity`
+
+A true planar kernel density estimate on a raster, with the bandwidth in ground units. For each output
+cell center `u` it evaluates `lambda(u) = sum_i w_i K_h(|u - x_i|)` over the points inside the kernel
+support, where `K_h(d) = K(d / h) / h^2` is radially symmetric and integrates to one over the plane
+(Silverman 1986, Density Estimation, Table 3.1):
+
+| `kernel` | `K_h(d)` for `t = d^2 / h^2` | Support |
+| --- | --- | --- |
+| `'gaussian'` (default) | `exp(-t / 2) / (2 pi h^2)` | truncated at `5h`; lost mass `exp(-12.5)`, 3.7e-6 |
+| `'quartic'` (biweight) | `3 / pi (1 - t)^2 / h^2` | `t < 1` |
+| `'epanechnikov'` | `2 / pi (1 - t) / h^2` | `t < 1` |
+
+```ts
+const kdeParameters = new GPUParameterBuffer(device, {id: 'kde', format: 'float32', length: 9});
+graph.add(
+  new GPUKernelDensity({
+    positions, // float32x2, planar frame with equal units on both axes
+    weights, // optional float32 (populations, counts); NaN or negative excludes the point
+    parameters: kdeParameters.importToGraph(graph),
+    width: 512,
+    height: 512,
+    indexGridSize: [64, 64], // internal GPUGridIndex over the points
+    indexBounds: [minX, minY, maxX, maxY], // must cover the points that should count
+    kernel: 'quartic',
+    edgeCorrection: 'uniform', // default
+    normalization: 'intensity', // default
+    output: {values, weightSum, invalidCount} // weightSum and invalidCount are optional
+  })
+);
+kdeParameters.write(
+  getGPUKernelDensityParameterValues({extent: [x0, y0, x1, y1], bandwidth: 250 /* meters */}) // no recompile
+);
+```
+
+- **Units.** `normalization: 'intensity'` (default) is the sum of weights per unit area, position
+  units to the power -2: points per square meter in a meter frame, so the value does not change with
+  the raster resolution. Multiply by a cell area to get expected weight per cell. `'probability'`
+  divides by the sum of included weights (`output.weightSum`), giving a probability density that
+  integrates to about one over the window (exactly one only without edge correction and with the
+  whole kernel inside the window). Cells are evaluated at their centers, not averaged over the cell.
+- **Edge correction** repairs the downward bias within one bandwidth of the study window, where kernel
+  mass falls outside the data region. `'uniform'` (default) divides each cell by `e(u)`, the kernel
+  mass inside the window (Diggle 1985; spatstat `density.ppp(edge = TRUE)`). `'diggle'` instead
+  weights each point by `1 / e(x_i)` (Jones 1993; spatstat `diggle = TRUE`), which keeps the total
+  closer to the point count but is noisier at the edge. `'none'` is the plain sum. The window is
+  `window` in `getGPUKernelDensityParameterValues` and defaults to the extent; with correction, points
+  outside the window are excluded and cells whose centers are outside are NaN. `e(u)` is closed form,
+  with no quadrature: normal-CDF differences for the gaussian, and an exact inclusion-exclusion of
+  four disk-clipped quadrant integrals for quartic and epanechnikov. `getGPUKernelDensityWindowMass`
+  is the float64 reference. The window is a rectangle; an irregular study area is not supported (use
+  the extent that matches your bounding region and mask the output, accepting the bias at concave edges).
+- **Bandwidth.** It is per-frame, in position units, and should reflect the question (a service
+  distance, a neighborhood). Normal-reference rules on read-back positions are provided:
+  `getScottBandwidth` (`h_i = n_eff^(-1/6) sigma_i`) and `getSilvermanBandwidth`, matching
+  `scipy.stats.gaussian_kde` including weights through the effective sample size
+  `(sum w)^2 / sum w^2`. In two dimensions the two rules coincide. They return per-axis bandwidths and a
+  pooled `isotropic` one for the radial kernels, and oversmooth clustered data. Likelihood
+  cross-validation and Diggle's selector are not provided.
+- **Exclusions.** A non-finite position or weight, a negative weight, and a position outside
+  `indexBounds` exclude the row; `output.invalidCount` (status vocabulary `invalidCount`) is their
+  number. Zero-weight rows are included.
+- **Determinism and precision.** The index is rebuilt every encoding, IDs are re-ranked inside each
+  index cell, and each cell sums in a fixed order (index row, column, ascending row), with no float
+  atomics. Distances use offsets from the extent origin to limit f32 cancellation; the f32 inputs
+  themselves are not recentered, so use local coordinates for fine resolution far from the origin.
+- Pinned to `sklearn.neighbors.KernelDensity` (gaussian, epanechnikov), numpy (quartic), and
+  `scipy.integrate.dblquad` (window mass, edge-corrected fields); bandwidth rules to `scipy.stats.gaussian_kde`.
+- `spatialContext` is planar/native only (omitted means planar/native).
+
+Not provided: adaptive or space-time bandwidths, network KDE (see the network contributors), reflection
+boundaries, and non-rectangular windows.
+
 ### `GPUInverseDistanceWeighting`
 
 Interpolates scattered samples onto a raster with inverse distance weighting (`w = 1 / d^p`),
@@ -1811,7 +2848,7 @@ graph.add(
     positions, // float32x2 per sample
     values, // float32 per sample, NaN skips
     mask, // optional uint32, 0 skips
-    parameters: idwParameters.importToGraph(graph), // 8 float32
+    parameters: idwParameters.importToGraph(graph), // 9 float32
     width: 512,
     height: 512,
     indexGridSize: [128, 128], // internal GPUGridIndex over the samples
@@ -1825,6 +2862,7 @@ idwParameters.write(
     extent: [x0, y0, x1, y1],
     searchRadius: 250,
     power: 2,
+    taper: 'none', // or 'modified-shepard' (Franke-Nielson, needs a finite radius)
     neighborCount: 8, // 0 = every sample within the radius
     minimumNeighborCount: 3
   })
@@ -1842,6 +2880,30 @@ idwParameters.write(
   contributors is nodata (NaN). `counts` holds the contributors after the `k` limit.
 - Negative or NaN radius, or a negative or non-finite power, produces an all-NaN raster.
   `searchRadius: Infinity` searches the whole index domain.
+- Units and coordinates: by default positions, extent and radius share one planar unit and
+  distances are differences of offsets from the extent minimum, so large absolute coordinates (UTM
+  northings) do not quantize them. With `spatialContext: {coordinateSpace: 'longitude-latitude',
+  metric: 'great-circle'}` positions are absolute lon/lat degrees, the index and output extent stay
+  in degrees, and distances are haversine meters on a sphere (`sphereRadius`, else 6371008.8 m;
+  kilometers with `units: 'kilometers'`), so `searchRadius` is in meters. Neighbors and radius
+  tests order by the haversine term. The query box is conservative (longitude span widened by the
+  cosine of the highest latitude reached, full span near the poles) but does not wrap the
+  antimeridian, and the nearest-k limit scans the whole box instead of early-stopping. f32
+  absolute lon/lat gives about 1 m accuracy at Earth scale. Other longitude/latitude metrics
+  (rhumb, ellipsoidal, none) throw; project to a planar frame (for example `createGPULocalFrame`)
+  for them.
+- `taper: 'none'` (default) is `w = 1 / d^p` inside the radius, a hard cutoff: a sample entering
+  or leaving the radius changes the surface discontinuously. `taper: 'modified-shepard'` is the
+  Franke and Nielson (1980) weight `w = ((R - d)+ / (R d))^p` with `R = searchRadius`, which falls
+  to zero at the radius (a sample exactly at `R` has weight zero). It needs a finite radius
+  (`getGPUInverseDistanceWeightingParameterValues` throws otherwise). `counts` still counts every
+  sample inside the radius. Default stays `'none'` for backward compatibility; prefer the taper
+  when a finite radius is a modelling choice rather than just a speed limit.
+- Parameter guidance: `power` 2 is conventional, not optimal; higher powers flatten the surface
+  around samples. `minimumNeighborCount` defaults to 1, so a lone distant sample inside the radius
+  paints a constant plateau of its value; use 3 or more to leave sparse cells as nodata. IDW
+  has no direction or sector search and no leave-one-out output; use `GPUKriging`'s
+  cross-validation to compare models on the same samples.
 - Determinism: the grid index's in-cell order depends on atomics, so the contributor re-sorts IDs inside
   each index cell every encoding; sums then run in a fixed order (index row, column, ascending
   row; or `(d^2, row)` with `k`). Weights are accumulated in log space against a running maximum,
@@ -1860,18 +2922,78 @@ under a fitted variogram, solved per invocation by pivoted Gaussian elimination 
 normalized by its total sill and the prediction is relative to the nearest value). The samples come from
 the same internal `GPUGridIndex` as `GPUInverseDistanceWeighting`.
 
+```ts
+graph.add(
+  new GPUKriging({
+    positions, values, parameters: krigingParameters.importToGraph(graph),
+    width, height, indexGridSize, indexBounds, maximumNeighborCount: 16,
+    output: {
+      values: surface, variance, // float32 rasters
+      invalidCount, uncertainCount, // optional uint32 scalars
+      crossValidationPrediction, crossValidationVariance // optional float32 per SAMPLE row
+    }
+  })
+);
+```
+
 - Props: `positions`, `values` (NaN skips), optional `mask`, `parameters` (`getGPUKrigingParameterValues`,
   at least 12 float32), `width`, `height`, `indexGridSize`, `indexBounds`, `maximumNeighborCount` (1 to 16,
   compile-time) and `output: {values, variance?}`.
 - Per frame: extent, radius, `k`, minimum neighbors, model (`'spherical'`, `'exponential'` or `'gaussian'`,
   the `fitVariogramModel` convention) and nugget, sill and range. Pass `sill + nugget` as PyKrige's "sill"
   when comparing, since PyKrige's value is the total sill.
-- `values` is a row-major raster and nodata (too few neighbors, a singular system, duplicate sample
-  positions in a neighborhood) is NaN. `variance` is the kriging variance, 0 at exact hits, NaN at nodata.
+- `values` is a row-major raster and nodata is NaN: too few distinct neighbors, an ill-conditioned
+  system, or an unreliable variance. `variance` is the kriging variance in squared value units, 0 at exact
+  hits, NaN at nodata.
+- Units and coordinates: by default positions, extent, radius and variogram range share one planar
+  unit; distances are differences of offsets from the extent minimum (cross-validation: from the
+  index domain minimum), so UTM-sized coordinates keep full f32 precision relative to the
+  neighborhood. With `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
+  'great-circle'}` positions are absolute lon/lat degrees, the index and extent stay in degrees,
+  and the search radius, variogram range and all sample-sample and sample-cell distances are
+  haversine meters (`sphereRadius`, else 6371008.8 m; kilometers with `units: 'kilometers'`).
+  Neighbors are ordered by `(haversine term, row)`; exact hits and duplicate coalescing compare
+  degree positions exactly; leave-one-out uses the same metric. The query box is conservative and
+  does not wrap the antimeridian, and the ring scan's early stop is disabled (the whole box is
+  scanned, so an unbounded radius is `O(samples)` per cell). f32 absolute lon/lat gives about 1 m
+  accuracy at Earth scale. Other longitude/latitude metrics throw.
+- Status: `invalidCount` counts cells that are NaN for lack of data or invalid settings (fewer than
+  `minimumNeighborCount` distinct positions, no sample in the radius, outside the index domain).
+  `uncertainCount` counts cells rejected by the numerical checks below. Both are computed over the
+  raster of the last encoding, so a nonzero `uncertainCount` means the surface has holes that are
+  not "no data" but "do not trust the solve here".
+- Singularity is a relative test, not an absolute one: a pivot at or below
+  `KRIGING_RELATIVE_PIVOT_TOLERANCE` (1e-6) of the system scale is zero, and a system whose smallest
+  pivot is below `KRIGING_PIVOT_RATIO_TOLERANCE` (1e-4) of its largest is rejected as ill conditioned,
+  since an f32 solve loses about `cond * 6e-8` of the weights' accuracy and the ratio tracks `1 / cond`.
+  The usual cause is a Gaussian model with a near-zero nugget and closely spaced samples: add a nugget
+  (0.001 of the sill moves the ratio from 1e-6 to 5e-5 for 12 clustered samples) or thin the samples. The
+  constants were calibrated against emulated f32 solves compared with float64.
+- Variance is `mu + sum(w * gamma)` in units of the total sill and is never negative for a valid
+  model. A negative value above `-KRIGING_NEGATIVE_VARIANCE_TOLERANCE` (1e-4) is f32 rounding and is
+  clamped to zero; a larger negative variance makes the cell NaN (value and variance) and counts it in
+  `uncertainCount`. It is never silently clamped.
+- Duplicate sample positions inside a neighborhood are coalesced into one kriging point whose value is
+  the mean of their values (summed in `(d^2, row)` order, so the result is deterministic), instead of
+  making the system singular. Duplicates still occupy neighbor slots, so a neighborhood of `k` rows can
+  hold fewer than `k` points, and `minimumNeighborCount` counts distinct positions. An exact hit returns the
+  mean of the samples at that position with variance 0.
+- The nugget is treated as micro-scale variation: the predictor is exact at the data even with a
+  positive nugget (zero variance at exact hits). Filtered kriging with a measurement-error nugget is not
+  provided.
+- Leave-one-out cross-validation (`crossValidationPrediction`, optional `crossValidationVariance`, one
+  float32 row per sample) krigs each sample from its `k` nearest OTHER samples with the same variogram,
+  radius, `k` and minimum-neighbor settings and the same solver code. Rows that are NaN, masked or
+  unestimable are NaN. Another sample at exactly the same position is an exact hit (its mean, variance 0).
+  Compare models with the standardized error `(value - prediction) / sqrt(variance)`, which should have
+  mean near 0 and variance near 1, and the root mean squared error of `value - prediction`.
+- A sample `mask` is folded into a transient value copy first (a one-pass kernel), and the per-cell status
+  goes to a transient before the counters are accumulated, so every kernel stays within 8 storage buffers.
 - Pinned to PyKrige 1.7.3 with 8 closest points (exponential, spherical and Gaussian within 0.2 on values
-  near 70, and 1 percent on variance). Kernels bind at most 8 storage buffers. Global and universal
-  kriging, anisotropy and cross-validation are not provided, and `radius: Infinity` scans the whole index
-  per cell.
+  near 70, and 1 percent on variance); the pivot-ratio, duplicate-coalescing, mask, leave-one-out and
+  translation fixtures are float64 numpy ordinary kriging (Cressie 1993, eq. 3.2.12 to 3.2.16) that
+  reproduces the PyKrige numbers to 5e-7. Global and universal kriging, anisotropy, octant search and
+  filtered (measurement-error) kriging are not provided.
 
 ### `GPUDotDensity` and `GPURandomPointsInPolygon`
 
@@ -1905,8 +3027,17 @@ parameters.write(
   to its cell weight.
 - Dots are ordered by feature, category and rank (offsets from a prefix scan). `dots.ids` holds the
   feature row of each dot and `dots.count` is safe as an instance count; rows past it are NaN /
-  `0xffffffff`. A dot whose `maximumAttempts` candidates all miss keeps its slot with a NaN position
-  and is counted in `failedCount`.
+  `0xffffffff`. A dot whose `maximumAttempts` (default 32) candidates all miss keeps its slot with a NaN
+  position and is counted in `failedCount`.
+- **Rejection bias.** A candidate is accepted with probability polygon area / bounding-box area (times the
+  mask weight), so a dot fails with probability `(1 - p)^maximumAttempts`. Thin, diagonal, concave or
+  mask-starved polygons deterministically lose dots, which biases the map toward compact polygons. Watch
+  `failedCount` (a sampling failure rather than an invalid input row, so it keeps its own name instead of
+  `invalidCount`), and raise the compile-time `maximumAttempts` until it is zero.
+- **Coordinates.** Dots are uniform in coordinate space, so `spatialContext` is planar/native only (omitted
+  means planar/native), on `GPUDotDensity`, `GPURandomPointsInPolygon` and `GPURandomPointsOnLine`.
+  Longitude/latitude throws: degrees are not an equal-area frame, so project to an equal-area planar frame
+  first.
 - Containment is an even-odd test over all rings of the feature (holes excluded); this equals
   multipolygon containment for valid geometry. Cost per candidate is linear in the feature's vertices.
 
@@ -1932,6 +3063,13 @@ table therefore feeds the projection directly.
   Invalid rows, and rows coarser than `resolution`, are skipped. H3 validity comes from
   gpu-dggs `dggs_h3_is_valid_cell_id`. Optional `values` and a `mask` can change every frame.
   Rows with a NaN coordinate or a non-finite value are skipped.
+- **Coordinate space.** `spatialContext` is checked at construction and exposed as a resolved
+  field. `positions` are longitude/latitude degrees (default `{coordinateSpace:
+  'longitude-latitude', metric: 'none'}`); a planar context throws, because Quadbin keying is
+  defined on degrees. Pre-keyed `cells`, `GPUCellRollup` and `GPUCellPyramid` use a `discrete-grid`
+  context (default `gridFamily` is `family`): a given `gridFamily` must equal `family`, and a given
+  `gridResolution` (the finest resolution of the input keys) must be at least `resolution`. Nothing
+  is measured, so only metric `'none'` is accepted.
 - **Cell table** (`GPUCellTable`). Capacity is `cells.length`. Rows `[0, count)` hold occupied
   cells in ascending key order. Later rows hold the empty key `0xffffffff` in both words, count 0
   and NaN extremes. Columns: `counts`, exact fixed-point `sums` (signed 64-bit words of
@@ -2001,6 +3139,9 @@ and `GPUH3CellProjection` read. The zero key means "no cell".
     optional `validity`, one row per input row.
   - Masked and non-finite rows get the zero key. The resolution is compile-time.
   - Rewriting positions or the mask re-encodes without recompiling.
+  - `spatialContext` (optional) must be longitude/latitude without a metric, which is also the
+    default; planar contexts throw. `GPUCellGeometry` takes cell ids, so it has no `spatialContext`
+    prop; its decoded `centers` and `boundaries` are described by `outputSpatialContext`.
 - **`GPUCellGeometry`.**
   - Input is `cells` (`wordOrder` option).
   - Outputs are `centers` (lng/lat) and optional `boundaries` with a fixed `maximumVertexCount`
@@ -2031,6 +3172,8 @@ graph.add(new GPUCellGeometry({
   - Geometry matches h3-js / oracles within about 3e-5 degrees.
 
 ### `GPUCellTopology` and `GPUCellCompaction`
+
+Both consume cell keys, not positions, so neither takes a `spatialContext`.
 
 Cell topology for Quadbin and H3 keys stored as `uint32x2` little-endian `(low, high)` words.
 This is the Arrow `Uint64` layout used by `GPUCellAggregation`. Inputs also accept
@@ -2081,6 +3224,8 @@ graph.add(new GPUCellCompaction({
 
 ### `GPUCellGridPath` and `GPUCellMeasures`
 
+`GPUCellGridPath` consumes cell keys, so it takes no `spatialContext`.
+
 H3 gap kernels (`family: 'h3'`), integer-exact where possible.
 
 - **`GPUCellGridPath`** (h3 `grid_distance`, `grid_path_cells`, `are_neighbor_cells`): per pair,
@@ -2094,9 +3239,15 @@ H3 gap kernels (`family: 'h3'`), integer-exact where possible.
   exact rounding ties (H3 rounds with double noise), and paths crossing pentagon base cells fail
   (`counts = 0`) in about 6% of those cases. Distances matched h3 4.5.0 on 355 of 355 pairs, failures
   included.
-- **`GPUCellMeasures`** (h3 `cell_area`, `edge_length`, `is_pentagon`): `areas` (km2), `perimeters`,
-  `edgeLengths` (stride `maximumEdgeCount` 6 to 10, great-circle km between consecutive
-  `cellToBoundary` vertices), `edgeCounts` and `pentagons`. Single-face hexagons are exact from lattice
+- **`GPUCellMeasures`** (h3 `cell_area`, `edge_length`, `is_pentagon`): `areas` (square meters),
+  `perimeters`, `edgeLengths` (stride `maximumEdgeCount` 6 to 10, great-circle meters between
+  consecutive `cellToBoundary` vertices), `edgeCounts` and `pentagons`. **Breaking:** outputs used to
+  be kilometers; meters are now the default and kilometers need an explicit `units: 'kilometers'`
+  (then areas are square kilometers). The sphere is the WGS84 authalic sphere
+  (`GPU_EARTH_AUTHALIC_RADIUS_METERS`, replacing the removed `GPU_CELL_MEASURES_EARTH_RADIUS_KM`), and
+  the instance's `measures` field is the machine-readable description (`lengthModel: 'great-circle'`,
+  `areaModel: 'sphere-polygon'`, units). Cell identifiers carry no coordinates, so the class has no
+  `spatialContext`. Single-face hexagons are exact from lattice
   offsets, within 1e-6 relative at resolutions 0 to 15. Pentagons and cells straddling a face edge use f32
   boundary vectors: 6e-7 at resolution 0, 2e-5 at 2, 2.5e-4 at 4 and about 1e-2 at 6, so treat them as
   unreliable beyond resolution 5. Open: directed edges and vertexes.
@@ -2110,7 +3261,14 @@ Polyfills polygons (with holes) into Quadbin or H3 cells, like CARTO `QUADBIN_PO
 - **Inputs.** Polygon features use the `GPUPointInPolygonJoin` layout: `polygonPositions`
   (lng/lat `float32x2`), `featureOffsets`, `polygonOffsets`, `ringOffsets`, and optional
   `featureIds`. Geometry is planar in lng/lat degrees, as in h3-js and turf. Containment is
-  even-odd over all rings. Polygons must not cross the antimeridian.
+  even-odd over all rings. `spatialContext` defaults to, and must be, longitude/latitude without a
+  metric (planar contexts throw).
+- **Antimeridian and poles.** Polygons must not cross the antimeridian. A feature whose bounding
+  box is wider than 180 degrees of longitude (every antimeridian-crossing ring, since such a ring has
+  an edge with a longitude difference above 180) gets no cells and is counted in the optional
+  `output.invalidCount`; split it at +-180 first. A feature reaching past the cover's latitude limit
+  (89 degrees for H3, 85.051129 for Quadbin) loses its polar cells and is counted in the optional
+  `output.uncertainCount`. Both scalars are cleared on every encoding.
 - **Containment.**
   - `'center'`: the cell centre is inside the polygon.
   - `'full'`: the cell lies inside the polygon.
@@ -2120,7 +3278,9 @@ Polyfills polygons (with holes) into Quadbin or H3 cells, like CARTO `QUADBIN_PO
     only.
 - **Candidates.** Quadbin tests the integer-exact tile range of each feature's bounding box. H3
   lays a lng/lat lattice over the bounding box, with spacing below half the minimum H3 inradius at
-  that resolution (measured from h3-js; the minimum sits next to a pentagon). Each lattice point
+  that resolution (measured from h3-js; the minimum sits next to a pentagon). The longitude spacing
+  is taken at the feature's most equatorward latitude (0 when it spans the equator), so tall
+  features are oversampled toward the pole rather than missing cells nearer the equator. Each lattice point
   indexes its cell with `cellIndexH3FromLngLat`. The cell is emitted only from the lattice point
   nearest its centre, so every cell whose centre lies in the polygon is emitted exactly once with
   no sort.
@@ -2156,6 +3316,9 @@ Border cells can still lie entirely inside. A join can skip the exact point-in-p
 cell is core.
 
 ### `GPUCellSetOutline`
+
+It consumes cell keys, so it takes no `spatialContext`; the segments and rings it produces are
+longitude/latitude degrees (the `GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT` convention).
 
 The boundary edges of a set of H3 or Quadbin cells, the `cellsToMultiPolygon` outline. Set `rings` to chain
 the edges into closed rings with shells and holes on the GPU ([`GPUSegmentRingAssembly`](#gpusegmentringassembly)).
@@ -2196,6 +3359,8 @@ graph.add(new GPUCellSetOutline({
 
 ### `GPUSegmentRingAssembly`
 
+`spatialContext` replaces the former `geographic` flag. It defaults to native planar coordinates (**behavior change:** `geographic` defaulted to true). A `longitude-latitude` context with metric `'none'` scales x differences by `cos(latitude)` (clamped at 0.01) when comparing turns at shared vertices; great-circle and other metrics are rejected because ring assembly measures nothing, and `vertexTolerance` stays in position units. Hole detection still uses the f32 shoelace sign of each ring.
+
 Chains directed boundary segments into closed rings on the GPU, the ring-assembly step of
 `cellsToMultiPolygon`. It consumes `GPUCellSetOutline` output, or any `float32x4` segment list whose
 vertices meet within a tolerance.
@@ -2209,7 +3374,7 @@ graph.add(new GPUSegmentRingAssembly({
   interiorSide: 'left', // side of each segment that is filled ('left': counter-clockwise shells)
   normalizeWinding: true, // shells counter-clockwise, holes clockwise (RFC 7946)
   splitTouchingRings: true, // default
-  geographic: true, // cos(lat) in turn comparisons; false for planar coordinates
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}, // cos(lat) in turn comparisons; omit for planar
   output: {
     ringOffsets, // uint32, ringCapacity + 1
     positions, // float32x2, vertex capacity
@@ -2229,6 +3394,11 @@ graph.add(new GPUSegmentRingAssembly({
   group, through a sort of quantized vertex hashes and a 3 x 3 neighborhood lookup. Quadbin vertices are
   bit-exact; H3 vertices of neighboring cells agree within f32 round-off (below 5e-5 degrees). Pick a
   tolerance of at least four times the f32 spacing of the coordinates and well below the shortest segment.
+  Vertices are hashed relative to the first segment's start vertex into unsigned cells of size
+  `max(vertexTolerance, extent * 2^-22)` (with a small slack), where `extent` is the largest coordinate
+  offset from that origin, measured on the GPU. Projected coordinates (UTM, Web Mercator) therefore never
+  collide at any tolerance, and candidates are still compared by their true distance against
+  `vertexTolerance`. `overflow` is also set when a valid segment has a non-finite coordinate.
 - **Shells and holes.** The signed area (shoelace, relative to the first vertex) is compared with
   `interiorSide`: with `'left'` shells are counter-clockwise. `ringIsHole` flags holes. `ringShells`
   assigns every hole to its innermost enclosing shell (smallest area, lowest index on ties, same group), a
@@ -2264,25 +3434,42 @@ graph.add(new GPUSegmentRingAssembly({
 
 ### `GPULineNoding`, `GPUPolygonize` and `GPUMakeValid`
 
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). The resolved context is passed on to the noding and ring-assembly stages.
+
 These contributors form the bounded planar geometry-topology substrate:
 
 - `GPULineNoding` splits arbitrary finite linework at crossings, touches, both ends of collinear
   overlaps, and repeated vertices. Each atomic `GPUNodedSegmentPort` row carries source feature,
   line/ring, original edge, and normalized start/end parameter provenance.
 - `GPUPolygonize` expands each noded segment into two directed edges, assigns deterministic left-face
-  ownership, omits the unbounded and zero-area faces, and emits canonical polygon features. Its
-  diagnostics classify source edges as closed-ring, open-chain, cut, dangle, and unused.
-- `GPUMakeValid` applies the same pipeline independently to every input polygon feature. It repairs
+  ownership, omits the unbounded and zero-area faces, and emits canonical polygon features. It
+  emits every bounded face (shapely `polygonize` semantics): the hole of a holed ring comes back as
+  its own polygon. Its diagnostics classify source edges as closed-ring, open-chain, cut, dangle,
+  and unused.
+- `GPUMakeValid` applies the same pipeline independently to every input polygon feature, then keeps a
+  face only when the feature's source rings cover it an odd number of times. The fill rule is source
+  parity (even-odd), the GEOS `make_valid` linework method that shapely uses: a valid polygon with a
+  hole returns the annulus only (no second polygon filling the hole), an island inside a hole is kept
+  as its own polygon, and the doubly covered lens of mutually crossing rings is dropped. It repairs
   self-crossing and mutually crossing rings into bounded polygon faces; dimensional collapse remains
-  available through diagnostics rather than being converted to mixed geometry.
+  available through diagnostics rather than being converted to mixed geometry. Parity is probed
+  exactly at a symbolic point beside the first edge of each face shell (strictly inside the face, no
+  rounded sample point), brute force over the noded segments, one thread per face. A face whose
+  orientation cannot be certified is kept. `status.count` is the number of kept polygons.
 
 All three require an explicit `GPUTopologyPrecisionPolicy`. The current policy uses the shared exact
 orientation predicates with an uncertainty counter, float32 coordinate storage, and a caller-chosen
-Chebyshev vertex tolerance. `requiredCount` is exact when `candidateOverflow` is zero. When the
-intersection substrate is incomplete, both `candidateOverflow` and `overflow` are set and callers
-must grow `intersectionCapacity` and rerun. No CPU readback or compatibility adapter is involved.
+Chebyshev vertex tolerance. For `GPULineNoding`, `requiredCount` is exact when `candidateOverflow` is
+zero. For `GPUPolygonize` and `GPUMakeValid`, `status.requiredCount` is the unclamped ring-assembly
+requirement (every face ring, including holes), the ring capacity to allocate, not the number of
+polygons written (`count`). `candidateOverflow` is the noding flag only: when the intersection
+substrate is incomplete, both `candidateOverflow` and `overflow` are set and callers must grow
+`intersectionCapacity` and rerun; ring or segment capacity loss sets `overflow` alone. No CPU readback
+or compatibility adapter is involved.
 
 ### `GPUCellTableCompare`
+
+It compares tables keyed by cell, so it takes no `spatialContext`.
 
 `GPUCellTableCompare` outer-joins two sorted cell tables (the outputs of `GPUCellAggregation` or `GPUCellRollup`) into one union table for period-over-period or A-versus-B compare maps. Both tables must use the same grid family and resolution; the contributor cannot check that.
 
@@ -2317,7 +3504,8 @@ Inputs are packed `positions` sorted by path with `pathOffsets` (`pathCount + 1`
 
 ```ts
 graph.add(new GPULineSegmentize({
-  positions, pathOffsets, coordinateSystem: 'spherical', // or 'planar'
+  positions, pathOffsets,
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}, // omit for planar
   parameters: segmentizeParameters.importToGraph(graph),
   output: {positions: densified, pathOffsets: densifiedOffsets, count, overflow, measures}
 }));
@@ -2341,9 +3529,14 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
 
 - `GPULineSegmentize` (PostGIS `ST_Segmentize`, densify): every segment of length `L` becomes
   `clamp(ceil(L / maximumSegmentLength), 1, maximumPiecesPerSegment)` equal pieces; input vertices
-  are kept. `'spherical'` positions are longitude/latitude degrees: lengths are great-circle
-  distances times `radius` (default mean Earth radius, meters), interior points are slerped, and
-  longitudes are unwrapped along each path so it stays continuous across the antimeridian.
+  are kept. With a great-circle `spatialContext`, positions are longitude/latitude degrees: lengths
+  are great-circle distances times the context's `sphereRadius` (default mean Earth radius,
+  `GPU_EARTH_MEAN_RADIUS_METERS`; meters, or kilometers with `units: 'kilometers'`), interior points
+  are slerped, and longitudes are unwrapped along each path so it stays continuous across the
+  antimeridian. **Breaking:** the `coordinateSystem` and `radius` props of `GPULineSegmentize` and
+  `GPULineChunk` (and `radius` of `GPUGreatCircleArcs`) are replaced by `spatialContext`; planar is
+  the default. `GPUGreatCircleArcs` defaults to a great-circle longitude/latitude context and
+  throws for planar ones; `GPULineSmooth` is planar only and throws for longitude/latitude.
 - `GPUGreatCircleArcs` (turf `greatCircle`): one path of `segments + 1` vertices per
   origin/destination pair, `segments = clamp(max(ceil(distance / maximumSegmentLength),
   minimumSegments), 1, maximumSegments)`. Endpoints are exact; longitudes are unwrapped from the
@@ -2362,7 +3555,7 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
   `pathCount`/`sourcePaths` report the pieces. `'substring'` extracts `[startMeasure,
   endMeasure]` from every path (turf `lineSliceAlong`, PostGIS `ST_LineSubstring` by distance);
   measures are clamped to the path and a start past the end gives an empty path. Zero-length
-  paths are copied as one piece. Both modes support `'spherical'`.
+  paths are copied as one piece. Both modes support a great-circle `spatialContext`.
 - Everything per frame lives in the parameter buffer, so resolution, ratio, chunk length and
   ranges change with no recompile. All kernels are element-wise or sequential per path:
   deterministic, no float atomics.
@@ -2380,9 +3573,11 @@ on the Earth (turf `area`, `length`, `centroid`, `bbox`, `distance`, `bearing`, 
 graph.add(new GPUGeometryMeasures({
   positions, geometryType: 'polygons',
   ringOffsets, featureRingOffsets, // feature -> rings -> vertices
-  coordinateSystem: 'wgs84', // or 'planar', 'spherical', 'geodesic'
+  // planar (native units), great-circle (spherical), or ellipsoidal (geodesic edges by default)
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'},
   holeRule: 'winding', // or 'first-ring-exterior'
   output: {areas, lengths, centroids, bounds, vertexCounts},
+  status: {invalidCount}, // geographic polygons with a pole or half-world edge, see below
   groupIds, groupCount: 12,
   groupOutput: {areas: groupAreas, centroids: groupCentroids, featureCounts}
 }));
@@ -2402,14 +3597,33 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances,
 - Holes: `'winding'` sums signed ring areas (holes wind opposite to the exterior, RFC 7946);
   `'first-ring-exterior'` counts the first ring of each feature as exterior and the others as holes
   whatever their winding.
-- `'spherical'` areas are the Chamberlain-Duquette formula turf uses (shoelace in the Lambert
-  cylindrical equal-area projection, exact for longitude/latitude boxes; long edges are straight
-  in that projection, not geodesics); pass `radius: GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS` for turf
-  `area` parity. `'wgs84'` maps latitude to authalic latitude (exact equal-area ellipsoid mapping)
-  and measures edges with an f32 Vincenty inverse. Rings around a pole are not supported.
+- Great-circle (`metric: 'great-circle'`) areas are the Chamberlain-Duquette formula turf uses
+  (shoelace in the Lambert cylindrical equal-area projection, exact for longitude/latitude boxes;
+  long edges are straight in that projection, not geodesics); pass
+  `sphereRadius: GPU_WGS84_SEMI_MAJOR_AXIS_METERS` for turf `area` parity. Ellipsoidal with
+  `ellipsoidalEdgeModel: 'coordinate-linear'` maps latitude to authalic latitude (exact equal-area
+  ellipsoid mapping) and measures edges with an f32 Vincenty inverse.
+- **Measure model.** The instance's `measures` field (`GPUMeasureDescription`) says what the length
+  and area outputs mean: `lengthModel` (`'planar'`, `'great-circle'`, `'ellipsoidal-geodesic'`),
+  `areaModel` (`'planar'`, `'sphere-equal-area'`, `'wgs84-authalic'`, `'geodesic'`) and the length
+  and area units (planar: native; geographic: meters and square meters, or kilometers on a sphere
+  context with `units: 'kilometers'`).
+- **Antimeridian and poles (geographic polygons).** Longitude steps are wrapped per edge, so an
+  edge with a longitude difference above 180 degrees (Fiji's 179 to -179) takes the short way and
+  the ring is measured correctly. A ring whose wrapped steps sum to +-360 degrees encloses a pole,
+  and an edge whose wrapped step reaches 180 degrees (or whose raw step is a full 360) has no
+  unique interior side. Features owning such a ring report NaN `areas`, `signedAreas` and
+  `centroids` (lengths, bounds and vertex counts stay valid) and are counted in
+  `status.invalidCount`, a one-row `uint32` view cleared every encoding. Split such polygons at the
+  antimeridian, or project them to a polar frame first. The check covers the serial and cooperative
+  kernels. Line features are unaffected.
 - Groups: features are stably sorted by group ID and one workgroup per group reduces them with a
   fixed tree, so group sums are bitwise reproducible. Group centroids are area- (or length-)
-  weighted means of feature centroids.
+  weighted means of feature centroids. **Behavior change:** in geographic contexts the mean is
+  taken on 3D unit vectors (a spherical centroid), not on longitude and latitude numbers, so a
+  group straddling the antimeridian lands on the antimeridian (for example 179 and -179 give 180)
+  instead of at longitude 0. An antipodal group has no mean direction and reports NaN; a group
+  containing an invalid feature reports NaN. Planar groups are unchanged.
 - `'geodesic'` (`pyproj.Geod.geometry_area_perimeter`, geo `GeodesicArea`): lengths and perimeters are
   Vincenty geodesic lengths, as `'wgs84'`, and polygon areas follow geodesic edges on the WGS84
   ellipsoid. Edges of 20 km or more are sampled along the geodesic (spans of at most 250 km, at most 16)
@@ -2445,6 +3659,33 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances,
   WGS84 and spherical box areas within 3e-7 relative from 100 m blocks to 2,000 km boxes;
   sphere pair distances 1e-7 m at 1 m and 0.9 m at 10,000 km; destinations within 1 m, bounded by
   the f32 resolution of output latitudes (about 0.4 m).
+
+### `GEODESIC_WGSL`, `createGPULocalFrame`, and `GPULocalFrameProjection`
+
+Two ways to work on longitude/latitude data, used consistently across the package:
+
+- **Measure on the sphere.** `GEODESIC_WGSL` is the public WGSL source of the spherical functions
+  every great-circle path in this package uses; include it once in your own compute shader.
+  Positions are `vec2<f32>(longitude, latitude)` degrees and distances are in the units of the
+  `radius` argument (`GPU_EARTH_MEAN_RADIUS_METERS` for meters, the package default).
+  `geodesicHaversineDistance(a, b, radius)` is the great-circle distance;
+  `geodesicSegmentFraction(point, start, end)` and
+  `geodesicSegmentDistance(point, start, end, fraction, radius)` give the point-to-segment distance
+  for segments that are straight in longitude/latitude (the edge model of the containment tests and
+  network edges; exact to first order for kilometer-length segments, densify longer ones). Also
+  available: `geodesicHaversineTerm`, `geodesicCentralAngle`, `geodesicInitialBearingDegrees`,
+  `geodesicDestination`, `geodesicInterpolate` and `geodesicWrapLongitudeDelta`.
+- **Project first.** Planar operators throw on longitude/latitude contexts. `createGPULocalFrame({origin,
+  kind})` returns a binary64 CPU frame in meters: `'azimuthal-equidistant'` (spherical, mean radius;
+  distances and bearings from the origin exact) or `'lambert-equal-area'` (WGS84 ellipsoidal, areas
+  exact), matching PROJ `aeqd +R=6371008.8` and `laea +ellps=WGS84` to a millimeter. It offers
+  `project(lng, lat)`, `unproject(x, y)` and `projectArray(lngLats, stride)` for uploads, and a
+  `spatialContext` that carries the frame identity: contexts of frames with different origins are
+  incompatible, so data projected around different origins is not mixed. Float32 frame coordinates
+  keep about 1e-7 of the frame extent (millimeters at 10 km) instead of the 0.4 to 1 m resolution of
+  float32 degrees. `GPULocalFrameProjection` projects GPU-resident `float32x2` or binary64
+  (`uint32x4`) longitude/latitude rows into the frame without a readback (compiled adaptive patches
+  from `gpu-project`, default tolerance 1 cm, output in absolute frame meters).
 
 ### `GPULinearReferencing` and `GPULineLocate`
 
@@ -2488,9 +3729,12 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
 - `output.normalizedMeasures` (both coordinate systems) is `measures / pathLength`, 0 for zero-length
   paths and NaN when unmatched (Shapely `line_locate_point(normalized=True)`).
   `GPULineLocate({measureMode: 'fraction'})` is `line_interpolate_point(normalized=True)`.
-- `coordinateSystem: 'spherical'` on both classes: positions are longitude and latitude in degrees and
-  segments are great-circle arcs. `distances`, `measures`, `signedOffsets` and the search `radius` are
-  meters on a sphere of `sphereRadius` (default 6371008.8; `radius` already names the search radius).
+- `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` on both classes
+  (planar is the default): positions are longitude and latitude in degrees and segments are
+  great-circle arcs. `distances`, `measures`, `signedOffsets` and the search `radius` are meters on the
+  context's `sphereRadius` (default 6371008.8; `radius` already names the search radius).
+  **Breaking:** the `coordinateSystem` and `sphereRadius` props are removed in favor of
+  `spatialContext`; other contexts throw.
   The foot point is the closest point on the arc (geo `HaversineClosestPoint`), with a longitude that is
   continuous with the segment start, so it can exceed 180 across the antimeridian. `distances` is the
   cross-track distance and `measures` the along-track measure. `GPULineLocate` slerps along the arc
@@ -2501,6 +3745,8 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
   f=0)` the worst error was 1.5 m for distance, 0.8 m for measure and 1.7 m for the foot point.
 
 ### `GPULineSplit` and `GPULineMerge`
+
+Both classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first.
 
 `GPULineSplit` splits linestrings at every crossing, touch, shared vertex and overlap end (turf `lineSplit`
 against the union of the lines; verified against Shapely `unary_union`). It reuses `GPUSegmentIntersection`
@@ -2543,6 +3789,8 @@ network from the pieces.
 
 ### `GPULineClipByPolygon` and `GPUSharedPaths`
 
+Both classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first.
+
 `GPULineClipByPolygon` clips linestrings to polygons (GeoPandas `clip(lines, polygons)`, Shapely
 `intersection(line, polygon)`); `mode: 'outside'` is `difference`. It is bounded because it never computes
 a new intersection between two polygons: every output vertex is an input vertex or a crossing of one line
@@ -2565,6 +3813,8 @@ the segment directions, and chained into one polyline per (left line, right line
 coincident right segments emit duplicate runs.
 
 ### `GPULineSimplification`
+
+`spatialContext` defaults to native planar coordinates, with the tolerance in position units. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` (optional `sphereRadius`, default `GPU_EARTH_MEAN_RADIUS_METERS`) runs Douglas-Peucker (both metrics) with great-circle meters: `tolerance` and `importance` are meters, chords are straight in longitude/latitude, and the distance from a vertex to its chord is the haversine distance to the closest point of the chord (found in the local equirectangular frame of the vertex, exact to first order for chords of kilometers). The `'time-ratio'` expected position is interpolated linearly in longitude/latitude with the longitude difference wrapped. Great-circle distances use f32 transcendental functions, so the bit-exactness below holds for planar contexts only. `method: 'visvalingam'` is planar only and throws in a great-circle context (its tolerance is an area, its rounds mirror a bit-exact planar triangle area, and no spherical-excess variant exists); kilometers and other metrics throw. For Visvalingam, or to keep planar bit-exactness, project first (`createGPULocalFrame`, `GPULocalFrameProjection`).
 
 Douglas-Peucker (and approximate Visvalingam-Whyatt) simplification of many polylines or tracks, stored as rows sorted by line and
 delimited by `trackOffsets` (the `GPUTrajectoryMetrics` layout). It runs in two parts: a
@@ -2627,6 +3877,8 @@ rows get `+Infinity` (a superset). Not supported: `metric: 'time-ratio'` and top
 
 ### `GPUCoverageSimplification`
 
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). The tolerance is in position units.
+
 Gap-free simplification of a polygon coverage (Shapely `simplify_coverage`, PostGIS `ST_CoverageSimplify`).
 Every arc shared by two polygons is simplified once, so both neighbors keep the same vertices along it.
 Arcs are runs of ring edges with the same partner polygon, broken at each ring start; the lower polygon ID
@@ -2681,6 +3933,7 @@ the same edge (snapped point IDs, `(min, max)` keys). Kept edges are oriented in
 overlay: a coverage has no crossings, so the result is a subset of the input edges and is bounded by the
 input vertex count plus one closing vertex per ring, with ring and vertex capacities and an overflow flag.
 The input must be a valid coverage (check it with [`GPUCoverageValidity`](#gpucoveragevalidity)).
+Planar only: `spatialContext` defaults to native planar coordinates and `longitude-latitude` throws.
 `snapTolerance` snaps vertices and the output uses the first vertex's coordinates. Dissolve edge sets,
 area, parts and holes matched `gdf.dissolve(method='coverage')` exactly on 5 scenes and 18 labels. The
 per-ring area walk is serial per ring. The directory is `polygon-coverage-topology/` because `.gitignore`
@@ -2688,7 +3941,7 @@ ignores `coverage-*/`.
 
 ### `GPUTrajectoryMetrics`
 
-Per-track metrics for rows sorted by track and time and delimited by `trackOffsets`: planar length,
+Per-track metrics for rows sorted by track and time and delimited by `trackOffsets`: path length,
 duration, average speed, and maximum speed (via `GPUSegmentedReduction`). Stop detection finds
 maximal runs of slow steps (speed below a per-frame threshold) that last at least a per-frame
 minimum duration. It publishes a bounded stop list in row order (track, start row, end row,
@@ -2714,6 +3967,18 @@ dx)` in radians, 0 for a zero-distance step) and `stepAccelerations` (`(speed_i 
 deltaTime_i`, 0 for the first two rows of a track). The first row of a track and rows outside tracks are 0,
 so a drawn segment takes the value of its end row. `stops.drawInstanceCount` (one `uint32` row) receives
 the clamped stop count, for example an indirect draw record's instance count.
+
+`spatialContext` is optional. Omitted (or planar) means Euclidean distances in position units and headings
+`atan2(dy, dx)`. With `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` (optional
+`sphereRadius`, default `GPU_EARTH_MEAN_RADIUS_METERS`) the positions are `(longitude, latitude)` degrees,
+step distances and `trackLengths` are great-circle meters, speeds and `stopSpeedThreshold` are meters per
+timestamp unit, and `stepHeadings` are initial bearings in the planar heading convention, radians counterclockwise from
+east in `(-pi, pi]` (`pi / 2 - bearing`, where `GPUGeodesicPairs` reports the bearing in degrees clockwise
+from north), so headings mean the same in every context. Longitude/latitude without the `great-circle` metric, kilometer units and the ellipsoidal metric throw.
+Stop `centroids` are arithmetic means of coordinates, so a dwell straddling the antimeridian or a pole has a
+meaningless centroid. Positions are float32 degrees (about 1 m resolution at mid-latitudes); for
+sub-meter work project to a local frame instead. The `spatialContext` prop used to be required and
+planar-only.
 
 ### `GPUTrajectoryPlayhead` and `GPUTrajectoryResample`
 
@@ -2747,12 +4012,23 @@ playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: 125.
 - Duplicate timestamps: the last row of a run of equal times wins ("latest row wins"), so the
   interpolation interval always has a positive duration and nothing divides by zero.
 - Heading is `atan2(dy, dx)` (0 along +x, counterclockwise); compass bearing is `π/2 - heading`.
-  Zero-length segments give 0. Positions are planar; project upstream (no antimeridian handling).
+  Zero-length segments give 0. Positions are planar unless `spatialContext` is great-circle.
+- Great-circle (`spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`, optional
+  `sphereRadius`, default `GPU_EARTH_MEAN_RADIUS_METERS`): positions are `(longitude, latitude)` degrees and
+  each segment is interpolated by spherical linear interpolation instead of a linear blend of degrees. The
+  heading is the segment's initial bearing in the planar convention (radians counterclockwise from east,
+  `pi / 2 - bearing`, in `(-pi, pi]`), and `speeds` are
+  great-circle meters per timestamp unit. Interpolated longitudes are continuous with the segment's start
+  row, so a segment that crosses the antimeridian yields longitudes beyond ±180 (the end row is `b` shifted
+  by a multiple of 360 degrees) rather than jumping; wrap downstream if needed. Fractions 0 and 1 return
+  the start and end row exactly (up to that shift). Other contexts throw. Ellipsoidal interpolation is a
+  non-goal.
 - Time: comparisons are exact in both modes (Int64 words compare integer words, then the f32
   playhead fraction); differences are subtracted exactly and then rounded to f32.
 
 `GPUTrajectoryResample` resamples every track to `sampleCount` samples, uniformly in time
-(`spacing: 'time'`, default) or along the planar path (`'arc-length'`), into a dense
+(`spacing: 'time'`, default) or along the path (`'arc-length'`: planar length, or great-circle meters with a
+great-circle `spatialContext`, which also slerps the samples as the playhead does), into a dense
 `[trackCount × sampleCount]` `float32x2` buffer (row `track * sampleCount + k`), with optional
 elevations and sample times relative to the track start. It is the fixed-length input for
 trajectory similarity, k-means, and fixed-vertex trails.
@@ -2782,6 +4058,11 @@ same instant for every track and the sample is NaN outside a track's own time sp
 Entry and exit events of trajectories against polygon zones, with interpolated times, bounded events per
 track, and dwell time and visit count per `(track, zone)`.
 
+`spatialContext` is planar only (the default). Segments and zone edges are straight lines in the coordinate
+plane, which is not the geometry of degrees (a great-circle segment is not straight in longitude/latitude, and
+edges cross the antimeridian), so any longitude-latitude context throws; project positions and zone edges first
+with `createGPULocalFrame`.
+
 - Inputs: `positions` (`float32x2`), `timestamps` (`float32` relative, or `uint32x2` Int64 words),
   `trackOffsets` (`trackCount + 1`), the zone boundary edges `edgeStarts`, `edgeEnds` (`float32x2`) and
   `edgeZones` (the zone index; the rings and holes of one zone share it), `zoneCount`, `candidateCapacity`
@@ -2791,11 +4072,17 @@ track, and dwell time and visit count per `(track, zone)`.
   timestamp, f32) and `eventRows` (the segment end row); optional dense `[trackCount * zoneCount]`
   `dwellTimes` and `visitCounts`; and `trackEventCounts` (unclamped).
 - Events are sorted by `(track, time, edge row)`. Each segment queries a `GPUBVH` of edge bounds and
-  runs an exact segment-edge test with half-open parameters; the time is
+  runs an exact crossing test (`orientSign`, never f32 parameters); the time is
   `t[r - 1] + s * (t[r] - t[r - 1])`. Enter versus exit comes from parity, not ring orientation: the first
   sample of every track probes with a +x ray (even-odd), so a track that starts inside a zone works, and
   that first interval counts as a visit with dwell from `t = 0`. Open visits close at the track's last
   sample. Dwell and visits use every event, even when the event list is truncated.
+- Boundary rule: every track sample `(x, y)` is read as `(x - e^2, y - e)` for an infinitesimal `e > 0`
+  (the track moves, the polygon does not), for the initial ray and the segment crossings alike, so the
+  parity of a track's crossings always equals the change of its inside flag. A track that only touches a
+  polygon apex or an edge from outside has no event; one that runs through a vertex into the interior has
+  one; a sample on an edge is just below it (inside when the interior lies below) and on a vertical edge
+  just west of it. Event times along a collinear overlap use the f32 projection.
 - `events.output.overflow` is 1 when the candidate scratch overflowed, any track exceeded
   `maxEventsPerTrack`, or more events were kept than `ids.length`.
 
@@ -2850,6 +4137,20 @@ Pairs of tracks within `distance` in the same time bucket (MobilityDB `tdwithin`
   `pairs.candidateOverflow` reports hit-scratch or grid incompleteness.
 - It uses a 3D `GPUGridIndex` (x, y and the bucket as an exact third axis) with a 3x3 scan per sample,
   three stable sorts of the hits and `GPUCompaction` for the runs.
+- Great-circle: with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
+  (optional `sphereRadius`) the samples are `(longitude, latitude)` degrees, `distance` and the reported
+  `minimumDistances` are great-circle meters, and `cellSize` and `bounds` stay in degrees. The test is the
+  great-circle distance of the two samples of one bucket, so there is no tangent-plane approximation. Pruning
+  is conservative: two points within angle `theta` differ by at most `theta` in latitude and by at most
+  `asin(sin(theta) / cos(L))` in longitude, where `L` is the largest `|latitude|` of `bounds`. The lattice
+  therefore searches up to `maximumDistance = radius * asin(sin(cellSize) * cos(L))` (times `1 - 1e-6`),
+  exposed as `encounters.maximumDistance`, and `distance` is clamped to it. Verified against pyproj: walking
+  every azimuth at that distance from latitude ±L stays within one cell. Pick latitude bounds that exclude the
+  polar caps (the reach shrinks to 0 as `L` approaches 90). Bounds with longitudes exactly `[-180, 180]` wrap
+  the lattice across the antimeridian (sample longitudes are folded into that range first and `cellSize` must
+  be below 120 degrees); other longitude bounds do not wrap, and `cellSize` must be below 90. Latitudes must
+  lie in `(-90, 90)`. Planar contexts keep `maximumDistance = cellSize`. `addClockEncounters` forwards
+  `spatialContext` to the resample and the encounters.
 - It is discrete in time: the samples must share a clock (column `k` is one instant for all tracks), and
   encounters between buckets are missed. With `GPUTrajectoryResample` that holds only when the tracks cover
   the same window.
@@ -2867,6 +4168,18 @@ feeds `GPUTrajectoryEncounters`, so tracks need not cover the same window. Optio
 `samples` outputs expose the clock and the resampled tracks (`AddClockEncountersProps`, `ClockEncounters`).
 
 ### `GPUTrackSimilarity`
+
+`spatialContext` defaults to native planar (Euclidean distances in the f32 input coordinates; the planar kernels
+compile no geodesic code). `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` makes Hausdorff,
+Frechet and `maxDistance` great-circle distances in meters on a sphere of `sphereRadius` (default
+`GPU_EARTH_MEAN_RADIUS_METERS`); kilometers and other metrics throw. Vertices are `[longitude, latitude]` degrees
+and segments are straight in longitude/latitude, as everywhere in this package. The vertex-to-segment distance is
+the haversine distance to the closest point of the segment, with that point found in the local equirectangular
+frame of the vertex (`geodesicSegmentFraction`, `geodesicSegmentDistance`): exact to first order for segments of
+kilometers, so `densify` long segments. Densified points interpolate longitude and latitude linearly with the
+longitude difference wrapped to +-180, so tracks may cross the antimeridian. Against numpy haversine with a
+20000-part segment densification (cross-checked with `pyproj.Geod(a=6371008.8, f=0)`) the f32 results are
+expected within 2e-3 relative; the spec covers a mid-latitude, a 66 degree and an antimeridian pair.
 
 Hausdorff (symmetric, vertex-to-segment as GEOS computes it, unbounded length) and discrete Frechet
 (vertex-based) distances for given pairs of tracks or rings (`hausdorff_distance(a, b, densify)`,
@@ -2902,7 +4215,9 @@ All of these are contributors: construct, then `graph.add`. Per-frame values go 
 
 Buffer-like outline geometry for drawing (turf `buffer` and `lineOffset`, PostGIS `ST_Buffer` as a
 picture). Props: `positions`, `geometryType` (`'points'`, `'lines'` or `'rings'`), `pathOffsets` (lines and
-rings), `coordinateSystem` (`'planar'` or `'spherical'`), `radius`, `joinSegments` (default 16),
+rings), `spatialContext` (omitted is planar; `{coordinateSpace: 'longitude-latitude', metric:
+'great-circle'}` gives meters on a sphere of `sphereRadius`, default the mean Earth radius; this replaces
+the removed `coordinateSystem` and `radius` props, and other contexts throw), `joinSegments` (default 16),
 `parameters` (`getGPUOutlineGeometryParameterValues({distance})`) and `output.positions`. It writes a
 non-indexed triangle list with exactly `positions.length * getGPUOutlineGeometryVerticesPerInput(joinSegments)`
 vertices: per input vertex a round-join disc fan plus a quad to the next vertex, with unused triangles
@@ -2922,7 +4237,8 @@ The output has `getGPUOffsetCurveRowsPerVertex` rows per vertex (`2q + 1` round,
 limit are per-frame. It is render-grade: GEOS loop removal is not done, so tight inside corners can
 self-cross. GEOS clamps `quad_segs` to at least 8, so round-join parity is pinned at 8 and 16; GEOS
 leaves the corner at a ring's first vertex open on the outside and this closes it. Points were within 2e-4
-of Shapely 2.1.2. Planar only, rings are implicit-closed.
+of Shapely 2.1.2. Planar only (`spatialContext` defaults to planar; a longitude/latitude context throws,
+so project first with `createGPULocalFrame` and `GPULocalFrameProjection`), rings are implicit-closed.
 
 `GPUVertexSnap` is the vertex-to-vertex subset of `shapely.snap`: each vertex with a reference vertex
 strictly closer than the per-frame `tolerance` moves to the nearest one (lowest row on ties) and the layout
@@ -2932,6 +4248,8 @@ It matched Shapely on 60 random lines.
 
 ### `GPUPolygonOverlay` and `GPUBufferSurface`
 
+Both classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws. `GPUBufferSurface` distance is in position units, so project first (`createGPULocalFrame`, `GPULocalFrameProjection`) and buffer in the frame's meters; buffering degrees gives an ellipse on the ground.
+
 `GPUPolygonOverlay` produces polygon geometry for `intersection`, `union`, `difference`,
 `symmetric-difference`, and unary `dissolve`. It combines and nodes both operand boundaries, tests
 the Boolean result on both sides of every atomic segment, keeps only edges where membership changes,
@@ -2939,11 +4257,28 @@ orients them with result interior on the left, and assembles those edges into sh
 result is compact polygon geometry rather than a face mask. `output.boundary` retains the operand and
 source-feature provenance of every selected atomic edge.
 
+Operand membership follows `fillRule`. The default `'even-odd'` reads the first ring of a polygon as
+its shell and any other ring as a hole (crossing parity per ring). `'positive'`, `'negative'` and
+`'nonzero'` instead sum the exact winding numbers of all rings of one polygon (counter-clockwise
++1, clockwise -1, same half-open crossing rule as the parity test) and keep the points where the
+sum is greater than, less than, or different from zero, so regions a raw boundary covers twice stay
+inside; a point is in the operand when it is inside any polygon. `output.status.requiredCount` is
+the unclamped ring (shell plus hole) requirement of the assembly, for sizing the output ring
+capacity; it is no longer a copy of `count`.
+
 `GPUBufferSurface` is the topology-producing counterpart of `GPUOutlineGeometry` and
-`GPUOffsetCurve`. Polygon rings are normalized before signed offsetting. Lines receive independent
-left and right offsets plus `round`, `flat`, or `square` caps. Both paths finish with the same noding,
-dissolve, and repair assembly as overlay, so raw-offset loops and overlaps are converted into polygon
-surfaces. Joins are `round`, `mitre`, or `bevel`; round resolution is controlled by `quadSegments`.
+`GPUOffsetCurve`. Consecutive duplicate vertices are dropped from lines and rings first, and a
+polygon ring's closing vertex is dropped when it repeats the first (GeoJSON and GeoArrow rings are
+closed, the offset curve needs open rings). Polygon rings are normalized (counter-clockwise shells,
+clockwise holes) before signed offsetting. Lines receive independent left and right offsets plus
+`round`, `flat`, or `square` caps. Both paths finish with the same noding and dissolve as overlay,
+using a winding fill rule (`'positive'` for polygons, `'negative'` for the clockwise line outline)
+so regions the raw offset covers twice (hairpins closer than twice the distance, self-crossing
+lines, slots narrower than twice the distance) stay inside, and the inverted loops of a negative
+buffer through a thin neck are discarded, as in `shapely.buffer`. Checked on hairpin, figure-eight,
+slot and thin-neck shapes with mitre joins. Known limitation: a polygon hole that a positive buffer
+collapses (narrower than twice the distance) is not removed but survives as a smaller reflected hole;
+a union of simple pieces would fix it and is deferred. Joins are `round`, `mitre`, or `bevel`; round resolution is controlled by `quadSegments`.
 Positive polygon distances grow shells and shrink holes, negative distances do the reverse, and
 non-positive line distances produce an empty surface.
 
@@ -2954,6 +4289,8 @@ polygon capacity. Capacity, optional outputs, join/cap style, and topology are c
 and mitre limit remain GPU parameters and can change per encoding.
 
 ### `GPUAffineTransform`, `GPUGeometryOrientation`, and `GPUGeometryCleanup`
+
+All three classes are planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; `GPUAffineTransform` forwards the resolved context (and its frame) to its measures. `GPUGeometryOrientation` `'orient-polygons'` judges ring winding at the lexicographically smallest vertex with exact orientation, so sliver rings are not misjudged by f32 shoelace cancellation (a bow-tie ring is judged by that vertex, like `shapely.is_ccw`, not by its signed area).
 
 Geometry edits that keep the GeoArrow layout. `GPUAffineTransform` is `shapely.affinity` (`affine_transform`,
 `translate`, `scale`, `rotate`, `skew`): either one per-frame matrix packed by
@@ -2982,6 +4319,9 @@ cover dynamic snapping, ties, duplicate preservation and capacity overflow. `nor
 
 ### `GPUMinimumBounds`
 
+Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
+`createGPULocalFrame` and `GPULocalFrameProjection`.
+
 Per feature (from `positions`, `ringOffsets` and optional `featureRingOffsets`) or per `uint32` label group
 (`labels` and `groupCount`): the minimum-area rotated rectangle (`rectangleCorners`, four counter-clockwise
 corners, and `rectangleSizes` = width, height, angle, area), the minimum bounding circle (`circles` = cx, cy,
@@ -2996,6 +4336,8 @@ not vertex order: rectangle area within 2e-4 relative, radius 1e-4, diameter 1e-
 group, and near-collinear circumcenters fall back to the diametral circle.
 
 ### `GPUPolygonTriangulation`
+
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). Orientation signs are exact.
 
 Earcut on the GPU (`earcut`, deck.gl `PolygonLayer` tessellation, geo `TriangulateEarcut`, Sedona
 `ST_TriangulatePolygon` as earcut, not constrained Delaunay). Props: `polygons: {positions, polygonOffsets,
@@ -3022,14 +4364,30 @@ no triangles, cocircular ties follow stable input order, and every output triang
 `invalidCount`; `duplicateCount` reports discarded site rows. Use
 `getDelaunayMaximumTriangleCount(pointCount)` for the general-position upper bound.
 
+The starting super triangle is symbolic: its three vertices are points at infinity (towards +x, +y and
+-x, with infinitesimally tilted directions and hierarchically growing radii), never finite coordinates.
+Every orientation or incircle test that touches one reduces to exact comparisons of real coordinates:
+a triangle with one infinite vertex has the half-plane left of its real edge as circumcircle (a site on
+the edge's line is inside only when strictly between the endpoints), and a triangle with two or three
+infinite vertices is decided by one exact orientation sign. Real hull triangles are therefore never
+lost to a finite super vertex, so the result is the complete Delaunay triangulation of the convex hull,
+`2n - 2 - h` triangles for `n` distinct sites and `h` hull-boundary points. An earlier finite
+supertriangle (corners at 32 extents) dropped hull triangles, for example 2 of about 1200 for 600
+uniform points and 51 of 185 for a 1e-2-thick band.
+
 `GPUVoronoiDiagram` consumes those triangle rows and their GPU-resident count without readback.
 Internal edges connect adjacent circumcenters; hull bisectors extend to a dynamic one-row
 `clipBounds` view. Its compact `float32x4` segments retain the two source site IDs and canonical
 bounded status. Both operations are deterministic for a fixed row order and use finite planar f32
-coordinates; they do not claim constrained Delaunay, exact incircle arithmetic, polygonal Voronoi
-cells, or concave construction.
+coordinates; they do not claim constrained Delaunay, polygonal Voronoi cells, or concave construction.
+Orientation and incircle tests are adaptive exact on the f32 coordinates. Both are planar only: a
+longitude/latitude `spatialContext` throws at construction (project first with `createGPULocalFrame`
+and `GPULocalFrameProjection`), because a lng/lat Delaunay is not a spherical one.
 
 ### `GPULabelPoint`
+
+Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
+`createGPULocalFrame` and `GPULocalFrameProjection`.
 
 A label point inside each polygon, the pole of inaccessibility (turf `pointOnFeature`, Shapely
 `representative_point`, polylabel). Props: `positions`, `ringOffsets`, optional `featureRingOffsets`,
@@ -3052,12 +4410,16 @@ Shape indices per polygon (momepy compactness, QGIS shape metrics, esda `shape`)
 `elongation = 1 - sqrt(lambda2 / lambda1)`. `orientation` is the major axis in radians in `(-pi/2, pi/2]`.
 `convexity = area / hull area` uses a private gift-wrapping hull (`O(n * h)` per feature). `clockwise` is
 read from the first ring (y up), and `sliver` is set when Polsby-Popper is below the per-frame threshold.
-Coordinates are planar and degenerate features give NaN.
+Coordinates are planar and degenerate features give NaN. A longitude/latitude `spatialContext` throws at
+construction; project first with `createGPULocalFrame` and `GPULocalFrameProjection`. The resolved context,
+including its `frame` identity, reaches the internal `GPUGeometryMeasures`. The gift-wrapping hull picks
+each next vertex with the exact orientation predicate (`orientSign`) on the original positions.
 
 ### `GPULineDensity`
 
 Line length per grid cell and its density (QGIS line density). Props: `positions`, `pathOffsets`,
-`columns`, `rows`, `coordinateSystem`, `radius`, `maximumRecords`, `parameters`
+`columns`, `rows`, `spatialContext` (planar/native, or longitude-latitude with the great-circle metric),
+`maximumRecords`, `parameters`
 (`getGPULineDensityParameterValues({minX, minY, cellWidth, cellHeight})`) and
 `output: {lengths, densities?, overflow, totalRecords?}`. Segments are clipped to the grid and walked cell
 by cell, and the lengths are summed per cell by a stable sort and a fixed-order reduction, so results are
@@ -3067,18 +4429,27 @@ last segments. A segment on a cell boundary goes to the upper or right cell, and
 special (pass ring edges as lines). Length per polygon is
 [`GPULineLengthPerPolygon`](#gpulinelengthperpolygon).
 
+**Semantics.** `densities` is the line length inside the cell divided by the cell area, a box kernel
+with the grid cell as its support. It is not the ArcGIS or QGIS circular-search-radius line density,
+which spreads each line over a disk and is smooth; those need a smoothing step. For a smooth field,
+rasterize `lengths` (or `densities`) and convolve it with `GPUConvolution` (with the same cell-index and
+zero-boundary caveats as [`GPUPointDensity`](#gpupointdensity) smoothing), or sample line points with
+`GPURandomPointsOnLine` and use [`GPUKernelDensity`](#gpukerneldensity).
+
 ### `GPULineLengthPerPolygon`
 
 Total line length inside each polygon (QGIS "Sum line lengths", PostGIS
 `sum(ST_Length(ST_Intersection(line, polygon)))`). Props: `positions`, `pathOffsets`, `polygons` (the layout of
-`GPUSpatialPredicateJoin`), optional `pathWeights`, `coordinateSystem`, `radius`, `maximumCandidatePairs`
+`GPUSpatialPredicateJoin`), optional `pathWeights`, `spatialContext` (omitted: planar/native; or
+longitude-latitude with the great-circle metric, replacing the former `coordinateSystem` and `radius`),
+`maximumCandidatePairs`
 (default `max(1024, 8 * positions.length)`), `maximumCrossings` (default 64) and
 `output: {lengths, weightedLengths?, segmentCounts?, overflow}`. Every vertex row that is not the last of its path
 is a segment. Segments meet polygons through `GPUSpatialJoinCandidates`, are cut at every ring-edge crossing, and
 each piece whose midpoint is inside (even-odd over all rings, so holes and multipolygons work) is kept. Lengths
 are summed per polygon by a stable sort and a fixed-order segmented sum, so results are bitwise reproducible
 (segment counts use integer atomics). `weightedLengths` is `sum(length * pathWeight)` (weights are per path, not
-per segment) and `segmentCounts` counts segments with positive length inside. `'spherical'` clips straight in
+per segment) and `segmentCounts` counts segments with positive length inside. A longitude-latitude context clips straight in
 longitude/latitude, as `GPULineDensity` does, and measures each piece as the great-circle distance between its
 endpoints. `overflow` is 1 when the candidate, BVH or crossing capacity was exceeded, and lengths can then be low.
 
@@ -3100,7 +4471,8 @@ Grid geometry (turf `squareGrid`, `hexGrid`, `triangleGrid`, `pointGrid`, QGIS c
 `getGPUGridCellCount` and `getGPUGridVerticesPerCell`; size the unique square or hex vertex lattice
 with `getGPUGridCornerCount`. Hexagons are pointy-top by default (`cellWidth` is flat to flat), triangles come in
 alternating strips with half-cell row shifts (not turf's exact layout), and the point grid sits at cell
-centers. The cell counts are compile-time.
+centers. The cell counts are compile-time. The lattice is planar: `spatialContext` accepts only a planar
+context (the default) and throws for longitude/latitude, so project first or use `GPUPointToCell`.
 
 - `hexOrientation: 'flat'` (GeoPandas `make_grid(flat_topped=True)`): `cellWidth` is still the
   flat-to-flat distance (GeoPandas `cell_size`), columns step `1.5 * R`, rows step `cellWidth`, odd
@@ -3116,13 +4488,16 @@ centers. The cell counts are compile-time.
   It emits every shared and boundary vertex exactly once using an integer lattice, without sorting or
   floating-point hashing. `output.cornerIntersects` independently tests those points against `extent`,
   including polygon and hole boundaries. Triangle and point grids do not expose corner output.
+- Cell polygons compute every vertex from the same integer-lattice expression as `output.corners`, so
+  neighbouring cells share bit-identical vertices (no 1-ulp cracks or overlaps along seams).
 
 ### `GPUShapeGenerator`
 
 Circles, sectors and ellipses around per-feature centers and radii (turf `circle`, `sector`, `ellipse`).
 Props include `shape` (`GPUShapeType`), `centers`, `radii`, optional sector `bearings` and ellipse
-`rotations`, `coordinateSystem` (`'planar'`, or `'geodesic'` with spherical destination and radii in
-meters; `GPUShapeCoordinateSystem`), compile-time `maximumSegments` and per-frame `parameters`
+`rotations`, `spatialContext` (planar by default, or `{coordinateSpace: 'longitude-latitude', metric:
+'great-circle'}` with spherical destination and radii in meters on the mean Earth radius; this replaces
+the removed `coordinateSystem` prop and `GPU_SHAPE_GENERATOR_EARTH_RADIUS`), compile-time `maximumSegments` and per-frame `parameters`
 (`getGPUShapeGeneratorParameterValues`). The segment count and the radius scale are per-frame, up to
 `maximumSegments`; size outputs with `getGPUShapeVertexCount` and `getGPUShapeMinimumSegments`. The output
 is packed rings plus GeoArrow-style `offsets` (feature `f` starts at `f * V`) and an optional
@@ -3134,6 +4509,9 @@ additional compute pass. Coincident sector bearings keep their center spokes. Ge
 round to about 0.5 m.
 
 ### `GPUHilbertKeys`
+
+`spatialContext` accepts planar coordinates or longitude/latitude with metric `'none'` (plain
+coordinates for ordering; no antimeridian wrap). Metric contexts throw.
 
 2D Hilbert curve index (order 1 to 16, `uint32`) of points, or of feature box centers (`minima` and
 `maxima`), within per-frame `bounds` `[minX, minY, maxX, maxY]` (or the GPU-reduced bounds of the valid
@@ -3149,6 +4527,8 @@ road-like data. The joins' `spatialSort` now uses it by default (see
 [Spatial sort default](#spatial-sort-default)).
 
 ### `GPURectangleClip`
+
+Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`).
 
 Clips lines or polygons to a rectangle (turf `bboxClip`, Shapely `clip_by_rect`, PostGIS `ST_ClipByBox2D`).
 Props: `positions`, `geometryType` (`'lines'` or `'polygons'`), `pathOffsets`, `parameters`
@@ -3171,8 +4551,14 @@ viewportBuffer.write(getGPURectangleClipParameterValues({minX, minY, maxX, maxY}
 
 Ordinary least squares with an intercept and a full regression report, in one prebuilt graph:
 coefficients, standard errors, t statistics, R2, adjusted R2, sigma squared, log-likelihood, AIC,
-BIC, optional per-row residual and fitted columns, the Jarque-Bera normality test and the
-Breusch-Pagan (Koenker) heteroskedasticity test.
+BIC, optional per-row residual and fitted columns, the Jarque-Bera normality test, the
+Koenker-Bassett and Breusch-Pagan heteroskedasticity tests, and collinearity and precision
+diagnostics (Belsley condition number, correlation condition number, maximum VIF, precision
+warning). `getGPUOrdinaryLeastSquaresModelResult(readback, {predictorNames})` turns the read-back
+arrays into the shared `GPURegressionModelResult` (coefficient table with Student t p-values on
+`n - p` degrees of freedom, `sigmaSquared = RSS / (n - p)` and `sigmaSquaredMaximumLikelihood = RSS / n`,
+R2, log-likelihood, AIC and BIC equal to spreg, conditioning, and the tests `jarqueBera`,
+`breuschPagan`, `koenkerBassett`).
 
 ```ts
 const graph = new GPUCommandGraph(device);
@@ -3182,7 +4568,7 @@ graph.add(
     response, // GraphDataView<'float32'>
     mask, // optional GraphDataView<'uint32'>; zero excludes the row
     parameters: ridgeBuffer.importToGraph(graph), // optional: [ridgeLambda]
-    predictorCount: 3, // compile-time, 1 to 15; the intercept is added internally
+    predictorCount: 3, // compile-time, 1 to 15 (16-wide Cholesky); the intercept is added internally
     output: {coefficients, standardErrors, tStatistics, summary, status, residuals, fitted}
   })
 );
@@ -3190,13 +4576,31 @@ graph.add(
 
 - Rows with any non-finite predictor or response value, or a zero mask, are excluded.
 - `coefficients`, `standardErrors`, `tStatistics`: `predictorCount + 1` floats, intercept first.
-- `summary` (16 floats), indexed by `GPU_ORDINARY_LEAST_SQUARES_SUMMARY_*`: row count, R2, adjusted
-  R2, sigma squared, log-likelihood, AIC, BIC, Jarque-Bera, its p-value, Breusch-Pagan, its p-value,
-  RSS, TSS, skewness, kurtosis, ridge lambda.
+- `summary` (22 floats, `GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH`), indexed by
+  `GPU_ORDINARY_LEAST_SQUARES_SUMMARY_*`: row count, R2, adjusted R2, sigma squared, log-likelihood,
+  AIC, BIC, Jarque-Bera, its p-value, Koenker-Bassett, its p-value, RSS, TSS, skewness, kurtosis,
+  ridge lambda, Breusch-Pagan, its p-value, `CONDITION_NUMBER`, `CORRELATION_CONDITION_NUMBER`,
+  `MAXIMUM_VARIANCE_INFLATION_FACTOR`, `PRECISION_WARNING`. The slots 9 and 10 used to be called
+  `BREUSCH_PAGAN`; they were always the Koenker-Bassett statistic, and `BREUSCH_PAGAN` now names the
+  classic test in slots 16 and 17.
+- The predictor count is capped at 15 (16 coefficients with the intercept) by the 16-wide
+  function-local Cholesky factorization of the solve; a larger design needs a tiled solver.
 - `status` (uint32): 0 ok, 1 singular or ill-conditioned (a predictor within `1 - 1e-6` of the span
   of the others, or constant), 2 too few rows (`n <= predictorCount + 1`). A failed fit leaves every
   statistic and per-row column NaN (the row count is still written).
 - `residuals` and `fitted` are optional per-row columns (NaN for excluded rows).
+- Conditioning never changes `status`: a warning is not a failure and the fit is still reported.
+  `CONDITION_NUMBER` is the Belsley number (spreg `OLS.mulColli`): `sqrt(lambdaMax / lambdaMin)` of the
+  raw `[1, X]` Gram matrix scaled to unit diagonal (rebuilt from the centered moments and means; values
+  above about 30 mean harmful collinearity; ridge is not included). `CORRELATION_CONDITION_NUMBER` is
+  `lambdaMax / lambdaMin` of the predictor correlation matrix the float32 Cholesky factors (with the
+  ridge penalty), and `MAXIMUM_VARIANCE_INFLATION_FACTOR` the largest diagonal of its inverse. Float32
+  coefficients lose about `correlationConditionNumber * 6e-8` relative accuracy, so
+  `PRECISION_WARNING` is 1 when the correlation condition number exceeds 1e4
+  (`GPU_REGRESSION_PRECISION_CONDITION_LIMIT`, about three of seven digits lost). Eigenvalues come from a
+  cyclic Jacobi routine in float32, so the condition numbers are indicative for very ill-conditioned
+  designs (the GPU specs allow 2e-2 to 1e-1 relative against the float64 oracle and spreg). They match spreg `mulColli` and `diagnostics.vif` (max
+  over the predictor columns, computed on the centered design) in the float64 oracle.
 - The optional ridge penalty `lambda >= 0` is added to the centered normal matrix of the
   predictors (never the intercept) and changes between frames without rebuilding the graph. Ridge
   standard errors are `sigma2 (X'X + lambda I)^-1` and ignore the shrinkage bias.
@@ -3210,17 +4614,25 @@ given `tileRowCount` (default `max(64, ceil(rows / 4096))`).
 
 AIC and BIC count `predictorCount + 1` parameters (GeoDa convention); the log-likelihood is
 Gaussian with `sigma2 = RSS / n`. Jarque-Bera is `n/6 (S^2 + (K - 3)^2 / 4)` with p-value
-`exp(-JB / 2)`. Breusch-Pagan is the Koenker studentized statistic `n R2` of the regression of `e^2`
-on the predictors, with a chi-square p-value on `predictorCount` degrees of freedom computed by
-the regularized upper incomplete gamma with a fixed iteration cap. `getChiSquareSurvival(value,
-degreesOfFreedom)` is the float64 CPU mirror.
+`exp(-JB / 2)`. Both heteroskedasticity tests use the auxiliary regression of `e^2` on `[1, X]` with
+`R2_aux`, and a chi-square p-value on `predictorCount` degrees of freedom computed by the regularized
+upper incomplete gamma with a fixed iteration cap. Koenker-Bassett (studentized, valid without
+normality) is `n R2_aux`; the classic Breusch-Pagan (assumes normal errors) is
+`0.5 R2_aux (sum e^4 / s2^2 - n) = 0.5 R2_aux n (kurtosis - 1)` with `s2 = RSS / n`, which is spreg
+`breusch_pagan` with `z = [1, X]`. Both match spreg 1.9.1 (`breusch_pagan`, `koenker_bassett` with
+`z = reg.x`; spreg's default `z` is the squared design). With skewed errors they differ several
+times over, and Jarque-Bera rejecting normality is the cue to read Koenker-Bassett instead.
+`getChiSquareSurvival(value, degreesOfFreedom)` is the float64 CPU mirror, and
+`getStudentTTwoSidedPValue` / `getStudentTSurvival` (float64 regularized incomplete beta, pinned to
+`scipy.stats.t.sf`) back the model-result p-values.
 
 ### `GPUGeographicallyWeightedRegression`
 
 Geographically weighted regression with AICc bandwidth selection (Fotheringham, Brunsdon and
 Charlton 2002; mgwr, ArcGIS GWR). For every included row `i` it fits a weighted least squares
 `y ~ 1 + x` over all included rows `j` with weights `K(d_ij / h)` and writes local coefficients,
-local R-squared, fitted values, residuals and the hat-matrix diagonal.
+local standard errors, t values and a significance mask, local R-squared, fitted values, residuals and
+the hat-matrix diagonal.
 
 ```ts
 const parameters = new GPUParameterBuffer(device, {
@@ -3230,13 +4642,13 @@ const parameters = new GPUParameterBuffer(device, {
 });
 graph.add(
   new GPUGeographicallyWeightedRegression({
-    positions, // GraphDataView<'float32x2'>, planar
+    positions, // GraphDataView<'float32x2'>, planar (or lon/lat degrees with spatialContext)
     predictors, // row-major row * predictorCount + column
     predictorCount: 2,
     response,
     parameters: parameterBuffer.importToGraph(graph),
     maximumBandwidthCount: 16,
-    output: {coefficients, selectedBandwidth, summary}
+    output: {coefficients, standardErrors, tValues, significant, selectedBandwidth, summary}
   })
 );
 parameters.write(
@@ -3253,16 +4665,76 @@ parameters.write(
   counted as in mgwr; `k` in `[2, maximumNeighborCount]`, at most 128).
 - Bandwidth ladder: up to `maximumBandwidthCount` (at most 32) candidates in the parameter buffer.
   Each candidate's AICc, `n ln(RSS/n) + n ln(2 pi) + n (n + tr S) / (n - 2 - tr S)`, is evaluated on
-  the GPU, the lowest wins (ties to the lowest index) and the outputs are written at that
-  bandwidth. A ladder of one value is a fixed bandwidth. Candidates with any singular location,
-  invalid `k` or `n - 2 - tr S <= 0` score NaN.
+  the GPU and the outputs are written at the selected bandwidth. A ladder of one value is a fixed
+  bandwidth. Candidates with a non-positive bandwidth, invalid `k` or `n - 2 - tr S <= 0` score NaN.
+- Singular locations (changed): a location whose local system is singular (for example a rare dummy
+  that is constant in its neighbourhood) makes only that row NaN (coefficients, standard errors,
+  fitted value, residual, hat; `localStatus` 1). It no longer voids the whole candidate. A candidate's
+  `n`, RSS, `tr S` and AICc are taken over its non-singular rows, and `bandwidthSingularRowCounts`
+  reports the count per candidate. Selection: among the candidates with the fewest singular rows the
+  lowest AICc wins (ties to the lowest index), so a bandwidth with singular rows is chosen only when
+  every valid candidate has some. This is a deliberate deviation from mgwr, which raises on a singular
+  local system.
+- Refinement (new, default on; `refinement: false` keeps the fixed ladder, a number from 1 to 4 sets
+  the pass count, default 2): after the caller ladder, a GPU kernel writes a new ladder that zooms
+  around the best candidate between its nearest evaluated neighbours (it never extrapolates beyond the
+  caller's range), the same kernels evaluate it, and the overall best wins. Adaptive ladders hold
+  integers: when the integers inside the bracket number at most `maximumBandwidthCount` all of them
+  are tried, so the result is the exact integer optimum of the bracket; a wider bracket is sampled at
+  equal spacing and the next pass narrows it. Fixed ladders are `maximumBandwidthCount` equally spaced
+  distances per pass. Each pass costs up to one more ladder evaluation, so the default is about three
+  times the work of the bare ladder; shorten the ladder rather than turning refinement off when cost
+  matters. `selectedBandwidth` is `[candidate index, value]`; indices from `maximumBandwidthCount` up
+  are refined candidates, and `candidateTable` lists every candidate of every pass. On the
+  144-row test scene (adaptive bisquare) mgwr's golden section with its default bounds `[40 + 2 p, n]`
+  stops at `k = 47`, while its exhaustive integer AICc optimum, which the refinement finds from a
+  five-value ladder, is `k = 26` (and mgwr's golden section with bounds widened to 6..144 agrees).
+  The AICc curve in `k` is not unimodal there (local minimum near 30), which is why a bracket that
+  fits the ladder is enumerated rather than searched.
+- Local inference (new): `standardErrors`, `tValues` and `significant` (all laid out like
+  `coefficients`) are mgwr `bse`, `tvalues` and `filter_tvals != 0`. `bse = sqrt(diag(C C') sigma2)`
+  with `C C' = (X'WX)^-1 X'W^2 X (X'WX)^-1` (one more weighted Gram matrix in the same neighbourhood
+  pass) and `sigma2 = RSS / (n - tr S)` (mgwr `sigma2_v1`). The summary carries `ENP = tr S`,
+  `SIGMA_SQUARED`, `LOG_LIKELIHOOD`, the Da Silva-Fotheringham adjusted alpha `alpha * k / tr S`
+  (`ADJUSTED_ALPHA`, `k` design columns, `alpha` 0.05 unless the per-frame `significanceLevel` says
+  otherwise) and the critical value `t.ppf(1 - adjusted / 2, n - 1)` (`CRITICAL_T`). The Student t
+  quantile is inverted on the GPU (continued-fraction incomplete beta with a bisection; the float64
+  CPU mirror `getStudentTCriticalValue` is pinned to `scipy.stats.t.ppf` to 1e-9 and the GPU summary is
+  checked against mgwr), because the mask needs it there.
+  `significant` is 1 where `|t| > CRITICAL_T`. The bandwidth is selected on the observed data and the
+  inference is conditional on it, as in mgwr. Pinned to mgwr 2.2.1 (fixed and adaptive, planar and
+  spherical); adaptive fits agree to about 5e-4 because mgwr scales the k-th neighbour distance by
+  1.0000001 and this contributor by 1.00001.
+- `getGPUGeographicallyWeightedRegressionModelResult({summary, selectedBandwidth})` returns the shared
+  `GPURegressionModelResult` (`kind: 'geographically-weighted-regression'`, empty `coefficients`,
+  `parameterCount = tr S`, `rowCount = n`, `sigmaSquared = RSS / (n - tr S)`, `logLikelihood`,
+  `akaikeInformationCriterion` `= -2 llf + 2 (tr S + 1)` and `correctedAkaikeInformationCriterion`
+  (mgwr `llf`, `aic`, `aicc`), `rSquared`) plus `effectiveParameterCount`, `singularRowCount`,
+  `includedRowCount`, `adjustedAlpha`, `criticalT` and `selectedBandwidth`.
+- `spatialContext` (new): omitted is planar. `{coordinateSpace: 'longitude-latitude', metric:
+  'great-circle', units: 'meters'}` makes `positions` `(longitude, latitude)` degrees and every
+  distance (kernels, fixed bandwidths, the adaptive k-th neighbour) a haversine distance on a sphere of
+  `sphereRadius` (default the mean Earth radius 6,371,008.8 m); bandwidths are then metres. Rows with a
+  latitude outside [-90, 90] are excluded. The grid index is planar-only and is not built for a
+  great-circle context, so every location scans every included row and the 65,536-row scan limit
+  applies; the cell walk is not made exact for longitude wrap-around. mgwr `spherical=True` uses a
+  6371.0 km radius and kilometres, so pass `sphereRadius: 6371000` and metres to match it.
+- Predictors: 1 to 11 (12 design columns; it was 7). No kernel binds more than eight storage buffers,
+  because the per-row results (including standard errors) share one row-state buffer; the limit is
+  per-thread private memory (`2 P^2 + 6 P` floats in the fit). The 11-predictor shader has not been run
+  on every adapter: lower `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT` if one
+  rejects it.
 - Outputs: `coefficients` (`row * (predictorCount + 1) + column`, column 0 intercept), optional
-  `localR2`, `fitted`, `residuals`, `hatDiagonal`, `localStatus` (0 ok, 1 singular, 2 excluded),
-  `bandwidthScores`, `selectedBandwidth` (`[index, value]`), `localConditionNumber` and `summary` (RSS, trace of S, AICc,
-  global R-squared, n, has-valid-candidate flag).
+  `standardErrors`, `tValues`, `significant`, `localR2`, `fitted`, `residuals`, `hatDiagonal`,
+  `localStatus` (0 ok, 1 singular, 2 excluded), `bandwidthScores` (AICc of the caller ladder),
+  `bandwidthSingularRowCounts`, `candidateTable`, `selectedBandwidth` (`[index, value]`),
+  `localConditionNumber` and `summary` (`GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY`: RSS, `tr S`,
+  AICc, global R-squared, n, has-valid-candidate flag, singular rows, sigma2, adjusted alpha, critical
+  t, log-likelihood, included rows; 12 floats, it was 6).
 - `localConditionNumber` is the mgwr `local_collinearity` local condition number: the singular-value
   ratio of the kernel-weighted, column-normalized design (above 30 flags collinearity). It is pinned to
-  mgwr 2.2.1 (bisquare and gaussian, fixed and adaptive) and is f32-accurate.
+  mgwr 2.2.1 (bisquare and gaussian, fixed and adaptive) and is f32-accurate. Its eigenvalues come
+  from the shared `getSymmetricEigenvalueRangeWGSL` Jacobi helper of the regression solvers.
 - Rows with a zero mask or a non-finite position, predictor or response are excluded as
   calibration locations and as neighbours.
 - Numerics: the design is centred on the focal row and Jacobi-equilibrated before the shared
@@ -3279,14 +4751,18 @@ parameters.write(
 ### `GPUGeographicallyWeightedRegressionNonstationarityTest`
 
 Monte Carlo test of coefficient non-stationarity (mgwr `spatial_variability`, GWR4). It permutes the
-observations among the locations with the Philox/Feistel bijection of the permutation contributors, refits
+observations among the locations with the Philox-keyed swap-or-not shuffle of `GPUGlobalPermutationTest`
+(the earlier Feistel bijection was non-uniform on small row counts), refits
 at the selected bandwidth and compares the standard deviation of each local coefficient with the observed
 one. The pseudo p-value is `(g + 1) / (P + 1)`. Outputs are `table` (six floats per coefficient), `summary`
 (`GPU_GWR_NONSTATIONARITY_SUMMARY`, `GPU_GWR_NONSTATIONARITY_TABLE`, `GPU_GWR_NONSTATIONARITY_TABLE_STRIDE`)
 and an optional `standardDeviations` (the reference distribution). The per-permutation standard deviations
 match mgwr 2.2.1 to 3e-15 (CPU oracle) and 2e-3 (GPU). The bandwidth stays at the value the regression
-selected (mgwr re-selects it for every permutation). The cost is `O(P * n^2 * p^2)` with a full scan (no
-grid index).
+selected (mgwr re-selects it for every permutation), and that value was selected on the observed data, so
+the test is conditional on it, as mgwr's is. `selectedBandwidth` is read from slot 1 (the selected value),
+so it also works when the regression refined its bandwidth beyond the caller ladder. It is planar-only
+(a great-circle `spatialContext` throws, with a hint to project first) and takes 1 to 7 predictors even
+though the regression accepts 11. The cost is `O(P * n^2 * p^2)` with a full scan (no grid index).
 
 ### `GPUSpatialRegressionDiagnostics`
 
@@ -3296,15 +4772,27 @@ robust LM-error, LM-SARMA, and Moran's I of the residuals (mean, variance, z, tw
 - Props: `weights` (a square `GPUSpatialWeights`; any sparsity pattern is accepted, directed kNN included,
   and row-standardized weights work; `W'` is formed with `GPUSpatialWeightsTranspose`),
   `predictors` (row-major `n x k`, no intercept), `response`, `residuals` (OLS residuals with intercept,
-  for example `GPUOrdinaryLeastSquares` `output.residuals`; finite on every row), `predictorCount` (1 to 15),
-  optional `tileRowCount` and `output: {tests, summary, status}`.
+  for example `GPUOrdinaryLeastSquares` `output.residuals`), `predictorCount` (1 to 15), optional `mask`,
+  `restandardizeRows`, `tileRowCount` and `output: {tests, summary, status}`.
+- Masked and missing fits: a row is analyzed when its `mask` entry is not zero and its response, residual
+  and predictors are finite; pass the OLS `mask` and the NaN residuals of excluded rows do the rest. Excluded
+  rows are removed from the whole analysis: `n`, `S0`, `T`, every Gram matrix and every `W`-product run over
+  the fitted rows, and links from fitted rows to excluded rows are dropped. That is `libpysal.weights.w_subset`
+  on the fitted ids. With `restandardizeRows: true` each fitted row's remaining weights are rescaled to sum
+  to 1 (`w_subset` then `transform = 'r'`; use it after masking row-standardized weights); the default
+  keeps the surviving weights as given. Rows left with no fitted neighbor keep an all-zero row. Results
+  match spreg 1.9.1 `OLS(..., spat_diag=True, moran=True)` on the fitted subset in both modes.
 - `tests` (18 f32): six rows of `[statistic, df, p]`: LM_LAG, LM_ERROR, ROBUST_LM_LAG, ROBUST_LM_ERROR
   (df 1), LM_SARMA (df 2) and MORAN_RESIDUALS (the statistic is z, the df slot is 0, p is two-sided). The
   row index constants are `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_*`.
-- `summary` (12 f32): `n`, `sigma2 = e'e / n`, `T = tr(W'W + WW)`, `J`, `S0`, Moran `I`, `E[I]`, `Var[I]`,
-  `z`, `p`, `e'We` and `e'Wy` (`..._SUMMARY_*`).
-- `status`: 0 ok, 1 singular, 2 too few rows, 3 degenerate weights, 4 non-finite input or zero residuals.
-  Every output is NaN unless the status is 0. A masked OLS fit (NaN residuals) reports status 4.
+- `summary` (13 f32): `n` (analyzed rows), `sigma2 = e'e / n`, `T = tr(W'W + WW)`, `J`, `S0`, Moran `I`,
+  `E[I]`, `Var[I]`, `z`, `p`, `e'We`, `e'Wy` and `EXCLUDED_ROW_COUNT` (`..._SUMMARY_*`). The excluded
+  count is a summary slot, not a status port, because `status` is this operator's single result code; it is
+  also written when the status is not 0. Before this change a masked fit reported status 4 for the whole
+  result.
+- `status`: 0 ok, 1 singular, 2 too few analyzed rows (`n <= predictorCount + 1`, also a failed OLS fit),
+  3 degenerate weights, 4 non-finite moments or exactly zero residuals. Every output is NaN unless the
+  status is 0. Conditioning slots are not reported here (see the OLS fit).
 
 Sums are fixed-order tile sums with a Kahan merge on centered columns, and the solve is a unit-diagonal
 scaled Cholesky, so there are no atomics and no readback. Moran's variance and `J` are f32 with
@@ -3316,60 +4804,315 @@ row's own neighbors only, which biased the Moran variance for asymmetric pattern
 ```ts
 graph.add(new GPUOrdinaryLeastSquares({predictors, response, predictorCount: 2, output: {..., residuals}}));
 graph.add(new GPUSpatialRegressionDiagnostics({
-  weights, predictors, response, residuals, predictorCount: 2, output: {tests, summary, status}
+  weights, predictors, response, residuals, mask, restandardizeRows: true, predictorCount: 2,
+  output: {tests, summary, status}
 }));
 ```
 
 ### `GPUSpatialTwoStageLeastSquares`
 
 The spatial lag model `y = rho W y + X b + e` by two-stage least squares (spreg `GM_Lag` with `w_lags = 1`),
-with instruments `[1, X, WX]`. Props: `weights`, `predictors`, `response`, `predictorCount` (1 to 8),
-optional `tileRowCount`, `instrumentOrder` and `output: {table, summary, status, residuals?}`.
+with instruments `[1, X, WX]`. Props: `weights`, `predictors`, `response`, `predictorCount` (1 to 8 with
+`instrumentOrder: 1`, 1 to 5 with `instrumentOrder: 2`: the constant is centered out, so the solve factors `(order + 1) k`
+instrument columns in a 16-wide Cholesky; the order-2 cap was previously 8 in the check but failed when building the
+graph), optional `tileRowCount`, `instrumentOrder` and `output: {table, summary, status, residuals?}`. No kernel
+binds more than 8 storage buffers.
 `instrumentOrder: 2` (compile-time, default 1) adds `W^2 X` (spreg `w_lags=2`, instruments `[1, X, WX,
 W^2 X]`), evaluated per row from the two-hop neighborhood with no extra buffers; it is pinned to spreg
 1.9.1 `GM_Lag(w_lags=2)` on three scenes.
 
 - `table`: `(k + 2) x 4` f32 rows of `[coefficient, se, z, two-sided normal p]` in spreg order: the
   intercept, then `X`, then `rho` last.
-- `summary` (7): `n`, `sigma2 = u'u / n` (spreg `sig2n`, the `GM_Lag` default), `u'u`, the pseudo R2
-  (squared correlation of `y` and `y - u`), Moran's `I` of `u`, the Anselin-Kelejian statistic and its
-  p-value. The statistic follows spreg `akTest(case='gen')`; any sparsity pattern is accepted (`W'u` comes from
-  `GPUSpatialWeightsTranspose`), and it matches spreg 1.9.1 on directed kNN scenes.
+- `summary` (16, `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_*`): `n`, `sigma2 = u'u / n` (spreg `sig2n`, the `GM_Lag`
+  default), `u'u`, the pseudo R2 (squared correlation of `y` and `y - u`), Moran's `I` of `u`, the
+  Anselin-Kelejian statistic and its p-value (slots 0 to 6). The statistic follows spreg `akTest(case='gen')`; any
+  sparsity pattern is accepted (`W'u` comes from `GPUSpatialWeightsTranspose`), and it matches spreg 1.9.1 on
+  directed kNN scenes. Diagnostics (slots 7 to 15; none changes `status`):
+  - Conditioning of the second stage: the Belsley condition number of the raw `[1, PZ]` Gram matrix (`Z = [X, Wy]`,
+    `P` the projection on the instruments), the correlation condition number of `Z'PZ` and its largest variance
+    inflation factor, the correlation condition number of the instrument system `H'H` (the instrument-projection
+    system), and a precision warning (1.0) when either correlation condition number exceeds 1e4 (float32
+    normal equations may have lost three of seven digits). Computed by the Jacobi eigenvalue routine of
+    `spatial-regression-solve`.
+  - First-stage strength: the classical joint F statistic and the partial R2 of the excluded instruments (`WX`, and
+    `W^2 X` for order 2) in the regression of `Wy` on `[1, X, WX, ...]`; `F = ((ESS_full - ESS_restricted) / (m - k)) /
+    (RSS_full / (n - m - 1))`, partial R2 `= (ESS_full - ESS_restricted) / (TSS - ESS_restricted)`. The usual
+    weak-instrument rule of thumb is `F < 10`. Both are the non-robust (homoskedastic) forms and are pinned to a numpy
+    computation of the same definitions.
+  - Admissibility of `rho`: `||W||_inf` (largest absolute row sum) and a flag that is 1.0 when `|rho| ||W||_inf >= 1`,
+    that is when `I - rho W` is not guaranteed invertible and the reduced form and impacts are unreliable
+    (`(-1, 1)` for a row-standardized `W`; sufficient, not necessary, for other `W`). It is a flag, not a failure:
+    2SLS is unconstrained, the estimate is still reported, and the reader decides what a boundary or explosive `rho`
+    means for the model.
 - `status`: 0 ok, 1 singular or ill-conditioned (including non-finite inputs), 2 too few rows, 3 non-finite
   sums.
 - `residuals`: the structural residuals `u = y - Z delta`, which can be passed to later diagnostics.
 
 The coefficients, standard errors, `sigma2`, pseudo R2 and Anselin-Kelejian statistic match spreg on a
-144-row scene within 5e-3 (coefficients) to 2e-2 (z, AK). Robust and HAC variants,
-`GM_Combo` and maximum-likelihood models are not provided. For the spatial error model see
+144-row scene within 5e-3 (coefficients) to 2e-2 (z, AK). The standard errors are the classical
+`sigma2 (Z'PZ)^-1`: heteroskedasticity-robust and HAC standard errors are not provided (spreg `robust`),
+nor are `GM_Combo` and maximum-likelihood models. For the spatial error model see
 [`GPUSpatialErrorGM`](#gpuspatialerrorgm).
+
+`getGPUSpatialTwoStageLeastSquaresModelResult(readback, {predictorNames?})` turns the read-back `table`, `summary`
+and `status` into the shared `GPURegressionModelResult`: rows `CONSTANT`, the predictors and `W_y` (role
+`'spatial-lag'`), z statistics with float64 normal p-values, `sigmaSquaredMaximumLikelihood = u'u / n` (the scale
+of the standard errors, `standardErrorSigmaSquared: 'maximum-likelihood'`), `pseudoRSquared`, no likelihood,
+`tests.anselinKelejian` and conditioning (the correlation condition number is the larger of the second-stage
+and instrument values, so `illConditioned` equals the precision warning).
+`getGPUSpatialTwoStageLeastSquaresDiagnostics(summary)` returns the first-stage F, partial R2, `||W||_inf` and the
+`rho` admissibility flag.
+
+### `GPUSpatialWeightsTraces`
+
+Powers of a spatial weights matrix: `powerTraces[q-1] = tr((W/s)^q)` and `powerSums[q-1] = 1' (W/s)^q 1` with `s = ||W||_inf` (largest absolute row sum, written to `output.infinityNorm`; series then run in `rho * s`, which keeps the float32 powers bounded for raw weights) for
+`q = 1..Q`. These are the inputs of the spatial-lag log-determinant `ln|I - rho W| = -sum_q rho^q tr(W^q) / q`
+and of the impact multipliers (see `GPUSpatialLagImpacts`). Props: `weights` (any square CSR: asymmetric,
+not standardized, self-loops allowed), `maximumPower` (`Q`, compile-time, 1 to 256), optional `mode`,
+`probeCount`, `seed`, `includeGramTraces`, `tileRowCount`, `probeBatchSize` and
+`output: {powerTraces, powerSums, gramTraces?, approximation?, infinityNorm?}` (float32 views of at least `Q`, `Q`, 4 values
+and a uint32 scalar).
+
+- `mode: 'exact'` runs one unit-vector chain `v_q = W v_{q-1}` per row and sums the diagonal entries
+  `v_q[i]`: exact up to float32 rounding. It is the default for at most 4096 rows
+  (`GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT`): the work is `rows * Q * nnz`, which at 4096 rows,
+  `Q = 256` and 8 neighbors is about 3e10 multiply-adds in about 520 dispatches, while 16384 rows (the limit
+  of an explicit `'exact'`) already costs 8200 dispatches and 5e11 multiply-adds.
+- `mode: 'stochastic'` is Hutchinson estimation with `probeCount` (default 64) Rademacher probes from Philox
+  (counter `(probe, row / 4, 0, 'PROB')`, key `(seed, 'TRAC')`, so a seeded run is reproducible and
+  `getSpatialWeightsTracesOnCPU` replays the same probes). The standard error of `tr(A)` is at most
+  `sqrt(2 / probeCount) ||A||_F`. `approximation` is 1 (it is 0 in exact mode).
+- `powerSums` is always exact: one chain from the ones vector.
+- `gramTraces` (when `includeGramTraces`, 4 values) are `[tr(W'W), tr(W'W W), tr((W'W)^2), sum_i c_i^2]` with
+  `c_i = sum_l w_li^2`: the moments of the Kelejian-Prucha and Anselin-Kelejian variance formulas. `tr(W'W)` and
+  `sum c_i^2` are exact sums (the column sums use `GPUSpatialWeightsTranspose`); the other two are
+  `E[(Wz)'(WWz)]` and `E[||W'(Wz)||^2]` over the same probes, exact in exact mode.
+
+Probes run in batches whose two ping-pong vectors stay within 64 MiB. Every dot product is a fixed-order tile
+sum with a Kahan merge, so there are no float atomics and results are bit-identical across batch sizes and
+runs. A `W` with spectral radius above 1 grows as `radius^q` and can overflow float32 for large `Q`.
+
+CPU float64 mirrors for specs and later consumers: `getSpatialWeightsTracesOnCPU(weights, Q, options?)`,
+`getSpatialLogDeterminantFromTraces(rho, powerTraces)`, `getSpatialMultiplierTraceFromTraces(rho, powerTraces,
+n)` (`= tr((I - rho W)^-1) = n + sum_q rho^q tr(W^q)`) and the truncation bounds
+`getSpatialLogDeterminantTruncationBound` and `getSpatialMultiplierTruncationBound`. WGSL generators
+`getSpatialLogDeterminantWGSL(Q, bindingName)`, `getSpatialMultiplierTraceWGSL(Q, bindingName, n)` and
+`getSpatialMultiplierTotalWGSL(Q, bindingName, n)` define `getSpatialLogDeterminant(rho)` and friends by
+Horner's rule over an f32 storage binding. The series require `|rho| * spectralRadius(W) < 1` (`|rho| < 1` for
+a row-standardized `W`) and are truncated: the log-determinant error is below
+`n |rho|^(Q+1) / ((Q+1)(1 - |rho|))` and the multiplier error below `n |rho|^(Q+1) / (1 - |rho|)`, so choose `Q`
+from `|rho|^Q` (`Q = 30` is accurate to 1e-9 at `|rho| = 0.5` but needs about 300 terms at `|rho| = 0.9`).
+
+The traces match `np.trace(np.linalg.matrix_power(W, q))` for `q = 1..12` on a row-standardized lattice, a
+binary lattice and two directed kNN scenes (numpy 2.5.4), and the log-determinant series matches
+`np.linalg.slogdet` within the stated bound.
+
+```ts
+graph.add(new GPUSpatialWeightsTraces({
+  weights, maximumPower: 30, output: {powerTraces, powerSums, infinityNorm}   // exact for <= 4096 rows
+}));
+```
+
+### `GPUSpatialLagImpacts`
+
+Average direct, indirect and total impacts of the predictors of a spatial lag model (LeSage and Pace 2009):
+`direct = b_k tr((I - rho W)^-1) / n`, `total = b_k 1'(I - rho W)^-1 1 / n`, `indirect = total - direct`, from the
+truncated series `n + sum_{q<=Q} rho^q tr(W^q)` and `n + sum_{q<=Q} rho^q 1'W^q 1` evaluated in one kernel. Props:
+`coefficients` and `coefficientStride` (the `table` of `GPUSpatialTwoStageLeastSquares` with stride 4, or any
+fit with a coefficient per row), `rhoIndex` (`predictorCount + 1` for the 2SLS table), optional
+`firstPredictorIndex` (default 1, so the intercept is excluded), `predictorCount`, `rowCount`, `maximumPower`,
+`traces: {powerTraces, powerSums, infinityNorm}` (the outputs of `GPUSpatialWeightsTraces`), optional `status` and `rhoBound`
+(default 1), and `output: {impacts}`: `predictorCount * 3` f32 values `[direct, indirect, total]` per
+predictor.
+
+Impacts are NaN when the fit `status` is nonzero, `rho` is not finite or `|rho| >= rhoBound`. For a `W` that
+is not row-standardized set `rhoBound = 1 / spectralRadius`, so the series cannot diverge silently.
+
+The direct impact matches spreg 1.9.1 `GM_Lag(..., spat_impacts='full')`, and so does the total for a
+row-standardized `W` (spreg uses `1 / (1 - rho)`, which is exact only there; this node uses the exact
+`1'W^q1` sums, so it is also right for other weights). spreg's `'simple'` method fixes the direct multiplier at 1
+and is not reproduced; its `'power'` method stops after the first term below tolerance, which is wrong on
+bipartite lattices where odd traces vanish. Standard errors of the impacts (simulation of `(rho, b)` from the
+coefficient covariance) are not provided: the 2SLS contributor does not output the covariance matrix.
+
+```ts
+graph.add(new GPUSpatialTwoStageLeastSquares({..., output: {table, summary, status}}));
+graph.add(new GPUSpatialWeightsTraces({weights, maximumPower: 30, output: {powerTraces, powerSums, infinityNorm}}));
+graph.add(new GPUSpatialLagImpacts({
+  coefficients: table, coefficientStride: 4, rhoIndex: 3, predictorCount: 2,
+  rowCount, maximumPower: 30, traces: {powerTraces, powerSums, infinityNorm}, status, output: {impacts}
+}));
+```
 
 ### `GPUSpatialErrorGM`
 
-The spatial error model `y = X b + u`, `u = lambda W u + e` by generalized moments (spreg 1.9.1 `GM_Error`,
-Kelejian and Prucha 1998 and 1999, homoskedastic). Props: `weights` (any square CSR; no symmetry or
-standardization needed), `predictors`, `response`, `predictorCount` (1 to 8), optional `tileRowCount` and
+The spatial error model `y = X b + u`, `u = lambda W u + e` by generalized moments. Props: `weights` (any square
+CSR; no symmetry or standardization needed), `predictors`, `response`, `predictorCount` (1 to 15, the OLS limit and
+the 16-wide Cholesky; no kernel binds more than 8 storage buffers, so the previous cap of 8 was not needed),
+`estimator`, optional `tileRowCount`, `traceMode`, `traceProbeCount`, `traceSeed` and
 `output: {table, summary, status, residuals?}`.
 
-- Steps: OLS of `y` on `[1, X]` gives `u`; the moments of `u`, `Wu` and `WWu` give `lambda` (bounded to
-  `[-0.99, 0.99]`, `sigma2 >= 0`, spreg's `optim_moments` bounds); then OLS of `y - lambda W y` on the
-  filtered `[1, X]` (the constant is filtered too, as `get_spFilter` does) gives the coefficients.
+**Default change.** `estimator` is `'homoskedastic'` by default (spreg 1.9.1 `GM_Error_Hom`, `A1 = 'hom_sc'`,
+one iteration: Drukker, Egger and Prucha 2013, Anselin 2011), which gives `lambda` a standard error, z and p-value.
+The previous behavior is `estimator: 'kelejian-prucha'` (spreg `GM_Error`, Kelejian and Prucha 1998 and 1999), whose
+`lambda` row keeps NaN for se, z and p; in both cases the standard errors of the betas condition on the
+estimated `lambda`.
+
+- Steps (both): OLS of `y` on `[1, X]` gives `u`; moments of `u` give `lambda`, minimized globally on a 1024-interval
+  grid with bisection of every bracketed minimum (spreg runs a local L-BFGS-B from zero; the two agree whenever the
+  objective has a single basin); OLS of `y - lambda W y` on the filtered `[1, X]` (the constant is filtered too, as
+  `get_spFilter` does) gives the coefficients.
+- `lambda` bound: `0.99 / ||W||_inf` with `||W||_inf` the largest absolute row sum, computed on the GPU. It equals
+  spreg's fixed 0.99 for a row-standardized `W` and keeps `I - lambda W` invertible for any `W`; a fixed 0.99
+  admitted explosive `lambda` for raw weights. A solution on the bound is flagged
+  (`..._SUMMARY_LAMBDA_AT_BOUND`) and `..._SUMMARY_LAMBDA_BOUND` reports the bound.
+- `homoskedastic` replicates spreg step for step: (a) `lambda1` minimizes the unweighted
+  `|G [l, l^2]' - g|^2` of the moments `u'A1u`, `u'A2u` with `A1 = (W'W - (t/n) I) / (1 + (t/n)^2)`, `t = tr(W'W)`,
+  `A2 = (W + W') / 2`; (b) the FGLS betas at `lambda1` are the reported betas and give `u1 = y - X b1`; (c) the
+  moments are recomputed on `u1` and `psi`, the variance of the moments (from `sigma2`, `mu3`, `mu4` of
+  `u1 - lambda1 W u1` and the traces `tr W`, `tr W^2`, `tr W'W`, `tr W'WW`, `tr (W'W)^2`, `sum_i c_i^2` of
+  [`GPUSpatialWeightsTraces`](#gpuspatialweightstraces)), weights the second minimization
+  `(G p - g)' psi^-1 (G p - g)` giving `lambda`; (d) `Var(b) = sigma2 (Xs'Xs)^-1` with `Xs` and `u_s` filtered at
+  `lambda` (`sigma2 = u_s'u_s / n`) and `Var(lambda) = (j' psi^-1 j)^-1 / n`, `j = G [1, 2 lambda]'`. The
+  closed forms replace spreg's `n x n` `A1`, `A2` and are verified against spreg's own `psi`, `G`, `lambda` and
+  standard errors (the betas-`lambda` covariance of spreg is not formed; it changes no reported number).
+  Pinned to spreg on a row-standardized lattice, an asymmetric kNN scene and a non-row-standardized (binary) lattice.
+- Traces are exact up to 4096 rows and Hutchinson estimates above (`traceMode` overrides). With stochastic traces
+  the standard error of `lambda` is approximate and `..._SUMMARY_APPROXIMATION` is 1.0 (betas, `lambda` and the
+  betas' standard errors still use the exact moment sums).
 - `table`: `(k + 2) x 4` f32 rows of `[coefficient, se, z, two-sided normal p]`: the intercept, `X`, then
-  `lambda` last. The `lambda` row has NaN for se, z and p because `GM_Error` estimates no variance for it.
-- `summary` (6, `GPU_SPATIAL_ERROR_GM_SUMMARY_*`): `n`, `lambda`, `sigma2 = e'e / n` (spreg `sig2n`), pseudo R2,
-  the residual sum of squares and the moment objective at the solution.
-- `status`: 0 ok, 1 singular (OLS or filtered fit), 2 too few rows (`n <= k + 2`), 3 non-finite.
+  `lambda` last.
+- `summary` (13, `GPU_SPATIAL_ERROR_GM_SUMMARY_*`): `n`, `lambda`, `sigma2 = e'e / n` (spreg `sig2n`), pseudo R2,
+  the residual sum of squares `u'u` and the moment objective at the solution, then conditioning of the final
+  filtered regression (Belsley condition number of the raw filtered `[1, X]`, correlation condition number of the
+  factored Gram matrix, largest predictor variance inflation factor, and a precision warning above a correlation
+  condition number of 1e4 that never changes `status`), the `lambda` bound, the approximation flag and the
+  at-bound flag.
+- `status`: 0 ok, 1 singular (OLS or filtered fit), 2 too few rows (`n <= k + 2`), 3 non-finite (including `W`
+  without links).
 - `residuals`: `u = y - X b`.
+
+`getGPUSpatialErrorGMModelResult(readback, {predictorNames?})` turns the read-back `table`, `summary` and `status`
+into the shared `GPURegressionModelResult`: rows `CONSTANT`, the predictors and `lambda` (role `'spatial-error'`),
+z statistics with float64 normal p-values, `sigmaSquaredMaximumLikelihood = e'e / n` (and
+`residualSumOfSquares = n sigma2` of the filtered residuals, the scale of the standard errors), `pseudoRSquared`,
+no likelihood and the conditioning above.
 
 Accumulations use the fixed-order tile and Kahan scheme of `GPUOrdinaryLeastSquares`, so results are
 deterministic. The spec matches spreg on a 10x10 lattice and an asymmetric kNN scene (`k = 4`, 80 rows):
-`lambda` and the coefficients within 5e-3, standard errors within 1e-2 and z within 2e-2 (relative).
-Deviation: spreg runs a local L-BFGS-B from `lambda = 0`; here one kernel scans the objective on a fixed grid
-and bisects every bracketed minimum, returning the global minimum. The two agree whenever the objective has a
-single basin. The `GM_Error_Het` and `GM_Error_Hom` variants are not provided.
+`lambda` and the coefficients within 5e-3, standard errors within 1e-2 and z within 2e-2 (relative), for both
+estimators. The `GM_Error_Het` variant and the Kelejian-Prucha weighted estimator are not provided.
 
 ```ts
 graph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCount: 2, output: {table, summary, status}}));
+```
+
+### `GPUSpatialLagMaximumLikelihood`
+
+Maximum-likelihood estimator of the spatial lag model `y = rho W y + X b + e` (spreg 1.9.1 `ML_Lag`, `method='full'`),
+with the exact log-determinant replaced by a truncated trace series. Nothing is read back. Props: `weights` (any
+square CSR), `predictors`, `response`, `predictorCount` (1 to 14), `maximumPower` (series length `Q`, 2 to 256,
+default 128), `traceMode`, `traceProbeCount`, `traceSeed`, optional `tileRowCount` and
+`output: {table, summary, status, converged?, residuals?, powerTraces?, powerSums?, infinityNorm?}`. Provide `powerTraces`,
+`powerSums` and `infinityNorm` together to share the traces with a downstream [`GPUSpatialLagImpacts`](#gpuspatiallagimpacts).
+
+- Steps: the OLS residuals `e0`, `e1` of `y` and `W y` on `[1, X]` (two `GPUOrdinaryLeastSquares` compositions) make
+  the concentrated likelihood `-n/2 ln(s2(rho)) + ln|I - rho W|`, `s2 = (e0 - rho e1)'(e0 - rho e1) / n`, depend on
+  three sums. The log-determinant is `-sum_{q<=Q} rho^q tr(W^q) / q` from
+  [`GPUSpatialWeightsTraces`](#gpuspatialweightstraces) (exact traces up to 4096 rows, Hutchinson above).
+  `rho` is the global maximum on `[-B, B]`: one kernel evaluates the analytic derivative on 1025 grid points,
+  bisects (32 steps) every positive-to-non-positive sign change on the derivative, and keeps the best candidate
+  (an end point counts when the derivative points outward). It is deterministic and has no iteration budget.
+  `b = b0 - rho b1`, `s2 = u'u / n`.
+- Variance: spreg's information matrix of `(b, rho, s2)` with `tr1 = tr(W A)` and `tr2 = tr((W A)^2)` as series in
+  `rho` of the power traces, and `tr3 = tr((W A)' W A)`, `A = (I - rho W)^-1`, from a second probe pass at the
+  estimated `rho` (Horner `u <- z + rho W u` per probe, exact unit probes up to 4096 rows, Rademacher above; the
+  probes of `GPUSpatialWeightsTraces`). The `s2` row is eliminated by its Schur complement, the matrix is built on
+  centered predictors, unit-scaled and factored with the shared Cholesky, and the intercept variance is mapped back
+  to the uncentered model. A positive definite failure leaves the standard errors NaN
+  (`..._SUMMARY_VARIANCE_DEFINED` 0) without changing `status`. The coefficient block equals spreg's `vm`.
+- Search interval and truncation. `B = min(0.99, seriesLimit) / ||W||_inf` with `||W||_inf` the largest absolute row
+  sum computed on the GPU (0.99 for a row-standardized `W`; keeps `I - rho W` invertible for any `W`, whereas spreg's
+  fixed `(-1, 1)` admits explosive `rho` for raw weights). The series omits a tail below
+  `n s^(Q+1) / ((Q+1) (1 - s))`, `s = |rho| ||W||_inf` (worst case, `|tr(W^q)| <= n s^q`;
+  `getSpatialLogDeterminantTruncationBound`), and omitting it biases the likelihood toward large positive `rho`, so
+  the interval also stops at the `seriesLimit` where the worst-case tail reaches `1e-5 n`
+  (`getSpatialMaximumLikelihoodSeriesLimit`: about 0.93 for `Q = 128`, 0.96 for `Q = 256`). Beyond it the fit is a
+  boundary solution (`..._SUMMARY_AT_BOUNDARY`, `..._SERIES_LIMITED`, `converged` 0); raise `maximumPower` when
+  `rho` is near the bound. The default `Q = 128` keeps the worst-case truncation below `1e-7 n` log-likelihood units
+  at `|rho| <= 0.9` (below `1e-6 |LL|`) at the cost of about `Q (1 + probe batches)` dispatches; the probe pass costs
+  `rows x Q x nnz` multiply-adds in exact mode. `..._SUMMARY_TRUNCATION_BOUND` reports the remainder at the estimate.
+- Approximation. Above 4096 rows the traces and the `tr3` pass are Hutchinson estimates (`..._SUMMARY_APPROXIMATION`
+  1.0): `rho` itself then carries stochastic error (about 1e-3 with 256 probes on a 144-row lattice), unlike
+  `GPUSpatialErrorGM` where only the standard error of `lambda` is approximate.
+- `table`: `(k + 2) x 4` f32 rows of `[coefficient, se, z, two-sided normal p]`: the intercept, `X`, then `rho` last
+  (spreg `W_y`). It is the layout `GPUSpatialLagImpacts` reads (`coefficientStride: 4`, `rhoIndex: predictorCount + 1`).
+- `summary` (22, `GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_*`): `n`, `rho`, `sigma2 = u'u / n`, full log-likelihood
+  `-n/2 ln s2 + ln|I - rho W| - n/2 (ln 2 pi + 1)` (spreg `logll`), AIC and Schwarz with spreg's `k = predictorCount + 2`
+  (`rho` counted), `pr2` (squared correlation of `y` and `y - u`), `pr2_e` (of `y` and `(I - rho W)^-1 X b`), `u'u`,
+  conditioning of the design (Belsley number, correlation condition number, largest VIF, precision warning above
+  1e4; never changes `status`), the bound, the approximation, converged, at-boundary and series-limited flags, the
+  truncation bound, variance-defined, the number of local maxima found on the grid (more than 1 is multimodal) and
+  `ln|I - rho W|`.
+- `status`: 0 ok, 1 singular design, 2 too few rows (`n <= k + 2`), 3 non-finite predictor, response or weight (or no
+  admissible interval); the outputs are then NaN. `converged` (optional) is 1 for an interior maximum.
+- `residuals`: `u = y - rho W y - X b`.
+
+`getGPUSpatialLagMaximumLikelihoodModelResult(readback, {predictorNames?})` builds the shared
+`GPURegressionModelResult` (`kind: 'spatial-lag-maximum-likelihood'`, rows `CONSTANT`, predictors and `W_y` with role
+`'spatial-lag'`, z statistics with float64 normal p-values, `standardErrorSigmaSquared: 'maximum-likelihood'`,
+`logLikelihood`, and AIC and Schwarz equal to spreg's); `getGPUSpatialMaximumLikelihoodDiagnostics(summary)` returns
+the flags and `pr2_e`. At most 14 predictors: the `(predictorCount + 2)`-wide information matrix must fit the
+16-wide Cholesky. Inputs must be finite.
+
+Verified against spreg `ML_Lag(method='full', spat_impacts='full')` on a 12x12 lattice, a binary (raw) lattice, a
+six-predictor lattice and two kNN scenes by a float64 mirror (`rho` to 4e-8, coefficients 3e-7, standard errors 1e-7,
+z, log-likelihood, AIC, Schwarz, `pr2`, `pr2_e`, conditioning and `tr1`, `tr2`, `tr3`); the GPU spec checks the float32
+output against the same pins at 2e-3 (`rho`, coefficients) and 1e-2 (standard errors), and chains the fit into
+`GPUSpatialLagImpacts`. spreg's total multiplier `1 / (1 - rho)` is exact only for a row-standardized `W`; for other
+weights the impacts here use the exact `1'W^q 1` sums.
+
+```ts
+graph.add(new GPUSpatialLagMaximumLikelihood({weights, predictors, response, predictorCount: 2,
+  output: {table, summary, status, powerTraces, powerSums, infinityNorm}}));
+graph.add(new GPUSpatialLagImpacts({coefficients: table, coefficientStride: 4, rhoIndex: 3, predictorCount: 2,
+  rowCount, maximumPower: 128, traces: {powerTraces, powerSums, infinityNorm}, status, output: {impacts}}));
+```
+
+### `GPUSpatialErrorMaximumLikelihood`
+
+Maximum-likelihood estimator of the spatial error model `y = X b + u`, `u = lambda W u + e` (spreg 1.9.1
+`ML_Error`, `method='full'`), with the same truncated-series log-determinant, search and approximation rules as
+`GPUSpatialLagMaximumLikelihood`. Props: `weights`, `predictors`, `response`, `predictorCount` (1 to 15),
+`maximumPower`, `traceMode`, `traceProbeCount`, `traceSeed`, optional `tileRowCount` and
+`output: {table, summary, status, converged?, residuals?}`.
+
+- Steps: with `Z = [1, X - mean, y - mean]`, three tile passes (Kahan-merged, fixed order) accumulate once
+  `G0 = Z'Z`, `G1 + G1' = Z'WZ + (Z'WZ)'` and `G2 = (WZ)'(WZ)`. The Gram matrix of the filtered columns
+  `Z - lambda W Z` (the filtered constant `1 - lambda sum_j w_ij` is column 0, as in spreg) is then exactly
+  `G0 - lambda (G1 + G1') + lambda^2 G2`, so scanning `lambda` needs no pass over the rows. Each grid point solves
+  one unit-scaled Cholesky system for `ee(lambda)`, and the derivative follows from the envelope theorem
+  (`ee' = yy' - 2 b'r' + b'A'b`); the search is the one of the lag model on `-n/2 ln(ee / n) + ln|I - lambda W|`.
+- Variance: `Var(b) = s2 (Xs'Xs)^-1` (centered form mapped back to the uncentered intercept) and
+  `Var(lambda) = 1 / (tr2 + tr3 - 2 tr1^2 / n)`, the Schur complement of spreg's 2 x 2 information matrix of
+  `(lambda, s2)`, with the traces of `W (I - lambda W)^-1` (`tr3` from the probe pass at the estimated `lambda`). As in
+  spreg the coefficient standard errors condition on `lambda`.
+- `table`: `(k + 2) x 4` rows, `lambda` last. `summary`: the 22 slots of the lag model; `sigma2 = e'e / n` of the
+  filtered residuals, `pr2` of `y` and `X b`, `pr2_e` NaN, `u'u` of `u = y - X b`, and the conditioning of the final
+  filtered regression (Belsley number of the raw `[c, X - lambda W X]`, correlation condition number and largest
+  predictor VIF of the unit-scaled filtered system). AIC and Schwarz use spreg's `k = predictorCount + 1`: spreg's
+  `ML_Error` does not count `lambda` (`k = x.shape[1]`), unlike `ML_Lag`, which counts `rho`.
+- `status` as the lag model (the cap is 15 predictors, the OLS and Cholesky limit).
+
+`getGPUSpatialErrorMaximumLikelihoodModelResult(readback, {predictorNames?})` builds the shared model result
+(`kind: 'spatial-error-maximum-likelihood'`, `lambda` role `'spatial-error'`, `residualSumOfSquares = n sigma2` of the
+filtered residuals, AIC and Schwarz equal to spreg's). Verified against `ML_Error(method='full')` on a
+row-standardized lattice, an asymmetric kNN scene and a binary lattice (float64 mirror to 1e-7; GPU spec at 2e-3 and
+1e-2, not yet measured).
+
+```ts
+graph.add(new GPUSpatialErrorMaximumLikelihood({weights, predictors, response, predictorCount: 2,
+  output: {table, summary, status}}));
 ```
 
 ## Recipes
@@ -3382,9 +5125,10 @@ never rebuilds the graph.
 
 ```ts
 const hotSpots = addHotSpotAnalysisRecipe(graph, {
-  source: {kind: 'points', positions, family: 'quadbin', resolution: 8, tableCapacity: 4096,
-    neighborCapacity: 49152, gridSize: [64, 64], neighborSearchParameters},
-  parameters: autocorrelationParameters, zScores, bins,
+  source: {kind: 'points', positions, family: 'quadbin', resolution: 8, cellCapacity: 4096,
+    studyArea: {polygonPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: 16384}},
+  parameters: autocorrelationParameters,
+  outputs: {zScores, bins},
   permutation: {parameters: permutationParameters, maximumPermutations: 199},
   color: {classBreaksParameters, maximumClassCount: 5, colorScaleParameters, palette, maximumPaletteCount: 5}
 });
@@ -3392,15 +5136,15 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
 
 | Recipe | Chain |
 | --- | --- |
-| `addHotSpotAnalysisRecipe` | (GPUPointToCell) -> GPUCellAggregation -> GPUCellGeometry centers -> GPUNeighborSearch (or GPULatticeWeights for raster source) -> GPUHotSpotAnalysis -> GPULocalPermutationTest -> GPUClassBreaks -> GPUColorScale |
+| `addHotSpotAnalysisRecipe` | GPUCellCover study area -> GPUCellAggregation (sorted unique study cells) + (GPUPointToCell) -> GPUCellAggregation (points) -> join (zeros kept) -> area density (GPUCellMeasures for H3) -> GPUCellTopology disk -> CSR weights (or GPULatticeWeights for raster source) -> GPUHotSpotAnalysis -> GPULocalPermutationTest -> GPUClassBreaks -> GPUColorScale |
 | `addRateClusterMapRecipe` | GPUEmpiricalBayesRates -> GPUContiguityWeights -> GPUSpatialWeightsTransform(row) -> GPULocalMoran (`quadrantGating: 'none'` with permutation) -> GPULocalPermutationTest -> quadrant colors |
 | `addPointsInPolygonsChoroplethRecipe` | backend 'zonal' (GPUZonalStatistics) or 'group' (GPUPointInPolygonJoin -> dense GPUGroupStatistics) -> GPUClassBreaks -> GPUColorScale |
-| `addSpaceTimeHotSpotsRecipe` | GPUCalendarBuckets -> atomic count into the dense cube (sorted GPUGroupStatistics path when its scratch or overflow outputs are passed) -> GPUEmergingHotSpots -> ordinal GPUColorScale |
+| `addSpaceTimeHotSpotsRecipe` | GPUCalendarBuckets (absolute time-step slices) -> atomic count into the dense cube (sorted GPUGroupStatistics path when its scratch or overflow outputs are passed) -> GPUEmergingHotSpots -> ordinal GPUColorScale |
 | `addClusterAndOutlineRecipe` | GPUSpatialClustering -> GPUGroupGeometry + GPUGroupConvexHull -> GPUGeometryMeasures |
-| `addSpatialRegressionRecipe` | GPUOrdinaryLeastSquares -> GPUSpatialRegressionDiagnostics + residual GPULocalMoran (+ optional GPUGeographicallyWeightedRegression) |
+| `addSpatialRegressionRecipe` | GPUOrdinaryLeastSquares -> GPUSpatialRegressionDiagnostics -> GPU specification decision (Anselin's rule: 0 OLS, 1 lag, 2 error, 3 both robust, 4 undetermined) + residual GPULocalMoran (+ optional GPUGeographicallyWeightedRegression); `mask` and `restandardizeRows` flow through OLS and diagnostics |
 | `addDriveTimeCatchmentRecipe` | GPUNetworkSnapping -> GPUNetworkServiceAreas -> (GPUNetworkIsochrones raster and/or cell outline with rings -> GPUPointInPolygonJoin demand join) -> snap demand -> band adapters -> GPUGroupStatistics |
 | `addStraightLineCatchmentsRecipe` | GPUDistanceField allocation -> GPURasterZonalStatistics |
-| `addChangeOfSupportRecipe` | 2x GPUPolygonRasterization -> GPUArealInterpolation -> GPUSpatialLag |
+| `addChangeOfSupportRecipe` | 2x GPUPolygonRasterization -> GPUArealInterpolation (with source conservation diagnostics) -> GPUSpatialLag |
 | `addFleetDwellRecipe` | GPUTrajectoryMetrics stops -> GPUPointInPolygonJoin -> stop mask -> GPUGroupStatistics (dense, one row per zone) |
 | `addFleetDwellZoneEventsRecipe` | GPUZoneEvents -> GPUGroupStatistics (dense, one row per zone; zone-event variant of the fleet dwell recipe) |
 | `addPeriodComparisonRecipe` | 2x GPUCellAggregation -> GPUCellTableCompare (with mask) -> GPUClassBreaks -> GPUColorScale |
@@ -3420,7 +5164,20 @@ Notes:
   `cellCostLimit`" at cell resolution (the union of cells that hold reached nodes), where the band
   classification stays exact at the snapped edge. Isoband triangles cannot feed the join, because their
   topology is GPU-written and has no ring structure; the cell rings can. Sparse networks drop cells, so the
-  polygon join is coarser than the network-space bands.
+  polygon join is coarser than the network-space bands. With `candidateCapacity`, each snapping reports
+  BVH candidate overflow in `result.snapping` and the `snap-facilities` and `snap-demand` status stages,
+  so a facility or demand point snapped past a dropped candidate is never silent.
+- The drive-time, straight-line catchment and fleet dwell recipes take an optional `spatialContext` and
+  return the resolved one as `result.spatialContext`. The straight-line recipe and both fleet dwell recipes
+  are planar only (longitude/latitude throws; the join and zone edges are straight lines in the plane, and the
+  distance field is Euclidean). The drive-time recipe also accepts longitude/latitude (metric `'none'` or
+  `'great-circle'`; the cell-outline isochrones need degrees). Both of its snappings then run great-circle:
+  edges are ranked by great-circle distance and `maxSnapDistance` is in meters, with no east-west bias at
+  any latitude. Drive times stay in the units of `network.weights` (the snapped fraction splits the edge
+  cost). For the other recipes, project with `createGPULocalFrame` and pass its `spatialContext` (planar,
+  meters), so the distance-field `settings` and the straight-line `distances` output are in meters.
+  The fleet dwell recipes used to hand the trajectory stage a native planar context whatever the data;
+  they now resolve one context and pass it to the metrics, join and zone stages.
 - The rate cluster map recipe runs `GPULocalMoran` with `quadrantGating: 'none'` when `permutation` is
   given and keeps the quadrant where the permutation `significant` mask is set; without `permutation` the
   quadrant is gated by the analytic p-value. `analyticQuadrants` returns the local Moran quadrants (gated
@@ -3434,6 +5191,128 @@ Notes:
 - The cluster recipe drops clusters at or above `maximumClusterCount`, and the caller supplies the
   geometry parameters. The change-of-support recipe's `overflow` covers the overlap list only; the raster
   flags are returned as `rasterOverflow`.
+
+### `addHotSpotAnalysisRecipe`
+
+Points on a study area, or a raster, to Getis-Ord Gi* hot and cold spots.
+
+Points source (breaking change from the occupied-cells design):
+
+- `studyArea` (polygons in GeoArrow offsets plus `candidateCapacity`, optional `coverCapacity`) and
+  `cellCapacity` are required. The recipe covers the polygons with `GPUCellCover` (`'center'` containment),
+  deduplicates and sorts the cells with `GPUCellAggregation`, aggregates the points the same way and joins them
+  by binary search of each 64-bit key. Every study cell is a row, with value 0 when it holds no point, so the
+  null mean is not inflated and clusters of empty cells can be cold spots. Points outside the study area are
+  excluded; `result.pointsOutsideStudyArea` counts them. `result.table.cells` are the sorted study cells and
+  `table.counts` / `table.sumValues` the joined values.
+- Neighbors are topological: the cells within `neighborRings` grid steps (`GPUCellTopology` disk) that are also
+  study cells, self excluded, binary weights, rows ascending. The defaults are 1 ring for Quadbin (8 neighbors)
+  and 2 for H3 (18 neighbors), the smallest disks that reach `minimumNeighbors: 8`. This replaces the degree
+  radius and the `neighborSearchParameters`, `gridSize` and `tableCapacity` props. `neighborCapacity` is
+  optional (defaults to the largest disk); truncation sets the `weights` status `overflow`.
+- `distanceBand` (optional, exclusive with `neighborRings`) uses a metric band instead: `GPUNeighborSearch` in radius
+  mode over the cell centers with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`,
+  so the radius in `neighborSearchParameters` is in meters (the context's `units`). Any other context throws: a
+  radius in degrees is an ellipse that narrows east-west with latitude. `minimumNeighbors` still applies.
+  `distanceBand.rowStandardize` (default `false`, classic binary Gi*) row-standardizes the band through the
+  search's compile-time `rowStandardize`, overriding the per-frame field of `neighborSearchParameters`. The
+  described weights (`info.transform` `'row'` or `'binary'`, and the search status) feed `GPUHotSpotAnalysis`.
+- `analyze: 'density'` (default) analyses value (or count) per square kilometer. Web Mercator tiles shrink
+  with the cosine of latitude, so raw Quadbin counts compare cells of different area; `'count'` is allowed for
+  H3 only (cells are approximately equal area) and throws for Quadbin. Quadbin area is the exact spherical
+  rectangle `R^2 dLon (sin(lat1) - sin(lat2))` and H3 area comes from `GPUCellMeasures`, both on the authalic
+  sphere (`GPU_EARTH_AUTHALIC_RADIUS_METERS`, which is H3's own radius), so the families share one model.
+  Quadbin areas are within f32 rounding (about 1e-6 relative); H3 pentagons and edge cells above resolution 5 are
+  unreliable (see `GPUCellMeasures`).
+
+Statistics and legend (both sources):
+
+- `minimumNeighbors` defaults to 8 (ArcGIS guidance for Gi*). Rows with fewer neighbors other than themselves
+  get NaN `zScores` and `pValues`, bin 0, and are outside the multiple-testing family;
+  `status` stage `minimum-neighbors` reports `invalidCount`. Quadbin with one ring has exactly 8 neighbors at
+  most, so the cells on the study-area border are NaN; use `neighborRings: 2` or a lower minimum for them.
+- `multipleTesting` defaults to `'benjamini-hochberg'` (it replaces `falseDiscoveryRate`). Legend contract,
+  stable under any setting: bins `+-1`, `+-2`, `+-3` are 90%, 95% and 99% confidence hot (`+`) or cold (`-`)
+  spots; without correction that is `|z| >= 1.645, 1.960, 2.576`, with Benjamini-Hochberg the step-up test at
+  q = 0.10, 0.05, 0.01. `result.inference` is a `GPUInferenceMetadata` (alternative `'two-sided'`, analytic so
+  `permutationCount: 0`, the method, and `testedRowsDefinition`, for example `'study-area cells with at least 8
+  neighbors'`); `result.permutationInference` describes the optional permutation confirmation.
+- The lattice source keeps its queen/rook weights and gets the same guard and metadata.
+- Permutation confirmation tests every study row; it does not apply `minimumNeighbors`.
+
+### `addRateClusterMapRecipe`
+
+Event counts and populations per polygon to significant local Moran clusters of empirical-Bayes rates (esda
+`Moran_Local_Rate`).
+
+- `analyze` is `'standardized'` (default, Assuncao-Reis) or `'smoothed'` (global empirical-Bayes rate).
+  `clampPriorVariance` (default `true`) is passed to `GPUEmpiricalBayesRates` and only changes the `'smoothed'`
+  path: the prior variance is clamped at zero (Marshall), so counts no more dispersed than Poisson shrink fully
+  to the pooled rate. `false` reproduces esda `Empirical_Bayes`. The standardized path is unaffected.
+- `multipleTesting` defaults to `'benjamini-hochberg'` (it replaces `permutation.falseDiscoveryRate`) and applies
+  to whichever inference runs: the analytic `GPULocalMoran` p-values without `permutation`, or the permutation
+  pseudo p-values with it. The family is every polygon with a valid rate and at least one neighbor, never a viewport.
+- Analytic inference is a preview (two-sided normal approximation of the conditional-randomization moments).
+  Permutation inference is the reference; esda uses 999 permutations and so should you. The alternative defaults to
+  `'two-sided'`. Analytic p-values are exposed as `result.analytic`, permutation ones as `result.permutation`
+  (`pseudoPValues`, and `adjustedPValues` after the correction).
+- Islands and polygons with a NaN rate (zero population, masked) end at quadrant 0 and have NaN p-values: they are
+  outside the test family, not counted as tested but not significant.
+- Legend contract, stable under any setting: palette index 0 is "not significant" and 1, 2, 3, 4 are high-high,
+  low-high, low-low, high-low. The correction changes which polygons reach significance, never what a color means.
+- `result.inference` is the `getInferenceMetadata` of the `GPULocalPermutationTest` the recipe built (or of
+  `GPULocalMoran` without `permutation`), so it comes from the same settings that are packed for the GPU. It holds
+  the alternative, `permutationCount` (0 for analytic), `seed` when given in `permutation.seed`,
+  `significanceLevel` (default 0.05, recorded on both paths), `multipleTesting` and `testedRowsDefinition`. The
+  GPU reads the real seed and count from the parameter views. An invalid `permutation.permutations` or `seed`
+  throws when the recipe is built.
+
+### `addPeriodComparisonRecipe`
+
+Two periods of events to a classified, colored change map.
+
+- `delta` (after minus before) is always defined. `ratio` and `percentChange` are NaN, not 0, for cells whose earlier
+  value is 0; NaN rows are skipped by `GPUClassBreaks` and take the palette no-data color.
+- `zScore` is a descriptive score of the change (`'poisson'`: `delta / sqrt(before + after)`, or `'standardized'`
+  deltas). It has no null distribution and no multiple-testing correction, so a threshold on it is not a significance
+  level; use `addHotSpotAnalysisRecipe` or `addRateClusterMapRecipe` for inference. With `measure: 'count'` every
+  union cell has `before + after > 0`, so the Poisson denominator is never zero.
+
+### `addChangeOfSupportRecipe`
+
+Transfers values between two polygon zone systems by area: both systems are rasterized to one grid
+(`GPUPolygonRasterization`), `GPUArealInterpolation` builds the overlap areas and both weight sets, and
+`GPUSpatialLag` moves `sourceValues` to the targets as `extensiveValues` and `intensiveValues`.
+
+- Props: `width`, `height`, `extent` (rasterization extent), `source` and `target` zone systems,
+  `pairCapacity`, optional `cellWeights`, `sourceValues` and `columnCount`, `categories`, `denominator`,
+  `sourceAnchorCells`, `spatialContext` and `outputs` / `scratch` overrides.
+- Denominators (default change): extensive `'zone'`, intensive `'overlap'`, so a target only partly
+  covered by sources is the mean of what covers it. Pass `denominator: 'zone'` for the old intensive result.
+- Conservation: the result always carries `sourceAreas`, `sourceTransferredFractions` and `invalidCount`;
+  the last one is also in the `areal-interpolation` stage `status`. A source entirely outside the targets,
+  or smaller than a cell, shows up there instead of silently losing mass; `sourceAnchorCells` rescues the
+  latter.
+- Coordinates: `spatialContext` omitted is native planar (cell counts are areas). `longitude-latitude`
+  (metric `'none'` or `'great-circle'`) declares a longitude/latitude raster whose `extent` is in degrees,
+  and the areal stage weights each cell by its spherical area in square meters. Rasterization itself only
+  tests cell centers in the coordinates as given (straight polygon edges in degrees; split polygons at the
+  antimeridian). The resolved context is returned as `result.spatialContext`.
+- Accuracy is bounded by the raster resolution (cell centers decide membership), never an exact polygon
+  intersection.
+
+### `addPointsInPolygonsChoroplethRecipe`
+
+Points to a per-polygon statistic to class breaks to colors, with `backend: 'zonal'` (default,
+`GPUZonalStatistics`) or `'group'` (`GPUPointInPolygonJoin` then dense `GPUGroupStatistics`). `statistic`
+is `'count'` (default), `'sum'`, `'mean'`, `'minimum'` or `'maximum'`; features with no points keep NaN (mean,
+minimum, maximum) or 0 (count, sum).
+
+- Coordinates: `spatialContext` omitted is native planar. `longitude-latitude` is accepted because the
+  mapped statistics are topological: containment uses straight polygon edges in degrees (not geodesics) and
+  polygons crossing the antimeridian must be split. No density is mapped, so no polygon area is needed; for
+  a density per square meter use `GPUZonalStatistics` directly with spherical `areas`. Other spaces throw.
+  The resolved context is returned as `result.spatialContext`.
 
 ## Cross-reference
 
@@ -3589,24 +5468,27 @@ bounded outputs and does not read back; the CPU libraries return unbounded geome
 | `esda.Moran` `.p_sim`, `.z_sim` | `GPUGlobalPermutationTest` |
 | `esda.Moran_Local` | `GPULocalMoran`; `GPULocalPermutationTest` for `p_sim` |
 | `esda.G_Local` (Gi, Gi*) | `GPUHotSpotAnalysis`; `GPULocalPermutationTest` (`'localG'`, `'localGStar'`); recipe `addHotSpotAnalysisRecipe` |
-| `esda.Moran_Rate`, `Moran_Local_Rate`, `smoothing.Empirical_Bayes`, `assuncao_rate` | `GPUEmpiricalBayesRates`; recipe `addRateClusterMapRecipe` |
-| `esda.fdr` | `falseDiscoveryRate` option of `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalPermutationTest` |
+| `smoothing.Empirical_Bayes` | `GPUEmpiricalBayesRates` (`clampPriorVariance: false` for exact parity); recipe `addRateClusterMapRecipe` |
+| `esda.Moran_Rate`, `Moran_Local_Rate`, `assuncao_rate` | `GPUAssuncaoReisStandardization` followed by `GPUGlobalSpatialStatistics` or `GPULocalMoran` |
+| `esda.fdr`, `statsmodels.multipletests` | `GPUMultipleTestingAdjustment`; `multipleTesting` option of `GPUHotSpotAnalysis`, `GPULocalMoran`, `GPULocalPermutationTest` |
 | `pointpats.PointPattern`, `ripley.k_test`, `f_test`, `g_test`, `j_test` | `GPUPointPatternIndices`, `GPURipley`, `GPURipleyDistanceFunctions` (dataframe) |
 | `pointpats.Knox`, `Mantel` | `GPUKnoxTest`, `GPUMantelTest` |
 | `esda.Moran` correlogram (`spatial_correlogram`) | `GPUSpatialCorrelogram` (dataframe) |
-| `esda.Spatial_Pearson`, `Local_Geary`, `Gamma` | `GPUSpatialPearson`, `GPULocalGeary`, `GPUGammaStatistic`; shared permutation adapters use `GPUGlobalPermutationTest` or `GPULocalPermutationTest` |
+| `esda.Spatial_Pearson`, `Spatial_Pearson_Local` (Lee's L) | `GPUGlobalPermutationTest` (`'leesL'`), `GPULocalPermutationTest` (`'localLeeL'`) |
+| `esda.Local_Geary`, `Gamma` | `GPULocalGeary`, `GPUGammaStatistic`; shared permutation adapters use `GPUGlobalPermutationTest` or `GPULocalPermutationTest` |
 | `spreg.OLS` | `GPUOrdinaryLeastSquares` |
 | `spreg.diagnostics_sp.LMtests`, `MoranRes` | `GPUSpatialRegressionDiagnostics`; recipe `addSpatialRegressionRecipe` |
 | `spreg.GM_Lag` | `GPUSpatialTwoStageLeastSquares` |
-| `spreg.ML_Lag`, `ML_Error`, panel, SUR, regimes, probit | `GPUSpatialTwoStageLeastSquares` and `GPUSpatialErrorGM` provide bounded GPU-resident lag and error estimators; use caller-partitioned `GPUOrdinaryLeastSquares` for panel or regime fits and `spreg` when maximum-likelihood, SUR, or probit inference is specifically required |
+| `spreg.ML_Lag`, `ML_Error` (`method='full'`), `spat_impacts` | `GPUSpatialLagMaximumLikelihood`, `GPUSpatialErrorMaximumLikelihood`; impacts `GPUSpatialLagImpacts` over `GPUSpatialWeightsTraces` |
+| `spreg` panel, SUR, regimes, probit | Use caller-partitioned `GPUOrdinaryLeastSquares` for panel or regime fits and `spreg` when SUR or probit inference is required |
 | `mgwr.GWR` | `GPUGeographicallyWeightedRegression`; `MGWR` backfitting is not built |
 | `giddy.Markov`, `LISA_Markov`, `Spatial_Markov` | `GPUTransitionMatrix`, `GPULISAMarkov`, `GPUSpatialMarkov` |
 | `giddy.directional`, `Rose` | `GPURoseStatistic` with explicit directional or axial circular semantics |
 | `segregation` aspatial and spatial indices | `GPUSegregation` |
 | `inequality.gini.Gini`, `theil.Theil`, `Gini_Spatial` | `GPUInequality` (dataframe) |
 | `esda.shape` (`isoperimetric_quotient`, `convex_hull_ratio`) | `GPUShapeDescriptors` |
-| `spopt.region.AZP`, `MaxPHeuristic`, `Skater`, `Ward` | `GPUAZPRegions` (bounded leaf-move AZP), `GPUMaxPRegions` (deterministic greedy construction), `GPUSkaterRegions`, `GPUWardRegions` (bounded adjacent Ward linkage) |
-| `spopt.locate.PMedian`, `MCLP`, `LSCP` | `GPULocationAllocation` provides bounded greedy p-median, maximum-coverage, and set-covering selection over `GPUNetworkCostMatrix` or another dense cost matrix; use `spopt` when an integer-programming optimum or richer constraints are required |
+| `spopt.region.AZP`, `MaxPHeuristic`, `Skater`, `Ward` | `GPUAZPRegions` (greedy steepest-descent AZP), `GPUMaxPRegions` (randomized multi-start greedy construction with optional AZP refinement), `GPUSkaterRegions`, `GPUWardRegions` (bounded adjacent Ward linkage) |
+| `spopt.locate.PMedian`, `MCLP`, `LSCP` | `GPULocationAllocation` provides bounded greedy p-median, maximum-coverage, and set-covering selection (plus a swap improvement phase) over `GPUNetworkCostMatrix` or another dense cost matrix; use `spopt` when an integer-programming optimum or richer constraints are required |
 | `access.Access.two_step_fca`, `weighted_catchment`, `Huff` | `GPUCatchmentAccessibility`, `GPUHuffTradeAreas`, `GPUNetworkAccessibility` (network) |
 | `spaghetti`, `pandana` network distance and accessibility | `GPUNetworkReachability`, `GPUNetworkCostMatrix`, `GPUNetworkAccessibility` (network) |
 | `PySAL` hot spot workflow (Gi* + FDR + map) | recipe `addHotSpotAnalysisRecipe` |
