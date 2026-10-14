@@ -14,11 +14,11 @@ import {
 } from '../../../src/gpu-network/flow-aggregation';
 import {getGPUPointDensityHexagonGridSize} from '../../../src/gpu-spatial-analysis/point-density';
 import {
-  getGPUTimeWindowParameterValues,
-  getGPUTimeWindowWordParameterValues,
+  getGPUTimeWindowFilterParameterValues,
+  getGPUTimeWindowFilterWordParameterValues,
   getInt64TimeWords,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
-  GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH
 } from '../../../src/gpu-dataframe/time-window-filter';
 import {
   createInputBuffer,
@@ -36,6 +36,7 @@ import {
   createSeededRandom,
   type FlowOracleResult
 } from './flow-aggregation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NO_ZONE = GPU_FLOW_AGGREGATION_NO_ZONE;
 const GARBAGE = 0xdeadbeef;
@@ -70,7 +71,7 @@ type HarnessOptions = {
   topCount: number;
   pairCapacity: number;
   hasWeights: boolean;
-  maxProbeCount?: number;
+  maximumProbeCount?: number;
   createProps: (
     graph: GPUCommandGraph<void>
   ) => Pick<GPUFlowAggregationProps, 'zones'> & Partial<GPUFlowAggregationProps>;
@@ -113,28 +114,30 @@ function createHarness(device: Device, options: HarnessOptions): Harness {
   const contributor = new GPUFlowAggregation({
     id: options.id,
     pairCapacity: options.pairCapacity,
-    maxProbeCount: options.maxProbeCount,
+    maximumProbeCount: options.maximumProbeCount,
     ...options.createProps(graph),
     output: {
       ids: ids.view,
-      count: count.view,
-      overflow: overflow.view,
-      requiredCount: requiredCount.view
-    },
-    pairOverflow: pairOverflow.view,
-    drawInstanceCount: drawInstanceCount.view,
-    flowOriginZoneIds: originZones.view,
-    flowDestinationZoneIds: destinationZones.view,
-    flowCounts: counts.view,
-    flowWeights: weights.view,
-    zoneOutCounts: zoneOutCounts.view,
-    zoneInCounts: zoneInCounts.view,
-    ...(hasWeights
-      ? {
-          zoneOutWeights: zoneOutWeights.view,
-          zoneInWeights: zoneInWeights.view
-        }
-      : {})
+      status: {
+        count: count.view,
+        overflow: overflow.view,
+        requiredCount: requiredCount.view,
+        pairOverflow: pairOverflow.view
+      },
+      drawInstanceCount: drawInstanceCount.view,
+      flowOriginZoneIds: originZones.view,
+      flowDestinationZoneIds: destinationZones.view,
+      flowCounts: counts.view,
+      flowWeights: weights.view,
+      zoneOutCounts: zoneOutCounts.view,
+      zoneInCounts: zoneInCounts.view,
+      ...(hasWeights
+        ? {
+            zoneOutWeights: zoneOutWeights.view,
+            zoneInWeights: zoneInWeights.view
+          }
+        : {})
+    }
   });
   graph.add(contributor);
   const compiled = graph.compile();
@@ -239,9 +242,7 @@ function createWeights(seed: number, rowCount: number): number[] {
 
 it('GPUFlowAggregation aggregates grid zones against the oracle (weighted and unweighted)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const bounds: [number, number, number, number] = [0, 0, 6, 5];
   const gridSize: [number, number] = [6, 5];
   const rowCount = 2000;
@@ -297,9 +298,7 @@ it('GPUFlowAggregation aggregates grid zones against the oracle (weighted and un
 
 it('GPUFlowAggregation orders equal weights by pair key', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Pairs (origin, destination) with two rows each, inserted in scrambled order.
   const pairs = [
     [3, 1],
@@ -369,9 +368,7 @@ function createHexagonPoints(radii: number[]): number[] {
 
 it('GPUFlowAggregation bins hexagon zones with per-frame radius and bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const origins = createHexagonPoints([1, 1.4, 0.6]);
   const rowCount = origins.length / 2;
   const destinations: number[] = [];
@@ -446,9 +443,7 @@ it('GPUFlowAggregation bins hexagon zones with per-frame radius and bounds', asy
 
 it('GPUFlowAggregation applies mask, time window, and self-flow exclusion per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = 500;
   const zoneCount = 8;
   const {origins, destinations} = createZoneIds(3, rowCount, zoneCount, 2);
@@ -458,8 +453,8 @@ it('GPUFlowAggregation applies mask, time window, and self-flow exclusion per fr
   const window = new GPUParameterBuffer(device, {
     id: 'flow-window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues({start: 10, end: 60})
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({start: 10, end: 60})
   });
   const buffers = [
     createInputBuffer(device, Uint32Array.from(origins)),
@@ -509,13 +504,13 @@ it('GPUFlowAggregation applies mask, time window, and self-flow exclusion per fr
   };
   const first = await verify(10, 60, maskValues);
   expect(first.flows.length).toBeGreaterThan(0);
-  window.write(getGPUTimeWindowParameterValues({start: 40, end: 90}));
+  window.write(getGPUTimeWindowFilterParameterValues({start: 40, end: 90}));
   const second = await verify(40, 90, maskValues);
   expect(second.flows).not.toEqual(first.flows);
   const newMask = maskValues.map(value => 1 - value);
   buffers[3].write(Uint32Array.from(newMask));
   await verify(40, 90, newMask);
-  window.write(getGPUTimeWindowParameterValues({start: 200, end: 100}));
+  window.write(getGPUTimeWindowFilterParameterValues({start: 200, end: 100}));
   const empty = await verify(200, 100, newMask);
   expect(empty.flows.length).toBe(0);
 
@@ -526,9 +521,7 @@ it('GPUFlowAggregation applies mask, time window, and self-flow exclusion per fr
 
 it('GPUFlowAggregation reports pair table overflow and keeps zone totals exact', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = 300;
   const zoneCount = 16;
   const {origins, destinations} = createZoneIds(41, rowCount, zoneCount);
@@ -603,9 +596,7 @@ it('GPUFlowAggregation reports pair table overflow and keeps zone totals exact',
 
 it('GPUFlowAggregation handles empty input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const buffers = [
     createInputBuffer(device, Uint32Array.from([0])),
     createInputBuffer(device, Uint32Array.from([0])),
@@ -644,9 +635,7 @@ it('GPUFlowAggregation handles empty input', async () => {
 
 it('GPUFlowAggregation handles empty grid input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const buffers = [
     createInputBuffer(device, Float32Array.from([0, 0])),
     createInputBuffer(device, Float32Array.from([0, 0]))
@@ -675,9 +664,7 @@ it('GPUFlowAggregation handles empty grid input', async () => {
 
 it('GPUFlowAggregation handles a single row', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const buffers = [
     createInputBuffer(device, Uint32Array.from([2])),
     createInputBuffer(device, Uint32Array.from([1])),
@@ -717,9 +704,7 @@ it('GPUFlowAggregation handles a single row', async () => {
 
 it('GPUFlowAggregation gates rows exactly with Int64 word timestamps', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = 900;
   const zoneCount = 6;
   const {origins, destinations} = createZoneIds(31, rowCount, zoneCount, 1);
@@ -748,8 +733,8 @@ it('GPUFlowAggregation gates rows exactly with Int64 word timestamps', async () 
   const window = new GPUParameterBuffer(device, {
     id: 'flow-word-window',
     format: 'uint32',
-    length: GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowWordParameterValues(windows[0])
+    length: GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterWordParameterValues(windows[0])
   });
   const buffers = [
     createInputBuffer(device, Uint32Array.from(origins)),
@@ -782,7 +767,7 @@ it('GPUFlowAggregation gates rows exactly with Int64 word timestamps', async () 
   });
   let previousTotal = -1;
   for (const {start, end} of windows) {
-    window.write(getGPUTimeWindowWordParameterValues({start, end}));
+    window.write(getGPUTimeWindowFilterWordParameterValues({start, end}));
     harness.submit();
     const oracle = computeFlowAggregation({
       zones: {kind: 'ids', zoneCount},
@@ -826,9 +811,7 @@ function getFloat32Bits(values: readonly number[]): number[] {
 
 it('GPUFlowAggregation sorted sums are bitwise stable and match the fixed-tree oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = 4000;
   const zoneCount = 3;
   const topCount = 16;
@@ -918,9 +901,7 @@ it('GPUFlowAggregation sorted sums are bitwise stable and match the fixed-tree o
 
 it('GPUFlowAggregation sorted sums keep zone totals exact when the pair table overflows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = 3000;
   const zoneCount = 40;
   const {origins, destinations} = createZoneIds(5, rowCount, zoneCount, 2);
@@ -942,7 +923,7 @@ it('GPUFlowAggregation sorted sums keep zone totals exact when the pair table ov
     zoneCount,
     topCount: 8,
     pairCapacity: 64,
-    maxProbeCount: 8,
+    maximumProbeCount: 8,
     hasWeights: true,
     createProps: graph => ({
       sumOrder: 'sorted',
@@ -975,9 +956,7 @@ it('GPUFlowAggregation sorted sums keep zone totals exact when the pair table ov
 
 it('GPUFlowAggregation sorted sums with grid zones and a mask match the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const bounds: [number, number, number, number] = [0, 0, 3, 2];
   const gridSize: [number, number] = [3, 2];
   const rowCount = 1500;
@@ -1027,9 +1006,7 @@ it('GPUFlowAggregation sorted sums with grid zones and a mask match the oracle',
 
 it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = 1 << 20;
   const zoneCount = 64;
   const {origins, destinations} = createZoneIds(8, rowCount, zoneCount);
@@ -1045,7 +1022,7 @@ it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async
       zoneCount,
       topCount: 64,
       pairCapacity: 8192,
-      maxProbeCount: 64,
+      maximumProbeCount: 64,
       hasWeights: true,
       createProps: graph => ({
         sumOrder,

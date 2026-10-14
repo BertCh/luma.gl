@@ -9,6 +9,7 @@ import {dggs} from '@luma.gl/shadertools';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {
   getHexagonEdgeLengthAvg,
+  getPentagons,
   gridDistance,
   latLngToCell,
   cellToLatLng,
@@ -24,11 +25,13 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  createH3TestRandom,
   createCellEdgePoints,
   createPentagonNeighborhoodPoints,
   createSpecialH3Points,
   createUniformSpherePoints
 } from './h3-index-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const CAPACITY = 32768;
 
@@ -162,9 +165,7 @@ const PENTAGON_MISMATCH_BOUND: readonly number[] = [
 
 it('cellIndexH3FromLngLat matches h3-js on the same f32 inputs, with measured per-resolution limits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const runner = createRunner(device);
   const table: string[] = [
     'res | uniform n  mism  rate     nbr | edge n  mism  rate     nbr | pent n mism nbr'
@@ -213,9 +214,7 @@ it('cellIndexH3FromLngLat matches h3-js on the same f32 inputs, with measured pe
 
 it('cellIndexH3FromLngLat handles poles, antimeridian, equator, NaN and invalid resolution', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const runner = createRunner(device);
   const special = createSpecialH3Points();
   for (const resolution of [0, 1, 2, 3, 4]) {
@@ -229,5 +228,82 @@ it('cellIndexH3FromLngLat handles poles, antimeridian, equator, NaN and invalid 
   expect(keys.slice(0, 4)).toEqual([0n, 0n, 0n, 0n]);
   expect(keys[4]).toBe(BigInt(`0x${latLngToCell(30, 20, 5)}`));
   expect(await runner.run(new Float32Array([10, 10]), 16)).toEqual([0n]);
+  runner.destroy();
+});
+
+/**
+ * Points within `offsetRadians` of the 30 icosahedron edges (the great-circle arcs between
+ * adjacent res-0 pentagon centers, the icosahedron vertices), as interleaved float32 lng/lat.
+ */
+function createIcosahedronEdgePoints(
+  count: number,
+  offsetRadians: number,
+  seed: number
+): Float32Array {
+  const random = createH3TestRandom(seed);
+  const toVector = (cell: string) => {
+    const [lat, lng] = cellToLatLng(cell).map(value => (value * Math.PI) / 180);
+    return [Math.cos(lat) * Math.cos(lng), Math.cos(lat) * Math.sin(lng), Math.sin(lat)];
+  };
+  const vertices = getPentagons(0).map(toVector);
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const edges: [number[], number[]][] = [];
+  for (let i = 0; i < vertices.length; i++) {
+    for (let j = i + 1; j < vertices.length; j++) {
+      // Adjacent icosahedron vertices are 63.43 degrees apart; the next distance is 116.57.
+      if (Math.acos(dot(vertices[i], vertices[j])) < 1.2) {
+        edges.push([vertices[i], vertices[j]]);
+      }
+    }
+  }
+  expect(edges).toHaveLength(30);
+  const points: number[] = [];
+  for (let index = 0; index < count; index++) {
+    const [a, b] = edges[index % edges.length];
+    const t = random();
+    const normal = [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0]
+    ];
+    const normalLength = Math.hypot(...normal);
+    const offset = offsetRadians * (2 * random() - 1);
+    const point = [0, 1, 2].map(
+      axis => (1 - t) * a[axis] + t * b[axis] + (offset * normal[axis]) / normalLength
+    );
+    const length = Math.hypot(...point);
+    const lat = (Math.asin(point[2] / length) * 180) / Math.PI;
+    const lng = (Math.atan2(point[1], point[0]) * 180) / Math.PI;
+    points.push(lng, lat);
+  }
+  return new Float32Array(points);
+}
+
+/**
+ * Maximum allowed mismatch rate within one res-10 edge length (about 7.5 m) of an icosahedron
+ * face edge, at resolutions 8 to 10. Measured on the headless WebGPU device (6000 points per
+ * resolution: 21, 3 and 41 mismatches, all grid neighbors, i.e. the uniform and cell-edge rates)
+ * and set to roughly 2 to 3 times the observation.
+ */
+const FACE_EDGE_MISMATCH_BOUND: Record<number, number> = {8: 1e-2, 9: 2e-3, 10: 2e-2};
+
+it('cellIndexH3FromLngLat near icosahedron face edges at resolutions 8-10 (review D S-7)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const runner = createRunner(device);
+  const rates: string[] = [];
+  for (const resolution of [8, 9, 10]) {
+    const points = createIcosahedronEdgePoints(6000, 1.2e-6, 4000 + resolution);
+    const comparison = compareWithH3(points, await runner.run(points, resolution), resolution);
+    rates.push(
+      `res ${resolution}: ${comparison.mismatches}/${comparison.rows} mismatches, ${comparison.neighbors} neighbors`
+    );
+    expect(comparison.neighbors, `neighbors res ${resolution}`).toBe(comparison.mismatches);
+    expect(
+      comparison.mismatches / comparison.rows,
+      `face edge res ${resolution}`
+    ).toBeLessThanOrEqual(FACE_EDGE_MISMATCH_BOUND[resolution]);
+  }
+  console.error(`H3 forward GPU vs h3-js near icosahedron face edges\n${rates.join('\n')}`);
   runner.destroy();
 });

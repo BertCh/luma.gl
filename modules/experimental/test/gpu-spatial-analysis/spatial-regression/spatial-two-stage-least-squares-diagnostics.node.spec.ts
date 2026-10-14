@@ -81,14 +81,14 @@ for (const name of Object.keys(SCENES) as (keyof typeof SCENES)[]) {
 }
 
 it('two-stage diagnostics separate a strong first stage, a weak one and an inadmissible rho', () => {
-  const strong = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE.knn_60_13.order1;
-  const weak = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE.weak_80_7.order1;
+  const strong = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE['knn_60_13'].order1;
+  const weak = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE['weak_80_7'].order1;
   expect(strong.firstStageF).toBeGreaterThan(100);
   expect(weak.firstStageF).toBeLessThan(10);
   expect(weak.rhoOutsideAdmissibleRange).toBe(true);
   expect(strong.rhoOutsideAdmissibleRange).toBe(false);
   // rho is inside (-1, 1) yet |rho| ||W||_inf >= 1: the check is conservative for raw weights.
-  const raw = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE.lag_binary_10_5_high;
+  const raw = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE['lag_binary_10_5_high'];
   expect(Math.abs(raw.order1.rho)).toBeLessThan(1);
   expect(Math.abs(raw.order1.rho) * raw.weightsInfinityNorm).toBeGreaterThan(1);
   expect(raw.order1.rhoOutsideAdmissibleRange).toBe(true);

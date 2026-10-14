@@ -15,6 +15,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit';
 import {MAPCLASSIFY_FIT_CASES, MAPCLASSIFY_FIT_VALUES} from './mapclassify-fit-fixture';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NO_CLASS = 0xffffffff;
 
@@ -102,7 +103,7 @@ async function runFit(
 
 it('GPUClassificationFit matches the formula oracle on a hand-checked fixture', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // class 0: [1, 2, 4, 10] median 3 (even count averages the middles); class 1: [-5, 7, 9] median 7.
   const values = [10, 1, 7, 2, -5, 4, 9];
   const classes = [0, 0, 1, 0, 1, 0, 1];
@@ -124,7 +125,7 @@ it('GPUClassificationFit matches the formula oracle on a hand-checked fixture', 
 
 it('GPUClassificationFit matches the oracle with ties, negatives, NaN, no-class rows, mask and empty class', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(7);
   const classCount = 5;
   const rowCount = 900;
@@ -166,7 +167,7 @@ it('GPUClassificationFit matches the oracle with ties, negatives, NaN, no-class 
 
 it('GPUClassificationFit defines a constant column as a perfect fit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rig = new AnalysisRig(device);
   const actual = await runFit(rig, [3, 3, 3, 3], [0, 1, 0, 1], 2);
   expect(actual.summary[GPU_CLASSIFICATION_FIT_GADF]).toBe(1);
@@ -176,7 +177,7 @@ it('GPUClassificationFit defines a constant column as a perfect fit', async () =
 
 it('GPUClassificationFit reproduces pinned mapclassify 2.11.0 adcm, gadf and tss', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const [name, expected] of Object.entries(MAPCLASSIFY_FIT_CASES)) {
     const rig = new AnalysisRig(device);
     const actual = await runFit(rig, MAPCLASSIFY_FIT_VALUES, expected.classes, expected.k);
@@ -198,7 +199,7 @@ it('GPUClassificationFit reproduces pinned mapclassify 2.11.0 adcm, gadf and tss
 
 it('GPUClassificationFit handles an empty class and a constant column like mapclassify', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rig = new AnalysisRig(device);
   // mapclassify UserDefined([1, 2, 10, 11], bins=[2, 5, 10, 11]): counts [2, 0, 1, 1], adcm 1.0.
   const actual = await runFit(rig, [1, 2, 10, 11], [0, 0, 2, 3], 4);
@@ -211,7 +212,7 @@ it('GPUClassificationFit handles an empty class and a constant column like mapcl
 
 it('GPUClassificationFit reduces a heavily skewed class split across many lanes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(11);
   const classCount = 4;
   const rowCount = 20011;

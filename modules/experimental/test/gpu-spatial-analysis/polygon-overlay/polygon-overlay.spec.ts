@@ -20,6 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type GraphBuffers = {
   buffers: Buffer[];
@@ -136,7 +137,6 @@ function createOverlayOutput(
       ringOffsets: ringOffsets.view,
       sourceIds: sourceIds.view
     },
-    sourceIds: sourceIds.view,
     status: {
       count: count.view,
       requiredCount: requiredCount.view,
@@ -238,9 +238,7 @@ async function runRectangleOverlay(
 
 it('GPUPolygonOverlay matches rectangle set-operation areas and complete status', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [operation, expectedArea, expectedFeatureCount] of [
     ['intersection', 2, 1],
     ['union', 6, 1],
@@ -257,9 +255,7 @@ it('GPUPolygonOverlay matches rectangle set-operation areas and complete status'
 
 it('GPUPolygonOverlay reports incomplete candidate generation when arrangement capacity is bounded', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runRectangleOverlay(device, 'intersection', {
     intersections: 1,
     nodedSegments: 1
@@ -270,9 +266,7 @@ it('GPUPolygonOverlay reports incomplete candidate generation when arrangement c
 
 it('GPUPolygonOverlay dissolves overlapping features into their union surface', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'overlay-dissolve'});
   const graphBuffers = createGraphBuffers(device, graph);
   const result = createOverlayOutput(graphBuffers, 'dissolve-result');
@@ -331,9 +325,7 @@ it('GPUPolygonOverlay dissolves overlapping features into their union surface', 
 
 it('GPUBufferSurface assembles a square-capped line into a repaired polygon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'buffer-line'});
   const graphBuffers = createGraphBuffers(device, graph);
   const result = createOverlayOutput(graphBuffers, 'buffer-result', 128, 32, 128);
@@ -381,9 +373,7 @@ it('GPUBufferSurface assembles a square-capped line into a repaired polygon', as
 
 it('GPUBufferSurface grows and shrinks polygon surfaces with signed distance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [distance, expectedArea] of [
     [1, 16],
     [-0.5, 1]
@@ -432,9 +422,7 @@ it('GPUBufferSurface grows and shrinks polygon surfaces with signed distance', a
 // it inside (shapely.unary_union of the two squares has area 16).
 it('GPUPolygonOverlay fill rule decides regions a boundary covers twice', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [fillRule, expectedArea] of [
     ['even-odd', 12],
     ['positive', 16],
@@ -497,9 +485,7 @@ it('GPUPolygonOverlay fill rule decides regions a boundary covers twice', async 
 
 it('GPUPolygonOverlay publishes the unclamped ring requirement', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'overlay-required-count'});
   const graphBuffers = createGraphBuffers(device, graph);
   // Three disjoint unit squares dissolve into three rings; the output holds two.

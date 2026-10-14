@@ -31,6 +31,8 @@ import {
   createSeededPoints,
   findNearestHexagon
 } from './point-density-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {sumFixedPointOracle} from '../../utils/fixed-point-oracle';
 
 const FIXTURE_POSITIONS = [
   0.5,
@@ -67,9 +69,7 @@ function destroyAll(resources: {destroy(): void}[]): void {
 
 it('GPUPointDensity grid statistics, texture, extent, and histogram follow per-frame bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const hasTexture = device.getTextureFormatCapabilities('r32float').store;
   const positionsBuffer = createInputBuffer(device, Float32Array.from(FIXTURE_POSITIONS));
   const weightsBuffer = createInputBuffer(device, Float32Array.from(FIXTURE_WEIGHTS));
@@ -121,7 +121,7 @@ it('GPUPointDensity grid statistics, texture, extent, and histogram follow per-f
         means: importGraphBuffer(graph, 'means', meansBuffer, 'float32', 8),
         extent: importGraphBuffer(graph, 'extent', extentBuffer, 'float32', 2),
         histogram: importGraphBuffer(graph, 'histogram', histogramBuffer, 'uint32', 4),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)},
         texture: textureView as never
       }
     })
@@ -192,9 +192,7 @@ it('GPUPointDensity grid statistics, texture, extent, and histogram follow per-f
 
 it('GPUPointDensity writes an unweighted count field with internal counts', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positionsBuffer = createInputBuffer(device, Float32Array.from(FIXTURE_POSITIONS));
   const valuesBuffer = createOutputBuffer(device, 8);
   const extentBuffer = createOutputBuffer(device, 2);
@@ -237,9 +235,7 @@ function createHexagonFixture(radii: number[]): number[] {
 
 it('GPUPointDensity bins hexagons with a per-frame radius and reports lattice overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createHexagonFixture([1, 1.4, 0.6]);
   const rowCount = positions.length / 2;
   const weights = Array.from({length: rowCount}, (_, index) => index + 1);
@@ -271,7 +267,7 @@ it('GPUPointDensity bins hexagons with a per-frame radius and reports lattice ov
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
         counts: importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', cellCount),
         sums: importGraphBuffer(graph, 'sums', sumsBuffer, 'float32', cellCount),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
       }
     })
   );
@@ -306,9 +302,7 @@ it('GPUPointDensity bins hexagons with a per-frame radius and reports lattice ov
 
 it('GPUPointDensity gives identical results for chunked positions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const firstBuffer = createInputBuffer(device, Float32Array.from(FIXTURE_POSITIONS.slice(0, 10)));
   const secondBuffer = createInputBuffer(device, Float32Array.from(FIXTURE_POSITIONS.slice(10)));
   const weightsBuffer = createInputBuffer(device, Float32Array.from(FIXTURE_WEIGHTS));
@@ -342,9 +336,7 @@ it('GPUPointDensity gives identical results for chunked positions', async () => 
 
 it('GPUPointDensity smooths the field with a per-frame kernel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const support = getGPUConvolutionSupport(device, {
     width: 5,
     height: 5,
@@ -398,9 +390,7 @@ it('GPUPointDensity smooths the field with a per-frame kernel', async () => {
 
 it('GPUPointDensity handles empty input', async () => {
   const device = (await getWebGPUTestDevice()) as Device | null;
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positionsBuffer = createInputBuffer(device, new Float32Array(2));
   const buffers: Buffer[] = [
     createOutputBuffer(device, 4),
@@ -419,7 +409,9 @@ it('GPUPointDensity handles empty input', async () => {
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', 4),
         counts: importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', 4),
         extent: importGraphBuffer(graph, 'extent', extentBuffer, 'float32', 2),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        }
       }
     })
   );
@@ -435,9 +427,7 @@ it('GPUPointDensity handles empty input', async () => {
 
 it('GPUPointDensity separable smoothing matches the dense kernel within 1e-5', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 64;
   const height = 48;
   const positions = Float32Array.from(createSeededPoints(11, 3000, [0, 0, width, height]));
@@ -459,7 +449,7 @@ it('GPUPointDensity separable smoothing matches the dense kernel within 1e-5', a
     }
     const dense = createGPUPointDensityGaussianKernel(radius, sigma);
     const line = createGPUPointDensityGaussianKernel1D(radius, sigma);
-    const results: Float32Array[] = [];
+    const results: number[][] = [];
     for (const separable of [false, true]) {
       const positionsBuffer = createInputBuffer(device, positions);
       const valuesBuffer = createOutputBuffer(device, width * height);
@@ -530,9 +520,7 @@ it('GPUPointDensity separable smoothing matches the dense kernel within 1e-5', a
 
 it('GPUPointDensity smoothing requires a kernel or separableKernel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positionsBuffer = createInputBuffer(device, new Float32Array(2));
   const valuesBuffer = createOutputBuffer(device, 4);
   const graph = new GPUCommandGraph(device, {id: 'density-no-kernel'});
@@ -553,9 +541,7 @@ for (const binning of ['grid', 'hexagon'] as const) {
   for (const sumAccumulation of ['workgroup', 'atomic'] as const) {
     it(`GPUPointDensity ${binning} sums match the CPU when most points share one cell (${sumAccumulation})`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const bounds = [0, 0, 16, 16] as const;
       const rowCount = 20000;
       const gridSize: [number, number] =
@@ -605,6 +591,11 @@ for (const binning of ['grid', 'hexagon'] as const) {
       const sums = await readFloat32(sumsBuffer, cellCount);
       expect(Math.max(...oracle.sums)).toBeGreaterThan(10000);
       for (const [index, expected] of oracle.sums.entries()) {
+        // Tolerance derivation: both accumulations add in a nondeterministic order (the float
+        // compare-and-swap add, or workgroup partials followed by it). Each f32 add rounds by at
+        // most 2^-24 = 6e-8 relative, so the worst case for the ~18000 rows of the hot cell is
+        // n * 6e-8 = 1e-3, but rounding errors of random sign accumulate as sqrt(n) * 6e-8 =
+        // 8e-6, comfortably inside 1e-4 relative (1e-4 absolute for sums below one).
         expect(Math.abs(sums[index] - expected)).toBeLessThanOrEqual(1e-4 * Math.max(1, expected));
       }
       compiled.destroy();
@@ -612,3 +603,108 @@ for (const binning of ['grid', 'hexagon'] as const) {
     });
   }
 }
+
+/**
+ * Decision 4: workgroup sums are fixed point, so they equal the exact BigInt model bit for bit
+ * and do not change across runs, row orders or chunkings.
+ */
+it('GPUPointDensity workgroup sums are deterministic and equal the fixed-point oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rowCount = 50_000;
+  const gridSize: [number, number] = [16, 16];
+  const cellCount = 256;
+  let state = 12345;
+  const random = () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+  const positions = new Float32Array(rowCount * 2);
+  const weights = new Float32Array(rowCount);
+  const keys = new Uint32Array(rowCount);
+  for (let row = 0; row < rowCount; row++) {
+    // Cell centers avoid edge ties; 60% of the rows share one hotspot cell.
+    const x = random() < 0.6 ? 7 : Math.floor(random() * 16);
+    const y = random() < 0.6 ? 9 : Math.floor(random() * 16);
+    positions[row * 2] = x + 0.5;
+    positions[row * 2 + 1] = y + 0.5;
+    keys[row] = y * 16 + x;
+    weights[row] = (random() - 0.3) * 2 ** Math.floor(random() * 16 - 8);
+  }
+  weights[7] = 3e6;
+  weights[8] = Number.NaN;
+  const run = async (order: number[], chunkCount: number): Promise<number[]> => {
+    const orderedPositions = new Float32Array(rowCount * 2);
+    const orderedWeights = new Float32Array(rowCount);
+    for (const [target, source] of order.entries()) {
+      orderedPositions[target * 2] = positions[source * 2];
+      orderedPositions[target * 2 + 1] = positions[source * 2 + 1];
+      orderedWeights[target] = weights[source];
+    }
+    const positionsBuffer = createInputBuffer(device, orderedPositions);
+    const weightsBuffer = createInputBuffer(device, orderedWeights);
+    const valuesBuffer = createOutputBuffer(device, cellCount);
+    const sumsBuffer = createOutputBuffer(device, cellCount);
+    const graph = new GPUCommandGraph(device, {id: `density-deterministic-${chunkCount}`});
+    const chunkLength = Math.ceil(rowCount / chunkCount);
+    const chunk = <Format extends 'float32' | 'float32x2'>(
+      name: string,
+      buffer: Buffer,
+      format: Format,
+      components: number
+    ) => {
+      const whole = importGraphBuffer(graph, name, buffer, format, rowCount);
+      return createVectorView(
+        name,
+        format,
+        Array.from({length: chunkCount}, (_, index) => {
+          const begin = index * chunkLength;
+          const length = Math.min(chunkLength, rowCount - begin);
+          return graph.createDataView(whole.buffer, {
+            format,
+            length,
+            byteOffset: begin * components * 4
+          });
+        })
+      );
+    };
+    graph.add(
+      new GPUPointDensity({
+        positions:
+          chunkCount === 1
+            ? importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount)
+            : chunk('positions', positionsBuffer, 'float32x2', 2),
+        weights:
+          chunkCount === 1
+            ? importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', rowCount)
+            : chunk('weights', weightsBuffer, 'float32', 1),
+        bounds: [0, 0, 16, 16],
+        gridSize,
+        sumAccumulation: 'workgroup',
+        statistic: 'sum',
+        output: {
+          values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
+          sums: importGraphBuffer(graph, 'sums', sumsBuffer, 'float32', cellCount)
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const bits = await readUint32(sumsBuffer, cellCount);
+    compiled.destroy();
+    destroyAll([positionsBuffer, weightsBuffer, valuesBuffer, sumsBuffer]);
+    return bits;
+  };
+  const identity = Array.from({length: rowCount}, (_, row) => row);
+  const first = await run(identity, 1);
+  const expected = sumFixedPointOracle(weights, keys, cellCount).sums;
+  expect(first).toEqual(Array.from(new Uint32Array(Float32Array.from(expected).buffer)));
+  expect(await run(identity, 1)).toEqual(first);
+  const shuffled = identity.slice();
+  for (let row = shuffled.length - 1; row > 0; row--) {
+    const other = Math.floor(random() * (row + 1));
+    [shuffled[row], shuffled[other]] = [shuffled[other], shuffled[row]];
+  }
+  expect(await run(shuffled, 3)).toEqual(first);
+  expect(await run(identity.slice().reverse(), 1)).toEqual(first);
+});

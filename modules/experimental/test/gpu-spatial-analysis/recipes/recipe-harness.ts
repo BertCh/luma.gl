@@ -78,6 +78,17 @@ export class RecipeTestFixture {
     return parameterBuffer.importToGraph(this.graph) as GraphDataView<Format>;
   }
 
+  /** Creates an empty per-frame parameter buffer for a recipe that packs its own settings. */
+  parameterBuffer<Format extends 'float32' | 'uint32'>(
+    name: string,
+    format: Format,
+    length: number
+  ): GPUParameterBuffer<Format> {
+    const parameterBuffer = new GPUParameterBuffer<Format>(this.device, {id: name, format, length});
+    this.parameterBuffers.push(parameterBuffer);
+    return parameterBuffer;
+  }
+
   /** Compiles the graph, encodes it once and submits it. Results stay readable until `destroy()`. */
   run(): void {
     this.compiled = this.graph.compile();

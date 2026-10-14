@@ -9,20 +9,21 @@ import {
   type CompiledGPUCommandGraph,
   type GPUCommandGraphEncoding
 } from '@luma.gl/gpgpu/gpu-core';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/index';
 import {
   getGPURasterExtremaPyramidLayout,
   GPURasterExtremaPyramid,
   type GPURasterExtremaPyramidOutput
 } from '../../../src/gpu-raster/raster-pyramid/index';
 import {
-  getGPUTerrainSightLineParameterValues,
+  getGPUTerrainLineOfSightParameterValues,
   getGPUTerrainViewshedParameterValues,
   GPUTerrainCumulativeViewshed,
   GPUTerrainLineOfSight,
   GPUTerrainViewshed
 } from '../../../src/gpu-terrain/terrain-analysis/index';
 import {
-  getGPUPointHorizonParameterValues,
+  getGPUPointHorizonProfileParameterValues,
   getGPUPointHorizonVisibilityParameterValues,
   GPUPointHorizonProfile,
   GPUPointHorizonVisibility
@@ -117,6 +118,7 @@ export function createSharedPyramidScene(
 ): SharedPyramidScene {
   const {width, height, mode, only} = options;
   const pixelCount = width * height;
+  const grid = makeGPURasterMetadata({width, height, cellSize: CELL_SIZE});
   const pairCount = options.pairCount ?? 256;
   const observerCount = options.observerCount ?? 4;
   const azimuthCount = options.azimuthCount ?? 90;
@@ -176,41 +178,33 @@ export function createSharedPyramidScene(
   const viewshedSettings = makeParameters(
     'viewshed-settings',
     8,
-    getGPUTerrainViewshedParameterValues({
-      observer: [width / 2, height / 2],
-      observerHeight,
-      cellSize: [CELL_SIZE, CELL_SIZE],
-      curvatureCoefficient
-    })
+    getGPUTerrainViewshedParameterValues(
+      {observer: [width / 2, height / 2], observerHeight, curvatureCoefficient},
+      grid
+    )
   );
-  const sightLineValues = getGPUTerrainSightLineParameterValues({
-    observerHeight,
-    cellSize: [CELL_SIZE, CELL_SIZE],
-    curvatureCoefficient,
-    toleranceMeters: 2
-  });
+  const sightLineValues = getGPUTerrainLineOfSightParameterValues(
+    {observerHeight, curvatureCoefficient, toleranceMeters: 2},
+    grid
+  );
   const lineOfSightSettings = makeParameters('line-of-sight-settings', 12, sightLineValues);
   const cumulativeSettings = makeParameters('cumulative-settings', 12, sightLineValues);
   const horizonSettings = makeParameters(
     'horizon-settings',
     8,
-    getGPUPointHorizonParameterValues({
-      cellSize: [CELL_SIZE, CELL_SIZE],
-      curvatureCoefficient
-    })
+    getGPUPointHorizonProfileParameterValues({curvatureCoefficient}, grid)
   );
   const horizonVisibilitySettings = makeParameters(
     'horizon-visibility-settings',
     12,
-    getGPUPointHorizonVisibilityParameterValues({
-      cellSize: [CELL_SIZE, CELL_SIZE],
-      curvatureCoefficient,
-      toleranceDegrees: 0.05
-    })
+    getGPUPointHorizonVisibilityParameterValues(
+      {curvatureCoefficient, toleranceDegrees: 0.05},
+      grid
+    )
   );
 
   const traversal = mode === 'march' ? 'march' : 'pyramid';
-  const layout = getGPURasterExtremaPyramidLayout(width, height, {
+  const layout = getGPURasterExtremaPyramidLayout(grid, {
     firstBlockSize: 4,
     footprint: 'bilinear'
   });
@@ -232,18 +226,19 @@ export function createSharedPyramidScene(
     earlier.add(
       new GPURasterExtremaPyramid({
         id: 'earlier-pyramid',
-        width,
-        height,
+        grid,
         firstBlockSize: 4,
         footprint: 'bilinear',
         input: importElevation(earlier, 'earlier-elevation'),
-        combined: importGraphBuffer(
-          earlier,
-          'earlier-combined',
-          pyramidBuffer,
-          'float32',
-          2 * layout.length
-        )
+        output: {
+          combined: importGraphBuffer(
+            earlier,
+            'earlier-combined',
+            pyramidBuffer,
+            'float32',
+            2 * layout.length
+          )
+        }
       })
     );
     producerCompiled = earlier.compile();
@@ -255,12 +250,18 @@ export function createSharedPyramidScene(
   if (mode === 'shared') {
     const producer = new GPURasterExtremaPyramid({
       id: 'shared-pyramid',
-      width,
-      height,
+      grid,
       firstBlockSize: 4,
       footprint: 'bilinear',
       input: importElevation(graph, 'shared-elevation'),
-      combined: createTransientView(graph, 'shared-pyramid-combined', 'float32', 2 * layout.length)
+      output: {
+        combined: createTransientView(
+          graph,
+          'shared-pyramid-combined',
+          'float32',
+          2 * layout.length
+        )
+      }
     });
     graph.add(producer);
     pyramid = producer.output;
@@ -285,13 +286,14 @@ export function createSharedPyramidScene(
     graph.add(
       new GPUTerrainViewshed({
         id: 'viewshed',
-        width,
-        height,
+        grid,
         elevation: importElevation(graph, 'viewshed-elevation'),
-        settings: settingsView(viewshedSettings),
+        parameters: settingsView(viewshedSettings),
         traversal,
         pyramid,
-        visibility: importGraphBuffer(graph, 'viewshed-out', viewshedOutput, 'uint32', pixelCount)
+        output: {
+          visibility: importGraphBuffer(graph, 'viewshed-out', viewshedOutput, 'uint32', pixelCount)
+        }
       })
     );
   }
@@ -299,15 +301,28 @@ export function createSharedPyramidScene(
     graph.add(
       new GPUTerrainLineOfSight({
         id: 'line-of-sight',
-        width,
-        height,
+        grid,
         elevation: importElevation(graph, 'los-elevation'),
         pairs: importGraphBuffer(graph, 'pairs', pairBuffer, 'float32x4', pairCount),
-        settings: settingsView(lineOfSightSettings),
+        parameters: settingsView(lineOfSightSettings),
         traversal,
         pyramid,
-        visibility: importGraphBuffer(graph, 'los-out', lineOfSightVisibility, 'uint32', pairCount),
-        clearance: importGraphBuffer(graph, 'los-clear', lineOfSightClearance, 'float32', pairCount)
+        output: {
+          visibility: importGraphBuffer(
+            graph,
+            'los-out',
+            lineOfSightVisibility,
+            'uint32',
+            pairCount
+          ),
+          clearance: importGraphBuffer(
+            graph,
+            'los-clear',
+            lineOfSightClearance,
+            'float32',
+            pairCount
+          )
+        }
       })
     );
   }
@@ -315,8 +330,7 @@ export function createSharedPyramidScene(
     graph.add(
       new GPUTerrainCumulativeViewshed({
         id: 'cumulative',
-        width,
-        height,
+        grid,
         elevation: importElevation(graph, 'cumulative-elevation'),
         observers: importGraphBuffer(
           graph,
@@ -325,16 +339,18 @@ export function createSharedPyramidScene(
           'float32x2',
           cumulativeObserverCount
         ),
-        settings: settingsView(cumulativeSettings),
+        parameters: settingsView(cumulativeSettings),
         traversal,
         pyramid,
-        visibleCount: importGraphBuffer(
-          graph,
-          'cumulative-out',
-          cumulativeOutput,
-          'uint32',
-          pixelCount
-        )
+        output: {
+          visibleCount: importGraphBuffer(
+            graph,
+            'cumulative-out',
+            cumulativeOutput,
+            'uint32',
+            pixelCount
+          )
+        }
       })
     );
   }
@@ -342,8 +358,7 @@ export function createSharedPyramidScene(
     graph.add(
       new GPUPointHorizonProfile({
         id: 'profile',
-        width,
-        height,
+        grid,
         elevation: importElevation(graph, 'profile-elevation'),
         traversal,
         pyramid,
@@ -357,9 +372,17 @@ export function createSharedPyramidScene(
           'float32x4',
           observerCount
         ),
-        settings: settingsView(horizonSettings),
-        tangent: importGraphBuffer(graph, 'profile-tangent', profileTangent, 'float32', rayCount),
-        distance: importGraphBuffer(graph, 'profile-distance', profileDistance, 'float32', rayCount)
+        parameters: settingsView(horizonSettings),
+        output: {
+          tangent: importGraphBuffer(graph, 'profile-tangent', profileTangent, 'float32', rayCount),
+          distance: importGraphBuffer(
+            graph,
+            'profile-distance',
+            profileDistance,
+            'float32',
+            rayCount
+          )
+        }
       })
     );
   }
@@ -367,8 +390,7 @@ export function createSharedPyramidScene(
     graph.add(
       new GPUPointHorizonVisibility({
         id: 'horizon-visibility',
-        width,
-        height,
+        grid,
         elevation: importElevation(graph, 'horizon-elevation'),
         traversal,
         pyramid,
@@ -382,8 +404,16 @@ export function createSharedPyramidScene(
           observerCount
         ),
         targets: importGraphBuffer(graph, 'horizon-targets', targetBuffer, 'float32x4', pairCount),
-        settings: settingsView(horizonVisibilitySettings),
-        visibility: importGraphBuffer(graph, 'horizon-out', horizonVisibility, 'uint32', pairCount)
+        parameters: settingsView(horizonVisibilitySettings),
+        output: {
+          visibility: importGraphBuffer(
+            graph,
+            'horizon-out',
+            horizonVisibility,
+            'uint32',
+            pairCount
+          )
+        }
       })
     );
   }

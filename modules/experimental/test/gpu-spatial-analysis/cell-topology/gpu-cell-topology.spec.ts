@@ -27,6 +27,7 @@ import {
 } from '../cell-aggregation/cell-aggregation-oracle';
 import {createRandom} from '../cell-aggregation/cell-aggregation-points';
 import {getCellTopologyRowOnCPU} from './cell-topology-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Family = 'quadbin' | 'h3';
 
@@ -212,9 +213,7 @@ async function checkOperation(
 for (const family of ['quadbin', 'h3'] as const) {
   it(`GPUCellTopology ${family} disks and rings match the CPU reference`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const cells = family === 'h3' ? getH3Cells() : getQuadbinCells();
     for (const k of [0, 1, 2, 4]) {
       await checkOperation(device, family, {type: 'disk', k}, cells);
@@ -225,9 +224,7 @@ for (const family of ['quadbin', 'h3'] as const) {
 
 it('GPUCellTopology parents match the CPU reference', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Resolution 12 and 15 cells, plus coarser ones that yield zero rows.
   const h3Cells = getH3Cells();
   for (const resolution of [0, 3, 7, 12]) {
@@ -241,9 +238,7 @@ it('GPUCellTopology parents match the CPU reference', async () => {
 
 it('GPUCellTopology children match the CPU reference including pentagons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const h3Cells = getH3Cells();
   for (const [inputResolution, resolution] of [
     [3, 3],
@@ -273,9 +268,7 @@ it('GPUCellTopology children match the CPU reference including pentagons', async
 
 it('GPUCellTopology follows masks and rewritten cells without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const family of ['quadbin', 'h3'] as const) {
     const all = family === 'h3' ? getH3Cells() : getQuadbinCells();
     const rows = 40;
@@ -304,9 +297,7 @@ it('GPUCellTopology follows masks and rewritten cells without recompiling', asyn
 
 it('GPUCellTopology accepts high-low word order', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = getQuadbinCells().slice(0, 30);
   const operation: GPUCellTopologyOperation = {type: 'ring', k: 1};
   const stride = getCellTopologyStride('quadbin', operation);

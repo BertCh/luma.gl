@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUMultiScaleReliefParameterValues,
@@ -27,6 +28,7 @@ import {
   getMaximumMagnitude,
   punchHoles
 } from './relief-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 64;
 const HEIGHT = 48;
@@ -52,12 +54,13 @@ async function runMultiScaleRelief(
   graph.add(
     new GPUMultiScaleRelief({
       ...scales,
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       elevation: createElevationBand(graph, device, elevation, buffers),
-      settings: settings.importToGraph(graph),
-      relief: importGraphBuffer(graph, 'relief', reliefBuffer, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      parameters: settings.importToGraph(graph),
+      output: {
+        relief: importGraphBuffer(graph, 'relief', reliefBuffer, 'float32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -118,9 +121,7 @@ it('getGPUMultiScaleReliefRadii follows the RVT index formulas', () => {
 
 it('GPUMultiScaleRelief equals the literal RVT loop for several scale ladders', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 21);
   punchHoles(elevation, WIDTH, [
     [5, 5],
@@ -145,5 +146,21 @@ it('GPUMultiScaleRelief equals the literal RVT loop for several scale ladders', 
     elevation,
     {resolution: 0.5, featureMinimum: 2, featureMaximum: 9, scalingFactor: 1},
     [1]
+  );
+});
+
+it('GPUMultiScaleRelief matches RVT above the former absolute elevation cap', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = Float32Array.from(
+    {length: PIXEL_COUNT},
+    (_, index) => 1000000 + (index % 17) * 0.25
+  );
+  elevation[0] = NaN;
+  await runMultiScaleRelief(
+    device,
+    elevation,
+    {resolution: 1, featureMinimum: 3, featureMaximum: 30, scalingFactor: 2},
+    [1, 2]
   );
 });

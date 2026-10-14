@@ -94,7 +94,57 @@ export function decodeCalendarOnCPU(
   if (Math.abs(offsetMinutes) > GPU_CALENDAR_BUCKETS_MAXIMUM_OFFSET_MINUTES) {
     return getInvalidCalendarFields();
   }
-  const local = milliseconds + BigInt(offsetMinutes) * 60_000n;
+  return decodeCalendarWithOffsetOnCPU(milliseconds, offsetMinutes * 60_000, firstDayOfWeek);
+}
+
+/**
+ * Number of transitions at or before `milliseconds` (upper-bound binary search), the index of
+ * the offset in force in a `timeZone` table.
+ */
+export function getTransitionIndexOnCPU(
+  transitions: readonly bigint[],
+  milliseconds: bigint
+): number {
+  let low = 0;
+  let high = transitions.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (transitions[middle] <= milliseconds) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/**
+ * CPU oracle of the `timeZone` table path: looks the offset in seconds up with a BigInt binary
+ * search, then decodes exactly. An offset beyond +-86400 s is invalid.
+ *
+ * @param transitions Strictly increasing epoch-millisecond instants.
+ * @param offsetSeconds `transitions.length + 1` offsets in seconds.
+ */
+export function decodeCalendarWithTableOnCPU(
+  milliseconds: bigint,
+  transitions: readonly bigint[],
+  offsetSeconds: ArrayLike<number>,
+  firstDayOfWeek: number = 0
+): CalendarFields {
+  const seconds = offsetSeconds[getTransitionIndexOnCPU(transitions, milliseconds)];
+  return decodeCalendarWithOffsetOnCPU(milliseconds, seconds * 1000, firstDayOfWeek);
+}
+
+/** Decode with an offset in milliseconds; beyond +-86,400,000 ms the row is invalid. */
+export function decodeCalendarWithOffsetOnCPU(
+  milliseconds: bigint,
+  offsetMilliseconds: number,
+  firstDayOfWeek: number = 0
+): CalendarFields {
+  if (Math.abs(offsetMilliseconds) > 86_400_000) {
+    return getInvalidCalendarFields();
+  }
+  const local = milliseconds + BigInt(offsetMilliseconds);
   if (local < INT64_MINIMUM || local > INT64_MAXIMUM) {
     return getInvalidCalendarFields();
   }

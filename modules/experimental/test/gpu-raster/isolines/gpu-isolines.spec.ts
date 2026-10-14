@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {GPUIsolines} from '../../../src/gpu-raster/isolines/gpu-isolines';
 import {getGPUIsolinesParameterValues} from '../../../src/gpu-raster/isolines/isolines-parameters';
 import {
@@ -22,6 +23,7 @@ import {
   stitchIsolinesOnCPU,
   type IsolinesScene
 } from './isolines-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type HarnessOptions = {
   width: number;
@@ -53,8 +55,8 @@ function createHarness(device: Device, options: HarnessOptions) {
     segmentLevels: createOutputBuffer(device, capacity),
     segmentEdges: createOutputBuffer(device, 2 * capacity),
     count: createOutputBuffer(device, 1),
-    overflow: createOutputBuffer(device, 1),
     requiredCount: createOutputBuffer(device, 1),
+    overflow: createOutputBuffer(device, 1),
     vertices: createOutputBuffer(device, 2 * vertexCapacity),
     polylineOffsets: createOutputBuffer(device, capacity + 1),
     polylineLevels: createOutputBuffer(device, capacity),
@@ -64,6 +66,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     polylineOverflow: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'isolines-graph'});
+  const grid = makeGPURasterMetadata({width, height});
   const importView = <Format extends 'float32' | 'uint32' | 'float32x2' | 'float32x4' | 'uint32x2'>(
     name: string,
     buffer: ReturnType<typeof createOutputBuffer>,
@@ -72,8 +75,7 @@ function createHarness(device: Device, options: HarnessOptions) {
   ) => importGraphBuffer(graph, name, buffer, format, length);
   graph.add(
     new GPUIsolines({
-      width,
-      height,
+      grid,
       values: importView('raster', rasterBuffer, 'float32', width * height),
       validity: validityBuffer
         ? importView('validity', validityBuffer, 'uint32', width * height)
@@ -85,36 +87,40 @@ function createHarness(device: Device, options: HarnessOptions) {
         segments: importView('segments', buffers.segments, 'float32x4', capacity),
         segmentLevels: importView('segment-levels', buffers.segmentLevels, 'uint32', capacity),
         segmentEdges: importView('segment-edges', buffers.segmentEdges, 'uint32x2', capacity),
-        count: importView('count', buffers.count, 'uint32', 1),
-        overflow: importView('overflow', buffers.overflow, 'uint32', 1),
-        requiredCount: importView('total-count', buffers.requiredCount, 'uint32', 1)
-      },
-      polylines: options.polylines
-        ? {
-            vertices: importView('vertices', buffers.vertices, 'float32x2', vertexCapacity),
-            polylineOffsets: importView(
-              'polyline-offsets',
-              buffers.polylineOffsets,
-              'uint32',
-              capacity + 1
-            ),
-            polylineLevels: importView(
-              'polyline-levels',
-              buffers.polylineLevels,
-              'uint32',
-              capacity
-            ),
-            polylineClosed: importView(
-              'polyline-closed',
-              buffers.polylineClosed,
-              'uint32',
-              capacity
-            ),
-            polylineCount: importView('polyline-count', buffers.polylineCount, 'uint32', 1),
-            vertexCount: importView('vertex-count', buffers.vertexCount, 'uint32', 1),
-            overflow: importView('polyline-overflow', buffers.polylineOverflow, 'uint32', 1)
-          }
-        : undefined
+        polylines: options.polylines
+          ? {
+              vertices: importView('vertices', buffers.vertices, 'float32x2', vertexCapacity),
+              polylineOffsets: importView(
+                'polyline-offsets',
+                buffers.polylineOffsets,
+                'uint32',
+                capacity + 1
+              ),
+              polylineLevels: importView(
+                'polyline-levels',
+                buffers.polylineLevels,
+                'uint32',
+                capacity
+              ),
+              polylineClosed: importView(
+                'polyline-closed',
+                buffers.polylineClosed,
+                'uint32',
+                capacity
+              ),
+              polylineCount: importView('polyline-count', buffers.polylineCount, 'uint32', 1),
+              vertexCount: importView('vertex-count', buffers.vertexCount, 'uint32', 1)
+            }
+          : undefined,
+        status: {
+          overflow: importView('overflow', buffers.overflow, 'uint32', 1),
+          polylineOverflow: options.polylines
+            ? importView('polyline-overflow', buffers.polylineOverflow, 'uint32', 1)
+            : undefined,
+          count: importView('count', buffers.count, 'uint32', 1),
+          requiredCount: importView('total-count', buffers.requiredCount, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -136,13 +142,14 @@ function createHarness(device: Device, options: HarnessOptions) {
       levels.set(scene.levels.slice(0, maximumLevelCount));
       levelsBuffer.write(levels);
       parameterBuffer.write(
-        getGPUIsolinesParameterValues({
-          width,
-          height,
-          levelCount,
-          extent: scene.extent,
-          localOrigin
-        })
+        getGPUIsolinesParameterValues(
+          {
+            levelCount,
+            extent: scene.extent,
+            localOrigin
+          },
+          grid
+        )
       );
       submitGraph(device, compiled, undefined);
       const [count] = await readUint32(buffers.count, 1);
@@ -281,9 +288,7 @@ function createRandomScene(seed: number, width: number, height: number): Isoline
 
 it('GPUIsolines matches the CPU oracle on random fields as levels and counts change', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 23;
   const harness = createHarness(device, {
@@ -320,9 +325,7 @@ it('GPUIsolines matches the CPU oracle on random fields as levels and counts cha
 
 it('GPUIsolines resolves both saddle types and keeps a plateau empty', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = createHarness(device, {
     width: 4,
     height: 3,
@@ -364,9 +367,7 @@ it('GPUIsolines resolves both saddle types and keeps a plateau empty', async () 
 
 it('GPUIsolines closes a ring around a peak and chains an open ramp contour', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 21;
   const height = 21;
   const harness = createHarness(device, {
@@ -407,9 +408,7 @@ it('GPUIsolines closes a ring around a peak and chains an open ramp contour', as
 
 it('GPUIsolines honours nodata sentinels, validity and NaN holes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 19;
   const height = 15;
   const harness = createHarness(device, {
@@ -437,11 +436,52 @@ it('GPUIsolines honours nodata sentinels, validity and NaN holes', async () => {
   expectPolylinesMatch(actual, expected, 'nodata');
 });
 
+it('GPUIsolines treats infinities as nodata and keeps bridges and collapses duplicate vertices at integer levels', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 12;
+  const height = 10;
+  const harness = createHarness(device, {
+    width,
+    height,
+    maximumLevelCount: 3,
+    segmentCapacity: 1500,
+    polylines: true
+  });
+  // C-06: +inf/-inf samples next to finite ones. The oracle treats them as nodata, so no NaN
+  // vertices appear and saddle centres never become NaN.
+  const infinite = createRandomScene(21, width, height);
+  for (let index = 0; index < infinite.values.length; index += 7) {
+    infinite.values[index] = index % 14 === 0 ? Infinity : -Infinity;
+  }
+  const infiniteScene = {...infinite, levels: [3, 5, 7]};
+  const infiniteActual = await harness.run(infiniteScene);
+  const infiniteExpected = expectSegmentsMatch(infiniteActual, infiniteScene, 3, 'infinities');
+  expect(infiniteExpected.length).toBeGreaterThan(0);
+  expectPolylinesMatch(infiniteActual, infiniteExpected, 'infinities');
+  // C-22: integer raster and integer levels put corners exactly on levels. Zero-length bridge
+  // segments stay in the raw output and the stitching; polyline vertices (compared bit for bit
+  // against the oracle) have the consecutive duplicates collapsed.
+  const integers = new Float32Array(width * height);
+  for (let index = 0; index < integers.length; index++) {
+    integers[index] = ((index % width) * 2 + Math.floor(index / width) * 3) % 5;
+  }
+  const integerScene: IsolinesScene = {
+    width,
+    height,
+    values: integers,
+    levels: [0, 2, 3],
+    extent: [0, 0, width, height]
+  };
+  const integerActual = await harness.run(integerScene);
+  const integerExpected = expectSegmentsMatch(integerActual, integerScene, 3, 'integers');
+  expect(integerExpected.length).toBeGreaterThan(0);
+  expectPolylinesMatch(integerActual, integerExpected, 'integers');
+});
+
 it('GPUIsolines clamps to capacity, reports overflow, and drops polylines on overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 31;
   const height = 21;
   const scene = createRandomScene(21, width, height);
@@ -488,8 +528,15 @@ it('GPUIsolines clamps to capacity, reports overflow, and drops polylines on ove
   const clipped = await tight.run(scene);
   const {polylines} = stitchIsolinesOnCPU(full);
   const flattened = getPolylineVertices(polylines, clipped.segments);
+  // The vertex capacity applies to the staged (pre-deduplication) vertices: one per segment plus
+  // the closing vertex, as documented on GPUIsolinesPolylineOutput. Collapsing bit-identical
+  // neighbours happens after the prefix is chosen, so the kept prefix is conservative.
   let keep = 0;
-  while (keep < polylines.length && flattened.offsets[keep + 1] <= Math.floor(full.length / 2)) {
+  let stagedVertexCount = 0;
+  while (keep < polylines.length) {
+    const next = stagedVertexCount + polylines[keep].segmentIndices.length + 1;
+    if (next > Math.floor(full.length / 2)) break;
+    stagedVertexCount = next;
     keep++;
   }
   expect(keep).toBeLessThan(polylines.length);
@@ -501,9 +548,7 @@ it('GPUIsolines clamps to capacity, reports overflow, and drops polylines on ove
 
 it('GPUIsolines stitches a large smooth field with many long chains and rings', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 129;
   const height = 97;
   const values = new Float32Array(width * height);
@@ -542,9 +587,7 @@ it('GPUIsolines stitches a large smooth field with many long chains and rings', 
 
 it('GPUIsolines stitches one very long ring and one very long open chain across many jump rounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 241;
   const height = 241;
   const ringValues = new Float32Array(width * height);
@@ -582,9 +625,7 @@ it('GPUIsolines stitches one very long ring and one very long open chain across 
 
 it('GPUIsolines places UTM-scale vertices to sub-decimetre with a local origin', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Review C-08: a 2.5 m raster at a UTM northing of 4.6e6 m, where the float32 ulp is 0.5 m.
   const width = 96;
   const height = 64;

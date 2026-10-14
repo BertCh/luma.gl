@@ -9,7 +9,7 @@
  * cases. Generator: scratchpad `build/K/gen.py`.
  */
 
-/** Longitude/latitude path vertices, f32-exact. */
+/** Longitude/latitude line vertices, f32-exact. */
 export const SPHERICAL_POSITIONS = [
   8.0, 47.0, 8.75057315826416, 49.38328170776367, 10.40468692779541, 47.734527587890625,
   9.205684661865234, 49.97584533691406, 6.237276554107666, 51.90321731567383, -60.0, 72.0,
@@ -18,9 +18,9 @@ export const SPHERICAL_POSITIONS = [
   5.000214099884033, 100.00199890136719, 5.001384735107422, 100.00248718261719, 5.003340244293213,
   100.00135040283203, 5.001981258392334, 100.00180053710938, 5.000156879425049, 20.0, 20.0
 ];
-export const SPHERICAL_PATH_OFFSETS = [0, 5, 9, 12, 18, 19, 19];
-/** Total great-circle length of each path in meters. */
-export const SPHERICAL_PATH_LENGTHS = [1053641.67, 579435.645, 741095.397, 908.931232, 0.0, 0.0];
+export const SPHERICAL_LINE_OFFSETS = [0, 5, 9, 12, 18, 19, 19];
+/** Total great-circle length of each line in meters. */
+export const SPHERICAL_LINE_LENGTHS = [1053641.67, 579435.645, 741095.397, 908.931232, 0.0, 0.0];
 export const SPHERICAL_POINTS = [
   10.464241981506348, 47.59934997558594, 9.668670654296875, 47.51690673828125, 10.392180442810059,
   46.724586486816406, 8.451863288879395, 46.50413513183594, 5.039703369140625, 51.38136291503906,
@@ -38,9 +38,9 @@ export const SPHERICAL_POINTS = [
   5.000949382781982, 8.0, 47.0, 0.0, -60.0
 ];
 
-/** Closest point on the path network per query point: path, segment, meters, foot point, side. */
+/** Closest point on the line network per query point: line, segment, meters, foot point, side. */
 export const SPHERICAL_PROJECTIONS: {
-  path: number;
+  line: number;
   segment: number;
   distance: number;
   measure: number;
@@ -49,7 +49,7 @@ export const SPHERICAL_PROJECTIONS: {
   side: number;
 }[] = [
   {
-    path: 0,
+    line: 0,
     segment: 1,
     distance: 15678.7158,
     measure: 490838.76,
@@ -58,7 +58,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 0,
+    line: 0,
     segment: 1,
     distance: 59397.8298,
     measure: 480843.478,
@@ -67,7 +67,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 0,
+    line: 0,
     segment: 1,
     distance: 112304.452,
     measure: 490838.76,
@@ -76,7 +76,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 0,
+    line: 0,
     segment: 0,
     distance: 65002.0114,
     measure: 0.0,
@@ -85,7 +85,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 0,
+    line: 0,
     segment: 3,
     distance: 100974.047,
     measure: 1053641.67,
@@ -94,7 +94,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 0,
+    line: 0,
     segment: 3,
     distance: 424.488214,
     measure: 957877.267,
@@ -103,7 +103,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 0,
+    line: 0,
     segment: 3,
     distance: 68560.802,
     measure: 922955.5,
@@ -112,7 +112,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 0,
+    line: 0,
     segment: 0,
     distance: 28153.7803,
     measure: 151845.774,
@@ -121,7 +121,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 1,
+    line: 1,
     segment: 2,
     distance: 177600.054,
     measure: 494961.376,
@@ -130,7 +130,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 1,
+    line: 1,
     segment: 1,
     distance: 5389.70154,
     measure: 434424.677,
@@ -139,7 +139,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 1,
+    line: 1,
     segment: 1,
     distance: 32719.8578,
     measure: 403212.349,
@@ -148,7 +148,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 1,
+    line: 1,
     segment: 2,
     distance: 88635.1233,
     measure: 579435.645,
@@ -157,7 +157,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 1,
+    line: 1,
     segment: 1,
     distance: 88664.8028,
     measure: 317552.326,
@@ -166,7 +166,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 1,
+    line: 1,
     segment: 0,
     distance: 193775.167,
     measure: 41180.7238,
@@ -175,7 +175,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 1,
+    line: 1,
     segment: 0,
     distance: 62511.9896,
     measure: 122528.928,
@@ -184,7 +184,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 1,
+    line: 1,
     segment: 2,
     distance: 149155.205,
     measure: 491706.033,
@@ -193,7 +193,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 2,
+    line: 2,
     segment: 0,
     distance: 27441.7417,
     measure: 277562.858,
@@ -202,7 +202,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 2,
+    line: 2,
     segment: 0,
     distance: 270294.316,
     measure: 367532.153,
@@ -211,7 +211,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 2,
+    line: 2,
     segment: 1,
     distance: 116270.846,
     measure: 741095.397,
@@ -220,7 +220,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 2,
+    line: 2,
     segment: 0,
     distance: 32722.0054,
     measure: 175865.24,
@@ -229,7 +229,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 2,
+    line: 2,
     segment: 1,
     distance: 235325.602,
     measure: 474386.935,
@@ -238,7 +238,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 2,
+    line: 2,
     segment: 0,
     distance: 74088.6567,
     measure: 163550.295,
@@ -247,7 +247,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 2,
+    line: 2,
     segment: 0,
     distance: 232956.186,
     measure: 0.0,
@@ -256,7 +256,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 2,
+    line: 2,
     segment: 0,
     distance: 143927.632,
     measure: 0.0,
@@ -265,7 +265,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 3,
+    line: 3,
     segment: 2,
     distance: 580.41205,
     measure: 503.329538,
@@ -274,7 +274,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 3,
+    line: 3,
     segment: 0,
     distance: 514.924178,
     measure: 3.10642257e-10,
@@ -283,7 +283,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 3,
+    line: 3,
     segment: 0,
     distance: 2643.79434,
     measure: 23.8667806,
@@ -292,7 +292,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 3,
+    line: 3,
     segment: 0,
     distance: 255.519938,
     measure: 23.8667806,
@@ -301,7 +301,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 3,
+    line: 3,
     segment: 4,
     distance: 2278.62184,
     measure: 908.931232,
@@ -310,7 +310,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 3,
+    line: 3,
     segment: 0,
     distance: 2140.87591,
     measure: 0.0,
@@ -319,7 +319,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 3,
+    line: 3,
     segment: 2,
     distance: 2023.72634,
     measure: 503.329538,
@@ -328,7 +328,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: -1
   },
   {
-    path: 3,
+    line: 3,
     segment: 0,
     distance: 329.752815,
     measure: 23.8667806,
@@ -337,7 +337,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 1
   },
   {
-    path: 0,
+    line: 0,
     segment: 0,
     distance: 1.15454905e-10,
     measure: 0.0,
@@ -346,7 +346,7 @@ export const SPHERICAL_PROJECTIONS: {
     side: 0
   },
   {
-    path: 3,
+    line: 3,
     segment: 0,
     distance: 11044053.5,
     measure: 1.28694659e-9,
@@ -356,18 +356,18 @@ export const SPHERICAL_PROJECTIONS: {
   }
 ];
 
-/** Located events: path, fraction of the path, lateral offset in meters, expected position. */
+/** Located events: line, fraction of the line, lateral offset in meters, expected position. */
 export const SPHERICAL_EVENTS: {
-  path: number;
+  line: number;
   fraction: number;
   offset: number;
   meters: number;
   position: [number, number];
   azimuth: number;
 }[] = [
-  {path: 0, fraction: 0.0, offset: 0.0, meters: 0.0, position: [8.0, 47.0], azimuth: 11.5780769},
+  {line: 0, fraction: 0.0, offset: 0.0, meters: 0.0, position: [8.0, 47.0], azimuth: 11.5780769},
   {
-    path: 0,
+    line: 0,
     fraction: 0.0,
     offset: 2500.0,
     meters: 0.0,
@@ -375,7 +375,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 11.5780769
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.1,
     offset: 0.0,
     meters: 105364.167,
@@ -383,7 +383,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 11.7872095
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.1,
     offset: 2500.0,
     meters: 105364.167,
@@ -391,7 +391,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 11.7872095
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.37,
     offset: 0.0,
     meters: 389847.418,
@@ -399,7 +399,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 146.477903
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.37,
     offset: 2500.0,
     meters: 389847.418,
@@ -407,7 +407,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 146.477903
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.5,
     offset: 0.0,
     meters: 526820.835,
@@ -415,7 +415,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 340.942115
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.5,
     offset: 2500.0,
     meters: 526820.835,
@@ -423,7 +423,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 340.942115
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.93,
     offset: 0.0,
     meters: 979886.753,
@@ -431,7 +431,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 315.290528
   },
   {
-    path: 0,
+    line: 0,
     fraction: 0.93,
     offset: 2500.0,
     meters: 979886.753,
@@ -439,7 +439,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 315.290528
   },
   {
-    path: 0,
+    line: 0,
     fraction: 1.0,
     offset: 0.0,
     meters: 1053641.67,
@@ -447,16 +447,16 @@ export const SPHERICAL_EVENTS: {
     azimuth: 314.69724
   },
   {
-    path: 0,
+    line: 0,
     fraction: 1.0,
     offset: 2500.0,
     meters: 1053641.67,
     position: [6.21165541, 51.8872329],
     azimuth: 314.69724
   },
-  {path: 1, fraction: 0.0, offset: 0.0, meters: 0.0, position: [-60.0, 72.0], azimuth: 107.372351},
+  {line: 1, fraction: 0.0, offset: 0.0, meters: 0.0, position: [-60.0, 72.0], azimuth: 107.372351},
   {
-    path: 1,
+    line: 1,
     fraction: 0.0,
     offset: 2500.0,
     meters: 0.0,
@@ -464,7 +464,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 107.372351
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.1,
     offset: 0.0,
     meters: 57943.5645,
@@ -472,7 +472,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 108.889244
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.1,
     offset: 2500.0,
     meters: 57943.5645,
@@ -480,7 +480,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 108.889244
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.37,
     offset: 0.0,
     meters: 214391.189,
@@ -488,7 +488,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 197.144394
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.37,
     offset: 2500.0,
     meters: 214391.189,
@@ -496,7 +496,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 197.144394
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.5,
     offset: 0.0,
     meters: 289717.822,
@@ -504,7 +504,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 196.58705
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.5,
     offset: 2500.0,
     meters: 289717.822,
@@ -512,7 +512,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 196.58705
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.93,
     offset: 0.0,
     meters: 538875.15,
@@ -520,7 +520,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 237.828976
   },
   {
-    path: 1,
+    line: 1,
     fraction: 0.93,
     offset: 2500.0,
     meters: 538875.15,
@@ -528,7 +528,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 237.828976
   },
   {
-    path: 1,
+    line: 1,
     fraction: 1.0,
     offset: 0.0,
     meters: 579435.645,
@@ -536,16 +536,16 @@ export const SPHERICAL_EVENTS: {
     azimuth: 237.052644
   },
   {
-    path: 1,
+    line: 1,
     fraction: 1.0,
     offset: 2500.0,
     meters: 579435.645,
     position: [-61.7073018, 68.2783709],
     azimuth: 237.052644
   },
-  {path: 2, fraction: 0.0, offset: 0.0, meters: 0.0, position: [178.0, 10.0], azimuth: 55.5389468},
+  {line: 2, fraction: 0.0, offset: 0.0, meters: 0.0, position: [178.0, 10.0], azimuth: 55.5389468},
   {
-    path: 2,
+    line: 2,
     fraction: 0.0,
     offset: 2500.0,
     meters: 0.0,
@@ -553,7 +553,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 55.5389468
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.1,
     offset: 0.0,
     meters: 74109.5397,
@@ -561,7 +561,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 55.6377654
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.1,
     offset: 2500.0,
     meters: 74109.5397,
@@ -569,7 +569,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 55.6377654
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.37,
     offset: 0.0,
     meters: 274205.297,
@@ -577,7 +577,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 55.923865
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.37,
     offset: 2500.0,
     meters: 274205.297,
@@ -585,7 +585,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 55.923865
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.5,
     offset: 0.0,
     meters: 370547.698,
@@ -593,7 +593,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 56.0717143
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.5,
     offset: 2500.0,
     meters: 370547.698,
@@ -601,7 +601,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 56.0717143
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.93,
     offset: 0.0,
     meters: 689218.719,
@@ -609,7 +609,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 108.994945
   },
   {
-    path: 2,
+    line: 2,
     fraction: 0.93,
     offset: 2500.0,
     meters: 689218.719,
@@ -617,7 +617,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 108.994945
   },
   {
-    path: 2,
+    line: 2,
     fraction: 1.0,
     offset: 0.0,
     meters: 741095.397,
@@ -625,16 +625,16 @@ export const SPHERICAL_EVENTS: {
     azimuth: 109.081279
   },
   {
-    path: 2,
+    line: 2,
     fraction: 1.0,
     offset: 2500.0,
     meters: 741095.397,
     position: [-175.992512, 11.0212476],
     azimuth: 109.081279
   },
-  {path: 3, fraction: 0.0, offset: 0.0, meters: 0.0, position: [100.0, 5.0], azimuth: 4.0610863},
+  {line: 3, fraction: 0.0, offset: 0.0, meters: 0.0, position: [100.0, 5.0], azimuth: 4.0610863},
   {
-    path: 3,
+    line: 3,
     fraction: 0.0,
     offset: 0.5,
     meters: 0.0,
@@ -642,7 +642,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 4.0610863
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.1,
     offset: 0.0,
     meters: 90.8931232,
@@ -650,7 +650,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 59.357492
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.1,
     offset: 0.5,
     meters: 90.8931232,
@@ -658,7 +658,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 59.357492
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.37,
     offset: 0.0,
     meters: 336.304556,
@@ -666,7 +666,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 13.9684899
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.37,
     offset: 0.5,
     meters: 336.304556,
@@ -674,7 +674,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 13.9684899
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.5,
     offset: 0.0,
     meters: 454.465616,
@@ -682,7 +682,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 13.9685123
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.5,
     offset: 0.5,
     meters: 454.465616,
@@ -690,7 +690,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 13.9685123
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.93,
     offset: 0.0,
     meters: 845.306046,
@@ -698,7 +698,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 166.19082
   },
   {
-    path: 3,
+    line: 3,
     fraction: 0.93,
     offset: 0.5,
     meters: 845.306046,
@@ -706,7 +706,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 166.19082
   },
   {
-    path: 3,
+    line: 3,
     fraction: 1.0,
     offset: 0.0,
     meters: 908.931232,
@@ -714,7 +714,7 @@ export const SPHERICAL_EVENTS: {
     azimuth: 166.190832
   },
   {
-    path: 3,
+    line: 3,
     fraction: 1.0,
     offset: 0.5,
     meters: 908.931232,

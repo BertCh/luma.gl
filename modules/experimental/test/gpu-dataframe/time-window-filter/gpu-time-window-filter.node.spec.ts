@@ -20,8 +20,10 @@ function createProps(
     window: createTransientView(graph, 'window', 'float32', 8),
     output: {
       ids: createTransientView(graph, 'ids', 'uint32', rows),
-      count: createTransientView(graph, 'count', 'uint32', 1),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      status: {
+        count: createTransientView(graph, 'count', 'uint32', 1),
+        overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      }
     },
     ...overrides
   };
@@ -66,12 +68,16 @@ it('GPUTimeWindowFilter wires track counts and vector chunks', () => {
     createTransientView(graph, 't1', 'float32', 0),
     createTransientView(graph, 't2', 'float32', 2)
   ]);
+  const trackProps = createProps(graph, 5);
   const ids = new GPUTimeWindowFilter({
-    ...createProps(graph, 5),
+    ...trackProps,
     id: 'tracks',
     timestamps,
     trackIds: createTransientView(graph, 'track-ids', 'uint32', 5),
-    trackVisibleCounts: createTransientView(graph, 'track-counts', 'uint32', 2)
+    output: {
+      ...trackProps.output,
+      trackVisibleCounts: createTransientView(graph, 'track-counts', 'uint32', 2)
+    }
   })
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -103,7 +109,7 @@ it('GPUTimeWindowFilter validates props', () => {
   );
   expect(() =>
     create({
-      clipFractions: createTransientView(graph, 'clip', 'float32x2', 4)
+      output: {...base.output, clipFractions: createTransientView(graph, 'clip', 'float32x2', 4)}
     })
   ).toThrow(/requires endTimestamps/);
   expect(() =>
@@ -113,7 +119,10 @@ it('GPUTimeWindowFilter validates props', () => {
   ).toThrow(/requires endTimestamps/);
   expect(() =>
     create({
-      trackVisibleCounts: createTransientView(graph, 'counts', 'uint32', 2)
+      output: {
+        ...base.output,
+        trackVisibleCounts: createTransientView(graph, 'counts', 'uint32', 2)
+      }
     })
   ).toThrow(/together/);
   expect(() => create({trackIds: createTransientView(graph, 'tracks', 'uint32', 4)})).toThrow(
@@ -148,15 +157,18 @@ it('GPUTimeWindowFilter validates props', () => {
   });
   expect(() =>
     create({
-      drawInstanceCount: graph.createDataView(strided, {
-        format: 'uint32',
-        length: 1,
-        byteStride: 16,
-        byteOffset: 4,
-        rowByteLength: 4
-      })
+      output: {
+        ...base.output,
+        drawInstanceCount: graph.createDataView(strided, {
+          format: 'uint32',
+          length: 1,
+          byteStride: 16,
+          byteOffset: 4,
+          rowByteLength: 4
+        })
+      }
     })
-  ).toThrow(/drawInstanceCount/);
+  ).toThrow(/output.drawInstanceCount/);
 
   const otherGraph = new GPUCommandGraph(device);
   const foreign = new GPUTimeWindowFilter(createProps(otherGraph));

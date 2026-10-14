@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUColumnQuantileInterpolation} from '../../../src/gpu-dataframe/column-classification/column-quantiles-parameters';
+import {
+  getOrderStatisticMidpoint,
+  getOrderStatisticSample,
+  interpolateOrderStatistic,
+  isOrderStatisticProbability
+} from '../order-statistic-oracle';
 
 /** Inputs of {@link computeColumnQuantilesOracle}. */
 export type ColumnQuantilesOracleInput = {
@@ -19,24 +25,11 @@ export type ColumnQuantilesOracleInput = {
 export type ColumnQuantilesOracleResult = {
   quantiles: Float32Array;
   validCount: number;
-  /** Valid values sorted ascending (`-0` before `+0`). */
+  /** Valid (finite, unmasked) values sorted ascending, `-0` canonicalised to `+0`. */
   sorted: Float32Array;
   filterBounds: Float32Array;
-  filterMask: Uint32Array;
+  outputMask: Uint32Array;
 };
-
-/** Total order of non-NaN floats where `-0` sorts below `+0`. */
-export function compareFloatTotal(left: number, right: number): number {
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  const leftNegativeZero = Object.is(left, -0);
-  const rightNegativeZero = Object.is(right, -0);
-  return leftNegativeZero === rightNegativeZero ? 0 : leftNegativeZero ? -1 : 1;
-}
 
 /** Round half to even, as numpy `nearest`. */
 export function roundHalfToEven(value: number): number {
@@ -52,10 +45,10 @@ export function roundHalfToEven(value: number): number {
 }
 
 /**
- * Sort-based reference of `GPUColumnQuantiles`, written without any radix logic. Float32
- * intermediate arithmetic uses `Math.fround`, so the order statistics, ranks, and filter indices
- * equal the GPU's; the final `linear` and `midpoint` arithmetic may differ by 1 ULP because a GPU
- * can fuse the multiply and add.
+ * Sort-based reference of `GPUColumnQuantiles`, written without any radix logic, on the shared
+ * order-statistic policy (`../order-statistic-oracle.ts`): finite values only, `-0` equal to `+0`,
+ * NaN for an invalid probability. Float32 arithmetic uses `Math.fround` and the kernels never fuse
+ * a multiply-add, so every output is bit exact.
  */
 export function computeColumnQuantilesOracle(
   input: ColumnQuantilesOracleInput
@@ -63,20 +56,12 @@ export function computeColumnQuantilesOracle(
   const {values, mask} = input;
   const interpolation = input.interpolation ?? 'linear';
   const quantileCount = input.quantileCount ?? input.quantiles.length;
-  const validValues: number[] = [];
-  for (let row = 0; row < values.length; row++) {
-    const value = Math.fround(values[row]);
-    if (!Number.isNaN(value) && (!mask || mask[row] !== 0)) {
-      validValues.push(value);
-    }
-  }
-  validValues.sort(compareFloatTotal);
-  const sorted = Float32Array.from(validValues);
+  const sorted = Float32Array.from(getOrderStatisticSample(values, mask));
   const count = sorted.length;
   const quantiles = new Float32Array(quantileCount).fill(NaN);
   for (let index = 0; index < Math.min(quantileCount, input.quantiles.length); index++) {
     const probability = Math.fround(input.quantiles[index]);
-    if (count === 0 || !(probability >= 0 && probability <= 1)) {
+    if (count === 0 || !isOrderStatisticProbability(probability)) {
       continue;
     }
     const height = Math.fround(Math.fround(count - 1) * probability);
@@ -93,21 +78,15 @@ export function computeColumnQuantilesOracle(
     let result = firstValue;
     if (interpolation === 'linear') {
       const second = sorted[Math.min(lower + 1, count - 1)];
-      const fraction = height - lower;
-      if (firstValue !== second && fraction !== 0) {
-        result = Math.fround(firstValue + Math.fround(Math.fround(second - firstValue) * fraction));
-      }
+      result = interpolateOrderStatistic(firstValue, second, Math.fround(height - lower));
     } else if (interpolation === 'midpoint') {
-      const second = sorted[upper];
-      if (firstValue !== second) {
-        result = Math.fround(Math.fround(firstValue + second) * 0.5);
-      }
+      result = getOrderStatisticMidpoint(firstValue, sorted[upper]);
     }
     quantiles[index] = result;
   }
 
   const filterBounds = new Float32Array([NaN, NaN]);
-  const filterMask = new Uint32Array(values.length);
+  const outputMask = new Uint32Array(values.length);
   if (count > 0) {
     const [rawLower, rawUpper] = input.filterRange ?? [0, 1];
     const clampFraction = (raw: number, fallback: number) => {
@@ -121,17 +100,13 @@ export function computeColumnQuantilesOracle(
     filterBounds[1] = sorted[upperIndex];
     for (let row = 0; row < values.length; row++) {
       const value = Math.fround(values[row]);
-      if (Number.isNaN(value) || (mask && mask[row] === 0)) {
+      if (!Number.isFinite(value) || (mask && mask[row] === 0)) {
         continue;
       }
-      filterMask[row] =
-        compareFloatTotal(filterBounds[0], value) <= 0 &&
-        compareFloatTotal(value, filterBounds[1]) <= 0
-          ? 1
-          : 0;
+      outputMask[row] = filterBounds[0] <= value && value <= filterBounds[1] ? 1 : 0;
     }
   }
-  return {quantiles, validCount: count, sorted, filterBounds, filterMask};
+  return {quantiles, validCount: count, sorted, filterBounds, outputMask};
 }
 
 /** Returns the float32 bit pattern of a value with every NaN folded to one pattern. */

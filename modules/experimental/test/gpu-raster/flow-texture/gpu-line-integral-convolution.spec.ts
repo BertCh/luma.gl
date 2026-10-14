@@ -6,15 +6,16 @@ import {Texture, type Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
+import {GPURasterTextureToBuffer} from '../../../src/gpu-raster/gpu-raster-texture-to-buffer';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
-  convolveLineIntegralOnCPU,
   getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionWordParameterValues,
+  getGPULineIntegralConvolutionUint32ParameterValues,
   GPULineIntegralConvolution,
   type GPULineIntegralConvolutionSettings
 } from '../../../src/gpu-raster/flow-texture';
+import {convolveLineIntegralOnCPU} from '../../../src/gpu-raster/flow-texture/line-integral-convolution-cpu';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -22,6 +23,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createVortexField, type TestField} from './flow-texture-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Result = {
   values: Float32Array;
@@ -93,11 +95,10 @@ function createFixture(
       ),
       fieldWidth: field.width,
       fieldHeight: field.height,
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       stepCount,
       parameters: parameterBuffer.importToGraph(graph),
-      wordParameters: wordBuffer.importToGraph(graph),
+      uint32Parameters: wordBuffer.importToGraph(graph),
       output: {
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pixelCount),
         speeds: importGraphBuffer(graph, 'speeds', speedsBuffer, 'float32', pixelCount),
@@ -125,7 +126,7 @@ function createFixture(
   return {
     async run(settings) {
       parameterBuffer.write(getGPULineIntegralConvolutionParameterValues(settings));
-      wordBuffer.write(getGPULineIntegralConvolutionWordParameterValues(settings));
+      wordBuffer.write(getGPULineIntegralConvolutionUint32ParameterValues(settings));
       submitGraph(device, compiled, undefined);
       return {
         values: Float32Array.from(await readFloat32(valuesBuffer, pixelCount)),
@@ -160,9 +161,7 @@ function getMismatchFraction(actual: Float32Array, expected: Float32Array, toler
 
 it('GPULineIntegralConvolution matches the CPU oracle and writes the texture', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 32 x 32 vortex over [0, 32]^2 with a NaN cell, rendered at 64 x 64.
   const field = createVortexField(32, 0.1);
   field.velocities[2 * (5 * 32 + 5)] = Number.NaN;
@@ -202,9 +201,7 @@ it('GPULineIntegralConvolution matches the CPU oracle and writes the texture', a
 
 it('GPULineIntegralConvolution animates by phase without rebuilding and replays bitwise', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const field = createVortexField(16, 0.2);
   const fixture = createFixture(device, field, 32, 32, 8);
   try {

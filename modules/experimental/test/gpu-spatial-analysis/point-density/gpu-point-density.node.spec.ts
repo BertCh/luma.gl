@@ -5,6 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
+  GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT,
   GPUPointDensity,
   type GPUPointDensityProps
 } from '../../../src/gpu-spatial-analysis/point-density';
@@ -52,7 +53,7 @@ it('GPUPointDensity orders weighted grid steps', () => {
       means: createTransientView(graph, 'means', 'float32', 8),
       extent: createTransientView(graph, 'extent', 'float32', 2),
       histogram: createTransientView(graph, 'histogram', 'uint32', 4),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1)}
     }
   })
     .getCommandNodes(graph)
@@ -72,7 +73,7 @@ it('GPUPointDensity orders weighted grid steps', () => {
   device.destroy();
 });
 
-it('GPUPointDensity auto sum accumulation avoids workgroup scans for diffuse inputs', () => {
+it('GPUPointDensity auto sum accumulation selects the deterministic workgroup path', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const createWeightedDensity = (
@@ -96,8 +97,9 @@ it('GPUPointDensity auto sum accumulation avoids workgroup scans for diffuse inp
   const getIds = (density: GPUPointDensity) => density.getCommandNodes(graph).map(node => node.id);
 
   const diffuse = createWeightedDensity('diffuse', 4096, [256, 256]);
-  expect(diffuse.sumAccumulation).toBe('atomic');
-  expect(getIds(diffuse)).not.toContain('diffuse-sums-grid-keys-0');
+  // 'auto' is the deterministic fixed-point path for every topology (roadmap decision 4).
+  expect(diffuse.sumAccumulation).toBe('workgroup');
+  expect(getIds(diffuse)).toContain('diffuse-sums-grid-keys-0');
 
   const dense = createWeightedDensity('dense', 8192, [16, 16]);
   expect(dense.sumAccumulation).toBe('workgroup');
@@ -109,6 +111,17 @@ it('GPUPointDensity auto sum accumulation avoids workgroup scans for diffuse inp
   expect(
     createWeightedDensity('forced-workgroup', 4096, [256, 256], 'workgroup').sumAccumulation
   ).toBe('workgroup');
+  // The fixed-point table (12 bytes per cell) bounds weighted deterministic grids.
+  const tooLarge: [number, number] = [
+    4096,
+    Math.ceil(GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT / 4096)
+  ];
+  expect(() => createWeightedDensity('too-large', 64, tooLarge)).toThrow(
+    `too-large gridSize cells must be at most ${GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT}`
+  );
+  expect(createWeightedDensity('large-atomic', 64, tooLarge, 'atomic').sumAccumulation).toBe(
+    'atomic'
+  );
   device.destroy();
 });
 

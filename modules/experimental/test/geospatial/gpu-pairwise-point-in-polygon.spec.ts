@@ -11,16 +11,13 @@ import {
   GPUPairwisePointInPolygon,
   GPU_POINT_IN_POLYGON_CLASSIFICATION
 } from '../../src/geospatial/gpu-pairwise-point-in-polygon';
+import {requireTestDevice} from '../utils/require-test-device';
 
 const {outside, inside, boundary, uncertain} = GPU_POINT_IN_POLYGON_CLASSIFICATION;
 
 it('GPUPairwisePointInPolygon classifies f32 polygons and malformed inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const square = makeSquare(0, 0, 10, 10, true);
   const cases: PointInPolygonCase[] = [
@@ -198,33 +195,35 @@ it('GPUPairwisePointInPolygon classifies f32 polygons and malformed inputs', asy
   );
   const outputView = importView(graph, 'output', buffers.output, 'uint32', points.length);
 
-  new GPUPairwisePointInPolygon({
-    points: pointView,
-    polygonPositions: positionView,
-    geometryOffsets: geometryOffsetView,
-    polygonOffsets: polygonOffsetView,
-    ringOffsets: ringOffsetView,
-    output: outputView
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointInPolygon({
+      queryPositions: pointView,
+      positions: positionView,
+      featureOffsets: geometryOffsetView,
+      polygonOffsets: polygonOffsetView,
+      ringOffsets: ringOffsetView,
+      output: outputView
+    })
+  );
 
   expect(
     () =>
       new GPUPairwisePointInPolygon({
-        points: pointView,
-        polygonPositions: positionView,
-        geometryOffsets: geometryOffsetView,
+        queryPositions: pointView,
+        positions: positionView,
+        featureOffsets: geometryOffsetView,
         polygonOffsets: polygonOffsetView,
         ringOffsets: ringOffsetView,
         output: importView(graph, 'short-output', buffers.output, 'uint32', points.length - 1)
       }),
     ''
-  ).toThrow(/output.length must equal points.length/);
+  ).toThrow(/output.length must equal queryPositions.length/);
   expect(
     () =>
       new GPUPairwisePointInPolygon({
-        points: pointView,
-        polygonPositions: positionView,
-        geometryOffsets: importView(
+        queryPositions: pointView,
+        positions: positionView,
+        featureOffsets: importView(
           graph,
           'short-geometry-offsets',
           buffers.geometryOffsets,
@@ -236,19 +235,19 @@ it('GPUPairwisePointInPolygon classifies f32 polygons and malformed inputs', asy
         output: outputView
       }),
     ''
-  ).toThrow(/geometryOffsets.length must equal points.length \+ 1/);
+  ).toThrow(/featureOffsets.length must equal queryPositions.length \+ 1/);
   expect(
     () =>
       new GPUPairwisePointInPolygon({
-        points: pointView,
-        polygonPositions: positionView,
-        geometryOffsets: geometryOffsetView,
+        queryPositions: pointView,
+        positions: positionView,
+        featureOffsets: geometryOffsetView,
         polygonOffsets: polygonOffsetView,
         ringOffsets: ringOffsetView,
         output: importView(graph, 'aliased-output', buffers.points, 'uint32', points.length)
       }),
     ''
-  ).toThrow(/output and points must not overlap/);
+  ).toThrow(/output and queryPositions must not overlap/);
 
   if (isSoftwareBackedDevice(device)) {
     // SwiftShader still exceeds the 60-second test budget after predicate-only source specialization.
@@ -272,11 +271,7 @@ it('GPUPairwisePointInPolygon classifies f32 polygons and malformed inputs', asy
 
 it('GPUPairwisePointInPolygon preserves raw binary64 deltas and explicit ambiguity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -345,38 +340,40 @@ it('GPUPairwisePointInPolygon preserves raw binary64 deltas and explicit ambigui
   };
   const graph = new GPUCommandGraph(device, {id: 'pairwise-point-in-polygon-raw-test'});
 
-  new GPUPairwisePointInPolygon({
-    points: importView(graph, 'points', buffers.points, 'uint32x4', points.length),
-    polygonPositions: importView(
-      graph,
-      'polygon-positions',
-      buffers.positions,
-      'uint32x4',
-      hierarchy.positions.length
-    ),
-    geometryOffsets: importView(
-      graph,
-      'geometry-offsets',
-      buffers.geometryOffsets,
-      'uint32',
-      hierarchy.geometryOffsets.length
-    ),
-    polygonOffsets: importView(
-      graph,
-      'polygon-offsets',
-      buffers.polygonOffsets,
-      'uint32',
-      hierarchy.polygonOffsets.length
-    ),
-    ringOffsets: importView(
-      graph,
-      'ring-offsets',
-      buffers.ringOffsets,
-      'uint32',
-      hierarchy.ringOffsets.length
-    ),
-    output: importView(graph, 'output', buffers.output, 'uint32', points.length)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointInPolygon({
+      queryPositions: importView(graph, 'points', buffers.points, 'uint32x4', points.length),
+      positions: importView(
+        graph,
+        'polygon-positions',
+        buffers.positions,
+        'uint32x4',
+        hierarchy.positions.length
+      ),
+      featureOffsets: importView(
+        graph,
+        'geometry-offsets',
+        buffers.geometryOffsets,
+        'uint32',
+        hierarchy.geometryOffsets.length
+      ),
+      polygonOffsets: importView(
+        graph,
+        'polygon-offsets',
+        buffers.polygonOffsets,
+        'uint32',
+        hierarchy.polygonOffsets.length
+      ),
+      ringOffsets: importView(
+        graph,
+        'ring-offsets',
+        buffers.ringOffsets,
+        'uint32',
+        hierarchy.ringOffsets.length
+      ),
+      output: importView(graph, 'output', buffers.output, 'uint32', points.length)
+    })
+  );
 
   const compiled = graph.compile();
   encode(device, compiled);

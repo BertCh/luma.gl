@@ -9,6 +9,7 @@ import {
   GPUTerrainCriticalPoints
 } from '../../../src/gpu-terrain/terrain-features/gpu-terrain-critical-points';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {
   CRITICAL_POINT,
   classifyCriticalPoints,
@@ -70,11 +71,13 @@ it('GPUTerrainCriticalPoints validates props and schedules its nodes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Record<string, unknown> = {}) => {
+  const create = (
+    overrides: Record<string, unknown> = {},
+    outputOverrides: Record<string, unknown> = {}
+  ) => {
     instance++;
     return new GPUTerrainCriticalPoints({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: {
         id: `elevation-${instance}`,
         format: 'float32',
@@ -83,7 +86,10 @@ it('GPUTerrainCriticalPoints validates props and schedules its nodes', () => {
           values: createTransientView(graph, `e-${instance}`, 'float32', 30)
         }
       },
-      classes: createTransientView(graph, `classes-${instance}`, 'uint32', 30),
+      output: {
+        classes: createTransientView(graph, `classes-${instance}`, 'uint32', 30),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
@@ -92,36 +98,36 @@ it('GPUTerrainCriticalPoints validates props and schedules its nodes', () => {
     'terrain-critical-points-elevation',
     'terrain-critical-points-classify'
   ]);
-  const full = create({
-    id: 'peaks',
-    connectivity: 6,
-    signChanges: createTransientView(graph, 'sign-changes', 'uint32', 30),
-    counts: createTransientView(graph, 'counts', 'uint32', 6)
-  });
+  const full = create(
+    {id: 'peaks', connectivity: 6},
+    {
+      signChanges: createTransientView(graph, 'sign-changes', 'uint32', 30),
+      counts: createTransientView(graph, 'counts', 'uint32', 6)
+    }
+  );
   expect(full.getCommandNodes(graph).map(node => node.id)).toEqual([
     'peaks-elevation',
     'peaks-clear-counts',
     'peaks-classify'
   ]);
 
-  expect(() => create({width: 0})).toThrow(/dimensions/);
+  expect(() => create({grid: makeGPURasterMetadata({width: 0, height: 5})})).toThrow(/dimensions/);
   expect(() => create({connectivity: 4})).toThrow(/connectivity/);
-  expect(() => create({classes: createTransientView(graph, 'short', 'uint32', 29)})).toThrow(
+  expect(() => create({}, {classes: createTransientView(graph, 'short', 'uint32', 29)})).toThrow(
     /one value per pixel/
   );
   expect(() =>
-    create({signChanges: createTransientView(graph, 'short-sign-changes', 'uint32', 3)})
+    create({}, {signChanges: createTransientView(graph, 'short-sign-changes', 'uint32', 3)})
   ).toThrow(/signChanges/);
-  expect(() => create({counts: createTransientView(graph, 'short-counts', 'uint32', 5)})).toThrow(
-    /one value per class/
-  );
+  expect(() =>
+    create({}, {counts: createTransientView(graph, 'short-counts', 'uint32', 5)})
+  ).toThrow(/one value per class/);
   const shared = createTransientView(graph, 'shared', 'uint32', 30);
-  expect(() => create({classes: shared, signChanges: shared})).toThrow(/share buffers/);
+  expect(() => create({}, {classes: shared, signChanges: shared})).toThrow(/share buffers/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainCriticalPoints({
-      width: 2,
-      height: 2,
+      grid: makeGPURasterMetadata({width: 2, height: 2}),
       elevation: {
         id: 'foreign',
         format: 'float32',
@@ -130,7 +136,7 @@ it('GPUTerrainCriticalPoints validates props and schedules its nodes', () => {
           values: createTransientView(otherGraph, 'foreign-e', 'float32', 4)
         }
       },
-      classes: createTransientView(otherGraph, 'foreign-classes', 'uint32', 4)
+      output: {classes: createTransientView(otherGraph, 'foreign-classes', 'uint32', 4)}
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
   device.destroy();

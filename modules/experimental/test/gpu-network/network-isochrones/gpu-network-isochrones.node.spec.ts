@@ -3,14 +3,18 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {getResourceBuffer} from '../network-resource-buffers';
 import {expect, it} from 'vitest';
 import {
   GPUNetworkIsochrones,
-  getGPUNetworkIsochroneParameterValues,
+  getGPUNetworkIsochronesParameterValues,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH,
   type GPUNetworkIsochronesProps
 } from '../../../src/gpu-network/network-isochrones';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
 
@@ -23,12 +27,14 @@ function createProps(
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {
-    offsets: view('uint32', 5),
-    neighbors: view('uint32', 6),
-    weights: view('float32', 6),
-    nodePositions: view('float32x2', 4),
+    topology: {
+      offsets: view('uint32', 5),
+      neighbors: view('uint32', 6),
+      weights: view('float32', 6),
+      nodePositions: view('float32x2', 4)
+    },
     costs: view('float32', 4),
-    breaks: view('float32', 3),
+    costBreaks: view('float32', 3),
     parameters: view('float32', GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH),
     raster: {
       width: 8,
@@ -36,8 +42,7 @@ function createProps(
       output: {
         triangles: view('float32x2', 3 * 64),
         triangleBands: view('uint32', 64),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1)
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
       }
     },
     ...overrides
@@ -50,7 +55,7 @@ it('GPUNetworkIsochrones declares search, splat and isobands nodes', () => {
   const withSearch = new GPUNetworkIsochrones(
     createProps(graph, {
       id: 'searching',
-      sources: createTransientView(graph, 'search-sources', 'uint32', 2)
+      startNodes: createTransientView(graph, 'search-sources', 'uint32', 2)
     })
   ).getCommandNodes(graph);
   expect(plain.length).toBeGreaterThanOrEqual(6);
@@ -63,15 +68,43 @@ it('GPUNetworkIsochrones validates its properties', () => {
   expect(() => new GPUNetworkIsochrones({...props, raster: undefined})).toThrow(
     /raster or cellOutline/
   );
-  expect(() => new GPUNetworkIsochrones({...props, offsets: props.weights as never})).toThrow();
+  expect(
+    () =>
+      new GPUNetworkIsochrones({
+        ...props,
+        topology: {...props.topology, offsets: props.topology.weights as never}
+      })
+  ).toThrow(/topology.offsets/);
+  expect(
+    () =>
+      new GPUNetworkIsochrones({
+        ...props,
+        topology: {...props.topology, nodePositions: undefined as never}
+      })
+  ).toThrow(/topology.nodePositions is required/);
+  expect(
+    () =>
+      new GPUNetworkIsochrones({
+        ...props,
+        topology: {
+          ...props.topology,
+          weights: createTransientView(
+            new GPUCommandGraph(createNullWebGPUDevice()),
+            'short-weights',
+            'float32',
+            5
+          )
+        }
+      })
+  ).toThrow(/topology.weights length/);
   expect(() => new GPUNetworkIsochrones({...props, raster: {...props.raster!, width: 1}})).toThrow(
     /raster.width/
   );
   expect(
     () => new GPUNetworkIsochrones({...props, raster: {...props.raster!, maximumBufferPixels: 40}})
   ).toThrow(/maximumBufferPixels/);
-  expect(() => new GPUNetworkIsochrones({...props, sourceCount: props.neighbors})).toThrow(
-    /needs sources/
+  expect(() => new GPUNetworkIsochrones({...props, startCount: props.topology.neighbors})).toThrow(
+    /needs startNodes/
   );
 });
 
@@ -84,41 +117,48 @@ it('GPUNetworkIsochrones forwards converged and localIterations to its search', 
     const nodes = new GPUNetworkIsochrones(
       createProps(graph, {
         id: `search-${withAssignments}`,
-        sources: createTransientView(graph, `sources-${serial++}`, 'uint32', 2),
+        startNodes: createTransientView(graph, `sources-${serial++}`, 'uint32', 2),
         assignments: withAssignments
           ? createTransientView(graph, `assignments-${serial++}`, 'uint32', 4)
           : undefined,
-        maxIterations: 2,
+        maximumIterations: 2,
         localIterations: 4,
-        converged
+        output: {status: {converged}}
       })
     ).getCommandNodes(graph);
     const writers = nodes.filter(node =>
       node.resources?.some(
-        resource => resource.buffer === converged && resource.usage === 'storage-read-write'
+        resource =>
+          getResourceBuffer(resource) === converged && resource.usage === 'storage-read-write'
       )
     );
     expect(writers.length).toBeGreaterThan(0);
   }
   const props = createProps(graph);
   const flag = createTransientView(graph, `converged-${serial++}`, 'uint32', 1);
-  expect(() => new GPUNetworkIsochrones({...props, converged: flag})).toThrow(/needs sources/);
-  expect(() => new GPUNetworkIsochrones({...props, localIterations: 4})).toThrow(/needs sources/);
-  const sources = createTransientView(graph, `sources-${serial++}`, 'uint32', 2);
+  expect(() => new GPUNetworkIsochrones({...props, output: {status: {converged: flag}}})).toThrow(
+    /needs startNodes/
+  );
+  expect(() => new GPUNetworkIsochrones({...props, localIterations: 4})).toThrow(
+    /needs startNodes/
+  );
+  const startNodes = createTransientView(graph, `sources-${serial++}`, 'uint32', 2);
   expect(
     () =>
       new GPUNetworkIsochrones({
         ...props,
-        sources,
-        converged: createTransientView(graph, `converged-${serial++}`, 'uint32', 2)
+        startNodes,
+        output: {
+          status: {converged: createTransientView(graph, `converged-${serial++}`, 'uint32', 2)}
+        }
       })
-  ).toThrow(/converged must contain exactly one row/);
+  ).toThrow(/output\.status\.converged must contain exactly one row/);
   // Optional, as on GPUNetworkReachability and GPUNetworkServiceAreas.
-  expect(() => new GPUNetworkIsochrones({...props, sources})).not.toThrow();
+  expect(() => new GPUNetworkIsochrones({...props, startNodes})).not.toThrow();
 });
 
-it('getGPUNetworkIsochroneParameterValues packs and validates', () => {
-  const values = getGPUNetworkIsochroneParameterValues({
+it('getGPUNetworkIsochronesParameterValues packs and validates', () => {
+  const values = getGPUNetworkIsochronesParameterValues({
     breakCount: 3,
     extent: [0, 1, 10, 21],
     bufferRadius: 2,
@@ -139,9 +179,31 @@ it('getGPUNetworkIsochroneParameterValues packs and validates', () => {
     0
   ]);
   expect(() =>
-    getGPUNetworkIsochroneParameterValues({breakCount: 1, extent: [0, 0, 0, 1]})
-  ).toThrow(/extent/);
+    getGPUNetworkIsochronesParameterValues({breakCount: 1, extent: [0, 0, 0, 1]})
+  ).toThrow(/GPUNetworkIsochrones extent/);
   expect(() =>
-    getGPUNetworkIsochroneParameterValues({breakCount: -1, extent: [0, 0, 1, 1]})
-  ).toThrow(/breakCount/);
+    getGPUNetworkIsochronesParameterValues({breakCount: -1, extent: [0, 0, 1, 1]})
+  ).toThrow(/GPUNetworkIsochrones breakCount/);
+});
+
+it('GPUNetworkIsochrones bakes a numeric startCount without a binding', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'isochrones-count'});
+  const startNodes = createTransientView(graph, `sources-${serial++}`, 'uint32', 3);
+  const getSeedSource = (startCount: number | ReturnType<typeof createTransientView>) => {
+    const nodes = new GPUNetworkIsochrones(
+      createProps(graph, {id: `count-${serial++}`, startNodes, startCount: startCount as never})
+    ).getCommandNodes(graph);
+    // Only the search kernel is parsed; the isobands kernels belong to another contributor.
+    return getParsedKernelSources(nodes.filter(node => node.id.endsWith('-search-seed')));
+  };
+  const constant = getSeedSource(2);
+  const seedSources = [...constant].filter(([id]) => id.endsWith('-search-seed'));
+  expect(seedSources.length).toBeGreaterThan(0);
+  for (const [, source] of seedSources) {
+    expect(source).toContain('if (index >= 2u) { return; }');
+    expect(source).not.toContain('sourceCount[');
+  }
+  expect(() => new GPUNetworkIsochrones(createProps(graph, {startNodes, startCount: 4}))).toThrow(
+    /startCount must be an integer in \[0, 3\]/
+  );
 });

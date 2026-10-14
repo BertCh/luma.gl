@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {addChangeOfSupportRecipe} from '../../../src/gpu-spatial-analysis/recipes/change-of-support-recipe';
 import {addPointsInPolygonsChoroplethRecipe} from '../../../src/gpu-spatial-analysis/recipes/points-in-polygons-choropleth-recipe';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const LONGITUDE_LATITUDE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
@@ -20,7 +21,8 @@ function createGraph() {
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   const zones = () => ({
-    polygonPositions: view('float32x2', 8),
+    kind: 'polygons' as const,
+    positions: view('float32x2', 8),
     featureOffsets: view('uint32', 3),
     polygonOffsets: view('uint32', 3),
     ringOffsets: view('uint32', 3),
@@ -31,9 +33,8 @@ function createGraph() {
 
 function createChangeOfSupportProps(context: ReturnType<typeof createGraph>) {
   return {
-    width: 8,
-    height: 6,
-    extent: context.view('float32', 4),
+    grid: makeGPURasterMetadata({width: 8, height: 6}),
+    parameters: context.view('float32', 4),
     source: context.zones(),
     target: context.zones(),
     pairCapacity: 16
@@ -45,10 +46,12 @@ it('the change-of-support recipe resolves a planar or longitude-latitude raster 
   const planarResult = addChangeOfSupportRecipe(planar.graph, createChangeOfSupportProps(planar));
   expect(planarResult.spatialContext.coordinateSpace).toBe('planar');
   // Conservation diagnostics are always produced, and invalidCount joins the stage status.
-  expect(planarResult.sourceAreas.length).toBe(planarResult.sourceCount);
-  expect(planarResult.sourceTransferredFractions.length).toBe(planarResult.sourceCount);
-  expect(planarResult.invalidCount.length).toBe(1);
-  expect(planarResult.status.stages.at(-1)?.status.invalidCount).toBe(planarResult.invalidCount);
+  expect(planarResult.sourceAreas.length).toBe(planarResult.sourceZoneCount);
+  expect(planarResult.sourceTransferredFractions.length).toBe(planarResult.sourceZoneCount);
+  expect(planarResult.status.invalidCount.length).toBe(1);
+  expect(planarResult.status.stages.at(-1)?.status.invalidCount).toBe(
+    planarResult.status.invalidCount
+  );
 
   const geographic = createGraph();
   const geographicResult = addChangeOfSupportRecipe(geographic.graph, {
@@ -74,7 +77,7 @@ it('the change-of-support recipe accepts per-kind denominators and source anchor
     denominator: {extensive: 'overlap'},
     sourceAnchorCells: context.view('uint32', 2)
   });
-  expect(result.sourceCount).toBe(2);
+  expect(result.sourceZoneCount).toBe(2);
 });
 
 it('the choropleth recipe resolves a planar or longitude-latitude context', () => {
@@ -83,7 +86,7 @@ it('the choropleth recipe resolves a planar or longitude-latitude context', () =
   ) => {
     const context = createGraph();
     return addPointsInPolygonsChoroplethRecipe(context.graph, {
-      points: context.view('float32x2', 5),
+      points: {kind: 'points', positions: context.view('float32x2', 5)},
       polygons: {...context.zones(), candidateCapacity: 16},
       spatialContext
     });

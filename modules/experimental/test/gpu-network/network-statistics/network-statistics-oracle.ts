@@ -11,7 +11,6 @@ export type NetworkStatisticsOracleOptions = {
   nodeCount: number;
   csr: Pick<NetworkCSR, 'offsets' | 'neighbors'>;
   directed?: boolean;
-  countSelfLoopsTwice?: boolean;
   vertexMask?: ArrayLike<number>;
   edgeMask?: ArrayLike<number>;
   communities?: ArrayLike<number>;
@@ -40,7 +39,8 @@ export function computeNetworkStatisticsOracle(
 ): Uint32Array {
   const {nodeCount, csr, vertexMask, edgeMask, communities} = options;
   const directed = Boolean(options.directed);
-  const countTwice = Boolean(options.countSelfLoopsTwice) && !directed;
+  // Undirected, a self-loop adds 2 to its degree and to the modularity volumes (networkx).
+  const countTwice = !directed;
   const binCount = options.binCount ?? 32;
   const binning = options.binning ?? 'linear';
   const binWidth = options.binWidth ?? 1;
@@ -129,22 +129,40 @@ export function computeNetworkStatisticsOracle(
   let modularity = 0;
   const valid = Boolean(communities) && invalidLabels === 0 && liveSlots > 0;
   if (valid) {
-    // Mirror the single-workgroup finish: strided per-thread f32 sums, then a binary tree.
+    // Mirror the two-stage finish: a binary tree over each block of 256 labels, then per-thread
+    // strided f32 sums over the block partials and a final binary tree.
     const slotCount = Math.fround(liveSlots + (countTwice ? selfLoops : 0));
-    const partial = new Float32Array(WORKGROUP_SIZE);
-    for (let label = 0; label < nodeCount; label++) {
-      const thread = label % WORKGROUP_SIZE;
-      const outTerm = Math.fround((communityOut.get(label) ?? 0) / slotCount);
-      const inTerm = Math.fround(
-        (directed ? (communityIn.get(label) ?? 0) : (communityOut.get(label) ?? 0)) / slotCount
-      );
-      partial[thread] = Math.fround(partial[thread] + Math.fround(outTerm * inTerm));
-    }
-    for (let stride = WORKGROUP_SIZE / 2; stride > 0; stride >>= 1) {
-      for (let thread = 0; thread < stride; thread++) {
-        partial[thread] = Math.fround(partial[thread] + partial[thread + stride]);
+    const treeSum = (values: Float32Array): number => {
+      for (let stride = WORKGROUP_SIZE / 2; stride > 0; stride >>= 1) {
+        for (let thread = 0; thread < stride; thread++) {
+          values[thread] = Math.fround(values[thread] + values[thread + stride]);
+        }
       }
+      return values[0];
+    };
+    const blockCount = Math.ceil(nodeCount / WORKGROUP_SIZE);
+    const blockPartials = new Float32Array(blockCount);
+    for (let block = 0; block < blockCount; block++) {
+      const terms = new Float32Array(WORKGROUP_SIZE);
+      for (let thread = 0; thread < WORKGROUP_SIZE; thread++) {
+        const label = block * WORKGROUP_SIZE + thread;
+        if (label >= nodeCount) {
+          continue;
+        }
+        const outTerm = Math.fround((communityOut.get(label) ?? 0) / slotCount);
+        const inTerm = Math.fround(
+          (directed ? (communityIn.get(label) ?? 0) : (communityOut.get(label) ?? 0)) / slotCount
+        );
+        terms[thread] = Math.fround(outTerm * inTerm);
+      }
+      blockPartials[block] = treeSum(terms);
     }
+    const partial = new Float32Array(WORKGROUP_SIZE);
+    for (let block = 0; block < blockCount; block++) {
+      const thread = block % WORKGROUP_SIZE;
+      partial[thread] = Math.fround(partial[thread] + blockPartials[block]);
+    }
+    treeSum(partial);
     const resolution = Math.fround(options.resolution ?? 1);
     modularity = Math.fround(
       Math.fround((intra + (countTwice ? selfLoops : 0)) / slotCount) -

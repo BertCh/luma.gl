@@ -6,6 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_CRITICAL_POINT as CLASS,
@@ -24,6 +25,7 @@ import {
   createTwoBumps,
   getEulerSum
 } from './terrain-critical-points-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Run = {
   classes: number[];
@@ -49,8 +51,7 @@ async function runCriticalPoints(
   const countsBuffer = createOutputBuffer(device, 6);
   graph.add(
     new GPUTerrainCriticalPoints({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       connectivity,
       elevation: {
         id: 'elevation',
@@ -63,15 +64,17 @@ async function runCriticalPoints(
           ? importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', pixelCount)
           : undefined
       },
-      classes: importGraphBuffer(graph, 'classes', classesBuffer, 'uint32', pixelCount),
-      signChanges: importGraphBuffer(
-        graph,
-        'sign-changes',
-        signChangesBuffer,
-        'uint32',
-        pixelCount
-      ),
-      counts: importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', 6)
+      output: {
+        classes: importGraphBuffer(graph, 'classes', classesBuffer, 'uint32', pixelCount),
+        signChanges: importGraphBuffer(
+          graph,
+          'sign-changes',
+          signChangesBuffer,
+          'uint32',
+          pixelCount
+        ),
+        counts: importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', 6)
+      }
     })
   );
   const compiled = graph.compile();
@@ -117,9 +120,7 @@ function expectMatchesOracle(
 for (const connectivity of [8, 6] as const) {
   it(`GPUTerrainCriticalPoints ${connectivity}-ring matches the oracle on random DEMs, plateaus and nodata holes`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const width = 37;
     const height = 29;
     for (const [seed, levels] of [
@@ -175,9 +176,7 @@ for (const connectivity of [8, 6] as const) {
 
 it('GPUTerrainCriticalPoints classifies an egg-crate: 6-ring obeys the torus Euler relation', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const period = 7;
   const periodCount = 3;
   const size = period * periodCount + 2;
@@ -212,9 +211,7 @@ it('GPUTerrainCriticalPoints classifies an egg-crate: 6-ring obeys the torus Eul
 
 it('GPUTerrainCriticalPoints 6-ring satisfies the disk Euler relation for Gaussian bumps', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const size = 41;
   const wholeGrid = {columnStart: 0, columnEnd: size, rowStart: 0, rowEnd: size};
 

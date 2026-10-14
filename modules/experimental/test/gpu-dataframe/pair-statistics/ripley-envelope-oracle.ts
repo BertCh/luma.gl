@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getPhilox4x32, getPhiloxUnitFloat} from '../../../src/utils/philox-random';
+import {getPhilox4x32, getPhiloxUnitFloat, PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 
 const fround = Math.fround;
-
-/** Second Philox key word of `GPURipleyEnvelope` (ASCII `RIPF`). */
-const PHILOX_KEY_TAG = 0x52495046;
 
 /** Statistic scale of an envelope. */
 export type RipleyEnvelopeOracleStatistic = 'k' | 'l' | 'l-minus-r';
@@ -28,7 +25,7 @@ export type RipleyEnvelopeOracleResult = {
 
 /**
  * CPU mirror of the `GPURipleyEnvelope` simulation kernel: `count` uniform points in the window
- * from Philox4x32-10 with key `(seed, 'RIPF')` and counter `(row, simulationIndex, 0, 1)`, using
+ * from Philox4x32-10 with key `(seed, 'RIPF')` and counter `(row, simulationIndex, 0, 0)`, using
  * f32 arithmetic in the same order as the shader (a GPU fused multiply-add can differ by one ulp).
  */
 export function simulateCSROnCPU(
@@ -40,7 +37,10 @@ export function simulateCSROnCPU(
   const [minX, minY, maxX, maxY] = bounds.map(fround);
   const positions = new Float32Array(count * 2);
   for (let row = 0; row < count; row++) {
-    const words = getPhilox4x32([row, simulationIndex, 0, 1], [seed, PHILOX_KEY_TAG]);
+    const words = getPhilox4x32(
+      [row, simulationIndex, 0, 0],
+      [seed, PHILOX_PURPOSES.ripleyEnvelopeSimulation.id]
+    );
     positions[row * 2] = fround(minX + fround(getPhiloxUnitFloat(words[0]) * fround(maxX - minX)));
     positions[row * 2 + 1] = fround(
       minY + fround(getPhiloxUnitFloat(words[1]) * fround(maxY - minY))

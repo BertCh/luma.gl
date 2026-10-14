@@ -4,7 +4,10 @@
 
 import type {CPUWeights} from './rig';
 
-/** Double-precision 2SFCA / 3SFCA reference. */
+/**
+ * Double-precision 2SFCA / 3SFCA reference. A non-finite demand or ratio is missing: it adds nothing
+ * to a sum (the GPU kernel's edge policy).
+ */
 export function computeCatchmentOracle(
   method: '2sfca' | '3sfca',
   supply: number[],
@@ -23,16 +26,19 @@ export function computeCatchmentOracle(
     let captured = 0;
     for (let s = facilityWeights.offsets[j]; s < facilityWeights.offsets[j + 1]; s++) {
       const i = facilityWeights.neighbors[s];
+      if (!Number.isFinite(demand[i])) continue;
       if (method === '2sfca') captured += demand[i] * facilityWeights.weights[s];
       else if (selection[i] > 0)
-        captured += (demand[i] * facilityWeights.weights[s]) / selection[i];
+        captured += (demand[i] * facilityWeights.weights[s] ** 2) / selection[i];
     }
     return captured > 0 ? value / captured : 0;
   });
   const accessibility = demand.map((_, i) => {
     let score = 0;
     for (let s = demandWeights.offsets[i]; s < demandWeights.offsets[i + 1]; s++) {
-      score += demandWeights.weights[s] * ratios[demandWeights.neighbors[s]];
+      const ratio = ratios[demandWeights.neighbors[s]];
+      const weight = demandWeights.weights[s];
+      if (Number.isFinite(ratio)) score += (method === '3sfca' ? weight * weight : weight) * ratio;
     }
     return method === '3sfca' ? (selection[i] > 0 ? score / selection[i] : 0) : score;
   });

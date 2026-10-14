@@ -24,6 +24,7 @@ import {
   type NetworkCSR
 } from '../network-reachability/network-reachability-oracle';
 import {extractPathsOracle} from './network-path-extraction-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type HarnessOptions = {
   nodeCount: number;
@@ -98,13 +99,10 @@ function createHarness(device: Device, options: HarnessOptions) {
     graph.add(
       new GPUNetworkReachability({
         id: 'reach',
-        offsets,
-        neighbors,
-        weights,
-        sources: sources.importToGraph(graph),
-        costs,
-        predecessors,
-        maxIterations: options.maxIterations ?? 256
+        topology: {offsets, neighbors, weights},
+        startNodes: sources.importToGraph(graph),
+        output: {costs, predecessors},
+        maximumIterations: options.maxIterations ?? 256
       })
     );
   }
@@ -139,42 +137,44 @@ function createHarness(device: Device, options: HarnessOptions) {
     costs,
     targets: targetsParameter.importToGraph(graph),
     targetCount: targetCountParameter?.importToGraph(graph),
-    maxPathLength: options.maxPathLength,
+    maximumPathLength: options.maxPathLength,
     nodeIds: nodeIdsParameter?.importToGraph(graph),
     output: {
       ids: importGraphBuffer(graph, 'out-ids', outputIds, 'uint32', options.capacity),
-      count: importGraphBuffer(graph, 'out-count', outputCount, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'out-overflow', outputOverflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'out-total', outputTotal, 'uint32', 1)
+      status: {
+        count: importGraphBuffer(graph, 'out-count', outputCount, 'uint32', 1),
+        overflow: importGraphBuffer(graph, 'out-overflow', outputOverflow, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'out-total', outputTotal, 'uint32', 1)
+      },
+      lineOffsets: importGraphBuffer(
+        graph,
+        'path-offsets',
+        pathOffsets,
+        'uint32',
+        targetCapacity + 1
+      ),
+      pathCosts: importGraphBuffer(graph, 'path-costs', pathCosts, 'float32', targetCapacity),
+      pathFound: importGraphBuffer(graph, 'path-found', pathFound, 'uint32', targetCapacity)
     },
-    pathOffsets: importGraphBuffer(
-      graph,
-      'path-offsets',
-      pathOffsets,
-      'uint32',
-      targetCapacity + 1
-    ),
-    pathCosts: importGraphBuffer(graph, 'path-costs', pathCosts, 'float32', targetCapacity),
-    pathFound: importGraphBuffer(graph, 'path-found', pathFound, 'uint32', targetCapacity),
     edges: withEdges
       ? {
-          offsets,
-          neighbors,
-          weights,
+          topology: {offsets, neighbors, weights},
           edgeIds: edgeIdsParameter?.importToGraph(graph),
           output: {
             ids: importGraphBuffer(graph, 'edge-ids', edgeIdsOut, 'uint32', options.edgeCapacity),
-            count: importGraphBuffer(graph, 'edge-count', edgeCountOut, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflowOut, 'uint32', 1),
-            requiredCount: importGraphBuffer(graph, 'edge-total', edgeTotalOut, 'uint32', 1)
-          },
-          pathOffsets: importGraphBuffer(
-            graph,
-            'edge-path-offsets',
-            edgePathOffsets,
-            'uint32',
-            targetCapacity + 1
-          )
+            status: {
+              count: importGraphBuffer(graph, 'edge-count', edgeCountOut, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflowOut, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'edge-total', edgeTotalOut, 'uint32', 1)
+            },
+            lineOffsets: importGraphBuffer(
+              graph,
+              'edge-path-offsets',
+              edgePathOffsets,
+              'uint32',
+              targetCapacity + 1
+            )
+          }
         }
       : undefined
   });
@@ -244,9 +244,7 @@ const F1 = buildCSR(8, F1_EDGES);
 
 it('GPUNetworkPathExtraction extracts nodes and edges after GPUNetworkReachability', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = createHarness(device, {
     nodeCount: 8,
     csr: F1,
@@ -286,9 +284,7 @@ it('GPUNetworkPathExtraction extracts nodes and edges after GPUNetworkReachabili
 
 it('GPUNetworkPathExtraction matches the oracle on a random network', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 2000;
   const csr = buildCSR(nodeCount, createRandomNetwork(11, nodeCount, 8000));
   let state = 12345;
@@ -318,9 +314,7 @@ it('GPUNetworkPathExtraction matches the oracle on a random network', async () =
 
 it('GPUNetworkPathExtraction terminates on garbage predecessors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = createHarness(device, {
     nodeCount: 8,
     csr: F1,
@@ -345,9 +339,7 @@ it('GPUNetworkPathExtraction terminates on garbage predecessors', async () => {
 
 it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = createHarness(device, {
     nodeCount: 8,
     csr: F1,
@@ -401,9 +393,7 @@ it('GPUNetworkPathExtraction reports capacity overflow with a clamped count', as
 
 it('GPUNetworkPathExtraction re-encodes after target and count changes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = createHarness(device, {
     nodeCount: 8,
     csr: F1,
@@ -431,9 +421,7 @@ it('GPUNetworkPathExtraction re-encodes after target and count changes', async (
 
 it('GPUNetworkPathExtraction publishes zero counts without targets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = createHarness(device, {
     nodeCount: 8,
     csr: F1,
@@ -468,9 +456,7 @@ it('GPUNetworkPathExtraction publishes zero counts without targets', async () =>
 
 it('GPUNetworkPathExtraction extracts full routes across zero-weight edges and a zero-weight cycle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 0 -2-> 1 -0-> 2 <-0-> 3 -0-> 4 -1-> 5 -0-> 6, with the source on 0 and a zero-weight cycle 2 <-> 3.
   const csr = buildCSR(8, [
     [0, 1, 2],

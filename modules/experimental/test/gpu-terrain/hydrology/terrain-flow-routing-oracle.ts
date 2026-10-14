@@ -4,20 +4,22 @@
 
 import {
   GPU_RASTER_D8_DIRECTIONS,
-  getRasterD8Distance,
-  getRasterGroundCellSize,
-  type RasterGridSettings
+  getRasterD8Distance
 } from '../../../src/gpu-raster/cost-distance/raster-grid-utils';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+import {
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode,
+  type RasterGridGeoreference
+} from '../../../src/analysis-core/raster-grid';
 
 /** Inputs of {@link accumulateRoutingOnCPU}. */
 export type RoutingOracleInput = {
   routing: 'd-infinity' | 'mfd-freeman' | 'mfd-quinn';
   width: number;
   height: number;
-  cellSizeMode: GPUTerrainCellSizeMode;
-  /** Grid settings holding the float32 values the GPU reads. */
-  gridSettings: RasterGridSettings;
+  cellSizeMode: GPURasterCellSizeMode;
+  /** Georeference holding the float32 values the GPU reads. */
+  georeference: RasterGridGeoreference;
   /** Packed float32 `settings[6]`; not finite and positive selects the routing's published exponent. */
   flowExponent: number;
   /** Routing surface, NaN for invalid cells. */
@@ -58,12 +60,12 @@ for (const cardinal of [0, 2, 4, 6]) {
  * to `receivers[cell]`, or nothing when that is none.
  */
 export function getRoutingEdgesOnCPU(input: RoutingOracleInput, cell: number): RoutingEdge[] {
-  const {surface, width, height, cellSizeMode, gridSettings} = input;
+  const {surface, width, height, cellSizeMode, georeference} = input;
   const center = surface[cell];
   const row = Math.floor(cell / width);
   const usable = (neighbor: number) => neighbor !== NONE && Number.isFinite(surface[neighbor]);
   const distance = (direction: number) =>
-    getRasterD8Distance(cellSizeMode, direction, row, height, gridSettings);
+    getRasterD8Distance(cellSizeMode, direction, row, height, georeference);
   const fallback = (): RoutingEdge[] => {
     const receiver = input.receivers[cell];
     if (receiver === NONE) {
@@ -99,9 +101,9 @@ export function getRoutingEdgesOnCPU(input: RoutingOracleInput, cell: number): R
       const diagonalRow = row + GPU_RASTER_D8_DIRECTIONS[diagonal].rowOffset;
       const ground = getRasterGroundCellSize(
         cellSizeMode,
+        georeference,
         (row + diagonalRow + 1) * 0.5,
-        height,
-        gridSettings
+        height
       );
       const d2 = cardinal === 0 || cardinal === 4 ? ground[1] : ground[0];
       let slope = 0;
@@ -160,7 +162,7 @@ export function getRoutingEdgesOnCPU(input: RoutingOracleInput, cell: number): R
       : quinn
         ? 1
         : 1.1;
-  const [groundX, groundY] = getRasterGroundCellSize(cellSizeMode, row + 0.5, height, gridSettings);
+  const [groundX, groundY] = getRasterGroundCellSize(cellSizeMode, georeference, row + 0.5, height);
   const lower: {neighbor: number; direction: number; score: number}[] = [];
   for (let direction = 0; direction < 8; direction++) {
     const neighbor = getNeighbor(input, cell, direction);

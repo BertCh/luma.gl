@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 import {fillShufflePermutation} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 
@@ -41,10 +42,15 @@ export function getUniquePairs(pairs: OraclePairs, rows: number) {
  * Returns the time of every row under permutation `slot` (0 is identity, `s >= 1` is draw `s` of
  * the swap-or-not shuffle, the CPU twin of the GPU kernels).
  */
-export function getPermutedTimes(times: Float32Array, slot: number, seed: number): Float32Array {
+export function getPermutedTimes(
+  times: Float32Array,
+  slot: number,
+  seed: number,
+  stream: number
+): Float32Array {
   if (slot === 0) return times;
   const permutation = new Uint32Array(times.length);
-  fillShufflePermutation(permutation, times.length, getPermutationSeedKey(seed), slot);
+  fillShufflePermutation(permutation, times.length, getPermutationSeedKey(seed), slot, stream);
   return Float32Array.from(times, (_, row) => times[permutation[row]]);
 }
 
@@ -61,7 +67,7 @@ export function computeKnoxOracle(
   const unique = getUniquePairs(pairs, rows);
   const pairCount = unique.first.length;
   for (let slot = 0; slot <= permutations; slot++) {
-    const permuted = getPermutedTimes(times, slot, seed);
+    const permuted = getPermutedTimes(times, slot, seed, PHILOX_PURPOSES.knoxTestShuffle.id);
     let count = 0;
     for (let index = 0; index < pairCount; index++) {
       const difference = Math.fround(
@@ -95,7 +101,7 @@ export function computeMantelOracle(
   const results: number[] = [];
   const unique = getUniquePairs(pairs, rows);
   for (let slot = 0; slot <= permutations; slot++) {
-    const permuted = getPermutedTimes(times, slot, seed);
+    const permuted = getPermutedTimes(times, slot, seed, PHILOX_PURPOSES.mantelTestShuffle.id);
     const xs = unique.distances;
     const ys = unique.first.map((row, index) =>
       Math.abs(permuted[row] - permuted[unique.second[index]])
@@ -115,4 +121,38 @@ export function computeMantelOracle(
     results.push(covariance / Math.sqrt(varianceX * varianceY));
   }
   return results;
+}
+
+/**
+ * Sequential (Besag-Clifford) rule on top of a full-run statistics array (`statistics[0]` the
+ * observed value, `statistics[1..P]` the permuted ones), the CPU oracle of `stopAfterExceedances`.
+ * Walks the permutations in index order counting `statistic >= observed`; the first `L` with `h`
+ * exceedances stops the run with `p = min(1, h / L)`, otherwise `p = (e + 1) / (P + 1)`.
+ * `permutationsUsed` is `L`, or `P` when the rule never fired.
+ */
+export function computeSequentialStop(
+  statistics: ArrayLike<number>,
+  permutations: number,
+  stopAfterExceedances: number
+) {
+  let exceedances = 0;
+  for (let slot = 1; slot <= permutations; slot++) {
+    if (statistics[slot] >= statistics[0]) {
+      exceedances++;
+      if (exceedances === stopAfterExceedances) {
+        return {
+          stopped: true,
+          permutationsUsed: slot,
+          greater: exceedances,
+          pValue: Math.min(1, stopAfterExceedances / slot)
+        };
+      }
+    }
+  }
+  return {
+    stopped: false,
+    permutationsUsed: permutations,
+    greater: exceedances,
+    pValue: (exceedances + 1) / (permutations + 1)
+  };
 }

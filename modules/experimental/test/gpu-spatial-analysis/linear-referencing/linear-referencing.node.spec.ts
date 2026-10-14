@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {getGPUSphereRadius} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   getGPULineLocateParameterValues,
   GPULinearReferencing,
@@ -16,7 +17,7 @@ import {
   findNearestSegment,
   getVertexMeasures,
   locateAlong,
-  type ReferencePaths
+  type ReferenceLines
 } from './linear-referencing-oracle';
 
 let viewSerial = 0;
@@ -34,13 +35,16 @@ function createReferencingProps(
   overrides: Partial<GPULinearReferencingProps> = {}
 ): GPULinearReferencingProps {
   return {
-    points: view(graph, 'float32x2', 8),
+    queryPositions: view(graph, 'float32x2', 8),
     positions: view(graph, 'float32x2', 12),
-    pathOffsets: view(graph, 'uint32', 4),
+    lineOffsets: view(graph, 'uint32', 4),
     radius: view(graph, 'float32', 1),
     candidateCapacity: 64,
-    output: {measures: view(graph, 'float32', 8), sides: view(graph, 'sint32', 8)},
-    overflow: view(graph, 'uint32', 1),
+    output: {
+      measures: view(graph, 'float32', 8),
+      sides: view(graph, 'sint32', 8),
+      status: {overflow: view(graph, 'uint32', 1)}
+    },
     ...overrides
   };
 }
@@ -51,8 +55,8 @@ function createLocateProps(
 ): GPULineLocateProps {
   return {
     positions: view(graph, 'float32x2', 12),
-    pathOffsets: view(graph, 'uint32', 4),
-    eventPaths: view(graph, 'uint32', 5),
+    lineOffsets: view(graph, 'uint32', 4),
+    eventLineIndices: view(graph, 'uint32', 5),
     eventMeasures: view(graph, 'float32', 5),
     output: {positions: view(graph, 'float32x2', 5)},
     ...overrides
@@ -72,19 +76,32 @@ it('GPULinearReferencing composes the nearest-feature join and validates outputs
   expect(ids).toContain('linear-referencing-project');
   expect(ids.at(-1)).toBe('linear-referencing-output');
 
-  expect(() => new GPULinearReferencing(createReferencingProps(graph, {output: {}}))).toThrow(
-    /at least one output/
-  );
   expect(
     () =>
       new GPULinearReferencing(
-        createReferencingProps(graph, {output: {measures: view(graph, 'float32', 3)}})
+        createReferencingProps(graph, {output: {status: {overflow: view(graph, 'uint32', 1)}}})
+      )
+  ).toThrow(/at least one output/);
+  expect(
+    () =>
+      new GPULinearReferencing(
+        createReferencingProps(graph, {
+          output: {
+            measures: view(graph, 'float32', 3),
+            status: {overflow: view(graph, 'uint32', 1)}
+          }
+        })
       )
   ).toThrow(/must hold 8 rows/);
   expect(
     () =>
       new GPULinearReferencing(
-        createReferencingProps(graph, {output: {vertexMeasures: view(graph, 'float32', 8)}})
+        createReferencingProps(graph, {
+          output: {
+            vertexMeasures: view(graph, 'float32', 8),
+            status: {overflow: view(graph, 'uint32', 1)}
+          }
+        })
       )
   ).toThrow(/must hold 12 rows/);
   expect(
@@ -119,38 +136,33 @@ it('GPULineLocate validates events and parameters', () => {
 });
 
 it('linear referencing oracles agree with each other', () => {
-  const paths: ReferencePaths = {
+  const lines: ReferenceLines = {
     positions: new Float32Array([0, 0, 10, 0, 10, 10, 20, 20]),
-    pathOffsets: new Uint32Array([0, 3, 4])
+    lineOffsets: new Uint32Array([0, 3, 4])
   };
-  const measures = getVertexMeasures(paths);
+  const measures = getVertexMeasures(lines);
   expect(measures).toEqual([0, 10, 20, 0]);
-  const projection = findNearestSegment(paths, measures, [12, 4], 100);
+  const projection = findNearestSegment(lines, measures, [12, 4], 100);
   expect(projection?.segmentRow).toBe(1);
   expect(projection?.measure).toBe(14);
   expect(projection?.side).toBe(-1);
-  const located = locateAlong(paths, measures, 0, projection?.measure ?? 0);
+  const located = locateAlong(lines, measures, 0, projection?.measure ?? 0);
   expect(located.position).toEqual([10, 4]);
-  expect(locateAlong(paths, measures, 0, 25).status).toBe(1);
-  expect(locateAlong(paths, measures, 5, 1).status).toBe(2);
-  expect(locateAlong(paths, measures, 1, 0).tangent).toEqual([0, 0]);
+  expect(locateAlong(lines, measures, 0, 25).status).toBe(1);
+  expect(locateAlong(lines, measures, 5, 1).status).toBe(2);
+  expect(locateAlong(lines, measures, 1, 0).tangent).toEqual([0, 0]);
 });
 
 it('linear referencing selects planar or great-circle through spatialContext', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'referencing-context'});
   const greatCircle = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
   const planarReferencing = new GPULinearReferencing(createReferencingProps(graph));
-  expect(planarReferencing.coordinateSystem).toBe('planar');
   expect(planarReferencing.spatialContext.coordinateSpace).toBe('planar');
   const sphericalReferencing = new GPULinearReferencing(
     createReferencingProps(graph, {spatialContext: greatCircle, candidateCapacity: undefined})
   );
-  expect(sphericalReferencing.coordinateSystem).toBe('spherical');
-  expect(sphericalReferencing.sphereRadius).toBe(6371008.8);
-  expect(
-    new GPULineLocate(createLocateProps(graph, {spatialContext: {...greatCircle, sphereRadius: 1}}))
-      .sphereRadius
-  ).toBe(1);
+  expect(sphericalReferencing.spatialContext).toBe(greatCircle);
+  expect(getGPUSphereRadius(sphericalReferencing.spatialContext)).toBe(6371008.8);
   for (const construct of [
     () =>
       new GPULinearReferencing(

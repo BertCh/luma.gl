@@ -17,7 +17,7 @@ export type GeographicDistributionOracleInput = {
   ellipseConvention?: 'arcgis' | 'standard';
   orientationOnly?: boolean;
   medianTolerance?: number;
-  medianIterations?: number;
+  maximumMedianIterations?: number;
   vertexCount?: number;
 };
 
@@ -39,7 +39,9 @@ const COINCIDENT_DISTANCE_SQUARED = 1e-12;
 
 /**
  * Float64 reference implementation of the documented geographic distribution definitions: sequential
- * sums, two-pass central moments, fixed-iteration Weiszfeld median and circular statistics.
+ * sums, two-pass central moments, Weiszfeld median and circular statistics. The median iterates
+ * every non-empty group in lockstep and stops after the first step in which every group moved at
+ * most `medianTolerance`, or after `maximumMedianIterations` steps, as the GPU does.
  */
 export function computeGeographicDistribution(
   input: GeographicDistributionOracleInput
@@ -49,7 +51,7 @@ export function computeGeographicDistribution(
   const [originX, originY] = input.origin ?? [0, 0];
   const multiplier = input.standardDeviations ?? 1;
   const scale = (input.ellipseConvention ?? 'arcgis') === 'arcgis' ? Math.SQRT2 : 1;
-  const iterations = input.medianIterations ?? 24;
+  const iterations = input.maximumMedianIterations ?? 24;
   const tolerance = input.medianTolerance ?? 1e-3;
   const vertexCount = input.vertexCount ?? 64;
   const result: GeographicDistributionOracleResult = {
@@ -64,6 +66,13 @@ export function computeGeographicDistribution(
     ellipseVertices: new Array(groupCount * vertexCount * 2).fill(NaN),
     circleVertices: new Array(groupCount * vertexCount * 2).fill(NaN)
   };
+  const medianStates: {
+    group: number;
+    rows: {x: number; y: number; w: number}[];
+    x: number;
+    y: number;
+    lastMove: number;
+  }[] = [];
 
   for (let group = 0; group < groupCount; group++) {
     const rows: {x: number; y: number; w: number; row: number}[] = [];
@@ -125,33 +134,7 @@ export function computeGeographicDistribution(
       result.circleVertices[offset + 1] = meanY + originY + standardDistance * Math.sin(t);
     }
 
-    let medianX = meanX;
-    let medianY = meanY;
-    let lastMove = 0;
-    for (let iteration = 0; iteration < iterations; iteration++) {
-      let sumWeight = 0;
-      let sumX = 0;
-      let sumY = 0;
-      for (const r of rows) {
-        const dx = r.x - medianX;
-        const dy = r.y - medianY;
-        const distanceSquared = dx * dx + dy * dy;
-        if (distanceSquared > COINCIDENT_DISTANCE_SQUARED) {
-          const inverseWeight = r.w / Math.sqrt(distanceSquared);
-          sumWeight += inverseWeight;
-          sumX += inverseWeight * dx;
-          sumY += inverseWeight * dy;
-        }
-      }
-      const stepX = sumWeight > 0 ? sumX / sumWeight : 0;
-      const stepY = sumWeight > 0 ? sumY / sumWeight : 0;
-      medianX += stepX;
-      medianY += stepY;
-      lastMove = Math.hypot(stepX, stepY);
-    }
-    result.medianCenters[group * 2] = medianX + originX;
-    result.medianCenters[group * 2 + 1] = medianY + originY;
-    result.medianConverged[group] = lastMove <= tolerance ? 1 : 0;
+    medianStates.push({group, rows, x: meanX, y: meanY, lastMove: 0});
 
     if (input.lineEnds) {
       let cosine = 0;
@@ -192,6 +175,38 @@ export function computeGeographicDistribution(
         );
       }
     }
+  }
+
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    for (const state of medianStates) {
+      let sumWeight = 0;
+      let sumX = 0;
+      let sumY = 0;
+      for (const r of state.rows) {
+        const dx = r.x - state.x;
+        const dy = r.y - state.y;
+        const distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared > COINCIDENT_DISTANCE_SQUARED) {
+          const inverseWeight = r.w / Math.sqrt(distanceSquared);
+          sumWeight += inverseWeight;
+          sumX += inverseWeight * dx;
+          sumY += inverseWeight * dy;
+        }
+      }
+      const stepX = sumWeight > 0 ? sumX / sumWeight : 0;
+      const stepY = sumWeight > 0 ? sumY / sumWeight : 0;
+      state.x += stepX;
+      state.y += stepY;
+      state.lastMove = Math.hypot(stepX, stepY);
+    }
+    if (medianStates.every(state => state.lastMove <= tolerance)) {
+      break;
+    }
+  }
+  for (const state of medianStates) {
+    result.medianCenters[state.group * 2] = state.x + originX;
+    result.medianCenters[state.group * 2 + 1] = state.y + originY;
+    result.medianConverged[state.group] = state.lastMove <= tolerance ? 1 : 0;
   }
   return result;
 }

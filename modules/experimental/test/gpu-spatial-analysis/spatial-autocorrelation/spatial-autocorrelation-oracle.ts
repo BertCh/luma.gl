@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts';
 import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing';
 import {
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
   GPU_LOCAL_MORAN_QUADRANT,
-  type GPUSpatialAutocorrelationParameters
+  type GPUSpatialAutocorrelationSettings
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
 
 const {fround} = Math;
@@ -28,14 +28,14 @@ export type SpatialAutocorrelationOracleInput = {
   weights: OracleWeights;
   values: Float32Array;
   mask?: Uint32Array;
-  parameters?: GPUSpatialAutocorrelationParameters;
+  parameters?: GPUSpatialAutocorrelationSettings;
   /** Gi* only: weight `w_ii` of the focal row. Defaults to 1. */
   selfWeight?: number;
   /** Island policy, as `GPUHotSpotAnalysis`. Defaults to `'exclude'`. */
   islands?: 'exclude' | 'keep';
   /** Rows with fewer active neighbors have no z-score. Defaults to 1. */
   minimumNeighbors?: number;
-  /** Re-standardize each row over its remaining neighbors (`weights.info.transform === 'row'`). */
+  /** Re-standardize each row over its remaining neighbors (`weights.information.transform === 'row'`). */
   rowStandardized?: boolean;
 };
 
@@ -43,8 +43,6 @@ export type SpatialAutocorrelationOracleInput = {
 export type SpatialAutocorrelationOracleOptions = {
   /** Multiple-testing correction of the p-values. Defaults to `'none'`. */
   multipleTesting?: GPUMultipleTestingMethod;
-  /** @deprecated Alias of `multipleTesting: 'benjamini-hochberg'`. */
-  falseDiscoveryRate?: boolean;
 };
 
 /** Global moments used by both statistics. */
@@ -356,7 +354,7 @@ export function getAdjustedPValueMargin(
 }
 
 function getMethod(options: SpatialAutocorrelationOracleOptions): GPUMultipleTestingMethod {
-  return options.multipleTesting ?? (options.falseDiscoveryRate ? 'benjamini-hochberg' : 'none');
+  return options.multipleTesting ?? 'none';
 }
 
 function getAdjustedPValues(

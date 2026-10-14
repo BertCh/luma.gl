@@ -15,6 +15,7 @@ import {
   createRingEdges,
   type ZoneOracleResult
 } from './zone-events-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Zone 0 square with a hole, zone 1 beside it sharing an edge, zone 2 a triangle. Fractional coordinates avoid integer-track degeneracies. */
 const EDGES = createRingEdges([
@@ -156,9 +157,7 @@ function expectParity(actual: ZoneGPUResult, expected: ZoneOracleResult, label: 
 
 it('GPUZoneEvents matches the oracle on random walks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [11, 12]) {
     const tracks = packTracks(createWalkingTracks(seed, 300));
     const expected = computeZoneEventsOracle(tracks, EDGES, ZONE_COUNT);
@@ -172,7 +171,7 @@ it('GPUZoneEvents matches the oracle on random walks', async () => {
     const options = {
       zoneCount: ZONE_COUNT,
       candidateCapacity: 4096,
-      maxEventsPerTrack: 1000,
+      trackEventCapacity: 1000,
       eventCapacity: 2048
     };
     expectParity(await runZoneEvents(device, tracks, EDGES, options), expected, `seed ${seed}`);
@@ -187,9 +186,7 @@ it('GPUZoneEvents matches the oracle on random walks', async () => {
 
 it('GPUZoneEvents accepts Int64 word timestamps and matches float32 results', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = createWalkingTracks(21, 120);
   const words = packTracks(rows, 397n * 2n ** 32n - 20n);
   const expected = computeZoneEventsOracle(words, EDGES, ZONE_COUNT);
@@ -198,7 +195,7 @@ it('GPUZoneEvents accepts Int64 word timestamps and matches float32 results', as
     await runZoneEvents(device, words, EDGES, {
       zoneCount: ZONE_COUNT,
       candidateCapacity: 2048,
-      maxEventsPerTrack: 1000,
+      trackEventCapacity: 1000,
       eventCapacity: 1024
     }),
     expected,
@@ -209,9 +206,7 @@ it('GPUZoneEvents accepts Int64 word timestamps and matches float32 results', as
 
 it('GPUZoneEvents handles tracks that start inside a zone and shared borders', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Track 0 starts inside zone 0, leaves into zone 1 across the shared border, then ends inside.
   // Track 1 starts inside the hole (outside zone 0) and never moves. Track 2 never touches a zone.
   const tracks = packTracks([
@@ -237,7 +232,7 @@ it('GPUZoneEvents handles tracks that start inside a zone and shared borders', a
   const actual = await runZoneEvents(device, tracks, EDGES, {
     zoneCount: ZONE_COUNT,
     candidateCapacity: 64,
-    maxEventsPerTrack: 8,
+    trackEventCapacity: 8,
     eventCapacity: 16
   });
   expectParity(actual, expected, 'inside start');
@@ -251,13 +246,11 @@ it('GPUZoneEvents handles tracks that start inside a zone and shared borders', a
 
 it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = packTracks(createWalkingTracks(11, 300));
   const expected = computeZoneEventsOracle(tracks, EDGES, ZONE_COUNT);
   const base = {zoneCount: ZONE_COUNT, candidateCapacity: 4096, eventCapacity: 2048};
-  const truncated = await runZoneEvents(device, tracks, EDGES, {...base, maxEventsPerTrack: 2});
+  const truncated = await runZoneEvents(device, tracks, EDGES, {...base, trackEventCapacity: 2});
   const keptExpected = expected.events.filter(event => {
     const index = expected.events.filter(other => other.track === event.track).indexOf(event);
     return index < 2;
@@ -276,7 +269,7 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   // A too-small output capacity clamps the count and reports the unclamped total.
   const clamped = await runZoneEvents(device, tracks, EDGES, {
     ...base,
-    maxEventsPerTrack: 1000,
+    trackEventCapacity: 1000,
     eventCapacity: 10
   });
   expect(clamped.count).toBe(10);
@@ -288,7 +281,7 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   // Candidate scratch overflow is reported.
   const starved = await runZoneEvents(device, tracks, EDGES, {
     ...base,
-    maxEventsPerTrack: 1000,
+    trackEventCapacity: 1000,
     candidateCapacity: 16
   });
   expect(starved.overflow).toBe(1);
@@ -300,7 +293,7 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
   expect(starved.candidateCount).toBe(truncated.candidateCount);
   const sized = await runZoneEvents(device, tracks, EDGES, {
     ...base,
-    maxEventsPerTrack: 1000,
+    trackEventCapacity: 1000,
     candidateCapacity: starved.candidateCount
   });
   expect(sized.candidateOverflow).toBe(0);
@@ -311,9 +304,7 @@ it('GPUZoneEvents bounds events per track and flags overflow', async () => {
 
 it('GPUZoneEvents bounds the sparse table and reports its total', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = packTracks(createWalkingTracks(11, 300));
   const expected = computeZoneEventsOracle(tracks, EDGES, ZONE_COUNT);
   const visited = expected.visitCounts.filter(visits => visits > 0).length;
@@ -321,7 +312,7 @@ it('GPUZoneEvents bounds the sparse table and reports its total', async () => {
   const result = await runZoneEvents(device, tracks, EDGES, {
     zoneCount: ZONE_COUNT,
     candidateCapacity: 4096,
-    maxEventsPerTrack: 1000,
+    trackEventCapacity: 1000,
     eventCapacity: 2048,
     tableCapacity: 10
   });
@@ -340,14 +331,12 @@ it('GPUZoneEvents bounds the sparse table and reports its total', async () => {
  */
 it('GPUZoneEvents counts touches, turn-backs and vertex passes with exact ties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = createRingEdges([
     [0, [0, 10, 5, 0, 10, 10]],
     [1, [20, 0, 30, 0, 30, 10, 20, 10]]
   ]);
-  const zoneOptions = {candidateCapacity: 64, maxEventsPerTrack: 8, eventCapacity: 16};
+  const zoneOptions = {candidateCapacity: 64, trackEventCapacity: 8, eventCapacity: 16};
   const tracks = packTracks([
     // Touches the triangle apex (5, 0) from outside: no event.
     [
@@ -412,9 +401,7 @@ function expectTieParity(
 
 it('GPUZoneEvents matches the exact boundary rule on integer-grid tracks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = createRingEdges([
     [0, [0, 0, 8, 0, 8, 8, 0, 8]],
     [1, [0, 8, 4, 0, 8, 8]],
@@ -438,10 +425,41 @@ it('GPUZoneEvents matches the exact boundary rule on integer-grid tracks', async
   const actual = await runZoneEvents(device, tracks, edges, {
     zoneCount: 3,
     candidateCapacity: 8192,
-    maxEventsPerTrack: 64,
+    trackEventCapacity: 64,
     eventCapacity: 4096
   });
   expect(actual.overflow).toBe(0);
   expectTieParity(actual, tracks, edges, 3, 'grid');
+  device.destroy?.();
+});
+
+it('GPUZoneEvents handles one track with thousands of crossings (no serial per-track walk)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Track 0 zig-zags 2500 times across zone 0's outer square and the shared border into zone 1
+  // (about 7500 events in one track). Track 1 starts inside zone 2 and never leaves, so its visit
+  // is closed at its last sample. The random walks keep many short tracks next to the long one.
+  const zigzag: FixtureRow[] = [];
+  for (let row = 0; row <= 2500; row++) {
+    zigzag.push([row % 2 === 0 ? 50.25 : 350.75, 250.3 + (row % 7) * 0.01, row * 2]);
+  }
+  const inside: FixtureRow[] = [
+    [800.1, 200.2, 0],
+    [801.3, 201.7, 40],
+    [799.9, 199.4, 90]
+  ];
+  const tracks = packTracks([zigzag, inside, ...createWalkingTracks(31, 120)]);
+  const expected = computeZoneEventsOracle(tracks, EDGES, ZONE_COUNT);
+  expect(expected.trackEventCounts[0]).toBeGreaterThan(7000);
+  expect(expected.visitCounts[1 * ZONE_COUNT + 2]).toBe(1);
+  expect(expected.dwellTimes[1 * ZONE_COUNT + 2]).toBeCloseTo(90, 6);
+  const actual = await runZoneEvents(device, tracks, EDGES, {
+    zoneCount: ZONE_COUNT,
+    candidateCapacity: 65536,
+    trackEventCapacity: 20000,
+    eventCapacity: 16384
+  });
+  expect(actual.candidateOverflow).toBe(0);
+  expectParity(actual, expected, 'zig-zag');
   device.destroy?.();
 });

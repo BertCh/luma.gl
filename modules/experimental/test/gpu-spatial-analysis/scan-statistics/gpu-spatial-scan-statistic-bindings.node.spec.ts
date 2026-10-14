@@ -13,12 +13,12 @@ import {describe, expect, test} from 'vitest';
 import {
   GPUSpatialScanStatistic,
   type GPUSpatialScanModel
-} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
+} from '../../../src/gpu-spatial-analysis/scan-statistics';
 
 // WebGPU's default (and the 'core' device) limit of storage buffers per shader stage.
 const CORE_STORAGE_BUFFER_LIMIT = 8;
 
-type RecordingGraph = GPUCommandGraph & {passes: GPUCommandGraphComputeNode[]};
+type RecordingGraph = GPUCommandGraph & {passes: GPUCommandGraphComputeNode<unknown>[]};
 
 describe('GPUSpatialScanStatistic storage buffer bindings', () => {
   test.each<GPUSpatialScanModel>([
@@ -48,11 +48,13 @@ describe('GPUSpatialScanStatistic storage buffer bindings', () => {
       maximumPermutations,
       maximumClusters,
       parameters: view('parameters', 'uint32', 8),
-      clusterIndices: view('cluster-indices', 'uint32', maximumClusters * 4),
-      clusterStatistics: view('cluster-statistics', 'float32', maximumClusters * 8),
-      statistics: view('statistics', 'float32', maximumPermutations + 1),
-      summary: view('summary', 'uint32', 4),
-      zoneStatistics: view('zone-statistics', 'float32', zones * 4)
+      output: {
+        clusterIndices: view('cluster-indices', 'uint32', maximumClusters * 4),
+        clusterStatistics: view('cluster-statistics', 'float32', maximumClusters * 8),
+        statistics: view('statistics', 'float32', maximumPermutations + 1),
+        summary: view('summary', 'uint32', 4),
+        zoneStatistics: view('zone-statistics', 'float32', zones * 4)
+      }
     });
 
     // The kernel declaration itself throws above the device limit; assert the counts too.
@@ -71,7 +73,7 @@ describe('GPUSpatialScanStatistic storage buffer bindings', () => {
 });
 
 function makeRecordingGraph(id: string, maxStorageBuffersPerShaderStage: number): RecordingGraph {
-  const passes: GPUCommandGraphComputeNode[] = [];
+  const passes: GPUCommandGraphComputeNode<unknown>[] = [];
   const graph = {
     id,
     device: {
@@ -89,7 +91,7 @@ function makeRecordingGraph(id: string, maxStorageBuffersPerShaderStage: number)
       }
     },
     passes,
-    addComputePass(pass: GPUCommandGraphComputeNode): void {
+    addComputePass(pass: GPUCommandGraphComputeNode<unknown>): void {
       passes.push(pass);
     },
     createTransientBuffer(descriptor: {

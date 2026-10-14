@@ -8,7 +8,7 @@ import {
   quantizePairAmountOnCPU,
   quantizeScaledTermOnCPU
 } from '../../../src/gpu-dataframe/pair-statistics/pair-histogram';
-import {getPairStatisticsUnitVarianceOnCPU} from '../../../src/gpu-dataframe/pair-statistics/pair-statistics-fixed-point-unit';
+import {getPairStatisticsUnitVarianceOnCPU} from './pair-statistics-unit-oracle';
 import {forEachPair, getDistanceBin, isNearBinEdge} from './pair-statistics-oracle';
 import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
 import {VARIOGRAM_OUTLIER_REFERENCES} from './variogram-outlier-reference';

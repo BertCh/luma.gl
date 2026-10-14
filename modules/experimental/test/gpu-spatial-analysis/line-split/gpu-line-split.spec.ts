@@ -6,10 +6,11 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {runLineSplit, type Point} from './line-split-harness';
 import {SHAPELY_LINE_SPLIT_FIXTURE} from './shapely-line-split-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPULineSplit#splits an X crossing at the crossing point', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineSplit(device, [
     [
       [0, 0],
@@ -46,7 +47,7 @@ it('GPULineSplit#splits an X crossing at the crossing point', async () => {
 
 it('GPULineSplit#splits at a shared vertex without duplicating it and ignores line ends', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineSplit(device, [
     [
       [0, 0],
@@ -80,7 +81,7 @@ it('GPULineSplit#splits at a shared vertex without duplicating it and ignores li
 
 it('GPULineSplit#splits a line at its own crossing and keeps unsplit lines whole', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineSplit(device, [
     [
       [0, 0],
@@ -121,7 +122,7 @@ it('GPULineSplit#splits a line at its own crossing and keeps unsplit lines whole
 
 it('GPULineSplit#orders several splits on one segment and splits at both ends of an overlap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineSplit(device, [
     [
       [0, 0],
@@ -159,7 +160,7 @@ it('GPULineSplit#orders several splits on one segment and splits at both ends of
 
 it('GPULineSplit#reports overflow and keeps a consistent prefix', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const lines: Point[][] = [
     [
       [0, 0],
@@ -200,7 +201,7 @@ it('GPULineSplit#reports overflow and keeps a consistent prefix', async () => {
 
 it('GPULineSplit#matches Shapely unary_union noding on random lines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineSplit(device, SHAPELY_LINE_SPLIT_FIXTURE.lines as never);
   expect(result.overflow).toBe(0);
   const expected = SHAPELY_LINE_SPLIT_FIXTURE.pieces;
@@ -238,7 +239,7 @@ it('GPULineSplit#matches Shapely unary_union noding on random lines', async () =
 
 it('GPULineSplit#orders a long skewed crossing segment and keeps duplicates once', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // 90 vertical lines cross one 2-vertex segment: far more events on a single slot than the
   // size of a workgroup, listed in a scrambled order. Two of them coincide at x = 257.
   const crossingCount = 513;

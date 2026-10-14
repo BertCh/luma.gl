@@ -8,6 +8,7 @@ import {GPUSpatialWeightsTranspose} from '../../../src/gpu-spatial-analysis/spat
 import {readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from './spatial-weights-harness';
 import {createSeededRandom, type OracleCSR} from './spatial-weights-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -81,8 +82,7 @@ async function runTranspose(
     new GPUSpatialWeightsTranspose({
       weights: input,
       columnCount: rows === columns ? undefined : columns,
-      output: output.spatialWeights,
-      asymmetricSlots: asymmetric?.view
+      output: {...output.spatialWeights, asymmetricSlots: asymmetric?.view}
     })
   );
   const result = await output.read();
@@ -99,7 +99,7 @@ function expectSameCSR(actual: OracleCSR, expected: OracleCSR, label: string): v
 
 it('GPUSpatialWeightsTranspose matches the oracle for square asymmetric weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const [rows, density, seed] of [
     [12, 0.3, 1],
     [97, 0.08, 2],
@@ -116,7 +116,7 @@ it('GPUSpatialWeightsTranspose matches the oracle for square asymmetric weights'
 
 it('GPUSpatialWeightsTranspose handles rectangular cross weights, isolates and empty rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const [rows, columns, seed] of [
     [20, 7, 4],
     [7, 31, 5],
@@ -142,7 +142,7 @@ it('GPUSpatialWeightsTranspose handles rectangular cross weights, isolates and e
 
 it('GPUSpatialWeightsTranspose handles hub columns and column counts at radix-key boundaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Offsets come from a binary search of the sorted keys, so exercise a column that every row
   // lists (a hub), empty columns on both sides, and column counts just around powers of two,
   // where the sentinel key (columns) needs the last representable key value.
@@ -168,7 +168,7 @@ it('GPUSpatialWeightsTranspose handles hub columns and column counts at radix-ke
 
 it('GPUSpatialWeightsTranspose is an involution and drops out-of-range neighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const csr = createRandomCSR(40, 25, 0.15, 7);
   const {result: once} = await runTranspose(device, csr, 25);
   const {result: twice} = await runTranspose(device, once, 40);
@@ -191,7 +191,7 @@ it('GPUSpatialWeightsTranspose is an involution and drops out-of-range neighbors
 
 it('GPUSpatialWeightsTranspose reports asymmetric slots', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Symmetric pattern and values: zero.
   const base = createRandomCSR(30, 30, 0.1, 8, {square: true});
   const symmetric = new Map<number, number>();

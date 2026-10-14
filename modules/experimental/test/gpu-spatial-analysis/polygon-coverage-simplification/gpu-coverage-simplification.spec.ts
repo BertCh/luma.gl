@@ -20,6 +20,7 @@ import {
   findCoverageGaps
 } from './coverage-simplification-oracle';
 import {createWavyStrips} from './coverage-simplification-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -144,18 +145,25 @@ async function runCoverage(
       positions: rig.input(layout.positions, 'float32x2', vertexCount),
       ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
       polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
+      featureOffsets: rig.input(
+        Uint32Array.from(layout.polygonOffsets, (_, index) => index),
+        'uint32',
+        layout.polygonOffsets.length
+      ),
       parameters: parameters.importToGraph(rig.graph),
-      maximumRounds: 128,
+      maximumIterations: 128,
       simplifyBoundary,
-      topologyRounds,
-      converged: converged.view,
+      topologyIterationCount: topologyRounds,
       output: {
         positions: outputPositions.view,
         ringOffsets: outputOffsets.view,
-        keepMask: keepMask.view,
-        overflow: overflow.view,
-        requiredCount: requiredCount.view,
-        topologyStats: topologyStats.view
+        outputMask: keepMask.view,
+        topologyStatistics: topologyStats.view,
+        status: {
+          converged: converged.view,
+          overflow: overflow.view,
+          requiredCount: requiredCount.view
+        }
       }
     })
   );
@@ -201,7 +209,7 @@ function expectMatchesOracle(polygons: OraclePolygons, tolerance: number, result
 
 it('GPUCoverageSimplification matches the oracle and stays gap-free on a jagged grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const seed of [1, 2]) {
     const polygons = createJaggedGrid(6, 4, seed);
     const vertexCount = flattenPolygons(polygons).positions.length / 2;
@@ -223,7 +231,7 @@ it('GPUCoverageSimplification matches the oracle and stays gap-free on a jagged 
 
 it('GPUCoverageSimplification handles holes and islands, either owner', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const islandFirst of [false, true]) {
     const polygons = createHoleAndIsland(islandFirst);
     const vertexCount = flattenPolygons(polygons).positions.length / 2;
@@ -237,7 +245,7 @@ it('GPUCoverageSimplification handles holes and islands, either owner', async ()
 
 it('GPUCoverageSimplification clamps to the output capacity and flags overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createJaggedGrid(3, 3, 5);
   const full = await runCoverage(device, polygons, 0);
   const capacity = Math.floor(full.requiredCount / 2);
@@ -250,7 +258,7 @@ it('GPUCoverageSimplification clamps to the output capacity and flags overflow',
 
 it('GPUCoverageSimplification copies long arcs, shared and isolated, in parallel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(11);
   const arc: Point[] = [];
   for (let i = 0; i < 20000; i++) {
@@ -277,7 +285,7 @@ it('GPUCoverageSimplification copies long arcs, shared and isolated, in parallel
 
 it('GPUCoverageSimplification repairs crossings of simplified arcs and keeps rings valid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createWavyStrips(5, 1);
   const layout = flattenPolygons(polygons);
   const vertexCount = layout.positions.length / 2;
@@ -320,7 +328,7 @@ it('GPUCoverageSimplification repairs crossings of simplified arcs and keeps rin
 
 it('GPUCoverageSimplification never collapses a ring below three vertices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createJaggedGrid(3, 3, 9);
   // A tolerance larger than every cell collapses plain Douglas-Peucker rings.
   const result = await runCoverage(device, polygons, 5, undefined, 4);
@@ -445,7 +453,7 @@ const sortPoints = (points: Point[]) =>
 
 it('GPUCoverageSimplification simplifyBoundary matches shapely coverage_simplify', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const simplifyBoundary of [true, false]) {
     const result = await runCoverage(device, SHAPELY_COVERAGE, 0.5, undefined, 4, simplifyBoundary);
     const expected = SHAPELY_COVERAGE_KEPT[String(simplifyBoundary) as 'true' | 'false'];
@@ -457,7 +465,7 @@ it('GPUCoverageSimplification simplifyBoundary matches shapely coverage_simplify
 
 it('GPUCoverageSimplification simplifyBoundary false keeps every unshared vertex', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const columns = 6;
   const rows = 4;
   const polygons = createJaggedGrid(columns, rows, 1);

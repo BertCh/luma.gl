@@ -6,6 +6,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUWardRegionsParameterValues,
   GPUWardRegions,
   GPU_WARD_STATUS
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization';
@@ -27,10 +28,11 @@ import {
   evaluatePartition,
   standardizeColumns
 } from './spatial-regionalization-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPUWardRegions merges the least-cost adjacent regions to its target', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const offsets = Uint32Array.from([0, 1, 3, 5, 6]);
   const neighbors = Uint32Array.from([1, 0, 2, 1, 3, 2]);
   const edgeWeights = Float32Array.from([1, 1, 1, 1, 1, 1]);
@@ -48,6 +50,7 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
     status: createOutputBuffer(device, GPU_WARD_STATUS.length)
   };
   const seed = 0;
+  const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
   graph.add(
     new GPUWardRegions({
       weights: {
@@ -66,18 +69,11 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
       standardize: false,
       targetRegionCount: 2,
       maximumIterations: 2,
-      seed,
-      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
-      optimization: {
+      parameters: importGraphBuffer(graph, 'parameters', parametersBuffer, 'uint32', 1),
+      output: {
+        labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(
-          graph,
-          'status',
-          outputs.status,
-          'uint32',
-          GPU_WARD_STATUS.length
-        ),
-        seed
+        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
       }
     })
   );
@@ -88,12 +84,13 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
   expect(await readUint32(outputs.status, GPU_WARD_STATUS.length)).toEqual([2, 1, 0, 0]);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
+  parametersBuffer.destroy();
   Object.values(outputs).forEach(buffer => buffer.destroy());
 });
 
 it('GPUWardRegions merges a 900-row lattice to its target with contiguous regions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // 900 rows exceed the 256-lane workgroup, so each merge selection reduces several tiles.
   const width = 30;
   const rowCount = width * width;
@@ -113,6 +110,7 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
     status: createOutputBuffer(device, GPU_WARD_STATUS.length)
   };
   const seed = 0;
+  const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
   graph.add(
     new GPUWardRegions({
       weights: {
@@ -131,18 +129,11 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
       standardize: false,
       targetRegionCount,
       maximumIterations: rowCount - targetRegionCount,
-      seed,
-      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
-      optimization: {
+      parameters: importGraphBuffer(graph, 'parameters', parametersBuffer, 'uint32', 1),
+      output: {
+        labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(
-          graph,
-          'status',
-          outputs.status,
-          'uint32',
-          GPU_WARD_STATUS.length
-        ),
-        seed
+        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
       }
     })
   );
@@ -160,12 +151,13 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
   expect(Math.abs(objective - finalObjective)).toBeLessThan(1e-3 * Math.max(finalObjective, 1));
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
+  parametersBuffer.destroy();
   Object.values(outputs).forEach(buffer => buffer.destroy());
 });
 
 it('GPUWardRegions gates off merges once disconnected weights leave no adjacent pair', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Two components {0, 1} and {2, 3}: two merges are possible, the third iteration finds no
   // adjacent pair, disarms the indirect gate, and must not re-apply the stale winner.
   const offsets = Uint32Array.from([0, 1, 2, 3, 4]);
@@ -185,6 +177,7 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
     status: createOutputBuffer(device, GPU_WARD_STATUS.length)
   };
   const seed = 7;
+  const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
   graph.add(
     new GPUWardRegions({
       weights: {
@@ -203,18 +196,11 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
       standardize: false,
       targetRegionCount: 1,
       maximumIterations: 3,
-      seed,
-      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
-      optimization: {
+      parameters: importGraphBuffer(graph, 'parameters', parametersBuffer, 'uint32', 1),
+      output: {
+        labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(
-          graph,
-          'status',
-          outputs.status,
-          'uint32',
-          GPU_WARD_STATUS.length
-        ),
-        seed
+        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
       }
     })
   );
@@ -228,6 +214,7 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
   }
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
+  parametersBuffer.destroy();
   Object.values(outputs).forEach(buffer => buffer.destroy());
 });
 
@@ -256,6 +243,7 @@ async function runWardChain(
     status: createOutputBuffer(device, GPU_WARD_STATUS.length)
   };
   const seed = 0;
+  const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
   graph.add(
     new GPUWardRegions({
       weights: {
@@ -279,18 +267,11 @@ async function runWardChain(
       standardize: scene.standardize,
       targetRegionCount: 2,
       maximumIterations: rowCount - 2,
-      seed,
-      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
-      optimization: {
+      parameters: importGraphBuffer(graph, 'parameters', parametersBuffer, 'uint32', 1),
+      output: {
+        labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(
-          graph,
-          'status',
-          outputs.status,
-          'uint32',
-          GPU_WARD_STATUS.length
-        ),
-        seed
+        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
       }
     })
   );
@@ -303,13 +284,14 @@ async function runWardChain(
   };
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
+  parametersBuffer.destroy();
   Object.values(outputs).forEach(buffer => buffer.destroy());
   return result;
 }
 
 it('GPUWardRegions treats directed weights as undirected adjacency', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Each row lists only its lower neighbor. A pair is only a candidate from its lower region's
   // side, so merges across a link that lists the higher region first need the transposed link.
   const result = await runWardChain(device, {
@@ -325,7 +307,7 @@ it('GPUWardRegions treats directed weights as undirected adjacency', async () =>
 
 it('GPUWardRegions standardizes columns by default', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const values = Float32Array.from([0, 1, 10, 11]);
   const result = await runWardChain(device, {
     offsets: Uint32Array.from([0, 1, 3, 5, 6]),

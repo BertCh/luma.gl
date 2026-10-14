@@ -3,38 +3,38 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getCentralAngle, interpolateGreatCircle} from '../geometry-measures/geodesic-oracle';
-import {getFlatVertex, type FlatPathResult, type FlatPaths} from './line-segmentize-oracle';
+import {getFlatVertex, type FlatLineResult, type FlatLines} from './line-segmentize-oracle';
 
-type Piece = {path: number; start: number; end: number; copy: boolean};
+type Piece = {line: number; start: number; end: number; copy: boolean};
 
 /**
  * f64 reference of `GPULineChunk`: chunks of `chunkLength` (`'chunk'`) or one
- * `[startMeasure, endMeasure]` range per path (`'substring'`).
+ * `[startMeasure, endMeasure]` range per line (`'substring'`).
  */
-export function chunkPaths(
-  paths: FlatPaths,
+export function chunkLines(
+  lines: FlatLines,
   options: {
     mode: 'chunk' | 'substring';
     chunkLength?: number;
     startMeasure?: number;
     endMeasure?: number;
-    pathCapacity: number;
+    lineCapacity: number;
     spherical?: boolean;
     radius?: number;
   }
-): FlatPathResult & {sourcePaths: number[]; pieceTotal: number} {
+): FlatLineResult & {sourceLineIndices: number[]; pieceTotal: number} {
   const spherical = Boolean(options.spherical);
   const radius = options.radius ?? 6371008.8;
-  const pathCount = paths.pathOffsets.length - 1;
+  const lineCount = lines.lineOffsets.length - 1;
   const measures: number[] = [];
   const shifted: number[][] = [];
-  for (let path = 0; path < pathCount; path++) {
+  for (let line = 0; line < lineCount; line++) {
     let measure = 0;
     let shift = 0;
-    for (let row = paths.pathOffsets[path]; row < paths.pathOffsets[path + 1]; row++) {
-      const vertex = getFlatVertex(paths, row);
-      if (row > paths.pathOffsets[path]) {
-        const previous = getFlatVertex(paths, row - 1);
+    for (let row = lines.lineOffsets[line]; row < lines.lineOffsets[line + 1]; row++) {
+      const vertex = getFlatVertex(lines, row);
+      if (row > lines.lineOffsets[line]) {
+        const previous = getFlatVertex(lines, row - 1);
         measure += spherical
           ? getCentralAngle(previous, vertex) * radius
           : Math.hypot(vertex[0] - previous[0], vertex[1] - previous[1]);
@@ -45,26 +45,26 @@ export function chunkPaths(
     }
   }
   const pieces: Piece[] = [];
-  for (let path = 0; path < pathCount; path++) {
-    const start = paths.pathOffsets[path];
-    const end = paths.pathOffsets[path + 1];
+  for (let line = 0; line < lineCount; line++) {
+    const start = lines.lineOffsets[line];
+    const end = lines.lineOffsets[line + 1];
     if (end <= start) {
       continue;
     }
     const length = measures[end - 1];
     if (!(length > 0)) {
-      pieces.push({path, start: 0, end: 0, copy: true});
+      pieces.push({line, start: 0, end: 0, copy: true});
       continue;
     }
     if (options.mode === 'chunk') {
       const chunkLength = options.chunkLength ?? 0;
       const count =
         chunkLength > 0
-          ? Math.min(Math.max(Math.ceil(length / chunkLength), 1), options.pathCapacity + 1)
+          ? Math.min(Math.max(Math.ceil(length / chunkLength), 1), options.lineCapacity + 1)
           : 1;
       for (let piece = 0; piece < count; piece++) {
         pieces.push({
-          path,
+          line,
           start: chunkLength > 0 ? piece * chunkLength : 0,
           end: piece + 1 < count ? (piece + 1) * chunkLength : length,
           copy: false
@@ -73,7 +73,7 @@ export function chunkPaths(
     } else {
       const clamp = (value: number) => Math.min(Math.max(value, 0), length);
       pieces.push({
-        path,
+        line,
         start: clamp(options.startMeasure ?? 0),
         end: clamp(options.endMeasure ?? length),
         copy: false
@@ -92,15 +92,15 @@ export function chunkPaths(
   };
   const result = {
     positions: [] as number[][],
-    pathOffsets: [0],
+    lineOffsets: [0],
     sourceRows: [] as number[],
     measures: [] as number[],
-    sourcePaths: [] as number[],
+    sourceLineIndices: [] as number[],
     pieceTotal: pieces.length
   };
-  for (const piece of pieces.slice(0, options.pathCapacity)) {
-    const start = paths.pathOffsets[piece.path];
-    const end = paths.pathOffsets[piece.path + 1];
+  for (const piece of pieces.slice(0, options.lineCapacity)) {
+    const start = lines.lineOffsets[piece.line];
+    const end = lines.lineOffsets[piece.line + 1];
     const push = (vertex: number[], measure: number, row: number) => {
       result.positions.push(vertex);
       result.measures.push(measure);
@@ -129,12 +129,12 @@ export function chunkPaths(
       const endSegment = clampRow(interiorEnd);
       push(interpolate(endSegment, piece.end), piece.end, endSegment);
     }
-    result.pathOffsets.push(result.positions.length);
-    result.sourcePaths.push(piece.path);
+    result.lineOffsets.push(result.positions.length);
+    result.sourceLineIndices.push(piece.line);
   }
-  while (result.pathOffsets.length < options.pathCapacity + 1) {
-    result.pathOffsets.push(result.positions.length);
-    result.sourcePaths.push(0xffffffff);
+  while (result.lineOffsets.length < options.lineCapacity + 1) {
+    result.lineOffsets.push(result.positions.length);
+    result.sourceLineIndices.push(0xffffffff);
   }
   return result;
 }

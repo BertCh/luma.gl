@@ -11,7 +11,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPUNetworkStatistics,
-  encodeGPUNetworkStatisticsParameters,
+  getGPUNetworkStatisticsParameterValues,
   getGPUNetworkStatisticsLength,
   GPUNetworkStatistics
 } from '../../../src/gpu-network/network-statistics';
@@ -31,12 +31,17 @@ import {
   computeNetworkStatisticsOracle,
   type NetworkStatisticsOracleOptions
 } from './network-statistics-oracle';
+import {
+  compareNetworkStatistics,
+  getNetworkStatisticsReferenceEdges,
+  NETWORK_STATISTICS_REFERENCE
+} from './network-statistics-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   nodeCount: number;
   edges: readonly NetworkEdge[];
   directed?: boolean;
-  countSelfLoopsTwice?: boolean;
   vertexMask?: Uint32Array;
   edgeMask?: Uint32Array;
   communities?: Uint32Array;
@@ -86,23 +91,24 @@ class Fixture {
     if (options.edgeMask) this.edgeMaskBuffer = track(createInputBuffer(device, options.edgeMask));
     if (options.parameters) {
       this.parametersBuffer = track(
-        createInputBuffer(device, encodeGPUNetworkStatisticsParameters(options.parameters))
+        createInputBuffer(device, getGPUNetworkStatisticsParameterValues(options.parameters))
       );
     }
     this.contributor = new GPUNetworkStatistics({
       id: 'stats',
-      offsets: importView('offsets', offsets, nodeCount + 1),
-      neighbors: importView('neighbors', neighbors, slotCount),
+      topology: {
+        offsets: importView('offsets', offsets, nodeCount + 1),
+        neighbors: importView('neighbors', neighbors, slotCount)
+      },
       directed: options.directed,
-      countSelfLoopsTwice: options.countSelfLoopsTwice,
-      vertexMask:
+      nodeMask:
         this.vertexMaskBuffer && importView('vertex-mask', this.vertexMaskBuffer, nodeCount),
       edgeMask: this.edgeMaskBuffer && importView('edge-mask', this.edgeMaskBuffer, slotCount),
       communities: optional('communities', options.communities),
       parameters: this.parametersBuffer && importView('parameters', this.parametersBuffer, 2),
       degreeBinCount: this.binCount,
       degreeBinning: options.binning,
-      componentIterations: 64,
+      maximumComponentIterations: 64,
       output: importView('output', this.outputBuffer, getGPUNetworkStatisticsLength(this.binCount))
     });
     this.graph.add(this.contributor);
@@ -120,7 +126,7 @@ class Fixture {
   }
 
   setParameters(parameters: {resolution?: number; degreeBinWidth?: number}): void {
-    this.parametersBuffer!.write(encodeGPUNetworkStatisticsParameters(parameters));
+    this.parametersBuffer!.write(getGPUNetworkStatisticsParameterValues(parameters));
   }
 
   oracle(overrides: Partial<NetworkStatisticsOracleOptions> = {}): Uint32Array {
@@ -129,7 +135,6 @@ class Fixture {
       nodeCount: options.nodeCount,
       csr: this.csr,
       directed: options.directed,
-      countSelfLoopsTwice: options.countSelfLoopsTwice,
       vertexMask: options.vertexMask,
       edgeMask: options.edgeMask,
       communities: options.communities,
@@ -143,7 +148,6 @@ class Fixture {
 
   destroy(): void {
     this.compiled?.destroy();
-    this.contributor.destroy();
     for (const buffer of this.buffers) buffer.destroy();
   }
 }
@@ -190,7 +194,7 @@ function createUndirectedEdges(seed: number, nodeCount: number, edgeCount: numbe
 
 it('GPUNetworkStatistics matches the oracle on an undirected random graph with communities', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 400;
   const edges = [...createUndirectedEdges(3, nodeCount, 600), [5, 5, 1] as NetworkEdge];
   const fixture = new Fixture(device, {
@@ -202,7 +206,7 @@ it('GPUNetworkStatistics matches the oracle on an undirected random graph with c
   const words = await fixture.run();
   expectMatches(words, fixture.oracle());
   const decoded = decodeGPUNetworkStatistics(words);
-  expect(decoded.liveVertexCount).toBe(nodeCount);
+  expect(decoded.liveNodeCount).toBe(nodeCount);
   expect(decoded.selfLoopSlotCount).toBe(1);
   expect(decoded.componentsConverged).toBe(true);
   expect(decoded.modularityValid).toBe(true);
@@ -212,7 +216,7 @@ it('GPUNetworkStatistics matches the oracle on an undirected random graph with c
 
 it('GPUNetworkStatistics matches the oracle on a directed random graph with masks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 300;
   const edges = createRandomNetwork(11, nodeCount, 900);
   const slotCount = edges.length;
@@ -231,14 +235,14 @@ it('GPUNetworkStatistics matches the oracle on a directed random graph with mask
   expectMatches(words, fixture.oracle());
   const decoded = decodeGPUNetworkStatistics(words, {degreeBinCount: 8});
   expect(decoded.liveEdgeCount).toBe(decoded.liveSlotCount);
-  expect(decoded.liveVertexCount).toBeLessThan(nodeCount);
-  expect(decoded.maxTotalDegree).toBeGreaterThanOrEqual(decoded.maxOutDegree);
+  expect(decoded.liveNodeCount).toBeLessThan(nodeCount);
+  expect(decoded.maximumTotalDegree).toBeGreaterThanOrEqual(decoded.maximumOutDegree);
   fixture.destroy();
 });
 
 it('GPUNetworkStatistics matches the oracle without masks or communities (directed and undirected)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const directed of [false, true]) {
     const nodeCount = 257;
     const edges = directed
@@ -261,7 +265,7 @@ it('GPUNetworkStatistics matches the oracle without masks or communities (direct
 
 it('GPUNetworkStatistics changes the bin width and masks between encodings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 300;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -282,7 +286,7 @@ it('GPUNetworkStatistics changes the bin width and masks between encodings witho
   fixture.setParameters({resolution: 0.5, degreeBinWidth: 2});
   const words = await fixture.run();
   expectMatches(words, fixture.oracle({vertexMask: mask, resolution: 0.5, binWidth: 2}));
-  expect(decodeGPUNetworkStatistics(words, {degreeBinCount: 6}).liveVertexCount).toBe(
+  expect(decodeGPUNetworkStatistics(words, {degreeBinCount: 6}).liveNodeCount).toBe(
     mask.reduce((sum, value) => sum + value, 0)
   );
   expect(fixture.compiled).toBe(compiled);
@@ -291,7 +295,7 @@ it('GPUNetworkStatistics changes the bin width and masks between encodings witho
 
 it('GPUNetworkStatistics splits a component when a bridge vertex is masked', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Triangle {0,1,2}, bridge 3, triangle {4,5,6}.
   const roads: [number, number][] = [
     [0, 1],
@@ -325,16 +329,16 @@ it('GPUNetworkStatistics splits a component when a bridge vertex is masked', asy
   decoded = decodeGPUNetworkStatistics(words);
   expect(decoded.componentCount).toBe(2);
   expect(decoded.largestComponentSize).toBe(3);
-  expect(decoded.liveVertexCount).toBe(6);
+  expect(decoded.liveNodeCount).toBe(6);
   expect(decoded.liveEdgeCount).toBe(6);
-  expect(decoded.isolatedVertexCount).toBe(0);
+  expect(decoded.isolatedNodeCount).toBe(0);
   expect(decoded.componentsConverged).toBe(true);
   fixture.destroy();
 });
 
 it('GPUNetworkStatistics reports invalid modularity for out-of-range labels and dead graphs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 20;
   const edges = createUndirectedEdges(41, nodeCount, 40);
   const labels = createLabels(nodeCount, 3);
@@ -358,7 +362,7 @@ it('GPUNetworkStatistics reports invalid modularity for out-of-range labels and 
     communities: createLabels(nodeCount, 3)
   });
   const deadDecoded = decodeGPUNetworkStatistics(await dead.run());
-  expect(deadDecoded.liveVertexCount).toBe(0);
+  expect(deadDecoded.liveNodeCount).toBe(0);
   expect(deadDecoded.componentCount).toBe(0);
   expect(deadDecoded.largestComponentSize).toBe(0);
   expect(deadDecoded.modularityValid).toBe(false);
@@ -367,7 +371,7 @@ it('GPUNetworkStatistics reports invalid modularity for out-of-range labels and 
 
 it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 200;
   const edges = createUndirectedEdges(51, nodeCount, 500);
   const labels = createLabels(nodeCount, 7);
@@ -435,9 +439,9 @@ it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity', asyn
   fixture.destroy();
 });
 
-it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity with self-loops counted twice', async () => {
+it('GPUNetworkStatistics undirected modularity counts self-loops twice, matching GPUGraphModularity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 200;
   const edges = [
     ...createUndirectedEdges(51, nodeCount, 500),
@@ -448,8 +452,7 @@ it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity with s
   const fixture = new Fixture(device, {
     nodeCount,
     edges,
-    communities: labels,
-    countSelfLoopsTwice: true
+    communities: labels
   });
   const words = await fixture.run();
   expectMatches(words, fixture.oracle());
@@ -515,7 +518,7 @@ it('GPUNetworkStatistics undirected modularity matches GPUGraphModularity with s
 
 it('GPUNetworkStatistics times a 100k-vertex, 400k-slot encoding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 100_000;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -544,7 +547,7 @@ it('GPUNetworkStatistics times a 100k-vertex, 400k-slot encoding', async () => {
 
 it('GPUNetworkStatistics matches the oracle on a hub-and-spoke graph across many workgroups', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // 1500 vertices span six workgroups; vertex 0 is a hub with a row far longer than the others,
   // and degree 0 vertices stay isolated. Log2 bins and linear bins both run.
   const nodeCount = 1500;
@@ -567,9 +570,28 @@ it('GPUNetworkStatistics matches the oracle on a hub-and-spoke graph across many
       const words = await fixture.run();
       expectMatches(words, fixture.oracle());
       expect(
-        decodeGPUNetworkStatistics(words, {degreeBinCount: binCount}).maxTotalDegree
+        decodeGPUNetworkStatistics(words, {degreeBinCount: binCount}).maximumTotalDegree
       ).toBeGreaterThan(1000);
       fixture.destroy();
     }
+  }
+});
+
+it('GPUNetworkStatistics matches the networkx references', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Fixture from test/oracles/network-statistics.py: networkx degrees (a self-loop adds 2 when
+  // undirected), weak components, isolates and modularity with resolution 1.25.
+  for (const [name, scene] of Object.entries(NETWORK_STATISTICS_REFERENCE.scenes)) {
+    const fixture = new Fixture(device, {
+      nodeCount: scene.nodeCount,
+      edges: getNetworkStatisticsReferenceEdges(scene),
+      directed: scene.directed,
+      communities: Uint32Array.from(scene.communities),
+      parameters: {resolution: scene.resolution}
+    });
+    const words = await fixture.run();
+    expect(compareNetworkStatistics(scene, words), name).toBeUndefined();
+    fixture.destroy();
   }
 });

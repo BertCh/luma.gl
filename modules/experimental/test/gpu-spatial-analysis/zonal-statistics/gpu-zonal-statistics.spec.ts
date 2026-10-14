@@ -36,9 +36,22 @@ import {
   computeZonalStatistics,
   type ZonalOracleResult
 } from './zonal-statistics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
-type OutputKey = Exclude<keyof GPUZonalStatisticsOutput, 'extentStatistic'>;
+type OutputKey =
+  | Exclude<keyof GPUZonalStatisticsOutput, 'extentStatistic' | 'status'>
+  | 'overflow'
+  | 'uncertainCount';
+
+/** Status scalars live in `output.status`; every other output is a field of `output`. */
+function setOutput(output: Record<string, unknown>, key: OutputKey, view: unknown): void {
+  if (key === 'overflow' || key === 'uncertainCount') {
+    output['status'] = {...(output['status'] as object | undefined), [key]: view};
+  } else {
+    output[key] = view;
+  }
+}
 
 const UINT32_OUTPUTS: OutputKey[] = [
   'counts',
@@ -72,7 +85,6 @@ type FixtureOptions = {
   outputKeys: OutputKey[];
   extentStatistic?: GPUZonalStatisticsExtentStatistic;
   candidateCapacity?: number;
-  includeBoundary?: boolean;
   boundaryRule?: 'half-open' | 'closed' | 'open';
 };
 
@@ -118,12 +130,16 @@ function createPolygonFixture(device: Device, options: FixtureOptions): Fixture 
     const buffer = createOutputBuffer(device, length);
     buffers.push(buffer);
     outputs[key] = buffer;
-    output[key] = importGraphBuffer(
-      graph,
-      `out-${key}`,
-      buffer,
-      UINT32_OUTPUTS.includes(key) ? 'uint32' : 'float32',
-      length
+    setOutput(
+      output,
+      key,
+      importGraphBuffer(
+        graph,
+        `out-${key}`,
+        buffer,
+        UINT32_OUTPUTS.includes(key) ? 'uint32' : 'float32',
+        length
+      )
     );
   }
   graph.add(
@@ -131,7 +147,7 @@ function createPolygonFixture(device: Device, options: FixtureOptions): Fixture 
       id: 'zonal',
       features: {
         kind: 'polygons',
-        polygonPositions: importGraphBuffer(
+        positions: importGraphBuffer(
           graph,
           'polygon-positions',
           addInput('polygonPositions', arrays.polygonPositions),
@@ -152,10 +168,9 @@ function createPolygonFixture(device: Device, options: FixtureOptions): Fixture 
         )!,
         ringOffsets: view('ring-offsets', arrays.ringOffsets, 'uint32', arrays.ringOffsets.length)!,
         candidateCapacity: options.candidateCapacity ?? Math.max(pointCount * featureCount, 4),
-        includeBoundary: options.includeBoundary,
         boundaryRule: options.boundaryRule
       },
-      points,
+      positions: points,
       values: view(
         'values',
         options.values && Float32Array.from(options.values),
@@ -350,9 +365,7 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
   for (const weighted of [false, true]) {
     it(`GPUZonalStatistics matches the oracle on random polygons (${sumOrder}, ${weighted ? 'weighted' : 'unweighted'})`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const scene = createRandomScene(11, 12, 3000);
       const joined = getOracleRows(scene);
       const areas = getAreas(scene.features);
@@ -380,9 +393,7 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
 
 it('GPUZonalStatistics counts boundary points once under the half-open default and every rule', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Points on a 0.125 lattice and rectangles on a 0.25 lattice put many points exactly on edges and
   // vertices. Each rule must match the spatial-join oracle of the same rule.
   const scene = createRandomScene(11, 12, 3000);
@@ -406,9 +417,7 @@ it('GPUZonalStatistics counts boundary points once under the half-open default a
 
 it('GPUZonalStatistics sorted sums are bitwise reproducible and match atomic sums', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(23, 12, 3000);
   const options = {
     ...scene,
@@ -452,9 +461,7 @@ for (const statistic of [
 ] as GPUZonalStatisticsExtentStatistic[]) {
   it(`GPUZonalStatistics publishes the ${statistic} extent without its own output view`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createRandomScene(5, 12, 2000);
     const joined = getOracleRows(scene);
     const areas = getAreas(scene.features);
@@ -492,9 +499,7 @@ for (const statistic of [
 
 it('GPUZonalStatistics computes polygon areas for holes, multipolygons, and far-from-origin rings', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const offset = 100000;
   const farSquare = (size: number): number[][] => [
     [offset, offset],
@@ -541,9 +546,7 @@ it('GPUZonalStatistics computes polygon areas for holes, multipolygons, and far-
 
 it('GPUZonalStatistics handles empty features, all-NaN values, and empty extents', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Fixture features: [holed square, square, multipolygon, empty]. Feature 1 only has NaN values.
   const points: Point[] = [
     [0.5, 0.5],
@@ -615,9 +618,7 @@ it('GPUZonalStatistics handles empty features, all-NaN values, and empty extents
 
 it('GPUZonalStatistics reports join overflow when candidateCapacity is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(3, 12, 500);
   const fixture = createPolygonFixture(device, {
     ...scene,
@@ -631,9 +632,7 @@ it('GPUZonalStatistics reports join overflow when candidateCapacity is too small
 
 it('GPUZonalStatistics counts near-collinear points and reports zero uncertain pairs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const oracle = joinPointsInPolygons(UNCERTAINTY_POINTS, UNCERTAINTY_FEATURES, false);
   const fixture = createPolygonFixture(device, {
     features: UNCERTAINTY_FEATURES,
@@ -650,9 +649,7 @@ it('GPUZonalStatistics counts near-collinear points and reports zero uncertain p
 
 it('GPUZonalStatistics writes zero uncertainCount for feature rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createRowsFixture(device, {
     rows: [0, 1, 1, GPU_SPATIAL_JOIN_NO_FEATURE],
     featureCount: 2,
@@ -668,9 +665,7 @@ it('GPUZonalStatistics writes zero uncertainCount for feature rows', async () =>
 
 it('GPUZonalStatistics updates per frame without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const sumOrder of ['atomic', 'sorted'] as const) {
     const scene = createRandomScene(41, 12, 1000);
     const fixture = createPolygonFixture(device, {
@@ -750,12 +745,16 @@ function createRowsFixture(
     const buffer = createOutputBuffer(device, length);
     buffers.push(buffer);
     outputs[key] = buffer;
-    output[key] = importGraphBuffer(
-      graph,
-      `out-${key}`,
-      buffer,
-      UINT32_OUTPUTS.includes(key) ? 'uint32' : 'float32',
-      length
+    setOutput(
+      output,
+      key,
+      importGraphBuffer(
+        graph,
+        `out-${key}`,
+        buffer,
+        UINT32_OUTPUTS.includes(key) ? 'uint32' : 'float32',
+        length
+      )
     );
   }
   const values =
@@ -795,9 +794,7 @@ function createRowsFixture(
 
 it('GPUZonalStatistics accepts chunked feature rows with differently chunked values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(77);
   const featureCount = 9;
   const pointCount = 1500;
@@ -867,9 +864,7 @@ it('GPUZonalStatistics accepts chunked feature rows with differently chunked val
 
 it('GPUZonalStatistics sorted mode works with caller feature rows and many features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(5);
   const featureCount = 600;
   const pointCount = 4000;
@@ -907,9 +902,7 @@ it('GPUZonalStatistics sorted mode works with caller feature rows and many featu
 
 it('GPUZonalStatistics handles zero points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const sumOrder of ['atomic', 'sorted'] as const) {
     const graph = new GPUCommandGraph(device, {id: 'empty-graph'});
     const buffers: Buffer[] = [];
@@ -986,9 +979,7 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
   for (const weighted of [false, true]) {
     it(`GPUZonalStatistics variances match numpy.cov (${sumOrder}, ${weighted ? 'weighted' : 'unweighted'})`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const outputKeys: OutputKey[] = ['variances', 'standardDeviations', 'valueCounts'];
       if (weighted) {
         outputKeys.push('weightedDensities');

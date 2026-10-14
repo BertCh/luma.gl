@@ -6,24 +6,9 @@ import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {describe, expect, it} from 'vitest';
 import {
   assertCompatibleGPUSpatialContexts,
-  assertCompatibleGPUPreparedIndexes,
   defineGPUSpatialParameterSchema,
-  getGPUCapacityPlan,
-  getGPUCapacityRecovery,
-  getGPUCellCoverContributorCapacityPlan,
-  getGPUCellCapacityPlan,
-  getGPUEventCapacityPlan,
-  getGPUGeneratedGeometryCapacityPlan,
-  getGPULineTopologyCapacityPlan,
-  getGPUNeighborhoodCapacityPlan,
   getGPUPartitionMemoryPlan,
-  getGPUPairCapacityPlan,
-  getGPUSpatialJoinCapacityPlan,
   getGPUSpatialContextCompatibility,
-  getGPUSpatialQueryCostPlan,
-  getGPUTileSeamOwner,
-  getGPUTrajectoryEncounterCapacityPlan,
-  isGPUSeamResultOwner,
   packGPUSpatialParameterValues,
   validateGPUCompactPairPort,
   validateGPUFeatureGeometryPort,
@@ -32,7 +17,25 @@ import {
   validateGPUSpatialContext,
   validateGPUPartitionDescriptor,
   validateGPUTilePartitionDescriptor
-} from '../../../src/gpu-spatial-analysis/contracts/index';
+} from '../../../src/analysis-core/contracts/index';
+import {
+  getGPUCapacityPlan,
+  getGPUCapacityRecovery,
+  getGPUCellCoverContributorCapacityPlan,
+  getGPUCellCapacityPlan,
+  getGPUEventCapacityPlan,
+  getGPUGeneratedGeometryCapacityPlan,
+  getGPULineTopologyCapacityPlan,
+  getGPUNeighborhoodCapacityPlan,
+  getGPUPairCapacityPlan,
+  getGPUTrajectoryEncounterCapacityPlan
+} from '../../../src/analysis-core/contracts/capacity-planning';
+import {
+  assertCompatibleGPUPreparedIndexes,
+  getGPUSpatialQueryCostPlan,
+  getGPUTileSeamOwner,
+  isGPUSeamResultOwner
+} from '../../../src/analysis-core/contracts/partitioning';
 import {
   GPU_GEOMETRY_PREDICATES_PARAMETER_SCHEMA,
   GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA,
@@ -71,9 +74,7 @@ describe('GPU spatial-analysis contracts', () => {
       validateGPUCompactPairPort('pairs', {
         leftIds: view('uint32', 8),
         rightIds: view('uint32', 8),
-        count,
-        requiredCount: count,
-        overflow
+        status: {count, requiredCount: count, overflow}
       })
     ).not.toThrow();
     expect(() => validateGPUStatusPort('status', {count, overflow})).not.toThrow();
@@ -217,20 +218,7 @@ describe('GPU spatial-analysis contracts', () => {
     expect(getGPUEventCapacityPlan({sourceCount: 2}).estimatedOutputBytes).toBe(40);
   });
 
-  it('plans measured join, cell, topology and encounter contributors by independent stages', () => {
-    const join = getGPUSpatialJoinCapacityPlan({
-      leftCount: 100,
-      rightCount: 50,
-      candidateCapacity: 300,
-      pairCapacity: 120,
-      observedCandidateCount: 275,
-      observedRequiredCount: 80
-    });
-    expect(join.candidates).toMatchObject({capacity: 300, estimatedRequiredCount: 275});
-    expect(join.pairs).toMatchObject({capacity: 120, estimatedRequiredCount: 80});
-    expect(join.estimatedWorkItems).toBe(425);
-    expect(join.estimatedPeakTransientBytes).toBeGreaterThan(join.estimatedOutputBytes);
-
+  it('plans measured cell, topology and encounter contributors by independent stages', () => {
     const cover = getGPUCellCoverContributorCapacityPlan({
       featureCount: 4,
       vertexCount: 80,

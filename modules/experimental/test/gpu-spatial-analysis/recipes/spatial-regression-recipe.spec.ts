@@ -4,7 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {getGPUSpatialAutocorrelationParameterValues} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
+import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {
   addSpatialRegressionRecipe,
   getSpatialRegressionSpecification
@@ -27,6 +27,7 @@ import {
 } from '../spatial-regression/spatial-regression-diagnostics-oracle';
 import {computeLocalMoranOracle} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SIDE = 8;
 const LADDER = [3, 4, 6];
@@ -34,9 +35,7 @@ const LADDER_CAPACITY = 4;
 
 it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local fits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(SIDE, 11, 0.6, true);
   const rowCount = SIDE * SIDE;
   const k = scene.predictorCount;
@@ -116,21 +115,21 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
           scene.weights.weights.length
         )
       },
-      parameters: fixture.parameters(
+      parameters: fixture.parameterBuffer(
         'autocorrelation-parameters',
         'float32',
-        getGPUSpatialAutocorrelationParameterValues({})
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
       outputs: {
         ols: {
           coefficients: coefficients.view,
-          status: olsStatus.view,
+          status: {code: olsStatus.view},
           residuals: residuals.view
         },
         diagnostics: {
           tests: tests.view,
           summary: diagnosticsSummary.view,
-          status: diagnosticsStatus.view
+          status: {code: diagnosticsStatus.view}
         },
         specification: {decision: decision.view},
         residualMoran: {zScores: moranZ.view},
@@ -229,9 +228,7 @@ it('addSpatialRegressionRecipe chains OLS, diagnostics, residual Moran and local
 
 it('addSpatialRegressionRecipe runs diagnostics after a masked OLS fit and writes the decision', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(SIDE, 11, 0.6, true);
   const rowCount = SIDE * SIDE;
   const k = scene.predictorCount;
@@ -262,7 +259,8 @@ it('addSpatialRegressionRecipe runs diagnostics after a masked OLS fit and write
       response: fixture.input('response', scene.response, 'float32', rowCount),
       mask: fixture.input('mask', mask, 'uint32', rowCount),
       restandardizeRows: true,
-      significanceLevel: 0.01,
+      // One packed level drives the specification search and the residual Moran.
+      settings: {significanceLevel: 0.01},
       predictorCount: k,
       weights: {
         offsets: fixture.input('offsets', scene.weights.offsets, 'uint32', rowCount + 1),
@@ -279,13 +277,13 @@ it('addSpatialRegressionRecipe runs diagnostics after a masked OLS fit and write
           scene.weights.weights.length
         )
       },
-      parameters: fixture.parameters(
+      parameters: fixture.parameterBuffer(
         'autocorrelation-parameters',
         'float32',
-        getGPUSpatialAutocorrelationParameterValues({})
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
       outputs: {
-        diagnostics: {tests: tests.view, summary: summary.view, status: status.view},
+        diagnostics: {tests: tests.view, summary: summary.view, status: {code: status.view}},
         specification: {decision: decision.view}
       }
     });

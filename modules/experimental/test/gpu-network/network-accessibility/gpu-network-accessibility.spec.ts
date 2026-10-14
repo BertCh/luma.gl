@@ -12,8 +12,8 @@ import {
   GPUNetworkCostMatrix,
   GPUNetworkSnapping,
   GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
-  encodeGPUNetworkAccessibilityParameters,
-  type GPUNetworkAccessibilityParameters
+  getGPUNetworkAccessibilityParameterValues,
+  type GPUNetworkAccessibilitySettings
 } from '../../../src/gpu-network/network-accessibility';
 import {
   createInputBuffer,
@@ -34,8 +34,9 @@ import {
   type AccessibilitySeed,
   type OracleParameters
 } from './network-accessibility-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-function toOracleParameters(parameters: GPUNetworkAccessibilityParameters): OracleParameters {
+function toOracleParameters(parameters: GPUNetworkAccessibilitySettings): OracleParameters {
   return {
     threshold: parameters.threshold,
     decay: parameters.decay ?? 'none',
@@ -115,12 +116,12 @@ class ScoringFixture {
   }
 
   /** Writes parameters and encodes the same compiled graph. */
-  async run(parameters: GPUNetworkAccessibilityParameters): Promise<ScoringResult> {
+  async run(parameters: GPUNetworkAccessibilitySettings): Promise<ScoringResult> {
     if (!this.compiled) {
       this.compiled = this.graph.compile();
       this.compileCount++;
     }
-    this.parameters.write(encodeGPUNetworkAccessibilityParameters(parameters));
+    this.parameters.write(getGPUNetworkAccessibilityParameterValues(parameters));
     submitGraph(this.device, this.compiled, undefined);
     const result: ScoringResult = {
       cumulative: [],
@@ -143,7 +144,7 @@ class ScoringFixture {
   }
 }
 
-const PARAMETER_SWEEP: GPUNetworkAccessibilityParameters[] = [
+const PARAMETER_SWEEP: GPUNetworkAccessibilitySettings[] = [
   {threshold: 10},
   {threshold: 25, decay: 'exponential', beta: 0.15},
   {threshold: Infinity, decay: 'exponential', beta: 0.05},
@@ -154,9 +155,7 @@ const PARAMETER_SWEEP: GPUNetworkAccessibilityParameters[] = [
 
 it('GPUNetworkAccessibility scores opportunity rows; threshold and decay change without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 16;
   const nodeCount = width * width;
   const {edges} = createGridFixture(11, width, width);
@@ -200,9 +199,7 @@ it('GPUNetworkAccessibility scores opportunity rows; threshold and decay change 
 
 it('GPUNetworkAccessibility scores origin rows with a deterministic per-row tree', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 24;
   const nodeCount = width * width;
   const {edges} = createGridFixture(5, width, width);
@@ -237,9 +234,7 @@ it('GPUNetworkAccessibility scores origin rows with a deterministic per-row tree
 
 it('GPUNetworkAccessibility computes the two-step floating catchment area', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Facilities on the zero-weight fixture: one in the disconnected component with no demand.
   const nodeCount = 9;
   const csr = buildCSR(nodeCount, ZERO_WEIGHT_EDGES);
@@ -279,9 +274,7 @@ it('GPUNetworkAccessibility computes the two-step floating catchment area', asyn
 
 it('GPUNetworkAccessibility end to end: snapped opportunities, lane-batched matrix, scores', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 12;
   const nodeCount = width * width;
   const {positions, edges} = createGridFixture(9, width, width);
@@ -329,42 +322,44 @@ it('GPUNetworkAccessibility end to end: snapped opportunities, lane-batched matr
   graph.add(
     new GPUNetworkSnapping({
       id: 'snap',
-      points: input('points', points, 'float32x2'),
-      nodePositions: input('positions', positions, 'float32x2'),
-      offsets,
-      edgeTargets: neighbors,
-      edgeCosts: weights,
-      snappedEdges: importGraphBuffer(
-        graph,
-        'snapped-edges',
-        snappedEdgesBuffer,
-        'uint32',
-        pointCount
-      ),
-      seedNodes,
-      seedCosts
+      positions: input('points', points, 'float32x2'),
+      topology: {
+        offsets,
+        neighbors,
+        weights,
+        nodePositions: input('positions', positions, 'float32x2')
+      },
+      output: {
+        snappedEdges: importGraphBuffer(
+          graph,
+          'snapped-edges',
+          snappedEdgesBuffer,
+          'uint32',
+          pointCount
+        ),
+        startNodes: seedNodes,
+        startCosts: seedCosts
+      }
     })
   );
   graph.add(
     new GPUNetworkCostMatrix({
       id: 'matrix',
-      offsets,
-      neighbors,
-      weights,
-      seedNodes,
-      seedCosts,
-      seedsPerRow: 2,
+      topology: {offsets, neighbors, weights},
+      startNodes: seedNodes,
+      startCosts: seedCosts,
+      startsPerRow: 2,
       laneCount: 4,
-      maxIterations: 16,
+      maximumIterations: 16,
       costLimit: input('cost-limit', Float32Array.from([costLimit]), 'float32'),
-      costs: matrixView
+      output: {costs: matrixView}
     })
   );
   const parameters = new GPUParameterBuffer(device, {
     id: 'parameters',
     format: 'float32',
     length: GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
-    values: encodeGPUNetworkAccessibilityParameters({
+    values: getGPUNetworkAccessibilityParameterValues({
       threshold: 20,
       decay: 'exponential',
       beta: 0.1

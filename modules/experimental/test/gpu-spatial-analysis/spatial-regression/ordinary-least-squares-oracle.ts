@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../../src/gpu-spatial-analysis/contracts/model-result';
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../../src/analysis-core/contracts/model-result';
 import {
   GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,

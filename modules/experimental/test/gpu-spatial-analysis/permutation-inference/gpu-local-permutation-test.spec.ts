@@ -11,7 +11,7 @@ import {
 import type {
   GPUInferenceAlternative,
   GPUMultipleTestingMethod
-} from '../../../src/gpu-spatial-analysis/contracts';
+} from '../../../src/analysis-core/contracts';
 import {createLocalPermutationHarness, type LocalPermutationReadback} from './permutation-harness';
 import {
   computeLocalPermutationOracle,
@@ -21,6 +21,7 @@ import {
   type CPUSpatialWeights,
   type LocalPermutationOracle
 } from './permutation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function createClusteredScene(count: number, seed: number) {
   const random = createSeededRandom(seed);
@@ -105,9 +106,7 @@ function expectMatchesOracle(
 
 it('GPULocalPermutationTest matches the oracle for local Moran, Geary, G and G* on kNN weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createClusteredScene(700, 1);
   for (const [statistic, weights, rowStandardized] of [
     ['localMoran', createKnnWeights(positions, 6, true), true],
@@ -115,7 +114,7 @@ it('GPULocalPermutationTest matches the oracle for local Moran, Geary, G and G* 
     ['localG', createKnnWeights(positions, 5, false), false],
     ['localGStar', createKnnWeights(positions, 8, false), false]
   ] as const) {
-    const parameters = {seed: 42, permutations: 199, significanceLevel: 0.05};
+    const parameters = {seed: 42, permutationCount: 199, significanceLevel: 0.05};
     const harness = createLocalPermutationHarness(device, {
       scene: {weights, values, rowStandardized},
       statistic,
@@ -165,9 +164,7 @@ function createIslandScene() {
 
 it('GPULocalPermutationTest handles masks, NaN values, islands, overflow and every multiple-testing method', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {weights, values, mask} = createIslandScene();
   const methods: GPUMultipleTestingMethod[] = [
     'none',
@@ -177,7 +174,7 @@ it('GPULocalPermutationTest handles masks, NaN values, islands, overflow and eve
     'benjamini-yekutieli'
   ];
   for (const multipleTesting of methods) {
-    const parameters = {seed: 7, permutations: 99, significanceLevel: 0.1};
+    const parameters = {seed: 7, permutationCount: 99, significanceLevel: 0.1};
     const harness = createLocalPermutationHarness(device, {
       scene: {weights, values, mask, rowStandardized: true},
       statistic: 'localMoran',
@@ -216,11 +213,9 @@ it('GPULocalPermutationTest handles masks, NaN values, islands, overflow and eve
 
 it("GPULocalPermutationTest islands 'keep' retains islands in n but never tests them", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {weights, values, mask} = createIslandScene();
-  const parameters = {seed: 7, permutations: 99, significanceLevel: 0.1};
+  const parameters = {seed: 7, permutationCount: 99, significanceLevel: 0.1};
   const run = async (islands: 'exclude' | 'keep') => {
     const harness = createLocalPermutationHarness(device, {
       scene: {weights, values, mask, rowStandardized: true},
@@ -259,9 +254,7 @@ it("GPULocalPermutationTest islands 'keep' retains islands in n but never tests 
 
 it('GPULocalPermutationTest does not let ties or zero-weight slots make rows look significant', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const count = 300;
   const random = createSeededRandom(21);
   const positions = Float64Array.from({length: count * 2}, () => random() * 100);
@@ -286,7 +279,7 @@ it('GPULocalPermutationTest does not let ties or zero-weight slots make rows loo
   });
   const weights = createWeights(lists);
   const permutations = 99;
-  const parameters = {seed: 5, permutations, significanceLevel: 0.05};
+  const parameters = {seed: 5, permutationCount: permutations, significanceLevel: 0.05};
   for (const alternative of ['directed', 'two-sided'] as const) {
     const harness = createLocalPermutationHarness(device, {
       scene: {weights, values},
@@ -324,14 +317,12 @@ it('GPULocalPermutationTest does not let ties or zero-weight slots make rows loo
 
 it('GPULocalPermutationTest re-standardizes row-standardized weights over the neighbors left after masking', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createClusteredScene(400, 6);
   const weights = createKnnWeights(positions, 6, true);
   const random = createSeededRandom(8);
   const mask = Uint32Array.from({length: 400}, () => (random() < 0.8 ? 1 : 0));
-  const parameters = {seed: 3, permutations: 99, significanceLevel: 0.05};
+  const parameters = {seed: 3, permutationCount: 99, significanceLevel: 0.05};
   const run = async (rowStandardized: boolean) => {
     const harness = createLocalPermutationHarness(device, {
       scene: {weights, values, mask, rowStandardized},
@@ -371,15 +362,13 @@ it('GPULocalPermutationTest re-standardizes row-standardized weights over the ne
 
 it('GPULocalPermutationTest never clamps an invalid permutation count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createClusteredScene(300, 9);
   const weights = createKnnWeights(positions, 6, true);
   const harness = createLocalPermutationHarness(device, {
     scene: {weights, values},
     statistic: 'localMoran',
-    parameters: {seed: 1, permutations: 99},
+    parameters: {seed: 1, permutationCount: 99},
     maximumPermutations: 99
   });
   const valid = await harness.run();
@@ -387,7 +376,7 @@ it('GPULocalPermutationTest never clamps an invalid permutation count', async ()
   expect(valid.exceedances.some(count => count !== GPU_LOCAL_PERMUTATION_NOT_TESTED)).toBe(true);
   for (const requested of [0, 100, 1000]) {
     // Raw words: [seedLow, seedHigh, permutations, float32 bits of the level].
-    const words = getGPUPermutationParameterValues({seed: 1, permutations: 99});
+    const words = getGPUPermutationParameterValues({seed: 1, permutationCount: 99});
     words[2] = requested;
     const result = await harness.run(words);
     expect(result.overflow, `P=${requested}`).toBe(1);
@@ -402,23 +391,21 @@ it('GPULocalPermutationTest never clamps an invalid permutation count', async ()
 
 it('GPULocalPermutationTest is reproducible per seed and follows per-frame parameters without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createClusteredScene(2000, 4);
   const weights = createKnnWeights(positions, 8, true);
   const harness = createLocalPermutationHarness(device, {
     scene: {weights, values},
     statistic: 'localMoran',
-    parameters: {seed: 1, permutations: 99}
+    parameters: {seed: 1, permutationCount: 99}
   });
   const first = await harness.run();
   const second = await harness.run();
   expect(second.exceedances).toEqual(first.exceedances);
   expect(second.pseudoPValues).toEqual(first.pseudoPValues);
-  const reseeded = await harness.run({seed: 2, permutations: 99});
+  const reseeded = await harness.run({seed: 2, permutationCount: 99});
   expect(reseeded.exceedances).not.toEqual(first.exceedances);
-  const parameters = {seed: 3, permutations: 499, significanceLevel: 0.01};
+  const parameters = {seed: 3, permutationCount: 499, significanceLevel: 0.01};
   const more = await harness.run(parameters);
   const oracle = computeLocalPermutationOracle({
     weights,

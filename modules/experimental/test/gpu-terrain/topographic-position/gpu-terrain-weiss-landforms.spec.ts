@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainWeissLandforms,
@@ -21,11 +22,17 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createTopographicTerrain} from './topographic-position-oracle';
 import {computeWeissLandforms} from './weiss-landforms-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 48;
 const HEIGHT = 40;
 const PIXEL_COUNT = WIDTH * HEIGHT;
 const SCALES = [{radius: 2}, {radius: 8, innerRadius: 3}] as const;
+
+/** Grid of the test raster with square cells of `cellSize` meters. */
+function makeGrid(cellSize: number) {
+  return makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize});
+}
 
 type WeissRun = {landforms: number[]; standardized: number[]; validity: number[]};
 
@@ -52,8 +59,7 @@ async function runWeiss(
   });
   graph.add(
     new GPUTerrainWeissLandforms({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGrid(10),
       smallScale: SCALES[0],
       largeScale: SCALES[1],
       standardization,
@@ -68,16 +74,24 @@ async function runWeiss(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', PIXEL_COUNT)
           : undefined
       },
-      settings: settings.importToGraph(graph),
-      landforms: importGraphBuffer(graph, 'landforms', buffers.landforms, 'uint32', PIXEL_COUNT),
-      standardizedPosition: importGraphBuffer(
-        graph,
-        'standardized',
-        buffers.standardized,
-        'float32',
-        2 * PIXEL_COUNT
-      ),
-      validity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', PIXEL_COUNT)
+      parameters: settings.importToGraph(graph),
+      output: {
+        landforms: importGraphBuffer(graph, 'landforms', buffers.landforms, 'uint32', PIXEL_COUNT),
+        standardizedPosition: importGraphBuffer(
+          graph,
+          'standardized',
+          buffers.standardized,
+          'float32',
+          2 * PIXEL_COUNT
+        ),
+        outputValidity: importGraphBuffer(
+          graph,
+          'validity',
+          buffers.validity,
+          'uint32',
+          PIXEL_COUNT
+        )
+      }
     })
   );
   const compiled = graph.compile();
@@ -136,9 +150,7 @@ function expectMatchesOracle(
 
 it('GPUTerrainWeissLandforms classifies with global standardization like the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createTopographicTerrain(WIDTH, HEIGHT, 900, 60);
   const mask = new Uint32Array(PIXEL_COUNT).fill(1);
   for (const index of [3, 10 * WIDTH + 17, 25 * WIDTH + 40]) mask[index] = 0;
@@ -149,12 +161,11 @@ it('GPUTerrainWeissLandforms classifies with global standardization like the ora
     elevation,
     'global',
     [
-      getGPUTerrainWeissLandformsParameterValues({cellSize: [10, 10]}),
-      getGPUTerrainWeissLandformsParameterValues({
-        cellSize: [30, 30],
-        standardThreshold: 0.5,
-        slopeThresholdDegrees: 2
-      })
+      getGPUTerrainWeissLandformsParameterValues({}, makeGrid(10)),
+      getGPUTerrainWeissLandformsParameterValues(
+        {standardThreshold: 0.5, slopeThresholdDegrees: 2},
+        makeGrid(30)
+      )
     ],
     mask
   );
@@ -167,12 +178,10 @@ it('GPUTerrainWeissLandforms classifies with global standardization like the ora
 
 it('GPUTerrainWeissLandforms supports local (DEV) standardization', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createTopographicTerrain(WIDTH, HEIGHT, 2400, 200);
   const [run] = await runWeiss(device, elevation, 'local', [
-    getGPUTerrainWeissLandformsParameterValues({cellSize: [5, 5]})
+    getGPUTerrainWeissLandformsParameterValues({}, makeGrid(5))
   ]);
   expect(new Set(run.landforms).size).toBeGreaterThan(4);
   expectMatchesOracle(run, elevation, 'local', {cellSize: 5});
@@ -180,9 +189,7 @@ it('GPUTerrainWeissLandforms supports local (DEV) standardization', async () => 
 
 it('GPUTerrainWeissLandforms finds a mountain top and a canyon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A cone at one quarter and a pit at three quarters of a gently tilted plane.
   const elevation = Float32Array.from({length: PIXEL_COUNT}, (_, index) => {
     const column = index % WIDTH;
@@ -192,7 +199,7 @@ it('GPUTerrainWeissLandforms finds a mountain top and a canyon', async () => {
     return 500 + 0.01 * column + peak - pit;
   });
   const [run] = await runWeiss(device, elevation, 'global', [
-    getGPUTerrainWeissLandformsParameterValues({cellSize: [10, 10]})
+    getGPUTerrainWeissLandformsParameterValues({}, makeGrid(10))
   ]);
   expect(run.landforms[20 * WIDTH + 12]).toBe(10);
   expect(run.landforms[20 * WIDTH + 36]).toBe(1);

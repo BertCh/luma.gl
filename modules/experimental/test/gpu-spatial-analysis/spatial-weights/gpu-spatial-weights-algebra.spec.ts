@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
   GPUSpatialWeightsAlgebra,
   GPUSpatialWeightsSummary,
   GPUSpatialWeightsTransform,
-  type GPUSpatialWeightsAlgebraProps
+  type GPUSpatialWeightsAlgebraProps,
+  type GPUSpatialWeightsOutput
 } from '../../../src/gpu-spatial-analysis/spatial-weights';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from './spatial-weights-harness';
@@ -31,6 +31,7 @@ import {
   createSeededRandom,
   type OracleCSR
 } from './spatial-weights-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 2e-5): void {
   expect(actual.length, `${label} length`).toBe(expected.length);
@@ -54,16 +55,19 @@ async function runAlgebra(
   rows: number,
   capacity: number,
   distances: boolean,
-  create: (
-    output: ReturnType<WeightsRig['weightsOutput']>['spatialWeights'],
-    overflow: GraphDataView<'uint32'>,
-    total: GraphDataView<'uint32'>
-  ) => GPUSpatialWeightsAlgebraProps
+  create: (output: GPUSpatialWeightsOutput) => GPUSpatialWeightsAlgebraProps
 ) {
   const output = rig.weightsOutput(rows, capacity, distances);
   const overflow = rig.output('uint32', 1);
   const total = rig.output('uint32', 1);
-  rig.run(new GPUSpatialWeightsAlgebra(create(output.spatialWeights, overflow.view, total.view)));
+  rig.run(
+    new GPUSpatialWeightsAlgebra(
+      create({
+        ...output.spatialWeights,
+        status: {overflow: overflow.view, requiredCount: total.view}
+      })
+    )
+  );
   return {
     csr: await output.read(),
     overflow: (await readUint32(overflow.buffer, 1))[0],
@@ -75,7 +79,7 @@ const ROWS = 48;
 
 it('GPUSpatialWeightsAlgebra set operations match the oracle for every weight rule', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const left = createRandomWeights(ROWS, 0.12, 1);
   const right = createRandomWeights(ROWS, 0.12, 2);
   const rules: OracleCombineRule[] = ['left', 'right', 'sum', 'min', 'max', 'product', 'binary'];
@@ -88,21 +92,13 @@ it('GPUSpatialWeightsAlgebra set operations match the oracle for every weight ru
       const rig = new WeightsRig(device);
       const leftWeights = rig.uploadWeights(left, 2);
       const rightWeights = rig.uploadWeights(right, 1);
-      const actual = await runAlgebra(
-        rig,
-        ROWS,
-        expected.neighbors.length + 5,
-        true,
-        (output, overflow, total) => ({
-          operation,
-          left: leftWeights,
-          right: rightWeights,
-          weightRule: rule,
-          output,
-          overflow,
-          totalNeighbors: total
-        })
-      );
+      const actual = await runAlgebra(rig, ROWS, expected.neighbors.length + 5, true, output => ({
+        operation,
+        left: leftWeights,
+        right: rightWeights,
+        weightRule: rule,
+        output
+      }));
       const label = `${operation} ${rule}`;
       assertValidCSR(actual.csr, ROWS, label);
       expectSameCSR(actual.csr, expected, label, true);
@@ -115,7 +111,7 @@ it('GPUSpatialWeightsAlgebra set operations match the oracle for every weight ru
 
 it('GPUSpatialWeightsAlgebra identities hold on the GPU', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const left = createRandomWeights(ROWS, 0.15, 3);
   const right = createRandomWeights(ROWS, 0.15, 4);
   const union = computeBinaryOracle('union', left, right);
@@ -124,12 +120,11 @@ it('GPUSpatialWeightsAlgebra identities hold on the GPU', async () => {
     const rig = new WeightsRig(device);
     const leftWeights = rig.uploadWeights(left);
     const rightWeights = rig.uploadWeights(right);
-    const result = await runAlgebra(rig, ROWS, capacity, false, (output, overflow) => ({
+    const result = await runAlgebra(rig, ROWS, capacity, false, output => ({
       operation,
       left: leftWeights,
       right: rightWeights,
-      output,
-      overflow
+      output
     }));
     rig.destroy();
     return result;
@@ -151,7 +146,7 @@ it('GPUSpatialWeightsAlgebra identities hold on the GPU', async () => {
 
 it('GPUSpatialWeightsAlgebra reports overflow and keeps a valid truncated CSR', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const left = createRandomWeights(ROWS, 0.12, 5);
   const right = createRandomWeights(ROWS, 0.12, 6);
   const full = computeBinaryOracle('union', left, right);
@@ -159,13 +154,11 @@ it('GPUSpatialWeightsAlgebra reports overflow and keeps a valid truncated CSR', 
   const rig = new WeightsRig(device);
   const leftWeights = rig.uploadWeights(left);
   const rightWeights = rig.uploadWeights(right);
-  const actual = await runAlgebra(rig, ROWS, capacity, false, (output, overflow, total) => ({
+  const actual = await runAlgebra(rig, ROWS, capacity, false, output => ({
     operation: 'union',
     left: leftWeights,
     right: rightWeights,
-    output,
-    overflow,
-    totalNeighbors: total
+    output
   }));
   expect(actual.overflow).toBe(1);
   expect(actual.total).toBe(full.neighbors.length);
@@ -177,7 +170,7 @@ it('GPUSpatialWeightsAlgebra reports overflow and keeps a valid truncated CSR', 
 
 it('GPUSpatialWeightsAlgebra higherOrder matches breadth-first search', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const bases = [
     createRandomWeights(ROWS, 0.05, 7),
     computeLatticeOracle({width: 7, height: 6, criterion: 'rook'})
@@ -195,15 +188,14 @@ it('GPUSpatialWeightsAlgebra higherOrder matches breadth-first search', async ()
           rows,
           expected.neighbors.length + 4,
           false,
-          (output, overflow) => ({
+          output => ({
             operation: 'higherOrder',
             weights,
             order,
             cumulative,
             // Lower-order sets can exceed an exact-order output.
             workCapacity: computeHigherOrderOracle(base, order, true).neighbors.length + 4,
-            output,
-            overflow
+            output
           })
         );
         const label = `rows ${rows} order ${order} cumulative ${cumulative}`;
@@ -218,7 +210,7 @@ it('GPUSpatialWeightsAlgebra higherOrder matches breadth-first search', async ()
 
 it('GPUSpatialWeightsAlgebra selfWeight, subgraph and block match the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const base = createRandomWeights(ROWS, 0.12, 8);
   const random = createSeededRandom(9);
   const perRow = new Float32Array(ROWS).map(() => 0.25 + random() * 2);
@@ -230,19 +222,12 @@ it('GPUSpatialWeightsAlgebra selfWeight, subgraph and block match the oracle', a
     const rig = new WeightsRig(device);
     const weights = rig.uploadWeights(base);
     const expected = computeSelfWeightOracle(base, selfWeight === 'perRow' ? perRow : selfWeight);
-    const actual = await runAlgebra(
-      rig,
-      ROWS,
-      expected.neighbors.length,
-      true,
-      (output, overflow) => ({
-        operation: 'selfWeight',
-        weights,
-        selfWeight: selfWeight === 'perRow' ? rig.input(perRow, 'float32', ROWS) : selfWeight,
-        output,
-        overflow
-      })
-    );
+    const actual = await runAlgebra(rig, ROWS, expected.neighbors.length, true, output => ({
+      operation: 'selfWeight',
+      weights,
+      selfWeight: selfWeight === 'perRow' ? rig.input(perRow, 'float32', ROWS) : selfWeight,
+      output
+    }));
     expectSameCSR(actual.csr, expected, `selfWeight ${selfWeight}`, true);
     expect(actual.overflow).toBe(0);
     // Every row now lists itself.
@@ -262,19 +247,12 @@ it('GPUSpatialWeightsAlgebra selfWeight, subgraph and block match the oracle', a
     const withSelf = computeSelfWeightOracle(base, 9);
     const weights = rig.uploadWeights(withSelf);
     const expected = computeSelfWeightOracle(withSelf, 0.5);
-    const actual = await runAlgebra(
-      rig,
-      ROWS,
-      withSelf.neighbors.length,
-      true,
-      (output, overflow) => ({
-        operation: 'selfWeight',
-        weights,
-        selfWeight: 0.5,
-        output,
-        overflow
-      })
-    );
+    const actual = await runAlgebra(rig, ROWS, withSelf.neighbors.length, true, output => ({
+      operation: 'selfWeight',
+      weights,
+      selfWeight: 0.5,
+      output
+    }));
     expectSameCSR(actual.csr, expected, 'selfWeight replace', true);
     rig.destroy();
   }
@@ -285,19 +263,12 @@ it('GPUSpatialWeightsAlgebra selfWeight, subgraph and block match the oracle', a
     const expected = computeSubgraphOracle(base, mask);
     expect(expected.neighbors.length).toBeGreaterThan(0);
     expect(expected.neighbors.length).toBeLessThan(base.neighbors.length);
-    const actual = await runAlgebra(
-      rig,
-      ROWS,
-      expected.neighbors.length + 2,
-      true,
-      (output, overflow) => ({
-        operation: 'subgraph',
-        weights,
-        mask: rig.input(mask, 'uint32', ROWS),
-        output,
-        overflow
-      })
-    );
+    const actual = await runAlgebra(rig, ROWS, expected.neighbors.length + 2, true, output => ({
+      operation: 'subgraph',
+      weights,
+      mask: rig.input(mask, 'uint32', ROWS),
+      output
+    }));
     assertValidCSR(actual.csr, ROWS, 'subgraph');
     expectSameCSR(actual.csr, expected, 'subgraph', true);
     rig.destroy();
@@ -307,19 +278,12 @@ it('GPUSpatialWeightsAlgebra selfWeight, subgraph and block match the oracle', a
     const rig = new WeightsRig(device);
     const expected = computeBlockOracle(groupIds, groupCount);
     expect(expected.neighbors.length).toBeGreaterThan(0);
-    const actual = await runAlgebra(
-      rig,
-      ROWS,
-      expected.neighbors.length + 2,
-      false,
-      (output, overflow) => ({
-        operation: 'block',
-        groupIds: rig.input(groupIds, 'uint32', ROWS),
-        groupCount,
-        output,
-        overflow
-      })
-    );
+    const actual = await runAlgebra(rig, ROWS, expected.neighbors.length + 2, false, output => ({
+      operation: 'block',
+      groupIds: rig.input(groupIds, 'uint32', ROWS),
+      groupCount,
+      output
+    }));
     assertValidCSR(actual.csr, ROWS, 'block');
     expectSameCSR(actual.csr, expected, 'block');
     expect(actual.overflow).toBe(0);
@@ -329,7 +293,7 @@ it('GPUSpatialWeightsAlgebra selfWeight, subgraph and block match the oracle', a
 
 it('GPUSpatialWeightsSummary matches the oracle and the libpysal 3x3 rook values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const lattice = computeLatticeOracle({width: 3, height: 3, criterion: 'rook'});
   const random = createSeededRandom(11);
   // Isolates, asymmetric weights and one-way links.
@@ -352,9 +316,7 @@ it('GPUSpatialWeightsSummary matches the oracle and the libpysal 3x3 rook values
     rig.run(
       new GPUSpatialWeightsSummary({
         weights,
-        statistics: statistics.view,
-        counts: counts.view,
-        cardinality: cardinality.view
+        output: {statistics: statistics.view, counts: counts.view, cardinality: cardinality.view}
       })
     );
     const expected = computeSummaryOracle(csr);
@@ -384,7 +346,7 @@ it('GPUSpatialWeightsSummary matches the oracle and the libpysal 3x3 rook values
 
 it('GPUSpatialWeightsTransform double and variance match the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const base = createRandomWeights(ROWS, 0.1, 14);
   for (const inPlace of [false, true]) {
     const cases = [

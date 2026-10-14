@@ -6,7 +6,9 @@ import {Texture, type Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it, vi} from 'vitest';
-import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
+import {GPURasterTextureToBuffer} from '../../../src/gpu-raster/gpu-raster-texture-to-buffer';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUDistanceFieldParameterValues,
@@ -31,19 +33,24 @@ import {
   type DistanceFieldOracleResult,
   type DistanceFieldScene
 } from './distance-field-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NONE = GPU_DISTANCE_FIELD_NONE;
 
 type FixtureOptions = {
   width: number;
   height: number;
-  settings: GPUDistanceFieldSettings;
+  /** Cell size `[x, y]` in ground units. */
+  cellSize: readonly [number, number];
+  /** Minimum-corner `[x, y]` of cell `(0, 0)`. Defaults to `[0, 0]`. */
+  origin?: readonly [number, number];
+  settings?: GPUDistanceFieldSettings;
   positions?: Float32Array;
   ids?: Uint32Array;
   count?: number;
   mask?: Uint32Array;
   mode?: GPUDistanceFieldMode;
-  jumpFloodRefinementPasses?: 0 | 1 | 2;
+  jumpFloodRefinementIterationCount?: 0 | 1 | 2;
   texture?: boolean;
 };
 
@@ -55,10 +62,21 @@ type FixtureResult = {
   texture?: number[];
 };
 
+/** Grid whose row 0 is the minimum-y edge: the layout the scenes below assume. */
+function makeGrid(
+  width: number,
+  height: number,
+  cellSize: readonly [number, number],
+  origin: readonly [number, number] = [0, 0]
+): GPURasterMetadata {
+  return makeGPURasterMetadata({width, height, cellSize, origin, rowDirection: 'north'});
+}
+
 /** One compiled distance-field graph with rewritable seeds, count, mask, and settings. */
 class Fixture {
   readonly options: FixtureOptions;
   readonly cellCount: number;
+  grid: GPURasterMetadata;
   readonly contributor: GPUDistanceField;
   readonly compiled: CompiledGPUCommandGraph;
   readonly settings: GPUParameterBuffer<'float32'>;
@@ -80,7 +98,8 @@ class Fixture {
     const {width, height} = options;
     this.cellCount = width * height;
     const graph = new GPUCommandGraph(device, {id: 'distance-field-test'});
-    const settingsValues = getGPUDistanceFieldParameterValues(options.settings);
+    this.grid = makeGrid(width, height, options.cellSize, options.origin);
+    const settingsValues = getGPUDistanceFieldParameterValues(options.settings ?? {}, this.grid);
     this.settings = this.track(
       new GPUParameterBuffer(device, {
         id: 'df-settings',
@@ -158,9 +177,8 @@ class Fixture {
       importGraphBuffer(graph, `df-${name}`, this.outputs[name], format, this.cellCount);
     this.contributor = new GPUDistanceField({
       id: 'df',
-      width,
-      height,
-      settings: this.settings.importToGraph(graph),
+      grid: this.grid,
+      parameters: this.settings.importToGraph(graph),
       seedPositions: this.positions
         ? importGraphBuffer(
             graph,
@@ -176,7 +194,7 @@ class Fixture {
         ? importGraphBuffer(graph, 'df-mask', this.mask, 'uint32', this.cellCount)
         : undefined,
       mode: options.mode,
-      jumpFloodRefinementPasses: options.jumpFloodRefinementPasses,
+      jumpFloodRefinementIterationCount: options.jumpFloodRefinementIterationCount,
       output: {
         distances: view('distances', 'float32') as never,
         allocation: view('allocation', 'uint32') as never,
@@ -227,14 +245,21 @@ class Fixture {
 
   /** Rewrites per-frame inputs without recompiling. */
   update(changes: {
+    cellSize?: readonly [number, number];
     settings?: GPUDistanceFieldSettings;
     positions?: Float32Array;
     ids?: Uint32Array;
     count?: number;
     mask?: Uint32Array;
   }): void {
-    if (changes.settings) {
-      const values = getGPUDistanceFieldParameterValues(changes.settings);
+    if (changes.settings || changes.cellSize) {
+      this.grid = makeGrid(
+        this.options.width,
+        this.options.height,
+        changes.cellSize ?? this.options.cellSize,
+        this.options.origin
+      );
+      const values = getGPUDistanceFieldParameterValues(changes.settings ?? {}, this.grid);
       this.settings.write(values);
       this.scene = {...this.scene, settings: values};
     }
@@ -315,9 +340,7 @@ function expectExactParity(
 
 it('GPUDistanceField exact mode matches the brute-force oracle and follows per-frame seeds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 193;
   const height = 129;
   const random = createRandom(17);
@@ -332,7 +355,8 @@ it('GPUDistanceField exact mode matches the brute-force oracle and follows per-f
   const fixture = new Fixture(device, {
     width,
     height,
-    settings: {origin: [-10, 5], cellSize: [2, 2]},
+    origin: [-10, 5],
+    cellSize: [2, 2],
     positions,
     ids,
     count: capacity,
@@ -368,9 +392,7 @@ it('GPUDistanceField exact mode matches the brute-force oracle and follows per-f
 
 it('GPUDistanceField breaks exact ties on the smallest seed ID, including three-way ties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 21;
   const height = 21;
   // Cell (10, 10) is exactly 5 cells from every seed: three 3-4-5 / 0-5 offsets above, and
@@ -394,7 +416,7 @@ it('GPUDistanceField breaks exact ties on the smallest seed ID, including three-
     const fixture = new Fixture(device, {
       width,
       height,
-      settings: {cellSize: [1, 1]},
+      cellSize: [1, 1],
       positions,
       ids: Uint32Array.from(permutations[0]),
       mode
@@ -414,11 +436,51 @@ it('GPUDistanceField breaks exact ties on the smallest seed ID, including three-
   }
 });
 
+it('GPUDistanceField banded exact passes match the oracle across bands and merge rounds', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 300 columns: 10 column bands and 4 envelope merge rounds; 70 rows: 3 row bands.
+  const width = 300;
+  const height = 70;
+  const cases: {name: string; cells: [number, number][]; ids: number[]}[] = [
+    {name: 'single seed in the first band', cells: [[2, 3]], ids: [4]},
+    {
+      name: 'seeds only in the last bands',
+      cells: [
+        [299, 69],
+        [290, 40],
+        [297, 66]
+      ],
+      ids: [3, 1, 2]
+    },
+    {
+      // Mirror pairs: the axis column 150 is equidistant from both seeds of a row.
+      name: 'equidistant pairs across bands',
+      cells: Array.from({length: 10}, (_, index): [number, number][] => [
+        [150 - 37 - index, 7 * index],
+        [150 + 37 + index, 7 * index]
+      ]).flat(),
+      ids: Array.from({length: 20}, (_, index) => 19 - index)
+    }
+  ];
+  for (const scene of cases) {
+    const positions = Float32Array.from(scene.cells.flatMap(([x, y]) => [x + 0.5, y + 0.5]));
+    const fixture = new Fixture(device, {
+      width,
+      height,
+      cellSize: [1, 1],
+      positions,
+      ids: Uint32Array.from(scene.ids)
+    });
+    const actual = await fixture.run();
+    expectExactParity(actual, computeDistanceFieldOnCPU(fixture.scene), 0);
+    fixture.destroy();
+  }
+});
+
 it('GPUDistanceField supports anisotropic cells within one ULP of the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 150;
   const height = 97;
   const random = createRandom(23);
@@ -427,20 +489,20 @@ it('GPUDistanceField supports anisotropic cells within one ULP of the oracle', a
   const fixture = new Fixture(device, {
     width,
     height,
-    settings: {cellSize: [1, 2.5]},
+    cellSize: [1, 2.5],
     positions
   });
   const results: string[] = [];
-  for (const settings of [
-    {cellSize: [1, 2.5]},
-    {cellSize: [0.3, 0.7]},
-    {bounds: [0, 0, 1000, 300], gridSize: [width, height]},
-    {cellSize: [3, 3]}
-  ] as GPUDistanceFieldSettings[]) {
+  for (const cellSize of [
+    [1, 2.5],
+    [0.3, 0.7],
+    [1000 / width, 300 / height],
+    [3, 3]
+  ] as [number, number][]) {
     // Seeds stay at the same cells: rescale positions with the cell size.
-    const values = getGPUDistanceFieldParameterValues(settings);
+    const values = getGPUDistanceFieldParameterValues({}, makeGrid(width, height, cellSize));
     fixture.update({
-      settings,
+      cellSize,
       positions: positions.map(
         (value, index) => value * values[2 + (index % 2)] + values[index % 2]
       )
@@ -476,11 +538,9 @@ it('GPUDistanceField supports anisotropic cells within one ULP of the oracle', a
   fixture.destroy();
 });
 
-it('GPUDistanceField combines a labeled seed mask with points and applies maxDistance', async () => {
+it('GPUDistanceField combines a labeled seed mask with points and applies maximumDistance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 64;
   const height = 48;
   const random = createRandom(31);
@@ -500,7 +560,8 @@ it('GPUDistanceField combines a labeled seed mask with points and applies maxDis
     const fixture = new Fixture(device, {
       width,
       height,
-      settings: {cellSize: [10, 10], maxDistance: 75},
+      cellSize: [10, 10],
+      settings: {maximumDistance: 75},
       positions,
       ids,
       mask,
@@ -522,7 +583,7 @@ it('GPUDistanceField combines a labeled seed mask with points and applies maxDis
     // Clearing the mask and raising the limit leaves only the points.
     fixture.update({
       mask: new Uint32Array(width * height),
-      settings: {cellSize: [10, 10]}
+      settings: {}
     });
     const pointsOnly = await fixture.run();
     if (mode === 'exact') {
@@ -535,14 +596,12 @@ it('GPUDistanceField combines a labeled seed mask with points and applies maxDis
 
 it('GPUDistanceField writes empty fields when no seed is active', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const mode of ['exact', 'jump-flood'] as const) {
     const fixture = new Fixture(device, {
       width: 9,
       height: 5,
-      settings: {cellSize: [1, 1]},
+      cellSize: [1, 1],
       positions: Float32Array.of(1, 1, 2, 2),
       count: 0,
       mode
@@ -565,7 +624,7 @@ it('GPUDistanceField writes empty fields when no seed is active', async () => {
   const single = new Fixture(device, {
     width: 1,
     height: 1,
-    settings: {cellSize: [1, 1]},
+    cellSize: [1, 1],
     mask: Uint32Array.of(8),
     mode: 'jump-flood'
   });
@@ -577,9 +636,7 @@ it('GPUDistanceField writes empty fields when no seed is active', async () => {
 
 it('GPUDistanceField jump flooding stays within a recorded error of the exact field', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 256;
   const height = 256;
   const report: string[] = [];
@@ -590,14 +647,14 @@ it('GPUDistanceField jump flooding stays within a recorded error of the exact fi
       [0, 0],
       [width, height]
     );
-    for (const refinementPasses of [0, 1, 2] as const) {
+    for (const refinementIterationCount of [0, 1, 2] as const) {
       const fixture = new Fixture(device, {
         width,
         height,
-        settings: {cellSize: [1, 1]},
+        cellSize: [1, 1],
         positions,
         mode: 'jump-flood',
-        jumpFloodRefinementPasses: refinementPasses
+        jumpFloodRefinementIterationCount: refinementIterationCount
       });
       const actual = await fixture.run();
       const expected = computeDistanceFieldOnCPU(fixture.scene);
@@ -614,10 +671,10 @@ it('GPUDistanceField jump flooding stays within a recorded error of the exact fi
       }
       const wrongFraction = wrongCells / fixture.cellCount;
       // Bounds measured on this scene with margin; JFA errors are rare and sub-cell to few-cell.
-      expect(wrongFraction).toBeLessThan(refinementPasses === 0 ? 0.01 : 0.005);
+      expect(wrongFraction).toBeLessThan(refinementIterationCount === 0 ? 0.01 : 0.005);
       expect(worstError).toBeLessThan(4);
       report.push(
-        `seeds ${seedCount} JFA+${refinementPasses}: ${wrongCells} wrong cells (${(wrongFraction * 100).toFixed(3)}%), max error ${worstError.toFixed(3)} cells`
+        `seeds ${seedCount} JFA+${refinementIterationCount}: ${wrongCells} wrong cells (${(wrongFraction * 100).toFixed(3)}%), max error ${worstError.toFixed(3)} cells`
       );
       fixture.destroy();
     }
@@ -627,9 +684,7 @@ it('GPUDistanceField jump flooding stays within a recorded error of the exact fi
 
 it('GPUDistanceField reports rough wall-clock timings at 1024x1024', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 1024;
   const height = 1024;
   const positions = createRandomSeedPositions(createRandom(3), 1000, [0, 0], [width, height]);
@@ -638,7 +693,7 @@ it('GPUDistanceField reports rough wall-clock timings at 1024x1024', async () =>
     const fixture = new Fixture(device, {
       width,
       height,
-      settings: {cellSize: [1, 1]},
+      cellSize: [1, 1],
       positions,
       mode
     });

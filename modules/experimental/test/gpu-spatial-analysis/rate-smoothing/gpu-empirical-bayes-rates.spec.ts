@@ -23,6 +23,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeEmpiricalBayesOracle} from './empirical-bayes-oracle';
 import {EB_LOW_DISPERSION} from './eb-low-dispersion-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GARBAGE = 0x7f7f7f7f;
 const S = GPU_EMPIRICAL_BAYES_SUMMARY;
@@ -45,8 +46,8 @@ function createRates(rows: number) {
 async function runRates(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   input: {
-    events: Float32Array;
-    populations: Float32Array;
+    events: Float32Array | Uint32Array;
+    populations: Float32Array | Uint32Array;
     mask?: Uint32Array;
     clampPriorVariance?: boolean;
   }
@@ -69,15 +70,29 @@ async function runRates(
   }
   graph.add(
     new GPUEmpiricalBayesRates({
-      events: importGraphBuffer(graph, 'events', buffers[0]!, 'float32', rows),
-      populations: importGraphBuffer(graph, 'populations', buffers[1]!, 'float32', rows),
+      events: importGraphBuffer(
+        graph,
+        'events',
+        buffers[0]!,
+        input.events instanceof Uint32Array ? 'uint32' : 'float32',
+        rows
+      ),
+      populations: importGraphBuffer(
+        graph,
+        'populations',
+        buffers[1]!,
+        input.populations instanceof Uint32Array ? 'uint32' : 'float32',
+        rows
+      ),
       mask: buffers[2] && importGraphBuffer(graph, 'mask', buffers[2], 'uint32', rows),
       // Existing assertions below are esda parity, which does not clamp.
       clampPriorVariance: input.clampPriorVariance ?? false,
-      standardizedRates: importGraphBuffer(graph, 'z', outputs.standardized, 'float32', rows),
-      smoothedRates: importGraphBuffer(graph, 'smoothed', outputs.smoothed, 'float32', rows),
-      rawRates: importGraphBuffer(graph, 'raw', outputs.raw, 'float32', rows),
-      summary: importGraphBuffer(graph, 'summary', outputs.summary, 'float32', S.length)
+      output: {
+        standardizedRates: importGraphBuffer(graph, 'z', outputs.standardized, 'float32', rows),
+        smoothedRates: importGraphBuffer(graph, 'smoothed', outputs.smoothed, 'float32', rows),
+        rawRates: importGraphBuffer(graph, 'raw', outputs.raw, 'float32', rows),
+        summary: importGraphBuffer(graph, 'summary', outputs.summary, 'float32', S.length)
+      }
     })
   );
   const compiled = graph.compile();
@@ -107,9 +122,7 @@ function expectClose(actual: number, expected: number, label: string, relative =
 
 it('GPUEmpiricalBayesRates reproduces the esda assuncao_rate docstring example', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const events = Float32Array.from([30, 25, 25, 15, 33, 21, 30, 20]);
   const populations = Float32Array.from([100, 100, 110, 90, 100, 90, 110, 90]);
   const result = await runRates(device, {events, populations});
@@ -120,11 +133,24 @@ it('GPUEmpiricalBayesRates reproduces the esda assuncao_rate docstring example',
   expect(result.summary[S.count]).toBe(8);
 });
 
+it('GPUEmpiricalBayesRates gives identical results for uint32 and float32 counts', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Integer counts below 2^24 convert to f32 exactly, so the two runs must agree bit for bit.
+  const {events, populations} = createRates(3000);
+  const fromFloat = await runRates(device, {events, populations});
+  const fromUint = await runRates(device, {
+    events: Uint32Array.from(events),
+    populations: Uint32Array.from(populations)
+  });
+  expect(Array.from(fromUint.standardized)).toEqual(Array.from(fromFloat.standardized));
+  expect(Array.from(fromUint.smoothed)).toEqual(Array.from(fromFloat.smoothed));
+  expect(Array.from(fromUint.summary)).toEqual(Array.from(fromFloat.summary));
+});
+
 it('GPUEmpiricalBayesRates matches the CPU oracle with masks and excluded rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {events, populations} = createRates(5000);
   populations[3] = 0;
   events[10] = NaN;
@@ -157,9 +183,7 @@ it('GPUEmpiricalBayesRates matches the CPU oracle with masks and excluded rows',
 
 it('GPUEmpiricalBayesRates clamps a negative prior variance at zero by default (Marshall 1991)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const events = Float32Array.from(EB_LOW_DISPERSION.events);
   const populations = Float32Array.from(EB_LOW_DISPERSION.populations);
   const clamped = await runRates(device, {events, populations, clampPriorVariance: true});
@@ -185,9 +209,7 @@ it('GPUEmpiricalBayesRates clamps a negative prior variance at zero by default (
 
 it('GPUEmpiricalBayesRates feeds GPUGlobalSpatialStatistics Moran in one graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 600;
   const {events, populations} = createRates(rows);
   // Ring-like lists with spatially varying risk so Moran's I is clearly positive.
@@ -236,7 +258,7 @@ it('GPUEmpiricalBayesRates feeds GPUGlobalSpatialStatistics Moran in one graph',
     new GPUEmpiricalBayesRates({
       events: importGraphBuffer(graph, 'events', inputs.events, 'float32', rows),
       populations: importGraphBuffer(graph, 'populations', inputs.populations, 'float32', rows),
-      standardizedRates: standardized
+      output: {standardizedRates: standardized}
     })
   );
   graph.add(
@@ -248,13 +270,15 @@ it('GPUEmpiricalBayesRates feeds GPUGlobalSpatialStatistics Moran in one graph',
       },
       values: standardized,
       statistics: ['moran'],
-      results: importGraphBuffer(
-        graph,
-        'results',
-        results,
-        'float32',
-        GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
-      )
+      output: {
+        summary: importGraphBuffer(
+          graph,
+          'results',
+          results,
+          'float32',
+          GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
+        )
+      }
     })
   );
   const compiled = graph.compile();

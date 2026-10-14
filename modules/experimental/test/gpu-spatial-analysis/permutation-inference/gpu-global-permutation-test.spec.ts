@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
   getGPUPermutationParameterValues,
-  GPU_GLOBAL_PERMUTATION_RESULT
+  GPU_GLOBAL_PERMUTATION_SUMMARY
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
 import {
   createGlobalPermutationHarness,
@@ -20,8 +20,9 @@ import {
   type CPUSpatialWeights,
   type GlobalPermutationOracle
 } from './permutation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-const R = GPU_GLOBAL_PERMUTATION_RESULT;
+const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
 
 function close(actual: number, expected: number, absolute: number, relative: number): boolean {
   return Math.abs(actual - expected) <= absolute + relative * Math.abs(expected);
@@ -58,7 +59,7 @@ function expectMatchesOracle(
     Math.abs(result.results[R.exceedances] - oracle.exceedances),
     `${label} exceedances`
   ).toBeLessThanOrEqual(nearTies);
-  expect(result.results[R.permutations]).toBe(permutations);
+  expect(result.results[R.permutationCount]).toBe(permutations);
   expect(
     close(
       result.results[R.pseudoPValue],
@@ -115,13 +116,11 @@ function createScene(count: number, seed: number) {
 
 it('GPUGlobalPermutationTest matches the oracle for Moran, Geary, General G and bivariate Moran', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values, secondValues} = createScene(900, 1);
   const weights = createKnnWeights(positions, 6, true);
   for (const statistic of ['moran', 'geary', 'getisOrdG', 'bivariateMoran'] as const) {
-    const parameters = {seed: 9, permutations: 199};
+    const parameters = {seed: 9, permutationCount: 199};
     const harness = createGlobalPermutationHarness(device, {
       scene: {weights, values, secondValues},
       statistic,
@@ -151,9 +150,7 @@ it('GPUGlobalPermutationTest matches the oracle for Moran, Geary, General G and 
 
 it('GPUGlobalPermutationTest on random values gives a reference distribution centred on -1/(n-1)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createSeededRandom(5);
   const count = 3000;
   const positions = Float64Array.from({length: count * 2}, () => random() * 100);
@@ -161,7 +158,7 @@ it('GPUGlobalPermutationTest on random values gives a reference distribution cen
   const weights = createKnnWeights(positions, 8, false);
   const mask = Uint32Array.from({length: count}, () => (random() < 0.9 ? 1 : 0));
   values[3] = NaN;
-  const parameters = {seed: 123, permutations: 999};
+  const parameters = {seed: 123, permutationCount: 999};
   const harness = createGlobalPermutationHarness(device, {
     scene: {weights, values, mask},
     statistic: 'moran',
@@ -191,26 +188,24 @@ it('GPUGlobalPermutationTest on random values gives a reference distribution cen
 
 it('GPUGlobalPermutationTest is bitwise reproducible per seed and follows seed, P and values per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createScene(1500, 2);
   const weights = createKnnWeights(positions, 5, true);
   const harness = createGlobalPermutationHarness(device, {
     scene: {weights, values},
     statistic: 'geary',
-    parameters: {seed: 1, permutations: 99},
+    parameters: {seed: 1, permutationCount: 99},
     maximumPermutations: 499
   });
   const first = await harness.run();
   const second = await harness.run();
   expect(second.resultBits).toEqual(first.resultBits);
   expect(second.referenceDistribution).toEqual(first.referenceDistribution);
-  const reseeded = await harness.run({seed: 2, permutations: 99});
+  const reseeded = await harness.run({seed: 2, permutationCount: 99});
   expect(reseeded.referenceDistribution).not.toEqual(first.referenceDistribution);
   expect(reseeded.results[R.observed]).toBe(first.results[R.observed]);
   const shuffled = values.map((_, index) => values[(index * 7919) % values.length]);
-  const parameters = {seed: 4, permutations: 499};
+  const parameters = {seed: 4, permutationCount: 499};
   const fresh = await harness.run(parameters, {values: shuffled});
   expectMatchesOracle(
     fresh,
@@ -244,9 +239,7 @@ function createLatticeWeights(side: number, rowStandardize: boolean): CPUSpatial
 
 it('GPUGlobalPermutationTest handles islands, masks and re-standardization like the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const side = 20;
   const count = side * side;
   const random = createSeededRandom(31);
@@ -266,7 +259,7 @@ it('GPUGlobalPermutationTest handles islands, masks and re-standardization like 
   const mask = Uint32Array.from({length: count}, () => (random() < 0.9 ? 1 : 0));
   mask[0] = 1;
   mask[1] = 1;
-  const parameters = {seed: 17, permutations: 199};
+  const parameters = {seed: 17, permutationCount: 199};
   const analysisCounts: Record<string, number> = {};
   for (const islands of ['exclude', 'keep'] as const) {
     const harness = createGlobalPermutationHarness(device, {
@@ -299,9 +292,7 @@ it('GPUGlobalPermutationTest handles islands, masks and re-standardization like 
 
 it('GPUGlobalPermutationTest reports p = 1 when every permutation ties the observed statistic', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const side = 12;
   const weights = createLatticeWeights(side, false);
   const values = new Float32Array(side * side).fill(4);
@@ -309,7 +300,7 @@ it('GPUGlobalPermutationTest reports p = 1 when every permutation ties the obser
     const harness = createGlobalPermutationHarness(device, {
       scene: {weights, values},
       statistic: 'getisOrdG',
-      parameters: {seed: 2, permutations: 99},
+      parameters: {seed: 2, permutationCount: 99},
       alternative,
       maximumPermutations: 99
     });
@@ -322,24 +313,22 @@ it('GPUGlobalPermutationTest reports p = 1 when every permutation ties the obser
 
 it('GPUGlobalPermutationTest never clamps an invalid permutation count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createScene(300, 3);
   const weights = createKnnWeights(positions, 5, true);
   const harness = createGlobalPermutationHarness(device, {
     scene: {weights, values},
     statistic: 'moran',
-    parameters: {seed: 1, permutations: 49},
+    parameters: {seed: 1, permutationCount: 49},
     maximumPermutations: 49
   });
   const valid = await harness.run();
-  expect(valid.results[R.permutations]).toBe(49);
+  expect(valid.results[R.permutationCount]).toBe(49);
   for (const requested of [0, 50, 5000]) {
-    const words = getGPUPermutationParameterValues({seed: 1, permutations: 49});
+    const words = getGPUPermutationParameterValues({seed: 1, permutationCount: 49});
     words[2] = requested;
     const result = await harness.run(words);
-    expect(result.results[R.permutations], `P=${requested}`).toBeNaN();
+    expect(result.results[R.permutationCount], `P=${requested}`).toBeNaN();
     expect(result.results[R.pseudoPValue], `P=${requested}`).toBeNaN();
     expect(result.results[R.exceedances]).toBeNaN();
     expect(result.referenceDistribution.every(Number.isNaN)).toBe(true);

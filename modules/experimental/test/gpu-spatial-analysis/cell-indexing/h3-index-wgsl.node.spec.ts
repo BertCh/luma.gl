@@ -6,6 +6,7 @@
 import {dggs} from '@luma.gl/shadertools';
 import {cellToChildren, cellToLatLng, getRes0Cells, latLngToCell} from 'h3-js';
 import {describe, expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {H3_INDEX_WGSL} from '../../../src/gpu-spatial-analysis/cell-indexing/h3-index-wgsl';
 import {
   CELL_INDEX_H3_BASE_CELL_PACKED_TABLE,
@@ -145,6 +146,12 @@ describe('H3_INDEX_WGSL source', () => {
         false
       );
     }
+  });
+
+  it('parses and rejects non-finite input with exponent-bit tests, not NaN compares', () => {
+    expect(() => new WgslReflect(`${dggs.source}\n${H3_INDEX_WGSL}`)).not.toThrow();
+    expect(H3_INDEX_WGSL).toContain('0x7f800000u');
+    expect(H3_INDEX_WGSL).not.toMatch(/!\(abs\(lngLatDegrees/);
   });
 
   it('embeds the 540-entry base cell table', () => {

@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -24,6 +25,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeBlendRVT, type RVTBlendLayer} from './relief-visualization-oracle';
 import {expectClose} from './relief-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 32;
 const HEIGHT = 24;
@@ -90,17 +92,18 @@ async function runBlend(
   const graph = new GPUCommandGraph(device, {id: 'blend-test'});
   graph.add(
     new GPUReliefBlend({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       layers: images.map((image, index) => {
         const buffer = createInputBuffer(device, image);
         buffers.push(buffer);
         return importGraphBuffer(graph, `layer-${index}`, buffer, 'float32', PIXEL_COUNT);
       }),
-      settings: settings.importToGraph(graph),
-      blend: importGraphBuffer(graph, 'blend', blendBuffer, 'float32', PIXEL_COUNT),
-      color: importGraphBuffer(graph, 'color', colorBuffer, 'uint32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      parameters: settings.importToGraph(graph),
+      output: {
+        blend: importGraphBuffer(graph, 'blend', blendBuffer, 'float32', PIXEL_COUNT),
+        color: importGraphBuffer(graph, 'color', colorBuffer, 'uint32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -121,9 +124,7 @@ async function runBlend(
 
 it('GPUReliefBlend matches the RVT render loop for the VAT presets and every mode', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const images = [
     createLayer(1, 0, 1),
     createLayer(2, 0, 50),
@@ -167,9 +168,7 @@ it('GPUReliefBlend matches the RVT render loop for the VAT presets and every mod
 
 it('GPUReliefBlend uses the bottom layer as is and analytic overlay and soft light values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const bottom = new Float32Array(PIXEL_COUNT).fill(0.8);
   const top = new Float32Array(PIXEL_COUNT).fill(0.25);
   await runBlend(

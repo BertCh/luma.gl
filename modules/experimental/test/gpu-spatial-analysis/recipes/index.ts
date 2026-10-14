@@ -10,6 +10,6 @@ import './period-comparison-recipe.spec';
 import './points-in-polygons-choropleth-recipe.spec';
 import './cluster-and-outline-recipe.spec';
 import './change-of-support-recipe.spec';
-import './drive-time-catchment-recipe.spec';
 import './straight-line-catchments-recipe.spec';
 import './fleet-dwell-recipe.spec';
+import './counts-weights-moran-chain.spec';

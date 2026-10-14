@@ -62,7 +62,11 @@ export function createPredicateGeometry(
       featureOffsets.push(polygonOffsets.length - 1);
     }
   }
-  const upload = (data: Float32Array | Uint32Array, id: string, format: 'float32x2' | 'uint32') => {
+  const upload = <Format extends 'float32x2' | 'uint32'>(
+    data: Float32Array | Uint32Array,
+    id: string,
+    format: Format
+  ) => {
     const buffer = createInputBuffer(device, data);
     buffers.push(buffer);
     return importGraphBuffer(

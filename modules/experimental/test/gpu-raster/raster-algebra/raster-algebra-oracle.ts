@@ -126,11 +126,11 @@ export function weightedOverlayOnCPU(
       }
       let remapped: number;
       if (parameters[base + 1] === 0) {
-        const inputMin = parameters[base + 2];
+        const inputMinimum = parameters[base + 2];
         if (parameters[base + 7] !== 0) {
-          remapped = value >= inputMin ? 1 : 0;
+          remapped = value >= inputMinimum ? 1 : 0;
         } else {
-          remapped = Math.min(Math.max(f(f(value - inputMin) * parameters[base + 3]), 0), 1);
+          remapped = Math.min(Math.max(f(f(value - inputMinimum) * parameters[base + 3]), 0), 1);
         }
         if (parameters[base + 4] !== 0) {
           remapped = f(1 - remapped);
@@ -365,7 +365,8 @@ export function arithmeticOnCPU(
   parameters: Float32Array,
   noDataValue?: number
 ): Float32Array {
-  const [operation, scaleA, offsetA, scaleB, offsetB, constantB, clampMin, clampMax] = parameters;
+  const [operation, scaleA, offsetA, scaleB, offsetB, constantB, clampMinimum, clampMaximum] =
+    parameters;
   const result = new Float32Array(a.length);
   for (let cell = 0; cell < a.length; cell++) {
     const aRaw = a[cell];
@@ -430,7 +431,9 @@ export function arithmeticOnCPU(
         value = NaN;
     }
     result[cell] =
-      isDefined && !Number.isNaN(value) ? Math.min(Math.max(value, clampMin), clampMax) : NaN;
+      isDefined && !Number.isNaN(value)
+        ? Math.min(Math.max(value, clampMinimum), clampMaximum)
+        : NaN;
   }
   return result;
 }

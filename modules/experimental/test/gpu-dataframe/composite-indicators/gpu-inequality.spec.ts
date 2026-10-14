@@ -23,6 +23,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeInequalityOnCPU, type InequalityOracleResult} from './inequality-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = {
   values: Float32Array;
@@ -178,7 +179,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
         hoover: float('hoover'),
         palma: float('palma'),
         mean: float('mean'),
-        count: importGraphBuffer(graph, 'out-count', outputs.count, 'uint32', zoneCount),
+        counts: importGraphBuffer(graph, 'out-count', outputs.count, 'uint32', zoneCount),
         lorenzKnots: float('lorenzKnots'),
         globalSummary: float('globalSummary')
       }
@@ -261,9 +262,7 @@ const SETTINGS: GPUInequalitySettings[] = [
 for (const withWeights of [false, true]) {
   it(`GPUInequality matches the CPU oracle ${withWeights ? 'with' : 'without'} weights and never rebuilds`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createScene(2400, 5, withWeights);
     const fixture = createFixture(device, scene);
     try {
@@ -300,9 +299,7 @@ for (const withWeights of [false, true]) {
 
 it('GPUInequality gives the known answers for equality, one holder and a textbook zone', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Zone 0 equal, zone 1 one holder of 4, zone 2 holds 1, 2, 3, 4; zones 3 to 6 are empty.
   const scene: Scene = {
     values: Float32Array.from([5, 5, 5, 5, 0, 0, 0, 12, 1, 2, 3, 4]),
@@ -340,9 +337,7 @@ it('GPUInequality gives the known answers for equality, one holder and a textboo
 
 it('GPUInequality is bitwise reproducible', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, createScene(1500, 9, true));
   try {
     const first = await fixture.run({epsilon: 2});
@@ -361,9 +356,7 @@ it('GPUInequality is bitwise reproducible', async () => {
 
 it('GPUInequality reports NaN when no row is included', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene: Scene = {
     values: Float32Array.from([1, 2]),
     zoneIds: Uint32Array.from([0, 1]),
@@ -385,9 +378,7 @@ it('GPUInequality reports NaN when no row is included', async () => {
 
 it('GPUInequality stays accurate for one large zone and a large radix sort', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(21);
   const rows = 30000;
   const values = new Float32Array(rows);

@@ -7,9 +7,10 @@ import {expect, it} from 'vitest';
 import {
   GPUGlobalPermutationTest,
   GPULocalPermutationTest,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_LOCAL_GEARY_CLASS,
   GPU_PERMUTATION_PARAMETER_LENGTH,
+  type GPULocalPermutationTestOutput,
   type GPULocalPermutationTestProps
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -22,7 +23,7 @@ import {
 } from './permutation-oracle';
 import {NEW_STATISTICS_REFERENCE as REFERENCE} from './new-statistics-reference';
 
-// Oracle: fix/work/A/oracle-u7-new-statistics.py (esda 2.10.0 / libpysal 4.15.0). The statistics
+// Oracle: test/oracles/statistics-local-join-counts-and-bivariate.py (esda 2.10.0 / libpysal 4.15.0). The statistics
 // are pinned against esda; the p-values against the TypeScript twin of our Philox draws, plus a
 // Monte Carlo bound against esda's p_sim (different random streams cannot agree draw by draw).
 
@@ -83,7 +84,7 @@ function expectPValuesNear(
 const common = {
   weights,
   seed: SEED,
-  permutations: PERMUTATIONS,
+  permutationCount: PERMUTATIONS,
   significanceLevel: 0.05,
   maximumNeighbors: 8,
   islands: 'keep' as const,
@@ -230,7 +231,7 @@ it('global Lee L matches esda Spatial_Pearson and the p-value agrees with signif
     secondValues: y,
     statistic: 'leesL',
     seed: SEED,
-    permutations: PERMUTATIONS,
+    permutationCount: PERMUTATIONS,
     alternative: 'directed',
     islands: 'keep',
     rowStandardized: true
@@ -249,8 +250,11 @@ it('GPULocalPermutationTest validates the new statistics and stays within eight 
   let serial = 0;
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `view-${serial++}`, format, length);
-  const create = (overrides: Partial<GPULocalPermutationTestProps> = {}) =>
-    new GPULocalPermutationTest({
+  // Overrides mix props and `output` fields; the output fields are moved into `output`.
+  type Overrides = Partial<GPULocalPermutationTestProps> & Partial<GPULocalPermutationTestOutput>;
+  const create = (overrides: Overrides = {}) => {
+    const {observed, significant, classes, quadrants, adjustedPValues, ...props} = overrides;
+    return new GPULocalPermutationTest({
       weights: {
         offsets: view('uint32', 11),
         neighbors: view('uint32', 40),
@@ -260,11 +264,19 @@ it('GPULocalPermutationTest validates the new statistics and stays within eight 
       parameters: view('uint32', GPU_PERMUTATION_PARAMETER_LENGTH),
       maximumPermutations: 999,
       statistic: 'localGeary',
-      exceedances: view('uint32', 10),
-      pseudoPValues: view('float32', 10),
-      overflow: view('uint32', 1),
-      ...overrides
+      ...props,
+      output: {
+        exceedances: view('uint32', 10),
+        pseudoPValues: view('float32', 10),
+        status: {overflow: view('uint32', 1)},
+        observed,
+        significant,
+        classes,
+        quadrants,
+        adjustedPValues
+      }
     });
+  };
   const second = () => view('float32', 10);
   expect(() => create({statistic: 'localBivariateMoran'})).toThrow(/requires secondValues/);
   expect(() => create({statistic: 'localLeeL'})).toThrow(/requires secondValues/);
@@ -282,7 +294,7 @@ it('GPULocalPermutationTest validates the new statistics and stays within eight 
   );
   expect(() => create({classes: view('uint32', 9)})).toThrow(/classes length/);
   // Building the nodes checks the storage-buffer limit of every kernel.
-  const build = (id: string, overrides: Partial<GPULocalPermutationTestProps>) =>
+  const build = (id: string, overrides: Overrides) =>
     create({id, ...overrides})
       .getCommandNodes(graph)
       .map(node => node.id);
@@ -334,7 +346,7 @@ it('GPUGlobalPermutationTest accepts leesL only with secondValues', () => {
       parameters: view('uint32', GPU_PERMUTATION_PARAMETER_LENGTH),
       maximumPermutations: 999,
       statistic: 'leesL',
-      results: view('float32', GPU_GLOBAL_PERMUTATION_RESULT.length)
+      output: {summary: view('float32', GPU_GLOBAL_PERMUTATION_SUMMARY.length)}
     });
   expect(() => create()).toThrow(/leesL requires secondValues/);
   const ids = create(view('float32', 10))

@@ -27,6 +27,7 @@ import {
   convolveZero,
   createSeededPoints
 } from './point-density-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS: [number, number, number, number] = [0, 0, 8, 8];
 const GRID: [number, number] = [8, 8];
@@ -74,9 +75,7 @@ function expectClose(actual: number[], expected: number[]): void {
 
 it('GPUPointDensity mask: grid statistics, extent, and histogram ignore masked rows per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, weights, rowCount} = createFixture(300);
   const frame0Mask = createMask(rowCount, 0);
   const positionsBuffer = createInputBuffer(device, Float32Array.from(positions));
@@ -149,9 +148,7 @@ it('GPUPointDensity mask: grid statistics, extent, and histogram ignore masked r
 
 it('GPUPointDensity mask: chunked positions and smoothing input exclude masked rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, rowCount} = createFixture(120);
   const split = 50;
   const mask = createMask(rowCount, 1);
@@ -195,9 +192,7 @@ it('GPUPointDensity mask: chunked positions and smoothing input exclude masked r
 
 it('GPUPointDensity mask: hexagon binning ignores masked rows and extreme masked weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const radius = 1;
   const {positions, weights, rowCount} = createFixture(300);
   const gridSize = getGPUPointDensityHexagonGridSize(BOUNDS, radius);

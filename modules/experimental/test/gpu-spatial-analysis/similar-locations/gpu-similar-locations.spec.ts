@@ -21,6 +21,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {SIMILAR_LOCATIONS_REFERENCE as REFERENCE} from './similar-locations-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** f32 statistics and distances against float64: relative 1e-4 of the largest distance. */
 const DISTANCE_TOLERANCE = 1e-4;
@@ -28,9 +29,7 @@ const RESULT_COUNT = 8;
 
 it('GPUSimilarLocations matches the NumPy/SciPy reference and changes parameters without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {rowCount, attributeCount} = REFERENCE;
   for (const standardization of ['zscore', 'rank'] as GPUSimilarLocationsStandardization[]) {
     const attributes = createInputBuffer(device, REFERENCE.attributes);
@@ -49,24 +48,24 @@ it('GPUSimilarLocations matches the NumPy/SciPy reference and changes parameters
     graph.add(
       new GPUSimilarLocations({
         id: 'similar',
-        attributes: importGraphBuffer(
+        values: importGraphBuffer(
           graph,
           'attributes',
           attributes,
           'float32',
           rowCount * attributeCount
         ),
-        attributeCount,
+        columnCount: attributeCount,
         mask: importGraphBuffer(graph, 'mask', mask, 'uint32', rowCount),
-        selection: importGraphBuffer(graph, 'selection', selection, 'uint32', rowCount),
+        referenceMask: importGraphBuffer(graph, 'selection', selection, 'uint32', rowCount),
         parameters: parameterBuffer.importToGraph(graph),
         standardization,
-        maximumResultCount: RESULT_COUNT,
+        resultCapacity: RESULT_COUNT,
         output: {
           ranks: importGraphBuffer(graph, 'ranks', ranksOut, 'uint32', rowCount),
           distances: importGraphBuffer(graph, 'distances', distancesOut, 'float32', rowCount),
           topIds: importGraphBuffer(graph, 'top', topOut, 'uint32', RESULT_COUNT),
-          count: importGraphBuffer(graph, 'count', countOut, 'uint32', 1)
+          status: {count: importGraphBuffer(graph, 'count', countOut, 'uint32', 1)}
         }
       })
     );
@@ -144,9 +143,7 @@ it('GPUSimilarLocations matches the NumPy/SciPy reference and changes parameters
 
 it('GPUSimilarLocations standardizes large tied inputs with the column reductions and the rank sort', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 5000 rows: not a multiple of the 256-lane reduction, above the rank sort threshold, with heavy
   // ties, a signed zero and invalid rows.
   const rowCount = 5000;
@@ -225,23 +222,23 @@ it('GPUSimilarLocations standardizes large tied inputs with the column reduction
     graph.add(
       new GPUSimilarLocations({
         id: 'similar-large',
-        attributes: importGraphBuffer(
+        values: importGraphBuffer(
           graph,
           'attributes',
           attributeBuffer,
           'float32',
           rowCount * attributeCount
         ),
-        attributeCount,
-        selection: importGraphBuffer(graph, 'selection', selection, 'uint32', rowCount),
+        columnCount: attributeCount,
+        referenceMask: importGraphBuffer(graph, 'selection', selection, 'uint32', rowCount),
         parameters: parameterBuffer.importToGraph(graph),
         standardization,
-        maximumResultCount: RESULT_COUNT,
+        resultCapacity: RESULT_COUNT,
         output: {
           ranks: importGraphBuffer(graph, 'ranks', ranksOut, 'uint32', rowCount),
           distances: importGraphBuffer(graph, 'distances', distancesOut, 'float32', rowCount),
           topIds: importGraphBuffer(graph, 'top', topOut, 'uint32', RESULT_COUNT),
-          count: importGraphBuffer(graph, 'count', countOut, 'uint32', 1)
+          status: {count: importGraphBuffer(graph, 'count', countOut, 'uint32', 1)}
         }
       })
     );

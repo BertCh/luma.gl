@@ -7,20 +7,29 @@ import {expect, it} from 'vitest';
 import {
   GPUTerrainPeakSnap,
   GPU_TERRAIN_PEAK_SNAP_STATUS,
+  getGPUTerrainPeakSnapParameterValues,
+  type GPUTerrainPeakSnapOutput,
   type GPUTerrainPeakSnapProps
 } from '../../../src/gpu-terrain/terrain-features/gpu-terrain-peak-snap';
 import {
   GPUTerrainSummits,
+  getGPUTerrainSummitsParameterValues,
+  type GPUTerrainSummitsOutput,
   type GPUTerrainSummitsProps
 } from '../../../src/gpu-terrain/terrain-features/gpu-terrain-summits';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
+import {getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
 
 function createOutput(graph: GPUCommandGraph, prefix: string, capacity: number) {
   return {
     ids: createTransientView(graph, `${prefix}-ids`, 'uint32', capacity),
-    count: createTransientView(graph, `${prefix}-count`, 'uint32', 1),
-    overflow: createTransientView(graph, `${prefix}-overflow`, 'uint32', 1)
+    status: {
+      count: createTransientView(graph, `${prefix}-count`, 'uint32', 1),
+      overflow: createTransientView(graph, `${prefix}-overflow`, 'uint32', 1)
+    }
   };
 }
 
@@ -28,15 +37,16 @@ it('GPUTerrainSummits schedules canonicalisation, search, compaction and publish
   const device = createNullWebGPUDevice();
   // Every contributor gets its own graph: node and transient IDs must be unique within one graph.
   const getNodeIds = (
-    build: (graph: GPUCommandGraph) => Partial<GPUTerrainSummitsProps>
+    build: (graph: GPUCommandGraph) => GPUTerrainSummitsOutput,
+    overrides: Partial<GPUTerrainSummitsProps> = {}
   ): string[] => {
     const graph = new GPUCommandGraph(device);
     return new GPUTerrainSummits({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: createBand(graph, 'elevation', 30),
-      settings: createTransientView(graph, 'settings', 'float32', 8),
-      ...build(graph)
+      parameters: createTransientView(graph, 'settings', 'float32', 8),
+      output: build(graph),
+      ...overrides
     })
       .getCommandNodes(graph)
       .map(node => node.id);
@@ -47,13 +57,15 @@ it('GPUTerrainSummits schedules canonicalisation, search, compaction and publish
   expect(maskOnly.at(-1)).toBe('terrain-summits-summits');
   expect(maskOnly.some(nodeId => nodeId.includes('publish'))).toBe(false);
 
-  const ids = getNodeIds(graph => ({
-    id: 'hill',
-    output: createOutput(graph, 'listing', 8),
-    outputDrop: createTransientView(graph, 'listing-drop', 'float32', 8),
-    overflow: createTransientView(graph, 'radius-overflow', 'uint32', 1),
-    drop: createTransientView(graph, 'drop', 'float32', 30)
-  }));
+  const ids = getNodeIds(
+    graph => ({
+      summits: createOutput(graph, 'listing', 8),
+      summitDrop: createTransientView(graph, 'listing-drop', 'float32', 8),
+      status: {radiusClamped: createTransientView(graph, 'radius-overflow', 'uint32', 1)},
+      drop: createTransientView(graph, 'drop', 'float32', 30)
+    }),
+    {id: 'hill'}
+  );
   expect(ids.every(nodeId => nodeId.startsWith('hill-'))).toBe(true);
   for (const step of ['overflow-clear', 'summits', 'pixel-ids', 'publish', 'output-drop']) {
     expect(ids).toContain(`hill-${step}`);
@@ -62,15 +74,14 @@ it('GPUTerrainSummits schedules canonicalisation, search, compaction and publish
   expect(ids.indexOf('hill-publish')).toBeLessThan(ids.indexOf('hill-output-drop'));
 
   // A list-only contributor keeps the mask in a transient.
-  expect(getNodeIds(graph => ({output: createOutput(graph, 'list-only', 4)}))).toContain(
+  expect(getNodeIds(graph => ({summits: createOutput(graph, 'list-only', 4)}))).toContain(
     'terrain-summits-publish'
   );
   for (const cellSizeMode of ['uniform', 'web-mercator', 'geographic'] as const) {
     expect(() =>
-      getNodeIds(graph => ({
-        cellSizeMode,
-        summitMask: createTransientView(graph, 'mask', 'uint32', 30)
-      }))
+      getNodeIds(graph => ({summitMask: createTransientView(graph, 'mask', 'uint32', 30)}), {
+        cellSizeMode
+      })
     ).not.toThrow();
   }
   device.destroy();
@@ -80,55 +91,68 @@ it('GPUTerrainSummits validates its props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainSummitsProps> = {}) => {
+  const create = (
+    overrides: Partial<GPUTerrainSummitsProps> = {},
+    outputOverrides: Partial<GPUTerrainSummitsOutput> = {}
+  ) => {
     instance++;
     return new GPUTerrainSummits({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: createBand(graph, `elevation-${instance}`, 30),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
-      summitMask: createTransientView(graph, `mask-${instance}`, 'uint32', 30),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 8),
+      output: {
+        summitMask: createTransientView(graph, `mask-${instance}`, 'uint32', 30),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
-  expect(() => create({summitMask: undefined})).toThrow(/at least one output/);
-  expect(() => create({width: 0})).toThrow(/dimensions/);
+  expect(() => create({}, {summitMask: undefined})).toThrow(/at least one output/);
+  expect(() => create({grid: makeGPURasterMetadata({width: 0, height: 5})})).toThrow(/dimensions/);
+  expect(() =>
+    create({
+      cellSizeMode: 'geographic',
+      grid: {...makeGPURasterMetadata({width: 6, height: 5}), affine: [1, 0.5, 0, 0, -1, 0]}
+    })
+  ).toThrow(/axis-aligned/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({maximumRadiusPixels: 0})).toThrow(/maximumRadiusPixels/);
   expect(() => create({maximumRadiusPixels: 65})).toThrow(/maximumRadiusPixels/);
   expect(() => create({maximumRadiusPixels: 2.5})).toThrow(/maximumRadiusPixels/);
   expect(() => create({incompleteNeighborhood: 'drop' as never})).toThrow(/incompleteNeighborhood/);
   expect(() =>
-    create({settings: createTransientView(graph, 'short-settings', 'float32', 7)})
-  ).toThrow(/settings/);
+    create({parameters: createTransientView(graph, 'short-settings', 'float32', 7)})
+  ).toThrow(/parameters/);
   expect(() =>
-    create({summitMask: createTransientView(graph, 'short-mask', 'uint32', 29)})
+    create({}, {summitMask: createTransientView(graph, 'short-mask', 'uint32', 29)})
   ).toThrow(/one value per pixel/);
-  expect(() => create({drop: createTransientView(graph, 'short-drop', 'float32', 29)})).toThrow(
+  expect(() => create({}, {drop: createTransientView(graph, 'short-drop', 'float32', 29)})).toThrow(
     /one value per pixel/
   );
   expect(() =>
-    create({outputDrop: createTransientView(graph, 'orphan-drop', 'float32', 4)})
-  ).toThrow(/requires output/);
+    create({}, {summitDrop: createTransientView(graph, 'orphan-drop', 'float32', 4)})
+  ).toThrow(/requires output.summits/);
   expect(() =>
-    create({
-      output: createOutput(graph, 'o', 8),
-      outputDrop: createTransientView(graph, 'short-column', 'float32', 7)
-    })
-  ).toThrow(/output.ids.length/);
+    create(
+      {},
+      {
+        summits: createOutput(graph, 'o', 8),
+        summitDrop: createTransientView(graph, 'short-column', 'float32', 7)
+      }
+    )
+  ).toThrow(/summits.ids.length/);
   expect(() =>
-    create({overflow: createTransientView(graph, 'empty-overflow', 'uint32', 0)})
-  ).toThrow(/overflow/);
+    create({}, {status: {radiusClamped: createTransientView(graph, 'empty-overflow', 'uint32', 0)}})
+  ).toThrow(/radiusClamped/);
   const shared = createBand(graph, 'shared', 30);
-  expect(() => create({elevation: shared, drop: shared.storage.values})).toThrow(/share buffers/);
+  expect(() => create({elevation: shared}, {drop: shared.storage.values})).toThrow(/share buffers/);
   const foreign = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainSummits({
-      width: 2,
-      height: 2,
+      grid: makeGPURasterMetadata({width: 2, height: 2}),
       elevation: createBand(foreign, 'foreign', 4),
-      settings: createTransientView(foreign, 'foreign-settings', 'float32', 8),
-      summitMask: createTransientView(foreign, 'foreign-mask', 'uint32', 4)
+      parameters: createTransientView(foreign, 'foreign-settings', 'float32', 8),
+      output: {summitMask: createTransientView(foreign, 'foreign-mask', 'uint32', 4)}
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
   device.destroy();
@@ -138,17 +162,22 @@ it('GPUTerrainPeakSnap schedules search and unpack nodes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainPeakSnapProps> = {}) => {
+  const create = (
+    overrides: Partial<GPUTerrainPeakSnapProps> = {},
+    outputOverrides: Partial<GPUTerrainPeakSnapOutput> = {}
+  ) => {
     instance++;
     return new GPUTerrainPeakSnap({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: createBand(graph, `elevation-${instance}`, 30),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 8),
       candidates: createTransientView(graph, `candidates-${instance}`, 'float32x2', 3),
-      positions: createTransientView(graph, `positions-${instance}`, 'float32x2', 3),
-      heights: createTransientView(graph, `heights-${instance}`, 'float32', 3),
-      status: createTransientView(graph, `status-${instance}`, 'uint32', 3),
+      output: {
+        positions: createTransientView(graph, `positions-${instance}`, 'float32x2', 3),
+        heights: createTransientView(graph, `heights-${instance}`, 'float32', 3),
+        snapStatus: createTransientView(graph, `status-${instance}`, 'uint32', 3),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
@@ -157,14 +186,18 @@ it('GPUTerrainPeakSnap schedules search and unpack nodes', () => {
   expect(ids.slice(-2)).toEqual(['terrain-peak-snap-search', 'terrain-peak-snap-unpack']);
   expect(ids).not.toContain('terrain-peak-snap-overflow-clear');
   expect(
-    create({
-      id: 'peaks',
-      candidateHeights: createTransientView(graph, 'candidate-heights', 'float32', 3),
-      candidateRadii: createTransientView(graph, 'candidate-radii', 'float32', 3),
-      snapDistance: createTransientView(graph, 'distance', 'float32', 3),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1),
-      cellSizeMode: 'geographic'
-    })
+    create(
+      {
+        id: 'peaks',
+        candidateHeights: createTransientView(graph, 'candidate-heights', 'float32', 3),
+        candidateRadii: createTransientView(graph, 'candidate-radii', 'float32', 3),
+        cellSizeMode: 'geographic'
+      },
+      {
+        snapDistance: createTransientView(graph, 'distance', 'float32', 3),
+        status: {radiusClamped: createTransientView(graph, 'overflow', 'uint32', 1)}
+      }
+    )
       .getCommandNodes(graph)
       .map(node => node.id)
   ).toContain('peaks-overflow-clear');
@@ -176,25 +209,30 @@ it('GPUTerrainPeakSnap validates its props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainPeakSnapProps> = {}) => {
+  const create = (
+    overrides: Partial<GPUTerrainPeakSnapProps> = {},
+    outputOverrides: Partial<GPUTerrainPeakSnapOutput> = {}
+  ) => {
     instance++;
     return new GPUTerrainPeakSnap({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: createBand(graph, `elevation-${instance}`, 30),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 8),
       candidates: createTransientView(graph, `candidates-${instance}`, 'float32x2', 3),
-      positions: createTransientView(graph, `positions-${instance}`, 'float32x2', 3),
-      heights: createTransientView(graph, `heights-${instance}`, 'float32', 3),
-      status: createTransientView(graph, `status-${instance}`, 'uint32', 3),
+      output: {
+        positions: createTransientView(graph, `positions-${instance}`, 'float32x2', 3),
+        heights: createTransientView(graph, `heights-${instance}`, 'float32', 3),
+        snapStatus: createTransientView(graph, `status-${instance}`, 'uint32', 3),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
-  expect(() => create({height: 0})).toThrow(/dimensions/);
+  expect(() => create({grid: makeGPURasterMetadata({width: 6, height: 0})})).toThrow(/dimensions/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({maximumRadiusPixels: 100})).toThrow(/maximumRadiusPixels/);
-  expect(() => create({settings: createTransientView(graph, 'short', 'float32', 7)})).toThrow(
-    /settings/
+  expect(() => create({parameters: createTransientView(graph, 'short', 'float32', 7)})).toThrow(
+    /parameters/
   );
   expect(() =>
     create({candidates: createTransientView(graph, 'wrong-format', 'float32', 6) as never})
@@ -204,35 +242,71 @@ it('GPUTerrainPeakSnap validates its props', () => {
   ).toThrow(/at least one row/);
   for (const [name, view] of [
     ['candidateHeights', createTransientView(graph, 'h2', 'float32', 2)],
-    ['candidateRadii', createTransientView(graph, 'r2', 'float32', 2)],
-    ['heights', createTransientView(graph, 'o2', 'float32', 2)],
-    ['snapDistance', createTransientView(graph, 'd2', 'float32', 2)]
+    ['candidateRadii', createTransientView(graph, 'r2', 'float32', 2)]
   ] as const) {
     expect(() => create({[name]: view})).toThrow(/one value per candidate/);
   }
-  expect(() => create({positions: createTransientView(graph, 'p2', 'float32x2', 2)})).toThrow(
-    /one value per candidate/
-  );
-  expect(() => create({status: createTransientView(graph, 's2', 'uint32', 2)})).toThrow(
-    /one value per candidate/
-  );
+  for (const [name, view] of [
+    ['heights', createTransientView(graph, 'o2', 'float32', 2)],
+    ['snapDistance', createTransientView(graph, 'd2', 'float32', 2)],
+    ['positions', createTransientView(graph, 'p2', 'float32x2', 2)],
+    ['snapStatus', createTransientView(graph, 's2', 'uint32', 2)]
+  ] as const) {
+    expect(() => create({}, {[name]: view})).toThrow(/one value per candidate/);
+  }
   expect(() =>
-    create({overflow: createTransientView(graph, 'empty-overflow', 'uint32', 0)})
-  ).toThrow(/overflow/);
+    create({}, {status: {radiusClamped: createTransientView(graph, 'empty-overflow', 'uint32', 0)}})
+  ).toThrow(/radiusClamped/);
   const candidates = createTransientView(graph, 'aliased', 'float32x2', 3);
-  expect(() => create({candidates, positions: candidates})).toThrow(/share buffers/);
+  expect(() => create({candidates}, {positions: candidates})).toThrow(/share buffers/);
   const foreign = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainPeakSnap({
-      width: 2,
-      height: 2,
+      grid: makeGPURasterMetadata({width: 2, height: 2}),
       elevation: createBand(foreign, 'foreign', 4),
-      settings: createTransientView(foreign, 'foreign-settings', 'float32', 8),
+      parameters: createTransientView(foreign, 'foreign-settings', 'float32', 8),
       candidates: createTransientView(foreign, 'foreign-candidates', 'float32x2', 1),
-      positions: createTransientView(foreign, 'foreign-positions', 'float32x2', 1),
-      heights: createTransientView(foreign, 'foreign-heights', 'float32', 1),
-      status: createTransientView(foreign, 'foreign-status', 'uint32', 1)
+      output: {
+        positions: createTransientView(foreign, 'foreign-positions', 'float32x2', 1),
+        heights: createTransientView(foreign, 'foreign-heights', 'float32', 1),
+        snapStatus: createTransientView(foreign, 'foreign-status', 'uint32', 1)
+      }
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
   device.destroy();
+});
+
+it('review C-17: one pixel per row reports a clamped summit radius', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const nodes = new GPUTerrainSummits({
+    grid: makeGPURasterMetadata({width: 6, height: 5}),
+    elevation: createBand(graph, 'elevation', 30),
+    parameters: createTransientView(graph, 'settings', 'float32', 8),
+    output: {
+      summitMask: createTransientView(graph, 'mask', 'uint32', 30),
+      status: {radiusClamped: createTransientView(graph, 'radius-overflow', 'uint32', 1)}
+    }
+  }).getCommandNodes(graph);
+  const summits = getRasterPipelines(nodes).find(pipeline => pipeline.id.endsWith('-summits'))!;
+  const atomics = summits.source.match(/atomicMax\(&overflowValues/g) ?? [];
+  expect(atomics).toHaveLength(1);
+  expect(summits.source).toMatch(/if \(column == 0 && isRadiusClamped\(requested, cell\)\)/);
+  device.destroy();
+});
+
+it('summit and peak snap packers write the grid cell size and row edges', () => {
+  const grid = makeGPURasterMetadata({width: 6, height: 5, cellSize: [0.5, 0.25], origin: [3, 46]});
+  const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
+  expect([cellSize[0], cellSize[1], northEdge, southEdge]).toEqual([0.5, 0.25, 46, 44.75]);
+  const summits = getGPUTerrainSummitsParameterValues({radius: 2, minimumDrop: 1}, grid);
+  expect(Array.from(summits)).toEqual([2, 1, 0.5, 0.25, 46, 44.75, 0, 0]);
+  const snap = getGPUTerrainPeakSnapParameterValues({interior: false}, grid);
+  expect(Array.from(snap)).toEqual([150, 300, 80, 0.5, 0.25, 46, 44.75, 0]);
+  expect(() =>
+    getGPUTerrainSummitsParameterValues(
+      {radius: 2},
+      makeGPURasterMetadata({width: 1, height: 1, cellSize: 0})
+    )
+  ).toThrow(/cell size/);
 });

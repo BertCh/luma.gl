@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 import {describe, expect, it} from 'vitest';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 import {fillShufflePermutation} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
@@ -13,6 +14,8 @@ import {
 } from '../../../src/gpu-spatial-analysis/space-time-tests/space-time-kernels';
 import {getPermutedTimes} from './space-time-oracle';
 
+const STREAM = PHILOX_PURPOSES.knoxTestShuffle.id;
+
 // The Knox and Mantel oracle (and so the GPU kernels it must equal bit for bit) permute times with
 // the swap-or-not shuffle: permuted time of row r under slot s is times[fillShufflePermutation(s)[r]].
 describe('space-time permutations use the swap-or-not shuffle', () => {
@@ -21,12 +24,12 @@ describe('space-time permutations use the swap-or-not shuffle', () => {
     const seed = 2 ** 33 + 12345;
     for (const slot of [1, 2, 9]) {
       const permutation = new Uint32Array(times.length);
-      fillShufflePermutation(permutation, times.length, getPermutationSeedKey(seed), slot);
-      expect(Array.from(getPermutedTimes(times, slot, seed))).toEqual(
+      fillShufflePermutation(permutation, times.length, getPermutationSeedKey(seed), slot, STREAM);
+      expect(Array.from(getPermutedTimes(times, slot, seed, STREAM))).toEqual(
         Array.from(permutation, index => times[index])
       );
     }
-    expect(getPermutedTimes(times, 0, seed)).toBe(times);
+    expect(getPermutedTimes(times, 0, seed, STREAM)).toBe(times);
   });
 
   // Uniformity at n = 4: each of the 4 positions receives each source with probability 1/4. The
@@ -37,7 +40,7 @@ describe('space-time permutations use the swap-or-not shuffle', () => {
     const table = new Float64Array(count * count);
     const permutation = new Uint32Array(count);
     for (let slot = 1; slot <= draws; slot++) {
-      fillShufflePermutation(permutation, count, getPermutationSeedKey(7), slot);
+      fillShufflePermutation(permutation, count, getPermutationSeedKey(7), slot, STREAM);
       for (let row = 0; row < count; row++) table[row * count + permutation[row]]++;
     }
     const expected = draws / count;
@@ -49,7 +52,7 @@ describe('space-time permutations use the swap-or-not shuffle', () => {
   it('assigns one permutation per workgroup and uses the shared shuffle WGSL', () => {
     expect(getSpaceTimeGroupsPerSlot(256)).toBe(256 / SPACE_TIME_WORKGROUP_SIZE);
     expect(getSpaceTimeGroupsPerSlot(1)).toBe(1);
-    const wgsl = getSpaceTimeShuffleWGSL(256);
+    const wgsl = getSpaceTimeShuffleWGSL(256, STREAM);
     expect(wgsl).toContain('getSwapOrNotPermutationIndex');
     expect(wgsl).not.toContain('Feistel');
     expect(SPACE_TIME_SLOT_PROLOGUE_WGSL).toContain('workgroupBarrier()');

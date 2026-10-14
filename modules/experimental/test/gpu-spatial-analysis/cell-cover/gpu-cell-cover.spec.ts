@@ -34,6 +34,7 @@ import {
   type CoverResult
 } from './cell-cover-oracle';
 import {isCellInsideFeature} from './cell-cover-core-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type CoverRun = CoverResult & {
   count: number;
@@ -86,7 +87,7 @@ async function runCover(
       family: options.family,
       resolution: options.resolution,
       containment: options.containment,
-      polygonPositions: importGraphBuffer(
+      positions: importGraphBuffer(
         graph,
         'positions',
         input(arrays.positions),
@@ -142,16 +143,18 @@ async function runCover(
           outputCapacity
         ),
         core: importGraphBuffer(graph, 'out-core', outputBuffers.core, 'uint32', outputCapacity),
-        count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
-        candidateOverflow: importGraphBuffer(
-          graph,
-          'out-candidate-overflow',
-          outputBuffers.candidateOverflow,
-          'uint32',
-          1
-        ),
-        requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
+          candidateOverflow: importGraphBuffer(
+            graph,
+            'out-candidate-overflow',
+            outputBuffers.candidateOverflow,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -220,9 +223,7 @@ function createQuadbinScene(): CoverFeature[] {
 
 it('GPUCellCover quadbin matches the CPU oracle for every containment', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createQuadbinScene();
   const arrays = flattenCoverFeatures(features);
   for (const resolution of [3, 6, 8, 10]) {
@@ -250,9 +251,7 @@ it('GPUCellCover quadbin matches the CPU oracle for every containment', async ()
 
 it('GPUCellCover quadbin center agrees with the independent f64 oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createQuadbinScene();
   const arrays = flattenCoverFeatures(features);
   const report: string[] = [];
@@ -276,9 +275,7 @@ it('GPUCellCover quadbin center agrees with the independent f64 oracle', async (
 
 it('GPUCellCover reports overflow, clamps count and uses feature ids', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createQuadbinScene().slice(0, 2);
   const expected = coverQuadbinOnCPU(flattenCoverFeatures(features), 9, 'center');
   const capacity = 40;
@@ -315,9 +312,7 @@ it('GPUCellCover reports overflow, clamps count and uses feature ids', async () 
 
 it('GPUCellCover h3 center matches h3-js polygonToCells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const [pentagonLat, pentagonLng] = cellToLatLng(getPentagons(5)[0]);
   const createScene = (scale: number) =>
     roundFeatures([
@@ -380,9 +375,7 @@ it('GPUCellCover h3 center matches h3-js polygonToCells', async () => {
 
 it('GPUCellCover h3 center keeps the cells of tall high-latitude polygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // D-07: a longitude spacing taken at the poleward edge lost 448 of 1756 res-3 cells over 0-85
   // degrees; the spacing now comes from the most equatorward latitude. Truth: h3-js polygonToCells.
   const features = roundFeatures([
@@ -414,9 +407,7 @@ it('GPUCellCover h3 center keeps the cells of tall high-latitude polygons', asyn
 
 it('GPUCellCover core flag is sound, conservative and nonzero (quadbin and h3)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases: {family: 'quadbin' | 'h3'; resolution: number; features: CoverFeature[]}[] = [
     {family: 'quadbin', resolution: 8, features: createQuadbinScene().slice(0, 4)},
     {family: 'quadbin', resolution: 10, features: createQuadbinScene().slice(0, 1)},
@@ -496,9 +487,7 @@ function createDenseScene(): CoverFeature[] {
 
 it('GPUCellCover edge slabs give the same cells and core flags as testing every edge', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createDenseScene();
   const cases: {
     family: 'quadbin' | 'h3';
@@ -542,84 +531,92 @@ it('GPUCellCover edge slabs give the same cells and core flags as testing every 
   }
 });
 
-it('GPUCellCover rejects antimeridian-spanning features and counts clamped polar features', async () => {
-  const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  // Feature 0 is ordinary, feature 1 crosses the antimeridian (its bounding box is 340 degrees
-  // wide, edge longitude difference 340), feature 2 reaches past the Web Mercator latitude limit.
-  const features: CoverFeature[] = [
-    [[createRectangleRing([0, 0, 2, 2])]],
-    [[createRectangleRing([170, 0, -170, 2])]],
-    [[createRectangleRing([0, 84, 2, 86])]]
-  ];
-  const arrays = flattenCoverFeatures(features);
-  const buffers: Buffer[] = [];
-  const input = (values: Float32Array | Uint32Array) => {
-    const buffer = createInputBuffer(device, values);
-    buffers.push(buffer);
-    return buffer;
-  };
-  const output = (length: number) => {
-    const buffer = createOutputBuffer(device, length);
-    buffers.push(buffer);
-    return buffer;
-  };
-  const capacity = 256;
-  const featureIds = output(capacity);
-  const cells = output(2 * capacity);
-  const count = output(1);
-  const overflow = output(1);
-  const candidateOverflow = output(1);
-  const invalidCount = output(1);
-  const uncertainCount = output(1);
-  const graph = new GPUCommandGraph(device, {id: 'cell-cover-status'});
-  const view = (name: string, values: Float32Array | Uint32Array, format: 'float32x2' | 'uint32') =>
-    importGraphBuffer(
-      graph,
-      name,
-      input(values),
-      format,
-      format === 'float32x2' ? values.length / 2 : values.length
+// With edge slabs the counters move to their own `-status` pass (the count kernel would bind 9).
+for (const edgeSlabs of [false, true]) {
+  it(`GPUCellCover rejects antimeridian-spanning features and counts clamped polar features (edge slabs ${edgeSlabs})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // Feature 0 is ordinary, feature 1 crosses the antimeridian (its bounding box is 340 degrees
+    // wide, edge longitude difference 340), feature 2 reaches past the Web Mercator latitude limit.
+    const features: CoverFeature[] = [
+      [[createRectangleRing([0, 0, 2, 2])]],
+      [[createRectangleRing([170, 0, -170, 2])]],
+      [[createRectangleRing([0, 84, 2, 86])]]
+    ];
+    const arrays = flattenCoverFeatures(features);
+    const buffers: Buffer[] = [];
+    const input = (values: Float32Array | Uint32Array) => {
+      const buffer = createInputBuffer(device, values);
+      buffers.push(buffer);
+      return buffer;
+    };
+    const output = (length: number) => {
+      const buffer = createOutputBuffer(device, length);
+      buffers.push(buffer);
+      return buffer;
+    };
+    const capacity = 256;
+    const featureIds = output(capacity);
+    const cells = output(2 * capacity);
+    const count = output(1);
+    const overflow = output(1);
+    const candidateOverflow = output(1);
+    const invalidCount = output(1);
+    const uncertainCount = output(1);
+    const graph = new GPUCommandGraph(device, {id: 'cell-cover-status'});
+    const view = (
+      name: string,
+      values: Float32Array | Uint32Array,
+      format: 'float32x2' | 'uint32'
+    ) =>
+      importGraphBuffer(
+        graph,
+        name,
+        input(values),
+        format,
+        format === 'float32x2' ? values.length / 2 : values.length
+      );
+    graph.add(
+      new GPUCellCover({
+        family: 'quadbin',
+        resolution: 4,
+        // A res-4 tile is 22.5 degrees wide, so the 2-degree feature 0 contains no tile center;
+        // 'intersects' gives it cells, which the assertion below needs.
+        containment: 'intersects',
+        positions: view('positions', arrays.positions, 'float32x2') as never,
+        featureOffsets: view('feature-offsets', arrays.featureOffsets, 'uint32') as never,
+        polygonOffsets: view('polygon-offsets', arrays.polygonOffsets, 'uint32') as never,
+        ringOffsets: view('ring-offsets', arrays.ringOffsets, 'uint32') as never,
+        candidateCapacity: 4096,
+        edgeSlabs,
+        output: {
+          featureIds: importGraphBuffer(graph, 'out-ids', featureIds, 'uint32', capacity),
+          cells: importGraphBuffer(graph, 'out-cells', cells, 'uint32x2', capacity),
+          status: {
+            count: importGraphBuffer(graph, 'out-count', count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'out-overflow', overflow, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'out-candidate',
+              candidateOverflow,
+              'uint32',
+              1
+            ),
+            invalidCount: importGraphBuffer(graph, 'out-invalid', invalidCount, 'uint32', 1),
+            uncertainCount: importGraphBuffer(graph, 'out-uncertain', uncertainCount, 'uint32', 1)
+          }
+        }
+      })
     );
-  graph.add(
-    new GPUCellCover({
-      family: 'quadbin',
-      resolution: 4,
-      // A res-4 tile is 22.5 degrees wide, so the 2-degree feature 0 contains no tile center;
-      // 'intersects' gives it cells, which the assertion below needs.
-      containment: 'intersects',
-      polygonPositions: view('positions', arrays.positions, 'float32x2') as never,
-      featureOffsets: view('feature-offsets', arrays.featureOffsets, 'uint32') as never,
-      polygonOffsets: view('polygon-offsets', arrays.polygonOffsets, 'uint32') as never,
-      ringOffsets: view('ring-offsets', arrays.ringOffsets, 'uint32') as never,
-      candidateCapacity: 4096,
-      output: {
-        featureIds: importGraphBuffer(graph, 'out-ids', featureIds, 'uint32', capacity),
-        cells: importGraphBuffer(graph, 'out-cells', cells, 'uint32x2', capacity),
-        count: importGraphBuffer(graph, 'out-count', count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'out-overflow', overflow, 'uint32', 1),
-        candidateOverflow: importGraphBuffer(
-          graph,
-          'out-candidate',
-          candidateOverflow,
-          'uint32',
-          1
-        ),
-        invalidCount: importGraphBuffer(graph, 'out-invalid', invalidCount, 'uint32', 1),
-        uncertainCount: importGraphBuffer(graph, 'out-uncertain', uncertainCount, 'uint32', 1)
-      }
-    })
-  );
-  const compiled = graph.compile();
-  submitGraph(device, compiled, undefined);
-  expect((await readUint32(invalidCount, 1))[0]).toBe(1);
-  expect((await readUint32(uncertainCount, 1))[0]).toBe(1);
-  const written = (await readUint32(count, 1))[0];
-  const ids = (await readUint32(featureIds, capacity)).slice(0, written);
-  expect(ids.includes(0)).toBe(true);
-  expect(ids.includes(1)).toBe(false);
-  compiled.destroy();
-  buffers.forEach(buffer => buffer.destroy());
-});
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    expect((await readUint32(invalidCount, 1))[0]).toBe(1);
+    expect((await readUint32(uncertainCount, 1))[0]).toBe(1);
+    const written = (await readUint32(count, 1))[0];
+    const ids = (await readUint32(featureIds, capacity)).slice(0, written);
+    expect(ids.includes(0)).toBe(true);
+    expect(ids.includes(1)).toBe(false);
+    compiled.destroy();
+    buffers.forEach(buffer => buffer.destroy());
+  });
+}

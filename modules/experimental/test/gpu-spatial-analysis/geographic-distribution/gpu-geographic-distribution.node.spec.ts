@@ -12,7 +12,12 @@ import {
   type GPUGeographicDistributionOutput,
   type GPUGeographicDistributionProps
 } from '../../../src/gpu-spatial-analysis/geographic-distribution';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {WgslReflect} from 'wgsl_reflect';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {computeGeographicDistribution} from './geographic-distribution-oracle';
 
 const ROWS = 8;
@@ -94,9 +99,9 @@ it('GPUGeographicDistribution validates its props', () => {
         createProps(graph, {}, {ellipses: view(graph, 'out-ellipses', 'float32', 2)})
       )
   ).toThrow('output.ellipses must hold at least 3 rows');
-  expect(() => new GPUGeographicDistribution(createProps(graph, {medianIterations: 0}))).toThrow(
-    'medianIterations'
-  );
+  expect(
+    () => new GPUGeographicDistribution(createProps(graph, {maximumMedianIterations: 0}))
+  ).toThrow('maximumMedianIterations');
   expect(() => new GPUGeographicDistribution(createProps(graph, {polygonVertexCount: 2}))).toThrow(
     'polygonVertexCount'
   );
@@ -137,7 +142,7 @@ it('GPUGeographicDistribution returns deterministic node IDs within the binding 
           groupCount: 3,
           lineEnds: view(graph, 'ends', 'float32x2', ROWS),
           polygonVertexCount: 4,
-          medianIterations: 2
+          maximumMedianIterations: 2
         },
         output
       )
@@ -294,7 +299,7 @@ it('oracle: median centre and directional mean', () => {
   const median = computeGeographicDistribution({
     positions: [0, 0, 1, 0, 10, 0, 1, 0.001],
     groupCount: 1,
-    medianIterations: 200
+    maximumMedianIterations: 200
   });
   closeTo(median.medianCenters[0], 1, 0.02);
   const lines = computeGeographicDistribution({
@@ -366,9 +371,71 @@ it('GPUGeographicDistribution and GPURoseStatistic are planar only', () => {
       origin: 'positive-x-counter-clockwise',
       binCount: 4
     } as const,
-    summary: view(graph, 'rose-summary', 'float32', 5),
-    bins: view(graph, 'rose-bins', 'float32', 4)
+    output: {
+      summary: view(graph, 'rose-summary', 'float32', 5),
+      bins: view(graph, 'rose-bins', 'float32', 4)
+    }
   });
   expect(new GPURoseStatistic(roseProps()).spatialContext.coordinateSpace).toBe('planar');
   expect(() => new GPURoseStatistic(roseProps(lonLat))).toThrow(/project positions to a planar/);
+});
+
+it('GPUGeographicDistribution median: pipeline count independent of maximumMedianIterations (rule 12), gated loop (rule 13)', () => {
+  for (const reduction of ['chunked', 'sorted'] as const) {
+    const build = (maximumMedianIterations: number) => {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      const rows = 300;
+      return new GPUGeographicDistribution({
+        id: 'g',
+        positions: view(graph, 'positions', 'float32x2', rows),
+        groupIds: view(graph, 'groups', 'uint32', rows),
+        groupCount: 3,
+        reduction,
+        maximumMedianIterations,
+        parameters: view(
+          graph,
+          'parameters',
+          'float32',
+          GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH
+        ),
+        output: {
+          medianCenters: view(graph, 'median', 'float32x2', 3),
+          medianConverged: view(graph, 'converged', 'uint32', 3)
+        }
+      }).getCommandNodes(graph) as readonly {id: string; condition?: {mode: string}}[];
+    };
+    expect(getGPUCommandNodePipelineKeys(build(4)).size, reduction).toBe(
+      getGPUCommandNodePipelineKeys(build(3)).size
+    );
+    const nodes = build(3);
+    const gated = nodes.filter(node => node.id.startsWith('g-median-1') && node.condition);
+    expect(gated.length, reduction).toBeGreaterThanOrEqual(2);
+    expect(gated.every(node => node.condition?.mode === 'indirect')).toBe(true);
+    // The check kernel writes the gate, so it stays ungated.
+    expect(
+      nodes.find(node => node.id === 'g-median-1-check')?.condition,
+      reduction
+    ).toBeUndefined();
+    for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+      expect(() => new WgslReflect(source), `${reduction} ${id}`).not.toThrow();
+    }
+  }
+});
+
+it('geographic distribution oracle stops the median once every group moved at most medianTolerance', () => {
+  const positions = Float32Array.from([0, 0, 10, 0, 0, 10, 7, 7, 100, 100, 104, 100, 100, 103]);
+  const groupIds = Uint32Array.from([0, 0, 0, 0, 1, 1, 1]);
+  const run = (medianTolerance: number, maximumMedianIterations: number) =>
+    computeGeographicDistribution({
+      positions,
+      groupIds,
+      groupCount: 2,
+      medianTolerance,
+      maximumMedianIterations
+    });
+  // A huge tolerance stops after the first step; that equals a one-iteration run.
+  expect(run(1e9, 50).medianCenters).toEqual(run(1e9, 1).medianCenters);
+  expect(run(1e9, 50).medianConverged).toEqual([1, 1]);
+  // A zero tolerance never stops early.
+  expect(run(0, 3).medianCenters).not.toEqual(run(0, 1).medianCenters);
 });

@@ -7,12 +7,12 @@ import {expect, it} from 'vitest';
 import {
   GPUSegmentRingAssembly,
   type GPUSegmentRingAssemblyProps
-} from '../../../src/gpu-spatial-analysis/ring-assembly';
+} from '../../../src/analysis-core/ring-assembly';
 import {
   GPU_RING_CELL_BIAS,
   getRingCellSize,
   quantizeRingVertexCoordinate
-} from '../../../src/gpu-spatial-analysis/ring-assembly/ring-vertex-quantizer';
+} from '../../../src/analysis-core/ring-assembly/ring-vertex-quantizer';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
@@ -31,8 +31,10 @@ function createProps(
       ringOffsets: view('uint32', 5),
       positions: view('float32x2', 32),
       ringShells: view('uint32', 4),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {
+        count: view('uint32', 1),
+        overflow: view('uint32', 1)
+      }
     },
     ...overrides
   };

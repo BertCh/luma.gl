@@ -10,6 +10,7 @@ import {
   type GPULineSimplificationProps
 } from '../../../src/gpu-spatial-analysis/line-simplification';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {countDistinctPipelines} from '../../utils/gpu-contributor-test-utils';
 import {
   computeParallelImportance,
   divideFloor,
@@ -38,15 +39,12 @@ function createProps(
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {
     positions: view('float32x2', 10),
-    trackOffsets: view('uint32', 3),
+    lineOffsets: view('uint32', 3),
     importance: view('float32', 10),
     parameters: view('float32', 4),
-    selection: {
-      output: {
-        ids: view('uint32', 10),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1)
-      },
+    output: {
+      ids: view('uint32', 10),
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)},
       lineCounts: view('uint32', 2),
       lineStarts: view('uint32', 2)
     },
@@ -101,8 +99,8 @@ it('GPULineSimplification parameter helper packs and validates the tolerance', (
 });
 
 it('GPULineSimplification validates props', () => {
-  expectThrows(() => ({maximumRounds: 0}), /maximumRounds/);
-  expectThrows(() => ({maximumRounds: 1025}), /maximumRounds/);
+  expectThrows(() => ({maximumIterations: 0}), /maximumIterations/);
+  expectThrows(() => ({maximumIterations: 1025}), /maximumIterations/);
   expectThrows(() => ({finishSpanLimit: -1}), /finishSpanLimit/);
   expectThrows(() => ({finishSpanLimit: 129}), /finishSpanLimit/);
   expectThrows(() => ({metric: 'line' as never}), /metric/);
@@ -119,34 +117,41 @@ it('GPULineSimplification validates props', () => {
     /importance length/
   );
   expectThrows(
-    graph => ({trackOffsets: createTransientView(graph, 'o', 'uint32', 1)}),
-    /at least two rows/
+    graph => ({lineOffsets: createTransientView(graph, 'o', 'uint32', 1)}),
+    /lineOffsets needs two rows/
   );
   expectThrows(() => ({parameters: undefined}), /parameters are required/);
   expectThrows(
     graph => ({parameters: createTransientView(graph, 'p', 'float32', 2)}),
     /4 float32 values/
   );
-  expectThrows(() => ({computeImportance: false, selection: undefined}), /computeImportance or/);
+  expectThrows(() => ({computeImportance: false, output: undefined}), /computeImportance or/);
   expectThrows(
     graph => ({
       computeImportance: false,
-      status: {converged: createTransientView(graph, 'c', 'uint32', 1)}
+      output: {
+        ids: createTransientView(graph, 'sel-ids', 'uint32', 10),
+        status: {
+          count: createTransientView(graph, 'sel-count', 'uint32', 1),
+          overflow: createTransientView(graph, 'sel-overflow', 'uint32', 1),
+          converged: createTransientView(graph, 'c', 'uint32', 1)
+        }
+      }
     }),
-    /status requires/
+    /output.status.converged and iterationCount require/
   );
   expectThrows(
     graph => ({
-      selection: {
-        output: {
-          ids: createTransientView(graph, 'ids', 'uint32', 4),
+      output: {
+        ids: createTransientView(graph, 'ids', 'uint32', 4),
+        status: {
           count: createTransientView(graph, 'count', 'uint32', 1),
           overflow: createTransientView(graph, 'overflow', 'uint32', 1)
         },
         lineCounts: createTransientView(graph, 'lc', 'uint32', 5)
       }
     }),
-    /lineCounts length/
+    /output.lineCounts length/
   );
 });
 
@@ -154,7 +159,7 @@ it('GPULineSimplification emits deterministic node IDs and five nodes per round'
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const contributor = new GPULineSimplification(
-    createProps(graph, {id: 'simplify', maximumRounds: 3})
+    createProps(graph, {id: 'simplify', maximumIterations: 3})
   );
   const nodes = contributor.getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
@@ -207,7 +212,7 @@ it('parallel importance equals recursive Douglas-Peucker on corner cases', () =>
   expect(Array.from(importance.slice(15, 18))).toEqual([Infinity, Infinity, Infinity]);
   // Tie: rows 1 and 3 of the last line are both 1 from the chord; the smaller row splits first,
   // then rows 2 and 3 tie against chord 1..4 and row 3 is clamped to row 2's importance.
-  const tieStart = scene.trackOffsets[8];
+  const tieStart = scene.lineOffsets[8];
   const tie = Array.from(importance.slice(tieStart, tieStart + 5));
   expect([tie[0], tie[1], tie[4]]).toEqual([Infinity, 1, Infinity]);
   expect(tie[2]).toBeCloseTo(2 / Math.sqrt(10), 6);
@@ -225,10 +230,10 @@ it('a round cap leaves a deep spiral unconverged with a superset of Douglas-Peuc
   const scene = createSpiralScene(300);
   const full = computeParallelImportance(scene, 1024);
   expect(full.converged).toBe(true);
-  expect(full.roundCount).toBeGreaterThan(12);
+  expect(full.iterationCount).toBeGreaterThan(12);
   const capped = computeParallelImportance(scene, 6);
   expect(capped.converged).toBe(false);
-  expect(capped.roundCount).toBe(6);
+  expect(capped.iterationCount).toBe(6);
   for (const tolerance of [0.5, 2, 5, 20]) {
     const kept = new Set(getKeptRowsFromImportance(scene, capped.importanceBits, tolerance));
     for (const row of simplifyDouglasPeucker(scene, tolerance)) {
@@ -236,5 +241,26 @@ it('a round cap leaves a deep spiral unconverged with a superset of Douglas-Peuc
     }
   }
   // A cap equal to the depth still converges.
-  expect(computeParallelImportance(scene, full.roundCount).converged).toBe(true);
+  expect(computeParallelImportance(scene, full.iterationCount).converged).toBe(true);
+});
+
+it('GPULineSimplification rounds are gated on the GPU and share pipelines (rules 12 and 13)', () => {
+  for (const method of ['douglas-peucker', 'visvalingam'] as const) {
+    const buildNodes = (maximumIterations: number) => {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      return new GPULineSimplification(
+        createProps(graph, {id: `rounds-${method}-${maximumIterations}`, method, maximumIterations})
+      ).getCommandNodes(graph);
+    };
+    const nodes = buildNodes(3);
+    const roundNodes = nodes.filter(node => /-round-\d+-(?!gate)/.test(node.id));
+    expect(roundNodes.length).toBeGreaterThan(0);
+    for (const node of roundNodes) {
+      const {condition} = node as {condition?: {source: string; mode: string}};
+      expect(condition?.source, node.id).toBe('gpu');
+      expect(condition?.mode, node.id).toBe('indirect');
+    }
+    expect(countDistinctPipelines(buildNodes(4))).toBe(countDistinctPipelines(buildNodes(3)));
+    expect(countDistinctPipelines(buildNodes(6))).toBe(countDistinctPipelines(buildNodes(4)));
+  }
 });

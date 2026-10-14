@@ -8,38 +8,38 @@ import {
   wrapLongitudeDelta
 } from '../geometry-measures/geodesic-oracle';
 
-/** Flat path layout used by the line contributor tests. */
-export type FlatPaths = {
+/** Flat line layout used by the line contributor tests. */
+export type FlatLines = {
   /** Interleaved x/y (or longitude/latitude) values. */
   positions: Float32Array;
-  /** `pathCount + 1` row offsets. */
-  pathOffsets: Uint32Array;
+  /** `lineCount + 1` row offsets. */
+  lineOffsets: Uint32Array;
 };
 
-/** f64 result of a path-emitting oracle, flattened like `GPULinePathOutput`. */
-export type FlatPathResult = {
+/** f64 result of a line-emitting oracle, flattened like `GPULineGeometryOutput`. */
+export type FlatLineResult = {
   positions: number[][];
-  pathOffsets: number[];
+  lineOffsets: number[];
   sourceRows: number[];
   measures: number[];
 };
 
-/** Packs nested paths into the flat layout (values rounded to f32). */
-export function createFlatPaths(paths: readonly (readonly number[][])[]): FlatPaths {
-  const pathOffsets = new Uint32Array(paths.length + 1);
+/** Packs nested lines into the flat layout (values rounded to f32). */
+export function createFlatLines(lines: readonly (readonly number[][])[]): FlatLines {
+  const lineOffsets = new Uint32Array(lines.length + 1);
   const values: number[] = [];
-  paths.forEach((path, pathIndex) => {
-    for (const vertex of path) {
+  lines.forEach((line, lineIndex) => {
+    for (const vertex of line) {
       values.push(vertex[0], vertex[1]);
     }
-    pathOffsets[pathIndex + 1] = pathOffsets[pathIndex] + path.length;
+    lineOffsets[lineIndex + 1] = lineOffsets[lineIndex] + line.length;
   });
-  return {positions: new Float32Array(values), pathOffsets};
+  return {positions: new Float32Array(values), lineOffsets};
 }
 
-/** Returns the f32-rounded vertex `row` of a flat path set. */
-export function getFlatVertex(paths: FlatPaths, row: number): [number, number] {
-  return [paths.positions[2 * row], paths.positions[2 * row + 1]];
+/** Returns the f32-rounded vertex `row` of a flat line set. */
+export function getFlatVertex(lines: FlatLines, row: number): [number, number] {
+  return [lines.positions[2 * row], lines.positions[2 * row + 1]];
 }
 
 function getLength(
@@ -54,35 +54,35 @@ function getLength(
 /**
  * f64 reference of `GPULineSegmentize`: pieces per segment
  * `clamp(ceil(length / maximumSegmentLength), 1, maximumPieces)`, input vertices kept, spherical
- * longitudes unwrapped along each path.
+ * longitudes unwrapped along each line.
  */
-export function segmentizePaths(
-  paths: FlatPaths,
+export function segmentizeLines(
+  lines: FlatLines,
   options: {
     maximumSegmentLength: number;
     maximumPieces: number;
     spherical?: boolean;
     radius?: number;
   }
-): FlatPathResult {
+): FlatLineResult {
   const spherical = Boolean(options.spherical);
   const radius = options.radius ?? 1;
-  const result: FlatPathResult = {
+  const result: FlatLineResult = {
     positions: [],
-    pathOffsets: [0],
+    lineOffsets: [0],
     sourceRows: [],
     measures: []
   };
-  const pathCount = paths.pathOffsets.length - 1;
-  for (let path = 0; path < pathCount; path++) {
-    const start = paths.pathOffsets[path];
-    const end = paths.pathOffsets[path + 1];
+  const lineCount = lines.lineOffsets.length - 1;
+  for (let line = 0; line < lineCount; line++) {
+    const start = lines.lineOffsets[line];
+    const end = lines.lineOffsets[line + 1];
     let measure = 0;
     let shift = 0;
     for (let row = start; row < end; row++) {
-      const vertex = getFlatVertex(paths, row);
+      const vertex = getFlatVertex(lines, row);
       if (row > start) {
-        const previous = getFlatVertex(paths, row - 1);
+        const previous = getFlatVertex(lines, row - 1);
         shift -= 360 * Math.round((vertex[0] - previous[0]) / 360);
       }
       const shifted = spherical ? [vertex[0] + shift, vertex[1]] : vertex;
@@ -90,7 +90,7 @@ export function segmentizePaths(
       result.sourceRows.push(row);
       result.measures.push(measure);
       if (row + 1 < end) {
-        const next = getFlatVertex(paths, row + 1);
+        const next = getFlatVertex(lines, row + 1);
         const length = getLength(vertex, next, spherical, radius);
         const pieces =
           options.maximumSegmentLength > 0 && length > 0
@@ -115,7 +115,7 @@ export function segmentizePaths(
         measure += length;
       }
     }
-    result.pathOffsets.push(result.positions.length);
+    result.lineOffsets.push(result.positions.length);
   }
   return result;
 }
@@ -127,13 +127,13 @@ export function tessellateGreatCircleArcs(
   options: {
     maximumSegmentLength: number;
     minimumSegments: number;
-    maximumSegments: number;
+    maximumSegmentCount: number;
     radius: number;
   }
-): FlatPathResult {
-  const result: FlatPathResult = {
+): FlatLineResult {
+  const result: FlatLineResult = {
     positions: [],
-    pathOffsets: [0],
+    lineOffsets: [0],
     sourceRows: [],
     measures: []
   };
@@ -143,12 +143,12 @@ export function tessellateGreatCircleArcs(
     const distance = angle * options.radius;
     let segments =
       options.maximumSegmentLength > 0 && distance > 0
-        ? Math.ceil(Math.min(distance / options.maximumSegmentLength, options.maximumSegments))
+        ? Math.ceil(Math.min(distance / options.maximumSegmentLength, options.maximumSegmentCount))
         : 1;
     if (options.minimumSegments > segments) {
-      segments = Math.min(options.minimumSegments, options.maximumSegments);
+      segments = Math.min(options.minimumSegments, options.maximumSegmentCount);
     }
-    segments = Math.min(Math.max(segments, 1), options.maximumSegments);
+    segments = Math.min(Math.max(segments, 1), options.maximumSegmentCount);
     for (let vertex = 0; vertex <= segments; vertex++) {
       const fraction = vertex / segments;
       result.positions.push(
@@ -161,7 +161,7 @@ export function tessellateGreatCircleArcs(
       result.sourceRows.push(pair);
       result.measures.push(distance * fraction);
     }
-    result.pathOffsets.push(result.positions.length);
+    result.lineOffsets.push(result.positions.length);
   });
   return result;
 }

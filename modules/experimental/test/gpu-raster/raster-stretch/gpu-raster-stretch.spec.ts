@@ -7,6 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
 import {
   getGPURasterStretchParameterValues,
   GPU_RASTER_STRETCH_PARAMETER_LENGTH,
@@ -29,6 +30,7 @@ import {
   stretchRasterOnCPU,
   type RasterStretchScene
 } from './raster-stretch-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type OutputName = 'stretched' | 'colors' | 'lut' | 'lutColors' | 'histogram' | 'statistics';
 const ALL_OUTPUTS: OutputName[] = [
@@ -106,8 +108,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     new GPURasterStretch({
       id: 'stretch',
       values: valuesBuffer.importToGraph(graph),
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       noDataValue: scene.noDataValue,
       validity: validityBuffer
         ? importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount)
@@ -222,8 +223,8 @@ async function checkFrame(
   expect(statistics[4], 'validCount').toBe(stats.validCount);
   expect(statistics[6]).toBe(0);
   expect(statistics[7]).toBe(0);
-  expectClose(statistics[0], stats.isEmpty ? nan : stats.domainMin, 0, 'domainMin');
-  expectClose(statistics[1], stats.isEmpty ? nan : stats.domainMax, 0, 'domainMax');
+  expectClose(statistics[0], stats.isEmpty ? nan : stats.domainMinimum, 0, 'domainMinimum');
+  expectClose(statistics[1], stats.isEmpty ? nan : stats.domainMaximum, 0, 'domainMaximum');
   expectClose(
     statistics[5],
     stats.isEmpty ? nan : stats.binWidth,
@@ -318,9 +319,7 @@ const PALETTE = Uint32Array.from([
 
 it('GPURasterStretch matches the CPU oracle across modes, domains, windows and masks without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createIntegerScene(5, 37, 29);
   scene.regionMask = new Uint32Array(37 * 29).map((_, cell) => ((cell * 7) % 5 === 0 ? 0 : 1));
   const harness = createHarness(device, {scene, palette: PALETTE});
@@ -368,9 +367,7 @@ it('GPURasterStretch matches the CPU oracle across modes, domains, windows and m
 
 it('GPURasterStretch automatic domain is the exact minimum and maximum, percentile bounds honor the bin error', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(21);
   const width = 64;
   const height = 48;
@@ -391,8 +388,8 @@ it('GPURasterStretch automatic domain is the exact minimum and maximum, percenti
   const finite = Array.from(values)
     .filter(Number.isFinite)
     .sort((left, right) => left - right);
-  expect(stats.domainMin).toBe(finite[0]);
-  expect(stats.domainMax).toBe(finite[finite.length - 1]);
+  expect(stats.domainMinimum).toBe(finite[0]);
+  expect(stats.domainMaximum).toBe(finite[finite.length - 1]);
   // lo/hi are within one bin width of the exact percentile of the data.
   const exactLow = finite[Math.floor(0.02 * finite.length)];
   const exactHigh = finite[Math.min(Math.ceil(0.98 * finite.length) - 1, finite.length - 1)];
@@ -409,9 +406,7 @@ it('GPURasterStretch automatic domain is the exact minimum and maximum, percenti
 
 it('GPURasterStretch defines all-nodata, empty-window and constant rasters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // All nodata: NaN everywhere, zero counts, no crash.
   const nodata: RasterStretchScene = {
     values: new Float32Array(20).fill(NaN),
@@ -482,9 +477,7 @@ it('GPURasterStretch defines all-nodata, empty-window and constant rasters', asy
 
 it('GPURasterStretch supports output subsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createIntegerScene(3, 20, 10);
   const histogramOnly = createHarness(device, {scene, outputs: ['histogram', 'statistics']});
   const {parameters, result} = await histogramOnly.run({mode: 'percentile'});
@@ -506,9 +499,7 @@ it('GPURasterStretch supports output subsets', async () => {
 
 it('GPURasterStretch matches the CPU oracle over many workgroup tiles (privatized histogram and tree reduction)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 199 x 157 = 31243 cells: several tiles of the workgroup-private reduce and histogram passes,
   // with a ragged last tile.
   const scene = createIntegerScene(9, 199, 157);

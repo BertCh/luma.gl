@@ -7,9 +7,11 @@ import {expect, it} from 'vitest';
 import {
   GPUGlobalPermutationTest,
   GPULocalPermutationTest,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_PERMUTATION_PARAMETER_LENGTH,
+  type GPUGlobalPermutationTestOutput,
   type GPUGlobalPermutationTestProps,
+  type GPULocalPermutationTestOutput,
   type GPULocalPermutationTestProps
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -43,56 +45,47 @@ function createViews(graph: GPUCommandGraph) {
 it('GPULocalPermutationTest validates its props and emits deterministic node IDs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'local-permutation-validation'});
   const {view, common} = createViews(graph);
-  const create = (overrides: Partial<GPULocalPermutationTestProps> = {}) =>
+  const create = (
+    overrides: Partial<GPULocalPermutationTestProps> = {},
+    output: Partial<GPULocalPermutationTestOutput> = {}
+  ) =>
     new GPULocalPermutationTest({
       ...common,
       statistic: 'localMoran',
-      exceedances: view('uint32', 10),
-      pseudoPValues: view('float32', 10),
-      overflow: view('uint32', 1),
-      ...overrides
+      ...overrides,
+      output: {
+        exceedances: view('uint32', 10),
+        pseudoPValues: view('float32', 10),
+        status: {overflow: view('uint32', 1)},
+        ...output
+      }
     });
   expect(() => create()).not.toThrow();
   expect(() => create({maximumNeighbors: 65})).toThrow(/maximumNeighbors/);
   expect(() => create({maximumPermutations: 0})).toThrow(/maximumPermutations/);
   expect(() => create({statistic: 'nope' as 'localG'})).toThrow(/unknown/);
   expect(() => create({multipleTesting: 'holm'})).toThrow(/requires significant/);
-  expect(() => create({falseDiscoveryRate: true})).toThrow(/requires significant/);
   expect(() => create({islands: 'drop' as 'keep'})).toThrow(/islands/);
   expect(() => create({multipleTesting: 'sidak' as 'holm'})).toThrow(/method must be/);
-  // The deprecated alias may not contradict an explicit method.
-  expect(() =>
-    create({
-      significant: view('uint32', 10),
-      falseDiscoveryRate: true,
-      multipleTesting: 'bonferroni'
-    })
-  ).toThrow(/falseDiscoveryRate/);
-  expect(() =>
-    create({
-      significant: view('uint32', 10),
-      falseDiscoveryRate: true,
-      multipleTesting: 'benjamini-hochberg'
-    })
-  ).not.toThrow();
-  expect(() => create({pseudoPValues: view('float32', 9)})).toThrow(/pseudoPValues length/);
+  expect(() => create({}, {pseudoPValues: view('float32', 9)})).toThrow(/pseudoPValues length/);
   expect(() => create({parameters: view('uint32', 2)})).toThrow(/parameters/);
-  expect(() => create({exceedances: common.weights.offsets})).toThrow();
-  const contributor = create({
-    id: 'local',
-    significant: view('uint32', 10),
-    multipleTesting: 'benjamini-hochberg',
-    adjustedPValues: view('float32', 10),
-    islandCount: view('uint32', 1),
-    observed: view('float32', 10)
-  });
+  expect(() => create({}, {exceedances: common.weights.offsets})).toThrow();
+  const contributor = create(
+    {id: 'local', multipleTesting: 'benjamini-hochberg'},
+    {
+      significant: view('uint32', 10),
+      adjustedPValues: view('float32', 10),
+      islandCount: view('uint32', 1),
+      observed: view('float32', 10)
+    }
+  );
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('local-permute');
   expect(ids.some(id => id.startsWith('local-multiple-testing'))).toBe(true);
   expect(ids).toContain('local-inputs-island-clear');
   expect(ids.at(-1)).toBe('local-significant');
   // Without a correction the exact integer comparison is fused into the classify kernel.
-  const plain = create({id: 'plain', significant: view('uint32', 10)});
+  const plain = create({id: 'plain'}, {significant: view('uint32', 10)});
   expect(
     plain
       .getCommandNodes(graph)
@@ -107,25 +100,27 @@ it('GPUGlobalPermutationTest validates its props and emits deterministic node ID
     id: 'global-permutation-validation'
   });
   const {view, common} = createViews(graph);
-  const create = (overrides: Partial<GPUGlobalPermutationTestProps> = {}) =>
+  const create = (
+    overrides: Partial<GPUGlobalPermutationTestProps> = {},
+    output: Partial<GPUGlobalPermutationTestOutput> = {}
+  ) =>
     new GPUGlobalPermutationTest({
       ...common,
       statistic: 'moran',
-      results: view('float32', GPU_GLOBAL_PERMUTATION_RESULT.length),
-      ...overrides
+      ...overrides,
+      output: {summary: view('float32', GPU_GLOBAL_PERMUTATION_SUMMARY.length), ...output}
     });
   expect(() => create()).not.toThrow();
   expect(() => create({statistic: 'bivariateMoran'})).toThrow(/secondValues/);
-  expect(() => create({results: view('float32', 4)})).toThrow(/results/);
-  expect(() => create({referenceDistribution: view('float32', 10)})).toThrow(
+  expect(() => create({}, {summary: view('float32', 4)})).toThrow(/summary/);
+  expect(() => create({}, {referenceDistribution: view('float32', 10)})).toThrow(
     /referenceDistribution/
   );
   expect(() => create({values: view('float32', 3)})).toThrow(/values length/);
-  const contributor = create({
-    id: 'global',
-    histogram: view('uint32', 8),
-    referenceDistribution: view('float32', 999)
-  });
+  const contributor = create(
+    {id: 'global'},
+    {histogram: view('uint32', 8), referenceDistribution: view('float32', 999)}
+  );
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('global-pairs');
   expect(ids.at(-1)).toBe('global-finalize');
@@ -143,7 +138,7 @@ it('permutation oracles behave as nulls on random values and detect clustered va
     values: noise,
     statistic: 'localMoran',
     seed: 3,
-    permutations: 199,
+    permutationCount: 199,
     significanceLevel: 0.05,
     maximumNeighbors: 32
   });
@@ -158,7 +153,7 @@ it('permutation oracles behave as nulls on random values and detect clustered va
     values: noise,
     statistic: 'localMoran',
     seed: 3,
-    permutations: 199,
+    permutationCount: 199,
     significanceLevel: 0.05,
     maximumNeighbors: 32,
     multipleTesting: 'benjamini-hochberg'
@@ -176,7 +171,7 @@ it('permutation oracles behave as nulls on random values and detect clustered va
     values: clustered,
     statistic: 'moran',
     seed: 5,
-    permutations: 99
+    permutationCount: 99
   });
   expect(global.pseudoPValue).toBeCloseTo(2 / 100, 10);
   expect(global.zSimulated).toBeGreaterThan(5);
@@ -185,7 +180,7 @@ it('permutation oracles behave as nulls on random values and detect clustered va
     values: noise,
     statistic: 'moran',
     seed: 5,
-    permutations: 499
+    permutationCount: 499
   });
   expect(Math.abs(nullGlobal.simulatedMean + 1 / (count - 1))).toBeLessThan(0.01);
 });
@@ -198,17 +193,23 @@ it('both tests validate permutation counts and describe their inference', () => 
     statistic: 'localMoran',
     maximumPermutations: 99,
     maximumNeighbors: 8,
-    significant: view('uint32', 10),
     multipleTesting: 'benjamini-yekutieli',
-    exceedances: view('uint32', 10),
-    pseudoPValues: view('float32', 10),
-    overflow: view('uint32', 1)
+    output: {
+      significant: view('uint32', 10),
+      exceedances: view('uint32', 10),
+      pseudoPValues: view('float32', 10),
+      status: {overflow: view('uint32', 1)}
+    }
   });
-  expect(local.getParameterValues({seed: 5, permutations: 99})[2]).toBe(99);
-  expect(() => local.getParameterValues({seed: 5, permutations: 100})).toThrow(
+  expect(local.getParameterValues({seed: 5, permutationCount: 99})[2]).toBe(99);
+  expect(() => local.getParameterValues({seed: 5, permutationCount: 100})).toThrow(
     /maximumPermutations/
   );
-  const metadata = local.getInferenceMetadata({seed: 5, permutations: 49, significanceLevel: 0.01});
+  const metadata = local.getInferenceMetadata({
+    seed: 5,
+    permutationCount: 49,
+    significanceLevel: 0.01
+  });
   expect(metadata).toMatchObject({
     alternative: 'two-sided',
     permutationCount: 49,
@@ -222,19 +223,50 @@ it('both tests validate permutation counts and describe their inference', () => 
   const global = new GPUGlobalPermutationTest({
     ...common,
     statistic: 'moran',
-    alternative: 'less',
+    alternative: 'lesser',
     islands: 'keep',
     maximumPermutations: 99,
-    results: view('float32', GPU_GLOBAL_PERMUTATION_RESULT.length)
+    output: {summary: view('float32', GPU_GLOBAL_PERMUTATION_SUMMARY.length)}
   });
-  expect(() => global.getParameterValues({seed: 5, permutations: 1000})).toThrow(
+  expect(() => global.getParameterValues({seed: 5, permutationCount: 1000})).toThrow(
     /maximumPermutations/
   );
-  const globalMetadata = global.getInferenceMetadata({seed: 5, permutations: 99});
+  const globalMetadata = global.getInferenceMetadata({seed: 5, permutationCount: 99});
   expect(globalMetadata.alternative).toBe('lesser');
   expect(globalMetadata.multipleTesting).toBe('none');
   expect(globalMetadata.testedRowsDefinition).toMatch(/kept in n/);
-  expect(GPU_GLOBAL_PERMUTATION_RESULT.islandCount).toBe(10);
-  expect(GPU_GLOBAL_PERMUTATION_RESULT.analysisCount).toBe(11);
-  expect(GPU_GLOBAL_PERMUTATION_RESULT.length).toBe(12);
+  expect(GPU_GLOBAL_PERMUTATION_SUMMARY.islandCount).toBe(10);
+  expect(GPU_GLOBAL_PERMUTATION_SUMMARY.analysisCount).toBe(11);
+  expect(GPU_GLOBAL_PERMUTATION_SUMMARY.length).toBe(12);
+});
+
+it('both tests convert uint32 values with one node and keep float32 values as given', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'permutation-uint32'});
+  const {view, common} = createViews(graph);
+  const counts = view('uint32', 10);
+  const localIds = new GPULocalPermutationTest({
+    ...common,
+    id: 'local-counts',
+    values: counts,
+    statistic: 'localMoran',
+    output: {
+      exceedances: view('uint32', 10),
+      pseudoPValues: view('float32', 10),
+      status: {overflow: view('uint32', 1)}
+    }
+  })
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(localIds.filter(id => id.endsWith('-to-float32'))).toEqual([
+    'local-counts-inputs-values-to-float32'
+  ]);
+  const globalIds = new GPUGlobalPermutationTest({
+    ...common,
+    id: 'global-floats',
+    statistic: 'moran',
+    output: {summary: view('float32', GPU_GLOBAL_PERMUTATION_SUMMARY.length)}
+  })
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(globalIds.some(id => id.endsWith('-to-float32'))).toBe(false);
 });

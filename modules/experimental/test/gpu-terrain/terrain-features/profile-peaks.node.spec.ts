@@ -10,6 +10,8 @@ import {
   getGPUProfilePeaksParameterValues
 } from '../../../src/gpu-terrain/terrain-features/gpu-profile-peaks';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
+import {GPU_PROFILE_PEAKS_UNRESOLVED_MASK} from '../../../src/gpu-terrain/terrain-features';
 import {
   concatenateProfiles,
   createGaussianBumps,
@@ -18,11 +20,11 @@ import {
 
 it('packs settings and validates them', () => {
   expect(GPU_PROFILE_PEAKS_PARAMETER_LENGTH).toBe(1);
-  expect(Array.from(getGPUProfilePeaksParameterValues({minProminence: 2.5}))).toEqual([2.5]);
-  expect(() => getGPUProfilePeaksParameterValues({minProminence: Number.NaN})).toThrow(/NaN/);
-  expect(() => getGPUProfilePeaksParameterValues({minProminence: 1}, new Float32Array(0))).toThrow(
-    /target/
-  );
+  expect(Array.from(getGPUProfilePeaksParameterValues({minimumProminence: 2.5}))).toEqual([2.5]);
+  expect(() => getGPUProfilePeaksParameterValues({minimumProminence: Number.NaN})).toThrow(/NaN/);
+  expect(() =>
+    getGPUProfilePeaksParameterValues({minimumProminence: 1}, new Float32Array(0))
+  ).toThrow(/target/);
 });
 
 it('oracle reproduces the mt-image reference cases', () => {
@@ -34,7 +36,7 @@ it('oracle reproduces the mt-image reference cases', () => {
     ]),
     undefined,
     offsets,
-    {window: 30, minProminence: 2}
+    {window: 30, minimumProminence: 2}
   );
   expect(summits.peaks).toHaveLength(2);
   expect(summits.peaks[0].index).toBeCloseTo(50.3, 1);
@@ -43,17 +45,21 @@ it('oracle reproduces the mt-image reference cases', () => {
   const plateau = new Float32Array(60);
   plateau.fill(5, 25, 31);
   expect(
-    findProfilePeaksOracle(plateau, undefined, [0, 60], {window: 15, minProminence: 1}).peaks.map(
-      peak => peak.local
-    )
+    findProfilePeaksOracle(plateau, undefined, [0, 60], {
+      window: 15,
+      minimumProminence: 1
+    }).peaks.map(peak => peak.local)
   ).toEqual([25]);
   // Tiny and empty profiles.
   expect(
-    findProfilePeaksOracle(Float32Array.of(1, 2), undefined, [0, 2], {window: 5, minProminence: 0})
-      .peaks
+    findProfilePeaksOracle(Float32Array.of(1, 2), undefined, [0, 2], {
+      window: 5,
+      minimumProminence: 0
+    }).peaks
   ).toEqual([]);
   expect(
-    findProfilePeaksOracle(new Float32Array(0), undefined, [0], {window: 5, minProminence: 0}).peaks
+    findProfilePeaksOracle(new Float32Array(0), undefined, [0], {window: 5, minimumProminence: 0})
+      .peaks
   ).toEqual([]);
   // Chain: A > B > C keeps A and C.
   const chain = findProfilePeaksOracle(
@@ -64,7 +70,7 @@ it('oracle reproduces the mt-image reference cases', () => {
     ]),
     undefined,
     [0, 80],
-    {window: 12, minProminence: 1, nms: 10}
+    {window: 12, minimumProminence: 1, suppressionRadius: 10}
   );
   expect(chain.peaks.map(peak => peak.local)).toEqual([30, 46]);
   // A gap with a sentinel value never contributes.
@@ -74,7 +80,7 @@ it('oracle reproduces the mt-image reference cases', () => {
   validity[56] = 0;
   const withSentinel = findProfilePeaksOracle(sentinel, validity, [0, 100], {
     window: 20,
-    minProminence: 1
+    minimumProminence: 1
   });
   expect(withSentinel.peaks.map(peak => peak.local)).toEqual([50]);
   expect(withSentinel.peaks[0].prominence).toBeLessThan(11);
@@ -84,11 +90,11 @@ it('oracle reproduces the mt-image reference cases', () => {
     (_, index) => 10 * Math.exp(-(Math.min(index, 60 - index) ** 2) / 8)
   );
   expect(
-    findProfilePeaksOracle(circular, undefined, [0, 60], {window: 15, minProminence: 1}).peaks
+    findProfilePeaksOracle(circular, undefined, [0, 60], {window: 15, minimumProminence: 1}).peaks
   ).toEqual([]);
   const wrapped = findProfilePeaksOracle(circular, undefined, [0, 60], {
     window: 15,
-    minProminence: 1,
+    minimumProminence: 1,
     wrap: true
   });
   expect(wrapped.peaks.map(peak => peak.local)).toEqual([0]);
@@ -102,15 +108,21 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Record<string, unknown> = {}) => {
+  const create = (
+    overrides: Record<string, unknown> = {},
+    outputOverrides: Record<string, unknown> = {}
+  ) => {
     instance++;
     return new GPUProfilePeaks({
       values: createTransientView(graph, `values-${instance}`, 'float32', 40),
       offsets: createTransientView(graph, `offsets-${instance}`, 'uint32', 3),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 1),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 1),
       window: 8,
-      nmsRounds: 2,
-      peakMask: createTransientView(graph, `mask-${instance}`, 'uint32', 40),
+      maximumSuppressionIterations: 2,
+      output: {
+        peakMask: createTransientView(graph, `mask-${instance}`, 'uint32', 40),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
@@ -120,18 +132,19 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
     return new GPUProfilePeaks({
       values: createTransientView(target, 'values', 'float32', 40),
       offsets: createTransientView(target, 'offsets', 'uint32', 3),
-      settings: createTransientView(target, 'settings', 'float32', 1),
+      parameters: createTransientView(target, 'settings', 'float32', 1),
       window: 8,
-      nmsRounds: 2,
-      peakMask: createTransientView(target, 'mask', 'uint32', 40),
+      maximumSuppressionIterations: 2,
+      output: {peakMask: createTransientView(target, 'mask', 'uint32', 40)},
       ...overrides
     }).getCommandNodes(target);
   };
-  expect(create().nms).toBe(2);
-  expect(create({window: 40}).nms).toBe(10);
+  expect(create().suppressionRadius).toBe(2);
+  expect(create({window: 40}).suppressionRadius).toBe(10);
   expect(build().map(node => node.id)).toEqual([
     'profile-peaks-candidates',
     'profile-peaks-nms-reset',
+    'profile-peaks-nms-gate-slots-write',
     'profile-peaks-nms-0',
     'profile-peaks-nms-1',
     'profile-peaks-nms-gate-0',
@@ -143,23 +156,28 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
     values: createTransientView(target, 'values', 'float32', 40),
     validity: createTransientView(target, 'validity', 'uint32', 40),
     offsets: createTransientView(target, 'offsets', 'uint32', 3),
-    settings: createTransientView(target, 'settings', 'float32', 1),
+    parameters: createTransientView(target, 'settings', 'float32', 1),
     window: 8,
-    nmsRounds: 1,
-    prominence: createTransientView(target, 'prominence', 'float32', 40),
-    refinedIndex: createTransientView(target, 'refined-index', 'float32', 40),
-    refinedValue: createTransientView(target, 'refined-value', 'float32', 40),
-    converged: createTransientView(target, 'converged', 'uint32', 1),
+    maximumSuppressionIterations: 1,
     output: {
-      ids: createTransientView(target, 'ids', 'uint32', 5),
-      count: createTransientView(target, 'count', 'uint32', 1),
-      overflow: createTransientView(target, 'overflow', 'uint32', 1)
+      prominence: createTransientView(target, 'prominence', 'float32', 40),
+      refinedIndex: createTransientView(target, 'refined-index', 'float32', 40),
+      refinedValue: createTransientView(target, 'refined-value', 'float32', 40),
+      peaks: {
+        ids: createTransientView(target, 'ids', 'uint32', 5),
+        status: {
+          count: createTransientView(target, 'count', 'uint32', 1),
+          overflow: createTransientView(target, 'overflow', 'uint32', 1)
+        }
+      },
+      status: {converged: createTransientView(target, 'converged', 'uint32', 1)}
     }
   });
   const ids = full.getCommandNodes(target).map(node => node.id);
-  expect(ids.slice(0, 7)).toEqual([
+  expect(ids.slice(0, 8)).toEqual([
     'peaks-candidates',
     'peaks-nms-reset',
+    'peaks-nms-gate-slots-write',
     'peaks-nms-0',
     'peaks-nms-gate-0',
     'peaks-converged-reset',
@@ -170,41 +188,58 @@ it('GPUProfilePeaks validates props and schedules its nodes', () => {
   expect(ids).toContain('peaks-publish');
   expect(ids.some(id => id.startsWith('peaks-compaction'))).toBe(true);
 
-  expect(() => create({peakMask: undefined})).toThrow(/at least one output/);
+  expect(() => create({}, {peakMask: undefined})).toThrow(/at least one output/);
   expect(() => create({window: 0})).toThrow(/window/);
   expect(() => create({window: 2.5})).toThrow(/window/);
   expect(() => create({window: 5000})).toThrow(/window/);
-  expect(() => create({minSide: -1})).toThrow(/minSide/);
-  expect(() => create({nms: -1})).toThrow(/nms/);
-  expect(() => create({nms: Number.NaN})).toThrow(/nms/);
-  expect(() => create({nmsRounds: 2000})).toThrow(/nmsRounds/);
-  expect(() => create({nmsRounds: 1.5})).toThrow(/nmsRounds/);
+  expect(() => create({minimumSide: -1})).toThrow(/minimumSide/);
+  expect(() => create({suppressionRadius: -1})).toThrow(/suppressionRadius/);
+  expect(() => create({suppressionRadius: Number.NaN})).toThrow(/suppressionRadius/);
+  expect(() => create({maximumSuppressionIterations: 2000})).toThrow(
+    /maximumSuppressionIterations/
+  );
+  expect(() => create({maximumSuppressionIterations: 1.5})).toThrow(/maximumSuppressionIterations/);
   expect(() => create({offsets: createTransientView(graph, 'empty-offsets', 'uint32', 0)})).toThrow(
     /offsets/
   );
   expect(() =>
     create({validity: createTransientView(graph, 'short-validity', 'uint32', 39)})
   ).toThrow(/validity/);
-  expect(() => create({peakMask: createTransientView(graph, 'short-mask', 'uint32', 39)})).toThrow(
-    /one value per sample/
-  );
   expect(() =>
-    create({prominence: createTransientView(graph, 'wrong-format', 'uint32', 40)})
+    create({}, {peakMask: createTransientView(graph, 'short-mask', 'uint32', 39)})
+  ).toThrow(/one value per sample/);
+  expect(() =>
+    create({}, {prominence: createTransientView(graph, 'wrong-format', 'uint32', 40)})
   ).toThrow(/prominence/);
   expect(() =>
-    create({settings: createTransientView(graph, 'empty-settings', 'float32', 0)})
-  ).toThrow(/settings/);
+    create({parameters: createTransientView(graph, 'empty-settings', 'float32', 0)})
+  ).toThrow(/parameters/);
   const shared = createTransientView(graph, 'shared', 'uint32', 40);
-  expect(() => create({validity: shared, peakMask: shared})).toThrow(/share buffers/);
+  expect(() => create({validity: shared}, {peakMask: shared})).toThrow(/share buffers/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUProfilePeaks({
       values: createTransientView(otherGraph, 'foreign-values', 'float32', 40),
       offsets: createTransientView(graph, 'foreign-offsets', 'uint32', 3),
-      settings: createTransientView(graph, 'foreign-settings', 'float32', 1),
+      parameters: createTransientView(graph, 'foreign-settings', 'float32', 1),
       window: 8,
-      peakMask: createTransientView(graph, 'foreign-mask', 'uint32', 40)
+      output: {peakMask: createTransientView(graph, 'foreign-mask', 'uint32', 40)}
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
   device.destroy();
+});
+
+it('review C-09: candidates left undecided by maximumSuppressionIterations carry the unresolved mask word', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const nodes = new GPUProfilePeaks({
+    values: createTransientView(graph, 'values', 'float32', 40),
+    offsets: createTransientView(graph, 'offsets', 'uint32', 3),
+    parameters: createTransientView(graph, 'settings', 'float32', 1),
+    window: 8,
+    maximumSuppressionIterations: 1,
+    output: {peakMask: createTransientView(graph, 'mask', 'uint32', 40)}
+  }).getCommandNodes(graph);
+  const outputs = getRasterPipelines(nodes).find(pipeline => pipeline.id.endsWith('-outputs'))!;
+  // Before, an undecided candidate wrote 0 ("not a peak").
+  expect(outputs.source).toContain(`${GPU_PROFILE_PEAKS_UNRESOLVED_MASK}u, unresolved)`);
 });

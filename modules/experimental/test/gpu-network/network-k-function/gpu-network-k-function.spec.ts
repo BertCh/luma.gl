@@ -32,21 +32,22 @@ import {
   type KFunctionEvent
 } from './network-k-function-oracle';
 import {SPAGHETTI_FIXTURE} from './spaghetti-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type KFunctionOptions = {
   csr: AccessibilityCSR;
   positions: Float32Array;
   points: Float32Array;
   networkLength: number;
-  maxDistance: number;
+  maximumDistance: number;
   bandCount: number;
   simulationCount?: number;
   activeSimulations?: number;
   seed?: number;
   rowsPerBlock?: number;
   laneCount?: number;
-  maxSnapDistance?: number;
-  maxIterations?: number;
+  maximumSnapDistance?: number;
+  maximumIterations?: number;
 };
 
 type KFunctionResult = {
@@ -113,28 +114,34 @@ async function runKFunction(device: Device, options: KFunctionOptions): Promise<
   graph.add(
     new GPUNetworkKFunction({
       id: 'k',
-      points: input('points', points, 'float32x2'),
-      nodePositions: input('positions', positions, 'float32x2'),
-      offsets: input('offsets', csr.offsets, 'uint32'),
-      neighbors: input('neighbors', csr.neighbors, 'uint32'),
-      weights: input('weights', csr.weights, 'float32'),
-      maxSnapDistance:
-        options.maxSnapDistance !== undefined
-          ? scalar('max-snap-distance', options.maxSnapDistance)
+      positions: input('points', points, 'float32x2'),
+      topology: {
+        offsets: input('offsets', csr.offsets, 'uint32'),
+        neighbors: input('neighbors', csr.neighbors, 'uint32'),
+        weights: input('weights', csr.weights, 'float32'),
+        nodePositions: input('positions', positions, 'float32x2')
+      },
+      maximumSnapDistance:
+        options.maximumSnapDistance !== undefined
+          ? scalar('max-snap-distance', options.maximumSnapDistance)
           : undefined,
-      maxDistance: scalar('max-distance', options.maxDistance),
+      maximumDistance: scalar('max-distance', options.maximumDistance),
       networkLength: scalar('network-length', options.networkLength),
       parameters: parameters.importToGraph(graph),
       bandCount,
       simulationCount,
       rowsPerBlock: options.rowsPerBlock,
       laneCount: options.laneCount,
-      maxIterations: options.maxIterations ?? 32,
-      kValues: output('k-values', 'float32', patternCount * bandCount),
-      pairCounts: output('pair-counts', 'uint32', patternCount * bandCount),
-      envelope: simulationCount > 0 ? output('envelope', 'float32', 3 * bandCount) : undefined,
-      snappedEventCount: output('snapped', 'uint32', 1),
-      converged: output('converged', 'uint32', 1)
+      maximumIterations: options.maximumIterations ?? 32,
+      output: {
+        kValues: output('k-values', 'float32', patternCount * bandCount),
+        pairCounts: output('pair-counts', 'uint32', patternCount * bandCount),
+        envelope: simulationCount > 0 ? output('envelope', 'float32', 3 * bandCount) : undefined,
+        snappedEventCount: output('snapped', 'uint32', 1),
+        status: {
+          converged: output('converged', 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -160,9 +167,7 @@ async function runKFunction(device: Device, options: KFunctionOptions): Promise<
 
 it('GPUNetworkKFunction matches spaghetti GlobalAutoK on a jittered grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = SPAGHETTI_FIXTURE;
   const nodePositions = Float32Array.from(fixture.nodes.flat());
   const edges: [number, number, number][] = [];
@@ -181,7 +186,7 @@ it('GPUNetworkKFunction matches spaghetti GlobalAutoK on a jittered grid', async
     positions: nodePositions,
     points: Float32Array.from(fixture.points.flat()),
     networkLength: fixture.networkLength,
-    maxDistance: fixture.maxDistance,
+    maximumDistance: fixture.maximumDistance,
     bandCount: fixture.bandCount,
     rowsPerBlock: 16
   });
@@ -208,30 +213,28 @@ const GRID_POINTS = Float32Array.from(
 
 it('GPUNetworkKFunction matches the CPU oracle for observed and simulated patterns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const bandCount = 9;
-  const maxDistance = 14;
+  const maximumDistance = 14;
   const simulationCount = 4;
   const activeSimulations = 3;
   const seed = 987654;
-  const maxSnapDistance = 2;
+  const maximumSnapDistance = 2;
   const result = await runKFunction(device, {
     csr: GRID_CSR,
     positions: GRID.positions,
     points: GRID_POINTS,
     networkLength: GRID_NETWORK_LENGTH,
-    maxDistance,
+    maximumDistance,
     bandCount,
     simulationCount,
     activeSimulations,
     seed,
-    maxSnapDistance,
+    maximumSnapDistance,
     rowsPerBlock: 17,
-    maxIterations: 48
+    maximumIterations: 48
   });
-  const observed = snapEvents(GRID_POINTS, GRID.positions, GRID_CSR, maxSnapDistance);
+  const observed = snapEvents(GRID_POINTS, GRID.positions, GRID_CSR, maximumSnapDistance);
   const validCount = observed.filter(event => event.first < GRID_NODE_COUNT).length;
   expect(validCount).toBeLessThan(GRID_POINTS.length / 2);
   expect(result.snappedEventCount).toBe(validCount);
@@ -246,7 +249,6 @@ it('GPUNetworkKFunction matches the CPU oracle for observed and simulated patter
       events = simulateEvents(
         GRID_CSR,
         GRID_NODE_COUNT,
-        GRID_NETWORK_LENGTH,
         seed,
         pattern,
         GRID_POINTS.length / 2,
@@ -255,7 +257,7 @@ it('GPUNetworkKFunction matches the CPU oracle for observed and simulated patter
     }
     expectedCounts.push(
       pattern <= activeSimulations
-        ? getPairCounts(GRID_CSR, GRID_NODE_COUNT, events, maxDistance, bandCount)
+        ? getPairCounts(GRID_CSR, GRID_NODE_COUNT, events, maximumDistance, bandCount)
         : new Array<number>(bandCount).fill(0)
     );
   }
@@ -284,18 +286,16 @@ it('GPUNetworkKFunction matches the CPU oracle for observed and simulated patter
 
 it('GPUNetworkKFunction results do not depend on the block size', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const base = {
     csr: GRID_CSR,
     positions: GRID.positions,
     points: GRID_POINTS,
     networkLength: GRID_NETWORK_LENGTH,
-    maxDistance: 10,
+    maximumDistance: 10,
     bandCount: 6,
     simulationCount: 2,
-    maxIterations: 48
+    maximumIterations: 48
   };
   const small = await runKFunction(device, {...base, rowsPerBlock: 5});
   const large = await runKFunction(device, {...base, rowsPerBlock: 72});
@@ -308,9 +308,7 @@ it('GPUNetworkKFunction results do not depend on the block size', async () => {
 
 it('GPUNetworkKFunction never draws simulated events from CSR rows past offsets[nodeCount]', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Review B-03: the simulation weighted every row of `neighbors`, so a tail row with a positive
   // weight could be drawn; its node search then ended at NODE_COUNT and emitted an out-of-range
   // event, and the sampled length no longer matched networkLength. Long tail rows to real nodes
@@ -325,13 +323,13 @@ it('GPUNetworkKFunction never draws simulated events from CSR rows past offsets[
     positions: GRID.positions,
     points: GRID_POINTS,
     networkLength: GRID_NETWORK_LENGTH,
-    maxDistance: 14,
+    maximumDistance: 14,
     bandCount: 9,
     simulationCount: 4,
     activeSimulations: 4,
     seed: 4242,
-    maxSnapDistance: 2,
-    maxIterations: 48
+    maximumSnapDistance: 2,
+    maximumIterations: 48
   };
   const expected = await runKFunction(device, {...options, csr: GRID_CSR});
   const result = await runKFunction(device, {...options, csr: tailCSR});

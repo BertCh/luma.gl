@@ -6,15 +6,16 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainLineOfSight,
   GPUTerrainViewshed,
-  getGPUTerrainSightLineParameterValues,
+  getGPUTerrainLineOfSightParameterValues,
   getGPUTerrainViewshedParameterValues,
-  type GPUTerrainSightLineSettings,
+  type GPUTerrainLineOfSightSettings,
   type GPUTerrainSightLineTraversal
 } from '../../../src/gpu-terrain/terrain-analysis';
 import {
@@ -25,22 +26,23 @@ import {
   readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type LineOfSightRun = {codes: number[]; clearance: number[]};
 
 async function runLineOfSight(
   device: Device,
   elevation: Float32Array,
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   pairs: Float32Array,
-  settings: GPUTerrainSightLineSettings,
+  settings: GPUTerrainLineOfSightSettings,
   options: {
     traversal?: GPUTerrainSightLineTraversal;
     pairHeights?: Float32Array;
     clearance?: boolean;
   } = {}
 ): Promise<LineOfSightRun> {
+  const {width, height} = grid;
   const pairCount = pairs.length / 4;
   const elevationBuffer = createInputBuffer(device, elevation);
   const pairBuffer = createInputBuffer(device, pairs);
@@ -53,13 +55,12 @@ async function runLineOfSight(
     id: 'los-settings',
     format: 'float32',
     length: 12,
-    values: getGPUTerrainSightLineParameterValues(settings)
+    values: getGPUTerrainLineOfSightParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-line-of-sight-test'});
   graph.add(
     new GPUTerrainLineOfSight({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -72,13 +73,15 @@ async function runLineOfSight(
       pairHeights: heightBuffer
         ? importGraphBuffer(graph, 'heights', heightBuffer, 'float32x2', pairCount)
         : undefined,
-      settings: settingsBuffer.importToGraph(graph),
+      parameters: settingsBuffer.importToGraph(graph),
       traversal: options.traversal,
-      visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pairCount),
-      clearance:
-        options.clearance === false
-          ? undefined
-          : importGraphBuffer(graph, 'clearance', clearanceBuffer, 'float32', pairCount)
+      output: {
+        visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pairCount),
+        clearance:
+          options.clearance === false
+            ? undefined
+            : importGraphBuffer(graph, 'clearance', clearanceBuffer, 'float32', pairCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -104,32 +107,32 @@ async function runLineOfSight(
 async function runViewshedCodes(
   device: Device,
   elevation: Float32Array,
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   observer: [number, number],
-  settings: GPUTerrainSightLineSettings
+  settings: GPUTerrainLineOfSightSettings
 ): Promise<number[]> {
-  const pixelCount = width * height;
+  const pixelCount = grid.width * grid.height;
   const elevationBuffer = createInputBuffer(device, elevation);
   const visibilityBuffer = createOutputBuffer(device, pixelCount);
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainViewshedParameterValues({
-      observer,
-      observerHeight: settings.observerHeight,
-      targetHeight: settings.targetHeight,
-      maxDistance: settings.maxDistance,
-      cellSize: settings.cellSize,
-      curvatureCoefficient: settings.curvatureCoefficient
-    })
+    values: getGPUTerrainViewshedParameterValues(
+      {
+        observer,
+        observerHeight: settings.observerHeight,
+        targetHeight: settings.targetHeight,
+        maximumDistance: settings.maximumDistance,
+        curvatureCoefficient: settings.curvatureCoefficient
+      },
+      grid
+    )
   });
   const graph = new GPUCommandGraph(device, {id: 'los-reference-viewshed'});
   graph.add(
     new GPUTerrainViewshed({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -138,8 +141,10 @@ async function runViewshedCodes(
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
         }
       },
-      settings: settingsBuffer.importToGraph(graph),
-      visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+      parameters: settingsBuffer.importToGraph(graph),
+      output: {
+        visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -154,18 +159,17 @@ async function runViewshedCodes(
 
 const WIDTH = 30;
 const HEIGHT = 22;
+const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 30});
+const STRIP_GRID = makeGPURasterMetadata({width: 12, height: 1, cellSize: 1});
 
 it('GPUTerrainLineOfSight reproduces the viewshed codes for every pixel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createFractalTerrain(WIDTH, HEIGHT, 5, 40);
-  const settings: GPUTerrainSightLineSettings = {
+  const settings: GPUTerrainLineOfSightSettings = {
     observerHeight: 1.7,
     targetHeight: 0.5,
-    maxDistance: 600,
-    cellSize: [30, 30],
+    maximumDistance: 600,
     curvatureCoefficient: 2e-5
   };
   const observer: [number, number] = [12.25, 9.5];
@@ -173,9 +177,9 @@ it('GPUTerrainLineOfSight reproduces the viewshed codes for every pixel', async 
   for (let index = 0; index < WIDTH * HEIGHT; index++) {
     pairs.set([observer[0], observer[1], index % WIDTH, Math.floor(index / WIDTH)], index * 4);
   }
-  const expected = await runViewshedCodes(device, terrain, WIDTH, HEIGHT, observer, settings);
-  const march = await runLineOfSight(device, terrain, WIDTH, HEIGHT, pairs, settings);
-  const pyramid = await runLineOfSight(device, terrain, WIDTH, HEIGHT, pairs, settings, {
+  const expected = await runViewshedCodes(device, terrain, GRID, observer, settings);
+  const march = await runLineOfSight(device, terrain, GRID, pairs, settings);
+  const pyramid = await runLineOfSight(device, terrain, GRID, pairs, settings, {
     traversal: 'pyramid'
   });
   expect(march.codes).toEqual(expected);
@@ -197,7 +201,7 @@ it('GPUTerrainLineOfSight reproduces the viewshed codes for every pixel', async 
     }
   }
   // Without the clearance output the early exit gives the same codes.
-  const early = await runLineOfSight(device, terrain, WIDTH, HEIGHT, pairs, settings, {
+  const early = await runLineOfSight(device, terrain, GRID, pairs, settings, {
     clearance: false
   });
   expect(early.codes).toEqual(march.codes);
@@ -205,13 +209,11 @@ it('GPUTerrainLineOfSight reproduces the viewshed codes for every pixel', async 
 
 it('GPUTerrainLineOfSight applies pair heights, noData and the float64 oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 12 x 1 strip with a wall of 3 at column 6 and an eye of 1 at column 0.
   const strip = new Float32Array(12);
   strip[6] = 3;
-  const settings: GPUTerrainSightLineSettings = {observerHeight: 1, cellSize: [1, 1]};
+  const settings: GPUTerrainLineOfSightSettings = {observerHeight: 1};
   const pairs = Float32Array.from([
     0,
     0,
@@ -239,21 +241,23 @@ it('GPUTerrainLineOfSight applies pair heights, noData and the float64 oracle', 
     0 // behind the wall, with a tall observer
   ]);
   const pairHeights = Float32Array.from([1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 50, 0]);
-  const run = await runLineOfSight(device, strip, 12, 1, pairs, settings, {pairHeights});
+  const run = await runLineOfSight(device, strip, STRIP_GRID, pairs, settings, {pairHeights});
   expect(run.codes).toEqual([V.hidden, V.visible, V.visible, V.noData, V.noData, V.visible]);
   expect(run.clearance[0]).toBeLessThan(0);
   expect(run.clearance[1]).toBeGreaterThan(0);
   expect(run.clearance[3]).toBeNaN();
-  const limited = await runLineOfSight(device, strip, 12, 1, pairs, {...settings, maxDistance: 5});
+  const limited = await runLineOfSight(device, strip, STRIP_GRID, pairs, {
+    ...settings,
+    maximumDistance: 5
+  });
   expect(limited.codes.slice(0, 2)).toEqual([V.outOfRange, V.visible]);
 
   if (isSoftwareDevice(device)) {
     return;
   }
   const terrain = createFractalTerrain(WIDTH, HEIGHT, 21, 40);
-  const toleranceSettings: GPUTerrainSightLineSettings = {
+  const toleranceSettings: GPUTerrainLineOfSightSettings = {
     observerHeight: 2,
-    cellSize: [30, 30],
     curvatureCoefficient: 2e-5,
     toleranceMeters: 2,
     tolerancePerKilometer: 1,
@@ -269,10 +273,10 @@ it('GPUTerrainLineOfSight applies pair heights, noData and the float64 oracle', 
     );
   }
   const list = Float32Array.from(pairList);
-  const gpu = await runLineOfSight(device, terrain, WIDTH, HEIGHT, list, toleranceSettings, {
+  const gpu = await runLineOfSight(device, terrain, GRID, list, toleranceSettings, {
     traversal: 'pyramid'
   });
-  const settingValues = getGPUTerrainSightLineParameterValues(toleranceSettings);
+  const settingValues = getGPUTerrainLineOfSightParameterValues(toleranceSettings, GRID);
   let mismatches = 0;
   for (let index = 0; index < 200; index++) {
     const expected = computeTerrainSightLine(

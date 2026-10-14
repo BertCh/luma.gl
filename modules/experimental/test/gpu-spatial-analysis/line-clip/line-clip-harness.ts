@@ -175,22 +175,24 @@ export async function runLineClip(
       mode: options.mode,
       intersectionCapacity: options.intersectionCapacity ?? 2048,
       candidateCapacity: options.candidateCapacity ?? 4096,
-      pieces: {
-        geometry: {
-          kind: 'lines',
-          positions: positions.view,
-          lineOffsets: offsets.view
+      output: {
+        pieces: {
+          geometry: {
+            kind: 'lines',
+            positions: positions.view,
+            lineOffsets: offsets.view
+          },
+          sourceIds: lineIds.view,
+          status: {
+            count: count.view,
+            overflow: overflow.view,
+            requiredCount: requiredCount.view,
+            vertexCount: vertexCount.view,
+            requiredVertexCount: requiredVertexCount.view
+          }
         },
-        sourceIds: lineIds.view,
-        status: {
-          count: count.view,
-          overflow: overflow.view,
-          requiredCount: requiredCount.view
-        },
-        vertexCount: vertexCount.view,
-        requiredVertexCount: requiredVertexCount.view
-      },
-      uncertainCount: uncertainCount.view
+        status: {uncertainCount: uncertainCount.view}
+      }
     })
   );
   const compiled = graph.compile();
@@ -272,16 +274,20 @@ export async function runSharedPaths(
         lineOffsets: input('right-offsets', rightArrays.lineOffsets, 'uint32')
       },
       intersectionCapacity: options.intersectionCapacity ?? 1024,
-      runs: {
-        leftLineIds: leftLineIds.view,
-        rightLineIds: rightLineIds.view,
-        forward: forward.view,
-        offsets: offsets.view,
-        positions: positions.view,
-        count: count.view,
-        vertexCount: vertexCount.view,
-        overflow: overflow.view,
-        requiredCount: requiredCount.view
+      output: {
+        runs: {
+          leftLineIds: leftLineIds.view,
+          rightLineIds: rightLineIds.view,
+          forward: forward.view,
+          offsets: offsets.view,
+          positions: positions.view
+        },
+        status: {
+          count: count.view,
+          vertexCount: vertexCount.view,
+          overflow: overflow.view,
+          requiredCount: requiredCount.view
+        }
       }
     })
   );

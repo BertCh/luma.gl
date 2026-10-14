@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test} from 'vitest';
+import {describe, expect, test, vi} from 'vitest';
+import {Computation} from '@luma.gl/engine';
+import type {Buffer, Device} from '@luma.gl/core';
+import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
 import {
   GraphBufferHandle,
   GraphDataView,
@@ -19,7 +22,7 @@ import {
 } from '@luma.gl/experimental/gpu-raster';
 
 type GraphOwner = GraphBufferHandle['graph'];
-type RecordingGraph = GPUCommandGraph & {passes: GPUCommandGraphComputeNode[]};
+type RecordingGraph = GPUCommandGraph & {passes: GPUCommandGraphComputeNode<void>[]};
 
 describe('GPURasterBandMath contributor validation', () => {
   test('accepts every operation and preserves independent source calibration', () => {
@@ -157,6 +160,52 @@ describe('GPURasterBandMath contributor validation', () => {
     );
   });
 
+  test('sets bindings only when a resolved buffer changes', () => {
+    const graph = makeRecordingGraph('band-math-bindings');
+    const props = makeBandMathProps(graph);
+    new GPURasterBandMath(props).addToGraph(graph);
+    const device = createNullWebGPUDevice();
+    Object.defineProperty(device, 'props', {
+      value: {...device.props, _cacheShaders: false, _cachePipelines: false}
+    });
+    Object.defineProperty(device, 'createComputePipeline', {
+      value: (pipelineProps: {id?: string}) => ({
+        id: pipelineProps.id ?? '',
+        hash: '',
+        destroy: () => {}
+      })
+    });
+    const setBindings = vi.spyOn(Computation.prototype, 'setBindings').mockImplementation(() => {});
+    const dispatch = vi.spyOn(Computation.prototype, 'dispatch').mockImplementation(() => {});
+    try {
+      const node = graph.passes[0].compile({device} as unknown as {device: Device}) as {
+        encode: (context: unknown) => void;
+      };
+      const buffers = new Map<unknown, Buffer>();
+      const encode = () =>
+        node.encode({
+          computePass: {},
+          getBuffer: (view: unknown) => {
+            if (!buffers.has(view)) buffers.set(view, {byteLength: 1024} as unknown as Buffer);
+            return buffers.get(view)!;
+          }
+        });
+
+      encode();
+      encode();
+      expect(setBindings, 'unchanged buffers keep the bind group').toHaveBeenCalledTimes(1);
+      expect(dispatch).toHaveBeenCalledTimes(2);
+
+      buffers.set(props.output, {byteLength: 1024} as unknown as Buffer);
+      encode();
+      expect(setBindings, 'a replaced output buffer rebinds').toHaveBeenCalledTimes(2);
+    } finally {
+      setBindings.mockRestore();
+      dispatch.mockRestore();
+      device.destroy();
+    }
+  });
+
   test('declares all graph hazards without encoding or submitting commands', () => {
     const graph = makeRecordingGraph('band-math-graph');
     const props = makeBandMathProps(graph, 'normalized-difference');
@@ -170,7 +219,7 @@ describe('GPURasterBandMath contributor validation', () => {
 
     expect(graph.passes).toHaveLength(1);
     expect(graph.passes[0].id).toBe(contributor.id);
-    expect(graph.passes[0].resources.map(resource => resource.usage)).toEqual([
+    expect(graph.passes[0].resources!.map(resource => resource.usage)).toEqual([
       'storage-read',
       'storage-read',
       'storage-write',
@@ -252,7 +301,7 @@ function makeRecordingGraph(
   id: string,
   limitOverrides: Partial<GPUCommandGraph['device']['limits']> = {}
 ): RecordingGraph {
-  const passes: GPUCommandGraphComputeNode[] = [];
+  const passes: GPUCommandGraphComputeNode<void>[] = [];
   return {
     id,
     device: {
@@ -266,7 +315,7 @@ function makeRecordingGraph(
       }
     },
     passes,
-    addComputePass(pass: GPUCommandGraphComputeNode): void {
+    addComputePass(pass: GPUCommandGraphComputeNode<void>): void {
       passes.push(pass);
     }
   } as unknown as RecordingGraph;

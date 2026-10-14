@@ -6,7 +6,8 @@ import {expect, it} from 'vitest';
 import {existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 import * as spatialAnalysis from '../../../src/gpu-spatial-analysis/index';
-import {GPU_SPATIAL_ANALYSIS_CONTRACT_NAMES} from '../../../src/gpu-spatial-analysis/contracts/index';
+import {GPUTerrainPeakProminence} from '../../../src/gpu-terrain';
+import {GPU_SPATIAL_ANALYSIS_CONTRACT_NAMES} from '../../../src/analysis-core/contracts/index';
 import {
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   GPU_SPATIAL_ANALYSIS_AUDIT,
@@ -22,7 +23,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/ontology/index';
 
 it('catalogues every public contributor and recipe exactly once', () => {
-  const publicOperators = Object.entries(spatialAnalysis)
+  const publicOperators = Object.entries({...spatialAnalysis, GPUTerrainPeakProminence})
     .filter(
       ([name, value]) =>
         typeof value === 'function' && (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name))
@@ -38,7 +39,7 @@ it('catalogues every public contributor and recipe exactly once', () => {
 });
 
 it('describes every public contributor and recipe at operator level', () => {
-  const publicOperators = Object.entries(spatialAnalysis)
+  const publicOperators = Object.entries({...spatialAnalysis, GPUTerrainPeakProminence})
     .filter(
       ([name, value]) =>
         typeof value === 'function' && (/^GPU[A-Z]/.test(name) || /^add[A-Z]/.test(name))
@@ -170,3 +171,26 @@ function definedCapability(id: string) {
   expect(capability).toBeDefined();
   return capability;
 }
+
+it('registers terrain prominence in its actual package with the independent reference', () => {
+  const operator = getGPUSpatialAnalysisOperator('GPUTerrainPeakProminence');
+  expect(operator).toMatchObject({
+    package: '@luma.gl/experimental/gpu-terrain',
+    primaryCapability: 'terrain-peak-prominence',
+    inputs: ['surface'],
+    outputs: ['surface', 'attributes'],
+    coordinateModels: ['grid'],
+    cardinality: 'source-sized',
+    deterministic: true,
+    readback: 'none',
+    evidence: {
+      status: 'partial',
+      contract: 'GPUTerrainPeakProminenceOutput',
+      documentation: 'docs/api-reference/experimental/gpu-terrain.md',
+      correctnessOracle: 'modules/experimental/test/oracles/terrain-peak-prominence.json'
+    }
+  });
+  expect(getGPUSpatialAnalysisCapabilityForOperator('GPUHierarchicalDensityClustering')?.id).toBe(
+    'group-and-regional-analysis'
+  );
+});

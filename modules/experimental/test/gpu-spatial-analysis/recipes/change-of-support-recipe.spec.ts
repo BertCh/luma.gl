@@ -4,7 +4,8 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {getGPUPolygonRasterizationExtentValues} from '../../../src/gpu-raster/polygon-rasterization/index';
+import {getGPUPolygonRasterizationParameterValues} from '../../../src/gpu-raster/polygon-rasterization/index';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {addChangeOfSupportRecipe} from '../../../src/gpu-spatial-analysis/recipes/change-of-support-recipe';
 import {
   computeArealOracle,
@@ -12,6 +13,7 @@ import {
   NO_ZONE
 } from '../areal-interpolation/areal-interpolation-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Rectangle = [number, number, number, number];
 
@@ -24,6 +26,8 @@ const NUMPY_TRANSFERRED_FRACTIONS = [
 
 const WIDTH = 24;
 const HEIGHT = 18;
+// Unit cells from the origin, row 0 at the smallest y.
+const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, rowDirection: 'north'});
 
 /** Rectangles `[x0, y0, x1, y1]` with integer corners as a polygon feature set. */
 function createRectangleSystem(rectangles: Rectangle[]) {
@@ -61,9 +65,7 @@ function rasterize(rectangles: Rectangle[]): Uint32Array {
 
 it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by area', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 2 x 2 source blocks and 3 x 2 target blocks that straddle them; the target system leaves a gap.
   const source = createRectangleSystem([
     [0, 0, 12, 9],
@@ -105,7 +107,8 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
     const fractions = fixture.output('source-fractions', 'float32', 4);
     const invalidCount = fixture.output('invalid-count', 'uint32', 1);
     const toZones = (system: ReturnType<typeof createRectangleSystem>, name: string) => ({
-      polygonPositions: fixture.input(
+      kind: 'polygons' as const,
+      positions: fixture.input(
         `${name}-positions`,
         system.positions,
         'float32x2',
@@ -132,11 +135,10 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
       crossingCapacity: 1024
     });
     const recipe = addChangeOfSupportRecipe(fixture.graph, {
-      width: WIDTH,
-      height: HEIGHT,
-      extent: fixture.input(
-        'extent',
-        getGPUPolygonRasterizationExtentValues(0, 0, 1, 1),
+      grid: GRID,
+      parameters: fixture.input(
+        'parameters',
+        getGPUPolygonRasterizationParameterValues(GRID),
         'float32',
         4
       ),
@@ -151,13 +153,15 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
           weights: weights.view
         },
         intensiveWeightValues: intensiveWeightValues.view,
-        overflow: overflow.view,
-        requiredCount: totalPairs.view,
         extensiveValues: extensive.view,
         intensiveValues: intensive.view,
         sourceAreas: sourceAreas.view,
         sourceTransferredFractions: fractions.view,
-        invalidCount: invalidCount.view
+        status: {
+          overflow: overflow.view,
+          requiredCount: totalPairs.view,
+          invalidCount: invalidCount.view
+        }
       }
     });
     expect(recipe.contributors.length).toBe(5);

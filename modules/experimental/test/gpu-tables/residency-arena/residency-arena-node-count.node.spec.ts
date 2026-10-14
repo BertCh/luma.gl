@@ -43,8 +43,10 @@ function countNodes(chunkCount: number, tileCount: number) {
     return contributor.getCommandNodes(graph).length;
   };
   const scalarOutputs = (graph: GPUCommandGraph) => ({
-    count: createTransientView(graph, 'count', 'uint32', 1),
-    overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+    status: {
+      count: createTransientView(graph, 'count', 'uint32', 1),
+      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+    }
   });
 
   // (a) chunked masks (time-style + live), chunked ids output: the V3 shape.
@@ -90,9 +92,9 @@ function countNodes(chunkCount: number, tileCount: number) {
       ],
       output: {
         ids: createTransientView(graph, 'ids', 'uint32', ROW_COUNT),
-        ...scalarOutputs(graph)
-      },
-      drawInstanceCount: createTransientView(graph, 'draw', 'uint32', 1)
+        ...scalarOutputs(graph),
+        drawInstanceCount: createTransientView(graph, 'draw', 'uint32', 1)
+      }
     });
   });
   const arenaRowSelection = count(graph => {

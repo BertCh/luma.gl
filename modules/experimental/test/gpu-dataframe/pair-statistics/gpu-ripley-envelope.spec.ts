@@ -16,6 +16,7 @@ import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harne
 import {createRandom} from './pair-statistics-oracle';
 import {computeRipleyOnCPU} from './ripley-oracle';
 import {computeRipleyEnvelopeOnCPU, simulateCSROnCPU} from './ripley-envelope-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 const RADIUS_COUNT = 4;
@@ -50,7 +51,7 @@ function createHarness(device: Device, positions: Float32Array) {
         parameters: views.parameters,
         gridSize: [16, 16],
         radiusCount: RADIUS_COUNT,
-        k: views.outputs.k as never
+        output: {k: views.outputs.k as never}
       });
       const envelope = new GPURipleyEnvelope({
         positions: views.positions,
@@ -61,12 +62,14 @@ function createHarness(device: Device, positions: Float32Array) {
         simulationCount: SIMULATION_COUNT,
         statistic: 'k',
         observedK: views.outputs.k as never,
-        lower: views.outputs.lower as never,
-        upper: views.outputs.upper as never,
-        globalLower: views.outputs.globalLower as never,
-        globalUpper: views.outputs.globalUpper as never,
-        theoretical: views.outputs.theoretical as never,
-        statistics: views.outputs.statistics as never
+        output: {
+          lower: views.outputs.lower as never,
+          upper: views.outputs.upper as never,
+          globalLower: views.outputs.globalLower as never,
+          globalUpper: views.outputs.globalUpper as never,
+          theoretical: views.outputs.theoretical as never,
+          statistics: views.outputs.statistics as never
+        }
       });
       return {
         getCommandNodes: graph => [
@@ -110,9 +113,7 @@ function createLatticePattern(): Float32Array {
 
 it('GPURipleyEnvelope matches the CPU mirror of its simulations and ranking', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createCSRPattern();
   const harness = createHarness(device, positions);
   try {
@@ -153,6 +154,10 @@ it('GPURipleyEnvelope matches the CPU mirror of its simulations and ranking', as
     expect(getFloatBits(again.statistics)).toEqual(getFloatBits(result.statistics));
     const other = await harness.run(getGPURipleyParameterValues({...FRAME, seed: SEED + 1}));
     expect(getFloatBits(other.upper)).not.toEqual(getFloatBits(result.upper));
+    // The seed is a uint32 word: 2^24 and 2^24 + 1 round to one float32, but are two streams.
+    const low = await harness.run(getGPURipleyParameterValues({...FRAME, seed: 2 ** 24}));
+    const high = await harness.run(getGPURipleyParameterValues({...FRAME, seed: 2 ** 24 + 1}));
+    expect(getFloatBits(high.statistics)).not.toEqual(getFloatBits(low.statistics));
   } finally {
     harness.destroy();
   }
@@ -160,9 +165,7 @@ it('GPURipleyEnvelope matches the CPU mirror of its simulations and ranking', as
 
 it('GPURipleyEnvelope keeps a CSR pattern inside the global envelope and rejects a regular one', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [name, positions, inside] of [
     ['csr', createCSRPattern(), true],
     ['lattice', createLatticePattern(), false]

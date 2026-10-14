@@ -4,9 +4,9 @@
 
 import {expect, it} from 'vitest';
 import {
-  getGPUTimeWindowWordParameterValues,
+  getGPUTimeWindowFilterWordParameterValues,
   getInt64TimeWords,
-  GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
   joinTimeWords,
   splitTimeWords
 } from '../../../src/gpu-dataframe/time-window-filter';
@@ -87,42 +87,42 @@ it('getInt64TimeWords is a zero-copy view of the same bytes', () => {
   ]);
 });
 
-it('getGPUTimeWindowWordParameterValues packs words, fractions, and fades', () => {
-  const values = getGPUTimeWindowWordParameterValues({
+it('getGPUTimeWindowFilterWordParameterValues packs words, fractions, and fades', () => {
+  const values = getGPUTimeWindowFilterWordParameterValues({
     start: 0x1_0000_0002n,
     end: 5_000_000_000.5,
     startFadeDuration: 2,
     endFadeDuration: 4
   });
   expect(values).toBeInstanceOf(Uint32Array);
-  expect(values.length).toBe(GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH);
+  expect(values.length).toBe(GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH);
   expect(Array.from(values.subarray(0, 4))).toEqual([2, 1, 5_000_000_000 % 2 ** 32, 1]);
   const floats = new Float32Array(values.buffer, values.byteOffset, 8);
   expect(Array.from(floats.subarray(4))).toEqual([0, 0.5, 2, 4]);
 
   const target = new Uint32Array(10);
-  expect(getGPUTimeWindowWordParameterValues({start: 1, end: 2}, target)).toBe(target);
+  expect(getGPUTimeWindowFilterWordParameterValues({start: 1, end: 2}, target)).toBe(target);
 });
 
-it('getGPUTimeWindowWordParameterValues validates its input', () => {
-  expect(() => getGPUTimeWindowWordParameterValues({start: 0, end: 1}, new Uint32Array(7))).toThrow(
-    /must hold 8/
-  );
+it('getGPUTimeWindowFilterWordParameterValues validates its input', () => {
   expect(() =>
-    getGPUTimeWindowWordParameterValues({
+    getGPUTimeWindowFilterWordParameterValues({start: 0, end: 1}, new Uint32Array(7))
+  ).toThrow(/must hold 8/);
+  expect(() =>
+    getGPUTimeWindowFilterWordParameterValues({
       start: 0,
       end: 1,
       startFadeDuration: -1
     })
   ).toThrow();
   expect(() =>
-    getGPUTimeWindowWordParameterValues({
+    getGPUTimeWindowFilterWordParameterValues({
       start: 0,
       end: 1,
       endFadeDuration: NaN
     })
   ).toThrow();
-  expect(() => getGPUTimeWindowWordParameterValues({start: NaN, end: 1})).toThrow();
+  expect(() => getGPUTimeWindowFilterWordParameterValues({start: NaN, end: 1})).toThrow();
 });
 
 // Review B-07: ordering by the sign of the wrapped difference is wrong when |a - b| >= 2^63, so an

@@ -3,13 +3,25 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {WgslReflect} from 'wgsl_reflect';
 import {expect, it} from 'vitest';
 import {
   GPUBufferSurface,
   GPUPolygonOverlay,
   type GPUPolygonOverlayOutput
 } from '../../../src/gpu-spatial-analysis';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createPointerJumpNodes,
+  getPointerJumpRoundCount
+} from '../../../src/gpu-spatial-analysis/polygon-overlay/overlay-face-labelling-wgsl';
+import {
+  CORE_PRIVATE_MEMORY_LIMIT_BYTES,
+  countDistinctPipelines,
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getPrivateMemoryBytes
+} from '../../utils/gpu-contributor-test-utils';
+import {getUndeclaredCalls} from '../segment-intersection/wgsl-call-sites';
 
 let serial = 0;
 
@@ -48,7 +60,6 @@ function output(graph: GPUCommandGraph, vertices = 64, rings = 16): GPUPolygonOv
       ringOffsets: view(graph, 'uint32', rings + 1),
       sourceIds
     },
-    sourceIds,
     status: status(),
     boundary: {
       endpoints: view(graph, 'float32x4', 64),
@@ -75,6 +86,8 @@ it('GPUPolygonOverlay builds a noded Boolean boundary and compact polygon surfac
   expect(ids).toContain('polygon-overlay-emit-boundary');
   expect(ids.some(id => id.startsWith('polygon-overlay-assemble-'))).toBe(true);
   expect(ids.at(-1)).toBe('polygon-overlay-publish');
+  expect(ids).not.toContain('polygon-overlay-assemble-cancel');
+  expect(ids).not.toContain('polygon-overlay-publish-required');
 });
 
 it('GPUPolygonOverlay enforces unary dissolve and shared canonical source IDs', () => {
@@ -100,8 +113,10 @@ it('GPUPolygonOverlay enforces unary dissolve and shared canonical source IDs', 
         output: output(graph)
       })
   ).toThrow(/accepts only the left operand/);
+  // The output has no top-level `sourceIds`: `geometry.sourceIds` is the only source-ID view, so only
+  // its length (one entry per ring) is checked.
   const mismatched = output(graph);
-  mismatched.sourceIds = view(graph, 'uint32', 16);
+  mismatched.geometry.sourceIds = view(graph, 'uint32', 15);
   expect(
     () =>
       new GPUPolygonOverlay({
@@ -111,7 +126,7 @@ it('GPUPolygonOverlay enforces unary dissolve and shared canonical source IDs', 
         vertexTolerance: 1e-5,
         output: mismatched
       })
-  ).toThrow(/must be the same view/);
+  ).toThrow(/share one ring capacity/);
 });
 
 it('GPUBufferSurface composes joins, line caps and topology repair', () => {
@@ -147,6 +162,134 @@ it('GPUBufferSurface composes joins, line caps and topology repair', () => {
   });
   const polygonIds = polygonBuffer.getCommandNodes(polygonGraph).map(node => node.id);
   expect(polygonIds).toContain('buffer-surface-orient-orientation');
-  expect(polygonIds).toContain('buffer-surface-offset-generate');
+  expect(polygonIds).toContain('buffer-surface-stroke-left-offset-generate');
   expect(polygonIds.some(id => id.startsWith('buffer-surface-repair-assemble-'))).toBe(true);
+});
+
+function createOverlay(
+  nodedSegments: number,
+  operation: 'intersection' | 'dissolve' = 'intersection'
+) {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: `overlay-${nodedSegments}`});
+  const contributor = new GPUPolygonOverlay({
+    left: polygon(graph),
+    right: operation === 'dissolve' ? undefined : polygon(graph),
+    operation,
+    capacity: {intersections: 32, nodedSegments},
+    vertexTolerance: 0.25,
+    output: output(graph)
+  });
+  return {graph, nodes: contributor.getCommandNodes(graph)};
+}
+
+it('GPUPolygonOverlay labels faces by ray shoots and pointer jumping, without ring membership', () => {
+  const {nodes} = createOverlay(64);
+  const ids = nodes.map(node => node.id);
+  const order = [
+    'polygon-overlay-ring-polygons',
+    'polygon-overlay-piece-canonical',
+    'polygon-overlay-piece-keys',
+    'polygon-overlay-sort-gather',
+    'polygon-overlay-group-flags',
+    'polygon-overlay-group-heads',
+    'polygon-overlay-ray-shoot-1',
+    'polygon-overlay-group-coverage',
+    'polygon-overlay-ray-shoot-2',
+    'polygon-overlay-classify-boundary',
+    'polygon-overlay-emit-boundary',
+    'polygon-overlay-lattice-to-world',
+    'polygon-overlay-publish'
+  ].map(id => ids.indexOf(id));
+  expect(
+    order.every(index => index >= 0),
+    JSON.stringify(order)
+  ).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // Ray shoots and pointer jumping after the sort; no per-ring membership or source-segment pass.
+  expect(ids.some(id => /membership|ring-bounds|source-segments/.test(id))).toBe(false);
+  const rounds = getPointerJumpRoundCount(64);
+  expect(ids.filter(id => id.startsWith('polygon-overlay-jump-1-round-'))).toHaveLength(rounds);
+  expect(ids.filter(id => id.startsWith('polygon-overlay-jump-2-round-'))).toHaveLength(rounds);
+});
+
+it('GPUPolygonOverlay kernels parse, call only declared functions and respect core limits', () => {
+  for (const operation of ['intersection', 'dissolve'] as const) {
+    const {nodes} = createOverlay(64, operation);
+    for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+      const {source} = kernel;
+      expect(() => new WgslReflect(source), kernel.id).not.toThrow();
+      // workgroupUniformLoad is a WGSL builtin the helper does not know.
+      expect(
+        getUndeclaredCalls(source).filter(name => name !== 'workgroupUniformLoad'),
+        `${kernel.id} undeclared calls`
+      ).toEqual([]);
+      expect(
+        source.match(/var<storage/g)?.length ?? 0,
+        `${kernel.id} bindings`
+      ).toBeLessThanOrEqual(8);
+      expect(getPrivateMemoryBytes(source), `${kernel.id} private memory`).toBeLessThanOrEqual(
+        CORE_PRIVATE_MEMORY_LIMIT_BYTES
+      );
+      // Reserved WGSL words that wgsl_reflect accepts (the noding kernels have their own audit).
+      if (!kernel.id.includes('-noding-')) {
+        expect(source, kernel.id).not.toMatch(/\b(?:target|from|sample|filter)\s*[:=)]/);
+      }
+    }
+  }
+});
+
+it('GPUPolygonOverlay pointer-jump rounds share pipelines whatever the round count (library rule 12)', () => {
+  // The jump kernels depend on the group capacity and the component count only: every round of a
+  // level uses one pipeline, the two levels (one and two components) two, plus their initializers.
+  const jumpPipelines = (nodedSegments: number) => {
+    const {nodes} = createOverlay(nodedSegments);
+    return countDistinctPipelines(
+      nodes.filter(node => node.id.startsWith('polygon-overlay-jump-'))
+    );
+  };
+  expect(getPointerJumpRoundCount(64)).not.toBe(getPointerJumpRoundCount(128));
+  // Per level: the initializer and the round kernel.
+  expect(jumpPipelines(64)).toBe(4);
+  expect(jumpPipelines(128)).toBe(4);
+  // Direct: the same views, three rounds and four rounds.
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'jump-rounds'});
+  const build = (rounds: number) =>
+    createPointerJumpNodes(graph, {
+      id: `jump-${rounds}`,
+      operation: 'GPUPolygonOverlay',
+      parents: createTransientView(graph, `parents-${rounds}`, 'uint32', 32),
+      values: createTransientView(graph, `values-${rounds}`, 'uint32', 32),
+      componentCount: 1,
+      rounds
+    }).nodes;
+  const three = build(3);
+  const four = build(4);
+  expect(three).toHaveLength(3);
+  expect(four).toHaveLength(4);
+  expect(countDistinctPipelines(three)).toBe(1);
+  expect(countDistinctPipelines(four)).toBe(1);
+});
+
+it('GPUPolygonOverlay bounds hot pixels by a quarter of the segment table', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'overlay-limit'});
+  expect(() =>
+    new GPUPolygonOverlay({
+      left: polygon(graph),
+      right: polygon(graph),
+      operation: 'union',
+      capacity: {intersections: 1048576, nodedSegments: 64},
+      vertexTolerance: 0.25,
+      output: output(graph)
+    }).getCommandNodes(graph)
+  ).toThrow(/positions rows \+ rings \+ capacity\.intersections must be at most 1048576/);
+});
+
+it('GPUPolygonOverlay builds with the smallest capacities', () => {
+  for (const nodedSegments of [1, 2, 3]) {
+    const {nodes} = createOverlay(nodedSegments);
+    expect(nodes.length).toBeGreaterThan(40);
+    for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+      expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
+    }
+  }
 });

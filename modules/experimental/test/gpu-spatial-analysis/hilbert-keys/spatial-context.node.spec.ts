@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUHilbertKeys} from '../../../src/gpu-spatial-analysis/hilbert-keys';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -32,7 +32,7 @@ it('GPUHilbertKeys accepts planar and plain longitude/latitude only', () => {
   const create = (spatialContext?: GPUSpatialContext) =>
     new GPUHilbertKeys({
       spatialContext,
-      points: view(graph, 'float32x2', 8),
+      positions: view(graph, 'float32x2', 8),
       output: {keys: view(graph, 'uint32', 8)}
     });
   const plain: GPUSpatialContext = {coordinateSpace: 'longitude-latitude', metric: 'none'};

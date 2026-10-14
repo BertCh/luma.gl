@@ -14,15 +14,14 @@ import {
 import {createGeometryFixture, expectClose} from '../outline-geometry/geometry-fixture';
 import {generateGrid} from './grid-generator-oracle';
 import {GEOPANDAS_FLAT_HEX, GEOPANDAS_INTERSECT_MASK} from './grid-generator-geopandas-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GRID_TYPES: GPUGridType[] = ['square', 'hex', 'triangle', 'point'];
 
 for (const gridType of GRID_TYPES) {
   it(`GPUGridGenerator builds ${gridType} grids like the f64 oracle and moves per frame`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const columns = 7;
     const rows = 5;
     const cellCount = getGPUGridCellCount(gridType, columns, rows);
@@ -101,9 +100,7 @@ for (const gridType of GRID_TYPES) {
 
 it('GPUGridGenerator hexOrientation flat matches GeoPandas make_grid flat_topped cells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {origin, cellSize, columns, rows, cells} = GEOPANDAS_FLAT_HEX;
   const fixture = createGeometryFixture(device, {
     inputs: {},
@@ -160,9 +157,7 @@ it('GPUGridGenerator hexOrientation flat matches GeoPandas make_grid flat_topped
 for (const gridType of ['square', 'hex', 'hexFlat', 'triangle', 'point'] as const) {
   it(`GPUGridGenerator intersects mask matches shapely intersects for ${gridType} cells`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const {rings, origin, cellWidth, cellHeight, columns, rows, masks} = GEOPANDAS_INTERSECT_MASK;
     const isHex = gridType === 'hex' || gridType === 'hexFlat';
     const publicType: GPUGridType = isHex ? 'hex' : gridType;
@@ -178,7 +173,10 @@ for (const gridType of ['square', 'hex', 'hexFlat', 'triangle', 'point'] as cons
           values: Float32Array.from(rings.flat().flat()),
           format: 'float32x2'
         },
-        extentRingOffsets: {values: Uint32Array.from(ringOffsets), format: 'uint32'}
+        extentRingOffsets: {values: Uint32Array.from(ringOffsets), format: 'uint32'},
+        // One feature with one polygon owning every ring: the extent test is even-odd over all rings.
+        extentFeatureOffsets: {values: Uint32Array.of(0, 1), format: 'uint32'},
+        extentPolygonOffsets: {values: Uint32Array.of(0, rings.length), format: 'uint32'}
       },
       outputs: {
         ...(verticesPerCell > 0
@@ -194,7 +192,10 @@ for (const gridType of ['square', 'hex', 'hexFlat', 'triangle', 'point'] as cons
           rows,
           parameters,
           extent: {
+            kind: 'polygons',
             positions: inputs['extentPositions'] as never,
+            featureOffsets: inputs['extentFeatureOffsets'] as never,
+            polygonOffsets: inputs['extentPolygonOffsets'] as never,
             ringOffsets: inputs['extentRingOffsets'] as never
           },
           output: {

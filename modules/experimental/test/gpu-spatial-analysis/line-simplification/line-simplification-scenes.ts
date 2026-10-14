@@ -25,10 +25,10 @@ export function createScene(
   const rowCount = lines.reduce((sum, line) => sum + line.length, 0);
   const positions = new Float32Array(rowCount * 2);
   const timestamps = new Float32Array(rowCount);
-  const trackOffsets = new Uint32Array(lines.length + 1);
+  const lineOffsets = new Uint32Array(lines.length + 1);
   let row = 0;
   for (const [lineIndex, line] of lines.entries()) {
-    trackOffsets[lineIndex] = row;
+    lineOffsets[lineIndex] = row;
     for (const [x, y, t] of line) {
       positions[2 * row] = x;
       positions[2 * row + 1] = y;
@@ -36,8 +36,8 @@ export function createScene(
       row++;
     }
   }
-  trackOffsets[lines.length] = row;
-  return {positions, trackOffsets, timestamps, metric};
+  lineOffsets[lines.length] = row;
+  return {positions, lineOffsets, timestamps, metric};
 }
 
 /**

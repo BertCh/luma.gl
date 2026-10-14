@@ -35,6 +35,7 @@ import {
   type OracleCell
 } from './cell-aggregation-oracle';
 import {createPointPositions, createRandom} from './cell-aggregation-points';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SUM_SCALE = 65536;
 
@@ -114,9 +115,11 @@ function importTable(graph: GPUCommandGraph, prefix: string, table: TableBuffers
     ),
     minimums: importGraphBuffer(graph, `${prefix}-minimums`, table.minimums, 'float32', capacity),
     maximums: importGraphBuffer(graph, `${prefix}-maximums`, table.maximums, 'float32', capacity),
-    count: importGraphBuffer(graph, `${prefix}-count`, table.count, 'uint32', 1),
-    overflow: importGraphBuffer(graph, `${prefix}-overflow`, table.overflow, 'uint32', 1),
-    requiredCount: importGraphBuffer(graph, `${prefix}-total`, table.total, 'uint32', 1)
+    status: {
+      count: importGraphBuffer(graph, `${prefix}-count`, table.count, 'uint32', 1),
+      overflow: importGraphBuffer(graph, `${prefix}-overflow`, table.overflow, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, `${prefix}-total`, table.total, 'uint32', 1)
+    }
   };
 }
 
@@ -240,9 +243,7 @@ function createAggregation(fixture: Fixture, scene: AggregationScene) {
 
 it('GPUCellAggregation quadbin point keys and tables match the CPU reference', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const resolution of [0, 1, 7, 15, 16, 21, 26]) {
     const fixture = new Fixture(device);
     const positions = createPointPositions(100 + resolution, 6000, resolution);
@@ -278,9 +279,7 @@ it('GPUCellAggregation quadbin point keys and tables match the CPU reference', a
 
 it('GPUCellAggregation folds hot cells that span many accumulation tiles exactly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const random = createRandom(77);
   // 40000 rows: most share one coarse cell (runs of many 256-row tiles), the rest are spread so
@@ -324,9 +323,7 @@ it('GPUCellAggregation folds hot cells that span many accumulation tiles exactly
 
 it('GPUCellAggregation follows per-frame masks and values without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const resolution = 9;
   const positions = createPointPositions(7, 4000, resolution);
@@ -425,9 +422,7 @@ function packKeys(keys: readonly (bigint | null)[], highLow = false): Uint32Arra
 
 it('GPUCellAggregation aggregates pre-keyed H3 and Quadbin rows (CARTO columns)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(5);
   const scenes: {
     family: GPUCellFamily;
@@ -485,9 +480,7 @@ it('GPUCellAggregation aggregates pre-keyed H3 and Quadbin rows (CARTO columns)'
 
 it('GPUCellPyramid roll-ups equal direct aggregation and switch levels per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const {family, levels} of [
     {family: 'quadbin' as const, levels: [18, 14, 9, 3, 0]},
     {family: 'h3' as const, levels: [9, 6, 2]}
@@ -526,11 +519,13 @@ it('GPUCellPyramid roll-ups equal direct aggregation and switch levels per frame
         : importGraphBuffer(graph, 'cells', fixture.input(packKeys(keys)), 'uint32x2', rows),
       values: importGraphBuffer(graph, 'values', fixture.input(values), 'float32', rows),
       sumScale: SUM_SCALE,
-      levels: levels.map((resolution, levelIndex) => ({
-        resolution,
-        output: importTable(graph, `level-${levelIndex}`, tables[levelIndex])
-      })),
-      levelCounts
+      resolutions: levels,
+      output: {
+        levels: levels.map((_, levelIndex) =>
+          importTable(graph, `level-${levelIndex}`, tables[levelIndex])
+        ),
+        levelCounts
+      }
     });
     graph.add(pyramid);
     const compiled = graph.compile();
@@ -581,7 +576,9 @@ it('GPUCellPyramid roll-ups equal direct aggregation and switch levels per frame
         activeLevel: activeLevel.importToGraph(selectionGraph),
         levelFirstRows,
         output: {
-          count: importGraphBuffer(selectionGraph, 'count', countBuffer, 'uint32', 1),
+          status: {
+            count: importGraphBuffer(selectionGraph, 'count', countBuffer, 'uint32', 1)
+          },
           drawArguments: importGraphBuffer(selectionGraph, 'draw', drawBuffer, 'uint32', 4)
         }
       })
@@ -608,9 +605,7 @@ it('GPUCellPyramid roll-ups equal direct aggregation and switch levels per frame
 
 it('GPUCellAggregation and roll-ups clamp to capacity and propagate overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const levels = [10, 6, 1];
   const positions = createPointPositions(31, 3000, levels[0]);
@@ -626,10 +621,12 @@ it('GPUCellAggregation and roll-ups clamp to capacity and propagate overflow', a
       positions: importGraphBuffer(graph, 'positions', fixture.input(positions), 'float32x2', rows),
       values: importGraphBuffer(graph, 'values', fixture.input(values), 'float32', rows),
       sumScale: SUM_SCALE,
-      levels: levels.map((resolution, levelIndex) => ({
-        resolution,
-        output: importTable(graph, `level-${levelIndex}`, tables[levelIndex])
-      }))
+      resolutions: levels,
+      output: {
+        levels: levels.map((_, levelIndex) =>
+          importTable(graph, `level-${levelIndex}`, tables[levelIndex])
+        )
+      }
     })
   );
   const compiled = graph.compile();

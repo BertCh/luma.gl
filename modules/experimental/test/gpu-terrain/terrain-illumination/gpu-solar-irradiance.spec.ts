@@ -5,6 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -26,6 +27,7 @@ import {
   decodeHorizonUnorm16Oracle,
   encodeHorizonUnorm16Oracle
 } from './terrain-horizon-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const DAY_START = Date.UTC(2024, 5, 20);
 const DAY_END = Date.UTC(2024, 5, 21);
@@ -63,9 +65,7 @@ function packUnorm16(horizon: Float32Array): Uint32Array {
 
 it('GPUSolarIrradiance matches the oracle for chunked, unchunked, and unorm16 horizons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 24;
   const height = 18;
   const pixelCount = width * height;
@@ -130,8 +130,7 @@ it('GPUSolarIrradiance matches the oracle for chunked, unchunked, and unorm16 ho
     const float = (id: string, buffer: (typeof inputs)[number], length = pixelCount) =>
       importGraphBuffer(graph, id, buffer, 'float32', length);
     const contributor = new GPUSolarIrradiance({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       directionCount,
       horizonFormat: variant.format,
       horizon:
@@ -141,13 +140,15 @@ it('GPUSolarIrradiance matches the oracle for chunked, unchunked, and unorm16 ho
       sunTable: float('sun-table', inputs[1], capacity * 4),
       sampleCapacity: capacity,
       samplesPerNode: variant.samplesPerNode,
-      settings: settings.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
       slope: float('slope', inputs[2]),
       aspect: float('aspect', inputs[3]),
       skyViewFactor: float('svf', inputs[4]),
-      sunHours: float('sun-hours', outputs[0]),
-      insolation: float('insolation', outputs[1]),
-      validity: importGraphBuffer(graph, 'validity', outputs[2], 'uint32', pixelCount)
+      output: {
+        sunHours: float('sun-hours', outputs[0]),
+        insolation: float('insolation', outputs[1]),
+        outputValidity: importGraphBuffer(graph, 'validity', outputs[2], 'uint32', pixelCount)
+      }
     });
     graph.add(contributor);
     const compiled = graph.compile();
@@ -216,9 +217,7 @@ it('GPUSolarIrradiance matches the oracle for chunked, unchunked, and unorm16 ho
 
 it('GPUSolarIrradiance gives about 12 hours at the equator on an equinox and fewer in a pit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 4;
   const height = 2;
   const pixelCount = width * height;
@@ -246,15 +245,16 @@ it('GPUSolarIrradiance gives about 12 hours at the equator on an equinox and few
   const graph = new GPUCommandGraph(device, {id: 'solar-irradiance-equinox'});
   graph.add(
     new GPUSolarIrradiance({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       directionCount,
       horizon: importGraphBuffer(graph, 'horizon', inputs[0], 'float32', horizon.length),
       sunTable: importGraphBuffer(graph, 'sun-table', inputs[1], 'float32', table.length),
       sampleCapacity: sampleCount,
-      settings: settings.importToGraph(graph),
-      sunHours: importGraphBuffer(graph, 'sun-hours', outputs[0], 'float32', pixelCount),
-      insolation: importGraphBuffer(graph, 'insolation', outputs[1], 'float32', pixelCount)
+      parameters: settings.importToGraph(graph),
+      output: {
+        sunHours: importGraphBuffer(graph, 'sun-hours', outputs[0], 'float32', pixelCount),
+        insolation: importGraphBuffer(graph, 'insolation', outputs[1], 'float32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -303,9 +303,7 @@ it('GPUSolarIrradiance gives about 12 hours at the equator on an equinox and few
 
 it('GPUSolarIrradiance times a day at 5 minute steps on 1024 x 1024 with 16 sectors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 1024;
   const height = 1024;
   const pixelCount = width * height;
@@ -329,16 +327,17 @@ it('GPUSolarIrradiance times a day at 5 minute steps on 1024 x 1024 with 16 sect
   const graph = new GPUCommandGraph(device, {id: 'solar-irradiance-timing'});
   graph.add(
     new GPUSolarIrradiance({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       directionCount,
       horizon: importGraphBuffer(graph, 'horizon', inputs[0], 'float32', horizon.length),
       sunTable: importGraphBuffer(graph, 'sun-table', inputs[1], 'float32', table.length),
       sampleCapacity: sampleCount,
       samplesPerNode: 96,
-      settings: settings.importToGraph(graph),
-      sunHours: importGraphBuffer(graph, 'sun-hours', outputs[0], 'float32', pixelCount),
-      insolation: importGraphBuffer(graph, 'insolation', outputs[1], 'float32', pixelCount)
+      parameters: settings.importToGraph(graph),
+      output: {
+        sunHours: importGraphBuffer(graph, 'sun-hours', outputs[0], 'float32', pixelCount),
+        insolation: importGraphBuffer(graph, 'insolation', outputs[1], 'float32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();

@@ -9,8 +9,8 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUMapMatching,
-  encodeGPUMapMatchingParameters,
-  type GPUMapMatchingParameters
+  getGPUMapMatchingParameterValues,
+  type GPUMapMatchingSettings
 } from '../../../src/gpu-network/map-matching/index';
 import {
   createInputBuffer,
@@ -20,6 +20,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {buildCSR, createGridFixture} from '../network-accessibility/network-accessibility-oracle';
 import {matchOracle} from './map-matching-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Review B-02 on the real kernel: a 41 x 41 Manhattan grid with 100 m blocks, one track whose
 // samples are 6 blocks east and 8 north apart (1 km straight, 1.4 km by road), one candidate per
@@ -34,7 +35,7 @@ const POINTS = Float32Array.from(
   [0, 1, 2, 3].flatMap(step => [(2 + 6 * step) * BLOCK + 3, (2 + 8 * step) * BLOCK - 4])
 );
 const TRACK_OFFSETS = [0, 4];
-const PARAMETERS: GPUMapMatchingParameters = {
+const PARAMETERS: GPUMapMatchingSettings = {
   sigma: 10,
   beta: 50,
   searchRadius: 55,
@@ -66,7 +67,7 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
     id: 'map-matching-budget-parameters',
     format: 'float32',
     length: 8,
-    values: encodeGPUMapMatchingParameters(PARAMETERS)
+    values: getGPUMapMatchingParameterValues(PARAMETERS)
   });
   const edges = output('edges', 4);
   const breaks = output('breaks', 4);
@@ -75,11 +76,13 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
   graph.add(
     new GPUMapMatching({
       id: 'budget',
-      points: input('points', POINTS, 'float32x2'),
+      positions: input('points', POINTS, 'float32x2'),
       trackOffsets: input('track-offsets', Uint32Array.from(TRACK_OFFSETS), 'uint32'),
-      nodePositions: input('nodes', POSITIONS, 'float32x2'),
-      offsets: input('offsets', CSR.offsets, 'uint32'),
-      edgeTargets: input('targets', CSR.neighbors, 'uint32'),
+      topology: {
+        nodePositions: input('nodes', POSITIONS, 'float32x2'),
+        offsets: input('offsets', CSR.offsets, 'uint32'),
+        neighbors: input('targets', CSR.neighbors, 'uint32')
+      },
       parameters: parameters.importToGraph(graph),
       candidateCount: 1,
       cellSize: 60,
@@ -88,8 +91,7 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
       output: {
         matchedEdges: edges.view,
         breaks: breaks.view,
-        overflow: overflow.view,
-        routeOverflow: routeOverflow.view
+        status: {overflow: overflow.view, routeOverflow: routeOverflow.view}
       }
     })
   );
@@ -111,9 +113,7 @@ async function runBudget(device: Device, routeNodeBudget: number): Promise<Budge
 
 it('GPUMapMatching flags budget breaks and counts dropped route nodes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const expected = matchOracle(
     POINTS,
     TRACK_OFFSETS,
@@ -142,9 +142,7 @@ it('GPUMapMatching flags budget breaks and counts dropped route nodes', async ()
 
 it('GPUMapMatching ignores CSR rows past offsets[nodeCount]', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Review B-04: a CSR shorter than edgeTargets. Before the fix the per-node kernel never wrote the
   // tail rows' edge-table words, so they kept zeros (a zero-length edge at node 0) or an aliased
   // transient's words (phantom edges). Now they are invalid and never become candidates.
@@ -176,16 +174,18 @@ it('GPUMapMatching ignores CSR rows past offsets[nodeCount]', async () => {
     id: 'map-matching-tail-parameters',
     format: 'float32',
     length: 8,
-    values: encodeGPUMapMatchingParameters({...PARAMETERS, searchRadius: 40})
+    values: getGPUMapMatchingParameterValues({...PARAMETERS, searchRadius: 40})
   });
   graph.add(
     new GPUMapMatching({
       id: 'tail',
-      points: input('points', points, 'float32x2'),
+      positions: input('points', points, 'float32x2'),
       trackOffsets: input('track-offsets', Uint32Array.of(0, 3), 'uint32'),
-      nodePositions: input('nodes', positions, 'float32x2'),
-      offsets: input('offsets', csr.offsets, 'uint32'),
-      edgeTargets: input('targets', targets, 'uint32'),
+      topology: {
+        nodePositions: input('nodes', positions, 'float32x2'),
+        offsets: input('offsets', csr.offsets, 'uint32'),
+        neighbors: input('targets', targets, 'uint32')
+      },
       parameters: parameters.importToGraph(graph),
       cellSize: 50,
       bounds: {minimum: [-50, -50], maximum: [250, 250]},

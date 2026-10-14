@@ -6,17 +6,9 @@ import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {describe, expect, it} from 'vitest';
 import {
   GPU_SPATIAL_ANALYSIS_CONTRACT_NAMES,
-  assertCompatibleGPUPreparedIndexes,
   defineGPUSpatialParameterSchema,
-  getGPUCapacityPlan,
-  getGPUCapacityRecovery,
-  getGPUCellCoverContributorCapacityPlan,
   getGPUPartitionMemoryPlan,
   getGPUSpatialContextCompatibility,
-  getGPUSpatialJoinCapacityPlan,
-  getGPUSpatialQueryCostPlan,
-  getGPUTileSeamOwner,
-  isGPUSeamResultOwner,
   packGPUSpatialParameterValues,
   validateGPUCompactPairPort,
   validateGPUFeatureGeometryPort,
@@ -25,8 +17,20 @@ import {
   validateGPUSpatialContext,
   validateGPUStatusPort,
   validateGPUTilePartitionDescriptor
-} from '../../../src/gpu-spatial-analysis/contracts/index';
-import {validateGPUSpatialParameterSchema} from '../../../src/gpu-spatial-analysis/contracts/parameter-schema';
+} from '../../../src/analysis-core/contracts/index';
+import {
+  getGPUCapacityPlan,
+  getGPUCapacityRecovery,
+  getGPUCellCoverContributorCapacityPlan
+} from '../../../src/analysis-core/contracts/capacity-planning';
+import {
+  assertCompatibleGPUPreparedIndexes,
+  getGPUSpatialQueryCostPlan,
+  getGPUTileSeamOwner,
+  isGPUSeamResultOwner,
+  type GPUPartitionRange
+} from '../../../src/analysis-core/contracts/partitioning';
+import {validateGPUSpatialParameterSchema} from '../../../src/analysis-core/contracts/parameter-schema';
 
 function view<Format extends string>(format: Format, length: number): GraphDataView<never> {
   return {format, length} as unknown as GraphDataView<never>;
@@ -185,8 +189,14 @@ describe('ports and status', () => {
     };
     expect(() => validateGPUFeatureGeometryPort('t', trajectories as never)).not.toThrow();
     expect(() =>
-      validateGPUFeatureGeometryPort('t', {...trajectories, timestamps: view('uint32', 6)} as never)
+      validateGPUFeatureGeometryPort('t', {
+        ...trajectories,
+        timestamps: view('uint32x2', 6)
+      } as never)
     ).not.toThrow();
+    expect(() =>
+      validateGPUFeatureGeometryPort('t', {...trajectories, timestamps: view('uint32', 6)} as never)
+    ).toThrow(/timestamps must use/);
     expect(() =>
       validateGPUFeatureGeometryPort('t', {...trajectories, timestamps: view('sint32', 6)} as never)
     ).toThrow(/timestamps must use/);
@@ -205,25 +215,27 @@ describe('ports and status', () => {
   });
 
   it('validates compact pair port formats, capacities and scalars', () => {
-    const pairs = {
-      leftIds: view('uint32', 4),
-      rightIds: view('uint32', 4),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
-    };
-    expect(() => validateGPUCompactPairPort('pairs', pairs as never)).not.toThrow();
+    const status = {count: view('uint32', 1), overflow: view('uint32', 1)};
+    const pairs = {leftIds: view('uint32', 4), rightIds: view('uint32', 4), status};
+    expect(() => validateGPUCompactPairPort('pairs', pairs)).not.toThrow();
     expect(() =>
-      validateGPUCompactPairPort('pairs', {...pairs, rightIds: view('uint32', 5)} as never)
+      validateGPUCompactPairPort('pairs', {...pairs, rightIds: view('uint32', 5)})
     ).toThrow(/capacities must match/);
     expect(() =>
       validateGPUCompactPairPort('pairs', {...pairs, leftIds: view('float32', 4)} as never)
     ).toThrow(/leftIds must use uint32/);
     expect(() =>
-      validateGPUCompactPairPort('pairs', {...pairs, overflow: view('uint32', 0)} as never)
-    ).toThrow(/overflow must contain one uint32 row/);
+      validateGPUCompactPairPort('pairs', {
+        ...pairs,
+        status: {...status, overflow: view('uint32', 0)}
+      })
+    ).toThrow(/status overflow must contain one uint32 row/);
     expect(() =>
-      validateGPUCompactPairPort('pairs', {...pairs, candidateOverflow: view('sint32', 1)} as never)
-    ).toThrow(/candidateOverflow must use uint32/);
+      validateGPUCompactPairPort('pairs', {
+        ...pairs,
+        status: {...status, candidateOverflow: view('sint32', 1)}
+      } as never)
+    ).toThrow(/status candidateOverflow must contain one uint32 row/);
   });
 
   it('skips absent status fields and rejects non-scalar or non-uint32 ones', () => {
@@ -399,32 +411,7 @@ describe('capacity planning', () => {
     expect(huge.estimatedOutputBytes).toBe(Number.MAX_SAFE_INTEGER);
   });
 
-  it('uses the default per-left estimates and lets observations override them', () => {
-    // Defaults: min(rightCount, 8) candidates and min(rightCount, 1) matches per left row.
-    const estimated = getGPUSpatialJoinCapacityPlan({leftCount: 10, rightCount: 3});
-    expect(estimated.candidates.estimatedRequiredCount).toBe(30);
-    expect(estimated.pairs.estimatedRequiredCount).toBe(10);
-    expect(estimated.candidates.limited).toBe(false);
-    const limited = getGPUSpatialJoinCapacityPlan({
-      leftCount: 10,
-      rightCount: 100,
-      candidateCapacity: 20
-    });
-    expect(limited.candidates).toMatchObject({
-      estimatedRequiredCount: 80,
-      capacity: 20,
-      limited: true
-    });
-    expect(
-      getGPUSpatialJoinCapacityPlan({leftCount: 10, rightCount: 3, observedCandidateCount: 0})
-        .candidates.estimatedRequiredCount
-    ).toBe(0);
-    expect(() => getGPUSpatialJoinCapacityPlan({leftCount: -1, rightCount: 3})).toThrow(
-      /leftCount/
-    );
-    expect(() =>
-      getGPUSpatialJoinCapacityPlan({leftCount: 1, rightCount: 3, pairCapacity: -1})
-    ).toThrow(/capacity/);
+  it('validates cell-cover planning inputs', () => {
     expect(() =>
       getGPUCellCoverContributorCapacityPlan({featureCount: 1, vertexCount: 1.5})
     ).toThrow(/vertexCount/);
@@ -539,7 +526,7 @@ describe('partitioning', () => {
     haloStart,
     haloEnd
   });
-  const descriptor = (length: number, partitions: object[], extra = {}) => ({
+  const descriptor = (length: number, partitions: GPUPartitionRange[], extra = {}) => ({
     length,
     partitions,
     seamOwnership: {kind: 'lowest-partition-id'} as const,
@@ -732,7 +719,7 @@ describe('measure model helpers', () => {
       getGPUSphereRadius,
       resolveGPUSpatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
-    } = await import('../../../src/gpu-spatial-analysis/contracts/spatial-context');
+    } = await import('../../../src/analysis-core/contracts/spatial-context');
     expect(getGPUAreaUnit('meters')).toBe('square-meters');
     expect(getGPUAreaUnit('kilometers')).toBe('square-kilometers');
     expect(getGPUAreaUnit('native')).toBe('native-squared');
@@ -749,6 +736,6 @@ describe('measure model helpers', () => {
         {coordinateSpace: 'longitude-latitude', metric: 'rhumb'},
         support
       )
-    ).toThrow(/rhumb/);
+    ).toThrow(/great-circle metric/);
   });
 });

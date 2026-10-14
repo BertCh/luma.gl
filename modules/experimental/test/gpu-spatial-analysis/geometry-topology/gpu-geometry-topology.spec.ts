@@ -19,6 +19,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {flattenLines, type Point} from '../line-split/line-split-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type RunResult = {
   nodedCount: number;
@@ -251,7 +252,7 @@ async function runPolygonize(
 
 it('GPUPolygonize nodes crossings with edge and parameter provenance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runPolygonize(device, [
     [
       [0, 0],
@@ -272,7 +273,7 @@ it('GPUPolygonize nodes crossings with edge and parameter provenance', async () 
 
 it('GPUPolygonize handles endpoint touches, overlaps, and repeated vertices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
 
   const touch = await runPolygonize(device, [
     [
@@ -318,7 +319,7 @@ it('GPUPolygonize handles endpoint touches, overlaps, and repeated vertices', as
 
 it('GPUPolygonize exposes exact required cardinality when noded output capacity is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runPolygonize(
     device,
     [
@@ -346,7 +347,7 @@ it('GPUPolygonize exposes exact required cardinality when noded output capacity 
 
 it('GPUPolygonize publishes the ring-assembly requirement, not the written polygon count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // A square with a hole polygonizes into the annulus ring, its hole ring, the island face and
   // the clockwise unbounded walk: more rings are required than polygons are written.
   const result = await runPolygonize(device, SQUARE_WITH_HOLE);
@@ -357,7 +358,7 @@ it('GPUPolygonize publishes the ring-assembly requirement, not the written polyg
 
 it('GPUPolygonize extracts a bounded face and reports complete use', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runPolygonize(device, [
     [
       [0, 0],
@@ -388,7 +389,7 @@ it('GPUPolygonize extracts a bounded face and reports complete use', async () =>
 
 it('GPUPolygonize repairs a self-crossing bow tie into bounded faces', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runPolygonize(device, [
     [
       [0, 0],
@@ -405,7 +406,7 @@ it('GPUPolygonize repairs a self-crossing bow tie into bounded faces', async () 
 
 it('GPUMakeValid rebuilds a self-crossing polygon boundary', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runPolygonize(
     device,
     [
@@ -490,7 +491,7 @@ const SQUARE_WITH_HOLE: Point[][] = [
 
 it('GPUMakeValid keeps only the annulus of a valid polygon with a hole', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // make_valid: Polygon, area 12, shell + 1 hole. GPUPolygonize would add the island face.
   expectMakeValidMatches(await runPolygonize(device, SQUARE_WITH_HOLE, 'make-valid'), [[12, 2]]);
   const polygonized = await runPolygonize(device, SQUARE_WITH_HOLE);
@@ -499,7 +500,7 @@ it('GPUMakeValid keeps only the annulus of a valid polygon with a hole', async (
 
 it('GPUMakeValid keeps a polygon with two holes whole', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // make_valid: Polygon, area 24, shell + 2 holes.
   const result = await runPolygonize(
     device,
@@ -533,7 +534,7 @@ it('GPUMakeValid keeps a polygon with two holes whole', async () => {
 
 it('GPUMakeValid splits a bow tie into two triangles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // make_valid: MultiPolygon, two parts of area 1.
   const result = await runPolygonize(
     device,
@@ -556,7 +557,7 @@ it('GPUMakeValid splits a bow tie into two triangles', async () => {
 
 it('GPUMakeValid drops the doubly covered lens of a hole ring crossing the shell', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // make_valid: MultiPolygon, parts of area 2 (the lobe outside the shell) and 14 (the shell
   // minus the lens); the lens covered by shell and hole ring has even parity and is dropped.
   const result = await runPolygonize(
@@ -587,7 +588,7 @@ it('GPUMakeValid drops the doubly covered lens of a hole ring crossing the shell
 
 it('GPUMakeValid keeps an island inside a hole as its own polygon by parity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // make_valid of MultiPolygon(lake with hole, island): parts of area 4 (island) and 64
   // (lake, shell + 1 hole), total 68. The island face is covered three times (odd).
   const result = await runPolygonize(

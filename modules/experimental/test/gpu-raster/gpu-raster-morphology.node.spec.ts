@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, test} from 'vitest';
+import {describe, expect, test, vi} from 'vitest';
+import {Computation} from '@luma.gl/engine';
+import type {Buffer, Device} from '@luma.gl/core';
+import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
 import {
   GraphBufferHandle,
   GraphDataView,
@@ -23,7 +26,7 @@ import {
 
 type GraphOwner = GraphBufferHandle['graph'];
 type RecordingGraph = GPUCommandGraph & {
-  passes: GPUCommandGraphComputeNode[];
+  passes: GPUCommandGraphComputeNode<void>[];
   transientHandles: GraphBufferHandle[];
 };
 
@@ -193,12 +196,60 @@ describe('GPURasterMorphology binary and grayscale contracts', () => {
 
     expect(graph.passes.map(pass => pass.id)).toEqual(['binary-expand']);
     expect(graph.transientHandles).toHaveLength(0);
-    expect(graph.passes[0].resources.map(resource => resource.usage)).toEqual([
+    expect(graph.passes[0].resources!.map(resource => resource.usage)).toEqual([
       'storage-read',
       'storage-write',
       'storage-write',
       'storage-read'
     ]);
+  });
+});
+
+describe('GPURasterMorphology binding reuse', () => {
+  test('sets bindings only when a resolved buffer changes', () => {
+    const graph = makeRecordingGraph('morphology-bindings');
+    const props = makeBinaryProps(graph);
+    new GPURasterDilation(props).addToGraph(graph);
+    const device = createNullWebGPUDevice();
+    Object.defineProperty(device, 'props', {
+      value: {...device.props, _cacheShaders: false, _cachePipelines: false}
+    });
+    Object.defineProperty(device, 'createComputePipeline', {
+      value: (pipelineProps: {id?: string}) => ({
+        id: pipelineProps.id ?? '',
+        hash: '',
+        destroy: () => {}
+      })
+    });
+    const setBindings = vi.spyOn(Computation.prototype, 'setBindings').mockImplementation(() => {});
+    const dispatch = vi.spyOn(Computation.prototype, 'dispatch').mockImplementation(() => {});
+    try {
+      const node = graph.passes[0].compile({device} as unknown as {device: Device}) as {
+        encode: (context: unknown) => void;
+      };
+      const buffers = new Map<unknown, Buffer>();
+      const encode = () =>
+        node.encode({
+          computePass: {},
+          getBuffer: (view: unknown) => {
+            if (!buffers.has(view)) buffers.set(view, {byteLength: 1024} as unknown as Buffer);
+            return buffers.get(view)!;
+          }
+        });
+
+      encode();
+      encode();
+      expect(setBindings, 'unchanged buffers keep the bind group').toHaveBeenCalledTimes(1);
+      expect(dispatch).toHaveBeenCalledTimes(2);
+
+      buffers.set(props.output, {byteLength: 1024} as unknown as Buffer);
+      encode();
+      expect(setBindings, 'a replaced output buffer rebinds').toHaveBeenCalledTimes(2);
+    } finally {
+      setBindings.mockRestore();
+      dispatch.mockRestore();
+      device.destroy();
+    }
   });
 });
 
@@ -220,7 +271,7 @@ describe('GPURasterOpening and GPURasterClosing graph composition', () => {
       'open-intermediate-values'
     ]);
     expect(grayscaleGraph.transientHandles.every(handle => handle.transient)).toBe(true);
-    expect(grayscaleGraph.passes[1].resources.map(resource => resource.usage)).toEqual([
+    expect(grayscaleGraph.passes[1].resources!.map(resource => resource.usage)).toEqual([
       'storage-read',
       'storage-write',
       'storage-write',
@@ -233,8 +284,12 @@ describe('GPURasterOpening and GPURasterClosing graph composition', () => {
     expect(closing.requiredHalo).toBe(6);
     expect(binaryGraph.passes.map(pass => pass.id)).toEqual(['close-dilate', 'close-erode']);
     expect(binaryGraph.transientHandles.map(handle => handle.byteLength)).toEqual([36, 36]);
-    const intermediateView = binaryGraph.passes[0].resources[1];
-    expect('buffer' in intermediateView && intermediateView.buffer.format).toBe('uint32');
+    const intermediateView = binaryGraph.passes[0].resources![1];
+    expect(
+      'buffer' in intermediateView &&
+        'format' in intermediateView.buffer &&
+        intermediateView.buffer.format
+    ).toBe('uint32');
   });
 
   test('snapshots validated grayscale settings and borrowed input metadata before callers mutate props', () => {
@@ -310,24 +365,28 @@ describe('GPURasterOpening and GPURasterClosing graph composition', () => {
       'stable-opening-erode',
       'stable-opening-dilate'
     ]);
-    expect(graph.passes[0].resources[0]).toEqual({
+    expect(graph.passes[0].resources![0]).toEqual({
       buffer: originalSource,
       usage: 'storage-read'
     });
-    expect(graph.passes[0].resources[3]).toEqual({
+    expect(graph.passes[0].resources![3]).toEqual({
       buffer: originalValidity,
       usage: 'storage-read'
     });
-    expect(graph.passes[1].resources[1]).toEqual({
+    expect(graph.passes[1].resources![1]).toEqual({
       buffer: originalOutput,
       usage: 'storage-write'
     });
-    expect(graph.passes[1].resources[2]).toEqual({
+    expect(graph.passes[1].resources![2]).toEqual({
       buffer: originalOutputValidity,
       usage: 'storage-write'
     });
-    const intermediateValues = graph.passes[0].resources[1];
-    expect('buffer' in intermediateValues && intermediateValues.buffer.format).toBe('float32');
+    const intermediateValues = graph.passes[0].resources![1];
+    expect(
+      'buffer' in intermediateValues &&
+        'format' in intermediateValues.buffer &&
+        intermediateValues.buffer.format
+    ).toBe('float32');
   });
 
   test('snapshots binary discrimination and zero-radius identity before caller mutation', () => {
@@ -371,11 +430,11 @@ describe('GPURasterOpening and GPURasterClosing graph composition', () => {
     closing.addToGraph(graph);
     expect(graph.passes.map(pass => pass.id)).toEqual(['stable-closing']);
     expect(graph.transientHandles).toHaveLength(0);
-    expect(graph.passes[0].resources[0]).toEqual({
+    expect(graph.passes[0].resources![0]).toEqual({
       buffer: originalSource,
       usage: 'storage-read'
     });
-    expect(graph.passes[0].resources[1]).toEqual({
+    expect(graph.passes[0].resources![1]).toEqual({
       buffer: originalOutput,
       usage: 'storage-write'
     });
@@ -472,7 +531,7 @@ function makeRecordingGraph(
   id: string,
   limitOverrides: Partial<GPUCommandGraph['device']['limits']> = {}
 ): RecordingGraph {
-  const passes: GPUCommandGraphComputeNode[] = [];
+  const passes: GPUCommandGraphComputeNode<void>[] = [];
   const transientHandles: GraphBufferHandle[] = [];
   const graph = {
     id,
@@ -490,7 +549,7 @@ function makeRecordingGraph(
     },
     passes,
     transientHandles,
-    addComputePass(pass: GPUCommandGraphComputeNode): void {
+    addComputePass(pass: GPUCommandGraphComputeNode<void>): void {
       passes.push(pass);
     },
     createTransientBuffer(descriptor: {

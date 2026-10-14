@@ -6,14 +6,15 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainCumulativeViewshed,
   GPUTerrainViewshed,
-  getGPUTerrainSightLineParameterValues,
+  getGPUTerrainLineOfSightParameterValues,
   getGPUTerrainViewshedParameterValues,
-  type GPUTerrainSightLineSettings,
+  type GPUTerrainLineOfSightSettings,
   type GPUTerrainSightLineTraversal
 } from '../../../src/gpu-terrain/terrain-analysis';
 import {
@@ -23,6 +24,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createFractalTerrain} from './terrain-analysis-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 40;
 const HEIGHT = 30;
@@ -34,11 +36,11 @@ const OBSERVERS: [number, number][] = [
   [-3, 10], // outside: contributes nothing
   [12.75, 22]
 ];
-const SETTINGS: GPUTerrainSightLineSettings = {
+const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 30});
+const SETTINGS: GPUTerrainLineOfSightSettings = {
   observerHeight: 2,
   targetHeight: 1,
-  maxDistance: 900,
-  cellSize: [30, 30],
+  maximumDistance: 900,
   curvatureCoefficient: 2e-5
 };
 
@@ -56,12 +58,11 @@ async function runCumulative(
     id: 'cumulative-settings',
     format: 'float32',
     length: 12,
-    values: getGPUTerrainSightLineParameterValues({...SETTINGS, toleranceMeters: 2})
+    values: getGPUTerrainLineOfSightParameterValues({...SETTINGS, toleranceMeters: 2}, GRID)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-cumulative-test'});
   const contributor = new GPUTerrainCumulativeViewshed({
-    width: WIDTH,
-    height: HEIGHT,
+    grid: GRID,
     elevation: {
       id: 'elevation',
       format: 'float32',
@@ -71,11 +72,13 @@ async function runCumulative(
       }
     },
     observers: importGraphBuffer(graph, 'observers', observerBuffer, 'float32x2', OBSERVERS.length),
-    settings: settingsBuffer.importToGraph(graph),
+    parameters: settingsBuffer.importToGraph(graph),
     traversal,
     observersPerDispatch,
-    visibleCount: importGraphBuffer(graph, 'visible', visibleBuffer, 'uint32', PIXEL_COUNT),
-    marginalCount: importGraphBuffer(graph, 'marginal', marginalBuffer, 'uint32', PIXEL_COUNT)
+    output: {
+      visibleCount: importGraphBuffer(graph, 'visible', visibleBuffer, 'uint32', PIXEL_COUNT),
+      marginalCount: importGraphBuffer(graph, 'marginal', marginalBuffer, 'uint32', PIXEL_COUNT)
+    }
   });
   graph.add(contributor);
   const compiled = graph.compile();
@@ -104,14 +107,16 @@ async function runViewshed(
     id: 'viewshed-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainViewshedParameterValues({
-      observer,
-      observerHeight: SETTINGS.observerHeight,
-      targetHeight: SETTINGS.targetHeight,
-      maxDistance: SETTINGS.maxDistance,
-      cellSize: SETTINGS.cellSize,
-      curvatureCoefficient: SETTINGS.curvatureCoefficient
-    })
+    values: getGPUTerrainViewshedParameterValues(
+      {
+        observer,
+        observerHeight: SETTINGS.observerHeight,
+        targetHeight: SETTINGS.targetHeight,
+        maximumDistance: SETTINGS.maximumDistance,
+        curvatureCoefficient: SETTINGS.curvatureCoefficient
+      },
+      GRID
+    )
   });
   const toleranceBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-tolerance',
@@ -122,8 +127,7 @@ async function runViewshed(
   const graph = new GPUCommandGraph(device, {id: 'cumulative-reference-viewshed'});
   graph.add(
     new GPUTerrainViewshed({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: GRID,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -132,9 +136,11 @@ async function runViewshed(
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', PIXEL_COUNT)
         }
       },
-      settings: settingsBuffer.importToGraph(graph),
-      tolerance: toleranceBuffer.importToGraph(graph),
-      visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', PIXEL_COUNT)
+      parameters: settingsBuffer.importToGraph(graph),
+      toleranceParameters: toleranceBuffer.importToGraph(graph),
+      output: {
+        visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', PIXEL_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -150,9 +156,7 @@ async function runViewshed(
 
 it('GPUTerrainCumulativeViewshed sums single-observer viewsheds over batches', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createFractalTerrain(WIDTH, HEIGHT, 3, 45);
   const expectedVisible = new Array<number>(PIXEL_COUNT).fill(0);
   const expectedMarginal = new Array<number>(PIXEL_COUNT).fill(0);

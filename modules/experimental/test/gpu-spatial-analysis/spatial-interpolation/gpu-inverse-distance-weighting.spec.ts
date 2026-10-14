@@ -6,7 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/index';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/index';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUInverseDistanceWeightingParameterValues,
@@ -23,8 +23,10 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {countContourSegments} from '../../gpu-terrain/terrain-analysis/terrain-analysis-oracle';
+import {makeExtentGrid} from './extent-grid';
 import {GREAT_CIRCLE_REFERENCE} from './great-circle-reference';
 import {interpolateInverseDistanceWeightingOnCPU} from './spatial-interpolation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * GPU versus float64 oracle tolerance: `|gpu - cpu| <= 2e-5 * valueScale`, where `valueScale` is
@@ -47,8 +49,19 @@ type Scene = {
 
 type Result = {values: Float32Array; counts: Uint32Array};
 
+/**
+ * Per-frame settings plus the frame's raster rectangle. The contributor reads the placement from
+ * its grid, so `run` builds a grid of the scene size over `extent` (rows advancing north, which
+ * packs `extent` unchanged) and `expectParity` passes `extent` to the oracle.
+ */
+type FrameSettings = GPUInverseDistanceWeightingSettings & {
+  extent: readonly [number, number, number, number];
+  /** Row order of the frame's grid. Defaults to rows advancing north. */
+  rowDirection?: 'north' | 'south';
+};
+
 type Fixture = {
-  run(settings: GPUInverseDistanceWeightingSettings): Promise<Result>;
+  run(settings: FrameSettings): Promise<Result>;
   /** Graph compilations after the first; per-frame changes must keep it at zero. */
   rebuildCount: number;
   destroy(): void;
@@ -111,8 +124,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
           )
         : undefined,
       parameters: parameterBuffer.importToGraph(graph),
-      width: scene.width,
-      height: scene.height,
+      grid: makeExtentGrid(scene.width, scene.height, [0, 0, 1, 1]),
       indexGridSize: scene.indexGridSize,
       indexBounds: scene.indexBounds,
       maximumNeighborCount: scene.maximumNeighborCount,
@@ -127,7 +139,13 @@ function createFixture(device: Device, scene: Scene): Fixture {
   compileCount++;
   return {
     async run(settings) {
-      parameterBuffer.write(getGPUInverseDistanceWeightingParameterValues(settings));
+      const {extent, rowDirection, ...packed} = settings;
+      parameterBuffer.write(
+        getGPUInverseDistanceWeightingParameterValues(
+          packed,
+          makeExtentGrid(scene.width, scene.height, extent, rowDirection)
+        )
+      );
       submitGraph(device, compiled, undefined);
       return {
         values: Float32Array.from(await readFloat32(valuesOut, cellCount)),
@@ -147,11 +165,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
   };
 }
 
-function expectParity(
-  actual: Result,
-  scene: Scene,
-  settings: GPUInverseDistanceWeightingSettings
-): Result {
+function expectParity(actual: Result, scene: Scene, settings: FrameSettings): Result {
   const expected = interpolateInverseDistanceWeightingOnCPU({
     ...scene,
     extent: settings.extent,
@@ -215,13 +229,11 @@ function createRandomScene(seed: number, sampleCount: number): Scene {
 
 it('GPUInverseDistanceWeighting matches the CPU oracle and changes parameters without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(1, 900);
   const fixture = createFixture(device, scene);
   const extent = [0, 0, 100, 60] as const;
-  const frames: GPUInverseDistanceWeightingSettings[] = [
+  const frames: FrameSettings[] = [
     {extent, searchRadius: 10, power: 2},
     {extent, searchRadius: 10, power: 0},
     {extent, searchRadius: 10, power: 1},
@@ -267,11 +279,45 @@ it('GPUInverseDistanceWeighting matches the CPU oracle and changes parameters wi
   fixture.destroy();
 });
 
+it('GPUInverseDistanceWeighting follows the grid row order: a north-up grid mirrors the rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = createRandomScene(7, 300);
+  const fixture = createFixture(device, scene);
+  const extent = [0, 0, 100, 60] as const;
+  const settings = {extent, searchRadius: 12, power: 2, neighborCount: 6};
+  const north = await fixture.run(settings);
+  const northUp = await fixture.run({...settings, rowDirection: 'south'});
+  expectParity(north, scene, settings);
+  // The north-up grid's row y is the north-advancing grid's row height - 1 - y. The cell centers
+  // are the same real numbers but come from different f32 arithmetic (start + (row + 0.5) * step
+  // with a negative step), so compare to the oracle's mirrored raster within the usual tolerance
+  // instead of bitwise.
+  const {width, height} = scene;
+  const valueScale = Math.max(...Array.from(scene.values).filter(Number.isFinite));
+  let interpolatedCount = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const mirrored = north.values[(height - 1 - y) * width + x];
+      const actual = northUp.values[y * width + x];
+      if (Number.isNaN(mirrored)) {
+        expect(Number.isNaN(actual), `cell ${x},${y} nodata`).toBe(true);
+      } else {
+        interpolatedCount++;
+        expect(Math.abs(actual - mirrored), `cell ${x},${y}`).toBeLessThanOrEqual(
+          RELATIVE_TOLERANCE * valueScale
+        );
+      }
+    }
+  }
+  expect(interpolatedCount).toBeGreaterThan(0);
+  expect(fixture.rebuildCount).toBe(0);
+  fixture.destroy();
+});
+
 it('GPUInverseDistanceWeighting resolves exact hits and nearest-k ties by the smallest row', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Extent [0, 8] x [0, 8] at 8 x 8 puts cell centers on half-integers, exactly representable.
   const positions = Float32Array.from([
     // Rows 0-1: duplicates on center (2.5, 3.5) with different values; row 0 must win.
@@ -342,9 +388,7 @@ it('GPUInverseDistanceWeighting resolves exact hits and nearest-k ties by the sm
 
 it('GPUInverseDistanceWeighting stays finite for tiny distances and large powers', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Samples about 1.2e-7 and 1e-3 from the single cell center; d^-12 overflows f32 without the
   // log-space accumulator.
   const scene: Scene = {
@@ -370,9 +414,7 @@ it('GPUInverseDistanceWeighting stays finite for tiny distances and large powers
 
 it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(4, 600);
   const {width, height} = scene;
   const cellCount = width * height;
@@ -381,12 +423,10 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
     id: 'idw-contour-parameters',
     format: 'float32',
     length: GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
-    values: getGPUInverseDistanceWeightingParameterValues({
-      extent: [0, 0, 100, 60],
-      searchRadius: 4,
-      power: 2,
-      minimumNeighborCount: 2
-    })
+    values: getGPUInverseDistanceWeightingParameterValues(
+      {searchRadius: 4, power: 2, minimumNeighborCount: 2},
+      makeExtentGrid(width, height, [0, 0, 100, 60])
+    )
   });
   const buffers = {
     positions: createInputBuffer(device, scene.positions),
@@ -404,8 +444,7 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
       positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', sampleCount),
       values: importGraphBuffer(graph, 'values', buffers.values, 'float32', sampleCount),
       parameters: parameterBuffer.importToGraph(graph),
-      width,
-      height,
+      grid: makeExtentGrid(width, height, [0, 0, 100, 60]),
       indexGridSize: scene.indexGridSize,
       indexBounds: scene.indexBounds,
       output: {values: surface}
@@ -414,8 +453,7 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
   const level = 30;
   graph.add(
     new GPUTerrainContours({
-      width,
-      height,
+      grid: {width, height, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
       elevation: {
         id: 'surface',
         format: 'float32',
@@ -425,10 +463,14 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
         {
           level,
           vertices: importGraphBuffer(graph, 'vertices', buffers.vertices, 'float32x2', 2 * 4096),
-          segmentCount: importGraphBuffer(graph, 'segment-count', buffers.segmentCount, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'segment-count', buffers.segmentCount, 'uint32', 1)
+          }
         }
       ],
-      overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+      output: {
+        status: {overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -450,9 +492,7 @@ it('GPUInverseDistanceWeighting output feeds GPUTerrainContours in the same grap
 
 it('GPUInverseDistanceWeighting ring walk matches the oracle on clustered samples and an unbounded radius', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Most samples sit in one corner, a few are far away, and the raster extends past the index
   // domain, so rings stop early near the cluster and run to the domain edge in the empty area.
   const random = createRandom(9);
@@ -492,9 +532,7 @@ it('GPUInverseDistanceWeighting ring walk matches the oracle on clustered sample
 
 it('GPUInverseDistanceWeighting great-circle mode matches haversine weights at 47 N', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: geo_oracle.py (haversine, R = 6371008.8 m). The radius is in meters; positions are
   // absolute f32 lon/lat (about 0.4 m ulp), so the bound is 2e-3 of the data scale.
   const reference = GREAT_CIRCLE_REFERENCE;

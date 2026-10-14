@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {describe, expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../src/analysis-core/contracts/spatial-context';
 import {GPUEdgeBundling} from '../../src/gpu-network/edge-bundling';
 import {
   GPU_MAP_MATCHING_PARAMETER_LENGTH,
@@ -119,20 +119,27 @@ describe('network contributor spatial contexts', () => {
   it('GPUNetworkSnapping accepts great-circle lon/lat on both candidate paths', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const props = {
-      points: createView(graph, 'float32x2', 3),
-      nodePositions: createView(graph, 'float32x2', 4),
-      edgeSources: createView(graph, 'uint32', 5),
-      edgeTargets: createView(graph, 'uint32', 5),
-      snappedEdges: createView(graph, 'uint32', 3),
-      snapDistances: createView(graph, 'float32', 3),
-      snappedPositions: createView(graph, 'float32x2', 3),
-      sourceCosts: createView(graph, 'float32', 3),
-      targetCosts: createView(graph, 'float32', 3)
+      positions: createView(graph, 'float32x2', 3),
+      topology: {
+        offsets: createView(graph, 'uint32', 5),
+        neighbors: createView(graph, 'uint32', 5),
+        nodePositions: createView(graph, 'float32x2', 4)
+      },
+      output: {
+        snappedEdges: createView(graph, 'uint32', 3),
+        snapDistances: createView(graph, 'float32', 3),
+        snappedPositions: createView(graph, 'float32x2', 3),
+        sourceCosts: createView(graph, 'float32', 3),
+        targetCosts: createView(graph, 'float32', 3)
+      }
     };
     expect(new GPUNetworkSnapping(props).spatialContext.coordinateSpace).toBe('planar');
     const snapping = new GPUNetworkSnapping({...props, spatialContext: GREAT_CIRCLE});
     expect(snapping.spatialContext).toEqual(GREAT_CIRCLE);
+    // The edge sources are expanded from `topology.offsets` before the scan.
     expect(snapping.getCommandNodes(graph).map(node => node.id)).toEqual([
+      'network-snapping-edge-sources-clear',
+      'network-snapping-edge-sources',
       'network-snapping-scan',
       'network-snapping-costs',
       'network-snapping-positions'
@@ -154,7 +161,8 @@ describe('network contributor spatial contexts', () => {
       id: 'joined',
       spatialContext: GREAT_CIRCLE,
       candidateCapacity: 4,
-      maxSnapDistance: createView(graph, 'float32', 1)
+      maximumSnapDistance: createView(graph, 'float32', 1),
+      output: {...props.output, status: {overflow: createView(graph, 'uint32', 1)}}
     }).getCommandNodes(graph);
     const joinedIds = joined.map(node => node.id);
     expect(joinedIds.some(id => id.startsWith('joined-join'))).toBe(true);
@@ -171,11 +179,13 @@ describe('network contributor spatial contexts', () => {
   it('GPUMapMatching accepts great-circle lon/lat and rejects degrees without it', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const props = {
-      points: createView(graph, 'float32x2', 6),
+      positions: createView(graph, 'float32x2', 6),
       trackOffsets: createView(graph, 'uint32', 2),
-      nodePositions: createView(graph, 'float32x2', 4),
-      offsets: createView(graph, 'uint32', 5),
-      edgeTargets: createView(graph, 'uint32', 6),
+      topology: {
+        offsets: createView(graph, 'uint32', 5),
+        neighbors: createView(graph, 'uint32', 6),
+        nodePositions: createView(graph, 'float32x2', 4)
+      },
       parameters: createView(graph, 'float32', GPU_MAP_MATCHING_PARAMETER_LENGTH),
       cellSize: 0.001,
       bounds: {minimum: [179.99, 59.99], maximum: [180.01, 60.01]} as const,
@@ -197,23 +207,25 @@ describe('network contributor spatial contexts', () => {
           ...props,
           spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb'}
         })
-    ).toThrow(/does not support the rhumb metric/);
+    ).toThrow(/great-circle metric/);
   });
 
   it('GPUNetworkKFunction passes the context to snapping, including BVH candidates', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const props = {
-      points: createView(graph, 'float32x2', 10),
-      nodePositions: createView(graph, 'float32x2', 6),
-      offsets: createView(graph, 'uint32', 7),
-      neighbors: createView(graph, 'uint32', 12),
-      weights: createView(graph, 'float32', 12),
-      maxDistance: createView(graph, 'float32', 1),
+      positions: createView(graph, 'float32x2', 10),
+      topology: {
+        offsets: createView(graph, 'uint32', 7),
+        neighbors: createView(graph, 'uint32', 12),
+        weights: createView(graph, 'float32', 12),
+        nodePositions: createView(graph, 'float32x2', 6)
+      },
+      maximumDistance: createView(graph, 'float32', 1),
       networkLength: createView(graph, 'float32', 1),
       parameters: createView(graph, 'uint32', 4),
       bandCount: 8,
       rowsPerBlock: 10,
-      kValues: createView(graph, 'float32', 8)
+      output: {kValues: createView(graph, 'float32', 8)}
     };
     const kFunction = new GPUNetworkKFunction({...props, spatialContext: GREAT_CIRCLE});
     expect(kFunction.spatialContext).toEqual(GREAT_CIRCLE);
@@ -225,7 +237,8 @@ describe('network contributor spatial contexts', () => {
       id: 'joined-k',
       spatialContext: GREAT_CIRCLE,
       candidateCapacity: 4,
-      maxSnapDistance: createView(graph, 'float32', 1)
+      maximumSnapDistance: createView(graph, 'float32', 1),
+      output: {...props.output, status: {overflow: createView(graph, 'uint32', 1)}}
     }).getCommandNodes(graph);
     expect(joined.map(node => node.id)).toContain('joined-k-snap-project');
   });
@@ -233,14 +246,21 @@ describe('network contributor spatial contexts', () => {
   it('GPUNetworkLineGraph accepts great-circle lon/lat', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const props = {
-      offsets: createView(graph, 'uint32', 4),
-      neighbors: createView(graph, 'uint32', 4),
-      weights: createView(graph, 'float32', 4),
-      nodePositions: createView(graph, 'float32x2', 3),
+      topology: {
+        offsets: createView(graph, 'uint32', 4),
+        neighbors: createView(graph, 'uint32', 4),
+        weights: createView(graph, 'float32', 4),
+        nodePositions: createView(graph, 'float32x2', 3)
+      },
       parameters: createView(graph, 'float32', GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH),
-      lineOffsets: createView(graph, 'uint32', 5),
-      lineNeighbors: createView(graph, 'uint32', 8),
-      lineWeights: createView(graph, 'float32', 8)
+      output: {
+        topology: {
+          offsets: createView(graph, 'uint32', 5),
+          neighbors: createView(graph, 'uint32', 8),
+          weights: createView(graph, 'float32', 8)
+        },
+        status: {overflow: createView(graph, 'uint32', 1)}
+      }
     };
     const lineGraph = new GPUNetworkLineGraph({...props, spatialContext: GREAT_CIRCLE});
     expect(lineGraph.spatialContext).toEqual(GREAT_CIRCLE);
@@ -278,30 +298,32 @@ describe('network contributor spatial contexts', () => {
       },
       intersectionCapacity: 16,
       tolerance: createView(graph, 'float32', 1),
-      pieces: {
-        geometry: {
-          kind: 'lines',
-          positions: createView(graph, 'float32x2', 32),
-          lineOffsets: createView(graph, 'uint32', pieceCapacity + 1)
+      output: {
+        pieces: {
+          geometry: {
+            kind: 'lines',
+            positions: createView(graph, 'float32x2', 32),
+            lineOffsets: createView(graph, 'uint32', pieceCapacity + 1)
+          },
+          sourceIds: createView(graph, 'uint32', pieceCapacity),
+          status: {count: createView(graph, 'uint32', 1), overflow: createView(graph, 'uint32', 1)}
         },
-        sourceIds: createView(graph, 'uint32', pieceCapacity),
-        status: {count: createView(graph, 'uint32', 1), overflow: createView(graph, 'uint32', 1)}
-      },
-      nodes: {
-        positions: createView(graph, 'float32x2', nodeCapacity),
-        count: createView(graph, 'uint32', 1)
-      },
-      edges: {
-        fromNodes: createView(graph, 'uint32', pieceCapacity),
-        toNodes: createView(graph, 'uint32', pieceCapacity),
-        lengths: createView(graph, 'float32', pieceCapacity)
-      },
-      csr: {
-        offsets: createView(graph, 'uint32', nodeCapacity + 1),
-        neighbors: createView(graph, 'uint32', pieceCapacity * 2),
-        weights: createView(graph, 'float32', pieceCapacity * 2)
-      },
-      overflow: createView(graph, 'uint32', 1)
+        nodes: {
+          positions: createView(graph, 'float32x2', nodeCapacity),
+          status: {count: createView(graph, 'uint32', 1)}
+        },
+        edges: {
+          fromNodes: createView(graph, 'uint32', pieceCapacity),
+          toNodes: createView(graph, 'uint32', pieceCapacity),
+          lengths: createView(graph, 'float32', pieceCapacity)
+        },
+        topology: {
+          offsets: createView(graph, 'uint32', nodeCapacity + 1),
+          neighbors: createView(graph, 'uint32', pieceCapacity * 2),
+          weights: createView(graph, 'float32', pieceCapacity * 2)
+        },
+        status: {overflow: createView(graph, 'uint32', 1)}
+      }
     });
     const ids = noding.getCommandNodes(graph).map(node => node.id);
     const order = [
@@ -318,23 +340,25 @@ describe('network contributor spatial contexts', () => {
   it('GPUEdgeBundling maps a lon/lat context to its degree-aware work box', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const props = {
-      positions: createView(graph, 'float32x2', 10),
-      sourceVertices: createView(graph, 'uint32', 6),
-      targetVertices: createView(graph, 'uint32', 6),
-      paths: createView(graph, 'float32x2', 6 * 16)
+      nodePositions: createView(graph, 'float32x2', 10),
+      sourceNodes: createView(graph, 'uint32', 6),
+      targetNodes: createView(graph, 'uint32', 6),
+      output: {paths: createView(graph, 'float32x2', 6 * 16)}
     };
-    expect(new GPUEdgeBundling(props).geographic).toBe(false);
-    expect(new GPUEdgeBundling({...props, geographic: true}).geographic).toBe(true);
-    expect(new GPUEdgeBundling({...props, spatialContext: GREAT_CIRCLE}).geographic).toBe(true);
-    expect(
-      new GPUEdgeBundling({
-        ...props,
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
-      }).geographic
-    ).toBe(true);
-    expect(() => new GPUEdgeBundling({...props, spatialContext: PLANAR, geographic: true})).toThrow(
-      /geographic contradicts spatialContext/
+    const getCoordinateSpace = (bundling: GPUEdgeBundling) =>
+      bundling.spatialContext.coordinateSpace;
+    expect(getCoordinateSpace(new GPUEdgeBundling(props))).toBe('planar');
+    expect(getCoordinateSpace(new GPUEdgeBundling({...props, spatialContext: GREAT_CIRCLE}))).toBe(
+      'longitude-latitude'
     );
+    expect(
+      getCoordinateSpace(
+        new GPUEdgeBundling({
+          ...props,
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
+        })
+      )
+    ).toBe('longitude-latitude');
     expect(
       () =>
         new GPUEdgeBundling({
@@ -352,8 +376,10 @@ describe('network contributor spatial contexts', () => {
       output: {
         triangles: createView(graph, 'float32x2', 3 * 64),
         triangleBands: createView(graph, 'uint32', 64),
-        count: createView(graph, 'uint32', 1),
-        overflow: createView(graph, 'uint32', 1)
+        status: {
+          count: createView(graph, 'uint32', 1),
+          overflow: createView(graph, 'uint32', 1)
+        }
       }
     };
     const cellOutline: GPUNetworkIsochronesProps['cellOutline'] = {
@@ -364,17 +390,18 @@ describe('network contributor spatial contexts', () => {
         cells: createView(graph, 'uint32x2', 16),
         edgeIndices: createView(graph, 'uint32', 16),
         endpoints: createView(graph, 'float32x4', 16),
-        count: createView(graph, 'uint32', 1),
-        overflow: createView(graph, 'uint32', 1)
+        status: {count: createView(graph, 'uint32', 1), overflow: createView(graph, 'uint32', 1)}
       }
     };
     const props: GPUNetworkIsochronesProps = {
-      offsets: createView(graph, 'uint32', 5),
-      neighbors: createView(graph, 'uint32', 6),
-      weights: createView(graph, 'float32', 6),
-      nodePositions: createView(graph, 'float32x2', 4),
+      topology: {
+        offsets: createView(graph, 'uint32', 5),
+        neighbors: createView(graph, 'uint32', 6),
+        weights: createView(graph, 'float32', 6),
+        nodePositions: createView(graph, 'float32x2', 4)
+      },
       costs: createView(graph, 'float32', 4),
-      breaks: createView(graph, 'float32', 3),
+      costBreaks: createView(graph, 'float32', 3),
       parameters: createView(graph, 'float32', GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH)
     };
     expect(new GPUNetworkIsochrones({...props, raster}).spatialContext).toBeUndefined();

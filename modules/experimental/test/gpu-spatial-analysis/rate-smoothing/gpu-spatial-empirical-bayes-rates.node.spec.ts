@@ -17,16 +17,16 @@ it('GPUSpatialEmpiricalBayesRates validates its props', () => {
     weights: createTransientView(graph, 'weights', 'float32', 6)
   };
   const output = createTransientView(graph, 'out', 'float32', 4);
-  expect(() => new GPUSpatialEmpiricalBayesRates({events, populations, weights})).toThrow(
-    /no output/
-  );
+  expect(
+    () => new GPUSpatialEmpiricalBayesRates({events, populations, weights, output: {}})
+  ).toThrow(/no output/);
   expect(
     () =>
       new GPUSpatialEmpiricalBayesRates({
         events,
         populations,
         weights: {...weights, offsets: createTransientView(graph, 'short', 'uint32', 4)},
-        spatialRates: output
+        output: {spatialRates: output}
       })
   ).toThrow(/row count/);
   expect(
@@ -35,14 +35,32 @@ it('GPUSpatialEmpiricalBayesRates validates its props', () => {
         events,
         populations,
         weights,
-        smoothedRates: createTransientView(graph, 'bad', 'float32', 3)
+        output: {smoothedRates: createTransientView(graph, 'bad', 'float32', 3)}
       })
   ).toThrow(/length/);
   const nodes = new GPUSpatialEmpiricalBayesRates({
     events,
     populations,
     weights,
-    smoothedRates: output
+    output: {smoothedRates: output}
   }).getCommandNodes(graph);
   expect(nodes.length).toBe(1);
+});
+
+it('GPUSpatialEmpiricalBayesRates accepts uint32 counts with one conversion node per input', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'seb-uint32'});
+  const nodes = new GPUSpatialEmpiricalBayesRates({
+    events: createTransientView(graph, 'events', 'uint32', 4),
+    populations: createTransientView(graph, 'populations', 'float32', 4),
+    weights: {
+      offsets: createTransientView(graph, 'offsets', 'uint32', 5),
+      neighbors: createTransientView(graph, 'neighbors', 'uint32', 6),
+      weights: createTransientView(graph, 'weights', 'float32', 6)
+    },
+    output: {smoothedRates: createTransientView(graph, 'out', 'float32', 4)}
+  }).getCommandNodes(graph);
+  expect(nodes.map(node => node.id)).toEqual([
+    'spatial-empirical-bayes-rates-events-to-float32',
+    'spatial-empirical-bayes-rates-smooth'
+  ]);
 });

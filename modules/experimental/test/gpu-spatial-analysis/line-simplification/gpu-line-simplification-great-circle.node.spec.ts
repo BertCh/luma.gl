@@ -5,7 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {GPULineSimplification} from '../../../src/gpu-spatial-analysis/line-simplification';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const GREAT_CIRCLE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
@@ -19,7 +19,7 @@ function createLine(overrides: Record<string, unknown> = {}) {
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   const line = new GPULineSimplification({
     positions: view('float32x2', 5),
-    trackOffsets: view('uint32', 2),
+    lineOffsets: view('uint32', 2),
     importance: view('float32', 5),
     timestamps: view('float32', 5),
     ...overrides

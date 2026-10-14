@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   getGPUGreatCircleArcsParameterValues,
   getGPULineChunkParameterValues,
@@ -13,10 +14,14 @@ import {
   GPULineChunk,
   GPULineSegmentize,
   GPULineSmooth,
-  type GPULinePathOutput,
+  type GPULineGeometryOutput,
   type GPULineSegmentizeProps
 } from '../../../src/gpu-spatial-analysis/line-segmentize';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {countDistinctPipelines} from '../../utils/gpu-contributor-test-utils';
 
 const GREAT_CIRCLE = {
   coordinateSpace: 'longitude-latitude',
@@ -30,17 +35,23 @@ function getViewId(name: string): string {
   return `${name}-${viewSerial++}`;
 }
 import {
-  createFlatPaths,
-  segmentizePaths,
+  createFlatLines,
+  segmentizeLines,
   tessellateGreatCircleArcs
 } from './line-segmentize-oracle';
 
-function createOutput(graph: GPUCommandGraph, pathCount: number, capacity = 64): GPULinePathOutput {
+function createOutput(
+  graph: GPUCommandGraph,
+  lineCount: number,
+  capacity = 64
+): GPULineGeometryOutput {
   return {
     positions: createTransientView(graph, getViewId('o-positions'), 'float32x2', capacity),
-    pathOffsets: createTransientView(graph, getViewId('o-offsets'), 'uint32', pathCount + 1),
-    count: createTransientView(graph, getViewId('o-count'), 'uint32', 1),
-    overflow: createTransientView(graph, getViewId('o-overflow'), 'uint32', 1),
+    lineOffsets: createTransientView(graph, getViewId('o-offsets'), 'uint32', lineCount + 1),
+    status: {
+      count: createTransientView(graph, getViewId('o-count'), 'uint32', 1),
+      overflow: createTransientView(graph, getViewId('o-overflow'), 'uint32', 1)
+    },
     measures: createTransientView(graph, getViewId('o-measures'), 'float32', capacity)
   };
 }
@@ -51,7 +62,7 @@ function createSegmentizeProps(
 ): GPULineSegmentizeProps {
   return {
     positions: createTransientView(graph, getViewId('positions'), 'float32x2', 10),
-    pathOffsets: createTransientView(graph, getViewId('offsets'), 'uint32', 3),
+    lineOffsets: createTransientView(graph, getViewId('offsets'), 'uint32', 3),
     parameters: createTransientView(graph, getViewId('parameters'), 'float32', 4),
     output: createOutput(graph, 2),
     ...overrides
@@ -111,10 +122,10 @@ it('GPULineSegmentize validates inputs and emits deterministic node IDs', () => 
   ).toThrow(/parameters/);
   expect(
     () => new GPULineSegmentize(createSegmentizeProps(graph, {output: createOutput(graph, 5)}))
-  ).toThrow(/pathOffsets/);
+  ).toThrow(/lineOffsets/);
   expect(
-    () => new GPULineSegmentize(createSegmentizeProps(graph, {maximumPiecesPerSegment: 2 ** 30}))
-  ).toThrow(/maximumPiecesPerSegment/);
+    () => new GPULineSegmentize(createSegmentizeProps(graph, {maximumPieceCount: 2 ** 30}))
+  ).toThrow(/maximumPieceCount/);
   const props = createSegmentizeProps(graph);
   expect(
     () =>
@@ -171,7 +182,7 @@ it('line segmentize parameter packing validates values', () => {
 });
 
 it('line segmentize oracles keep vertices, measures and endpoints', () => {
-  const paths = createFlatPaths([
+  const lines = createFlatLines([
     [
       [0, 0],
       [3, 4],
@@ -181,15 +192,15 @@ it('line segmentize oracles keep vertices, measures and endpoints', () => {
     [],
     [[1, 1]]
   ]);
-  const result = segmentizePaths(paths, {maximumSegmentLength: 2, maximumPieces: 100});
-  expect(result.pathOffsets).toEqual([0, 6, 6, 7]);
+  const result = segmentizeLines(lines, {maximumSegmentLength: 2, maximumPieces: 100});
+  expect(result.lineOffsets).toEqual([0, 6, 6, 7]);
   expect(result.positions[1]).toEqual([1, 4 / 3]);
   expect(result.measures[3]).toBe(5);
   expect(result.measures[5]).toBe(6);
   const arcs = tessellateGreatCircleArcs([[170, 0]], [[-170, 0]], {
     maximumSegmentLength: 0,
     minimumSegments: 4,
-    maximumSegments: 10,
+    maximumSegmentCount: 10,
     radius: 1
   });
   expect(arcs.positions.at(-1)).toEqual([190, 0]);
@@ -199,12 +210,12 @@ it('line segmentize oracles keep vertices, measures and endpoints', () => {
 it('GPULineSmooth and GPULineChunk validate their layouts', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'smooth-chunk'});
   const positions = createTransientView(graph, getViewId('positions'), 'float32x2', 10);
-  const pathOffsets = createTransientView(graph, getViewId('offsets'), 'uint32', 3);
+  const lineOffsets = createTransientView(graph, getViewId('offsets'), 'uint32', 3);
   const parameters = createTransientView(graph, getViewId('parameters'), 'float32', 4);
   const smooth = new GPULineSmooth({
     positions,
-    pathOffsets,
-    iterations: 3,
+    lineOffsets,
+    iterationCount: 3,
     parameters,
     output: {...createOutput(graph, 2), measures: undefined}
   });
@@ -218,8 +229,8 @@ it('GPULineSmooth and GPULineChunk validate their layouts', () => {
     () =>
       new GPULineSmooth({
         positions,
-        pathOffsets,
-        iterations: 3,
+        lineOffsets,
+        iterationCount: 3,
         parameters,
         output: createOutput(graph, 2)
       })
@@ -228,35 +239,35 @@ it('GPULineSmooth and GPULineChunk validate their layouts', () => {
     () =>
       new GPULineSmooth({
         positions,
-        pathOffsets,
-        iterations: 11,
+        lineOffsets,
+        iterationCount: 11,
         parameters,
         output: {...createOutput(graph, 2), measures: undefined}
       })
-  ).toThrow(/iterations/);
+  ).toThrow(/iterationCount/);
   expect(Array.from(getGPULineSmoothParameterValues())).toEqual([0.25, 0, 0, 0]);
   expect(() => getGPULineSmoothParameterValues({ratio: 0.75})).toThrow(/ratio/);
 
-  // Chunk mode: path capacity comes from the output; substring mode needs one path per input.
+  // Chunk mode: line capacity comes from the output; substring mode needs one line per input.
   const chunk = new GPULineChunk({
     positions,
-    pathOffsets,
+    lineOffsets,
     mode: 'chunk',
     parameters,
     output: createOutput(graph, 7)
   });
-  expect(chunk.pathCapacity).toBe(7);
+  expect(chunk.lineCapacity).toBe(7);
   expect(chunk.getCommandNodes(graph).map(node => node.id)).toContain('line-chunk-piece-range');
   expect(
     () =>
       new GPULineChunk({
         positions,
-        pathOffsets,
+        lineOffsets,
         mode: 'substring',
         parameters,
         output: createOutput(graph, 7)
       })
-  ).toThrow(/pathOffsets/);
+  ).toThrow(/lineOffsets/);
   expect(Array.from(getGPULineChunkParameterValues({chunkLength: 2}))).toEqual([
     2,
     0,
@@ -269,15 +280,15 @@ it('GPULineSmooth and GPULineChunk validate their layouts', () => {
 it('line operations declare their spatial context', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'line-contexts'});
   const positions = createTransientView(graph, getViewId('positions'), 'float32x2', 10);
-  const pathOffsets = createTransientView(graph, getViewId('offsets'), 'uint32', 3);
+  const lineOffsets = createTransientView(graph, getViewId('offsets'), 'uint32', 3);
   const parameters = createTransientView(graph, getViewId('parameters'), 'float32', 4);
   // Planar-only: great-circle longitude/latitude throws with a project-first hint.
   expect(
     () =>
       new GPULineSmooth({
         positions,
-        pathOffsets,
-        iterations: 1,
+        lineOffsets,
+        iterationCount: 1,
         parameters,
         spatialContext: GREAT_CIRCLE,
         output: {...createOutput(graph, 2), measures: undefined}
@@ -286,7 +297,7 @@ it('line operations declare their spatial context', () => {
   // Chunk accepts both.
   const chunkProps = {
     positions,
-    pathOffsets,
+    lineOffsets,
     mode: 'chunk' as const,
     parameters,
     output: {...createOutput(graph, 2), measures: undefined}
@@ -310,4 +321,30 @@ it('line operations declare their spatial context', () => {
         spatialContext: {coordinateSpace: 'planar', metric: 'native'}
       })
   ).toThrow(/does not support planar/);
+});
+
+it('GPULineSmooth builds the same pipelines for any number of passes and parses', () => {
+  for (const closed of [false, true]) {
+    const buildNodes = (iterationCount: number) => {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: `smooth-${iterationCount}`});
+      const positions = createTransientView(graph, getViewId('positions'), 'float32x2', 10);
+      const lineOffsets = createTransientView(graph, getViewId('offsets'), 'uint32', 3);
+      const parameters = createTransientView(graph, getViewId('parameters'), 'float32', 4);
+      return new GPULineSmooth({
+        positions,
+        lineOffsets,
+        iterationCount,
+        closed,
+        parameters,
+        output: {...createOutput(graph, 2), measures: undefined}
+      }).getCommandNodes(graph);
+    };
+    // The level number lives in a GPU word, so levels share pipelines (rule 12).
+    expect(countDistinctPipelines(buildNodes(4))).toBe(countDistinctPipelines(buildNodes(3)));
+    expect(countDistinctPipelines(buildNodes(5))).toBe(countDistinctPipelines(buildNodes(4)));
+    for (const {source} of getGPUCommandNodeKernelSources(buildNodes(3))) {
+      const reflect = new WgslReflect(source);
+      expect(reflect.storage.length).toBeLessThanOrEqual(8);
+    }
+  }
 });

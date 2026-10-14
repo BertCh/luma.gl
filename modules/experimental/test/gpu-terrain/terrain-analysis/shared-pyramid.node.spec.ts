@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/index';
 import {
   getGPURasterExtremaPyramidLayout,
   GPURasterExtremaPyramid,
@@ -22,6 +23,7 @@ import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const WIDTH = 40;
 const HEIGHT = 32;
+const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 10});
 
 function createFixture() {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'shared-pyramid-node'});
@@ -42,7 +44,7 @@ function createFixture() {
     height: number,
     options: {footprint?: 'cell' | 'bilinear'; shortBy?: number} = {}
   ): GPURasterExtremaPyramidOutput => {
-    const layout = getGPURasterExtremaPyramidLayout(width, height, {
+    const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width, height}), {
       firstBlockSize: 4,
       footprint: options.footprint
     });
@@ -58,44 +60,40 @@ function createFixture() {
   const consumers = (pyramid: GPURasterExtremaPyramidOutput, traversal: 'march' | 'pyramid') => ({
     viewshed: () =>
       new GPUTerrainViewshed({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         elevation,
-        settings: view('viewshed-settings', 'float32', 8),
-        visibility: view('viewshed-out', 'uint32', WIDTH * HEIGHT),
+        parameters: view('viewshed-settings', 'float32', 8),
+        output: {visibility: view('viewshed-out', 'uint32', WIDTH * HEIGHT)},
         traversal,
         pyramid
       }),
     lineOfSight: () =>
       new GPUTerrainLineOfSight({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         elevation,
         pairs: view('pairs', 'float32x4', 4),
-        settings: view('los-settings', 'float32', 12),
-        visibility: view('los-out', 'uint32', 4),
+        parameters: view('los-settings', 'float32', 12),
+        output: {visibility: view('los-out', 'uint32', 4)},
         traversal,
         pyramid
       }),
     cumulative: () =>
       new GPUTerrainCumulativeViewshed({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         elevation,
         observers: view('observers', 'float32x2', 2),
-        settings: view('cumulative-settings', 'float32', 12),
-        visibleCount: view('cumulative-out', 'uint32', WIDTH * HEIGHT),
+        parameters: view('cumulative-settings', 'float32', 12),
+        output: {visibleCount: view('cumulative-out', 'uint32', WIDTH * HEIGHT)},
         traversal,
         pyramid
       }),
     profile: () =>
       new GPUPointHorizonProfile({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         elevation,
         observers: view('profile-observers', 'float32x4', 2),
-        settings: view('profile-settings', 'float32', 8),
-        tangent: view('tangent', 'float32', 2 * 720),
+        parameters: view('profile-settings', 'float32', 8),
+        output: {tangent: view('tangent', 'float32', 2 * 720)},
         maximumDistance: 500,
         cellSize: 10,
         traversal,
@@ -103,13 +101,12 @@ function createFixture() {
       }),
     horizonVisibility: () =>
       new GPUPointHorizonVisibility({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         elevation,
         observers: view('horizon-observers', 'float32x4', 2),
         targets: view('targets', 'float32x4', 3),
-        settings: view('horizon-settings', 'float32', 12),
-        visibility: view('horizon-out', 'uint32', 3),
+        parameters: view('horizon-settings', 'float32', 12),
+        output: {visibility: view('horizon-out', 'uint32', 3)},
         maximumDistance: 500,
         cellSize: 10,
         traversal,
@@ -150,32 +147,31 @@ it('a shared pyramid requires the pyramid traversal', () => {
 
 it('GPURasterExtremaPyramid exposes combined output and rejects mixing it with maximum', () => {
   const {graph, elevation} = createFixture();
-  const layout = getGPURasterExtremaPyramidLayout(WIDTH, HEIGHT, {firstBlockSize: 4});
+  const layout = getGPURasterExtremaPyramidLayout(GRID, {firstBlockSize: 4});
   const combined = createTransientView(graph, 'combined', 'float32', 2 * layout.length);
   const pyramid = new GPURasterExtremaPyramid({
-    width: WIDTH,
-    height: HEIGHT,
+    grid: GRID,
     input: elevation,
-    combined
+    output: {combined}
   });
   expect(pyramid.output).toEqual({layout, combined});
   expect(
     () =>
       new GPURasterExtremaPyramid({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         input: elevation,
-        combined,
-        maximum: createTransientView(graph, 'maximum', 'float32', layout.length)
+        output: {
+          combined,
+          maximum: createTransientView(graph, 'maximum', 'float32', layout.length)
+        }
       })
   ).toThrow(/combined cannot be used together/);
   expect(
     () =>
       new GPURasterExtremaPyramid({
-        width: WIDTH,
-        height: HEIGHT,
+        grid: GRID,
         input: elevation,
-        combined: createTransientView(graph, 'short', 'float32', layout.length)
+        output: {combined: createTransientView(graph, 'short', 'float32', layout.length)}
       })
   ).toThrow(/must contain/);
 });

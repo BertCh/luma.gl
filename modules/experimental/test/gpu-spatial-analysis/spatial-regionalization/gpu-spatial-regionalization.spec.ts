@@ -5,8 +5,10 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUSkaterRegionsParameterValues,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPU_SKATER_NO_CUT,
+  GPU_SKATER_REGIONS_PARAMETER_LENGTH,
   GPURegionPartitionEvaluation,
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree
@@ -23,6 +25,7 @@ import {
   getSquaredDistance,
   type RegionalizationCase
 } from './spatial-regionalization-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const CASES = referenceCases as RegionalizationCase[];
 
@@ -65,18 +68,24 @@ function createRig(
       values: valuesView,
       columnCount: columns,
       standardize: options.standardize,
-      treeEdgeFlags: flags.view,
-      componentLabels: componentLabels.view,
-      standardizedValues: standardized?.view,
-      edges: {ids: edgeIds.view, count: edgeCount.view, overflow: edgeOverflow.view},
-      edgeEndpoints: endpoints.view,
-      edgeCosts: costs.view
+      output: {
+        treeEdgeFlags: flags.view,
+        componentLabels: componentLabels.view,
+        standardizedValues: standardized?.view,
+        edges: {ids: edgeIds.view, status: {count: edgeCount.view, overflow: edgeOverflow.view}},
+        edgeEndpoints: endpoints.view,
+        edgeDissimilarities: costs.view
+      }
     })
   );
   let skater;
   if (options.withSkater) {
     const maximumRegionCount = options.maximumRegionCount ?? 8;
-    const parameters = rig.input(new Uint32Array([2, 1]), 'uint32', 2);
+    const parameters = rig.input(
+      getGPUSkaterRegionsParameterValues({regionCount: 2}),
+      'uint32',
+      GPU_SKATER_REGIONS_PARAMETER_LENGTH
+    );
     const labels = rig.output('uint32', rows);
     const regionCount = rig.output('uint32', 1);
     const cutEdges = rig.output('uint32', maximumRegionCount - 1);
@@ -93,10 +102,12 @@ function createRig(
         columnCount: columns,
         maximumRegionCount,
         parameters,
-        labels: labels.view,
-        regionCount: regionCount.view,
-        cutEdges: cutEdges.view,
-        cutGains: cutGains.view
+        output: {
+          labels: labels.view,
+          regionCount: regionCount.view,
+          cutEdges: cutEdges.view,
+          cutGains: cutGains.view
+        }
       })
     );
     rig.graph.add(
@@ -105,9 +116,11 @@ function createRig(
         columnCount: columns,
         labels: labels.view,
         weights,
-        summary: summary.view,
-        regionSizes: sizes.view,
-        regionWithinSsd: within.view
+        output: {
+          summary: summary.view,
+          regionSizes: sizes.view,
+          regionWithinSumOfSquares: within.view
+        }
       })
     );
     skater = {parameters, labels, regionCount, cutEdges, cutGains, summary, sizes, within};
@@ -150,7 +163,7 @@ async function readEdges(setup: ReturnType<typeof createRig>): Promise<[number, 
 
 it('GPUSpatialWeightsMinimumSpanningTree matches scipy on lattices and an island forest', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const data of CASES) {
     const setup = createRig(device, data, data.values, data.columns, {standardize: false});
     setup.encode();
@@ -170,7 +183,7 @@ it('GPUSpatialWeightsMinimumSpanningTree matches scipy on lattices and an island
 
 it('GPUSpatialWeightsMinimumSpanningTree breaks cost ties by the lowest edge slot', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // A 9x9 rook lattice with attributes in {0, 1, 2}: cost ties everywhere. Exact integer costs.
   const width = 9;
   const rows = width * width;
@@ -207,7 +220,7 @@ it('GPUSpatialWeightsMinimumSpanningTree breaks cost ties by the lowest edge slo
 
 it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const data of CASES) {
     const maximumRegionCount = data.components + 9;
     const setup = createRig(device, data, data.values, data.columns, {
@@ -219,7 +232,12 @@ it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest
     for (const run of data.runs) {
       // spopt's islands='increase' adds the tree count to n_clusters when the graph is disconnected.
       const target = run.k + (data.components > 1 ? data.components : 0);
-      setup.rig.bufferOf(skater.parameters).write(new Uint32Array([target, run.floor ?? 1]));
+      setup.rig.bufferOf(skater.parameters).write(
+        getGPUSkaterRegionsParameterValues({
+          regionCount: target,
+          minimumRegionSize: run.floor ?? 1
+        })
+      );
       setup.encode();
       const labels = await readUint32(skater.labels.buffer, data.rows);
       const label = `${data.name} k=${run.k} floor=${run.floor}`;
@@ -242,9 +260,9 @@ it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest
       );
       const {
         regionCount: countIndex,
-        withinSsd,
-        betweenSsd,
-        totalSsd,
+        withinSumOfSquares,
+        betweenSumOfSquares,
+        totalSumOfSquares,
         minimumSize,
         maximumSize,
         crossLinkFraction,
@@ -252,10 +270,10 @@ it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest
         pseudoF
       } = GPU_REGION_PARTITION_EVALUATION_LAYOUT;
       expect(summary[countIndex], `${label} regions`).toBe(expected.regionCount);
-      expect(summary[withinSsd]).toBeCloseTo(run.score, 2);
-      expect(summary[withinSsd]).toBeCloseTo(expected.withinSsd, 2);
-      expect(summary[totalSsd]).toBeCloseTo(expected.totalSsd, 2);
-      expect(summary[betweenSsd]).toBeCloseTo(expected.totalSsd - expected.withinSsd, 2);
+      expect(summary[withinSumOfSquares]).toBeCloseTo(run.score, 2);
+      expect(summary[withinSumOfSquares]).toBeCloseTo(expected.withinSsd, 2);
+      expect(summary[totalSumOfSquares]).toBeCloseTo(expected.totalSsd, 2);
+      expect(summary[betweenSumOfSquares]).toBeCloseTo(expected.totalSsd - expected.withinSsd, 2);
       expect(summary[minimumSize]).toBe(expected.minimumSize);
       expect(summary[maximumSize]).toBe(expected.maximumSize);
       expect(summary[crossLinkFraction]).toBeCloseTo(expected.crossLinkFraction, 5);
@@ -285,7 +303,7 @@ it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest
 
 it('GPURegionPartitionEvaluation ignores unlabelled rows and honours labelCapacity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rig = new WeightsRig(device);
   const values = [0, 0, 1, 1, 10, 10, 11, 11, 100, 100];
   const labels = [0, 0, 1, 1, 0xffffffff, 7, 1, 1, 0, 0];
@@ -295,7 +313,7 @@ it('GPURegionPartitionEvaluation ignores unlabelled rows and honours labelCapaci
       values: rig.input(new Float32Array(values), 'float32', 10),
       labels: rig.input(new Uint32Array(labels), 'uint32', 10),
       labelCapacity: 4,
-      summary: summary.view
+      output: {summary: summary.view}
     })
   );
   const compiled = rig.graph.compile();
@@ -310,11 +328,14 @@ it('GPURegionPartitionEvaluation ignores unlabelled rows and honours labelCapaci
   );
   expect(words[GPU_REGION_PARTITION_EVALUATION_LAYOUT.regionCount]).toBe(2);
   expect(words[GPU_REGION_PARTITION_EVALUATION_LAYOUT.ignoredRows]).toBe(2);
-  expect(words[GPU_REGION_PARTITION_EVALUATION_LAYOUT.withinSsd]).toBeCloseTo(
+  expect(words[GPU_REGION_PARTITION_EVALUATION_LAYOUT.withinSumOfSquares]).toBeCloseTo(
     expected.withinSsd,
     2
   );
-  expect(words[GPU_REGION_PARTITION_EVALUATION_LAYOUT.totalSsd]).toBeCloseTo(expected.totalSsd, 1);
+  expect(words[GPU_REGION_PARTITION_EVALUATION_LAYOUT.totalSumOfSquares]).toBeCloseTo(
+    expected.totalSsd,
+    1
+  );
   compiled.destroy();
   rig.destroy();
 });

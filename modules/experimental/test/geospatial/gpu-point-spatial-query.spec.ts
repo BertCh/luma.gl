@@ -14,104 +14,103 @@ import {
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUPointSpatialQuery, type GPUPointSpatialQueryKind} from '../../src/geospatial';
+import {requireTestDevice} from '../utils/require-test-device';
 
 it('GPUPointSpatialQuery scans bounds and radius predicates in 2D and 3D', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   const softwareBackedDevice = isSoftwareBackedDevice(device);
   if (softwareBackedDevice) {
     void 0;
   }
 
-  const cases: QueryFixtureProps[] = [
-    {
-      id: 'unindexed-2d-bounds',
-      positions: Float32Array.from([
-        0,
-        0,
-        1,
-        1,
-        2,
-        2,
-        2.01,
-        1,
-        Number.NaN,
-        1,
-        Number.POSITIVE_INFINITY,
-        0,
-        -1,
-        0
-      ]),
-      dimension: 2,
-      kind: 'bounds',
-      query: Float32Array.from([0, 0, 2, 2]),
-      expectedIds: [0, 1, 2]
-    },
-    {
-      id: 'unindexed-2d-radius',
-      positions: Float32Array.from([0, 0, 3, 4, 4, 4, -3, -4, Number.NaN, 0, 3.0001, 4]),
-      sourceIds: Uint32Array.from([10, 11, 12, 13, 14, 15]),
-      dimension: 2,
-      kind: 'radius',
-      query: Float32Array.from([0, 0, 5]),
-      expectedIds: [10, 11, 13]
-    },
-    {
-      id: 'unindexed-3d-bounds',
-      positions: Float32Array.from([
-        0,
-        0,
-        0,
-        1,
-        2,
-        3,
-        2,
-        3,
-        4,
-        1,
-        1,
-        4.01,
-        0,
-        Number.NEGATIVE_INFINITY,
-        0
-      ]),
-      dimension: 3,
-      kind: 'bounds',
-      query: Float32Array.from([-1, -1, -1, 2, 3, 4]),
-      expectedIds: [0, 1, 2]
-    },
-    {
-      id: 'unindexed-3d-radius',
-      positions: Float32Array.from([
-        0,
-        0,
-        0,
-        1,
-        2,
-        2,
-        3,
-        3,
-        0,
-        -1,
-        -2,
-        -2,
-        0,
-        Number.NaN,
-        0,
-        1.0001,
-        2,
-        2
-      ]),
-      dimension: 3,
-      kind: 'radius',
-      query: Float32Array.from([0, 0, 0, 3]),
-      expectedIds: [0, 1, 3]
-    }
-  ].filter(testCase => !softwareBackedDevice || testCase.kind !== 'radius');
+  const cases: QueryFixtureProps[] = (
+    [
+      {
+        id: 'unindexed-2d-bounds',
+        positions: Float32Array.from([
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          2.01,
+          1,
+          Number.NaN,
+          1,
+          Number.POSITIVE_INFINITY,
+          0,
+          -1,
+          0
+        ]),
+        dimension: 2,
+        kind: 'bounds',
+        parameters: Float32Array.from([0, 0, 2, 2]),
+        expectedIds: [0, 1, 2]
+      },
+      {
+        id: 'unindexed-2d-radius',
+        positions: Float32Array.from([0, 0, 3, 4, 4, 4, -3, -4, Number.NaN, 0, 3.0001, 4]),
+        sourceIds: Uint32Array.from([10, 11, 12, 13, 14, 15]),
+        dimension: 2,
+        kind: 'radius',
+        parameters: Float32Array.from([0, 0, 5]),
+        expectedIds: [10, 11, 13]
+      },
+      {
+        id: 'unindexed-3d-bounds',
+        positions: Float32Array.from([
+          0,
+          0,
+          0,
+          1,
+          2,
+          3,
+          2,
+          3,
+          4,
+          1,
+          1,
+          4.01,
+          0,
+          Number.NEGATIVE_INFINITY,
+          0
+        ]),
+        dimension: 3,
+        kind: 'bounds',
+        parameters: Float32Array.from([-1, -1, -1, 2, 3, 4]),
+        expectedIds: [0, 1, 2]
+      },
+      {
+        id: 'unindexed-3d-radius',
+        positions: Float32Array.from([
+          0,
+          0,
+          0,
+          1,
+          2,
+          2,
+          3,
+          3,
+          0,
+          -1,
+          -2,
+          -2,
+          0,
+          Number.NaN,
+          0,
+          1.0001,
+          2,
+          2
+        ]),
+        dimension: 3,
+        kind: 'radius',
+        parameters: Float32Array.from([0, 0, 0, 3]),
+        expectedIds: [0, 1, 3]
+      }
+    ] satisfies QueryFixtureProps[]
+  ).filter(testCase => !softwareBackedDevice || testCase.kind !== 'radius');
 
   for (const testCase of cases) {
     const fixture = createQueryFixture(device, testCase);
@@ -127,11 +126,7 @@ it('GPUPointSpatialQuery scans bounds and radius predicates in 2D and 3D', async
 
 it('GPUPointSpatialQuery preserves exact radius boundaries and subnormals', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -165,7 +160,7 @@ it('GPUPointSpatialQuery preserves exact radius boundaries and subnormals', asyn
     ]),
     dimension: 2,
     kind: 'radius',
-    query: Float32Array.from([0, 0, 265]),
+    parameters: Float32Array.from([0, 0, 265]),
     expectedIds: [0, 2, 3, 5, 6, 7, 8]
   });
 
@@ -188,11 +183,7 @@ it('GPUPointSpatialQuery preserves exact radius boundaries and subnormals', asyn
 
 it('GPUPointSpatialQuery rejects outside radii at large coordinate offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -220,7 +211,7 @@ it('GPUPointSpatialQuery rejects outside radii at large coordinate offsets', asy
     ]),
     dimension: 2 as const,
     kind: 'radius' as const,
-    query: Float32Array.from([center, center, radius]),
+    parameters: Float32Array.from([center, center, radius]),
     gridSize: [4, 4] as const,
     indexBounds: [center - 8192, center - 8192, center + 8192, center + 8192] as const,
     expectedIds: [0, 1, 2, 5, 6]
@@ -251,11 +242,7 @@ it('GPUPointSpatialQuery rejects outside radii at large coordinate offsets', asy
 
 it('GPUPointSpatialQuery keeps indexed row addressing separate from returned source IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const sharedProps = {
     positions: Float32Array.from([
@@ -277,7 +264,7 @@ it('GPUPointSpatialQuery keeps indexed row addressing separate from returned sou
     sourceIds: Uint32Array.from([1010, 1010, 3030, 4040, 5050, 6060, 7070]),
     dimension: 2 as const,
     kind: 'bounds' as const,
-    query: Float32Array.from([0, 0, 1, 1]),
+    parameters: Float32Array.from([0, 0, 1, 1]),
     gridSize: [4, 4] as const,
     indexBounds: [0, 0, 4, 4] as const
   };
@@ -329,18 +316,14 @@ it('GPUPointSpatialQuery keeps indexed row addressing separate from returned sou
 
 it('GPUPointSpatialQuery preserves duplicate source IDs as distinct matching rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const sharedProps = {
     positions: Float32Array.from([0.25, 0.25, 0.75, 0.75, 1.25, 0.5, 2.5, 2.5]),
     sourceIds: Uint32Array.from([42, 42, 7, 42]),
     dimension: 2 as const,
     kind: 'bounds' as const,
-    query: Float32Array.from([0, 0, 1, 1]),
+    parameters: Float32Array.from([0, 0, 1, 1]),
     gridSize: [4, 4] as const,
     indexBounds: [0, 0, 4, 4] as const,
     expectedIds: [42, 42]
@@ -377,11 +360,7 @@ it('GPUPointSpatialQuery preserves duplicate source IDs as distinct matching row
 
 it('GPUPointSpatialQuery applies even-odd polygon holes and includes ring boundaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createQueryFixture(device, {
     id: 'polygon-holes-and-boundaries',
     positions: Float32Array.from([
@@ -408,7 +387,7 @@ it('GPUPointSpatialQuery applies even-odd polygon holes and includes ring bounda
     ]),
     dimension: 2,
     kind: 'polygon',
-    query: Float32Array.from([0, 0, 6, 6]),
+    parameters: Float32Array.from([0, 0, 6, 6]),
     polygonPositions: Float32Array.from([
       0, 0, 6, 0, 6, 6, 0, 6, 0, 6, 2, 2, 4, 2, 4, 4, 2, 4, 2, 4
     ]),
@@ -430,11 +409,7 @@ it('GPUPointSpatialQuery applies even-odd polygon holes and includes ring bounda
 
 it('GPUPointSpatialQuery writes source IDs during indexed polygon refinement', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   expect(
     device.limits.maxStorageBuffersPerShaderStage,
     'the core device exercises the portable storage-binding limit'
@@ -446,7 +421,7 @@ it('GPUPointSpatialQuery writes source IDs during indexed polygon refinement', a
     sourceIds: Uint32Array.from([101, 202, 303]),
     dimension: 2,
     kind: 'polygon',
-    query: Float32Array.from([0, 0, 6, 6]),
+    parameters: Float32Array.from([0, 0, 6, 6]),
     polygonPositions: Float32Array.from([0, 0, 6, 0, 6, 6, 0, 6]),
     ringOffsets: Uint32Array.from([0, 4]),
     indexed: true,
@@ -467,18 +442,14 @@ it('GPUPointSpatialQuery writes source IDs during indexed polygon refinement', a
 
 it('GPUPointSpatialQuery handles empty inputs and zero-capacity output', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createQueryFixture(device, {
     id: 'empty-point-query',
     positions: new Float32Array(0),
     dimension: 2,
     kind: 'bounds',
-    query: Float32Array.from([0, 0, 1, 1]),
+    parameters: Float32Array.from([0, 0, 1, 1]),
     capacity: 0,
     expectedIds: []
   });
@@ -501,7 +472,7 @@ type QueryFixtureProps = {
   sourceIds?: Uint32Array;
   dimension: 2 | 3;
   kind: GPUPointSpatialQueryKind;
-  query: Float32Array;
+  parameters: Float32Array;
   indexed?: boolean;
   gridSize?: GPUGridIndexSize;
   indexBounds?: GPUGridIndexBounds;
@@ -531,7 +502,7 @@ function createQueryFixture(device: Device, props: QueryFixtureProps): QueryFixt
     props.positions,
     props.dimension * Float32Array.BYTES_PER_ELEMENT
   );
-  const queryBuffer = createInputBuffer(device, props.query);
+  const queryBuffer = createInputBuffer(device, props.parameters);
   const sourceIdsBuffer = props.sourceIds ? createInputBuffer(device, props.sourceIds) : undefined;
   const output = {
     ids: createOutputBuffer(device, capacity),
@@ -544,7 +515,13 @@ function createQueryFixture(device: Device, props: QueryFixtureProps): QueryFixt
     props.dimension === 2
       ? importView(graph, `${props.id}-positions`, positionsBuffer, 'float32x2', length)
       : importView(graph, `${props.id}-positions`, positionsBuffer, 'float32x3', length);
-  const query = importView(graph, `${props.id}-query`, queryBuffer, 'float32', props.query.length);
+  const query = importView(
+    graph,
+    `${props.id}-query`,
+    queryBuffer,
+    'float32',
+    props.parameters.length
+  );
   const sourceIds = sourceIdsBuffer
     ? importView(graph, `${props.id}-source-ids`, sourceIdsBuffer, 'uint32', length)
     : undefined;
@@ -638,16 +615,18 @@ function createQueryFixture(device: Device, props: QueryFixtureProps): QueryFixt
     'uint32',
     1
   );
-  new GPUPointSpatialQuery({
-    id: `${props.id}-query-contributor`,
-    positions,
-    sourceIds,
-    index,
-    kind: props.kind,
-    query,
-    polygon,
-    output: {ids, count, overflow, requiredCount}
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPointSpatialQuery({
+      id: `${props.id}-query-contributor`,
+      positions,
+      sourceIds,
+      index,
+      kind: props.kind,
+      parameters: query,
+      polygon,
+      output: {ids, status: {count, overflow, requiredCount}}
+    })
+  );
 
   buffers.push(output.ids, output.count, output.overflow, output.requiredCount);
   return {compiled: graph.compile(), query: queryBuffer, output, buffers};

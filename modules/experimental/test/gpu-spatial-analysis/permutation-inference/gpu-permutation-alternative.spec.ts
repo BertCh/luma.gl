@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
   getGPUPermutationMetadata,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_LOCAL_PERMUTATION_NOT_TESTED
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
 import {createGlobalPermutationHarness, createLocalPermutationHarness} from './permutation-harness';
@@ -19,14 +19,19 @@ import {
   getOracleExceedance,
   type OracleAlternative
 } from './permutation-oracle';
+import {
+  PERMUTATION_ALTERNATIVE_REFERENCE,
+  PERMUTATION_ALTERNATIVE_TOLERANCES
+} from './permutation-alternative-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-const R = GPU_GLOBAL_PERMUTATION_RESULT;
+const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
 const ALTERNATIVES: OracleAlternative[] = ['directed', 'two-sided', 'greater', 'lesser'];
 
 it('publishes canonical reproducibility metadata', () => {
   expect(
     getGPUPermutationMetadata(
-      {seed: 9, permutations: 199},
+      {seed: 9, permutationCount: 199},
       {alternative: 'two-sided', multipleTesting: 'benjamini-hochberg'}
     )
   ).toEqual({
@@ -37,7 +42,7 @@ it('publishes canonical reproducibility metadata', () => {
     includeObserved: true
   });
   // The default tail is two-sided.
-  expect(getGPUPermutationMetadata({seed: 9, permutations: 199}).alternative).toBe('two-sided');
+  expect(getGPUPermutationMetadata({seed: 9, permutationCount: 199}).alternative).toBe('two-sided');
 });
 
 function createScene(count: number, seed: number, sign: number) {
@@ -52,13 +57,11 @@ function createScene(count: number, seed: number, sign: number) {
 
 it('GPULocalPermutationTest alternatives match the oracle and relate as esda defines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values} = createScene(500, 3, 1);
   const weights = createKnnWeights(positions, 6, true);
   const permutations = 199;
-  const parameters = {seed: 11, permutations, significanceLevel: 0.05};
+  const parameters = {seed: 11, permutationCount: permutations, significanceLevel: 0.05};
   const byAlternative = new Map<string, Awaited<ReturnType<typeof runLocal>>>();
   async function runLocal(alternative: OracleAlternative) {
     const harness = createLocalPermutationHarness(device!, {
@@ -134,15 +137,13 @@ it('GPULocalPermutationTest alternatives match the oracle and relate as esda def
 
 it('GPUGlobalPermutationTest alternatives follow esda tail semantics', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const permutations = 199;
   for (const sign of [1, -1]) {
     // Positive autocorrelation in the smooth field; the greater tail is rejected, not the lesser.
     const {positions, values} = createScene(900, 1, sign);
     const weights = createKnnWeights(positions, 6, true);
-    const parameters = {seed: 9, permutations};
+    const parameters = {seed: 9, permutationCount: permutations};
     const p: Record<string, number> = {};
     for (const alternative of ALTERNATIVES) {
       const harness = createGlobalPermutationHarness(device, {
@@ -184,19 +185,17 @@ it('GPUGlobalPermutationTest alternatives follow esda tail semantics', async () 
 
 it('folded tail counts distance from the simulated mean (esda calculate_significance)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const permutations = 199;
   const {positions, values} = createScene(500, 3, 1);
   const weights = createKnnWeights(positions, 6, true);
-  const parameters = {seed: 11, permutations, significanceLevel: 0.05};
+  const parameters = {seed: 11, permutationCount: permutations, significanceLevel: 0.05};
 
   // Global: folded exceedance equals the oracle (+-1 for f32 boundary ties) and p = (f + 1) / (R + 1).
   const globalHarness = createGlobalPermutationHarness(device, {
     scene: {weights, values},
     statistic: 'moran',
-    parameters: {seed: 9, permutations},
+    parameters: {seed: 9, permutationCount: permutations},
     alternative: 'folded',
     maximumPermutations: 255
   });
@@ -208,7 +207,7 @@ it('folded tail counts distance from the simulated mean (esda calculate_signific
     statistic: 'moran',
     alternative: 'folded',
     seed: 9,
-    permutations
+    permutationCount: permutations
   });
   expect(globalResult.results[R.exceedances]).toBeLessThanOrEqual(permutations);
   expect(
@@ -258,25 +257,22 @@ it('folded tail counts distance from the simulated mean (esda calculate_signific
   expect(small).toBeLessThan(tested);
 });
 
-// Pinned from esda 2.10.0: calculate_significance(observed, reference, alternative='folded') on this
-// fixed simulated array (reference excludes the observed value; mean is the reference mean).
-it('folded p-value formula matches esda 2.10.0 pinned values', () => {
-  const reference = [
-    0.5, -0.2, 0.1, 0.9, -0.4, 0.3, 0.0, 0.7, -0.6, 0.2, 0.4, -0.1, 0.15, 0.35, -0.3, 0.8, -0.05,
-    0.25, 0.6, -0.7
-  ];
+// esda 2.10 `calculate_significance(observed, reference, alternative='folded')` on a fixed simulated
+// array (reference excludes the observed value; mean is the reference mean), from
+// test/oracles/statistics-permutation-alternative.py.
+it('folded p-value formula matches esda 2.10.0 reference values', () => {
+  const reference = PERMUTATION_ALTERNATIVE_REFERENCE.simulated;
   const mean = reference.reduce((a, b) => a + b, 0) / reference.length;
-  const pinned: [number, number][] = [
-    [0.9, 3 / 21],
-    [-0.4, 7 / 21],
-    [0.05, 18 / 21],
-    [1.5, 1 / 21]
-  ];
-  for (const [observed, expected] of pinned) {
+  const cases = ['distinct_high', 'distinct_low', 'distinct_mid', 'distinct_extreme'];
+  for (const name of cases) {
+    const {observed, foldedP: expected} = PERMUTATION_ALTERNATIVE_REFERENCE.alternatives[name];
     const folded = reference.filter(
       value => Math.abs(value - mean) >= Math.abs(observed - mean)
     ).length;
     const {count, multiplier} = getOracleExceedance('folded', 0, 0, reference.length, folded);
-    expect(getOraclePValue(count, multiplier, reference.length)).toBeCloseTo(expected, 12);
+    expect(getOraclePValue(count, multiplier, reference.length)).toBeCloseTo(
+      expected,
+      PERMUTATION_ALTERNATIVE_TOLERANCES.pValueDecimals
+    );
   }
 });

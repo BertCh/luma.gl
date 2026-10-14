@@ -8,13 +8,13 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
-  getGPUTimeWindowParameterValues,
-  getGPUTimeWindowWordParameterValues,
+  getGPUTimeWindowFilterParameterValues,
+  getGPUTimeWindowFilterWordParameterValues,
   getInt64TimeWords,
   GPUTimeWindowFilter,
-  GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
   splitTimeWords,
-  type GPUTimeWordWindow
+  type GPUTimeWindowFilterWordSettings
 } from '../../../src/gpu-dataframe/time-window-filter';
 import {
   createInputBuffer,
@@ -24,6 +24,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NOW = 1_700_000_000_000n;
 const YEAR = 365n * 24n * 3600n * 1000n;
@@ -46,7 +47,7 @@ type WordOracle = {mask: number[]; weights: number[]; clip: number[]};
 function filterWordsOracle(
   starts: readonly bigint[],
   ends: readonly bigint[] | undefined,
-  window: GPUTimeWordWindow
+  window: GPUTimeWindowFilterWordSettings
 ): WordOracle {
   const windowStart = getInstant(window.start);
   const windowEnd = getInstant(window.end);
@@ -58,7 +59,11 @@ function filterWordsOracle(
     const rowEnd = ends?.[row] ?? rowStart;
     const endAfterStart = Number(rowEnd - windowStart.integer) - windowStart.fraction;
     const startBeforeEnd = Number(windowEnd.integer - rowStart) + windowEnd.fraction;
-    const accepted = endAfterStart >= 0 && startBeforeEnd >= 0;
+    // A reversed window accepts nothing (B-13), whatever the rows' extent.
+    const isWindowOrdered =
+      windowEnd.integer > windowStart.integer ||
+      (windowEnd.integer === windowStart.integer && windowEnd.fraction >= windowStart.fraction);
+    const accepted = isWindowOrdered && endAfterStart >= 0 && startBeforeEnd >= 0;
     result.mask.push(accepted ? 1 : 0);
     const startRamp = startFade > 0 ? clamp01(endAfterStart / startFade) : 1;
     const endRamp = endFade > 0 ? clamp01(startBeforeEnd / endFade) : 1;
@@ -84,7 +89,7 @@ async function runWordFilter(
   props: {
     starts: readonly bigint[];
     ends?: readonly bigint[];
-    windows: readonly GPUTimeWordWindow[];
+    windows: readonly GPUTimeWindowFilterWordSettings[];
     withFade?: boolean;
     withClip?: boolean;
     chunkSize?: number;
@@ -146,8 +151,8 @@ async function runWordFilter(
   const window = new GPUParameterBuffer(device, {
     id: 'word-window',
     format: 'uint32',
-    length: GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowWordParameterValues(props.windows[0])
+    length: GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterWordParameterValues(props.windows[0])
   });
   const maskBuffer = track(createOutputBuffer(device, rows));
   const idsBuffer = track(createOutputBuffer(device, rows));
@@ -161,20 +166,22 @@ async function runWordFilter(
       timestamps: importWords('starts', props.starts),
       endTimestamps: props.ends ? importWords('ends', props.ends) : undefined,
       window: window.importToGraph(graph),
-      outputMask: maskView,
-      fadeWeights: weightOutput?.view,
-      clipFractions: clipOutput?.view,
       output: {
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
-        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        },
+        outputMask: maskView,
+        fadeWeights: weightOutput?.view,
+        clipFractions: clipOutput?.view
       }
     })
   );
   const compiled = graph.compile();
   const results = [];
   for (const timeWindow of props.windows) {
-    window.write(getGPUTimeWindowWordParameterValues(timeWindow));
+    window.write(getGPUTimeWindowFilterWordParameterValues(timeWindow));
     submitGraph(device, compiled, undefined);
     const ids = await readCompactIds(idsBuffer, countBuffer);
     const mask = new Array<number>(rows).fill(0);
@@ -203,12 +210,10 @@ function expectClose(actual: number[], expected: number[], relative = 1e-5): voi
 
 it('GPUTimeWindowFilter word times are exact across a low-word wrap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starts: bigint[] = [];
   for (let value = 0x1_ffff_fff0n; value <= 0x2_0000_0010n; value++) starts.push(value);
-  const windows: GPUTimeWordWindow[] = [
+  const windows: GPUTimeWindowFilterWordSettings[] = [
     {start: 0x1_ffff_ffffn, end: 0x2_0000_0001n},
     {start: 0x2_0000_0000n, end: 0x2_0000_0000n},
     {start: 0x1_ffff_fffen, end: 0x1_ffff_ffffn},
@@ -226,15 +231,13 @@ it('GPUTimeWindowFilter word times are exact across a low-word wrap', async () =
 
 it('GPUTimeWindowFilter word windows with Int64 extreme edges keep pre-1970 rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Review B-07: ordering by the sign of a wrapped difference fails when |a - b| >= 2^63, so an
   // INT64_MIN/INT64_MAX "unbounded" window rejected negative (pre-1970) times.
   const minimum = -(2n ** 63n);
   const maximum = 2n ** 63n - 1n;
   const starts = [minimum, minimum + 1n, -NOW, -1n, 0n, 1n, NOW, maximum - 1n, maximum];
-  const windows: GPUTimeWordWindow[] = [
+  const windows: GPUTimeWindowFilterWordSettings[] = [
     {start: minimum, end: maximum},
     {start: -1n, end: maximum},
     {start: minimum, end: 0n},
@@ -261,12 +264,10 @@ it('GPUTimeWindowFilter word windows with Int64 extreme edges keep pre-1970 rows
 
 it('GPUTimeWindowFilter word times resolve 1 ms edges where float32 collapses', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = [NOW, NOW + YEAR, -NOW];
   const starts = edges.flatMap(edge => [edge - 1n, edge, edge + 1n]);
-  const windows: GPUTimeWordWindow[] = [
+  const windows: GPUTimeWindowFilterWordSettings[] = [
     {start: NOW, end: NOW + YEAR},
     {start: NOW + YEAR, end: NOW + YEAR},
     {start: -NOW, end: -NOW + 1n},
@@ -294,12 +295,10 @@ it('GPUTimeWindowFilter word times resolve 1 ms edges where float32 collapses', 
 
 it('GPUTimeWindowFilter word intervals match fade weights and clip fractions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starts = [-100n, -20n, 0n, 40n, 90n, 150n].map(offset => NOW + offset);
   const ends = [-50n, 30n, 80n, 100n, 200n, 160n].map(offset => NOW + offset);
-  const windows: GPUTimeWordWindow[] = [
+  const windows: GPUTimeWindowFilterWordSettings[] = [
     {start: NOW, end: NOW + 100n, startFadeDuration: 20, endFadeDuration: 30},
     {start: Number(NOW) + 10.5, end: Number(NOW) + 95.25, startFadeDuration: 40}
   ];
@@ -319,11 +318,26 @@ it('GPUTimeWindowFilter word intervals match fade weights and clip fractions', a
   expect(results[0].mask.some(value => value === 1)).toBe(true);
 });
 
+it('GPUTimeWindowFilter word windows that are reversed reject interval rows too (B-13)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Row 1 spans both window edges, so the bare overlap test accepted it before B-13.
+  const starts = [0n, 5n, 12n, 30n].map(offset => NOW + offset);
+  const ends = [10n, 25n, 18n, 40n].map(offset => NOW + offset);
+  const windows: GPUTimeWindowFilterWordSettings[] = [
+    {start: NOW + 20n, end: NOW + 10n},
+    {start: NOW + 10n, end: NOW + 20n}
+  ];
+  const results = await runWordFilter(device, {starts, ends, windows});
+  expect(results[0].mask).toEqual([0, 0, 0, 0]);
+  expect(results[0].mask).toEqual(filterWordsOracle(starts, ends, windows[0]).mask);
+  expect(results[1].mask).toEqual([1, 1, 1, 0]);
+  expect(results[1].mask).toEqual(filterWordsOracle(starts, ends, windows[1]).mask);
+});
+
 it('GPUTimeWindowFilter word windows honor a fractional playhead', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starts = Array.from({length: 13}, (_, offset) => NOW + BigInt(offset));
   const timeWindow = {start: Number(NOW) + 0.5, end: Number(NOW) + 10.5};
   const [result] = await runWordFilter(device, {
@@ -336,11 +350,9 @@ it('GPUTimeWindowFilter word windows honor a fractional playhead', async () => {
 
 it('GPUTimeWindowFilter word windows update per frame without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starts = [0n, 1n, 2n, 3n, 4n, 5n].map(offset => NOW + offset * 1000n);
-  const windows: GPUTimeWordWindow[] = [0, 2, 4, 5].map(index => ({
+  const windows: GPUTimeWindowFilterWordSettings[] = [0, 2, 4, 5].map(index => ({
     start: starts[index],
     end: starts[index] + 1500n
   }));
@@ -350,12 +362,10 @@ it('GPUTimeWindowFilter word windows update per frame without recompiling', asyn
 
 it('GPUTimeWindowFilter word timestamps work across vector chunks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starts = [0x1_ffff_fffen, 0x1_ffff_ffffn, 0x2_0000_0000n, 0x2_0000_0001n, 0x2_0000_0002n];
   const ends = starts.map(start => start + 1n);
-  const windows: GPUTimeWordWindow[] = [
+  const windows: GPUTimeWindowFilterWordSettings[] = [
     {start: 0x2_0000_0000n, end: 0x2_0000_0001n, endFadeDuration: 2}
   ];
   const results = await runWordFilter(device, {
@@ -373,9 +383,7 @@ it('GPUTimeWindowFilter word timestamps work across vector chunks', async () => 
 
 it('GPUTimeWindowFilter validates word and float inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'time-window-validation'});
   const wordsBuffer = createWordBuffer(device, [1n, 2n]);
   const floatsBuffer = createInputBuffer(device, Float32Array.from([1, 2]));
@@ -385,7 +393,7 @@ it('GPUTimeWindowFilter validates word and float inputs', async () => {
   const wordWindow = new GPUParameterBuffer(device, {
     id: 'word-window',
     format: 'uint32',
-    length: GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH
+    length: GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH
   });
   const shortWordWindow = new GPUParameterBuffer(device, {
     id: 'short-word-window',
@@ -396,14 +404,16 @@ it('GPUTimeWindowFilter validates word and float inputs', async () => {
     id: 'float-window',
     format: 'float32',
     length: 8,
-    values: getGPUTimeWindowParameterValues({start: 0, end: 1})
+    values: getGPUTimeWindowFilterParameterValues({start: 0, end: 1})
   });
   const words = importGraphBuffer(graph, 'words', wordsBuffer, 'uint32x2', 2);
   const floats = importGraphBuffer(graph, 'floats', floatsBuffer, 'float32', 2);
   const output = {
     ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 2),
-    count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-    overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+    status: {
+      count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+    }
   };
   const base = {output};
   expect(

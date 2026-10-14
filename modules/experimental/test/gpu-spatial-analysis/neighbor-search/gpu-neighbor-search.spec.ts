@@ -4,13 +4,14 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import type {GPUNeighborSearchParameters} from '../../../src/gpu-spatial-analysis/neighbor-search';
+import type {GPUNeighborSearchSettings} from '../../../src/gpu-spatial-analysis/neighbor-search';
 import {createNeighborSearchHarness, type NeighborSearchReadback} from './neighbor-search-harness';
 import {
   computeNeighborSearchOracle,
   createSeededRandom,
   type NeighborSearchOracleInput
 } from './neighbor-search-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -61,12 +62,10 @@ function expectMatchesOracle(
 
 it('GPUNeighborSearch kNN self join matches the brute-force oracle for k = 1, 4, 8, 32', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createRandomPoints(1500, 7);
   for (const k of [1, 4, 8, 32]) {
-    const parameters: GPUNeighborSearchParameters = {bounds: BOUNDS};
+    const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS};
     const harness = createNeighborSearchHarness(device, {
       mode: 'knn',
       k,
@@ -83,9 +82,7 @@ it('GPUNeighborSearch kNN self join matches the brute-force oracle for k = 1, 4,
 
 it('GPUNeighborSearch kNN resolves exact ties to the lowest ID and handles tiny and clustered sets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Integer lattice: many exactly equal distances.
   const lattice: number[] = [];
   for (let y = 0; y < 12; y++) {
@@ -103,7 +100,7 @@ it('GPUNeighborSearch kNN resolves exact ties to the lowest ID and handles tiny 
     [40, 40]
   ] as const) {
     for (const k of [3, 5, 9]) {
-      const parameters: GPUNeighborSearchParameters = {bounds: [0, 0, 44, 44]};
+      const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 44, 44]};
       const harness = createNeighborSearchHarness(device, {
         mode: 'knn',
         k,
@@ -122,7 +119,7 @@ it('GPUNeighborSearch kNN resolves exact ties to the lowest ID and handles tiny 
   }
   // Fewer valid targets than k, and a bounded kNN radius.
   const few = new Float32Array([1, 1, 2, 2, 3, 3]);
-  const parameters: GPUNeighborSearchParameters = {bounds: [0, 0, 4, 4]};
+  const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 4, 4]};
   const harness = createNeighborSearchHarness(device, {
     mode: 'knn',
     k: 8,
@@ -142,9 +139,7 @@ it('GPUNeighborSearch kNN resolves exact ties to the lowest ID and handles tiny 
 
 it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createRandomPoints(900, 11);
   const queryPositions = createRandomPoints(400, 12);
   const random = createSeededRandom(13);
@@ -153,7 +148,7 @@ it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', a
   // Some points outside the bounds are excluded.
   positions[0] = -5;
   queryPositions[3] = 150;
-  const knnParameters: GPUNeighborSearchParameters = {
+  const knnParameters: GPUNeighborSearchSettings = {
     bounds: BOUNDS,
     weightKind: 'inverseDistance',
     power: 2,
@@ -176,7 +171,7 @@ it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', a
   );
   knn.destroy();
 
-  const radiusParameters: GPUNeighborSearchParameters = {bounds: BOUNDS, radius: 6};
+  const radiusParameters: GPUNeighborSearchSettings = {bounds: BOUNDS, radius: 6};
   const radius = createNeighborSearchHarness(device, {
     mode: 'radius',
     positions,
@@ -196,9 +191,7 @@ it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', a
 
 it('GPUNeighborSearch radius self join follows per-frame radius and weights without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createRandomPoints(2500, 21);
   const random = createSeededRandom(22);
   const mask = Uint32Array.from({length: 2500}, () => (random() < 0.9 ? 1 : 0));
@@ -210,7 +203,7 @@ it('GPUNeighborSearch radius self join follows per-frame radius and weights with
     parameters: {bounds: BOUNDS, radius: 3},
     gridSize: [64, 64]
   });
-  const frames: GPUNeighborSearchParameters[] = [
+  const frames: GPUNeighborSearchSettings[] = [
     {bounds: BOUNDS, radius: 3},
     {bounds: BOUNDS, radius: 0.5},
     {bounds: BOUNDS, radius: 8, rowStandardize: true},
@@ -248,9 +241,7 @@ it('GPUNeighborSearch radius self join follows per-frame radius and weights with
 
 it('GPUNeighborSearch radius cell pruning preserves exact cell and circle boundaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The two-by-two lattice has 100-unit cells while the radius is one. These points exercise
   // targets exactly one unit away across horizontal and vertical cell boundaries, a diagonal cell
   // whose near corner is outside the circle, and far targets in every surrounding cell.
@@ -258,7 +249,7 @@ it('GPUNeighborSearch radius cell pruning preserves exact cell and circle bounda
     0, -1, -1, 0, 0, 0, -2, -1, -1, -2, 75, -1, -75, -1, -1, 75, -1, -75
   ]);
   const queryPositions = new Float32Array([-1, -1]);
-  const parameters: GPUNeighborSearchParameters = {
+  const parameters: GPUNeighborSearchSettings = {
     bounds: [-100, -100, 100, 100],
     radius: 1
   };
@@ -280,9 +271,7 @@ it('GPUNeighborSearch radius cell pruning preserves exact cell and circle bounda
 
 it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createRandomPoints(800, 31);
   const harness = createNeighborSearchHarness(device, {
     mode: 'knn',
@@ -293,7 +282,7 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
   });
   for (const kernel of ['gaussian', 'triangular', 'epanechnikov', 'bisquare', 'uniform'] as const) {
     for (const rowStandardize of [false, true]) {
-      const parameters: GPUNeighborSearchParameters = {
+      const parameters: GPUNeighborSearchSettings = {
         bounds: BOUNDS,
         weightKind: 'kernel',
         kernel,
@@ -316,7 +305,7 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
     parameters: {bounds: BOUNDS}
   });
   for (const distanceFloor of [0, 0.5]) {
-    const parameters: GPUNeighborSearchParameters = {
+    const parameters: GPUNeighborSearchSettings = {
       bounds: BOUNDS,
       weightKind: 'inverseDistance',
       distanceFloor
@@ -335,11 +324,9 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
 
 it('GPUNeighborSearch clamps offsets and flags overflow when the capacity is exceeded', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createRandomPoints(600, 41);
-  const parameters: GPUNeighborSearchParameters = {bounds: BOUNDS, radius: 10};
+  const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS, radius: 10};
   const oracle = computeNeighborSearchOracle({mode: 'radius', positions, parameters});
   const capacity = Math.floor(oracle.offsets[600] / 3);
   const harness = createNeighborSearchHarness(device, {
@@ -382,11 +369,9 @@ it('GPUNeighborSearch clamps offsets and flags overflow when the capacity is exc
 
 it('GPUNeighborSearch is bitwise reproducible across submissions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = createRandomPoints(3000, 51);
-  const parameters: GPUNeighborSearchParameters = {
+  const parameters: GPUNeighborSearchSettings = {
     bounds: BOUNDS,
     radius: 4,
     weightKind: 'kernel',
@@ -409,9 +394,7 @@ it('GPUNeighborSearch is bitwise reproducible across submissions', async () => {
 
 it('GPUNeighborSearch kNN cell pruning matches the oracle on mixed density with border points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A dense cluster next to a sparse background: queries hold k candidates after a ring or two
   // and then skip far cells (rows, row-clipped column ranges, end cells), while background
   // queries must keep expanding. Points on exact multiples of the cell width probe the borders.
@@ -434,7 +417,7 @@ it('GPUNeighborSearch kNN cell pruning matches the oracle on mixed density with 
     [100, 100]
   ] as const) {
     for (const k of [1, 16, 32]) {
-      const parameters: GPUNeighborSearchParameters = {bounds: BOUNDS};
+      const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS};
       const harness = createNeighborSearchHarness(device, {
         mode: 'knn',
         k,

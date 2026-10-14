@@ -8,15 +8,23 @@ import {
   getGPUFlowPairKey,
   getGPUFlowPairZones,
   GPUFlowAggregation,
+  type GPUFlowAggregationOutput,
   type GPUFlowAggregationProps
 } from '../../../src/gpu-network/flow-aggregation';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 let defaultViewSerial = 0;
 
+type PropsOverrides = Omit<Partial<GPUFlowAggregationProps>, 'output'> & {
+  output?: Partial<GPUFlowAggregationOutput>;
+};
+
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUFlowAggregationProps> = {}
+  overrides: PropsOverrides = {}
 ): GPUFlowAggregationProps {
   const createDefault = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `default-${defaultViewSerial++}`, format, length);
@@ -25,17 +33,20 @@ function createProps(
     originZoneIds: createDefault('uint32', 10),
     destinationZoneIds: createDefault('uint32', 10),
     pairCapacity: 8,
+    ...overrides,
     output: {
       ids: createDefault('uint32', 4),
-      count: createDefault('uint32', 1),
-      overflow: createDefault('uint32', 1)
-    },
-    ...overrides
+      status: {
+        count: createDefault('uint32', 1),
+        overflow: createDefault('uint32', 1)
+      },
+      ...overrides.output
+    }
   };
 }
 
 function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPUFlowAggregationProps>,
+  overrides: (graph: GPUCommandGraph) => PropsOverrides,
   message: RegExp
 ): void {
   const device = createNullWebGPUDevice();
@@ -58,9 +69,9 @@ it('GPUFlowAggregation pair keys round trip', () => {
 });
 
 it('GPUFlowAggregation rejects invalid properties', () => {
-  expectThrows(() => ({pairCapacity: 6}), /pairCapacity must be a positive power of two/);
-  expectThrows(() => ({pairCapacity: 0}), /pairCapacity must be a positive power of two/);
-  expectThrows(() => ({maxProbeCount: 9}), /maxProbeCount/);
+  expectThrows(() => ({pairCapacity: 6}), /pairCapacity must be a power of two/);
+  expectThrows(() => ({pairCapacity: 0}), /pairCapacity must be a power of two/);
+  expectThrows(() => ({maximumProbeCount: 9}), /maximumProbeCount/);
   expectThrows(() => ({zones: {kind: 'ids', zoneCount: 65536}}), /zone count/);
   expectThrows(() => ({zones: {kind: 'ids', zoneCount: 0}}), /zone count/);
   expectThrows(
@@ -116,27 +127,27 @@ it('GPUFlowAggregation rejects invalid properties', () => {
   );
   expectThrows(
     graph => ({
-      zoneOutWeights: createTransientView(graph, 'zone-out-weights', 'float32', 4)
+      output: {zoneOutWeights: createTransientView(graph, 'zone-out-weights', 'float32', 4)}
     }),
-    /zoneOutWeights requires weights/
+    /output\.zoneOutWeights requires weights/
   );
   expectThrows(
     graph => ({
-      zoneOutCounts: createTransientView(graph, 'zone-out-counts', 'uint32', 3)
+      output: {zoneOutCounts: createTransientView(graph, 'zone-out-counts', 'uint32', 3)}
     }),
-    /zoneOutCounts length/
+    /output\.zoneOutCounts length/
   );
   expectThrows(
     graph => ({
-      flowCounts: createTransientView(graph, 'flow-counts', 'uint32', 5)
+      output: {flowCounts: createTransientView(graph, 'flow-counts', 'uint32', 5)}
     }),
-    /flowCounts length/
+    /output\.flowCounts length/
   );
   expectThrows(
     graph => ({
-      flowWeights: createTransientView(graph, 'flow-weights', 'float32', 3)
+      output: {flowWeights: createTransientView(graph, 'flow-weights', 'float32', 3)}
     }),
-    /flowWeights length/
+    /output\.flowWeights length/
   );
   expectThrows(
     graph => ({
@@ -168,8 +179,10 @@ it('GPUFlowAggregation rejects outputs that share buffers with inputs', () => {
           destinationZoneIds: shared,
           output: {
             ids: shared,
-            count: createTransientView(graph, 'count', 'uint32', 1),
-            overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+            status: {
+              count: createTransientView(graph, 'count', 'uint32', 1),
+              overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+            }
           }
         })
       )
@@ -193,10 +206,12 @@ it('GPUFlowAggregation schedules ids zones in order', () => {
     createProps(graph, {
       sumOrder: 'atomic',
       weights: createTransientView(graph, 'weights', 'float32', 10),
-      flowCounts: createTransientView(graph, 'flow-counts', 'uint32', 4),
-      flowOriginZoneIds: createTransientView(graph, 'flow-origin', 'uint32', 4),
-      zoneOutCounts: createTransientView(graph, 'zone-out-counts', 'uint32', 4),
-      zoneInWeights: createTransientView(graph, 'zone-in-weights', 'float32', 4)
+      output: {
+        flowCounts: createTransientView(graph, 'flow-counts', 'uint32', 4),
+        flowOriginZoneIds: createTransientView(graph, 'flow-origin', 'uint32', 4),
+        zoneOutCounts: createTransientView(graph, 'zone-out-counts', 'uint32', 4),
+        zoneInWeights: createTransientView(graph, 'zone-in-weights', 'float32', 4)
+      }
     })
   )
     .getCommandNodes(graph)
@@ -208,9 +223,10 @@ it('GPUFlowAggregation schedules ids zones in order', () => {
     'flow-aggregation-pair-index',
     'flow-aggregation-pair-query',
     'flow-aggregation-pair-counts',
-    'flow-aggregation-pair-weights',
+    // The slot order by pair is built before the pair sums, which read it (review B-18).
     'flow-aggregation-slot-keys',
     'flow-aggregation-sort-pairs',
+    'flow-aggregation-pair-weights',
     'flow-aggregation-weight-keys',
     'flow-aggregation-sort-weights',
     'flow-aggregation-gather-ids',
@@ -346,12 +362,14 @@ it('GPUFlowAggregation sorted sums add sort, scan, and gather nodes', () => {
       pairCapacity: 16,
       output: {
         ids: createDefault('ids', 'uint32', 4),
-        count: createDefault('count', 'uint32', 1),
-        overflow: createDefault('overflow', 'uint32', 1)
-      },
-      flowWeights: createDefault('flow-weights', 'float32', 4),
-      zoneOutWeights: createDefault('zone-out-weights', 'float32', 4),
-      zoneInWeights: createDefault('zone-in-weights', 'float32', 4)
+        status: {
+          count: createDefault('count', 'uint32', 1),
+          overflow: createDefault('overflow', 'uint32', 1)
+        },
+        flowWeights: createDefault('flow-weights', 'float32', 4),
+        zoneOutWeights: createDefault('zone-out-weights', 'float32', 4),
+        zoneInWeights: createDefault('zone-in-weights', 'float32', 4)
+      }
     });
     const count = contributor.getCommandNodes(graph).length;
     device.destroy();
@@ -363,4 +381,39 @@ it('GPUFlowAggregation sorted sums add sort, scan, and gather nodes', () => {
   console.log(
     `flow-aggregation nodes (3 weight sums): atomic=${atomicCount} sorted=${sortedCount}`
   );
+});
+
+it('GPUFlowAggregation sorted pair sums dispatch one workgroup per stored pair', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const nodes = new GPUFlowAggregation(
+    createProps(graph, {
+      weights: createTransientView(graph, 'weights', 'float32', 10),
+      output: {flowWeights: createTransientView(graph, 'flow-weights', 'float32', 4)}
+    })
+  ).getCommandNodes(graph);
+  const ids = nodes.map(node => node.id);
+  // Review B-18: the pair sum is gated by an indirect dispatch written from the stored-pair count,
+  // so empty table slots launch no 256-lane workgroups.
+  const dispatch = ids.indexOf('flow-aggregation-pair-sum-dispatch');
+  const pairSum = ids.indexOf('flow-aggregation-pair-sum');
+  expect(dispatch).toBeGreaterThanOrEqual(0);
+  expect(dispatch).toBeLessThan(pairSum);
+  expect(ids.findIndex(id => id.startsWith('flow-aggregation-sort-pairs'))).toBeLessThan(pairSum);
+  expect(nodes[pairSum].condition).toMatchObject({source: 'gpu', mode: 'indirect'});
+  expect(getParsedKernelSources(nodes).get('flow-aggregation-pair-sum')).toContain(
+    'slotsByPair[slotsByPairOffset + pairIndex]'
+  );
+  // Rule 16: a capacity whose 256-lane dispatch cannot fit in uint32 fails at construction.
+  expect(
+    () =>
+      new GPUFlowAggregation(
+        createProps(graph, {
+          id: 'too-large',
+          pairCapacity: 2 ** 25,
+          weights: createTransientView(graph, 'weights-2', 'float32', 10)
+        })
+      )
+  ).toThrow(/at most 2\^23/);
+  device.destroy();
 });

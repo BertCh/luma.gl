@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   GPUDelaunayTessellation,
   GPUVoronoiDiagram

@@ -9,6 +9,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUSpatialWeightsTraces} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-weights-traces';
 import {
+  getGPUSpatialWeightsTracesParameterValues,
   getSpatialWeightsTracesOnCPU,
   type SpatialWeightsCSR,
   type GPUSpatialWeightsTracesMode
@@ -31,6 +32,7 @@ import {
   SPATIAL_WEIGHTS_TRACES_REFERENCE,
   SPATIAL_WEIGHTS_TRACES_REFERENCE_MAXIMUM_POWER
 } from './spatial-weights-traces-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const Q = SPATIAL_WEIGHTS_TRACES_REFERENCE_MAXIMUM_POWER;
 
@@ -41,6 +43,8 @@ type RunOptions = {
   includeGramTraces?: boolean;
   probeCount?: number;
   seed?: number;
+  /** Rewrites the seed after the first frame and submits the same compiled graph again. */
+  nextFrameSeed?: number;
   tileRowCount?: number;
   probeBatchSize?: number;
 };
@@ -50,6 +54,8 @@ type Result = {
   gramTraces?: Float32Array;
   approximation: number;
   infinityNorm: number;
+  /** `powerTraces` of the second frame, with `nextFrameSeed`. */
+  nextFramePowerTraces?: Float32Array;
 };
 
 /** `tr(W^q)` of the unscaled `W` from the scaled `tr((W/s)^q)` the node writes (`q` is 1-based). */
@@ -70,6 +76,12 @@ async function runTraces(device: Device, weights: Csr, options: RunOptions): Pro
   const gramBuffer = track(createOutputBuffer(device, 4));
   const approximationBuffer = track(createOutputBuffer(device, 1));
   const normBuffer = track(createOutputBuffer(device, 1));
+  const parameterBuffer =
+    options.seed === undefined
+      ? undefined
+      : track(
+          createInputBuffer(device, getGPUSpatialWeightsTracesParameterValues({seed: options.seed}))
+        );
   graph.add(
     new GPUSpatialWeightsTraces({
       id: 'traces',
@@ -99,7 +111,9 @@ async function runTraces(device: Device, weights: Csr, options: RunOptions): Pro
       maximumPower,
       mode: options.mode,
       probeCount: options.probeCount,
-      seed: options.seed,
+      ...(parameterBuffer
+        ? {parameters: importGraphBuffer(graph, 'trace-parameters', parameterBuffer, 'uint32', 1)}
+        : {}),
       tileRowCount: options.tileRowCount,
       probeBatchSize: options.probeBatchSize,
       includeGramTraces: options.includeGramTraces ?? false,
@@ -109,8 +123,10 @@ async function runTraces(device: Device, weights: Csr, options: RunOptions): Pro
         ...(options.includeGramTraces
           ? {gramTraces: importGraphBuffer(graph, 'gram-out', gramBuffer, 'float32', 4)}
           : {}),
-        approximation: importGraphBuffer(graph, 'approximation', approximationBuffer, 'uint32', 1),
-        infinityNorm: importGraphBuffer(graph, 'infinity-norm', normBuffer, 'float32', 1)
+        infinityNorm: importGraphBuffer(graph, 'infinity-norm', normBuffer, 'float32', 1),
+        status: {
+          approximation: importGraphBuffer(graph, 'approximation', approximationBuffer, 'uint32', 1)
+        }
       }
     })
   );
@@ -125,6 +141,11 @@ async function runTraces(device: Device, weights: Csr, options: RunOptions): Pro
     approximation: (await readUint32(approximationBuffer, 1))[0],
     infinityNorm: (await readFloat32(normBuffer, 1))[0]
   };
+  if (options.nextFrameSeed !== undefined && parameterBuffer) {
+    parameterBuffer.write(getGPUSpatialWeightsTracesParameterValues({seed: options.nextFrameSeed}));
+    submitGraph(device, compiled, undefined);
+    result.nextFramePowerTraces = Float32Array.from(await readFloat32(traceBuffer, maximumPower));
+  }
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();
@@ -190,9 +211,7 @@ function expectExactParity(label: string, actual: Result, reference: (typeof sce
 
 it('GPUSpatialWeightsTraces exact mode matches numpy matrix_power traces and sums', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [name, weights, reference] of scenes) {
     const actual = await runTraces(device, weights, {
       maximumPower: Q,
@@ -205,9 +224,7 @@ it('GPUSpatialWeightsTraces exact mode matches numpy matrix_power traces and sum
 
 it('GPUSpatialWeightsTraces defaults to exact below 4097 rows and is independent of tiling and batching', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const [, weights, reference] = scenes[2];
   const baseline = await runTraces(device, weights, {maximumPower: Q, includeGramTraces: true});
   expectExactParity('default', baseline, reference);
@@ -232,9 +249,7 @@ it('GPUSpatialWeightsTraces defaults to exact below 4097 rows and is independent
 
 it('GPUSpatialWeightsTraces computes the Gram traces when only one power is requested', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const [, weights, reference] = scenes[3];
   for (const mode of ['exact', 'stochastic'] as const) {
     const actual = await runTraces(device, weights, {
@@ -273,9 +288,7 @@ it('GPUSpatialWeightsTraces computes the Gram traces when only one power is requ
 
 it('GPUSpatialWeightsTraces handles self-loops in W', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // W = [[0.5, 0.5], [1, 0]]: tr(W) = 0.5, tr(W^2) = 1.25 (W^2 = [[0.75, 0.25], [0.5, 0.5]]).
   const weights = {
     offsets: Uint32Array.of(0, 2, 3),
@@ -297,9 +310,7 @@ it('GPUSpatialWeightsTraces handles self-loops in W', async () => {
 
 it('GPUSpatialWeightsTraces stochastic mode replays the CPU mirror, is seeded and unbiased', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const [, weights, reference] = scenes[2];
   const options = {
     maximumPower: 4,
@@ -341,12 +352,14 @@ it('GPUSpatialWeightsTraces stochastic mode replays the CPU mirror, is seeded an
       `tr(W^${q})`
     ).toBeLessThan(bound + 1e-3);
   }
-  // Determinism: the same seed gives bit-identical results, another seed does not.
-  const again = await runTraces(device, weights, options);
+  // Determinism: the same seed gives bit-identical results, another seed does not. The seed is
+  // per frame: rewriting it and resubmitting the same compiled graph equals a fresh build.
+  const again = await runTraces(device, weights, {...options, nextFrameSeed: 6});
   expect(Array.from(again.powerTraces)).toEqual(Array.from(actual.powerTraces));
   expect(Array.from(again.gramTraces!)).toEqual(Array.from(actual.gramTraces!));
   const other = await runTraces(device, weights, {...options, seed: 6});
   expect(Array.from(other.powerTraces)).not.toEqual(Array.from(actual.powerTraces));
+  expect(Array.from(again.nextFramePowerTraces!)).toEqual(Array.from(other.powerTraces));
   // Batching the probes does not change the estimate.
   const batched = await runTraces(device, weights, {...options, probeBatchSize: 64});
   expect(Array.from(batched.powerTraces)).toEqual(Array.from(actual.powerTraces));
@@ -354,9 +367,7 @@ it('GPUSpatialWeightsTraces stochastic mode replays the CPU mirror, is seeded an
 
 it('GPUSpatialWeightsTraces defaults to stochastic above 4096 rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A 70 x 70 row-standardized lattice has 4900 rows, above the exact-mode default limit. Only
   // the weights are built: a lag scene would densely invert a 4900 x 4900 system on the CPU.
   const weights = createLatticeWeights(70, true);
@@ -371,9 +382,7 @@ it('GPUSpatialWeightsTraces defaults to stochastic above 4096 rows', async () =>
 
 it('GPUSpatialWeightsTraces keeps a raw binary lattice finite at the default Q = 128', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Row sums reach 4, so the unscaled tr(W^q) would reach about n 3.8^q and overflow float32 near
   // q = 64; the scaled chains stay bounded by n.
   const [, weights] = scenes[1];

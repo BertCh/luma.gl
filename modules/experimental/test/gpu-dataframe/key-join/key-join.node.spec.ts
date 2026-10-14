@@ -94,8 +94,7 @@ it('GPUKeyJoin validates its props', () => {
   expect(() => new GPUKeyJoin(createProps(graph, {kind: 'inner'}))).toThrow(/rows is required/);
   const rows = {
     ids: view('uint32', 4),
-    count: view('uint32', 1),
-    overflow: view('uint32', 1)
+    status: {count: view('uint32', 1), overflow: view('uint32', 1)}
   };
   expect(() => new GPUKeyJoin(createProps(graph, {output: {rows}}))).toThrow(/only supported/);
   expect(() => new GPUKeyJoin(createProps(graph, {kind: 'inner', output: {rows}}))).not.toThrow();

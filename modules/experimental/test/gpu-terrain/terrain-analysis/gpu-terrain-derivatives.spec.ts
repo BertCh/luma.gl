@@ -6,7 +6,11 @@ import {Texture, type Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
+import {
+  GPURasterTextureToBuffer,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
+} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainDerivatives,
@@ -21,6 +25,8 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainDerivatives, type TerrainDerivativeOptions} from './terrain-analysis-oracle';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 6;
 const HEIGHT = 5;
@@ -29,6 +35,7 @@ const PLANE = Float32Array.from(
   {length: PIXEL_COUNT},
   (_, index) => 2 * (index % WIDTH) + 3 * Math.floor(index / WIDTH)
 );
+const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 10});
 
 function expectCloseArray(actual: number[], expected: number[], angular: boolean = false): void {
   expect(actual.length).toBe(expected.length);
@@ -57,7 +64,8 @@ function createDerivativeFixture(
   elevation: Float32Array,
   settingsValues: Float32Array,
   overrides: (graph: GPUCommandGraph) => Partial<GPUTerrainDerivativesProps> = () => ({}),
-  validityMask?: Uint32Array
+  validityMask?: Uint32Array,
+  grid: GPURasterMetadata = GRID
 ): DerivativeFixture {
   const graph = new GPUCommandGraph(device, {id: 'terrain-derivatives-test'});
   const elevationBuffer = createInputBuffer(device, elevation);
@@ -76,8 +84,7 @@ function createDerivativeFixture(
   });
   graph.add(
     new GPUTerrainDerivatives({
-      width: WIDTH,
-      height: HEIGHT,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -89,11 +96,19 @@ function createDerivativeFixture(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', PIXEL_COUNT)
           : undefined
       },
-      settings: settings.importToGraph(graph),
-      slope: importGraphBuffer(graph, 'slope', buffers.slope, 'float32', PIXEL_COUNT),
-      aspect: importGraphBuffer(graph, 'aspect', buffers.aspect, 'float32', PIXEL_COUNT),
-      hillshade: importGraphBuffer(graph, 'hillshade', buffers.hillshade, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', PIXEL_COUNT),
+      parameters: settings.importToGraph(graph),
+      output: {
+        slope: importGraphBuffer(graph, 'slope', buffers.slope, 'float32', PIXEL_COUNT),
+        aspect: importGraphBuffer(graph, 'aspect', buffers.aspect, 'float32', PIXEL_COUNT),
+        hillshade: importGraphBuffer(graph, 'hillshade', buffers.hillshade, 'float32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(
+          graph,
+          'validity',
+          buffers.validity,
+          'uint32',
+          PIXEL_COUNT
+        )
+      },
       ...overrides(graph)
     })
   );
@@ -124,12 +139,10 @@ function destroyFixture(fixture: DerivativeFixture): void {
   for (const buffer of fixture.owned) buffer.destroy();
 }
 
-it('GPUTerrainDerivatives shades a plane and updates settings per frame', async () => {
+it('GPUTerrainDerivatives shades a plane and updates parameters per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const settingsValues = getGPUTerrainDerivativesParameterValues({cellSize: [10, 10]});
+  requireTestDevice(device);
+  const settingsValues = getGPUTerrainDerivativesParameterValues({}, GRID);
   const fixture = createDerivativeFixture(device, PLANE, settingsValues);
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
@@ -144,12 +157,10 @@ it('GPUTerrainDerivatives shades a plane and updates settings per frame', async 
     3
   );
 
-  const updated = getGPUTerrainDerivativesParameterValues({
-    cellSize: [10, 10],
-    zFactor: 2,
-    azimuthDegrees: 90,
-    altitudeDegrees: 30
-  });
+  const updated = getGPUTerrainDerivativesParameterValues(
+    {zFactor: 2, azimuthDegrees: 90, altitudeDegrees: 30},
+    GRID
+  );
   fixture.settings.write(updated);
   submitGraph(device, compiled, undefined);
   await expectDerivatives(fixture, PLANE, updated);
@@ -159,10 +170,8 @@ it('GPUTerrainDerivatives shades a plane and updates settings per frame', async 
 
 it('GPUTerrainDerivatives handles flat terrain and nodata', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const settingsValues = getGPUTerrainDerivativesParameterValues({cellSize: [10, 10]});
+  requireTestDevice(device);
+  const settingsValues = getGPUTerrainDerivativesParameterValues({}, GRID);
   const flat = new Float32Array(PIXEL_COUNT).fill(100);
   const flatFixture = createDerivativeFixture(device, flat, settingsValues);
   let compiled = flatFixture.graph.compile();
@@ -195,17 +204,25 @@ it('GPUTerrainDerivatives handles flat terrain and nodata', async () => {
 
 it('GPUTerrainDerivatives scales Web Mercator and geographic rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const mercatorSettings = getGPUTerrainDerivativesParameterValues({
-    cellSize: [10, 10],
-    northEdge: 0.25,
-    southEdge: 0.375
+  requireTestDevice(device);
+  // Five rows from normalized Web Mercator y 0.25 to 0.375 (latitude 66.5 to 41.0 degrees).
+  const northY = getOracleWebMercatorY(0.25);
+  const rowHeight = (northY - getOracleWebMercatorY(0.375)) / HEIGHT;
+  const mercatorGrid = makeGPURasterMetadata({
+    width: WIDTH,
+    height: HEIGHT,
+    cellSize: [10, rowHeight],
+    origin: [0, northY]
   });
-  const mercator = createDerivativeFixture(device, PLANE, mercatorSettings, () => ({
-    cellSizeMode: 'web-mercator'
-  }));
+  const mercatorSettings = getGPUTerrainDerivativesParameterValues({}, mercatorGrid);
+  const mercator = createDerivativeFixture(
+    device,
+    PLANE,
+    mercatorSettings,
+    () => ({cellSizeMode: 'web-mercator'}),
+    undefined,
+    mercatorGrid
+  );
   let compiled = mercator.graph.compile();
   submitGraph(device, compiled, undefined);
   await expectDerivatives(mercator, PLANE, mercatorSettings, {cellSizeMode: 'web-mercator'});
@@ -214,14 +231,21 @@ it('GPUTerrainDerivatives scales Web Mercator and geographic rows', async () => 
   compiled.destroy();
   destroyFixture(mercator);
 
-  const geographicSettings = getGPUTerrainDerivativesParameterValues({
-    cellSize: [0.001, 0.001],
-    northEdge: 60,
-    southEdge: 59.9
+  const geographicGrid = makeGPURasterMetadata({
+    width: WIDTH,
+    height: HEIGHT,
+    cellSize: [0.001, 0.02],
+    origin: [0, 60]
   });
-  const geographic = createDerivativeFixture(device, PLANE, geographicSettings, () => ({
-    cellSizeMode: 'geographic'
-  }));
+  const geographicSettings = getGPUTerrainDerivativesParameterValues({}, geographicGrid);
+  const geographic = createDerivativeFixture(
+    device,
+    PLANE,
+    geographicSettings,
+    () => ({cellSizeMode: 'geographic'}),
+    undefined,
+    geographicGrid
+  );
   compiled = geographic.graph.compile();
   submitGraph(device, compiled, undefined);
   await expectDerivatives(geographic, PLANE, geographicSettings, {cellSizeMode: 'geographic'});
@@ -231,10 +255,8 @@ it('GPUTerrainDerivatives scales Web Mercator and geographic rows', async () => 
 
 it('GPUTerrainDerivatives supports north row order, percent slope, and textures', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const settingsValues = getGPUTerrainDerivativesParameterValues({cellSize: [10, 10]});
+  requireTestDevice(device);
+  const settingsValues = getGPUTerrainDerivativesParameterValues({}, GRID);
   const north = createDerivativeFixture(device, PLANE, settingsValues, () => ({
     rowDirection: 'north',
     slopeUnits: 'percent'
@@ -287,15 +309,14 @@ it('GPUTerrainDerivatives supports north row order, percent slope, and textures'
   const outputView = importTexture('hillshade-texture', outputTexture);
   graph.add(
     new GPUTerrainDerivatives({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: GRID,
       elevation: {
         id: 'elevation',
         format: 'float32',
         storage: {kind: 'texture', view: importTexture('elevation-texture', inputTexture)}
       },
-      settings: settings.importToGraph(graph),
-      hillshadeTexture: outputView
+      parameters: settings.importToGraph(graph),
+      output: {hillshadeTexture: outputView}
     })
   );
   new GPURasterTextureToBuffer({

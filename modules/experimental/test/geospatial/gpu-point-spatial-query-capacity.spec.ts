@@ -13,17 +13,14 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPUPointSpatialQuery, type GPUSpatialQueryOutput} from '../../src/geospatial';
+import {GPUPointSpatialQuery, type GPUCompactOutput} from '../../src/geospatial';
+import {requireTestDevice} from '../utils/require-test-device';
 
 const STORAGE_BINDING_ALIGNMENT = 256;
 
 it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const positionsBuffer = createInputBuffer(device, Float32Array.from([0, 0]));
   const sourceIdsBuffer = createInputBuffer(device, Uint32Array.from([7]));
@@ -40,25 +37,38 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
     {id: 'outputs', byteLength: outputBuffer.byteLength, usage: outputBuffer.usage},
     outputBuffer
   );
-  const baseOutput: Required<GPUSpatialQueryOutput> = {
+  const baseOutput: Required<GPUCompactOutput> = {
     ids: graph.createDataView(outputHandle, {format: 'uint32', length: 1}),
-    count: graph.createDataView(outputHandle, {
-      format: 'uint32',
-      length: 1,
-      byteOffset: STORAGE_BINDING_ALIGNMENT
-    }),
-    overflow: graph.createDataView(outputHandle, {
-      format: 'uint32',
-      length: 1,
-      byteOffset: STORAGE_BINDING_ALIGNMENT * 2
-    }),
-    requiredCount: graph.createDataView(outputHandle, {
-      format: 'uint32',
-      length: 1,
-      byteOffset: STORAGE_BINDING_ALIGNMENT * 3
-    })
+    status: {
+      count: graph.createDataView(outputHandle, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: STORAGE_BINDING_ALIGNMENT
+      }),
+      overflow: graph.createDataView(outputHandle, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: STORAGE_BINDING_ALIGNMENT * 2
+      }),
+      requiredCount: graph.createDataView(outputHandle, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: STORAGE_BINDING_ALIGNMENT * 3
+      })
+    }
   };
   const outputNames = ['ids', 'count', 'overflow', 'requiredCount'] as const;
+  /** Output with the view of `from` also bound to `to`. */
+  const aliasOutput = (
+    to: (typeof outputNames)[number],
+    from: (typeof outputNames)[number]
+  ): GPUCompactOutput => {
+    const read = (name: (typeof outputNames)[number]) =>
+      name === 'ids' ? baseOutput.ids : baseOutput.status[name];
+    return to === 'ids'
+      ? {...baseOutput, ids: read(from) as typeof baseOutput.ids}
+      : {...baseOutput, status: {...baseOutput.status, [to]: read(from)}};
+  };
   const intersectedCellCount = graph.createDataView(outputHandle, {
     format: 'uint32',
     length: 1,
@@ -74,14 +84,14 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
     for (let secondIndex = firstIndex + 1; secondIndex < outputNames.length; secondIndex++) {
       const firstName = outputNames[firstIndex];
       const secondName = outputNames[secondIndex];
-      const output = {...baseOutput, [secondName]: baseOutput[firstName]};
+      const output = aliasOutput(secondName, firstName);
       expect(
         () =>
           new GPUPointSpatialQuery({
             id: `${firstName}-${secondName}-alias`,
             positions,
             kind: 'bounds',
-            query,
+            parameters: query,
             output
           }),
         `${firstName} and ${secondName} cannot alias`
@@ -96,7 +106,7 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         positions,
         sourceIds,
         kind: 'bounds',
-        query,
+        parameters: query,
         output: {...baseOutput, ids: sourceIds}
       }),
     'a writable output cannot alias a live source-ID read'
@@ -108,12 +118,11 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         id: 'diagnostic-output-alias',
         positions,
         kind: 'bounds',
-        query,
-        output: baseOutput,
-        candidateCount: baseOutput.count
+        parameters: query,
+        output: {...baseOutput, candidateCount: baseOutput.status.count}
       }),
     'candidate diagnostics cannot alias compact outputs'
-  ).toThrow(/output candidateCount and output count must not overlap/);
+  ).toThrow(/output candidateCount and output status.count must not overlap/);
   expect(
     () =>
       new GPUPointSpatialQuery({
@@ -121,9 +130,8 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         positions,
         sourceIds,
         kind: 'bounds',
-        query,
-        output: baseOutput,
-        intersectedCellCount: sourceIds
+        parameters: query,
+        output: {...baseOutput, intersectedCellCount: sourceIds}
       }),
     'cell diagnostics cannot alias query inputs'
   ).toThrow(/intersectedCellCount.*sourceIds must not overlap/);
@@ -133,10 +141,8 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         id: 'diagnostic-pair-alias',
         positions,
         kind: 'bounds',
-        query,
-        output: baseOutput,
-        intersectedCellCount,
-        candidateCount: intersectedCellCount
+        parameters: query,
+        output: {...baseOutput, intersectedCellCount, candidateCount: intersectedCellCount}
       }),
     'the two diagnostics cannot alias one another'
   ).toThrow(/output candidateCount and output intersectedCellCount must not overlap/);
@@ -146,13 +152,15 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         id: 'diagnostic-not-scalar',
         positions,
         kind: 'bounds',
-        query,
-        output: baseOutput,
-        candidateCount: graph.createDataView(outputHandle, {
-          format: 'uint32',
-          length: 2,
-          byteOffset: STORAGE_BINDING_ALIGNMENT * 4
-        })
+        parameters: query,
+        output: {
+          ...baseOutput,
+          candidateCount: graph.createDataView(outputHandle, {
+            format: 'uint32',
+            length: 2,
+            byteOffset: STORAGE_BINDING_ALIGNMENT * 4
+          })
+        }
       }),
     'diagnostics must be scalar views'
   ).toThrow(/candidateCount must be one packed uint32 scalar/);
@@ -163,20 +171,21 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
     id: 'foreign-diagnostic',
     positions,
     kind: 'bounds',
-    query,
-    output: baseOutput,
-    candidateCount: importView(
-      foreignGraph,
-      'foreign-candidate-count',
-      foreignDiagnosticBuffer,
-      'uint32',
-      1
-    )
+    parameters: query,
+    output: {
+      ...baseOutput,
+      candidateCount: importView(
+        foreignGraph,
+        'foreign-candidate-count',
+        foreignDiagnosticBuffer,
+        'uint32',
+        1
+      )
+    }
   });
-  expect(
-    () => foreignQuery.addToGraph(graph),
-    'diagnostics must belong to the target graph'
-  ).toThrow(/views must belong to the target graph/);
+  expect(() => graph.add(foreignQuery), 'diagnostics must belong to the target graph').toThrow(
+    /views must belong to the target graph/
+  );
 
   const packedOutputBuffer = createOutputBuffer(device, 4);
   const packedOutputHandle = graph.importBuffer(
@@ -193,19 +202,21 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         id: 'packed-output-binding-alias',
         positions,
         kind: 'bounds',
-        query,
+        parameters: query,
         output: {
           ids: graph.createDataView(packedOutputHandle, {format: 'uint32', length: 1}),
-          count: graph.createDataView(packedOutputHandle, {
-            format: 'uint32',
-            length: 1,
-            byteOffset: Uint32Array.BYTES_PER_ELEMENT
-          }),
-          overflow: graph.createDataView(packedOutputHandle, {
-            format: 'uint32',
-            length: 1,
-            byteOffset: Uint32Array.BYTES_PER_ELEMENT * 2
-          })
+          status: {
+            count: graph.createDataView(packedOutputHandle, {
+              format: 'uint32',
+              length: 1,
+              byteOffset: Uint32Array.BYTES_PER_ELEMENT
+            }),
+            overflow: graph.createDataView(packedOutputHandle, {
+              format: 'uint32',
+              length: 1,
+              byteOffset: Uint32Array.BYTES_PER_ELEMENT * 2
+            })
+          }
         }
       }),
     'logically disjoint rows are rejected when their aligned binding ranges overlap'
@@ -233,21 +244,21 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
         id: 'zero-capacity-ids-positions-alias',
         positions,
         kind: 'bounds',
-        query,
+        parameters: query,
         output: {...baseOutput, ids: zeroCapacityIds}
       }),
     'a zero-capacity output still binds one row and detects a shared physical default buffer'
   ).toThrow(/output ids and positions must not overlap/);
 
-  new GPUPointSpatialQuery({
-    id: 'aligned-output-bindings',
-    positions,
-    kind: 'bounds',
-    query,
-    output: baseOutput,
-    intersectedCellCount,
-    candidateCount
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPointSpatialQuery({
+      id: 'aligned-output-bindings',
+      positions,
+      kind: 'bounds',
+      parameters: query,
+      output: {...baseOutput, intersectedCellCount, candidateCount}
+    })
+  );
   const compiled = graph.compile();
   encode(device, compiled);
   expect(await readUint32At(outputBuffer, 0), 'aligned output IDs are writable').toBe(0);
@@ -285,11 +296,7 @@ it('GPUPointSpatialQuery rejects every overlapping output pair', async () => {
 
 it('GPUPointSpatialQuery clamps an indirect draw count but preserves requiredCount', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const positionsBuffer = createInputBuffer(
     device,
@@ -308,26 +315,30 @@ it('GPUPointSpatialQuery clamps an indirect draw count but preserves requiredCou
   });
   const graph = new GPUCommandGraph(device, {id: 'spatial-query-result-capacity'});
 
-  new GPUPointSpatialQuery({
-    id: 'capacity-query',
-    positions: importView(graph, 'positions', positionsBuffer, 'float32x2', 6),
-    kind: 'bounds',
-    query: importView(graph, 'query', queryBuffer, 'float32', 4),
-    output: {
-      ids: importView(graph, 'ids', idsBuffer, 'uint32', 2),
-      count: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0)),
-      overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
-    },
-    intersectedCellCount: importView(
-      graph,
-      'intersected-cell-count',
-      intersectedCellCountBuffer,
-      'uint32',
-      1
-    ),
-    candidateCount: importView(graph, 'candidate-count', candidateCountBuffer, 'uint32', 1)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPointSpatialQuery({
+      id: 'capacity-query',
+      positions: importView(graph, 'positions', positionsBuffer, 'float32x2', 6),
+      kind: 'bounds',
+      parameters: importView(graph, 'query', queryBuffer, 'float32', 4),
+      output: {
+        ids: importView(graph, 'ids', idsBuffer, 'uint32', 2),
+        status: {
+          count: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0)),
+          overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
+          requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
+        },
+        intersectedCellCount: importView(
+          graph,
+          'intersected-cell-count',
+          intersectedCellCountBuffer,
+          'uint32',
+          1
+        ),
+        candidateCount: importView(graph, 'candidate-count', candidateCountBuffer, 'uint32', 1)
+      }
+    })
+  );
 
   const compiled = graph.compile();
   encode(device, compiled);
@@ -362,11 +373,7 @@ it('GPUPointSpatialQuery clamps an indirect draw count but preserves requiredCou
 
 it('GPUPointSpatialQuery propagates index overflow independently of result capacity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const positionsBuffer = createInputBuffer(
     device,
@@ -402,35 +409,39 @@ it('GPUPointSpatialQuery propagates index overflow independently of result capac
       overflow: indexOverflow
     })
   );
-  new GPUPointSpatialQuery({
-    id: 'indexed-capacity-query',
-    positions,
-    sourceIds: importView(graph, 'source-ids', sourceIdsBuffer, 'uint32', 5),
-    index: {
-      gridSize: [1, 1],
-      bounds: [0, 0, 1, 1],
-      cellOffsets,
-      rowIndices,
-      count: indexCount,
-      overflow: indexOverflow
-    },
-    kind: 'bounds',
-    query: importView(graph, 'query', queryBuffer, 'float32', 4),
-    output: {
-      ids: importView(graph, 'ids', idsBuffer, 'uint32', 5),
-      count: importView(graph, 'count', countBuffer, 'uint32', 1),
-      overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
-    },
-    intersectedCellCount: importView(
-      graph,
-      'intersected-cell-count',
-      intersectedCellCountBuffer,
-      'uint32',
-      1
-    ),
-    candidateCount: importView(graph, 'candidate-count', candidateCountBuffer, 'uint32', 1)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPointSpatialQuery({
+      id: 'indexed-capacity-query',
+      positions,
+      sourceIds: importView(graph, 'source-ids', sourceIdsBuffer, 'uint32', 5),
+      index: {
+        gridSize: [1, 1],
+        bounds: [0, 0, 1, 1],
+        cellOffsets,
+        rowIndices,
+        count: indexCount,
+        overflow: indexOverflow
+      },
+      kind: 'bounds',
+      parameters: importView(graph, 'query', queryBuffer, 'float32', 4),
+      output: {
+        ids: importView(graph, 'ids', idsBuffer, 'uint32', 5),
+        status: {
+          count: importView(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
+          requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
+        },
+        intersectedCellCount: importView(
+          graph,
+          'intersected-cell-count',
+          intersectedCellCountBuffer,
+          'uint32',
+          1
+        ),
+        candidateCount: importView(graph, 'candidate-count', candidateCountBuffer, 'uint32', 1)
+      }
+    })
+  );
 
   const compiled = graph.compile();
   encode(device, compiled);
@@ -482,11 +493,7 @@ it('GPUPointSpatialQuery propagates index overflow independently of result capac
 
 it('GPUPointSpatialQuery reports exact indexed broad-phase work without source-sized scratch', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const gridWidth = 4;
   const outputCapacity = 1_000_000;
@@ -517,35 +524,39 @@ it('GPUPointSpatialQuery reports exact indexed broad-phase work without source-s
   const rowIndices = importView(graph, 'row-indices', rowIndicesBuffer, 'uint32', 6);
   const indexCount = importView(graph, 'index-count', indexCountBuffer, 'uint32', 1);
   const indexOverflow = importView(graph, 'index-overflow', indexOverflowBuffer, 'uint32', 1);
-  new GPUPointSpatialQuery({
-    id: 'dispatch-query',
-    positions,
-    sourceIds: importView(graph, 'source-ids', sourceIdsBuffer, 'uint32', 4),
-    index: {
-      gridSize: [gridWidth, gridWidth],
-      bounds: [0, 0, gridWidth, gridWidth],
-      cellOffsets,
-      rowIndices,
-      count: indexCount,
-      overflow: indexOverflow
-    },
-    kind: 'bounds',
-    query: importView(graph, 'query', queryBuffer, 'float32', 4),
-    output: {
-      ids: importView(graph, 'ids', idsBuffer, 'uint32', outputCapacity),
-      count: importView(graph, 'count', countBuffer, 'uint32', 1),
-      overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
-    },
-    intersectedCellCount: importView(
-      graph,
-      'intersected-cell-count',
-      intersectedCellCountBuffer,
-      'uint32',
-      1
-    ),
-    candidateCount: importView(graph, 'candidate-count', candidateCountBuffer, 'uint32', 1)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPointSpatialQuery({
+      id: 'dispatch-query',
+      positions,
+      sourceIds: importView(graph, 'source-ids', sourceIdsBuffer, 'uint32', 4),
+      index: {
+        gridSize: [gridWidth, gridWidth],
+        bounds: [0, 0, gridWidth, gridWidth],
+        cellOffsets,
+        rowIndices,
+        count: indexCount,
+        overflow: indexOverflow
+      },
+      kind: 'bounds',
+      parameters: importView(graph, 'query', queryBuffer, 'float32', 4),
+      output: {
+        ids: importView(graph, 'ids', idsBuffer, 'uint32', outputCapacity),
+        status: {
+          count: importView(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importView(graph, 'overflow', overflowBuffer, 'uint32', 1),
+          requiredCount: importView(graph, 'total-count', totalCountBuffer, 'uint32', 1)
+        },
+        intersectedCellCount: importView(
+          graph,
+          'intersected-cell-count',
+          intersectedCellCountBuffer,
+          'uint32',
+          1
+        ),
+        candidateCount: importView(graph, 'candidate-count', candidateCountBuffer, 'uint32', 1)
+      }
+    })
+  );
 
   const compiled = graph.compile();
   const dispatchProbe = encodeWithDispatchProbe(device, compiled, 'dispatch-query-refine');
@@ -567,37 +578,47 @@ it('GPUPointSpatialQuery reports exact indexed broad-phase work without source-s
     'float32x2',
     4
   );
-  new GPUPointSpatialQuery({
-    id: 'baseline-query',
-    positions: baselinePositions,
-    index: {
-      gridSize: [gridWidth, gridWidth],
-      bounds: [0, 0, gridWidth, gridWidth],
-      cellOffsets: importView(
-        baselineGraph,
-        'baseline-cell-offsets',
-        cellOffsetsBuffer,
-        'uint32',
-        17
-      ),
-      rowIndices: importView(baselineGraph, 'baseline-row-indices', rowIndicesBuffer, 'uint32', 6),
-      count: importView(baselineGraph, 'baseline-index-count', indexCountBuffer, 'uint32', 1),
-      overflow: importView(
-        baselineGraph,
-        'baseline-index-overflow',
-        indexOverflowBuffer,
-        'uint32',
-        1
-      )
-    },
-    kind: 'bounds',
-    query: importView(baselineGraph, 'baseline-query-values', queryBuffer, 'float32', 4),
-    output: {
-      ids: importView(baselineGraph, 'baseline-ids', idsBuffer, 'uint32', 4),
-      count: importView(baselineGraph, 'baseline-count', countBuffer, 'uint32', 1),
-      overflow: importView(baselineGraph, 'baseline-overflow', overflowBuffer, 'uint32', 1)
-    }
-  }).addToGraph(baselineGraph);
+  baselineGraph.add(
+    new GPUPointSpatialQuery({
+      id: 'baseline-query',
+      positions: baselinePositions,
+      index: {
+        gridSize: [gridWidth, gridWidth],
+        bounds: [0, 0, gridWidth, gridWidth],
+        cellOffsets: importView(
+          baselineGraph,
+          'baseline-cell-offsets',
+          cellOffsetsBuffer,
+          'uint32',
+          17
+        ),
+        rowIndices: importView(
+          baselineGraph,
+          'baseline-row-indices',
+          rowIndicesBuffer,
+          'uint32',
+          6
+        ),
+        count: importView(baselineGraph, 'baseline-index-count', indexCountBuffer, 'uint32', 1),
+        overflow: importView(
+          baselineGraph,
+          'baseline-index-overflow',
+          indexOverflowBuffer,
+          'uint32',
+          1
+        )
+      },
+      kind: 'bounds',
+      parameters: importView(baselineGraph, 'baseline-query-values', queryBuffer, 'float32', 4),
+      output: {
+        ids: importView(baselineGraph, 'baseline-ids', idsBuffer, 'uint32', 4),
+        status: {
+          count: importView(baselineGraph, 'baseline-count', countBuffer, 'uint32', 1),
+          overflow: importView(baselineGraph, 'baseline-overflow', overflowBuffer, 'uint32', 1)
+        }
+      }
+    })
+  );
   const baselineCompiled = baselineGraph.compile();
   expect(
     baselineCompiled.stats.logicalTransientBytes,

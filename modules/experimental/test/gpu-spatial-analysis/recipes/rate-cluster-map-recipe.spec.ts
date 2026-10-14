@@ -6,8 +6,9 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {packGPUColor} from '../../../src/gpu-dataframe/column-classification/index';
 import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing/index';
-import {getGPUPermutationParameterValues} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
-import {getGPUSpatialAutocorrelationParameterValues} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
+import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
+import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
+import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {addRateClusterMapRecipe} from '../../../src/gpu-spatial-analysis/recipes/rate-cluster-map-recipe';
 import {computeLocalPermutationOracle} from '../permutation-inference/permutation-oracle';
 import {computeEmpiricalBayesOracle} from '../rate-smoothing/empirical-bayes-oracle';
@@ -23,6 +24,8 @@ import {
   type OraclePolygons
 } from '../spatial-weights/spatial-weights-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {RATE_CLUSTER_REFERENCE} from './rate-cluster-esda-reference';
 
 const COLUMNS = 7;
 const ROWS = 6;
@@ -62,9 +65,7 @@ function createScene() {
 
 it('addRateClusterMapRecipe smooths rates, builds contiguity and colors significant LISA quadrants', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {polygons, events, populations} = createScene();
   const rowCount = polygons.length;
   const layout = flattenPolygons(polygons);
@@ -82,9 +83,19 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
     packGPUColor(44, 123, 182),
     packGPUColor(253, 174, 97)
   ];
-  const permutationParameters = {seed: 11, permutations: PERMUTATIONS, significanceLevel: 0.05};
+  const permutationParameters = {seed: 11, permutationCount: PERMUTATIONS, significanceLevel: 0.05};
 
   const fixture = new RecipeTestFixture(device, 'rate-cluster-map-recipe-test');
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'rate-cluster-map-autocorrelation-parameters',
+    format: 'float32',
+    length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  });
+  const permutationParameterBuffer = new GPUParameterBuffer(device, {
+    id: 'rate-cluster-map-permutation-parameters',
+    format: 'uint32',
+    length: GPU_PERMUTATION_PARAMETER_LENGTH
+  });
   try {
     const standardized = fixture.output('standardized', 'float32', rowCount);
     const zScores = fixture.output('z-scores', 'float32', rowCount);
@@ -101,54 +112,55 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
     const recipe = addRateClusterMapRecipe(fixture.graph, {
       events: fixture.input('events', events, 'float32', rowCount),
       populations: fixture.input('populations', populations, 'float32', rowCount),
-      positions: fixture.input(
-        'positions',
-        layout.positions,
-        'float32x2',
-        layout.positions.length / 2
-      ),
-      ringOffsets: fixture.input(
-        'ring-offsets',
-        layout.ringOffsets,
-        'uint32',
-        layout.ringOffsets.length
-      ),
-      polygonOffsets: fixture.input(
-        'polygon-offsets',
-        layout.polygonOffsets,
-        'uint32',
-        layout.polygonOffsets.length
-      ),
+      polygons: {
+        kind: 'polygons',
+        // One polygon per feature: the identity feature offsets.
+        featureOffsets: fixture.input(
+          'feature-offsets',
+          Uint32Array.from({length: layout.polygonOffsets.length}, (_, index) => index),
+          'uint32',
+          layout.polygonOffsets.length
+        ),
+        positions: fixture.input(
+          'positions',
+          layout.positions,
+          'float32x2',
+          layout.positions.length / 2
+        ),
+        ringOffsets: fixture.input(
+          'ring-offsets',
+          layout.ringOffsets,
+          'uint32',
+          layout.ringOffsets.length
+        ),
+        polygonOffsets: fixture.input(
+          'polygon-offsets',
+          layout.polygonOffsets,
+          'uint32',
+          layout.polygonOffsets.length
+        )
+      },
       criterion: 'rook',
       neighborCapacity: rowCount * 4,
-      parameters: fixture.parameters(
-        'autocorrelation-parameters',
-        'float32',
-        getGPUSpatialAutocorrelationParameterValues({})
-      ),
+      parameters,
+      settings: permutationParameters,
       permutation: {
-        parameters: fixture.parameters(
-          'permutation-parameters',
-          'uint32',
-          getGPUPermutationParameterValues(permutationParameters)
-        ),
+        parameters: permutationParameterBuffer,
         maximumPermutations: PERMUTATIONS,
-        alternative: 'two-sided',
-        seed: permutationParameters.seed
+        alternative: 'two-sided'
       },
-      significanceLevel: permutationParameters.significanceLevel,
       palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 5),
       outputs: {
         standardizedRates: standardized.view,
         zScores: zScores.view,
         quadrants: quadrants.view,
         colors: colors.view,
-        weightsOverflow: overflow.view,
         permutation: {
           significant: significant.view,
           pseudoPValues: pseudoPValues.view,
           adjustedPValues: adjustedPValues.view
-        }
+        },
+        status: {weightsOverflow: overflow.view}
       },
       scratch: {
         spatialLag: lag.view,
@@ -249,40 +261,26 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
     expect(gpuQuadrants).toContain(1);
     expect(gpuQuadrants[COLUMNS * 4 + 2]).toBe(0);
   } finally {
+    parameters.destroy();
+    permutationParameterBuffer.destroy();
     fixture.destroy();
   }
 }, 120000);
 
-// Oracle: <scratchpad>/fix/work/B/b6_moran_local_rate.py (esda 2.10.0, libpysal 4.15.0):
+// Oracle: test/oracles/statistics-rate-cluster-recipe.py (esda, libpysal):
 // `Moran_Local_Rate(e, b, lat2W(4, 5, rook=True) row-standardized)` on this 5 x 4 scene.
-const PARITY_COLUMNS = 5;
-const PARITY_ROWS = 4;
-const PARITY_EVENTS = [4, 9, 12, 3, 14, 6, 11, 20, 15, 8, 3, 7, 16, 18, 5, 2, 5, 9, 10, 4];
-const PARITY_POPULATIONS = [
-  800, 1200, 900, 1000, 1500, 700, 1100, 1600, 1300, 900, 900, 1000, 1400, 1500, 1100, 1200, 900,
-  1000, 1300, 800
-];
-const ESDA_ASSUNCAO_RATE = [
-  -0.848400240573539, -0.21070092747783314, 1.4264569680970565, -1.4926115372650133,
-  0.37368325456132756, 0.09655848634443782, 0.5373347301986594, 1.4351091440031807,
-  1.048398299202036, 0.1938196662419266, -1.3469769610769853, -0.3422465861383595,
-  1.0371259594020437, 1.2452821913217844, -1.0819967521727547, -1.9918721559379855,
-  -0.7306583101494206, 0.2329358894249671, -0.15584299042192398, -0.848400240573539
-];
-const ESDA_LOCAL_I = [
-  -0.010614419475975854, -0.05995861505144364, -0.026512565498333345, -1.4072932534086802,
-  -0.2495037260127498, -0.07833331150499916, 0.18641055600884177, 1.5830237829723002,
-  0.4523526734244279, 0.047422826272235576, 0.8349717051856403, 0.014369110371909698,
-  0.7674760657481344, 0.3614609987740427, -0.262826594116496, 1.802842831133667, 0.4025377229665517,
-  0.035795890419974656, -0.02309184048571893, 0.41297716649074584
-];
-const ESDA_QUADRANTS = [2, 2, 4, 2, 4, 4, 1, 1, 1, 1, 3, 3, 1, 1, 2, 3, 3, 1, 2, 3];
+const {parity} = RATE_CLUSTER_REFERENCE;
+const PARITY_COLUMNS = parity.columns;
+const PARITY_ROWS = parity.rows;
+const PARITY_EVENTS = parity.events;
+const PARITY_POPULATIONS = parity.populations;
+const ESDA_ASSUNCAO_RATE = parity.assuncaoRate;
+const ESDA_LOCAL_I = parity.localI;
+const ESDA_QUADRANTS = parity.quadrants;
 
 it('addRateClusterMapRecipe analytic path matches esda Moran_Local_Rate and corrects the family', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = PARITY_COLUMNS * PARITY_ROWS;
   const polygons: OraclePolygons = [];
   for (let y = 0; y < PARITY_ROWS; y++) {
@@ -306,6 +304,11 @@ it('addRateClusterMapRecipe analytic path matches esda Moran_Local_Rate and corr
     packGPUColor(253, 174, 97)
   ];
   const fixture = new RecipeTestFixture(device, 'rate-cluster-map-parity-test');
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'rate-cluster-map-parity-parameters',
+    format: 'float32',
+    length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  });
   try {
     const standardized = fixture.output('standardized', 'float32', rowCount);
     const localI = fixture.output('local-i', 'float32', rowCount);
@@ -320,31 +323,37 @@ it('addRateClusterMapRecipe analytic path matches esda Moran_Local_Rate and corr
         'float32',
         rowCount
       ),
-      positions: fixture.input(
-        'positions',
-        layout.positions,
-        'float32x2',
-        layout.positions.length / 2
-      ),
-      ringOffsets: fixture.input(
-        'ring-offsets',
-        layout.ringOffsets,
-        'uint32',
-        layout.ringOffsets.length
-      ),
-      polygonOffsets: fixture.input(
-        'polygon-offsets',
-        layout.polygonOffsets,
-        'uint32',
-        layout.polygonOffsets.length
-      ),
+      polygons: {
+        kind: 'polygons',
+        // One polygon per feature: the identity feature offsets.
+        featureOffsets: fixture.input(
+          'feature-offsets',
+          Uint32Array.from({length: layout.polygonOffsets.length}, (_, index) => index),
+          'uint32',
+          layout.polygonOffsets.length
+        ),
+        positions: fixture.input(
+          'positions',
+          layout.positions,
+          'float32x2',
+          layout.positions.length / 2
+        ),
+        ringOffsets: fixture.input(
+          'ring-offsets',
+          layout.ringOffsets,
+          'uint32',
+          layout.ringOffsets.length
+        ),
+        polygonOffsets: fixture.input(
+          'polygon-offsets',
+          layout.polygonOffsets,
+          'uint32',
+          layout.polygonOffsets.length
+        )
+      },
       criterion: 'rook',
       neighborCapacity: rowCount * 4,
-      parameters: fixture.parameters(
-        'autocorrelation-parameters',
-        'float32',
-        getGPUSpatialAutocorrelationParameterValues({})
-      ),
+      parameters,
       palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 5),
       outputs: {
         standardizedRates: standardized.view,
@@ -384,24 +393,16 @@ it('addRateClusterMapRecipe analytic path matches esda Moran_Local_Rate and corr
       }
     }
   } finally {
+    parameters.destroy();
     fixture.destroy();
   }
 }, 120000);
 
-// Oracle: <scratchpad>/fix/work/B/b6_multipletests.py (statsmodels 0.15.0 `multipletests`,
+// Oracle: test/oracles/statistics-rate-cluster-recipe.py (statsmodels `multipletests`,
 // method 'fdr_bh'), with NaN (untested) rows interleaved: they must not enter the family.
 it('Benjamini-Hochberg over the tested family ignores NaN rows (statsmodels fdr_bh)', () => {
-  const finite = [
-    0.001, 0.008, 0.039, 0.041, 0.042, 0.06, 0.074, 0.205, 0.212, 0.216, 0.222, 0.251, 0.269, 0.275,
-    0.34, 0.341, 0.384, 0.569, 0.594, 0.696, 0.762, 0.94, 0.942, 0.975, 0.986
-  ];
-  const expected = [
-    0.025, 0.1, 0.21, 0.21, 0.21, 0.25, 0.26428571428571423, 0.49107142857142855,
-    0.49107142857142855, 0.49107142857142855, 0.49107142857142855, 0.49107142857142855,
-    0.49107142857142855, 0.49107142857142855, 0.5328125, 0.5328125, 0.5647058823529412,
-    0.781578947368421, 0.781578947368421, 0.8699999999999999, 0.9071428571428571, 0.986, 0.986,
-    0.986, 0.986
-  ];
+  const finite = RATE_CLUSTER_REFERENCE.benjaminiHochberg.pValues;
+  const expected = RATE_CLUSTER_REFERENCE.benjaminiHochberg.adjusted;
   const family: number[] = [];
   for (const [index, value] of finite.entries()) {
     family.push(value);

@@ -6,7 +6,76 @@
 // is rounded with Math.fround in the association of the WGSL kernels. GPUs may contract a*b+c into
 // FMA, so bilinear/bicubic/profile results are exact only where the arithmetic is exact.
 
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
+import {
+  getGPURasterProfileParameterValues,
+  getGPURasterSamplingParameterValues,
+  type GPURasterProfileSettings,
+  type GPURasterSamplingSettings
+} from '../../../src/gpu-raster/raster-sampling';
+
 const f = Math.fround;
+
+/**
+ * Grid for an extent `[minX, minY, maxX, maxY]` whose row 0 is at `minY` and whose rows advance
+ * toward larger y.
+ */
+export function makeExtentGrid(
+  width: number,
+  height: number,
+  extent: readonly [number, number, number, number],
+  northUp = false
+): GPURasterMetadata {
+  return makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [(extent[2] - extent[0]) / width, (extent[3] - extent[1]) / height],
+    // North-up: row 0 is the top row, at maxY. Otherwise row 0 is at minY.
+    origin: [extent[0], northUp ? extent[3] : extent[1]],
+    rowDirection: northUp ? 'south' : 'north'
+  });
+}
+
+/** Sampling settings plus the raster size and extent the oracle scenes describe. */
+export type SamplingCase = GPURasterSamplingSettings & {
+  width: number;
+  height: number;
+  extent: readonly [number, number, number, number];
+  /** Row 0 at the top (`maxY`) instead of at `minY`. */
+  northUp?: boolean;
+};
+
+/** Profile settings plus the raster size and extent the oracle scenes describe. */
+export type ProfileCase = GPURasterProfileSettings & {
+  width: number;
+  height: number;
+  extent: readonly [number, number, number, number];
+};
+
+/** Packs a {@link SamplingCase} through its extent grid. */
+export function packSamplingCase(
+  {width, height, extent, northUp, ...settings}: SamplingCase,
+  target?: Float32Array
+): Float32Array {
+  return getGPURasterSamplingParameterValues(
+    settings,
+    makeExtentGrid(width, height, extent, northUp),
+    target
+  );
+}
+
+/** Packs a {@link ProfileCase} through its extent grid. */
+export function packProfileCase(
+  {width, height, extent, ...settings}: ProfileCase,
+  target?: Float32Array
+): Float32Array {
+  return getGPURasterProfileParameterValues(
+    settings,
+    makeExtentGrid(width, height, extent),
+    target
+  );
+}
 
 /** Raster description for the oracle. */
 export type OracleRaster = {
@@ -139,7 +208,8 @@ export function sampleRasterOnCPU(
   const method = parameters[8];
   const renormalize = parameters[9] !== 0;
   const tx = f(f(x - minX) * parameters[6]);
-  const ty = f(f(y - minY) * parameters[7]);
+  // The row coordinate counts from the outer edge of row 0 (slot 11) with a signed step (slot 7).
+  const ty = f(f(y - parameters[11]) * parameters[7]);
   if (method === 0) {
     return fetchClamped(raster, Math.floor(tx), Math.floor(ty));
   }
@@ -174,56 +244,56 @@ export function sampleRasterPointsOnCPU(
 /** Result of {@link profileRasterOnCPU}. All arrays are untruncated by capacity. */
 export type RasterProfileOracle = {
   vertexDistances: Float32Array;
-  pathLength: Float32Array;
+  lineLengths: Float32Array;
   sampleOffsets: Uint32Array;
   requiredCount: number;
   truncated: boolean;
   samplePositions: Float32Array;
   sampleDistances: Float32Array;
   sampleValues: Float32Array;
-  samplePathIds: Uint32Array;
+  sampleLineIds: Uint32Array;
   sampleCumulativeGain: Float32Array;
   sampleCumulativeLoss: Float32Array;
-  pathGain: Float32Array;
-  pathLoss: Float32Array;
-  pathMinimum: Float32Array;
-  pathMaximum: Float32Array;
+  lineGains: Float32Array;
+  lineLosses: Float32Array;
+  lineMinimums: Float32Array;
+  lineMaximums: Float32Array;
 };
 
-/** Profile oracle; mirrors the GPU pipeline including the per-path sample limit. */
+/** Profile oracle; mirrors the GPU pipeline including the per-line sample limit. */
 export function profileRasterOnCPU(
   raster: OracleRaster,
   parameters: Float32Array,
-  pathPositions: Float32Array,
-  pathOffsets: Uint32Array
+  linePositions: Float32Array,
+  lineOffsets: Uint32Array
 ): RasterProfileOracle {
-  const pathCount = pathOffsets.length - 1;
-  const vertexCount = pathPositions.length / 2;
+  const lineCount = lineOffsets.length - 1;
+  const vertexCount = linePositions.length / 2;
   const spacing = parameters[10];
-  const maximumPerPath = Math.max(1, Math.min(1 << 24, Math.floor(0xffffffff / (pathCount + 1))));
+  const maximumPerLine = Math.max(1, Math.min(1 << 24, Math.floor(0xffffffff / (lineCount + 1))));
   const vertexDistances = new Float32Array(vertexCount);
-  const pathLength = new Float32Array(pathCount);
+  const lineLengths = new Float32Array(lineCount);
   const counts: number[] = [];
   const ranges: [number, number][] = [];
   let truncated = false;
-  for (let path = 0; path < pathCount; path++) {
-    const begin = Math.min(pathOffsets[path], vertexCount);
-    const end = Math.max(Math.min(pathOffsets[path + 1], vertexCount), begin);
+  for (let line = 0; line < lineCount; line++) {
+    const begin = Math.min(lineOffsets[line], vertexCount);
+    const end = Math.max(Math.min(lineOffsets[line + 1], vertexCount), begin);
     ranges.push([begin, end]);
     let count = 0;
     if (end > begin) {
       let distance = 0;
       vertexDistances[begin] = 0;
       for (let vertex = begin + 1; vertex < end; vertex++) {
-        const deltaX = f(pathPositions[2 * vertex] - pathPositions[2 * vertex - 2]);
-        const deltaY = f(pathPositions[2 * vertex + 1] - pathPositions[2 * vertex - 1]);
+        const deltaX = f(linePositions[2 * vertex] - linePositions[2 * vertex - 2]);
+        const deltaY = f(linePositions[2 * vertex + 1] - linePositions[2 * vertex - 1]);
         distance = f(distance + f(Math.sqrt(f(f(deltaX * deltaX) + f(deltaY * deltaY)))));
         vertexDistances[vertex] = distance;
       }
-      pathLength[path] = distance;
+      lineLengths[line] = distance;
       count = 1;
       if (distance > 0) {
-        let segments = Math.min(Math.ceil(f(distance / spacing)), maximumPerPath);
+        let segments = Math.min(Math.ceil(f(distance / spacing)), maximumPerLine);
         if (segments > 0 && f(f(segments - 1) * spacing) >= distance) {
           segments -= 1;
         }
@@ -231,46 +301,46 @@ export function profileRasterOnCPU(
           segments += 1;
         }
         count = segments + 1;
-        if (count > maximumPerPath) {
-          count = maximumPerPath;
+        if (count > maximumPerLine) {
+          count = maximumPerLine;
           truncated = true;
         }
       }
     }
     counts.push(count);
   }
-  const sampleOffsets = new Uint32Array(pathCount + 1);
-  for (let path = 0; path < pathCount; path++) {
-    sampleOffsets[path + 1] = sampleOffsets[path] + counts[path];
+  const sampleOffsets = new Uint32Array(lineCount + 1);
+  for (let line = 0; line < lineCount; line++) {
+    sampleOffsets[line + 1] = sampleOffsets[line] + counts[line];
   }
-  const requiredCount = sampleOffsets[pathCount];
+  const requiredCount = sampleOffsets[lineCount];
   const samplePositions = new Float32Array(requiredCount * 2);
   const sampleDistances = new Float32Array(requiredCount);
   const sampleValues = new Float32Array(requiredCount);
-  const samplePathIds = new Uint32Array(requiredCount);
+  const sampleLineIds = new Uint32Array(requiredCount);
   const sampleCumulativeGain = new Float32Array(requiredCount);
   const sampleCumulativeLoss = new Float32Array(requiredCount);
-  const pathGain = new Float32Array(pathCount);
-  const pathLoss = new Float32Array(pathCount);
-  const pathMinimum = new Float32Array(pathCount).fill(NaN);
-  const pathMaximum = new Float32Array(pathCount).fill(NaN);
-  for (let path = 0; path < pathCount; path++) {
-    const [begin, end] = ranges[path];
-    const first = sampleOffsets[path];
+  const lineGains = new Float32Array(lineCount);
+  const lineLosses = new Float32Array(lineCount);
+  const lineMinimums = new Float32Array(lineCount).fill(NaN);
+  const lineMaximums = new Float32Array(lineCount).fill(NaN);
+  for (let line = 0; line < lineCount; line++) {
+    const [begin, end] = ranges[line];
+    const first = sampleOffsets[line];
     let gain = 0;
     let loss = 0;
     let minimum = NaN;
     let maximum = NaN;
     let previous = 0;
     let hasPrevious = false;
-    for (let local = 0; local < counts[path]; local++) {
+    for (let local = 0; local < counts[line]; local++) {
       const sample = first + local;
       const lastVertex = end - 1;
       const length = vertexDistances[lastVertex];
       let distance = length;
-      let positionX = pathPositions[2 * lastVertex];
-      let positionY = pathPositions[2 * lastVertex + 1];
-      if (local + 1 < counts[path]) {
+      let positionX = linePositions[2 * lastVertex];
+      let positionY = linePositions[2 * lastVertex + 1];
+      if (local + 1 < counts[line]) {
         distance = Math.min(f(f(local) * spacing), length);
         let low = begin + 1;
         let high = end;
@@ -288,16 +358,16 @@ export function profileRasterOnCPU(
           const t = f(
             f(distance - startDistance) / f(vertexDistances[segmentStart + 1] - startDistance)
           );
-          const startX = pathPositions[2 * segmentStart];
-          const startY = pathPositions[2 * segmentStart + 1];
-          positionX = f(startX + f(f(pathPositions[2 * segmentStart + 2] - startX) * t));
-          positionY = f(startY + f(f(pathPositions[2 * segmentStart + 3] - startY) * t));
+          const startX = linePositions[2 * segmentStart];
+          const startY = linePositions[2 * segmentStart + 1];
+          positionX = f(startX + f(f(linePositions[2 * segmentStart + 2] - startX) * t));
+          positionY = f(startY + f(f(linePositions[2 * segmentStart + 3] - startY) * t));
         }
       }
       samplePositions[2 * sample] = positionX;
       samplePositions[2 * sample + 1] = positionY;
       sampleDistances[sample] = distance;
-      samplePathIds[sample] = path;
+      sampleLineIds[sample] = line;
       const value = sampleRasterOnCPU(raster, parameters, positionX, positionY);
       sampleValues[sample] = value;
       if (Number.isFinite(value)) {
@@ -320,26 +390,26 @@ export function profileRasterOnCPU(
       sampleCumulativeGain[sample] = gain;
       sampleCumulativeLoss[sample] = loss;
     }
-    pathGain[path] = gain;
-    pathLoss[path] = loss;
-    pathMinimum[path] = minimum;
-    pathMaximum[path] = maximum;
+    lineGains[line] = gain;
+    lineLosses[line] = loss;
+    lineMinimums[line] = minimum;
+    lineMaximums[line] = maximum;
   }
   return {
     vertexDistances,
-    pathLength,
+    lineLengths,
     sampleOffsets,
     requiredCount,
     truncated,
     samplePositions,
     sampleDistances,
     sampleValues,
-    samplePathIds,
+    sampleLineIds,
     sampleCumulativeGain,
     sampleCumulativeLoss,
-    pathGain,
-    pathLoss,
-    pathMinimum,
-    pathMaximum
+    lineGains,
+    lineLosses,
+    lineMinimums,
+    lineMaximums
   };
 }

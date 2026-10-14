@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainTopographicPosition,
@@ -23,6 +24,7 @@ import {
   createTopographicTerrain,
   type TopographicPositionOracleResult
 } from './topographic-position-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type TopographicPositionRun = {
   topographicPositionIndex: number[];
@@ -54,8 +56,7 @@ async function runTopographicPosition(
   };
   graph.add(
     new GPUTerrainTopographicPosition({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       scales,
       quantum: options.quantum,
       elevation: {
@@ -69,35 +70,37 @@ async function runTopographicPosition(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pixelCount)
           : undefined
       },
-      topographicPositionIndex: importGraphBuffer(
-        graph,
-        'tpi',
-        buffers.topographicPositionIndex,
-        'float32',
-        planeLength
-      ),
-      deviationFromMean: importGraphBuffer(
-        graph,
-        'dev',
-        buffers.deviationFromMean,
-        'float32',
-        planeLength
-      ),
-      maximumDeviation: importGraphBuffer(
-        graph,
-        'dev-max',
-        buffers.maximumDeviation,
-        'float32',
-        pixelCount
-      ),
-      maximumDeviationRadius: importGraphBuffer(
-        graph,
-        'dev-radius',
-        buffers.maximumDeviationRadius,
-        'uint32',
-        pixelCount
-      ),
-      validity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+      output: {
+        topographicPositionIndex: importGraphBuffer(
+          graph,
+          'tpi',
+          buffers.topographicPositionIndex,
+          'float32',
+          planeLength
+        ),
+        deviationFromMean: importGraphBuffer(
+          graph,
+          'dev',
+          buffers.deviationFromMean,
+          'float32',
+          planeLength
+        ),
+        maximumDeviation: importGraphBuffer(
+          graph,
+          'dev-max',
+          buffers.maximumDeviation,
+          'float32',
+          pixelCount
+        ),
+        maximumDeviationRadius: importGraphBuffer(
+          graph,
+          'dev-radius',
+          buffers.maximumDeviationRadius,
+          'uint32',
+          pixelCount
+        ),
+        outputValidity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -168,9 +171,7 @@ const SCALES: GPUTerrainTopographicPositionScale[] = [
 
 it('GPUTerrainTopographicPosition matches the quantized oracle exactly up to float32 rounding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 41;
   const height = 33;
   const elevation = createTopographicTerrain(width, height, 1500, 120);
@@ -209,9 +210,7 @@ it('GPUTerrainTopographicPosition matches the quantized oracle exactly up to flo
 
 it('GPUTerrainTopographicPosition radius-1 TPI equals the 8-neighbour gdaldem TPI', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 9;
   const height = 7;
   // Integer elevations at a quarter-unit step are exact at the default quantum.
@@ -236,9 +235,7 @@ it('GPUTerrainTopographicPosition radius-1 TPI equals the 8-neighbour gdaldem TP
 
 it('GPUTerrainTopographicPosition keeps large high tiles exact where a float32 table fails', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 512;
   const height = 384;
   const elevation = createTopographicTerrain(width, height, 3800, 40);

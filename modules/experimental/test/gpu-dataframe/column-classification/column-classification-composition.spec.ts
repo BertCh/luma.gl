@@ -11,7 +11,7 @@ import {getGPUBivariateClassificationParameterValues} from '../../../src/gpu-dat
 import {
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
-  type GPUClassBreaksParameters
+  type GPUClassBreaksSettings
 } from '../../../src/gpu-dataframe/column-classification/class-breaks-parameters';
 import {
   getGPUColorScaleParameterValues,
@@ -35,6 +35,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeColumnQuantilesOracle} from './column-quantiles-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NO_CLASS = 0xffffffff;
 const MAXIMUM_CLASS_COUNT = 9;
@@ -67,9 +68,7 @@ function classify(value: number, breaks: number[], classCount: number): number {
 
 it('quantile filter, class breaks, colour scale and bivariate classes compose in one graph without readback', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(31);
   const valuesX = new Float32Array(ROWS).map(() =>
     random() < 0.01 ? NaN : 10 / (0.02 + random())
@@ -150,7 +149,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
     ROWS
   );
   // The percentile filter mask is a graph transient: it never leaves the GPU.
-  const filterMask = createTransientView(graph, 'filter-mask', 'uint32', ROWS);
+  const outputMask = createTransientView(graph, 'filter-mask', 'uint32', ROWS);
   const outputs = {
     filterBounds: output(2),
     breaks: output(MAXIMUM_CLASS_COUNT + 1),
@@ -181,7 +180,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
       output: {
         quantiles: createTransientView(graph, 'unused-quantile', 'float32', 1),
         validCount: createTransientView(graph, 'unused-valid', 'uint32', 1),
-        filterMask,
+        outputMask,
         filterBounds: floatView('filterBounds', 2)
       }
     })
@@ -190,7 +189,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
     new GPUClassBreaks({
       id: 'breaks',
       values: x,
-      mask: filterMask,
+      mask: outputMask,
       parameters: parameterBuffers.breaks.importToGraph(graph),
       maximumClassCount: MAXIMUM_CLASS_COUNT,
       methods: ['quantile', 'natural-breaks', 'head-tail', 'equal-interval', 'standard-deviation'],
@@ -206,7 +205,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
     new GPUColorScale({
       id: 'scale',
       values: x,
-      mask: filterMask,
+      mask: outputMask,
       domain: breaksView,
       domainCount: classCountView,
       palette: importGraphBuffer(
@@ -265,7 +264,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
   );
   const compiled = graph.compile();
   try {
-    const frames: {filterRange: [number, number]; breaks: GPUClassBreaksParameters}[] = [
+    const frames: {filterRange: [number, number]; breaks: GPUClassBreaksSettings}[] = [
       {filterRange: [0, 1], breaks: {method: 'quantile', classCount: 5}},
       {filterRange: [0.05, 0.95], breaks: {method: 'natural-breaks', classCount: 6}},
       {filterRange: [0.1, 0.8], breaks: {method: 'head-tail', classCount: 9}},
@@ -295,7 +294,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
       const colors = await readUint32(outputs.colors, ROWS);
       const expectedCounts = new Array(MAXIMUM_CLASS_COUNT).fill(0);
       for (let row = 0; row < ROWS; row++) {
-        if (oracle.filterMask[row] === 0) {
+        if (oracle.outputMask[row] === 0) {
           expect(classIndices[row], `${label} row ${row}`).toBe(NO_CLASS);
           expect(colors[row]).toBe(packGPUColor(1, 2, 3, 4));
           continue;

@@ -23,6 +23,7 @@ import {
   type OracleAggregateOperation,
   type OracleJoinResult
 } from './key-join-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SUM_SCALE = 65536;
 const AGGREGATES: {
@@ -227,9 +228,11 @@ function createJoin(fixture: Fixture, scene: Scene) {
           scene.kind === 'inner'
             ? {
                 ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', scene.capacity),
-                count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
-                overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-                requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
+                status: {
+                  count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
+                  overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+                  requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
+                }
               }
             : undefined
       }
@@ -391,9 +394,7 @@ const SCENES: [string, Parameters<typeof createScene>[0]][] = [
 for (const [name, options] of SCENES) {
   it(`GPUKeyJoin left join matches the CPU oracle: ${name}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const fixture = new Fixture(device);
     const scene = createScene(options);
     const join = createJoin(fixture, scene);
@@ -410,9 +411,7 @@ for (const [name, options] of SCENES) {
 
 it('GPUKeyJoin inner join compacts matched rows and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [capacity, label] of [
     [4000, 'roomy capacity'],
     [37, 'overflowing capacity'],
@@ -443,9 +442,7 @@ it('GPUKeyJoin inner join compacts matched rows and reports overflow', async () 
 
 it('GPUKeyJoin follows per-frame input rewrites without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const scene = createScene({
     seed: 77,
@@ -498,9 +495,7 @@ it('GPUKeyJoin follows per-frame input rewrites without recompiling', async () =
 
 it('GPUKeyJoin handles keys with no valid right rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const scene = createScene({
     seed: 9,

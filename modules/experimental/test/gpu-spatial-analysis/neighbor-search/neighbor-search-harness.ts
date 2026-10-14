@@ -5,13 +5,14 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUNeighborSearchWeightTransform,
   GPUNeighborSearch,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  type GPUNeighborSearchParameters
+  type GPUNeighborSearchSettings,
+  type GPUNeighborSearchStructure
 } from '../../../src/gpu-spatial-analysis/neighbor-search';
 import {
   createInputBuffer,
@@ -33,8 +34,10 @@ export type NeighborSearchHarnessOptions = {
   k?: number;
   gridSize?: readonly [number, number];
   capacity: number;
-  parameters: GPUNeighborSearchParameters;
+  parameters: GPUNeighborSearchSettings;
   spatialContext?: GPUSpatialContext;
+  /** Search structure; the library default (`'auto'`) when omitted. */
+  searchStructure?: GPUNeighborSearchStructure;
 };
 
 /** One encoding read back. Neighbor columns are trimmed to `offsets[rows]`. */
@@ -54,7 +57,7 @@ export type NeighborSearchReadback = {
 /** A compiled neighbor-search graph resubmitted per frame. */
 export type NeighborSearchHarness = {
   readonly buildCount: number;
-  run(parameters?: GPUNeighborSearchParameters): Promise<NeighborSearchReadback>;
+  run(parameters?: GPUNeighborSearchSettings): Promise<NeighborSearchReadback>;
   writePositions(positions: Float32Array): void;
   writeMask(mask: Uint32Array): void;
   destroy(): void;
@@ -95,6 +98,7 @@ export function createNeighborSearchHarness(
   const contributor = new GPUNeighborSearch({
     mode: options.mode,
     spatialContext: options.spatialContext,
+    searchStructure: options.searchStructure,
     weightTransform: getGPUNeighborSearchWeightTransform(options.parameters),
     k: options.k,
     gridSize: options.gridSize ?? [16, 16],
@@ -107,16 +111,18 @@ export function createNeighborSearchHarness(
       queryMaskBuffer &&
       importGraphBuffer(graph, 'query-mask', queryMaskBuffer, 'uint32', queryRows),
     parameters: parameterBuffer.importToGraph(graph),
-    weights: {
+    output: {
       offsets: importGraphBuffer(graph, 'offsets', outputs.offsets, 'uint32', queryRows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', outputs.neighbors, 'uint32', capacity),
       weights: importGraphBuffer(graph, 'weights', outputs.weights, 'float32', capacity),
-      distances: importGraphBuffer(graph, 'distances', outputs.distances, 'float32', capacity)
-    },
-    overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-    totalNeighbors: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1),
-    neighborCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', queryRows),
-    invalidCount: importGraphBuffer(graph, 'invalid', outputs.invalid, 'uint32', 1)
+      distances: importGraphBuffer(graph, 'distances', outputs.distances, 'float32', capacity),
+      neighborCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', queryRows),
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1),
+        invalidCount: importGraphBuffer(graph, 'invalid', outputs.invalid, 'uint32', 1)
+      }
+    }
   });
   let buildCount = 0;
   const getCommandNodes = contributor.getCommandNodes.bind(contributor);

@@ -17,6 +17,7 @@ import {
 import {buildCSR, type NetworkEdge} from '../network-reachability/network-reachability-oracle';
 import {createGridEdges, createSymmetricEdges} from './network-analytics-oracle';
 import {neighborhoodOracle} from './network-neighborhood-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * GPUNetworkNeighborhood composes GPUNetworkReachability with the default `localIterations` (16),
@@ -65,14 +66,18 @@ async function expectExactNeighborhood(
   graph.add(
     new GPUNetworkNeighborhood({
       id: name,
-      offsets: input('offsets', csr.offsets, nodeCount + 1),
-      neighbors: input('neighbors', csr.neighbors, edgeCount),
-      seeds: seedBuffer.importToGraph(graph),
+      topology: {
+        offsets: input('offsets', csr.offsets, nodeCount + 1),
+        neighbors: input('neighbors', csr.neighbors, edgeCount)
+      },
+      startNodes: seedBuffer.importToGraph(graph),
       hops: hops.importToGraph(graph),
-      maxHops,
-      hopDistances: hopDistances.view,
-      nodeMask: nodeMask.view,
-      edgeMask: edgeMask.view
+      maximumHops: maxHops,
+      output: {
+        hopDistances: hopDistances.view,
+        nodeMask: nodeMask.view,
+        edgeMask: edgeMask.view
+      }
     })
   );
   const compiled = graph.compile();
@@ -101,9 +106,7 @@ async function expectExactNeighborhood(
 
 it('GPUNetworkNeighborhood keeps k-hop results exact when k is far below localIterations', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const chainLength = 200;
   const chain = createSymmetricEdges(
     Array.from({length: chainLength - 1}, (_, node) => [node, node + 1, 1] as NetworkEdge)

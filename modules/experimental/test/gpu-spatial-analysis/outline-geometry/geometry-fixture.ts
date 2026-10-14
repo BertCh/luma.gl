@@ -166,7 +166,7 @@ export function createRandom(seed: number): () => number {
   };
 }
 
-/** Flat polygon or path layout used by the specs: vertices, ring offsets and feature ring offsets. */
+/** Flat polygon or line layout used by the specs: vertices, ring offsets and feature ring offsets. */
 export type FlatRings = {
   positions: Float32Array;
   ringOffsets: Uint32Array;

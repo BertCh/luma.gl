@@ -11,7 +11,7 @@ import {
   type GPUShapeGeneratorProps,
   type GPUShapeType
 } from '../../../src/gpu-spatial-analysis/grid-generators/index';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
 import {
   TURF_ELLIPSE_AXES,
@@ -20,6 +20,7 @@ import {
   TURF_SHAPE_RADII,
   TURF_SHAPE_VALUES
 } from './turf-shape-values';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -90,7 +91,7 @@ for (const [shape, segments] of [
 ] as const) {
   it(`GPUShapeGenerator geodesic ${shape} matches turf and changes segments per frame`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const maximumSegments = 32;
     const radii =
       shape === 'ellipse'
@@ -139,7 +140,7 @@ for (const [shape, segments] of [
 
 it('GPUShapeGenerator planar rings are exact offsets by radius and bearing', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const centers = [
     [10, -5],
     [0.5, 200]
@@ -222,7 +223,7 @@ function rotateEllipsePoint(point: number[], rotation: number): number[] {
 
 it('GPUShapeGenerator arc-length ellipses match integrated arc positions across aspect ratios', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const axes = [
     [1, 1],
     [10, 2],
@@ -296,7 +297,7 @@ it('GPUShapeGenerator arc-length ellipses match integrated arc positions across 
 
 it('GPUShapeGenerator arc-length ellipses preserve collapsed axes and zero radius scale', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const axes = [
     [5, 0],
     [0, 5],
@@ -355,7 +356,7 @@ it('GPUShapeGenerator arc-length ellipses preserve collapsed axes and zero radiu
 
 it('GPUShapeGenerator geodesic arc-length ellipses apply spherical destination after spacing', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const center = [-73, 41];
   for (const [axes, rotation] of [
     [[500000, 10000], 31],

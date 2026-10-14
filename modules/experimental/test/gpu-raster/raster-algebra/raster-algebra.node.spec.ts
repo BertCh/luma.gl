@@ -17,7 +17,10 @@ import {
   GPURasterReclassify,
   GPUWeightedOverlay
 } from '../../../src/gpu-raster/raster-algebra';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {
   arithmeticOnCPU,
   computeCellStatisticsOnCPU,
@@ -51,9 +54,9 @@ it('raster-algebra parameter helpers pack layouts', () => {
   expect(getGPUWeightedOverlayParameterLength(3)).toBe(32);
   const overlay = getGPUWeightedOverlayParameterValues({
     layers: [
-      {weight: 2, inputMin: 10, inputMax: 20, invert: true},
+      {weight: 2, inputMinimum: 10, inputMaximum: 20, invert: true},
       {weight: -1, mode: 'table', breakCount: 2, closed: 'right'},
-      {weight: 1, inputMin: 5, inputMax: 5}
+      {weight: 1, inputMinimum: 5, inputMaximum: 5}
     ],
     normalizeWeights: true,
     noDataPolicy: 'ignore'
@@ -250,8 +253,8 @@ it('raster-algebra oracles agree with hand-computed cases', () => {
     {stack: Float32Array.from([0, 5, 10, 10, 10, NaN]), layerCount: 2, cellCount: 3},
     getGPUWeightedOverlayParameterValues({
       layers: [
-        {weight: 2, inputMin: 0, inputMax: 10},
-        {weight: 1, inputMin: 0, inputMax: 10, invert: true}
+        {weight: 2, inputMinimum: 0, inputMaximum: 10},
+        {weight: 1, inputMinimum: 0, inputMaximum: 10, invert: true}
       ],
       noDataPolicy: 'ignore',
       normalizeWeights: true
@@ -274,4 +277,52 @@ it('raster-algebra oracles agree with hand-computed cases', () => {
     getGPURasterArithmeticParameterValues({operation: 'round'})
   );
   expect(Array.from(rounded)).toEqual([0, 2, 2, -0, -2]);
+});
+
+it('getGPUWeightedOverlayParameterValues rejects table layers without remap tables', () => {
+  const settings = {layers: [{weight: 1}, {weight: 1, mode: 'table' as const, breakCount: 2}]};
+  expect(() =>
+    getGPUWeightedOverlayParameterValues(settings, undefined, {hasTables: false})
+  ).toThrow(/layer 1 is a table layer but has no remap tables/);
+  expect(() =>
+    getGPUWeightedOverlayParameterValues({layers: [{weight: 1}]}, undefined, {hasTables: false})
+  ).not.toThrow();
+  expect(() => getGPUWeightedOverlayParameterValues(settings)).not.toThrow();
+  expect(() =>
+    getGPUWeightedOverlayParameterValues(settings, undefined, {hasTables: true})
+  ).not.toThrow();
+});
+
+it('raster-algebra barrier kernels pass the workgroup size their WGSL assumes', () => {
+  withGraph(graph => {
+    const overlay = new GPUWeightedOverlay({
+      id: 'overlay',
+      stack: view(graph, 'float32', 6),
+      layerCount: 3,
+      cellCount: 2,
+      parameters: view(graph, 'float32', 32),
+      output: {score: view(graph, 'float32', 2), scoreRange: view(graph, 'float32', 2)}
+    });
+    const scoreSources = getGPUCommandNodeKernelSources(overlay.getCommandNodes(graph)).filter(
+      ({source}) => source.includes('var<workgroup> tileMinimum')
+    );
+    expect(scoreSources.length).toBe(1);
+    expect(scoreSources[0].source).toContain('array<u32, 256>');
+    expect(scoreSources[0].source).toContain('var stride = 128u;');
+    expect(scoreSources[0].source).toContain('@workgroup_size(256)');
+
+    const reclassify = new GPURasterReclassify({
+      id: 'reclassify',
+      values: view(graph, 'float32', 12),
+      breaks: view(graph, 'float32', 3),
+      parameters: view(graph, 'float32', 4),
+      output: {classes: view(graph, 'uint32', 12), classCounts: view(graph, 'uint32', 4)}
+    });
+    const classifySources = getGPUCommandNodeKernelSources(
+      reclassify.getCommandNodes(graph)
+    ).filter(({source}) => source.includes('localCounts'));
+    expect(classifySources.length).toBe(1);
+    expect(classifySources[0].source).toContain('slot += 256u');
+    expect(classifySources[0].source).toContain('@workgroup_size(256)');
+  });
 });

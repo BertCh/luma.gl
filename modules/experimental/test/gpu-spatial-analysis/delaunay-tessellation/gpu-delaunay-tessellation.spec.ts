@@ -18,14 +18,23 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  checkLocallyDelaunay,
   checkTriangulation,
+  countHullBoundarySites,
+  createLatticeFixture,
   createUniformFixture,
   digestTriangleSet,
   SCIPY_FIXTURES,
   toTriangleRows
 } from './delaunay-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-async function runDelaunay(device: Device, coordinates: Float32Array, triangleCapacity: number) {
+async function runDelaunay(
+  device: Device,
+  coordinates: Float32Array,
+  triangleCapacity: number,
+  maximumParallelSteps?: number
+) {
   const graph = new GPUCommandGraph(device, {id: 'delaunay-bounded-test'});
   const buffers: Buffer[] = [];
   const positionsBuffer = createInputBuffer(device, coordinates);
@@ -41,55 +50,110 @@ async function runDelaunay(device: Device, coordinates: Float32Array, triangleCa
   const overflow = scalar('bounded-overflow');
   const invalidCount = scalar('bounded-invalid-count');
   const duplicateCount = scalar('bounded-duplicate-count');
-  graph.add(
-    new GPUDelaunayTessellation({
-      positions: importGraphBuffer(
+  const converged = scalar('converged');
+  const iterationCount = scalar('iteration-count');
+  const iterationLimitReached = scalar('iteration-limit-reached');
+  const contributor = new GPUDelaunayTessellation({
+    positions: importGraphBuffer(
+      graph,
+      'bounded-positions',
+      positionsBuffer,
+      'float32x2',
+      coordinates.length / 2
+    ),
+    output: {
+      triangles: importGraphBuffer(
         graph,
-        'bounded-positions',
-        positionsBuffer,
-        'float32x2',
-        coordinates.length / 2
+        'bounded-triangles',
+        triangleBuffer,
+        'uint32x3',
+        triangleCapacity
       ),
-      output: {
-        triangles: importGraphBuffer(
-          graph,
-          'bounded-triangles',
-          triangleBuffer,
-          'uint32x3',
-          triangleCapacity
-        ),
-        status: {
-          count: count.view,
-          requiredCount: requiredCount.view,
-          overflow: overflow.view,
-          invalidCount: invalidCount.view
-        },
-        duplicateCount: duplicateCount.view
+      status: {
+        count: count.view,
+        requiredCount: requiredCount.view,
+        overflow: overflow.view,
+        invalidCount: invalidCount.view,
+        duplicateCount: duplicateCount.view,
+        converged: converged.view,
+        iterationCount: iterationCount.view,
+        iterationLimitReached: iterationLimitReached.view
       }
-    })
+    }
+  });
+  const nodes = contributor.getCommandNodes(graph);
+  graph.add(
+    maximumParallelSteps === undefined
+      ? nodes
+      : nodes.filter(node => {
+          const step = /-step-(\d+)-/.exec(node.id);
+          return !step || Number(step[1]) < maximumParallelSteps;
+        })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const [written, required, didOverflow, invalid, duplicates] = await Promise.all([
+  const [
+    written,
+    required,
+    didOverflow,
+    invalid,
+    duplicates,
+    didConverge,
+    iterations,
+    limitReached
+  ] = await Promise.all([
     readUint32(count.buffer, 1).then(values => values[0]),
     readUint32(requiredCount.buffer, 1).then(values => values[0]),
     readUint32(overflow.buffer, 1).then(values => values[0]),
     readUint32(invalidCount.buffer, 1).then(values => values[0]),
-    readUint32(duplicateCount.buffer, 1).then(values => values[0])
+    readUint32(duplicateCount.buffer, 1).then(values => values[0]),
+    readUint32(converged.buffer, 1).then(values => values[0]),
+    readUint32(iterationCount.buffer, 1).then(values => values[0]),
+    readUint32(iterationLimitReached.buffer, 1).then(values => values[0])
   ]);
   const indices = await readUint32(triangleBuffer, 3 * written);
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();
   }
-  return {written, required, didOverflow, invalid, duplicates, indices};
+  return {
+    written,
+    required,
+    didOverflow,
+    invalid,
+    duplicates,
+    indices,
+    didConverge,
+    iterations,
+    limitReached
+  };
 }
+
+it('GPUDelaunayTessellation finishes the exact GPU continuation after seed insertion', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const fixture of Object.values(SCIPY_FIXTURES)) {
+    const coordinates = createUniformFixture(
+      fixture.seed,
+      fixture.count,
+      fixture.width,
+      fixture.height
+    );
+    const result = await runDelaunay(device, coordinates, 2 * fixture.count, 3);
+    expect(result).toMatchObject({
+      written: fixture.triangles,
+      invalid: 0,
+      didConverge: 1,
+      limitReached: 0
+    });
+    expect(result.iterations).toBeGreaterThan(3);
+    expect(digestTriangleSet(toTriangleRows(result.indices))).toBe(fixture.digest);
+  }
+}, 600000);
 
 it('GPUDelaunayTessellation triangulates unique sites and reports bounded cardinality', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const coordinates = Float32Array.from([
     0, 0, 1, 0, 1, 1, 0, 1, 0.5, 0.5,
     // First-row ownership makes this final row a duplicate rather than another site.
@@ -122,9 +186,9 @@ it('GPUDelaunayTessellation triangulates unique sites and reports bounded cardin
           count: count.view,
           requiredCount: requiredCount.view,
           overflow: overflow.view,
-          invalidCount: invalidCount.view
-        },
-        duplicateCount: duplicateCount.view
+          invalidCount: invalidCount.view,
+          duplicateCount: duplicateCount.view
+        }
       }
     })
   );
@@ -166,9 +230,7 @@ it('GPUDelaunayTessellation triangulates unique sites and reports bounded cardin
 
 it('GPUDelaunayTessellation reports collinear, cocircular, and capacity edge cases deterministically', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const collinear = await runDelaunay(device, Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0), 4);
   expect(collinear).toMatchObject({
     written: 0,
@@ -203,9 +265,7 @@ it('GPUDelaunayTessellation reports collinear, cocircular, and capacity edge cas
 for (const [name, fixture] of Object.entries(SCIPY_FIXTURES)) {
   it(`GPUDelaunayTessellation keeps every hull triangle on ${name} (T = 2n - 2 - h)`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const coordinates = createUniformFixture(
       fixture.seed,
       fixture.count,
@@ -233,9 +293,7 @@ for (const [name, fixture] of Object.entries(SCIPY_FIXTURES)) {
 
 it('GPUDelaunayTessellation triangulates cocircular and hull-collinear sites without losing area', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases: {name: string; points: number[][]; triangles: number}[] = [
     {
       // Every site is a hull vertex: T = 2n - 2 - n = 10 whatever diagonals the ties select.
@@ -320,9 +378,7 @@ it('GPUDelaunayTessellation triangulates cocircular and hull-collinear sites wit
 
 it('GPUVoronoiDiagram derives compact internal and clipped hull edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'voronoi-test'});
   const buffers: Buffer[] = [];
   const input = <Format extends 'float32x2' | 'float32x4' | 'uint32x3' | 'uint32'>(
@@ -409,3 +465,110 @@ it('GPUVoronoiDiagram derives compact internal and clipped hull edges', async ()
     buffer.destroy();
   }
 });
+
+// Parallel insertion and flipping at scale (DEL-REF additions). The output order is canonical:
+// every row is rotated so its smallest vertex comes first, and rows ascend by (v0, v1).
+function expectCanonicalOrder(triangles: number[][]) {
+  for (let index = 0; index < triangles.length; index++) {
+    const [a, b, c] = triangles[index];
+    expect(a < b && a < c, `row ${index} starts with its smallest vertex`).toBe(true);
+    if (index > 0) {
+      const [previousA, previousB] = triangles[index - 1];
+      expect(previousA < a || (previousA === a && previousB < b), `row ${index} ascends`).toBe(
+        true
+      );
+    }
+  }
+}
+
+it('GPUDelaunayTessellation triangulates 1e4 uniform sites (T = 2n - 2 - b, exact empty circle)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const count = 10000;
+  const coordinates = createUniformFixture(20261014, count, 100, 100);
+  const expected = 2 * count - 2 - countHullBoundarySites(coordinates);
+  const result = await runDelaunay(device, coordinates, 2 * count);
+  expect(result).toMatchObject({
+    written: expected,
+    required: expected,
+    didOverflow: 0,
+    invalid: 0,
+    duplicates: 0
+  });
+  const triangles = toTriangleRows(result.indices);
+  expectCanonicalOrder(triangles);
+  expect(checkTriangulation(coordinates, triangles)).toEqual({
+    degenerate: 0,
+    circleViolations: 0,
+    duplicateEdges: 0,
+    areaDifference: 0n
+  });
+}, 600_000);
+
+it('GPUDelaunayTessellation triangulates a 64x64 lattice (cocircular ties by row order)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const coordinates = createLatticeFixture(64 * 64, 64);
+  // Boundary sites 4 * 63 = 252: T = 2 * 4096 - 2 - 252.
+  const expected = 2 * 64 * 64 - 2 - 252;
+  const result = await runDelaunay(device, coordinates, 2 * 64 * 64);
+  expect(result).toMatchObject({written: expected, required: expected, didOverflow: 0, invalid: 0});
+  const triangles = toTriangleRows(result.indices);
+  expectCanonicalOrder(triangles);
+  expect(checkLocallyDelaunay(coordinates, triangles)).toEqual({
+    degenerate: 0,
+    circleViolations: 0,
+    duplicateEdges: 0,
+    areaDifference: 0n
+  });
+}, 600_000);
+
+it('GPUDelaunayTessellation triangulates 1e5 uniform sites deterministically', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const count = 100000;
+  const coordinates = createUniformFixture(20261015, count, 100, 100);
+  const expected = 2 * count - 2 - countHullBoundarySites(coordinates);
+  const first = await runDelaunay(device, coordinates, 2 * count);
+  expect(first).toMatchObject({written: expected, required: expected, didOverflow: 0, invalid: 0});
+  const triangles = toTriangleRows(first.indices);
+  expectCanonicalOrder(triangles);
+  expect(checkLocallyDelaunay(coordinates, triangles)).toEqual({
+    degenerate: 0,
+    circleViolations: 0,
+    duplicateEdges: 0,
+    areaDifference: 0n
+  });
+  // Slot allocation follows atomic order, but the canonical output must not.
+  const second = await runDelaunay(device, coordinates, 2 * count);
+  expect(second.indices).toEqual(first.indices);
+}, 900_000);
+
+// The CPU WGSL executor runs this same scene; this spec additionally checks real indirect dispatch.
+it('GPUDelaunayTessellation converges on 2000 collinear-plus-apex sites', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const pointCount = 2000;
+  const coordinates = Float32Array.from(
+    Array.from({length: pointCount}, (_, row) =>
+      row === pointCount - 1 ? [pointCount / 2, 1] : [row, 0]
+    ).flat()
+  );
+  const result = await runDelaunay(device, coordinates, 2 * pointCount);
+  expect(result).toMatchObject({
+    written: pointCount - 2,
+    required: pointCount - 2,
+    invalid: 0,
+    didConverge: 1,
+    limitReached: 0
+  });
+  expect(result.iterations).toBeGreaterThan(3);
+  expect(result.iterations).toBeLessThan(100);
+  expect(result.written).toBe(2 * pointCount - 2 - countHullBoundarySites(coordinates));
+  expect(checkTriangulation(coordinates, toTriangleRows(result.indices))).toEqual({
+    degenerate: 0,
+    circleViolations: 0,
+    duplicateEdges: 0,
+    areaDifference: 0n
+  });
+}, 600_000);

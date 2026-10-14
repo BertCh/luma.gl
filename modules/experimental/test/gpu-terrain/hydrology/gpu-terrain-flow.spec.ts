@@ -3,9 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import hydrologyReference from '../../oracles/fixtures/terrain-hydrology.json';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
+} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_FLOW_CELL_CLASS as CELL_CLASS,
@@ -29,23 +35,35 @@ import {
   type TerrainFlowOracleResult
 } from './terrain-flow-oracle';
 import {toBits} from '../terrain-test-utils';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {createSerpentineDEM, fillDepressionsPriorityFlood} from './terrain-flow-corridors';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FlowOptions = {
+  /** Packed settings; the cell size and latitude band come from `cellSize` and `origin`. */
   settings?: GPUTerrainFlowSettings;
+  /** Ground cell size of the grid. Defaults to 1. */
+  cellSize?: number | [number, number];
+  /** World position of the top-left corner of the grid. Defaults to `[0, 0]`. */
+  origin?: [number, number];
   fillDepressions?: boolean;
   runoff?: Float32Array;
   cellSizeMode?: GPUTerrainFlowProps['cellSizeMode'];
   accumulationUnits?: GPUTerrainFlowProps['accumulationUnits'];
-  maxFillIterations?: number;
-  maxAccumulationIterations?: number;
+  maximumFillIterations?: number;
+  maximumAccumulationIterations?: number;
   /** Publish both convergence flags as 1-row views at byte offsets 0 and 4 of one 8-byte buffer. */
   sharedSummaryBuffer?: boolean;
 };
 
 type FlowResult = TerrainFlowOracleResult & {fillConverged: number; accumulationConverged: number};
 
-const DEFAULT_SETTINGS: GPUTerrainFlowSettings = {cellSize: [1, 1]};
+const DEFAULT_SETTINGS: GPUTerrainFlowSettings = {};
+
+/** Returns the raster grid that a spec places its DEM on. */
+function getFlowGrid(width: number, height: number, options: FlowOptions = {}): GPURasterMetadata {
+  return makeGPURasterMetadata({width, height, cellSize: options.cellSize, origin: options.origin});
+}
 
 function createFlowFixture(
   device: Device,
@@ -55,6 +73,7 @@ function createFlowFixture(
   options: FlowOptions = {}
 ) {
   const cellCount = width * height;
+  const grid = getFlowGrid(width, height, options);
   const settings = options.settings ?? DEFAULT_SETTINGS;
   const elevationBuffer = createInputBuffer(device, elevation);
   const runoffBuffer = options.runoff ? createInputBuffer(device, options.runoff) : undefined;
@@ -71,7 +90,7 @@ function createFlowFixture(
     id: 'flow-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainFlowParameterValues(settings)
+    values: getGPUTerrainFlowParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-flow-test'});
   const fillDepressions = options.fillDepressions ?? false;
@@ -82,58 +101,58 @@ function createFlowFixture(
     graph.createDataView(summary!.buffer, {format: 'uint32', length: 1, byteOffset});
   graph.add(
     new GPUTerrainFlow({
-      width,
-      height,
-      elevation: {
-        id: 'elevation',
-        format: 'float32',
-        storage: {
-          kind: 'buffer',
-          values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount)
-        }
-      },
-      settings: settingsBuffer.importToGraph(graph),
+      grid,
+      elevation: makeGPURasterBand(
+        importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount),
+        grid,
+        {id: 'elevation'}
+      ),
+      parameters: settingsBuffer.importToGraph(graph),
       cellSizeMode: options.cellSizeMode,
       fillDepressions,
-      maxFillIterations: options.maxFillIterations,
-      maxAccumulationIterations: options.maxAccumulationIterations,
+      maximumFillIterations: options.maximumFillIterations,
+      maximumAccumulationIterations: options.maximumAccumulationIterations,
       accumulationUnits: options.accumulationUnits,
       runoff: runoffBuffer
         ? importGraphBuffer(graph, 'runoff', runoffBuffer, 'float32', cellCount)
         : undefined,
-      filledElevation: fillDepressions
-        ? importGraphBuffer(graph, 'filled', buffers.filled, 'float32', cellCount)
-        : undefined,
-      flowDirections: importGraphBuffer(
-        graph,
-        'directions',
-        buffers.directions,
-        'uint32',
-        cellCount
-      ),
-      cellClasses: importGraphBuffer(graph, 'classes', buffers.classes, 'uint32', cellCount),
-      accumulation: importGraphBuffer(
-        graph,
-        'accumulation',
-        buffers.accumulation,
-        'float32',
-        cellCount
-      ),
-      streams: importGraphBuffer(graph, 'streams', buffers.streams, 'uint32', cellCount),
-      fillConverged: fillDepressions
-        ? summary
-          ? flagAt(0)
-          : importGraphBuffer(graph, 'fill-converged', buffers.fillConverged, 'uint32', 1)
-        : undefined,
-      accumulationConverged: summary
-        ? flagAt(4)
-        : importGraphBuffer(
-            graph,
-            'accumulation-converged',
-            buffers.accumulationConverged,
-            'uint32',
-            1
-          )
+      output: {
+        filledElevation: fillDepressions
+          ? importGraphBuffer(graph, 'filled', buffers.filled, 'float32', cellCount)
+          : undefined,
+        flowDirections: importGraphBuffer(
+          graph,
+          'directions',
+          buffers.directions,
+          'uint32',
+          cellCount
+        ),
+        cellClasses: importGraphBuffer(graph, 'classes', buffers.classes, 'uint32', cellCount),
+        accumulation: importGraphBuffer(
+          graph,
+          'accumulation',
+          buffers.accumulation,
+          'float32',
+          cellCount
+        ),
+        streams: importGraphBuffer(graph, 'streams', buffers.streams, 'uint32', cellCount),
+        status: {
+          fillConverged: fillDepressions
+            ? summary
+              ? flagAt(0)
+              : importGraphBuffer(graph, 'fill-converged', buffers.fillConverged, 'uint32', 1)
+            : undefined,
+          accumulationConverged: summary
+            ? flagAt(4)
+            : importGraphBuffer(
+                graph,
+                'accumulation-converged',
+                buffers.accumulationConverged,
+                'uint32',
+                1
+              )
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -143,7 +162,7 @@ function createFlowFixture(
     elevationBuffer,
     async run(nextSettings?: GPUTerrainFlowSettings): Promise<FlowResult> {
       if (nextSettings) {
-        settingsBuffer.write(getGPUTerrainFlowParameterValues(nextSettings));
+        settingsBuffer.write(getGPUTerrainFlowParameterValues(nextSettings, grid));
       }
       submitGraph(device, compiled, undefined);
       return {
@@ -237,8 +256,7 @@ async function expectMatchesOracle(
   const result = await fixture.run();
   const oracle = computeTerrainFlow({
     elevation,
-    width,
-    height,
+    grid: getFlowGrid(width, height, options),
     settings,
     cellSizeMode: options.cellSizeMode,
     fillDepressions: options.fillDepressions,
@@ -292,9 +310,7 @@ for (const [width, height] of [
 ]) {
   it(`GPUTerrainFlow matches the oracle on synthetic DEMs ${width}x${height}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     for (const [name, createDem] of DEM_CASES) {
       const elevation = createDem(width, height);
       await expectMatchesOracle(device, `${name} raw`, elevation, width, height);
@@ -303,7 +319,7 @@ for (const [width, height] of [
       });
       await expectMatchesOracle(device, `${name} fill 0.25`, elevation, width, height, {
         fillDepressions: true,
-        settings: {cellSize: [1, 1], fillEpsilon: 0.25, streamThreshold: 5}
+        settings: {fillEpsilon: 0.25, streamThreshold: 5}
       });
     }
   });
@@ -311,9 +327,7 @@ for (const [width, height] of [
 
 it('GPUTerrainFlow handles a 1x1 grid and an all-invalid grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const oracle = await expectMatchesOracle(device, 'single', Float32Array.of(3), 1, 1);
   expect(Array.from(oracle.classes)).toEqual([CELL_CLASS.outlet]);
   await expectMatchesOracle(device, 'single fill', Float32Array.of(3), 1, 1, {
@@ -324,9 +338,7 @@ it('GPUTerrainFlow handles a 1x1 grid and an all-invalid grid', async () => {
 
 it('GPUTerrainFlow reports pits without fill and drains them with fill and epsilon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 9;
   const height = 9;
   const elevation = DEMS.invertedCone(width, height);
@@ -340,7 +352,7 @@ it('GPUTerrainFlow reports pits without fill and drains them with fill and epsil
   // A rim of value 4 around the pit forces a nontrivial fill level.
   const options: FlowOptions = {
     fillDepressions: true,
-    settings: {cellSize: [1, 1], fillEpsilon: 0.25}
+    settings: {fillEpsilon: 0.25}
   } as const;
   fixture = createFlowFixture(device, elevation, width, height, options);
   result = await fixture.run();
@@ -367,9 +379,7 @@ it('GPUTerrainFlow reports pits without fill and drains them with fill and epsil
 
 it('GPUTerrainFlow treats nodata holes as outlets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 5x5 bowl whose center is nodata: its neighbors are boundary cells.
   const elevation = Float32Array.from({length: 25}, (_, cell) => (cell === 12 ? NaN : 10));
   elevation[7] = 12;
@@ -385,9 +395,7 @@ it('GPUTerrainFlow treats nodata holes as outlets', async () => {
 
 it('GPUTerrainFlow honors the cell size mode', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Center 10; east 8 (drop 2) and south 8.5 (drop 1.5); everything else is high.
   const elevation = new Float32Array(9).fill(100);
   elevation[4] = 10;
@@ -397,7 +405,8 @@ it('GPUTerrainFlow honors the cell size mode', async () => {
   expect(uniform.directions[4]).toBe(1);
   const geographic: FlowOptions = {
     cellSizeMode: 'geographic',
-    settings: {cellSize: [1, 0.25], northEdge: 10, southEdge: 0}
+    cellSize: [1, 0.25],
+    origin: [0, 10]
   };
   const geographicOracle = await expectMatchesOracle(
     device,
@@ -410,15 +419,14 @@ it('GPUTerrainFlow honors the cell size mode', async () => {
   expect(geographicOracle.directions[4]).toBe(4);
   await expectMatchesOracle(device, 'mercator', DEMS.noise(23, 17, 3), 23, 17, {
     cellSizeMode: 'web-mercator',
-    settings: {cellSize: [1, 1.5], northEdge: 0.3, southEdge: 0.45}
+    cellSize: 100000,
+    origin: [0, getOracleWebMercatorY(0.3)]
   });
 });
 
 it('GPUTerrainFlow weights accumulation by runoff and area', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 31;
   const height = 23;
   const elevation = DEMS.valley(width, height);
@@ -436,7 +444,8 @@ it('GPUTerrainFlow weights accumulation by runoff and area', async () => {
     {
       accumulationUnits: 'area',
       cellSizeMode: 'geographic',
-      settings: {cellSize: [0.001, 0.001], northEdge: 50, southEdge: 49.9},
+      cellSize: [0.001, 0.1 / 23],
+      origin: [0, 50],
       runoff
     },
     // Area weights: the GPU evaluates the WGS84 row area in float32 (mix, sin, cos, sqrt, two
@@ -452,16 +461,14 @@ it('GPUTerrainFlow weights accumulation by runoff and area', async () => {
 
 it('GPUTerrainFlow follows per-frame changes without recompiling and is deterministic', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const first = DEMS.noise(width, height, 1);
   const second = DEMS.noise(width, height, 2);
   const options: FlowOptions = {
     fillDepressions: true,
-    settings: {cellSize: [1, 1], streamThreshold: 3}
+    settings: {streamThreshold: 3}
   };
   const fixture = createFlowFixture(device, first, width, height, options);
   const run1 = await fixture.run();
@@ -469,12 +476,11 @@ it('GPUTerrainFlow follows per-frame changes without recompiling and is determin
   expect(toBits(run2.accumulation)).toEqual(toBits(run1.accumulation));
 
   fixture.elevationBuffer.write(second);
-  const settings = {cellSize: [1, 1], fillEpsilon: 0.5, streamThreshold: 7} as const;
+  const settings = {fillEpsilon: 0.5, streamThreshold: 7} as const;
   const changed = await fixture.run(settings);
   const oracle = computeTerrainFlow({
     elevation: second,
-    width,
-    height,
+    grid: getFlowGrid(width, height),
     settings,
     fillDepressions: true
   });
@@ -487,10 +493,9 @@ it('GPUTerrainFlow follows per-frame changes without recompiling and is determin
 
 it('GPUTerrainFlow reports fill and accumulation non-convergence', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  // A 200x3 channel drains from east to west; one fill iteration cannot lower +infinity far.
+  requireTestDevice(device);
+  // Positive epsilon selects the capped relaxation. Interior cells change from +infinity in
+  // its first round, so it needs another round to certify that no values changed.
   const width = 200;
   const height = 3;
   const bowl = Float32Array.from({length: width * height}, (_, cell) => {
@@ -499,15 +504,25 @@ it('GPUTerrainFlow reports fill and accumulation non-convergence', async () => {
   });
   const bowlFixture = createFlowFixture(device, bowl, width, height, {
     fillDepressions: true,
-    maxFillIterations: 1
+    maximumFillIterations: 1,
+    settings: {fillEpsilon: 0.125}
   });
   const bowlResult = await bowlFixture.run();
   expect(bowlResult.fillConverged).toBe(0);
+  // Epsilon zero selects the exact spill graph, which ignores the relaxation iteration cap.
+  const spillResult = await bowlFixture.run({fillEpsilon: 0});
+  expect(spillResult.fillConverged).toBe(1);
+  expect(toBits(spillResult.filled)).toEqual(toBits(bowl));
   bowlFixture.destroy();
 
   const length = 3000;
   const strip = Float32Array.from({length}, (_, row) => length - row);
-  const shortFixture = createFlowFixture(device, strip, 1, length, {maxAccumulationIterations: 1});
+  // Unit runoff selects the pull rounds: D8 'cells' accumulation without runoff runs on the Euler
+  // tour, which ignores the limit (see terrain-flow-euler-tour.spec.ts).
+  const shortFixture = createFlowFixture(device, strip, 1, length, {
+    maximumAccumulationIterations: 1,
+    runoff: new Float32Array(length).fill(1)
+  });
   const shortResult = await shortFixture.run();
   if (shortResult.accumulationConverged === 1) {
     expect(shortResult.accumulation.every(value => Number.isFinite(value))).toBe(true);
@@ -523,21 +538,19 @@ it('GPUTerrainFlow reports fill and accumulation non-convergence', async () => {
   shortFixture.destroy();
 
   await expectMatchesOracle(device, 'long strip', strip, 1, length, {
-    maxAccumulationIterations: 64
+    maximumAccumulationIterations: 64
   });
 });
 
 it('GPUTerrainFlow publishes both convergence flags into one summary buffer', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const elevation = DEMS.noise(width, height);
   const options: FlowOptions = {
     fillDepressions: true,
-    settings: {cellSize: [1, 1], fillEpsilon: 0.25}
+    settings: {fillEpsilon: 0.25}
   } as const;
   const separate = createFlowFixture(device, elevation, width, height, options);
   const expected = await separate.run();
@@ -565,9 +578,7 @@ it('GPUTerrainFlow publishes both convergence flags into one summary buffer', as
 
 it('GPUTerrainFlow fills a 256x256 serpentine corridor at default iterations', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Before directional sweeps a fill front advanced about one tile per iteration and this corridor
   // (about 32k cells long) never converged within the default iteration budget.
   const size = 256;
@@ -577,6 +588,27 @@ it('GPUTerrainFlow fills a 256x256 serpentine corridor at default iterations', a
     const actual = await fixture.run();
     expect(actual.fillConverged).toBe(1);
     expect(toBits(actual.filled)).toEqual(toBits(fillDepressionsPriorityFlood(elevation, size)));
+    fixture.destroy();
+  }
+});
+
+it('GPUTerrainFlow D8 directions and accumulation match pysheds', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Fixture: test/oracles/terrain-hydrology.py (pysheds Grid.flowdir and accumulation; pysheds'
+  // terminal -1/-2 mapped to 0). Integer cell counts are exact in float32, so both checks are exact.
+  for (const testCase of hydrologyReference.cases) {
+    const fixture = createFlowFixture(
+      device,
+      Float32Array.from(testCase.elevation),
+      testCase.width,
+      testCase.height,
+      {cellSize: testCase.cellSize as [number, number], maximumAccumulationIterations: 256}
+    );
+    const result = await fixture.run();
+    expect(Array.from(result.directions), testCase.name).toEqual(testCase.directions);
+    expect(Array.from(result.accumulation), testCase.name).toEqual(testCase.accumulation);
+    expect(result.accumulationConverged, testCase.name).toBe(1);
     fixture.destroy();
   }
 });

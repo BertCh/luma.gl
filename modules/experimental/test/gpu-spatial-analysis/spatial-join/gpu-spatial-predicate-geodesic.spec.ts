@@ -18,6 +18,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {GEODESIC_DWITHIN_POINTS, GEODESIC_DWITHIN_POLYGON} from './geodesic-dwithin-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GREAT_CIRCLE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
 
@@ -103,6 +104,7 @@ async function runGreatCircleJoin(
   const rightIds = output('right-ids', pairCapacity);
   const count = output('count', 1);
   const overflow = output('overflow', 1);
+  const pairOverflow = output('pair-overflow', 1);
   const distanceBuffer = createInputBuffer(device, Float32Array.from([distances[0]]));
   buffers.push(distanceBuffer);
   graph.add(
@@ -115,8 +117,17 @@ async function runGreatCircleJoin(
         : distances[0],
       spatialContext: GREAT_CIRCLE,
       candidateCapacity: Math.max(leftCount * 8, 64),
-      pairs: {leftIds: leftIds.view, rightIds: rightIds.view, count: count.view},
-      overflow: overflow.view
+      output: {
+        pairs: {
+          leftIds: leftIds.view,
+          rightIds: rightIds.view,
+          status: {
+            count: count.view,
+            overflow: pairOverflow.view
+          }
+        },
+        status: {overflow: overflow.view}
+      }
     })
   );
   const compiled = graph.compile();
@@ -152,9 +163,7 @@ const pointSides =
 
 it('GPUSpatialPredicateJoin great-circle dwithin matches haversine across latitude, antimeridian and pole', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {left, right, pairsWithin1500} = GEODESIC_DWITHIN_POINTS;
   const [result] = await runGreatCircleJoin(device, pointSides(left, right), [1500], false);
   expect(result.overflow).toBe(0);
@@ -164,9 +173,7 @@ it('GPUSpatialPredicateJoin great-circle dwithin matches haversine across latitu
 
 it('GPUSpatialPredicateJoin great-circle dwithin reads a per-frame distance in meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {left, right, pairsWithin1500, pairsWithin2500} = GEODESIC_DWITHIN_POINTS;
   const results = await runGreatCircleJoin(
     device,
@@ -186,9 +193,7 @@ it('GPUSpatialPredicateJoin great-circle dwithin reads a per-frame distance in m
 
 it('GPUSpatialPredicateJoin great-circle dwithin measures to polygon edges and counts containment as zero', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {ring, queries, distances} = GEODESIC_DWITHIN_POLYGON;
   const sides = (graph: GPUCommandGraph, buffers: Buffer[]) => ({
     left: createPoints(graph.device, graph, 'queries', queries, buffers),

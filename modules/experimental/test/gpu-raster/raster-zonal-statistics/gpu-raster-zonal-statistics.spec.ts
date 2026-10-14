@@ -6,9 +6,11 @@ import {Texture, type Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
 import type {GPURasterBand} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
+  getGPURasterZonalStatisticsParameterValues,
   GPURasterZonalStatistics,
   type GPURasterZonalStatisticsProps
 } from '../../../src/gpu-raster/raster-zonal-statistics';
@@ -25,6 +27,7 @@ import {
   type ZonalStatisticsOracleOptions,
   type ZonalStatisticsOracleResult
 } from './raster-zonal-statistics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const COLUMNS = ['cellCounts', 'valueCounts', 'sums', 'means', 'minimums', 'maximums'] as const;
 const NO_DATA = -9999;
@@ -149,15 +152,16 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
   owned.push(overflowBuffer);
   graph.add(
     new GPURasterZonalStatistics({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       zones: importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount),
       values: band,
       zoneCapacity,
       ignoredZone: options.ignoredZone,
       sumOrder: options.sumOrder,
-      output,
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+      output: {
+        ...output,
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+      }
     })
   );
   return {
@@ -193,9 +197,7 @@ const HEIGHT = 23;
 
 it('GPURasterZonalStatistics matches the oracle on a random grid with calibration', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(WIDTH, HEIGHT, 7);
   // Zone 9 is guaranteed empty: the generator only emits zones 0..8 and 10..14.
   const oracleOptions: ZonalStatisticsOracleOptions = {
@@ -233,9 +235,7 @@ it('GPURasterZonalStatistics matches the oracle on a random grid with calibratio
 
 it('GPURasterZonalStatistics skips ignoredZone silently and reports overflow only for others', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(WIDTH, HEIGHT, 11);
   data.zones.forEach((zone, index) => {
     if (zone >= 10) data.zones[index] = 3;
@@ -290,9 +290,7 @@ it('GPURasterZonalStatistics skips ignoredZone silently and reports overflow onl
 
 it('GPURasterZonalStatistics handles a single cell and zoneCapacity 1', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const single = {
     zones: Uint32Array.of(0),
     values: Float32Array.of(2.5),
@@ -340,9 +338,7 @@ it('GPURasterZonalStatistics handles a single cell and zoneCapacity 1', async ()
 
 it('GPURasterZonalStatistics recomputes after per-frame rewrites without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const first = createRandomData(WIDTH, HEIGHT, 21);
   const fixture = createFixture(device, {
     width: WIDTH,
@@ -460,9 +456,7 @@ async function readBits(buffer: Buffer, count: number): Promise<number[]> {
 
 it('GPURasterZonalStatistics sumOrder sorted is bitwise reproducible and matches the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 400;
   const height = 300;
   const data = createLargeData(width, height, 99);
@@ -518,9 +512,7 @@ it('GPURasterZonalStatistics sumOrder sorted is bitwise reproducible and matches
 
 it('GPURasterZonalStatistics sumOrder sorted matches the oracle with calibration and validity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(WIDTH, HEIGHT, 7);
   const fixture = createFixture(device, {
     width: WIDTH,
@@ -556,9 +548,7 @@ for (const [zoneCapacity, sumOrder] of [
 ] as const) {
   it(`GPURasterZonalStatistics matches the oracle across many workgroup tiles (${zoneCapacity} zones, ${sumOrder})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const width = 163;
     const height = 101;
     const random = createRandom(zoneCapacity);
@@ -594,14 +584,14 @@ for (const [zoneCapacity, sumOrder] of [
 
 it('GPURasterZonalStatistics weights geographic cells by spherical area', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 2 x 3 cells of 10 degrees longitude, rows 60-40, 40-20 and 20-0 N; zone 0 holds 1, 2, 3 and
   // zone 1 holds 4, 5, 6. Expected values: the oracle, pinned to python in the node spec.
   const width = 2;
   const height = 3;
-  const settingsValues = [10, 20, 60, 0];
+  const grid = makeGPURasterMetadata({width, height, cellSize: [10, 20], origin: [0, 60]});
+  const settingsValues = Array.from(getGPURasterZonalStatisticsParameterValues(grid));
+  expect(settingsValues).toEqual([10, 20, 60, 0]);
   const zones = new Uint32Array([0, 0, 0, 1, 1, 1]);
   const values = new Float32Array([1, 2, 3, 4, 5, 6]);
   const cellWeights = Array.from(zones, (_, cell) =>
@@ -626,8 +616,7 @@ it('GPURasterZonalStatistics weights geographic cells by spherical area', async 
     );
     graph.add(
       new GPURasterZonalStatistics({
-        width,
-        height,
+        grid,
         zones: importGraphBuffer(graph, 'zones', owned[0], 'uint32', 6),
         values: {
           id: 'values',
@@ -640,7 +629,7 @@ it('GPURasterZonalStatistics weights geographic cells by spherical area', async 
         zoneCapacity: 2,
         sumOrder,
         cellSizeMode: 'geographic',
-        settings: importGraphBuffer(graph, 'settings', owned[2], 'float32', 4),
+        parameters: importGraphBuffer(graph, 'parameters', owned[2], 'float32', 4),
         output
       })
     );
@@ -654,3 +643,93 @@ it('GPURasterZonalStatistics weights geographic cells by spherical area', async 
     for (const buffer of owned) buffer.destroy();
   }
 });
+
+for (const sumOrder of ['sorted', 'atomic'] as const) {
+  it(`GPURasterZonalStatistics splits the mask pass with every output on geographic cells (${sumOrder})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // 5000 zones disable the fused pass; geographic cells add the weight contributions and the
+    // settings binding, so one mask pass would bind 10 storage buffers (core limit 8).
+    const width = 163;
+    const height = 101;
+    const zoneCapacity = 5000;
+    const grid = makeGPURasterMetadata({width, height, cellSize: [0.1, 0.1], origin: [0, 60]});
+    const settingsValues = Array.from(getGPURasterZonalStatisticsParameterValues(grid));
+    const random = createRandom(4242);
+    const count = width * height;
+    const zones = new Uint32Array(count);
+    const values = new Float32Array(count);
+    const validity = new Uint32Array(count);
+    for (let index = 0; index < count; index++) {
+      zones[index] =
+        random() < 0.01 ? zoneCapacity + 3 : Math.floor((index / count) * zoneCapacity);
+      // Positive values: cell areas are about 1e8 m^2, so mixed signs would make the weighted sums
+      // cancel far below their f32 rounding scale and defeat the relative tolerance.
+      values[index] = random() < 0.05 ? Number.NaN : 1 + Math.round(random() * 400) / 4;
+      validity[index] = random() < 0.1 ? 0 : 1;
+    }
+    const cellWeights = Array.from(zones, (_, cell) =>
+      getRasterZonalCellArea(settingsValues, Math.floor(cell / width), height)
+    );
+    const expected = computeZonalStatistics(zones, values, {zoneCapacity, validity, cellWeights});
+    const graph = new GPUCommandGraph(device, {id: `zonal-split-mask-${sumOrder}`});
+    const owned = [
+      createInputBuffer(device, zones),
+      createInputBuffer(device, values),
+      createInputBuffer(device, validity),
+      createInputBuffer(device, new Float32Array(settingsValues))
+    ];
+    const names = [...COLUMNS, 'weightSums', 'variances', 'standardDeviations'] as const;
+    const outputBuffers = names.map(() => createOutputBuffer(device, zoneCapacity));
+    const overflowBuffer = createOutputBuffer(device, 1);
+    owned.push(...outputBuffers, overflowBuffer);
+    const output = Object.fromEntries(
+      names.map((name, index) => [
+        name,
+        importGraphBuffer(
+          graph,
+          name,
+          outputBuffers[index],
+          name === 'cellCounts' || name === 'valueCounts' ? 'uint32' : 'float32',
+          zoneCapacity
+        )
+      ])
+    );
+    const contributor = new GPURasterZonalStatistics({
+      grid,
+      zones: importGraphBuffer(graph, 'zones', owned[0], 'uint32', count),
+      values: {
+        id: 'values',
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: importGraphBuffer(graph, 'values', owned[1], 'float32', count)
+        },
+        validity: importGraphBuffer(graph, 'validity', owned[2], 'uint32', count)
+      },
+      zoneCapacity,
+      sumOrder,
+      cellSizeMode: 'geographic',
+      parameters: importGraphBuffer(graph, 'parameters', owned[3], 'float32', 4),
+      output: {
+        ...output,
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+      }
+    });
+    graph.add(contributor);
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    expect(expected.overflow).toBe(1);
+    expect(await readUint32(overflowBuffer, 1)).toEqual([1]);
+    for (const [index, name] of names.entries()) {
+      if (name === 'cellCounts' || name === 'valueCounts') {
+        expect(await readUint32(outputBuffers[index], zoneCapacity)).toEqual(expected[name]);
+      } else {
+        // Same tolerance derivation as the geographic case above (f32 areas, relative 1e-6).
+        expectCloseArray(await readFloat32(outputBuffers[index], zoneCapacity), expected[name]);
+      }
+    }
+    compiled.destroy();
+    for (const buffer of owned) buffer.destroy();
+  });
+}

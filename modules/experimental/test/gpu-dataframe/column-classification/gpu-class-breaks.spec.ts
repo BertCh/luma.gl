@@ -10,8 +10,9 @@ import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-cont
 import {
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
+  GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH,
   type GPUClassBreaksMethod,
-  type GPUClassBreaksParameters
+  type GPUClassBreaksSettings
 } from '../../../src/gpu-dataframe/column-classification/class-breaks-parameters';
 import {GPUClassBreaks} from '../../../src/gpu-dataframe/column-classification/gpu-class-breaks';
 import {
@@ -23,10 +24,22 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {
   computeClassBreaksOracle,
+  computeExactNaturalBreaks,
   countClassesOracle,
-  getNaturalBreaksCost,
+  getWithinClassCost,
   type ClassBreaksOracleResult
 } from './class-breaks-oracle';
+import {
+  CLASS_BREAKS_REFERENCE,
+  getGoodnessOfVarianceFit,
+  getReferenceEdgeMismatches,
+  getReferenceParameters,
+  NATURAL_BREAKS_LOCAL_OPTIMA,
+  NATURAL_BREAKS_LOCAL_OPTIMUM_FIT_TOLERANCE
+} from './class-breaks-reference';
+import {LegacyNaturalBreaks} from './legacy-natural-breaks';
+import {CLASS_BREAKS_EDGE_POLICY} from '../dataframe-edge-policy';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const MAXIMUM_CLASS_COUNT = 10;
 
@@ -82,10 +95,11 @@ function createClusteredColumn(seed: number, rows: number): Float32Array {
 type Result = {breaks: number[]; breakBits: number[]; classCount: number; classCounts: number[]};
 
 type Harness = {
+  /** `parameters` may be a raw packed view, to write values the CPU packer refuses. */
   run(
     values: Float32Array,
     mask: Uint32Array | undefined,
-    parameters: GPUClassBreaksParameters
+    parameters: GPUClassBreaksSettings | Float32Array
   ): Promise<Result>;
   /** Submits the compiled graph `frameCount` times and waits for one small readback. */
   submit(frameCount: number): Promise<void>;
@@ -101,9 +115,12 @@ function createHarness(
     naturalBreaksBinCount: number;
     methods?: GPUClassBreaksMethod[];
     valueFormat?: 'float32' | 'uint32' | 'sint32';
+    /** Defaults to MAXIMUM_CLASS_COUNT. */
+    maximumClassCount?: number;
   }
 ): Harness {
   const {rows, withMask, naturalBreaksBinCount} = props;
+  const maximumClassCount = props.maximumClassCount ?? MAXIMUM_CLASS_COUNT;
   const buffers: Buffer[] = [];
   const keep = (buffer: Buffer) => {
     buffers.push(buffer);
@@ -111,13 +128,13 @@ function createHarness(
   };
   const valuesBuffer = keep(createInputBuffer(device, new Float32Array(rows)));
   const maskBuffer = withMask ? keep(createInputBuffer(device, new Uint32Array(rows))) : undefined;
-  const breaksBuffer = keep(createOutputBuffer(device, MAXIMUM_CLASS_COUNT + 1));
+  const breaksBuffer = keep(createOutputBuffer(device, maximumClassCount + 1));
   const classCountBuffer = keep(createOutputBuffer(device, 1));
-  const classCountsBuffer = keep(createOutputBuffer(device, MAXIMUM_CLASS_COUNT));
+  const classCountsBuffer = keep(createOutputBuffer(device, maximumClassCount));
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'class-breaks-parameters',
     format: 'float32',
-    length: getGPUClassBreaksParameterLength(MAXIMUM_CLASS_COUNT)
+    length: getGPUClassBreaksParameterLength(maximumClassCount)
   });
   const graph = new GPUCommandGraph(device, {id: 'class-breaks-graph'});
   const contributor = new GPUClassBreaks({
@@ -125,24 +142,18 @@ function createHarness(
     values: importGraphBuffer(graph, 'values', valuesBuffer, props.valueFormat ?? 'float32', rows),
     mask: maskBuffer ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows) : undefined,
     parameters: parameterBuffer.importToGraph(graph),
-    maximumClassCount: MAXIMUM_CLASS_COUNT,
+    maximumClassCount,
     methods: props.methods,
     naturalBreaksBinCount,
     output: {
-      breaks: importGraphBuffer(
-        graph,
-        'o-breaks',
-        breaksBuffer,
-        'float32',
-        MAXIMUM_CLASS_COUNT + 1
-      ),
+      breaks: importGraphBuffer(graph, 'o-breaks', breaksBuffer, 'float32', maximumClassCount + 1),
       classCount: importGraphBuffer(graph, 'o-class-count', classCountBuffer, 'uint32', 1),
       classCounts: importGraphBuffer(
         graph,
         'o-class-counts',
         classCountsBuffer,
         'uint32',
-        MAXIMUM_CLASS_COUNT
+        maximumClassCount
       )
     }
   });
@@ -159,12 +170,16 @@ function createHarness(
       if (maskBuffer) {
         maskBuffer.write(mask ?? new Uint32Array(rows).fill(1));
       }
-      parameterBuffer.write(getGPUClassBreaksParameterValues(parameters, MAXIMUM_CLASS_COUNT));
+      parameterBuffer.write(
+        parameters instanceof Float32Array
+          ? parameters
+          : getGPUClassBreaksParameterValues(parameters, maximumClassCount)
+      );
       submitGraph(device, compiled, undefined);
-      const breaks = await readFloat32(breaksBuffer, MAXIMUM_CLASS_COUNT + 1);
-      const breakBits = await readUint32(breaksBuffer, MAXIMUM_CLASS_COUNT + 1);
+      const breaks = await readFloat32(breaksBuffer, maximumClassCount + 1);
+      const breakBits = await readUint32(breaksBuffer, maximumClassCount + 1);
       const [classCount] = await readUint32(classCountBuffer, 1);
-      const classCounts = await readUint32(classCountsBuffer, MAXIMUM_CLASS_COUNT);
+      const classCounts = await readUint32(classCountsBuffer, maximumClassCount);
       return {breaks, breakBits, classCount, classCounts};
     },
     async submit(frameCount) {
@@ -234,7 +249,7 @@ function checkFrame(
   result: Result,
   values: Float32Array,
   mask: Uint32Array | undefined,
-  parameters: GPUClassBreaksParameters,
+  parameters: GPUClassBreaksSettings,
   naturalBreaksBinCount: number
 ): void {
   const label = `${parameters.method} k=${parameters.classCount ?? ''}`;
@@ -246,17 +261,18 @@ function checkFrame(
     naturalBreaksBinCount
   });
   if (parameters.method === 'natural-breaks' && oracle.naturalHistogram && result.classCount > 1) {
-    // Near-tied partitions may resolve differently in f32; the GPU partition must be optimal.
-    const width = Math.fround(
-      Math.fround(oracle.maximum - oracle.minimum) * Math.fround(1 / naturalBreaksBinCount)
-    );
-    const startBins = result.breaks
-      .slice(1, result.classCount)
-      .map(edge => Math.round((edge - oracle.minimum) / width));
-    const optimum = getNaturalBreaksCost(oracle.naturalHistogram, oracle.naturalStartBins!);
-    const gpuCost = getNaturalBreaksCost(oracle.naturalHistogram, startBins);
+    // The CPU mirror runs the same algorithm; f32 rounding on the GPU may resolve a near tie
+    // differently, in which case the partition must cost as little (relative 1e-6: the f32 class
+    // cost has a relative error below 1e-6, see natural-breaks.node.spec.ts).
     expect(result.classCount, label).toBe(oracle.classCount);
-    expect(gpuCost, label).toBeLessThanOrEqual(optimum * (1 + 1e-5) + 1e-6);
+    const gpuEdges = result.breaks.slice(1, result.classCount);
+    const mirrorEdges = Array.from(oracle.breaks.slice(1, oracle.classCount));
+    if (gpuEdges.some((edge, index) => edge !== mirrorEdges[index])) {
+      const finite = Array.from(values).filter((value, row) => !mask || mask[row] !== 0);
+      expect(getWithinClassCost(finite, gpuEdges), label).toBeLessThanOrEqual(
+        getWithinClassCost(finite, mirrorEdges) * (1 + 1e-6)
+      );
+    }
   } else {
     expect(result.classCount, label).toBe(oracle.classCount);
     switch (parameters.method) {
@@ -286,7 +302,7 @@ function checkFrame(
   );
 }
 
-const FRAMES: GPUClassBreaksParameters[] = [
+const FRAMES: GPUClassBreaksSettings[] = [
   {method: 'equal-interval', classCount: 5},
   {method: 'quantile', classCount: 7},
   {method: 'standard-deviation', classCount: 6, standardDeviationInterval: 0.5},
@@ -303,9 +319,7 @@ const FRAMES: GPUClassBreaksParameters[] = [
 
 it('GPUClassBreaks matches the oracle for every method across per-frame changes without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 6000;
   const binCount = 256;
   const harness = createHarness(device, {rows, withMask: true, naturalBreaksBinCount: binCount});
@@ -328,9 +342,7 @@ it('GPUClassBreaks matches the oracle for every method across per-frame changes 
 
 it('GPUClassBreaks natural breaks find the clear optimum on clustered data', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 3000;
   const binCount = 1024;
   const harness = createHarness(device, {
@@ -341,7 +353,7 @@ it('GPUClassBreaks natural breaks find the clear optimum on clustered data', asy
   });
   try {
     const values = createClusteredColumn(5, rows);
-    const parameters: GPUClassBreaksParameters = {method: 'natural-breaks', classCount: 3};
+    const parameters: GPUClassBreaksSettings = {method: 'natural-breaks', classCount: 3};
     const result = await harness.run(values, undefined, parameters);
     const oracle = computeClassBreaksOracle({
       values,
@@ -351,11 +363,14 @@ it('GPUClassBreaks natural breaks find the clear optimum on clustered data', asy
     });
     expect(result.classCount).toBe(3);
     expectEdgesClose(result.breaks, oracle, 1e-6, 'clustered natural');
-    // The breaks fall in the gaps between the clusters.
-    expect(result.breaks[1]).toBeGreaterThan(7);
-    expect(result.breaks[1]).toBeLessThan(38);
-    expect(result.breaks[2]).toBeGreaterThan(42);
-    expect(result.breaks[2]).toBeLessThan(88);
+    // The breaks are the smallest values of the second and third cluster (centres 40 and 90, half
+    // width 2): data values, not bin edges.
+    expect(result.breaks[1]).toBeGreaterThanOrEqual(38);
+    expect(result.breaks[1]).toBeLessThan(38.1);
+    expect(result.breaks[2]).toBeGreaterThanOrEqual(88);
+    expect(result.breaks[2]).toBeLessThan(88.1);
+    expect(Array.from(values)).toContain(result.breaks[1]);
+    expect(Array.from(values)).toContain(result.breaks[2]);
     expect(result.classCounts.slice(0, 3)).toEqual([1000, 999, 1001]);
     // A method that is not compiled in yields no classes.
     const missing = await harness.run(values, undefined, {method: 'quantile', classCount: 4});
@@ -368,13 +383,11 @@ it('GPUClassBreaks natural breaks find the clear optimum on clustered data', asy
 
 it('GPUClassBreaks handles empty, constant, and tiny columns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 64;
   const harness = createHarness(device, {rows, withMask: true, naturalBreaksBinCount: 64});
   try {
-    const methods: GPUClassBreaksParameters[] = FRAMES.filter(frame => frame.method !== 'custom');
+    const methods: GPUClassBreaksSettings[] = FRAMES.filter(frame => frame.method !== 'custom');
     const constant = new Float32Array(rows).fill(3.5);
     const allNaN = new Float32Array(rows).fill(NaN);
     const twoValues = new Float32Array(rows).map((_, row) => (row % 2 ? 1 : 2));
@@ -412,9 +425,7 @@ it('GPUClassBreaks handles empty, constant, and tiny columns', async () => {
 
 it('GPUClassBreaks scales to 1M rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 1 << 20;
   const harness = createHarness(device, {
     rows,
@@ -436,7 +447,7 @@ it('GPUClassBreaks scales to 1M rows', async () => {
       {method: 'natural-breaks', classCount: 7},
       {method: 'head-tail', classCount: 10},
       {method: 'standard-deviation', classCount: 6}
-    ] as GPUClassBreaksParameters[]) {
+    ] as GPUClassBreaksSettings[]) {
       const result = await harness.run(values, undefined, frame);
       checkFrame(result, values, undefined, frame, 1024);
       await harness.submit(2);
@@ -456,9 +467,7 @@ it('GPUClassBreaks scales to 1M rows', async () => {
 
 it('GPUClassBreaks classifies uint32 and sint32 columns like the converted float column', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 4000;
   const binCount = 256;
   for (const valueFormat of ['uint32', 'sint32'] as const) {
@@ -487,3 +496,264 @@ it('GPUClassBreaks classifies uint32 and sint32 columns like the converted float
     }
   }
 }, 120000);
+
+it('GPUClassBreaks matches the mapclassify and jenkspy references', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Fixture: test/oracles/dataframe-class-breaks.py (mapclassify 2.11, jenkspy 0.4.1); each case
+  // carries its derived tolerance. The CPU mirror passes the same cases in
+  // class-breaks-reference.node.spec.ts.
+  const mismatches: string[] = [];
+  const localOptima: string[] = [];
+  const unexpectedLocalOptima: string[] = [];
+  for (const [name, scene] of Object.entries(CLASS_BREAKS_REFERENCE.scenes)) {
+    const values = Float32Array.from(scene.values);
+    const harness = createHarness(device, {
+      rows: values.length,
+      withMask: false,
+      naturalBreaksBinCount: 2048
+    });
+    try {
+      for (const referenceCase of scene.cases) {
+        const result = await harness.run(values, undefined, getReferenceParameters(referenceCase));
+        mismatches.push(
+          ...getReferenceEdgeMismatches(
+            `${name} ${referenceCase.method} k=${referenceCase.classCount}`,
+            result.breaks,
+            result.classCount,
+            referenceCase
+          )
+        );
+      }
+      for (const reference of scene.naturalBreaks) {
+        const result = await harness.run(values, undefined, {
+          method: 'natural-breaks',
+          classCount: reference.classCount
+        });
+        const label = `${name} ${reference.classCount}`;
+        expect(result.classCount, label).toBe(reference.classCount);
+        const inner = result.breaks.slice(1, reference.classCount);
+        // Exact lower edges of the exact Fisher-Jenks partition: equal data values. The JSON of the
+        // fixture is f32 data, so compare after Math.fround.
+        const expected = reference.exactLowerEdges.map(Math.fround);
+        if (inner.every((edge, index) => edge === expected[index])) {
+          expect(result.classCounts.slice(0, reference.classCount), label).toEqual(
+            reference.exactClassSizes
+          );
+        } else {
+          // A neighbouring local optimum (see NATURAL_BREAKS_LOCAL_OPTIMA), also where f32 rounding
+          // on the GPU resolved a near tie differently from the CPU mirror: allowed only within the
+          // documented goodness of variance fit.
+          const shortfall =
+            reference.exactGoodnessOfVarianceFit - getGoodnessOfVarianceFit(values, inner);
+          localOptima.push(`${label} (${shortfall.toExponential(1)})`);
+          expect(shortfall, label).toBeLessThanOrEqual(NATURAL_BREAKS_LOCAL_OPTIMUM_FIT_TOLERANCE);
+          if (!NATURAL_BREAKS_LOCAL_OPTIMA[label]) {
+            unexpectedLocalOptima.push(label);
+          }
+        }
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+  expect(mismatches).toEqual([]);
+  // Beyond the documented local optima the GPU must find the exact partition; log any other.
+  console.log(`natural breaks local optima: ${localOptima.join(', ') || 'none'}`);
+  expect(unexpectedLocalOptima).toEqual([]);
+}, 120000);
+
+it('GPUClassBreaks natural breaks handle ties, outliers, constant columns and missing rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const run = async (
+    values: Float32Array,
+    classCount: number,
+    mask?: Uint32Array,
+    maximumClassCount = MAXIMUM_CLASS_COUNT
+  ) => {
+    const harness = createHarness(device, {
+      rows: values.length,
+      withMask: Boolean(mask),
+      naturalBreaksBinCount: 2048,
+      methods: ['natural-breaks'],
+      maximumClassCount
+    });
+    try {
+      return await harness.run(values, mask, {method: 'natural-breaks', classCount});
+    } finally {
+      harness.destroy();
+    }
+  };
+  // A constant column is one class, whatever was requested.
+  const constant = await run(new Float32Array(200).fill(4.5), 5);
+  expect(constant.classCount).toBe(1);
+  expect(constant.breaks.slice(0, 2)).toEqual([4.5, 4.5]);
+  // A class count above the distinct values gives one class per distinct value.
+  for (const name of ['plateaus', 'two-values']) {
+    const scene = CLASS_BREAKS_REFERENCE.scenes[name];
+    const result = await run(Float32Array.from(scene.values), MAXIMUM_CLASS_COUNT);
+    const distinct = scene.distinctValueEdges!.map(Math.fround);
+    expect(result.classCount, name).toBe(distinct.length + 1);
+    expect(result.breaks.slice(1, result.classCount), name).toEqual(distinct);
+  }
+  // Heavy ties, k = 2 and a single extreme outlier against the exact dynamic program.
+  const random = createRandom(31);
+  const ties = new Float32Array(900).map(() => Math.floor(random() * 11));
+  const outlier = new Float32Array(500).map(() => 10 + (random() + random() + random() - 1.5) * 2);
+  outlier[123] = 1e7;
+  for (const [label, values, classCounts] of [
+    ['ties', ties, [2, 3, 5, 7]],
+    ['outlier', outlier, [2, 3, 4, 5, 6, 7]]
+  ] as const) {
+    for (const classCount of classCounts) {
+      const exact = computeExactNaturalBreaks(values, classCount);
+      const result = await run(values, classCount);
+      expect(result.classCount, `${label} ${classCount}`).toBe(classCount);
+      const inner = Array.from(result.breaks.slice(1, classCount));
+      if (exact.unique) {
+        expect(inner, `${label} ${classCount}`).toEqual(exact.edges.map(Math.fround));
+      }
+    }
+  }
+  // NaN, infinities and masked rows are missing: the result is that of the remaining column.
+  const clean = Float32Array.from(CLASS_BREAKS_REFERENCE.scenes['clusters'].values);
+  const noisy = new Float32Array(clean.length * 2);
+  const mask = new Uint32Array(noisy.length);
+  clean.forEach((value, row) => {
+    noisy[2 * row] = value;
+    mask[2 * row] = 1;
+    // Between every two rows: a decoy (masked), and every few rows NaN or an infinity.
+    noisy[2 * row + 1] = [1e6, NaN, Infinity, -Infinity][row % 4];
+    mask[2 * row + 1] = row % 4 === 0 ? 0 : 1;
+  });
+  const cleanResult = await run(clean, 4);
+  const noisyResult = await run(noisy, 4, mask);
+  expect(noisyResult.breakBits).toEqual(cleanResult.breakBits);
+  expect(noisyResult.classCount).toBe(4);
+}, 120000);
+
+it('GPUClassBreaks natural breaks A/B: O(k B^2) binned path against divide and conquer with refinement', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Same device, same column, same run: the previous pipeline (test-only legacy-natural-breaks.ts)
+  // against the current one, at 1024 and 2048 bins, k = 8, 2^20 rows. Logs the time per frame and
+  // the within-class cost of both partitions; the new cost must not be above the old one, whose
+  // breaks snap to bin edges.
+  const rows = 1 << 20;
+  const classCount = 8;
+  const values = createColumn(77, rows);
+  const frameCount = 20;
+  for (const binCount of [1024, 2048]) {
+    const harness = createHarness(device, {
+      rows,
+      withMask: false,
+      naturalBreaksBinCount: binCount,
+      methods: ['natural-breaks'],
+      maximumClassCount: classCount
+    });
+    const valuesBuffer = createInputBuffer(device, values);
+    const breaksBuffer = createOutputBuffer(device, classCount + 1);
+    const legacyGraph = new GPUCommandGraph(device, {id: `legacy-${binCount}`});
+    legacyGraph.add(
+      new LegacyNaturalBreaks({
+        id: 'legacy',
+        values: importGraphBuffer(legacyGraph, 'legacy-values', valuesBuffer, 'float32', rows),
+        classCount,
+        binCount,
+        breaks: importGraphBuffer(
+          legacyGraph,
+          'legacy-breaks',
+          breaksBuffer,
+          'float32',
+          classCount + 1
+        )
+      })
+    );
+    const legacy = legacyGraph.compile();
+    try {
+      const frame: GPUClassBreaksSettings = {method: 'natural-breaks', classCount};
+      const current = await harness.run(values, undefined, frame);
+      submitGraph(device, legacy, undefined);
+      const legacyBreaks = Array.from(await readFloat32(breaksBuffer, classCount + 1));
+      // Warm up, then time whole frames (encode, submit, GPU) with one small readback each.
+      await harness.submit(2);
+      const start = performance.now();
+      await harness.submit(frameCount);
+      const currentTime = (performance.now() - start) / frameCount;
+      for (let index = 0; index < 2; index++) {
+        submitGraph(device, legacy, undefined);
+      }
+      await readFloat32(breaksBuffer, 1);
+      const legacyStart = performance.now();
+      for (let index = 0; index < frameCount; index++) {
+        submitGraph(device, legacy, undefined);
+      }
+      await readFloat32(breaksBuffer, 1);
+      const legacyTime = (performance.now() - legacyStart) / frameCount;
+      const currentCost = getWithinClassCost(values, current.breaks.slice(1, classCount));
+      const legacyCost = getWithinClassCost(values, legacyBreaks.slice(1, classCount));
+      console.log(
+        `natural breaks A/B ${binCount} bins, k=${classCount}, ${rows} rows: ` +
+          `old ${legacyTime.toFixed(2)} ms/frame, new ${currentTime.toFixed(2)} ms/frame, ` +
+          `within-class cost old ${legacyCost.toExponential(6)} new ${currentCost.toExponential(6)}`
+      );
+      expect(current.classCount).toBe(classCount);
+      expect(currentCost).toBeLessThanOrEqual(legacyCost * (1 + 1e-9));
+    } finally {
+      legacy.destroy();
+      valuesBuffer.destroy();
+      breaksBuffer.destroy();
+      harness.destroy();
+    }
+  }
+}, 240000);
+
+it('GPUClassBreaks follows the class breaks edge policy', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const maximumClassCount = 4;
+  for (const row of CLASS_BREAKS_EDGE_POLICY) {
+    const values = Float32Array.from(row.values);
+    const harness = createHarness(device, {
+      rows: values.length,
+      withMask: false,
+      naturalBreaksBinCount: 16,
+      maximumClassCount,
+      // Only the methods the policy rows use: the constructor rightly refuses 'box-plot' (6
+      // classes) at maximumClassCount 4, and the default compiles every method.
+      methods: ['equal-interval', 'quantile', 'standard-deviation', 'custom']
+    });
+    try {
+      // Pack a valid frame (in-range counts as given, so quantile probabilities are packed), then
+      // write the raw class count: out-of-range rows test the GPU clamp.
+      const isInRange = row.classCount >= 1 && row.classCount <= maximumClassCount;
+      const parameters = getGPUClassBreaksParameterValues(
+        {
+          method: row.method,
+          classCount: isInRange ? row.classCount : 1,
+          // NaN edges are written raw below: the packer refuses them.
+          customEdges: row.customEdges?.map(edge => (Number.isNaN(edge) ? 0 : edge))
+        },
+        maximumClassCount
+      );
+      parameters[1] = row.classCount;
+      row.customEdges?.forEach((edge, index) => {
+        parameters[GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH + index] = edge;
+      });
+      if (row.standardDeviationInterval !== undefined) {
+        parameters[2] = row.standardDeviationInterval;
+      }
+      const result = await harness.run(values, undefined, parameters);
+      expect(result.classCount, row.name).toBe(row.expectedClassCount);
+      for (const [index, expected] of row.expectedBreaks.entries()) {
+        expect(
+          Object.is(result.breaks[index], expected),
+          `${row.name} e[${index}]: ${result.breaks[index]}`
+        ).toBe(true);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+});

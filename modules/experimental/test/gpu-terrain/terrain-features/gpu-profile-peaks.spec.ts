@@ -8,6 +8,9 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
+  GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED,
+  GPU_PROFILE_PEAKS_UNRESOLVED_MASK,
+  GPU_PROFILE_PEAKS_UNRESOLVED_VALUE,
   GPUProfilePeaks,
   getGPUProfilePeaksParameterValues
 } from '../../../src/gpu-terrain/terrain-features/gpu-profile-peaks';
@@ -27,14 +30,15 @@ import {
   type ProfilePeaksOracleResult
 } from './profile-peaks-oracle';
 import {createMulberryRandom} from '../terrain-oracle-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type PeakOptions = {
   window: number;
-  minProminence: number;
-  minSide?: number;
-  nms?: number;
+  minimumProminence: number;
+  minimumSide?: number;
+  suppressionRadius?: number;
   wrap?: boolean;
-  nmsRounds?: number;
+  maximumSuppressionIterations?: number;
 };
 
 type PeakRun = {
@@ -44,9 +48,10 @@ type PeakRun = {
   mask: number[];
   compactIds: number[];
   converged: number;
+  overflow: number;
 };
 
-/** Compiles one graph and returns a function that encodes it again with a new minProminence. */
+/** Compiles one graph and returns a function that encodes it again with a new minimumProminence. */
 async function createPeakRunner(
   device: Device,
   values: Float32Array,
@@ -63,7 +68,7 @@ async function createPeakRunner(
     id: 'profile-peaks-settings',
     format: 'float32',
     length: 1,
-    values: getGPUProfilePeaksParameterValues({minProminence: options.minProminence})
+    values: getGPUProfilePeaksParameterValues({minimumProminence: options.minimumProminence})
   });
   const prominenceBuffer = createOutputBuffer(device, sampleCount);
   const refinedIndexBuffer = createOutputBuffer(device, sampleCount);
@@ -80,43 +85,56 @@ async function createPeakRunner(
         ? importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount)
         : undefined,
       offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', offsets.length),
-      settings: parameterBuffer.importToGraph(graph),
+      parameters: parameterBuffer.importToGraph(graph),
       window: options.window,
-      minSide: options.minSide,
-      nms: options.nms,
+      minimumSide: options.minimumSide,
+      suppressionRadius: options.suppressionRadius,
       wrap: options.wrap,
-      nmsRounds: options.nmsRounds,
-      prominence: importGraphBuffer(graph, 'prominence', prominenceBuffer, 'float32', sampleCount),
-      refinedIndex: importGraphBuffer(
-        graph,
-        'refined-index',
-        refinedIndexBuffer,
-        'float32',
-        sampleCount
-      ),
-      refinedValue: importGraphBuffer(
-        graph,
-        'refined-value',
-        refinedValueBuffer,
-        'float32',
-        sampleCount
-      ),
-      peakMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', sampleCount),
+      maximumSuppressionIterations: options.maximumSuppressionIterations,
       output: {
-        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', sampleCount),
-        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
-      },
-      converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+        prominence: importGraphBuffer(
+          graph,
+          'prominence',
+          prominenceBuffer,
+          'float32',
+          sampleCount
+        ),
+        refinedIndex: importGraphBuffer(
+          graph,
+          'refined-index',
+          refinedIndexBuffer,
+          'float32',
+          sampleCount
+        ),
+        refinedValue: importGraphBuffer(
+          graph,
+          'refined-value',
+          refinedValueBuffer,
+          'float32',
+          sampleCount
+        ),
+        peakMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', sampleCount),
+        peaks: {
+          ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', sampleCount),
+          status: {
+            count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+          }
+        },
+        status: {converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
   return {
-    async run(minProminence: number = options.minProminence): Promise<PeakRun> {
-      parameterBuffer.write(getGPUProfilePeaksParameterValues({minProminence}));
+    async run(minimumProminence: number = options.minimumProminence): Promise<PeakRun> {
+      parameterBuffer.write(getGPUProfilePeaksParameterValues({minimumProminence}));
       submitGraph(device, compiled, undefined);
-      expect(await readUint32(overflowBuffer, 1)).toEqual([0]);
+      const [overflow] = await readUint32(overflowBuffer, 1);
+      // Capacity never overflows in these fixtures; bit 2 reports undecided candidates (C-09).
+      expect(overflow & ~GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED).toBe(0);
       return {
+        overflow,
         prominence: await readFloat32(prominenceBuffer, sampleCount),
         refinedIndex: await readFloat32(refinedIndexBuffer, sampleCount),
         refinedValue: await readFloat32(refinedValueBuffer, sampleCount),
@@ -214,9 +232,7 @@ async function expectOracleRun(
 
 it('GPUProfilePeaks finds Gaussian summits at sub-sample accuracy', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createGaussianBumps(200, [
     [50.3, 10, 6],
     [120.7, 6, 6]
@@ -224,7 +240,7 @@ it('GPUProfilePeaks finds Gaussian summits at sub-sample accuracy', async () => 
   const offsets = Uint32Array.from([0, 200]);
   const {run, oracle} = await expectOracleRun(device, values, undefined, offsets, {
     window: 30,
-    minProminence: 2
+    minimumProminence: 2
   });
   expect(oracle.peaks).toHaveLength(2);
   expect(run.compactIds).toHaveLength(2);
@@ -237,17 +253,18 @@ it('GPUProfilePeaks finds Gaussian summits at sub-sample accuracy', async () => 
 
 it('GPUProfilePeaks rejects peaks below the prominence threshold', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createGaussianBumps(100, [[50, 1, 4]]);
   const offsets = Uint32Array.from([0, 100]);
-  const high = await runOnce(device, values, undefined, offsets, {window: 20, minProminence: 2});
+  const high = await runOnce(device, values, undefined, offsets, {
+    window: 20,
+    minimumProminence: 2
+  });
   expect(high.compactIds).toEqual([]);
   expect(high.converged).toBe(1);
   const low = await expectOracleRun(device, values, undefined, offsets, {
     window: 20,
-    minProminence: 0.5
+    minimumProminence: 0.5
   });
   expect(low.run.compactIds).toEqual([50]);
   device.destroy();
@@ -255,13 +272,11 @@ it('GPUProfilePeaks rejects peaks below the prominence threshold', async () => {
 
 it('GPUProfilePeaks is invariant to a constant offset', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const offsets = Uint32Array.from([0, 120]);
   const base = createGaussianBumps(120, [[60.2, 7, 5]]);
   const shifted = base.map(value => value + 1024);
-  const options = {window: 25, minProminence: 1};
+  const options = {window: 25, minimumProminence: 1};
   const first = await expectOracleRun(device, base, undefined, offsets, options);
   const second = await expectOracleRun(device, shifted, undefined, offsets, options);
   expect(first.run.compactIds).toEqual([60]);
@@ -273,9 +288,7 @@ it('GPUProfilePeaks is invariant to a constant offset', async () => {
 
 it('GPUProfilePeaks takes the first sample of a plateau', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = new Float32Array(60);
   for (let index = 25; index <= 30; index++) {
     values[index] = 5;
@@ -283,7 +296,7 @@ it('GPUProfilePeaks takes the first sample of a plateau', async () => {
   const offsets = Uint32Array.from([0, 60]);
   const {run, oracle} = await expectOracleRun(device, values, undefined, offsets, {
     window: 15,
-    minProminence: 1
+    minimumProminence: 1
   });
   expect(oracle.peaks).toHaveLength(1);
   expect(run.compactIds).toEqual([25]);
@@ -292,7 +305,7 @@ it('GPUProfilePeaks takes the first sample of a plateau', async () => {
   // Flat input has no peaks.
   const flat = await runOnce(device, new Float32Array(50), undefined, Uint32Array.from([0, 50]), {
     window: 10,
-    minProminence: 0.1
+    minimumProminence: 0.1
   });
   expect(flat.compactIds).toEqual([]);
   expect(flat.converged).toBe(1);
@@ -301,15 +314,13 @@ it('GPUProfilePeaks takes the first sample of a plateau', async () => {
 
 it('GPUProfilePeaks never lets a gap value bleed: sentinel with validity 0 and NaN gaps', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const clean = createGaussianBumps(160, [
     [40, 10, 4],
     [100, 8, 4]
   ]);
   const offsets = Uint32Array.from([0, 160]);
-  const options = {window: 20, minProminence: 1};
+  const options = {window: 20, minimumProminence: 1};
   // A huge sentinel inside the window (and as a would-be neighbour) with validity zero.
   const sentinel = Float32Array.from(clean);
   const validity = new Uint32Array(160).fill(1);
@@ -329,7 +340,7 @@ it('GPUProfilePeaks never lets a gap value bleed: sentinel with validity 0 and N
   expect(viaSentinel.run.mask).toEqual(viaNaN.run.mask);
   expect(viaSentinel.run.prominence).toEqual(viaNaN.run.prominence);
   // Non-trivial: the first summit's right side is cut at 47 (7 valid samples) but still passes
-  // minSide 4; no output carries the sentinel.
+  // minimumSide 4; no output carries the sentinel.
   expect(viaSentinel.oracle.peaks.length).toBeGreaterThan(0);
   for (const value of [...viaSentinel.run.prominence, ...viaSentinel.run.refinedValue]) {
     if (!Number.isNaN(value)) {
@@ -341,37 +352,35 @@ it('GPUProfilePeaks never lets a gap value bleed: sentinel with validity 0 and N
   const adjacentValidity = new Uint32Array(160).fill(1);
   adjacent[41] = -32768;
   adjacentValidity[41] = 0;
-  // With the default minSide the candidate is rejected (its right side has no valid sample).
+  // With the default minimumSide the candidate is rejected (its right side has no valid sample).
   const rejected = await expectOracleRun(device, adjacent, adjacentValidity, offsets, options);
   expect(rejected.run.mask[40]).toBe(0);
   const beside = await expectOracleRun(device, adjacent, adjacentValidity, offsets, {
     window: 20,
-    minSide: 0,
+    minimumSide: 0,
     // An unwalked side leaves lo = v, so prominence is 0: only a zero threshold admits it.
-    minProminence: 0
+    minimumProminence: 0
   });
   expect(beside.run.mask[40]).toBe(1);
   expect(beside.run.refinedIndex[40]).toBe(40);
   device.destroy();
 });
 
-it('GPUProfilePeaks rejects peaks cut by a profile end or a gap (minSide)', async () => {
+it('GPUProfilePeaks rejects peaks cut by a profile end or a gap (minimumSide)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edge = createGaussianBumps(100, [[2, 10, 3]]);
   const offsets = Uint32Array.from([0, 100]);
   const atEdge = await expectOracleRun(device, edge, undefined, offsets, {
     window: 20,
-    minProminence: 1
+    minimumProminence: 1
   });
   expect(atEdge.run.compactIds).toEqual([]);
-  // With minSide 1 the same summit is accepted: the rejection really is minSide.
+  // With minimumSide 1 the same summit is accepted: the rejection really is minimumSide.
   const relaxed = await expectOracleRun(device, edge, undefined, offsets, {
     window: 20,
-    minProminence: 1,
-    minSide: 1
+    minimumProminence: 1,
+    minimumSide: 1
   });
   expect(relaxed.run.compactIds).toEqual([2]);
   const gapped = createGaussianBumps(100, [[50, 10, 4]]);
@@ -380,7 +389,7 @@ it('GPUProfilePeaks rejects peaks cut by a profile end or a gap (minSide)', asyn
   }
   const cut = await expectOracleRun(device, gapped, undefined, offsets, {
     window: 20,
-    minProminence: 1
+    minimumProminence: 1
   });
   expect(cut.run.compactIds).toEqual([]);
   // Profiles do not see each other: a summit at the start of the second profile is cut at its
@@ -391,7 +400,7 @@ it('GPUProfilePeaks rejects peaks cut by a profile end or a gap (minSide)', asyn
   ]);
   const twoProfiles = await expectOracleRun(device, values, undefined, twoOffsets, {
     window: 20,
-    minProminence: 1
+    minimumProminence: 1
   });
   expect(twoProfiles.run.compactIds).toEqual([25]);
   device.destroy();
@@ -399,9 +408,7 @@ it('GPUProfilePeaks rejects peaks cut by a profile end or a gap (minSide)', asyn
 
 it('GPUProfilePeaks resolves suppression chains exactly like greedy (keeps A and C, suppresses B)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A > B > C, A-B and B-C within nms (8 <= 10), A-C beyond it (16 > 10).
   const values = createGaussianBumps(80, [
     [30, 10, 2],
@@ -409,45 +416,65 @@ it('GPUProfilePeaks resolves suppression chains exactly like greedy (keeps A and
     [46, 6, 2]
   ]);
   const offsets = Uint32Array.from([0, 80]);
-  const options = {window: 12, minProminence: 1, nms: 10};
+  const options = {window: 12, minimumProminence: 1, suppressionRadius: 10};
   const {run, oracle} = await expectOracleRun(device, values, undefined, offsets, options);
   expect(oracle.peaks.map(peak => peak.local)).toEqual([30, 46]);
   expect(run.compactIds).toEqual([30, 46]);
   // Without suppression all three are reported.
   const unsuppressed = await expectOracleRun(device, values, undefined, offsets, {
     ...options,
-    nms: 3
+    suppressionRadius: 3
   });
   expect(unsuppressed.run.compactIds).toEqual([30, 38, 46]);
   device.destroy();
 });
 
-it('GPUProfilePeaks reports converged 0 and nothing undecided when nmsRounds is too small', async () => {
+it('GPUProfilePeaks reports converged 0 and nothing undecided when maximumSuppressionIterations is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createGaussianBumps(80, [
     [30, 10, 2],
     [38, 8, 2],
     [46, 6, 2]
   ]);
   const offsets = Uint32Array.from([0, 80]);
-  const options = {window: 12, minProminence: 1, nms: 10};
-  const none = await runOnce(device, values, undefined, offsets, {...options, nmsRounds: 0});
+  const options = {window: 12, minimumProminence: 1, suppressionRadius: 10};
+  const none = await runOnce(device, values, undefined, offsets, {
+    ...options,
+    maximumSuppressionIterations: 0
+  });
   expect(none.converged).toBe(0);
+  expect(none.overflow).toBe(GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED);
   expect(none.compactIds).toEqual([]);
-  expect(none.mask.every(word => word === 0)).toBe(true);
-  expect(none.prominence.every(value => Number.isNaN(value))).toBe(true);
+  // Review C-09: undecided candidates carry the unresolved markers, never "not a peak".
+  expect(none.mask.every(word => word === 0 || word === GPU_PROFILE_PEAKS_UNRESOLVED_MASK)).toBe(
+    true
+  );
+  expect(
+    none.mask.filter(word => word === GPU_PROFILE_PEAKS_UNRESOLVED_MASK).length
+  ).toBeGreaterThan(0);
+  for (const [index, word] of none.mask.entries()) {
+    if (word === GPU_PROFILE_PEAKS_UNRESOLVED_MASK) {
+      expect(none.prominence[index]).toBe(GPU_PROFILE_PEAKS_UNRESOLVED_VALUE);
+    } else {
+      expect(none.prominence[index]).toBeNaN();
+    }
+  }
   // One round may or may not finish (in-place updates), but whatever is reported is a subset of
   // the exact answer and `converged` tells which case it is.
-  const one = await runOnce(device, values, undefined, offsets, {...options, nmsRounds: 1});
+  const one = await runOnce(device, values, undefined, offsets, {
+    ...options,
+    maximumSuppressionIterations: 1
+  });
   const exact = [30, 46];
   for (const row of one.compactIds) {
     expect(exact).toContain(row);
   }
   if (one.converged === 1) {
     expect(one.compactIds).toEqual(exact);
+    expect(one.overflow).toBe(0);
+  } else {
+    expect(one.overflow).toBe(GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED);
   }
   const full = await runOnce(device, values, undefined, offsets, options);
   expect(full.converged).toBe(1);
@@ -457,9 +484,7 @@ it('GPUProfilePeaks reports converged 0 and nothing undecided when nmsRounds is 
 
 it('GPUProfilePeaks handles many CSR profiles including empty, single and two-sample ones', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const gappy = createGaussianBumps(70, [
     [20, 6, 3],
     [50, 9, 3]
@@ -481,7 +506,7 @@ it('GPUProfilePeaks handles many CSR profiles including empty, single and two-sa
     []
   ]);
   expect(Array.from(offsets).slice(0, 5)).toEqual([0, 0, 80, 80, 81]);
-  const options = {window: 15, minProminence: 1};
+  const options = {window: 15, minimumProminence: 1};
   const {run, oracle} = await expectOracleRun(device, values, undefined, offsets, options);
   expect(oracle.peaks.length).toBeGreaterThanOrEqual(4);
   expect(new Set(oracle.peaks.map(peak => peak.profile)).size).toBeGreaterThanOrEqual(3);
@@ -491,16 +516,14 @@ it('GPUProfilePeaks handles many CSR profiles including empty, single and two-sa
 
 it('GPUProfilePeaks wrap mode finds a peak straddling index 0', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const count = 120;
   const values = createCircularGaussianBumps(count, [
     [119.6, 10, 5],
     [60.3, 6, 5]
   ]);
   const offsets = Uint32Array.from([0, count]);
-  const options = {window: 30, minProminence: 2};
+  const options = {window: 30, minimumProminence: 2};
   const open = await runOnce(device, values, undefined, offsets, options);
   const seamIsReported = (rows: number[]) => rows.some(row => row <= 1 || row >= count - 2);
   expect(seamIsReported(open.compactIds)).toBe(false);
@@ -523,38 +546,39 @@ it('GPUProfilePeaks wrap mode finds a peak straddling index 0', async () => {
   ]);
   const collapsed = await expectOracleRun(device, twins, undefined, offsets, {
     window: 20,
-    minProminence: 1,
-    nms: 15,
+    minimumProminence: 1,
+    suppressionRadius: 15,
     wrap: true
   });
   expect(collapsed.run.compactIds).toHaveLength(1);
   const separate = await expectOracleRun(device, twins, undefined, offsets, {
     window: 20,
-    minProminence: 1,
-    nms: 5,
+    minimumProminence: 1,
+    suppressionRadius: 5,
     wrap: true
   });
   expect(separate.run.compactIds).toHaveLength(2);
   device.destroy();
 });
 
-it('GPUProfilePeaks applies a new minProminence without recompiling', async () => {
+it('GPUProfilePeaks applies a new minimumProminence without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createGaussianBumps(200, [
     [30, 10, 4],
     [90, 5, 4],
     [150, 2.5, 4]
   ]);
   const offsets = Uint32Array.from([0, 200]);
-  const options = {window: 25, minProminence: 1};
+  const options = {window: 25, minimumProminence: 1};
   const runner = await createPeakRunner(device, values, undefined, offsets, options);
   const counts: number[] = [];
-  for (const minProminence of [1, 4, 8, 20, 1]) {
-    const run = await runner.run(minProminence);
-    const oracle = findProfilePeaksOracle(values, undefined, offsets, {...options, minProminence});
+  for (const minimumProminence of [1, 4, 8, 20, 1]) {
+    const run = await runner.run(minimumProminence);
+    const oracle = findProfilePeaksOracle(values, undefined, offsets, {
+      ...options,
+      minimumProminence
+    });
     expectMatchesOracle(run, oracle, offsets);
     counts.push(run.compactIds.length);
   }
@@ -566,9 +590,7 @@ it('GPUProfilePeaks applies a new minProminence without recompiling', async () =
 for (const wrap of [false, true]) {
   it(`GPUProfilePeaks matches the oracle on random gappy profiles (wrap ${wrap})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     let totalPeaks = 0;
     for (const seed of [11, 12, 13, 14]) {
       const random = createMulberryRandom(seed);
@@ -599,9 +621,9 @@ for (const wrap of [false, true]) {
       }
       const {oracle} = await expectOracleRun(device, values, validity, offsets, {
         window: 12,
-        minProminence: 0.75,
-        minSide: 3,
-        nms: 4,
+        minimumProminence: 0.75,
+        minimumSide: 3,
+        suppressionRadius: 4,
         wrap
       });
       totalPeaks += oracle.peaks.length;

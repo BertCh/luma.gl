@@ -6,6 +6,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUMaxPRegionsParameterValues,
   GPUMaxPRegions,
   GPU_MAX_P_DEFAULT_START_COUNT,
   GPU_MAX_P_STATUS
@@ -28,10 +29,12 @@ import {
   evaluatePartition,
   standardizeColumns
 } from './spatial-regionalization-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {getRegionSums, runMaxPRegionsMirror} from './max-p-construction-mirror';
 
 it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const offsets = Uint32Array.from([0, 1, 3, 5, 6]);
   const neighbors = Uint32Array.from([1, 0, 2, 1, 3, 2]);
   const edgeWeights = Float32Array.from([1, 1, 1, 1, 1, 1]);
@@ -45,7 +48,8 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
     weights: createInputBuffer(device, edgeWeights),
     values: createInputBuffer(device, values),
     extensiveValues: createInputBuffer(device, extensiveValues),
-    threshold: createInputBuffer(device, threshold)
+    threshold: createInputBuffer(device, threshold),
+    parameters: createInputBuffer(device, getGPUMaxPRegionsParameterValues({seed: 0}))
   };
   const outputs = {
     labels: createOutputBuffer(device, 4),
@@ -76,7 +80,7 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
         extensiveValues.length
       ),
       threshold: importGraphBuffer(graph, 'threshold', inputs.threshold, 'float32', 1),
-      seed: 0,
+      parameters: importGraphBuffer(graph, 'parameters', inputs.parameters, 'uint32', 1),
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
@@ -106,7 +110,7 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
 
 it('GPUMaxPRegions labels every row of a 900-row lattice with contiguous regions above the floor', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // 900 rows exceed the 256-lane workgroup, so the strided scans and argmin run several tiles.
   const width = 30;
   const rowCount = width * width;
@@ -123,7 +127,8 @@ it('GPUMaxPRegions labels every row of a 900-row lattice with contiguous regions
     weights: createInputBuffer(device, edgeWeights),
     values: createInputBuffer(device, values),
     extensiveValues: createInputBuffer(device, extensiveValues),
-    threshold: createInputBuffer(device, Float32Array.from([floor]))
+    threshold: createInputBuffer(device, Float32Array.from([floor])),
+    parameters: createInputBuffer(device, getGPUMaxPRegionsParameterValues({seed: 3}))
   };
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
@@ -154,7 +159,7 @@ it('GPUMaxPRegions labels every row of a 900-row lattice with contiguous regions
         rowCount
       ),
       threshold: importGraphBuffer(graph, 'threshold', inputs.threshold, 'float32', 1),
-      seed: 3,
+      parameters: importGraphBuffer(graph, 'parameters', inputs.parameters, 'uint32', 1),
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
@@ -213,7 +218,8 @@ async function runMaxP(
     threshold: number;
     seed: number;
     startCount?: number;
-    improvementIterations?: number;
+    maximumGrowthSteps?: number;
+    maximumIterations?: number;
     standardize?: boolean;
   }
 ): Promise<MaxPRun> {
@@ -226,7 +232,8 @@ async function runMaxP(
     weights: createInputBuffer(device, edgeWeights),
     values: createInputBuffer(device, scene.values),
     extensiveValues: createInputBuffer(device, scene.extensiveValues),
-    threshold: createInputBuffer(device, Float32Array.from([scene.threshold]))
+    threshold: createInputBuffer(device, Float32Array.from([scene.threshold])),
+    parameters: createInputBuffer(device, getGPUMaxPRegionsParameterValues({seed: scene.seed}))
   };
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
@@ -264,8 +271,9 @@ async function runMaxP(
       ),
       threshold: importGraphBuffer(graph, 'threshold', inputs.threshold, 'float32', 1),
       startCount: scene.startCount,
-      improvementIterations: scene.improvementIterations,
-      seed: scene.seed,
+      maximumGrowthSteps: scene.maximumGrowthSteps,
+      maximumIterations: scene.maximumIterations,
+      parameters: importGraphBuffer(graph, 'parameters', inputs.parameters, 'uint32', 1),
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
@@ -307,8 +315,8 @@ function createLatticeScene(width: number, valueSeed: number, extensiveSeed: num
 
 it('GPUMaxPRegions multi-start never loses to its own first start', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
-  // Start 0 of a 16-start run uses the same Philox key (seed, 0) as a one-start run, so the
+  requireTestDevice(device);
+  // Start 0 of a 16-start run uses the same Philox counter (row, 0) as a one-start run, so the
   // selection rule (fewest leftovers, then most regions) can only match or beat it.
   const scene = {...createLatticeScene(20, 11, 22), threshold: 10, seed: 9};
   const single = await runMaxP(device, {...scene, startCount: 1});
@@ -334,7 +342,7 @@ it('GPUMaxPRegions multi-start never loses to its own first start', async () => 
 
 it('GPUMaxPRegions symmetrizes directed weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // A chain listed in one direction only (row i lists row i + 1). Growth still reaches both ways.
   const result = await runMaxP(device, {
     offsets: Uint32Array.from([0, 1, 2, 3, 4, 5, 5]),
@@ -352,10 +360,10 @@ it('GPUMaxPRegions symmetrizes directed weights', async () => {
 
 it('GPUMaxPRegions local improvement keeps the region count and the threshold', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const scene = {...createLatticeScene(16, 31, 32), threshold: 8, seed: 4, startCount: 4};
   const constructed = await runMaxP(device, scene);
-  const improved = await runMaxP(device, {...scene, improvementIterations: 64});
+  const improved = await runMaxP(device, {...scene, maximumIterations: 64});
   expect(improved.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
   expect(improved.status[GPU_MAX_P_STATUS.selectedStart]).toBe(
     constructed.status[GPU_MAX_P_STATUS.selectedStart]
@@ -383,7 +391,7 @@ it('GPUMaxPRegions local improvement keeps the region count and the threshold', 
 
 it('GPUMaxPRegions standardizes columns by default', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Two columns in very different units: only the standardized table makes the objective match
   // the CPU within-region sum of squares of z-scores (population standard deviation).
   const rowCount = 12 * 12;
@@ -405,4 +413,131 @@ it('GPUMaxPRegions standardizes columns by default', async () => {
   });
   const expected = evaluatePartition(standardizeColumns(values, 2), 2, result.labels).withinSsd;
   expect(Math.abs(result.objective - expected)).toBeLessThan(1e-3 * Math.max(expected, 1));
+});
+
+it('GPUMaxPRegions equals its CPU mirror on integer-valued input', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The 30x30 fixture regresses Metal contracting x - sum/count to a reciprocal FMA:
+  // that changed the winning start's region count from 192 to 191. Means are now stored
+  // between dispatches, so subtraction cannot be fused with the preceding division.
+  for (const [width, threshold, seed] of [
+    [20, 10, 3],
+    [30, 12, 7]
+  ]) {
+    const rowCount = width * width;
+    const lattice = createRookLattice(width, width);
+    const values = Float32Array.from(createRandomValues(rowCount, 77 + seed, 10), Math.floor);
+    const extensiveValues = Float32Array.from(createRandomValues(rowCount, 88 + seed, 5), value =>
+      Math.floor(value + 1)
+    );
+    const gpu = await runMaxP(device, {
+      ...lattice,
+      values,
+      extensiveValues,
+      threshold,
+      seed,
+      startCount: 4,
+      standardize: false
+    });
+    const mirror = runMaxPRegionsMirror({
+      ...lattice,
+      values,
+      extensive: extensiveValues,
+      threshold,
+      seed,
+      startCount: 4,
+      standardize: false
+    });
+    expect(gpu.status[GPU_MAX_P_STATUS.selectedStart], `${width}`).toBe(mirror.selectedStart);
+    expect(gpu.status[GPU_MAX_P_STATUS.regionCount]).toBe(mirror.regionCount);
+    expect(gpu.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(mirror.infeasibleRegionCount);
+    expect(gpu.labels).toEqual(Array.from(mirror.labels));
+  }
+});
+
+it('GPUMaxPRegions reports an island below the threshold and keeps contiguity on an irregular graph', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A 6-row path plus a separate pair whose extensive sum (2) is below the threshold (4).
+  const result = await runMaxP(device, {
+    offsets: Uint32Array.from([0, 1, 3, 5, 7, 9, 10, 11, 12]),
+    neighbors: Uint32Array.from([1, 0, 2, 1, 3, 2, 4, 3, 5, 4, 7, 6]),
+    values: Float32Array.from([0, 0.1, 0.2, 5, 5.1, 5.2, 9, 9.1]),
+    extensiveValues: Float32Array.from([2, 2, 2, 2, 2, 2, 1, 1]),
+    threshold: 4,
+    seed: 5,
+    startCount: 3,
+    standardize: false
+  });
+  expect(result.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(1);
+  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(0);
+  expect(result.labels[6]).toBe(result.labels[7]);
+  expect(result.labels[6]).not.toBe(result.labels[0]);
+  expect(Math.max(...result.labels)).toBe(result.status[GPU_MAX_P_STATUS.regionCount] - 1);
+});
+
+it('GPUMaxPRegions reports under-threshold regions when the growth steps run out', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = {
+    ...createLatticeScene(10, 5, 6),
+    extensiveValues: Float32Array.from({length: 100}, () => 1),
+    threshold: 30,
+    seed: 1,
+    startCount: 2
+  };
+  const starved = await runMaxP(device, {...scene, maximumGrowthSteps: 5});
+  expect(starved.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBeGreaterThan(0);
+  expect(starved.labels.every(label => label < starved.status[GPU_MAX_P_STATUS.regionCount])).toBe(
+    true
+  );
+  const roomy = await runMaxP(device, {...scene, maximumGrowthSteps: 256});
+  expect(roomy.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(0);
+  expect(findDisconnectedLabels(scene.offsets, scene.neighbors, roomy.labels)).toEqual([]);
+});
+
+it('GPUMaxPRegions A/B: 16,384-row lattice timing of the parallel construction', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The sequential construction was replaced in place, so there is no same-run old path: run this
+  // spec on the parent commit (one persistent workgroup per start) and on this one and compare the
+  // logged milliseconds and region counts. Scene: 128 x 128 lattice, about 15 rows per region.
+  const scene = {...createLatticeScene(128, 301, 302), threshold: 45, seed: 11, startCount: 16};
+  const start = performance.now();
+  const result = await runMaxP(device, scene);
+  const elapsed = performance.now() - start;
+  // eslint-disable-next-line no-console
+  console.log(
+    `GPUMaxPRegions A/B 16384 rows: ${elapsed.toFixed(0)} ms, ${result.status[GPU_MAX_P_STATUS.regionCount]} regions, ` +
+      `${result.status[GPU_MAX_P_STATUS.infeasibleRegionCount]} under threshold`
+  );
+  expect(result.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
+  expect(findDisconnectedLabels(scene.offsets, scene.neighbors, result.labels)).toEqual([]);
+  for (const sum of getRegionSums(result.labels, scene.extensiveValues).values()) {
+    expect(sum).toBeGreaterThanOrEqual(scene.threshold);
+  }
+});
+
+it('GPUMaxPRegions runs 262,144 rows without a row cap', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 8 times the former 32,768-row cap, one column, 2 starts; about 25 rows per region, so the
+  // default 256 growth steps leave a wide margin. Every dispatch is O(starts * (rows + slots)).
+  const width = 512;
+  const scene = {...createLatticeScene(width, 401, 402), threshold: 75, seed: 2, startCount: 2};
+  const start = performance.now();
+  const result = await runMaxP(device, scene);
+  // eslint-disable-next-line no-console
+  console.log(`GPUMaxPRegions 262144 rows: ${(performance.now() - start).toFixed(0)} ms`);
+  expect(result.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
+  expect(result.labels.length).toBe(width * width);
+  expect(result.status[GPU_MAX_P_STATUS.regionCount]).toBeGreaterThan(1000);
+  expect(new Set(result.labels).size).toBe(result.status[GPU_MAX_P_STATUS.regionCount]);
+  expect(findDisconnectedLabels(scene.offsets, scene.neighbors, result.labels)).toEqual([]);
+  for (const sum of getRegionSums(result.labels, scene.extensiveValues).values()) {
+    expect(sum).toBeGreaterThanOrEqual(scene.threshold);
+  }
 });

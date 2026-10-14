@@ -38,6 +38,7 @@ import {
 } from './gpu-rate-standardization-fixture';
 import {RATE_REFERENCE} from './gpu-rate-standardization-reference';
 import {isClose} from './spatial-autocorrelation-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const LAYOUT = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT;
 const FIELD = GPU_GLOBAL_SPATIAL_STATISTIC_FIELD;
@@ -79,7 +80,7 @@ function createPipeline(device: Device, rows: number, withMask: boolean) {
     offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
     weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity),
-    info: {rowCount: rows, transform: 'row' as const, symmetric: 'unknown' as const}
+    information: {rowCount: rows, transform: 'row' as const, symmetric: 'unknown' as const}
   };
   const mask = buffers.mask && importGraphBuffer(graph, 'mask', buffers.mask, 'uint32', rows);
   const standardizedRates = createTransientView(graph, 'standardized-rates', 'float32', rows);
@@ -88,15 +89,19 @@ function createPipeline(device: Device, rows: number, withMask: boolean) {
       events: importGraphBuffer(graph, 'events', buffers.events, 'float32', rows),
       populations: importGraphBuffer(graph, 'populations', buffers.populations, 'float32', rows),
       mask,
-      standardizedRates,
-      statistics: importGraphBuffer(
-        graph,
-        'rate-statistics',
-        buffers.statistics,
-        'float32',
-        GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
-      ),
-      invalidCount: importGraphBuffer(graph, 'invalid-count', buffers.invalidCount, 'uint32', 1)
+      output: {
+        standardizedRates,
+        statistics: importGraphBuffer(
+          graph,
+          'rate-statistics',
+          buffers.statistics,
+          'float32',
+          GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
+        ),
+        status: {
+          invalidCount: importGraphBuffer(graph, 'invalid-count', buffers.invalidCount, 'uint32', 1)
+        }
+      }
     })
   );
   graph.add(
@@ -105,7 +110,9 @@ function createPipeline(device: Device, rows: number, withMask: boolean) {
       values: standardizedRates,
       statistics: ['moran'],
       islands: 'keep',
-      results: importGraphBuffer(graph, 'results', buffers.results, 'float32', LAYOUT.length)
+      output: {
+        summary: importGraphBuffer(graph, 'results', buffers.results, 'float32', LAYOUT.length)
+      }
     })
   );
   graph.add(
@@ -114,8 +121,10 @@ function createPipeline(device: Device, rows: number, withMask: boolean) {
       values: standardizedRates,
       parameters: parameterBuffer.importToGraph(graph),
       islands: 'keep',
-      zScores: importGraphBuffer(graph, 'z-scores', buffers.zScores, 'float32', rows),
-      localI: importGraphBuffer(graph, 'local-i', buffers.localI, 'float32', rows)
+      output: {
+        zScores: importGraphBuffer(graph, 'z-scores', buffers.zScores, 'float32', rows),
+        localI: importGraphBuffer(graph, 'local-i', buffers.localI, 'float32', rows)
+      }
     })
   );
   const compiled = graph.compile();
@@ -177,15 +186,19 @@ function createStandardizer(device: Device, rows: number, withMask: boolean) {
       events: importGraphBuffer(graph, 'events', buffers.events, 'float32', rows),
       populations: importGraphBuffer(graph, 'populations', buffers.populations, 'float32', rows),
       mask: buffers.mask && importGraphBuffer(graph, 'mask', buffers.mask, 'uint32', rows),
-      standardizedRates: importGraphBuffer(graph, 'rates', buffers.rates, 'float32', rows),
-      statistics: importGraphBuffer(
-        graph,
-        'statistics',
-        buffers.statistics,
-        'float32',
-        GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
-      ),
-      invalidCount: importGraphBuffer(graph, 'invalid-count', buffers.invalidCount, 'uint32', 1)
+      output: {
+        standardizedRates: importGraphBuffer(graph, 'rates', buffers.rates, 'float32', rows),
+        statistics: importGraphBuffer(
+          graph,
+          'statistics',
+          buffers.statistics,
+          'float32',
+          GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
+        ),
+        status: {
+          invalidCount: importGraphBuffer(graph, 'invalid-count', buffers.invalidCount, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -247,12 +260,10 @@ function expectStatistics(actual: number[], expected: number[], label: string): 
   expect(isClose(actual[4], expected[4], 0, 1e-6), `${label} population`).toBe(true);
 }
 
-// Oracle: fix/work/A/oracle-u8-rate-moran.py (esda 2.10.0 / libpysal 4.15.0)
+// Oracle: test/oracles/statistics-rate-standardization.py (esda 2.10.0 / libpysal 4.15.0)
 it('GPUAssuncaoReisStandardization matches esda assuncao_rate, including a negative prior variance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const standardizer = createStandardizer(device, RATE_ROW_COUNT, false);
   for (const dataset of ['full', 'missing', 'under'] as const) {
     const {events, populations} = getRateInputs(dataset);
@@ -282,9 +293,7 @@ it('GPUAssuncaoReisStandardization matches esda assuncao_rate, including a negat
 
 it('GPUAssuncaoReisStandardization treats masked rows as outside the analysis', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const standardizer = createStandardizer(device, RATE_ROW_COUNT, true);
   const {events, populations} = getRateInputs('full');
   const mask = new Uint32Array(RATE_ROW_COUNT).fill(1);
@@ -307,9 +316,7 @@ it('GPUAssuncaoReisStandardization treats masked rows as outside the analysis', 
 
 it('EB Moran for rates: standardization -> GPUGlobalSpatialStatistics and GPULocalMoran match esda Moran_Rate and Moran_Local_Rate', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pipeline = createPipeline(device, RATE_ROW_COUNT, false);
   for (const dataset of ['full', 'missing'] as const) {
     const {events, populations} = getRateInputs(dataset);

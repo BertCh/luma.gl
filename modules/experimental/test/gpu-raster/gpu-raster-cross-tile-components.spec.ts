@@ -15,6 +15,8 @@ import {
 } from '@luma.gl/experimental/gpu-raster';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {requireTestDevice} from '../utils/require-test-device';
+import {sumFixedPointOracle} from '../utils/fixed-point-oracle';
 
 type ScalarFormat = 'uint32' | 'float32';
 
@@ -743,3 +745,35 @@ function destroyExecution(execution: CrossExecution): void {
     buffer.destroy();
   }
 }
+
+it('cross-tile cancellation sums match the fixed-point BigInt oracle bitwise across tile orders and replays', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const terms = [1e10, 1, -1e10, 3];
+  const tiles: TileFixture[] = terms.map((value, column) => ({
+    bounds: [column, 0, column + 1, 1],
+    labels: [1],
+    intensities: [value]
+  }));
+  const expected = sumFixedPointOracle(terms, [0, 0, 0, 0], 1).sums[0];
+  for (const order of [tiles, [...tiles].reverse()]) {
+    const execution = makeExecution(device, {
+      id: 'fixed-point-cancellation',
+      metadata: {width: 4, height: 1, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+      tiles: order,
+      regionCapacity: 4
+    });
+    try {
+      for (let replay = 0; replay < 2; replay++) {
+        submitGraph(device, execution.compiled, 'fixed-point-replay');
+        expect(await readLogical(execution.output.intensitySums)).toEqual([expected, 0, 0, 0]);
+        // Area pixels use centers: columns 0.5 + 1.5 + 2.5 + 3.5, rows 4 * 0.5.
+        expect(await readLogical(execution.output.columnSums)).toEqual([8, 0, 0, 0]);
+        expect(await readLogical(execution.output.rowSums)).toEqual([2, 0, 0, 0]);
+        expect((await readLogical(execution.overflow))[0]).toBe(0);
+      }
+    } finally {
+      destroyExecution(execution);
+    }
+  }
+});

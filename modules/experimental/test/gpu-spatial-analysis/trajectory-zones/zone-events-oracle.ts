@@ -12,11 +12,23 @@ import {rayCrossesEdge, segmentCrossesEdge} from './zone-crossing-rule';
 
 import type {OracleTracks} from '../trajectory-interpolation/trajectory-interpolation-oracle';
 
-/** Zone boundary edges. */
+/** Four-level polygon layout (one feature per zone) of the same rings as {@link ZoneEdges}. */
+export type ZonePolygons = {
+  positions: Float32Array;
+  featureOffsets: Uint32Array;
+  polygonOffsets: Uint32Array;
+  ringOffsets: Uint32Array;
+};
+
+/**
+ * Zone boundary edges for the CPU oracle, and the same rings as the polygon layout that
+ * `GPUZoneEvents` reads. Edge `i` starts at vertex `i` of `polygons.positions`.
+ */
 export type ZoneEdges = {
   starts: Float32Array;
   ends: Float32Array;
   zones: Uint32Array;
+  polygons: ZonePolygons;
 };
 
 /** One enter or exit event. */
@@ -46,26 +58,54 @@ export type ZoneOracleResult = {
   lastExitTimes: number[];
 };
 
-/** Builds closed-ring edges for `rings`, each `[zone, [x0, y0, x1, y1, ...]]`. */
+/**
+ * Builds closed-ring edges and the polygon layout for `rings`, each `[zone, [x0, y0, x1, y1, ...]]`.
+ * Rings are grouped by zone (stable), and all rings of a zone form one polygon of feature `zone`
+ * (its first ring is the shell). `zoneCount` defaults to the largest zone plus one.
+ */
 export function createRingEdges(
-  rings: readonly (readonly [number, readonly number[]])[]
+  rings: readonly (readonly [number, readonly number[]])[],
+  zoneCount: number = Math.max(0, ...rings.map(([zone]) => zone)) + 1
 ): ZoneEdges {
+  const grouped = rings
+    .map((ring, index) => ({ring, index}))
+    .sort((a, b) => a.ring[0] - b.ring[0] || a.index - b.index)
+    .map(({ring}) => ring);
   const starts: number[] = [];
   const ends: number[] = [];
   const zones: number[] = [];
-  for (const [zone, coordinates] of rings) {
+  const positions: number[] = [];
+  const ringOffsets: number[] = [0];
+  const polygonOffsets: number[] = [0];
+  const featureOffsets: number[] = [0];
+  for (const [zone, coordinates] of grouped) {
     const vertexCount = coordinates.length / 2;
     for (let vertex = 0; vertex < vertexCount; vertex++) {
       const next = (vertex + 1) % vertexCount;
       starts.push(coordinates[2 * vertex], coordinates[2 * vertex + 1]);
       ends.push(coordinates[2 * next], coordinates[2 * next + 1]);
       zones.push(zone);
+      positions.push(coordinates[2 * vertex], coordinates[2 * vertex + 1]);
     }
+    ringOffsets.push(positions.length / 2);
+  }
+  for (let zone = 0; zone < zoneCount; zone++) {
+    const ringCount = grouped.filter(([ringZone]) => ringZone === zone).length;
+    if (ringCount > 0) {
+      polygonOffsets.push(polygonOffsets[polygonOffsets.length - 1] + ringCount);
+    }
+    featureOffsets.push(polygonOffsets.length - 1);
   }
   return {
     starts: Float32Array.from(starts),
     ends: Float32Array.from(ends),
-    zones: Uint32Array.from(zones)
+    zones: Uint32Array.from(zones),
+    polygons: {
+      positions: Float32Array.from(positions),
+      featureOffsets: Uint32Array.from(featureOffsets),
+      polygonOffsets: Uint32Array.from(polygonOffsets),
+      ringOffsets: Uint32Array.from(ringOffsets)
+    }
   };
 }
 

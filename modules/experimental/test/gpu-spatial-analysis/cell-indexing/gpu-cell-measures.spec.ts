@@ -17,6 +17,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {h3ToBigInt, splitCellKey} from '../cell-aggregation/cell-aggregation-oracle';
 import {H3_MEASURES_FIXTURES} from './h3-measures-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const MAXIMUM_EDGE_COUNT = 10;
 const INVALID_CELLS = [0n, 1n, 0xffffffffffffffffn];
@@ -35,9 +36,7 @@ function getRelativeTolerance(isExactPath: boolean): number {
 
 it('GPUCellMeasures area, perimeter, edge lengths and pentagon flags match python h3 4.5.0', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = [...H3_MEASURES_FIXTURES.map(row => h3ToBigInt(row[0])), ...INVALID_CELLS];
   const rows = cells.length;
   const buffers: Buffer[] = [];
@@ -137,9 +136,7 @@ it('GPUCellMeasures area, perimeter, edge lengths and pentagon flags match pytho
 
 it('GPUCellMeasures validates its properties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'cell-measures-validation'});
   const buffer = createInputBuffer(device, new Uint32Array(4));
   const outBuffer = createOutputBuffer(device, 2);
@@ -158,9 +155,7 @@ it('GPUCellMeasures validates its properties', async () => {
 
 it('GPUCellMeasures publishes meters and square meters by default', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Single-face hexagons take the exact path, so the python h3 kilometer fixtures scale exactly.
   const fixtures = H3_MEASURES_FIXTURES.filter(row => row[4] === 1 && row[5] === 0).slice(0, 16);
   const rows = fixtures.length;

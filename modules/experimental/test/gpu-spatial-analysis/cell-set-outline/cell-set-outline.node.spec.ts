@@ -28,8 +28,7 @@ function createProps(
       cells: view('uint32x2', 16),
       edgeIndices: view('uint32', 16),
       endpoints: view('float32x4', 16),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     },
     ...overrides
   };

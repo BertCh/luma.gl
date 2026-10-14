@@ -22,6 +22,7 @@ import {
   type NetworkEdge
 } from '../network-reachability/network-reachability-oracle';
 import {neighborhoodOracle} from './network-neighborhood-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   edges: readonly NetworkEdge[];
@@ -106,26 +107,34 @@ function createFixture(device: Device, options: FixtureOptions, id: string): Fix
   graph.add(
     new GPUNetworkNeighborhood({
       id,
-      offsets: input('offsets', csr.offsets, nodeCount + 1),
-      neighbors: input('neighbors', csr.neighbors, edgeCount),
-      seeds: seeds.importToGraph(graph),
-      seedCount: seedCount?.importToGraph(graph),
+      topology: {
+        offsets: input('offsets', csr.offsets, nodeCount + 1),
+        neighbors: input('neighbors', csr.neighbors, edgeCount)
+      },
+      startNodes: seeds.importToGraph(graph),
+      startCount: seedCount?.importToGraph(graph),
       hops: hops.importToGraph(graph),
-      maxHops: options.maxHops,
+      maximumHops: options.maxHops,
       nodeIds: nodeIds?.importToGraph(graph),
       edgeIds: edgeIds?.importToGraph(graph),
-      hopDistances: hopDistances.view,
-      nodeMask: nodeMask.view,
-      edgeMask: edgeMask.view,
-      nodes: {
-        ids: nodeResultIds.view,
-        count: nodeResultCount.view,
-        overflow: nodeResultOverflow.view
-      },
-      edges: {
-        ids: edgeResultIds.view,
-        count: edgeResultCount.view,
-        overflow: edgeResultOverflow.view
+      output: {
+        hopDistances: hopDistances.view,
+        nodeMask: nodeMask.view,
+        edgeMask: edgeMask.view,
+        nodes: {
+          ids: nodeResultIds.view,
+          status: {
+            count: nodeResultCount.view,
+            overflow: nodeResultOverflow.view
+          }
+        },
+        edges: {
+          ids: edgeResultIds.view,
+          status: {
+            count: edgeResultCount.view,
+            overflow: edgeResultOverflow.view
+          }
+        }
       }
     })
   );
@@ -198,9 +207,7 @@ async function expectMatchesOracle(
 
 it('GPUNetworkNeighborhood matches the oracle on the F1 fixture across hop radii', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const options: FixtureOptions = {edges: F1_EDGES, nodeCount: 8, seeds: [0], hops: 0};
   const fixture = createFixture(device, options, 'hood-f1');
   // Re-encode the SAME compiled graph with different per-frame radii; 10 clamps to maxHops 8.
@@ -222,9 +229,7 @@ it('GPUNetworkNeighborhood matches the oracle on the F1 fixture across hop radii
 
 it('GPUNetworkNeighborhood matches the oracle on a random network with 3 seeds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 2000;
   const edges = createRandomNetwork(7, nodeCount, 5000);
   const options: FixtureOptions = {
@@ -251,9 +256,7 @@ it('GPUNetworkNeighborhood matches the oracle on a random network with 3 seeds',
 
 it('GPUNetworkNeighborhood handles seedCount changes and seed moves without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const options: FixtureOptions = {
     edges: F1_EDGES,
     nodeCount: 8,
@@ -275,9 +278,7 @@ it('GPUNetworkNeighborhood handles seedCount changes and seed moves without reco
 
 it('GPUNetworkNeighborhood clamps counts and flags overflow when capacity is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const options: FixtureOptions = {
     edges: F1_EDGES,
     nodeCount: 8,
@@ -297,9 +298,7 @@ it('GPUNetworkNeighborhood clamps counts and flags overflow when capacity is too
 
 it('GPUNetworkNeighborhood clamps hops above maxHops', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Path 0 -> 1 -> 2 -> 3 -> 4 -> 5.
   const edges: NetworkEdge[] = [0, 1, 2, 3, 4].map(node => [node, node + 1, 1]);
   const options: FixtureOptions = {edges, nodeCount: 6, seeds: [0], hops: 100, maxHops: 2};
@@ -311,9 +310,7 @@ it('GPUNetworkNeighborhood clamps hops above maxHops', async () => {
 
 it('GPUNetworkNeighborhood returns an empty ego network for zero active seeds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const options: FixtureOptions = {
     edges: F1_EDGES,
     nodeCount: 8,
@@ -331,9 +328,7 @@ it('GPUNetworkNeighborhood returns an empty ego network for zero active seeds', 
 
 it('GPUNetworkNeighborhood handles a single node and edgeless networks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const options: FixtureOptions = {edges: [], nodeCount: 1, seeds: [0], hops: 2};
   const fixture = createFixture(device, options, 'hood-single');
   await expectMatchesOracle(device, fixture, options);
@@ -343,9 +338,7 @@ it('GPUNetworkNeighborhood handles a single node and edgeless networks', async (
 
 it('GPUNetworkNeighborhood emits stable node and edge IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const csr = buildCSR(8, F1_EDGES);
   const options: FixtureOptions = {
     edges: F1_EDGES,

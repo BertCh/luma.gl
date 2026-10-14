@@ -6,6 +6,11 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
+} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -20,6 +25,7 @@ import {
   readFloat32,
   readUint32
 } from '../../utils/gpu-contributor-test-utils';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {createSeededRandom, computeTerrainFlow} from './terrain-flow-oracle';
 import {
   accumulateRoutingOnCPU,
@@ -27,6 +33,7 @@ import {
   sumTerminalAccumulationOnCPU,
   type RoutingOracleInput
 } from './terrain-flow-routing-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Routing = 'd-infinity' | 'mfd-freeman' | 'mfd-quinn';
 const ROUTINGS: Routing[] = ['d-infinity', 'mfd-freeman', 'mfd-quinn'];
@@ -55,16 +62,29 @@ const TOLERANCE: Record<Routing | 'd8', number> = {
 
 type FlowOptions = {
   routing: GPUTerrainFlowProps['flowRouting'];
+  /** Packed settings; the cell size and latitude band come from `cellSize` and `origin`. */
   settings?: GPUTerrainFlowSettings;
+  /** Ground cell size of the grid. Defaults to 1. */
+  cellSize?: number | [number, number];
+  /** World position of the top-left corner of the grid. Defaults to `[0, 0]`. */
+  origin?: [number, number];
   fillDepressions?: boolean;
   resolveFlats?: boolean;
   runoff?: Float32Array;
   cellSizeMode?: GPUTerrainFlowProps['cellSizeMode'];
   accumulationUnits?: GPUTerrainFlowProps['accumulationUnits'];
-  maxAccumulationIterations?: number;
+  maximumAccumulationIterations?: number;
 };
 
-const DEFAULT_SETTINGS: GPUTerrainFlowSettings = {cellSize: [1, 1]};
+const DEFAULT_SETTINGS: GPUTerrainFlowSettings = {};
+
+/** Returns the raster grid that a spec places its DEM on. */
+function getFlowGrid(width: number, height: number, options: FlowOptions): GPURasterMetadata {
+  return makeGPURasterMetadata({width, height, cellSize: options.cellSize, origin: options.origin});
+}
+
+/** Row step in EPSG:3857 meters that spans the old normalized Web Mercator band 0.3 to 0.45. */
+const MERCATOR_ROW_STEP = (getOracleWebMercatorY(0.3) - getOracleWebMercatorY(0.45)) / 29;
 
 function createFlowFixture(
   device: Device,
@@ -74,6 +94,7 @@ function createFlowFixture(
   options: FlowOptions
 ) {
   const cellCount = width * height;
+  const grid = getFlowGrid(width, height, options);
   const settings = options.settings ?? DEFAULT_SETTINGS;
   const elevationBuffer = createInputBuffer(device, elevation);
   const runoffBuffer = options.runoff ? createInputBuffer(device, options.runoff) : undefined;
@@ -86,7 +107,7 @@ function createFlowFixture(
     id: 'flow-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainFlowParameterValues(settings)
+    values: getGPUTerrainFlowParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-flow-routing-test'});
   const destroy = () => {
@@ -101,43 +122,43 @@ function createFlowFixture(
   try {
     graph.add(
       new GPUTerrainFlow({
-        width,
-        height,
-        elevation: {
-          id: 'elevation',
-          format: 'float32',
-          storage: {
-            kind: 'buffer',
-            values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount)
-          }
-        },
-        settings: settingsBuffer.importToGraph(graph),
+        grid,
+        elevation: makeGPURasterBand(
+          importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount),
+          grid,
+          {id: 'elevation'}
+        ),
+        parameters: settingsBuffer.importToGraph(graph),
         cellSizeMode: options.cellSizeMode,
         fillDepressions: options.fillDepressions,
         resolveFlats: options.resolveFlats,
         flowRouting: options.routing,
-        maxAccumulationIterations: options.maxAccumulationIterations,
+        maximumAccumulationIterations: options.maximumAccumulationIterations,
         accumulationUnits: options.accumulationUnits,
         runoff: runoffBuffer
           ? importGraphBuffer(graph, 'runoff', runoffBuffer, 'float32', cellCount)
           : undefined,
-        accumulation: importGraphBuffer(
-          graph,
-          'accumulation',
-          buffers.accumulation,
-          'float32',
-          cellCount
-        ),
-        accumulationConverged: importGraphBuffer(
-          graph,
-          'accumulation-converged',
-          buffers.converged,
-          'uint32',
-          1
-        ),
-        flatsConverged: options.resolveFlats
-          ? importGraphBuffer(graph, 'flats-converged', buffers.flatsConverged, 'uint32', 1)
-          : undefined
+        output: {
+          accumulation: importGraphBuffer(
+            graph,
+            'accumulation',
+            buffers.accumulation,
+            'float32',
+            cellCount
+          ),
+          status: {
+            accumulationConverged: importGraphBuffer(
+              graph,
+              'accumulation-converged',
+              buffers.converged,
+              'uint32',
+              1
+            ),
+            flatsConverged: options.resolveFlats
+              ? importGraphBuffer(graph, 'flats-converged', buffers.flatsConverged, 'uint32', 1)
+              : undefined
+          }
+        }
       })
     );
     compiled = graph.compile();
@@ -163,8 +184,7 @@ function createFlowFixture(
 function runOracle(elevation: Float32Array, width: number, height: number, options: FlowOptions) {
   return computeTerrainFlow({
     elevation,
-    width,
-    height,
+    grid: getFlowGrid(width, height, options),
     settings: options.settings ?? DEFAULT_SETTINGS,
     cellSizeMode: options.cellSizeMode,
     fillDepressions: options.fillDepressions,
@@ -252,9 +272,7 @@ for (const routing of ROUTINGS) {
   ]) {
     it(`GPUTerrainFlow ${routing} matches the float64 oracle on synthetic DEMs ${width}x${height}`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       for (const [name, createDem] of Object.entries(DEMS)) {
         const elevation = createDem(width, height);
         const raw = await expectMatchesOracle(
@@ -272,7 +290,7 @@ for (const routing of ROUTINGS) {
         await expectMatchesOracle(device, `${routing} ${name} fill`, elevation, width, height, {
           routing,
           fillDepressions: true,
-          settings: {cellSize: [1, 1], fillEpsilon: 0.25}
+          settings: {fillEpsilon: 0.25}
         });
       }
     });
@@ -280,9 +298,7 @@ for (const routing of ROUTINGS) {
 
   it(`GPUTerrainFlow ${routing} handles geographic and web-mercator cell sizes and weights`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const width = 37;
     const height = 29;
     const elevation = DEMS.ridges(width, height);
@@ -292,7 +308,9 @@ for (const routing of ROUTINGS) {
     const geographic: FlowOptions = {
       routing,
       cellSizeMode: 'geographic',
-      settings: {cellSize: [0.0009, 0.0006], northEdge: 52, southEdge: 51.9, fillEpsilon: 0.05},
+      cellSize: [0.0009, 0.1 / 29],
+      origin: [0, 52],
+      settings: {fillEpsilon: 0.05},
       fillDepressions: true
     };
     await expectMatchesOracle(
@@ -311,7 +329,9 @@ for (const routing of ROUTINGS) {
     const mercator: FlowOptions = {
       routing,
       cellSizeMode: 'web-mercator',
-      settings: {cellSize: [1.4, 1], northEdge: 0.3, southEdge: 0.45, fillEpsilon: 0.1},
+      cellSize: [1.4 * MERCATOR_ROW_STEP, MERCATOR_ROW_STEP],
+      origin: [0, getOracleWebMercatorY(0.3)],
+      settings: {fillEpsilon: 0.1},
       fillDepressions: true
     };
     await expectMatchesOracle(
@@ -329,7 +349,7 @@ for (const routing of ROUTINGS) {
     await expectMatchesOracle(device, `${routing} uniform area`, elevation, width, height, {
       routing,
       accumulationUnits: 'area',
-      settings: {cellSize: [3, 5]},
+      cellSize: [3, 5],
       runoff
     });
   });
@@ -337,9 +357,7 @@ for (const routing of ROUTINGS) {
 
 it('GPUTerrainFlow MFD honors explicit and default flow exponents', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const elevation = DEMS.noise(width, height);
@@ -352,7 +370,7 @@ it('GPUTerrainFlow MFD honors explicit and default flow exponents', async () => 
         elevation,
         width,
         height,
-        {routing, settings: {cellSize: [1, 1], flowExponent}}
+        {routing, settings: {flowExponent}}
       );
       if (routing === 'mfd-freeman') {
         results.set(flowExponent, run.result.accumulation);
@@ -368,9 +386,7 @@ it('GPUTerrainFlow MFD honors explicit and default flow exponents', async () => 
 
 it('GPUTerrainFlow MFD approaches D8 as the exponent grows, D-infinity equals D8 on an axis-aligned plane', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const valley = DEMS.valley(width, height);
@@ -381,7 +397,7 @@ it('GPUTerrainFlow MFD approaches D8 as the exponent grows, D-infinity equals D8
   for (const routing of ['mfd-freeman', 'mfd-quinn'] as const) {
     const {result} = await expectMatchesOracle(device, `${routing} p=64`, valley, width, height, {
       routing,
-      settings: {cellSize: [1, 1], flowExponent: 64}
+      settings: {flowExponent: 64}
     });
     for (const [cell, expected] of d8Result.accumulation.entries()) {
       expect(
@@ -407,9 +423,7 @@ it('GPUTerrainFlow MFD approaches D8 as the exponent grows, D-infinity equals D8
 
 it('GPUTerrainFlow D-infinity splits flow on a plane of slope (2, 1) with r = atan(1/2)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // z = -2 column - row: steepest descent toward east-south-east, r = atan(1/2) inside facet (E, SE).
   const width = 3;
   const height = 3;
@@ -420,7 +434,7 @@ it('GPUTerrainFlow D-infinity splits flow on a plane of slope (2, 1) with r = at
     width,
     height,
     cellSizeMode: 'uniform',
-    gridSettings: {cellSize: [1, 1]},
+    georeference: {cellSize: [1, 1]},
     flowExponent: 0,
     surface: plane,
     isValid: () => true,
@@ -448,9 +462,7 @@ it('GPUTerrainFlow D-infinity splits flow on a plane of slope (2, 1) with r = at
 
 it('GPUTerrainFlow conserves mass and sends fallback flow only to D8 receivers', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   for (const routing of ROUTINGS) {
@@ -471,7 +483,7 @@ it('GPUTerrainFlow conserves mass and sends fallback flow only to D8 receivers',
         width,
         height,
         cellSizeMode: 'uniform',
-        gridSettings: {cellSize: [1, 1]},
+        georeference: {cellSize: [1, 1]},
         flowExponent: 0,
         surface: elevation,
         isValid: cell => Number.isFinite(elevation[cell]),
@@ -490,9 +502,7 @@ it('GPUTerrainFlow conserves mass and sends fallback flow only to D8 receivers',
 
 it('GPUTerrainFlow routes through resolved flats', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const elevation = DEMS.ridges(width, height);
@@ -501,7 +511,7 @@ it('GPUTerrainFlow routes through resolved flats', async () => {
       routing,
       fillDepressions: true,
       resolveFlats: true,
-      settings: {cellSize: [1, 1], fillEpsilon: 0}
+      settings: {fillEpsilon: 0}
     };
     await expectMatchesOracle(device, `${routing} flats`, elevation, width, height, options);
   }
@@ -509,9 +519,7 @@ it('GPUTerrainFlow routes through resolved flats', async () => {
 
 it('GPUTerrainFlow reports the rounds needed by the routed accumulation', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 70;
   const height = 45;
   const elevation = DEMS.noise(width, height);
@@ -520,7 +528,7 @@ it('GPUTerrainFlow reports the rounds needed by the routed accumulation', async 
     for (let limit = 1; limit <= 64; limit++) {
       const fixture = createFlowFixture(device, elevation, width, height, {
         routing,
-        maxAccumulationIterations: limit
+        maximumAccumulationIterations: limit
       });
       const {converged} = await fixture.run();
       fixture.destroy();

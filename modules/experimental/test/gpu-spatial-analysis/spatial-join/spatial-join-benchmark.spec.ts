@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {getGPUSpatialJoinCapacityPlan} from '../../../src/gpu-spatial-analysis/contracts/index';
+import {getGPUSpatialJoinCapacityPlan} from '../../../src/gpu-spatial-analysis/spatial-join/spatial-join-capacity-plan';
 import './spatial-relate-benchmark';
 import {createRandom, type OraclePolygonFeature} from './spatial-join-oracle';
 import {
@@ -23,6 +23,7 @@ import {
   measureTraversal,
   type FeatureBounds
 } from './spatial-join-traversal-model';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -159,9 +160,7 @@ async function benchmarkPolygonJoin(
 
 it('spatial join sort benchmark: point-in-polygon, shuffled and coherent features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const columns = 120;
   const coherent = createGridSquares(columns);
   const points = createRandomPoints(250000, columns, 51);
@@ -172,9 +171,7 @@ it('spatial join sort benchmark: point-in-polygon, shuffled and coherent feature
 
 it('spatial join sort benchmark: nearest segments, shuffled', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(61);
   const extent = 1000;
   const segments: [Point, Point][] = Array.from({length: 50000}, () => {

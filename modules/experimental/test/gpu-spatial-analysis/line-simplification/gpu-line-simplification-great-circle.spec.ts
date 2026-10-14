@@ -15,22 +15,21 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {GREAT_CIRCLE_LINE_CASES} from './line-simplification-great-circle-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPULineSimplification great-circle importance matches numpy/pyproj in meters at high latitude and across the antimeridian', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases = Object.values(GREAT_CIRCLE_LINE_CASES);
   const positions = Float32Array.from(cases.flatMap(testCase => testCase.line.flat()));
-  const trackOffsets = Uint32Array.of(
+  const lineOffsets = Uint32Array.of(
     0,
     ...cases.map((_, index) => cases.slice(0, index + 1).reduce((sum, c) => sum + c.line.length, 0))
   );
   const rowCount = positions.length / 2;
   const buffers: Buffer[] = [];
   const positionsBuffer = createInputBuffer(device, positions);
-  const offsetsBuffer = createInputBuffer(device, trackOffsets);
+  const offsetsBuffer = createInputBuffer(device, lineOffsets);
   const importanceBuffer = createOutputBuffer(device, rowCount);
   buffers.push(positionsBuffer, offsetsBuffer, importanceBuffer);
   const graph = new GPUCommandGraph(device, {id: 'line-great-circle'});
@@ -39,13 +38,7 @@ it('GPULineSimplification great-circle importance matches numpy/pyproj in meters
       id: 'simplify',
       spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
-      trackOffsets: importGraphBuffer(
-        graph,
-        'offsets',
-        offsetsBuffer,
-        'uint32',
-        trackOffsets.length
-      ),
+      lineOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', lineOffsets.length),
       importance: importGraphBuffer(graph, 'importance', importanceBuffer, 'float32', rowCount)
     })
   );

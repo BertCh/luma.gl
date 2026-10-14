@@ -7,11 +7,13 @@ export {createSeededRandom} from '../neighbor-search/neighbor-search-oracle';
 /** Polygon scene: polygons of rings of `[x, y]` vertices. */
 export type OraclePolygons = [number, number][][][];
 
-/** Flat GeoArrow-style layout of {@link OraclePolygons}. */
+/** Flat GeoArrow-style four-level layout of {@link OraclePolygons}. */
 export type PolygonLayout = {
   positions: Float32Array;
   ringOffsets: Uint32Array;
   polygonOffsets: Uint32Array;
+  /** Feature-to-polygon offsets; one polygon per feature unless built by {@link flattenFeatures}. */
+  featureOffsets: Uint32Array;
 };
 
 /** A CPU CSR result. */
@@ -22,7 +24,17 @@ export type OracleCSR = {
   distances: number[];
 };
 
-/** Flattens polygons into positions, ring offsets and polygon offsets. */
+/** Flattens multipart features (each a list of polygons) into the four-level layout. */
+export function flattenFeatures(features: OraclePolygons[]): PolygonLayout {
+  const layout = flattenPolygons(features.flat());
+  const featureOffsets = [0];
+  for (const feature of features) {
+    featureOffsets.push(featureOffsets[featureOffsets.length - 1] + feature.length);
+  }
+  return {...layout, featureOffsets: new Uint32Array(featureOffsets)};
+}
+
+/** Flattens polygons into positions, ring, polygon and (identity) feature offsets. */
 export function flattenPolygons(polygons: OraclePolygons): PolygonLayout {
   const positions: number[] = [];
   const ringOffsets = [0];
@@ -41,7 +53,8 @@ export function flattenPolygons(polygons: OraclePolygons): PolygonLayout {
   return {
     positions: new Float32Array(positions),
     ringOffsets: new Uint32Array(ringOffsets),
-    polygonOffsets: new Uint32Array(polygonOffsets)
+    polygonOffsets: new Uint32Array(polygonOffsets),
+    featureOffsets: new Uint32Array(polygons.map((_, index) => index).concat(polygons.length))
   };
 }
 
@@ -60,8 +73,12 @@ function quantise(value: number, tolerance: number): number {
 export function computeContiguityOracle(
   polygons: OraclePolygons,
   criterion: 'queen' | 'rook',
-  snapTolerance = 0
+  snapTolerance = 0,
+  /** Feature (output row) of each polygon. Defaults to one feature per polygon. */
+  featureOfPolygon?: number[]
 ): OracleCSR {
+  const featureCount = featureOfPolygon ? Math.max(-1, ...featureOfPolygon) + 1 : polygons.length;
+  const featureOf = (polygon: number) => (featureOfPolygon ? featureOfPolygon[polygon] : polygon);
   const owners = new Map<string, Set<number>>();
   const add = (key: string, polygon: number) => {
     let set = owners.get(key);
@@ -77,18 +94,18 @@ export function computeContiguityOracle(
     for (const ring of rings) {
       ring.forEach((point, index) => {
         if (criterion === 'queen') {
-          add(pointKey(point), polygon);
+          add(pointKey(point), featureOf(polygon));
         } else {
           const first = pointKey(point);
           const second = pointKey(ring[(index + 1) % ring.length]);
           if (first !== second) {
-            add(first < second ? `${first}|${second}` : `${second}|${first}`, polygon);
+            add(first < second ? `${first}|${second}` : `${second}|${first}`, featureOf(polygon));
           }
         }
       });
     }
   });
-  const neighborSets = polygons.map(() => new Set<number>());
+  const neighborSets = Array.from({length: featureCount}, () => new Set<number>());
   for (const set of owners.values()) {
     for (const first of set) {
       for (const second of set) {

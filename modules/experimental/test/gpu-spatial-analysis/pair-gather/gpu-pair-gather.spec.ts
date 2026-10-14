@@ -10,6 +10,7 @@ import {
   type GPUPairGatherHow
 } from '../../../src/gpu-spatial-analysis/pair-gather/index';
 import {createGeometryFixture, expectClose} from '../outline-geometry/geometry-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type ExpectedRow = {
   left: number;
@@ -185,8 +186,7 @@ function createGather(
       leftRows: outputs['leftRows'],
       rightRows: outputs['rightRows'],
       rowCount: outputs['rowCount'],
-      overflow: outputs['overflow'],
-      matchedCount: outputs['matchedCount']
+      status: {overflow: outputs['overflow'], matchedCount: outputs['matchedCount']}
     }
   });
 }
@@ -251,16 +251,20 @@ function createPredicateFixture(device: TestDevice, how: GPUPairGatherHow, capac
         pairs: {
           leftIds: inputs['pairLeft'],
           rightIds: inputs['pairRight'],
-          count: inputs['pairCount'],
-          requiredCount: inputs['pairRequired'],
-          overflow: inputs['pairOverflow']
+          status: {
+            count: inputs['pairCount'],
+            requiredCount: inputs['pairRequired'],
+            overflow: inputs['pairOverflow']
+          }
         },
         ...(how === 'left'
           ? {
               unmatchedLeft: {
                 ids: inputs['unmatchedIds'],
-                count: inputs['unmatchedCount'],
-                overflow: inputs['unmatchedOverflow']
+                status: {
+                  count: inputs['unmatchedCount'],
+                  overflow: inputs['unmatchedOverflow']
+                }
               }
             }
           : {}),
@@ -272,9 +276,7 @@ function createPredicateFixture(device: TestDevice, how: GPUPairGatherHow, capac
 for (const how of ['inner', 'left'] as const) {
   it(`GPUPairGather how=${how} matches geopandas sjoin(predicate='intersects', how='${how}')`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const fixture = createPredicateFixture(device, how, 48);
     const result = await fixture.run();
     expect(result['overflow'][0]).toBe(0);
@@ -295,9 +297,7 @@ for (const how of ['inner', 'left'] as const) {
 
 it('GPUPairGather reports overflow when the output capacity is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createPredicateFixture(device, 'left', 20);
   const result = await fixture.run();
   expect(result['rowCount'][0]).toBe(20);
@@ -323,7 +323,7 @@ function createNearestFixture(device: TestDevice, how: GPUPairGatherHow) {
           counts: inputs['neighborCounts'],
           capacity: NEAREST.capacity
         },
-        overflow: [inputs['joinOverflow']],
+        overflowSources: [inputs['joinOverflow']],
         slotColumns: [{source: inputs['neighborDistances'], output: outputs['slotOut']}]
       })
   });
@@ -332,9 +332,7 @@ function createNearestFixture(device: TestDevice, how: GPUPairGatherHow) {
 for (const how of ['inner', 'left'] as const) {
   it(`GPUPairGather flattens nearest neighbors like geopandas sjoin_nearest(how='${how}', distance_col)`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const fixture = createNearestFixture(device, how);
     const result = await fixture.run();
     expect(result['overflow'][0]).toBe(0);
@@ -345,3 +343,43 @@ for (const how of ['inner', 'left'] as const) {
     fixture.destroy();
   });
 }
+
+it('GPUPairGather ORs many overflow sources within the core binding limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Nine flags (only the last set) push the publish kernel past 8 storage buffers, so they are
+  // first OR-ed into one word in groups of 7.
+  const flags = Object.fromEntries(
+    Array.from({length: 9}, (_, flag) => [
+      `flag${flag}`,
+      {values: new Uint32Array([flag === 8 ? 1 : 0]), format: 'uint32' as const}
+    ])
+  );
+  const fixture = createGeometryFixture(device, {
+    inputs: {
+      ...createColumnInputs(NEAREST),
+      neighborIds: {values: new Uint32Array(NEAREST.ids), format: 'uint32'},
+      neighborCounts: {values: new Uint32Array(NEAREST.counts), format: 'uint32'},
+      neighborDistances: {values: new Float32Array(NEAREST.dists), format: 'float32'},
+      ...flags
+    },
+    outputs: createOutputs(16),
+    create: ({inputs, outputs}) =>
+      createGather({inputs: inputs as never, outputs: outputs as never}, 'left', {
+        neighbors: {
+          ids: inputs['neighborIds'],
+          counts: inputs['neighborCounts'],
+          capacity: NEAREST.capacity
+        },
+        overflowSources: Object.keys(flags).map(name => inputs[name]),
+        slotColumns: [{source: inputs['neighborDistances'], output: outputs['slotOut']}]
+      })
+  });
+  const result = await fixture.run();
+  expect(result['overflow'][0]).toBe(1);
+  expectRowsMatch(
+    decodeRows({...result, rowCount: result['rowCount']}, 'slotOut'),
+    NEAREST.left as ExpectedRow[]
+  );
+  fixture.destroy();
+});

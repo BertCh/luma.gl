@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUReliefShadingParameterValues,
@@ -33,6 +34,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from './terrain-horizon-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Opt in with `VITE_TERRAIN_ILLUMINATION_BENCHMARK=true npx vitest run --project headless <this file>`.
 const RUN_BENCHMARK =
@@ -80,9 +82,7 @@ async function measureCase(device: Device, benchmarkCase: BenchmarkCase): Promis
 
 it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 600000}, async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(SIZE, SIZE, 1).map(value => value * 4);
   const parameters: GPUParameterBuffer<'float32'>[] = [];
   const createParameters = (values: Float32Array) => {
@@ -95,16 +95,15 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
     parameters.push(parameterBuffer);
     return parameterBuffer;
   };
-  const horizonSettings = createParameters(
-    getGPUTerrainHorizonParameterValues({cellSize: [30, 30]})
-  );
+  const grid = makeGPURasterMetadata({width: SIZE, height: SIZE, cellSize: 30});
+  const horizonSettings = createParameters(getGPUTerrainHorizonParameterValues({}, grid));
   const shadowSettings = createParameters(
     getGPUSolarShadowMaskParameterValues({
       azimuthDegrees: 250,
       altitudeDegrees: 12
     })
   );
-  const reliefSettings = createParameters(getGPUReliefShadingParameterValues({cellSize: [30, 30]}));
+  const reliefSettings = createParameters(getGPUReliefShadingParameterValues({}, grid));
   const textureSettings = createParameters(getGPUTextureShadingParameterValues({detail: 0.5}));
   const solarSettings = createParameters(
     getGPUSolarPositionParameterValues({
@@ -147,14 +146,13 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
       build: (graph: GPUCommandGraph, buffers: Buffer[]) =>
         graph.add(
           new GPUTerrainHorizon({
-            width: SIZE,
-            height: SIZE,
+            grid,
             elevation: elevationBand(graph, buffers),
-            settings: horizonSettings.importToGraph(graph),
+            parameters: horizonSettings.importToGraph(graph),
             directionCount,
             maximumRadius,
             stepGrowth,
-            skyViewFactor: output(graph, buffers, 'svf')
+            output: {skyViewFactor: output(graph, buffers, 'svf')}
           })
         )
     }
@@ -169,14 +167,13 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
             build: (graph: GPUCommandGraph, buffers: Buffer[]) =>
               graph.add(
                 new GPUTerrainHorizon({
-                  width: SIZE,
-                  height: SIZE,
+                  grid,
                   elevation: elevationBand(graph, buffers),
-                  settings: horizonSettings.importToGraph(graph),
+                  parameters: horizonSettings.importToGraph(graph),
                   directionCount: 16,
                   maximumRadius: 256,
                   stepGrowth: 1.1,
-                  horizon: output(graph, buffers, 'horizon', PIXEL_COUNT * 16)
+                  output: {horizon: output(graph, buffers, 'horizon', PIXEL_COUNT * 16)}
                 })
               )
           },
@@ -185,12 +182,11 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
             build: (graph: GPUCommandGraph, buffers: Buffer[]) =>
               graph.add(
                 new GPUSolarShadowMask({
-                  width: SIZE,
-                  height: SIZE,
+                  grid,
                   directionCount: 16,
                   horizon: output(graph, buffers, 'horizon', PIXEL_COUNT * 16),
-                  settings: shadowSettings.importToGraph(graph),
-                  sunVisibility: output(graph, buffers, 'visibility')
+                  parameters: shadowSettings.importToGraph(graph),
+                  output: {sunVisibility: output(graph, buffers, 'visibility')}
                 })
               )
           }
@@ -201,12 +197,13 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
       build: (graph, buffers) =>
         graph.add(
           new GPUReliefShading({
-            width: SIZE,
-            height: SIZE,
+            grid,
             elevation: elevationBand(graph, buffers),
-            settings: reliefSettings.importToGraph(graph),
-            relief: output(graph, buffers, 'relief'),
-            color: output(graph, buffers, 'color', PIXEL_COUNT, 'uint32')
+            parameters: reliefSettings.importToGraph(graph),
+            output: {
+              relief: output(graph, buffers, 'relief'),
+              color: output(graph, buffers, 'color', PIXEL_COUNT, 'uint32')
+            }
           })
         )
     },
@@ -215,12 +212,11 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
       build: (graph: GPUCommandGraph, buffers: Buffer[]) =>
         graph.add(
           new GPUTextureShading({
-            width: SIZE,
-            height: SIZE,
+            grid,
             elevation: elevationBand(graph, buffers),
-            settings: textureSettings.importToGraph(graph),
+            parameters: textureSettings.importToGraph(graph),
             levelCount,
-            textureShade: output(graph, buffers, 'texture-shade')
+            output: {textureShade: output(graph, buffers, 'texture-shade')}
           })
         )
     })),
@@ -237,8 +233,8 @@ it.skipIf(!RUN_BENCHMARK)('terrain illumination 2048^2 throughput', {timeout: 60
         graph.add(
           new GPUSolarPosition({
             positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', PIXEL_COUNT),
-            settings: solarSettings.importToGraph(graph),
-            altitude: output(graph, buffers, 'altitude')
+            parameters: solarSettings.importToGraph(graph),
+            output: {altitude: output(graph, buffers, 'altitude')}
           })
         );
       }

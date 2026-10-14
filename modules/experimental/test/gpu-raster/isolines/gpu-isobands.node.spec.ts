@@ -9,6 +9,7 @@ import {
   getGPUIsobandsParameterValues,
   GPU_ISOBANDS_PARAMETER_LENGTH
 } from '../../../src/gpu-raster/isolines/isobands-parameters';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from '../raster-algebra/raster-algebra-test-utils';
 import {
@@ -22,12 +23,10 @@ import {
   type IsobandsScene
 } from './isobands-oracle';
 
-const PARAMETERS = getGPUIsobandsParameterValues({
-  breakCount: 2,
-  extent: [0, 0, 4, 4],
-  width: 4,
-  height: 4
-});
+const PARAMETERS = getGPUIsobandsParameterValues(
+  {breakCount: 2, extent: [0, 0, 4, 4]},
+  makeGPURasterMetadata({width: 4, height: 4})
+);
 const GEOMETRY = getCellGeometry(PARAMETERS, 1, 2);
 const CELL_AREA = PARAMETERS[8] * PARAMETERS[9];
 
@@ -138,12 +137,10 @@ describe('GPUIsobands oracle', () => {
       values: Float32Array.from({length: 63}, () => Math.fround(random2() * 3.5)),
       breaks: Float32Array.from([0.7, 1.9, 2.6])
     };
-    const parameters = getGPUIsobandsParameterValues({
-      breakCount: 3,
-      extent: [10, -5, 37, 16],
-      width: 9,
-      height: 7
-    });
+    const parameters = getGPUIsobandsParameterValues(
+      {breakCount: 3, extent: [10, -5, 37, 16]},
+      makeGPURasterMetadata({width: 9, height: 7})
+    );
     const crossingsByGlobalEdge = new Map<string, Set<string>>();
     const cellColumns = scene.width - 1;
     for (let cell = 0; cell < cellColumns * (scene.height - 1); cell++) {
@@ -202,12 +199,8 @@ describe('GPUIsobands oracle', () => {
       noDataValue: -9999,
       breaks: Float32Array.from([1, 2, 3, 0, 0])
     };
-    const parameters = getGPUIsobandsParameterValues({
-      breakCount: 3,
-      extent: [0, 0, 12, 9],
-      width,
-      height
-    });
+    const grid = makeGPURasterMetadata({width, height});
+    const parameters = getGPUIsobandsParameterValues({breakCount: 3, extent: [0, 0, 12, 9]}, grid);
     const all = buildIsobandTrianglesOnCPU(scene, parameters, 5);
     const cellsWithNodata = new Set<number>();
     for (const bad of [13, 50, 70]) {
@@ -232,14 +225,10 @@ describe('GPUIsobands oracle', () => {
     }
     expect(area).toBeCloseTo((width - 1) * (height - 1) - cellsWithNodata.size, 2);
     expect(new Set(all.bands)).toEqual(new Set([0, 1, 2, 3]));
-    const windowParameters = getGPUIsobandsParameterValues({
-      breakCount: 3,
-      extent: [0, 0, 12, 9],
-      width,
-      height,
-      firstBand: 1,
-      lastBand: 2
-    });
+    const windowParameters = getGPUIsobandsParameterValues(
+      {breakCount: 3, extent: [0, 0, 12, 9], firstBand: 1, lastBand: 2},
+      grid
+    );
     const windowed = buildIsobandTrianglesOnCPU(scene, windowParameters, 5);
     expect(new Set(windowed.bands)).toEqual(new Set([1, 2]));
     expect(windowed.requiredCount).toBe(all.bands.filter(band => band === 1 || band === 2).length);
@@ -274,35 +263,45 @@ describe('GPUIsobands validation and wiring', () => {
   };
 
   it('packs parameters', () => {
-    const packed = getGPUIsobandsParameterValues({
-      breakCount: 3,
-      extent: [0, 10, 8, 14],
-      width: 4,
-      height: 2,
-      firstBand: 1
-    });
+    const grid = makeGPURasterMetadata({width: 2, height: 2});
+    const packed = getGPUIsobandsParameterValues(
+      {breakCount: 3, extent: [0, 10, 8, 14], firstBand: 1},
+      makeGPURasterMetadata({width: 4, height: 2})
+    );
     expect(packed.length).toBe(GPU_ISOBANDS_PARAMETER_LENGTH);
     expect(Array.from(packed)).toEqual([3, 1, 3, 0, 0, 10, 8, 14, 2, 2, 0, 0]);
     expect(() =>
-      getGPUIsobandsParameterValues({breakCount: -1, extent: [0, 0, 1, 1], width: 2, height: 2})
+      getGPUIsobandsParameterValues({breakCount: -1, extent: [0, 0, 1, 1]}, grid)
     ).toThrow(/breakCount/);
     expect(() =>
-      getGPUIsobandsParameterValues({breakCount: 1, extent: [0, 0, NaN, 1], width: 2, height: 2})
+      getGPUIsobandsParameterValues({breakCount: 1, extent: [0, 0, NaN, 1]}, grid)
     ).toThrow(/extent/);
+    // y-down and zero-size extents would mirror or collapse the geometry.
+    for (const extent of [
+      [0, 4, 4, 0],
+      [0, 0, 0, 4],
+      [4, 0, 0, 4]
+    ] as const) {
+      expect(() => getGPUIsobandsParameterValues({breakCount: 1, extent}, grid)).toThrow(/extent/);
+    }
   });
 
   it('validates props', () => {
     const {device, graph, view} = setup();
     const base = {
-      width: 4,
-      height: 3,
+      grid: makeGPURasterMetadata({width: 4, height: 3}),
       values: view('float32', 12),
       breaks: view('float32', 3),
       parameters: view('float32', 12)
     };
     expect(() => new GPUIsobands({...base, output: {}})).toThrow(/needs output/);
     expect(
-      () => new GPUIsobands({...base, width: 1, output: {bandClasses: view('uint32', 12)}})
+      () =>
+        new GPUIsobands({
+          ...base,
+          grid: makeGPURasterMetadata({width: 1, height: 3}),
+          output: {bandClasses: view('uint32', 12)}
+        })
     ).toThrow(/width/);
     expect(() => new GPUIsobands({...base, output: {bandClasses: view('uint32', 4)}})).toThrow(
       /rows/
@@ -317,8 +316,7 @@ describe('GPUIsobands validation and wiring', () => {
           output: {
             triangles: view('float32x2', 20),
             triangleBands: view('uint32', 10),
-            count: view('uint32', 1),
-            overflow: view('uint32', 1)
+            status: {overflow: view('uint32', 1), count: view('uint32', 1)}
           }
         })
     ).toThrow(/3 \* triangleBands/);
@@ -334,8 +332,7 @@ describe('GPUIsobands validation and wiring', () => {
     const {device, graph, view} = setup();
     const contributor = new GPUIsobands({
       id: 'bands',
-      width: 4,
-      height: 3,
+      grid: makeGPURasterMetadata({width: 4, height: 3}),
       values: view('float32', 12),
       validity: view('uint32', 12),
       breaks: view('float32', 3),
@@ -344,10 +341,12 @@ describe('GPUIsobands validation and wiring', () => {
         bandClasses: view('uint32', 12),
         triangles: view('float32x2', 60),
         triangleBands: view('uint32', 20),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1),
-        requiredCount: view('uint32', 1),
-        vertexCount: view('uint32', 1)
+        status: {
+          overflow: view('uint32', 1),
+          count: view('uint32', 1),
+          requiredCount: view('uint32', 1),
+          vertexCount: view('uint32', 1)
+        }
       }
     });
     expect(contributor.cellCount).toBe(6);

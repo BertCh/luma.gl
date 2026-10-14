@@ -6,6 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterBand, makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_FLOW_CELL_CLASS as CELL_CLASS,
@@ -26,17 +27,24 @@ import {
   type TerrainFlowOracleResult
 } from './terrain-flow-oracle';
 import {toBits} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {
+  GPU_RASTER_RELAXATION_RESTART_WORD,
+  getGPURasterRelaxationContinuationStateLength
+} from '../../../src/gpu-raster/cost-distance/raster-relaxation';
 
 type FlatsOptions = {
+  continuation?: boolean;
+  restart?: boolean;
   fillDepressions?: boolean;
   resolveFlats?: boolean;
-  maxFlatIterations?: number;
+  maximumFlatIterations?: number;
   settings?: GPUTerrainFlowSettings;
 };
 
 type FlatsResult = Omit<TerrainFlowOracleResult, 'receivers' | 'filled'> & {flatsConverged: number};
 
-const DEFAULT_SETTINGS: GPUTerrainFlowSettings = {cellSize: [1, 1], streamThreshold: 4};
+const DEFAULT_SETTINGS: GPUTerrainFlowSettings = {streamThreshold: 4};
 
 /** Compiles and runs one GPUTerrainFlow graph with flat resolution outputs. */
 async function runFlow(
@@ -47,6 +55,7 @@ async function runFlow(
   options: FlatsOptions
 ): Promise<FlatsResult> {
   const cellCount = width * height;
+  const grid = makeGPURasterMetadata({width, height});
   const settings = options.settings ?? DEFAULT_SETTINGS;
   const elevationBuffer = createInputBuffer(device, elevation);
   const buffers = {
@@ -60,49 +69,80 @@ async function runFlow(
     id: 'flats-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainFlowParameterValues(settings)
+    values: getGPUTerrainFlowParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-flats-test'});
   const resolveFlats = options.resolveFlats ?? true;
+  const continuationBuffers: ReturnType<typeof createInputBuffer>[] = [];
+  const createStage = (name: string) => {
+    const length = getGPURasterRelaxationContinuationStateLength(grid);
+    const state = createInputBuffer(device, new Uint32Array(length));
+    const values = createInputBuffer(device, new Float32Array(cellCount));
+    continuationBuffers.push(state, values);
+    return {
+      state: importGraphBuffer(graph, `${name}-state`, state, 'uint32', length),
+      values: importGraphBuffer(graph, `${name}-values`, values, 'float32', cellCount)
+    };
+  };
+  const flatContinuation = options.continuation
+    ? {lower: createStage('lower'), higher: createStage('higher'), maximum: createStage('maximum')}
+    : undefined;
   graph.add(
     new GPUTerrainFlow({
-      width,
-      height,
-      elevation: {
-        id: 'elevation',
-        format: 'float32',
-        storage: {
-          kind: 'buffer',
-          values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount)
-        }
-      },
-      settings: settingsBuffer.importToGraph(graph),
+      grid,
+      elevation: makeGPURasterBand(
+        importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount),
+        grid,
+        {id: 'elevation'}
+      ),
+      parameters: settingsBuffer.importToGraph(graph),
       fillDepressions: options.fillDepressions ?? false,
       resolveFlats,
-      maxFlatIterations: options.maxFlatIterations,
-      flowDirections: importGraphBuffer(
-        graph,
-        'directions',
-        buffers.directions,
-        'uint32',
-        cellCount
-      ),
-      cellClasses: importGraphBuffer(graph, 'classes', buffers.classes, 'uint32', cellCount),
-      accumulation: importGraphBuffer(
-        graph,
-        'accumulation',
-        buffers.accumulation,
-        'float32',
-        cellCount
-      ),
-      streams: importGraphBuffer(graph, 'streams', buffers.streams, 'uint32', cellCount),
-      flatsConverged: resolveFlats
-        ? importGraphBuffer(graph, 'flats-converged', buffers.flatsConverged, 'uint32', 1)
-        : undefined
+      flatContinuation,
+      maximumFlatIterations: options.maximumFlatIterations,
+      output: {
+        flowDirections: importGraphBuffer(
+          graph,
+          'directions',
+          buffers.directions,
+          'uint32',
+          cellCount
+        ),
+        cellClasses: importGraphBuffer(graph, 'classes', buffers.classes, 'uint32', cellCount),
+        accumulation: importGraphBuffer(
+          graph,
+          'accumulation',
+          buffers.accumulation,
+          'float32',
+          cellCount
+        ),
+        streams: importGraphBuffer(graph, 'streams', buffers.streams, 'uint32', cellCount),
+        status: {
+          flatsConverged: resolveFlats
+            ? importGraphBuffer(graph, 'flats-converged', buffers.flatsConverged, 'uint32', 1)
+            : undefined
+        }
+      }
     })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
+  if (options.continuation) {
+    if (options.restart) {
+      continuationBuffers[0].write(Uint32Array.of(1), GPU_RASTER_RELAXATION_RESTART_WORD * 4);
+      submitGraph(device, compiled, undefined);
+    }
+    let executions = 1;
+    while ((await readUint32(buffers.flatsConverged, 1))[0] === 0 && executions < 512) {
+      submitGraph(device, compiled, undefined);
+      executions++;
+    }
+    expect((await readUint32(buffers.flatsConverged, 1))[0]).toBe(1);
+    expect(executions).toBeGreaterThan(1);
+    // Replaying a completed computation resets all stages together, without recompile.
+    for (let execution = 0; execution < executions; execution++)
+      submitGraph(device, compiled, undefined);
+  }
   const result: FlatsResult = {
     directions: Uint32Array.from(await readUint32(buffers.directions, cellCount)),
     classes: Uint32Array.from(await readUint32(buffers.classes, cellCount)),
@@ -113,6 +153,7 @@ async function runFlow(
   compiled.destroy();
   settingsBuffer.destroy();
   elevationBuffer.destroy();
+  for (const buffer of continuationBuffers) buffer.destroy();
   for (const buffer of Object.values(buffers)) {
     buffer.destroy();
   }
@@ -178,8 +219,7 @@ async function expectMatchesOracle(
   const settings = options.settings ?? DEFAULT_SETTINGS;
   const common = {
     elevation,
-    width,
-    height,
+    grid: makeGPURasterMetadata({width, height}),
     settings,
     fillDepressions: options.fillDepressions
   };
@@ -215,9 +255,7 @@ for (const [width, height] of [
 ]) {
   it(`GPUTerrainFlow resolveFlats matches the oracle on synthetic DEMs ${width}x${height}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     let totalResolved = 0;
     for (const [name, createDem] of DEM_CASES) {
       const elevation = createDem(width, height);
@@ -227,7 +265,7 @@ for (const [width, height] of [
       });
       await expectMatchesOracle(device, `${name} fill 0.25`, elevation, width, height, {
         fillDepressions: true,
-        settings: {cellSize: [1, 1], fillEpsilon: 0.25, streamThreshold: 5}
+        settings: {fillEpsilon: 0.25, streamThreshold: 5}
       });
       if (name === 'plateau' || name === 'noise') {
         expect(raw.resolvedCount, `${name} raw resolved flats`).toBeGreaterThan(0);
@@ -241,9 +279,7 @@ for (const [width, height] of [
 
 it('GPUTerrainFlow resolveFlats drains a plateau through one boundary gap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 14;
   const height = 12;
   const elevation = Float32Array.from({length: width * height}, (_, cell) => {
@@ -270,9 +306,7 @@ it('GPUTerrainFlow resolveFlats drains a plateau through one boundary gap', asyn
 
 it('GPUTerrainFlow resolveFlats seeds only the tiles it needs on a plateau spanning many tiles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 100x70 cells cover 7x5 relaxation tiles. The single outlet sits in the last tile, so the hop
   // fields have to travel through tiles that held no seed in iteration 0.
   const width = 100;
@@ -298,9 +332,7 @@ it('GPUTerrainFlow resolveFlats seeds only the tiles it needs on a plateau spann
 
 it('GPUTerrainFlow resolveFlats routes away from the higher side of a flat', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Walls (30) on three sides, a plateau (10), and a low outlet column (5) on the right.
   const width = 24;
   const height = 7;
@@ -329,9 +361,7 @@ it('GPUTerrainFlow resolveFlats routes away from the higher side of a flat', asy
 
 it('GPUTerrainFlow resolveFlats leaves a closed flat without an outlet', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const size = 9;
   const elevation = Float32Array.from({length: size * size}, (_, cell) => {
     const column = cell % size;
@@ -346,9 +376,7 @@ it('GPUTerrainFlow resolveFlats leaves a closed flat without an outlet', async (
 
 it('GPUTerrainFlow resolveFlats leaves no interior flat after filling with epsilon 0', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [name, elevation, width, height] of [
     ['noise', DEMS.noise(37, 29), 37, 29],
     ['noise 70x45', DEMS.noise(70, 45, 3), 70, 45],
@@ -382,9 +410,7 @@ it('GPUTerrainFlow resolveFlats leaves no interior flat after filling with epsil
 
 it('GPUTerrainFlow reports flat resolution non-convergence', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A 200x5 plateau enclosed by walls drains west through column 1 into column 0.
   const width = 200;
   const height = 5;
@@ -396,7 +422,7 @@ it('GPUTerrainFlow reports flat resolution non-convergence', async () => {
     }
     return row === 0 || row === height - 1 || column === width - 1 ? 20 : 10;
   });
-  const limited = await runFlow(device, strip, width, height, {maxFlatIterations: 1});
+  const limited = await runFlow(device, strip, width, height, {maximumFlatIterations: 1});
   expect(limited.flatsConverged).toBe(0);
   const full = await expectMatchesOracle(device, 'long strip', strip, width, height);
   expect(full.resolvedCount).toBeGreaterThan(400);
@@ -405,9 +431,7 @@ it('GPUTerrainFlow reports flat resolution non-convergence', async () => {
 
 it('GPUTerrainFlow resolveFlats handles nodata holes inside a plateau', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 40;
   const height = 33;
   const elevation = DEMS.plateau(width, height);
@@ -419,4 +443,29 @@ it('GPUTerrainFlow resolveFlats handles nodata holes inside a plateau', async ()
   await expectMatchesOracle(device, 'plateau holes fill', elevation, width, height, {
     fillDepressions: true
   });
+});
+
+it('continued one-round flat passes equal a one-shot run and restart correctly after convergence', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 65;
+  const height = 65;
+  const elevation = Float32Array.from({length: width * height}, (_, cell) => {
+    const row = Math.floor(cell / width);
+    const column = cell % width;
+    return row === 0 || column === 0 || row === height - 1 || column === width - 1 ? 11 : 10;
+  });
+  elevation[width * 32] = 0;
+  const oneShot = await runFlow(device, elevation, width, height, {maximumFlatIterations: 512});
+  const continued = await runFlow(device, elevation, width, height, {
+    maximumFlatIterations: 1,
+    continuation: true
+  });
+  expect(continued).toEqual(oneShot);
+  const restarted = await runFlow(device, elevation, width, height, {
+    maximumFlatIterations: 1,
+    continuation: true,
+    restart: true
+  });
+  expect(restarted).toEqual(oneShot);
 });

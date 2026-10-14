@@ -6,11 +6,26 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPULocationAllocation,
+  getGPULocationAllocationMaximumSparseEntryCount,
   GPU_LOCATION_ALLOCATION_STATUS
 } from '../../../src/gpu-spatial-analysis/location-allocation/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {
   createCostMatrix,
+  createSeededRandom,
+  createWeightedInstance,
+  getBruteForceSwapScore,
+  getDecomposedSwapScores,
+  getDenseEntryColumns,
+  getSparseEntryColumns,
+  runColumnGreedyOnCPU,
+  runDecomposedSwapPhaseOnCPU,
+  toDenseCosts,
+  toSparseCosts,
+  transposeSparseCosts,
   createPartlyReachableCostMatrix,
   getBruteForceOptimum,
   getObjective,
@@ -19,8 +34,11 @@ import {
   runGreedyOnCPU,
   runSwapPhaseOnCPU,
   type LocationAllocationOracleOperation,
-  UNREACHABLE_SENTINEL_CASE
+  UNREACHABLE_SENTINEL_CASE,
+  decodePMedianFixture,
+  getWeightedPMedianBruteForceOptimum
 } from './location-allocation-oracle';
+import pMedianFixture from './p-median-fixture.json';
 
 const DEMAND_COUNT = 14;
 const FACILITY_COUNT = 8;
@@ -169,7 +187,7 @@ it('GPULocationAllocation validates maximumSwapIterations and declares swap node
     .getCommandNodes(graph)
     .map(node => node.id);
   for (const iteration of [0, 1]) {
-    for (const stage of ['prepare', 'list', 'score', 'choose', 'apply']) {
+    for (const stage of ['list', 'prepare', 'totals', 'score', 'choose', 'apply']) {
       expect(ids).toContain(`swap-swap-${iteration}-${stage}`);
     }
   }
@@ -209,4 +227,367 @@ it('p-median oracle never sums unreachable rows and compares reachability first'
       expect(swapped.converged, label).toBe(true);
     }
   }
+});
+
+it('p-median fixture: recorded metadata, and the JS brute force matches the scipy MILP optimum', () => {
+  expect(pMedianFixture.versions.scipy).toMatch(/^\d+\.\d+/);
+  expect(pMedianFixture.versions.numpy).toMatch(/^\d+\.\d+/);
+  // Integer costs and weights: every objective is an exact float32 integer.
+  expect(pMedianFixture.tolerance).toBe(0);
+  const instances = decodePMedianFixture(pMedianFixture);
+  expect(instances.length).toBeGreaterThanOrEqual(20);
+  expect(instances.some(instance => instance.optimalUnreachableWeight > 0)).toBe(true);
+  for (const [index, instance] of instances.entries()) {
+    const optimum = getWeightedPMedianBruteForceOptimum(
+      instance.costs,
+      instance.facilityCount,
+      instance.demandWeights,
+      instance.maximumFacilityCount
+    );
+    expect(optimum, `instance ${index}`).toEqual({
+      unreachableWeight: instance.optimalUnreachableWeight,
+      cost: instance.optimalCost
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Whitaker / Resende-Werneck gain decomposition against the swap definition.
+// ---------------------------------------------------------------------------------------------
+
+it('swap gain decomposition equals the brute-force swap delta (ties, unreachable rows, zero weights)', () => {
+  const facilityCount = 7;
+  const demandCount = 18;
+  let checked = 0;
+  let unreachableRowsSeen = 0;
+  for (const operation of ['p-median', 'maximum-coverage'] as LocationAllocationOracleOperation[]) {
+    for (let seed = 1; seed <= 60; seed++) {
+      const {costs, weights} = createWeightedInstance(seed * 7 + 1, demandCount, facilityCount);
+      const columns = getDenseEntryColumns(costs, facilityCount);
+      const random = createSeededRandom(seed);
+      for (const count of [1, 2, 3, 4]) {
+        const selected = Array.from({length: facilityCount}, (_, facility) => facility)
+          .sort(() => random() - 0.5)
+          .slice(0, count)
+          .sort((a, b) => a - b);
+        const forms = [
+          getDecomposedSwapScores(operation, columns, facilityCount, weights, selected, 3, {
+            netTerms: true
+          }).scores,
+          getDecomposedSwapScores(operation, columns, facilityCount, weights, selected, 3).scores
+        ];
+        if (selected.some(() => true)) {
+          for (let row = 0; row < demandCount; row++) {
+            if (selected.every(facility => costs[row * facilityCount + facility] === Infinity)) {
+              unreachableRowsSeen++;
+            }
+          }
+        }
+        for (const removed of selected) {
+          for (let candidate = 0; candidate < facilityCount; candidate++) {
+            if (selected.includes(candidate)) continue;
+            const expected = getBruteForceSwapScore(
+              operation,
+              costs,
+              facilityCount,
+              weights,
+              selected,
+              removed,
+              candidate,
+              3
+            );
+            for (const [form, scores] of forms.entries()) {
+              expect(
+                scores.get(`${removed}:${candidate}`),
+                `${operation} seed ${seed} S ${selected} swap ${removed}->${candidate} form ${form}`
+              ).toEqual(expected);
+            }
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  expect(checked).toBeGreaterThan(2000);
+  expect(unreachableRowsSeen).toBeGreaterThan(0);
+});
+
+it('decomposed swap phase applies the same swaps as the brute-force swap phase', () => {
+  const facilityCount = 8;
+  const demandCount = 14;
+  const unitWeights = new Float32Array(demandCount).fill(1);
+  for (const operation of ['p-median', 'maximum-coverage'] as LocationAllocationOracleOperation[]) {
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const matrix of [
+        createCostMatrix(seed, demandCount, facilityCount),
+        createPartlyReachableCostMatrix(seed, demandCount, facilityCount)
+      ]) {
+        const columns = getDenseEntryColumns(matrix, facilityCount);
+        for (const count of [2, 3, 4]) {
+          const label = `${operation} seed ${seed} p ${count}`;
+          const greedy = runGreedyOnCPU(operation, matrix, facilityCount, count, 8);
+          const expected = runSwapPhaseOnCPU(operation, matrix, facilityCount, greedy, 8, 100);
+          const decomposed = runDecomposedSwapPhaseOnCPU(
+            operation,
+            columns,
+            facilityCount,
+            unitWeights,
+            greedy,
+            8,
+            100
+          );
+          expect(decomposed, label).toEqual(expected);
+        }
+      }
+    }
+  }
+});
+
+it('sparse costs give the dense scores, greedy selection and swap phase (CPU mirrors)', () => {
+  const facilityCount = 8;
+  const demandCount = 16;
+  for (const operation of ['p-median', 'maximum-coverage'] as LocationAllocationOracleOperation[]) {
+    for (let seed = 1; seed <= 30; seed++) {
+      const {costs, weights} = createWeightedInstance(seed * 13 + 5, demandCount, facilityCount);
+      // Listing some +Infinity entries must not change anything.
+      const sparse = toSparseCosts(
+        costs,
+        facilityCount,
+        (row, facility) => (row + facility) % 5 === 0
+      );
+      expect(toDenseCosts(sparse, facilityCount), `${operation} ${seed} round trip`).toEqual(costs);
+      const dense = getDenseEntryColumns(costs, facilityCount);
+      const listed = getSparseEntryColumns(sparse, facilityCount);
+      const selected = [1, 4, 6];
+      const denseScores = getDecomposedSwapScores(
+        operation,
+        dense,
+        facilityCount,
+        weights,
+        selected,
+        3
+      );
+      const sparseScores = getDecomposedSwapScores(
+        operation,
+        listed,
+        facilityCount,
+        weights,
+        selected,
+        3
+      );
+      expect(sparseScores, `${operation} ${seed} scores`).toEqual(denseScores);
+      const denseGreedy = runColumnGreedyOnCPU(operation, dense, facilityCount, weights, 3, 3);
+      expect(runColumnGreedyOnCPU(operation, listed, facilityCount, weights, 3, 3)).toEqual(
+        denseGreedy
+      );
+      expect(
+        runDecomposedSwapPhaseOnCPU(operation, listed, facilityCount, weights, denseGreedy, 3, 50),
+        `${operation} ${seed} swap`
+      ).toEqual(
+        runDecomposedSwapPhaseOnCPU(operation, dense, facilityCount, weights, denseGreedy, 3, 50)
+      );
+    }
+  }
+});
+
+it('column greedy equals the dense greedy rule for unit weights', () => {
+  const facilityCount = 8;
+  const demandCount = 14;
+  const unitWeights = new Float32Array(demandCount).fill(1);
+  for (const operation of ['p-median', 'maximum-coverage'] as LocationAllocationOracleOperation[]) {
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const matrix of [
+        createCostMatrix(seed, demandCount, facilityCount),
+        createPartlyReachableCostMatrix(seed, demandCount, facilityCount)
+      ]) {
+        const columns = getSparseEntryColumns(toSparseCosts(matrix, facilityCount), facilityCount);
+        for (const count of [1, 3, 5]) {
+          expect(
+            runColumnGreedyOnCPU(operation, columns, facilityCount, unitWeights, count, 8),
+            `${operation} seed ${seed} p ${count}`
+          ).toEqual(runGreedyOnCPU(operation, matrix, facilityCount, count, 8));
+        }
+      }
+    }
+  }
+});
+
+it('transposeSparseCosts groups entries by facility with ascending demand rows', () => {
+  const costs = Float32Array.from([1, Infinity, 3, Infinity, 5, 6, 7, 8, Infinity]);
+  const transposed = transposeSparseCosts(toSparseCosts(costs, 3), 3);
+  expect(transposed.offsets).toEqual([0, 2, 4, 6]);
+  expect(transposed.entries.map(entry => entry.demand)).toEqual([0, 2, 1, 2, 0, 1]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Sparse input validation and kernel structure.
+// ---------------------------------------------------------------------------------------------
+
+function createSparseHarness() {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'la-sparse'});
+  let serial = 0;
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `la-sparse-view-${serial++}`, format, length);
+  const make = (
+    extra: Record<string, unknown> = {},
+    demandCount = 6,
+    facilityCount = 4,
+    entryCount = 12
+  ) => ({
+    sparseCosts: {
+      offsets: view('uint32', demandCount + 1),
+      facilities: view('uint32', entryCount),
+      costs: view('float32', entryCount)
+    },
+    facilityCount,
+    operation: 'p-median' as const,
+    maximumFacilityCount: 2,
+    output: {
+      selectedFacilities: view('uint32', facilityCount),
+      assignments: view('uint32', demandCount),
+      objective: view('float32', 1),
+      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+    },
+    ...extra
+  });
+  return {graph, view, make};
+}
+
+it('GPULocationAllocation validates sparseCosts', () => {
+  const {graph, view, make} = createSparseHarness();
+  const allocation = new GPULocationAllocation(make());
+  expect(allocation.demandCount).toBe(6);
+  expect(getGPULocationAllocationMaximumSparseEntryCount(graph.device)).toBe(2 ** 24);
+  expect(() => new GPULocationAllocation(make({costs: view('float32', 24)}))).toThrow(
+    /mutually exclusive/
+  );
+  expect(() => new GPULocationAllocation(make({sparseCosts: undefined}))).toThrow(
+    /requires costs or sparseCosts/
+  );
+  const sparse = make().sparseCosts;
+  expect(
+    () => new GPULocationAllocation(make({sparseCosts: {...sparse, costs: view('float32', 11)}}))
+  ).toThrow(/equally long/);
+  expect(
+    () =>
+      new GPULocationAllocation(
+        make(
+          {sparseCosts: {...sparse, facilities: view('uint32', 1), costs: view('float32', 1)}},
+          6,
+          4,
+          1
+        )
+      )
+  ).not.toThrow();
+  expect(
+    () => new GPULocationAllocation(make({sparseCosts: {...sparse, offsets: view('uint32', 1)}}))
+  ).toThrow(/offsets/);
+  expect(
+    () => new GPULocationAllocation(make({sparseCosts: {...sparse, costs: view('uint32', 12)}}))
+  ).toThrow(/sparseCosts.costs/);
+  // The sparse views must belong to the graph the contributor is added to.
+  const other = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'other'});
+  expect(() => new GPULocationAllocation(make()).getCommandNodes(other)).toThrow(
+    /same graph|belong/
+  );
+  // Outputs may not alias the sparse inputs.
+  const base = make();
+  expect(
+    () =>
+      new GPULocationAllocation({
+        ...base,
+        output: {...base.output, assignments: base.sparseCosts.facilities}
+      })
+  ).toThrow(/outputs must not share buffers/);
+  expect(graph).toBeDefined();
+});
+
+it('sparse swap scoring does one pass per candidate, not one thread per pair', () => {
+  for (const sparse of [false, true]) {
+    const {graph, view, make} = createSparseHarness();
+    const demandCount = 30;
+    const facilityCount = 9;
+    const input = sparse
+      ? make({}, demandCount, facilityCount, 80)
+      : {
+          ...make({}, demandCount, facilityCount, 80),
+          sparseCosts: undefined,
+          costs: view('float32', demandCount * facilityCount)
+        };
+    const nodes = new GPULocationAllocation({
+      ...input,
+      id: 'la',
+      maximumFacilityCount: 3,
+      maximumSwapIterations: 1
+    } as never).getCommandNodes(graph);
+    const sources = getGPUCommandNodeKernelSources(nodes);
+    const constantsOf = (id: string) => sources.find(source => source.id === id)!.constants;
+    // Candidate-parallel scoring: facilityCount invocations (pairs would be 3 * 9).
+    expect(constantsOf('la-swap-0-score')['INVOCATION_COUNT'], `sparse ${sparse}`).toBe(
+      facilityCount
+    );
+    // Sparse: one workgroup of 256 per slot (loss) plus one for the totals. Dense: totals only,
+    // the candidate pass adds each row's net term itself.
+    expect(constantsOf(`la-swap-0-${sparse ? 'removal' : 'totals'}`)['INVOCATION_COUNT']).toBe(
+      sparse ? (3 + 1) * 256 : 256
+    );
+    expect(constantsOf('la-swap-0-prepare')['INVOCATION_COUNT']).toBe(demandCount);
+  }
+});
+
+it('sparse setup runs validation, then the facility-major transpose, before the greedy steps', () => {
+  const {graph, view, make} = createSparseHarness();
+  const ids = new GPULocationAllocation(
+    make({id: 'sp', maximumSwapIterations: 1, demandWeights: view('float32', 6)})
+  )
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  for (const id of [
+    'sp-validate-offsets',
+    'sp-validate-rows',
+    'sp-validate-inputs',
+    'sp-transpose-rows',
+    'sp-transpose-offsets',
+    'sp-transpose-gather',
+    'sp-assign',
+    'sp-objective'
+  ]) {
+    expect(ids, id).toContain(id);
+  }
+  expect(ids.indexOf('sp-validate-rows')).toBeLessThan(ids.indexOf('sp-transpose-rows'));
+  expect(ids.indexOf('sp-transpose-gather')).toBeLessThan(ids.indexOf('sp-score-0'));
+  expect(ids.indexOf('sp-assign')).toBeLessThan(ids.indexOf('sp-objective'));
+  expect(ids).not.toContain('sp-validate');
+  // No weights and no coverage distance: nothing for the input validation to check.
+  const bare = new GPULocationAllocation(make({id: 'bare'})).getCommandNodes(graph).map(n => n.id);
+  expect(bare).not.toContain('bare-validate-inputs');
+});
+
+it('net per-row terms keep float32 accuracy where loss(r) and extra(i, r) cancel (d2 ~ 1e7 * d1)', () => {
+  // Rows served by facility 0 have d1 = 1 and d2 = 1e7 (facility 1); candidate 2 reaches them at
+  // costs 1..3, so removing 0 for 2 costs about 1 per row. The loss/extra split sums +-1e7-sized
+  // terms in float32 (spacing 1 near 1e7) and loses the answer; the net form stays exact.
+  const demandCount = 64;
+  const facilityCount = 3;
+  const costs = new Float32Array(demandCount * facilityCount);
+  for (let row = 0; row < demandCount; row++) {
+    costs[row * facilityCount] = 1;
+    costs[row * facilityCount + 1] = 1e7;
+    costs[row * facilityCount + 2] = 1 + (row % 3);
+  }
+  const weights = new Float32Array(demandCount).fill(1);
+  const columns = getDenseEntryColumns(costs, facilityCount);
+  const exact = getBruteForceSwapScore('p-median', costs, facilityCount, weights, [0, 1], 0, 2, 0);
+  const score = (netTerms: boolean, float32: boolean) =>
+    getDecomposedSwapScores('p-median', columns, facilityCount, weights, [0, 1], 0, {
+      netTerms,
+      float32
+    }).scores.get('0:2')!;
+  expect(score(true, false)).toEqual(exact);
+  expect(score(false, false)).toEqual(exact);
+  const netError = Math.abs(score(true, true).secondary - exact.secondary);
+  const splitError = Math.abs(score(false, true).secondary - exact.secondary);
+  // Net terms are small integers here, so float32 is exact; the split form is off by whole units.
+  expect(netError).toBe(0);
+  expect(splitError).toBeGreaterThan(0);
 });

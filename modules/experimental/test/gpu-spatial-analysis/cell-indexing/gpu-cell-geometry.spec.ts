@@ -52,6 +52,7 @@ import {
   webMercatorTileBounds,
   webMercatorTileCenter
 } from './cell-indexing-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type LngLat = [number, number];
 type Expected = {center: LngLat; boundary: LngLat[]};
@@ -263,9 +264,7 @@ async function expectGeometry(
 
 it('GPUCellGeometry decodes Quadbin and quadkey tiles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = getRandomPoints(1, 200);
   for (const resolution of [1, 4, 9, 14, 20, 24]) {
     const quadbinKeys = points.map(([lng, lat]) => quadbinPointToCell(lng, lat, resolution));
@@ -299,9 +298,7 @@ it('GPUCellGeometry decodes Quadbin and quadkey tiles', async () => {
 
 it('GPUCellGeometry decodes geohash bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = getRandomPoints(2, 200);
   for (const length of [1, 2, 4, 6, 8, 12]) {
     await expectGeometry(
@@ -316,9 +313,7 @@ it('GPUCellGeometry decodes geohash bounds', async () => {
 
 it('GPUCellGeometry decodes S2 cells and agrees with the S2 Hilbert curve', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = getRandomPoints(3, 200);
   const reports: Record<number, GeometryReport> = {};
   for (const level of [0, 1, 2, 5, 9, 14, 18, 22]) {
@@ -346,9 +341,7 @@ it('GPUCellGeometry decodes S2 cells and agrees with the S2 Hilbert curve', asyn
 
 it('dggs S2 decode agrees with the S2 oracle on face, level and (i, j) at every level', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Random leaf cells from the integer oracle, truncated to every level 0..30.
   const random = createRandom(77);
   const keys: bigint[] = [];
@@ -420,9 +413,7 @@ it('dggs S2 decode agrees with the S2 oracle on face, level and (i, j) at every 
 
 it('GPUCellGeometry decodes H3 centers and hexagon boundaries like h3-js', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = getRandomPoints(4, 200);
   const tolerance = {absolute: 3e-6, relative: 0.02};
   // Stride 10 holds every H3 boundary, distortion vertices included; every cell needs one.
@@ -448,9 +439,7 @@ it('GPUCellGeometry decodes H3 centers and hexagon boundaries like h3-js', async
 
 it('GPUCellGeometry decodes A5 cells like a5-js', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = getRandomPoints(5, 100);
   for (const resolution of [2, 5, 10, 16]) {
     await expectGeometry(
@@ -465,9 +454,7 @@ it('GPUCellGeometry decodes A5 cells like a5-js', async () => {
 
 it('GPUCellGeometry marks invalid keys, pads boundaries and honors word order', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const quadbin = quadbinPointToCell(10, 50, 8);
   const keys = [0n, 1n, quadbin, 0xffffffffffffffffn];
   for (const wordOrder of ['little-endian', 'high-low'] as const) {
@@ -493,9 +480,7 @@ it('GPUCellGeometry marks invalid keys, pads boundaries and honors word order', 
 
 it('GPUCellGeometry follows per-frame keys without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const geometry = createGeometry(device, 'geohash', 4);
   const compiled = geometry.compiled;
   const seen = new Set<number>();

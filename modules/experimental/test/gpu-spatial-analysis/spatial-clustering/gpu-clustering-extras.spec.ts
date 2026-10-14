@@ -6,13 +6,15 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
+  getGPUKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPUKMeans,
+  GPU_KMEANS_PARAMETER_LENGTH,
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   type GPUKMeansInitialization,
-  type GPUSpatialClusteringParameters
+  type GPUSpatialClusteringSettings
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
@@ -30,13 +32,14 @@ import {
   createSeededRandom,
   separateNearEpsilonPairs
 } from './spatial-clustering-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
 async function runDbscan(
   device: Device,
   positions: Float32Array,
-  parameters: GPUSpatialClusteringParameters,
+  parameters: GPUSpatialClusteringSettings,
   denseBoxShortcut: boolean
 ) {
   const rows = positions.length / 2;
@@ -57,10 +60,12 @@ async function runDbscan(
       parameters: parameterBuffer.importToGraph(rig.graph),
       gridSize: [32, 32],
       denseBoxShortcut,
-      labels: labels.view,
-      rootRows: rootRows.view,
-      coreFlags: coreFlags.view,
-      clusterCount: clusterCount.view
+      output: {
+        labels: labels.view,
+        rootRows: rootRows.view,
+        coreFlags: coreFlags.view,
+        clusterCount: clusterCount.view
+      }
     })
   );
   const result = {
@@ -94,9 +99,9 @@ function countDenseBoxPoints(
 
 it('GPUSpatialClustering with denseBoxShortcut gives identical results to the plain algorithm', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const bounds = [-10, -10, 110, 110] as const;
-  const frames: GPUSpatialClusteringParameters[] = [
+  const frames: GPUSpatialClusteringSettings[] = [
     {bounds, epsilon: 12, minimumPoints: 40},
     {bounds, epsilon: 6, minimumPoints: 15},
     {bounds, epsilon: 1.5, minimumPoints: 5},
@@ -172,20 +177,30 @@ async function runKMeans(
   const centers = rig.output('float32x2', options.k);
   const sizes = rig.output('uint32', options.k);
   const squaredDistances = rig.output('float32', rows);
-  const convergence = rig.output('uint32', 2);
+  const iterationCount = rig.output('uint32', 1);
+  const converged = rig.output('uint32', 1);
   const inertia = rig.output('float32', 1);
+  const {iterations, seed, tolerance, ...shape} = options;
   rig.run(
     new GPUKMeans({
       positions: rig.input(positions, 'float32x2', rows),
       // The default initialization is 'kmeans++'; the first-valid oracle specs pin it explicitly.
       initialization: 'first-valid',
-      ...options,
-      labels: labels.view,
-      centers: centers.view,
-      sizes: sizes.view,
-      squaredDistances: squaredDistances.view,
-      convergence: convergence.view,
-      inertia: inertia.view
+      ...shape,
+      maximumIterations: iterations,
+      parameters: rig.input(
+        getGPUKMeansParameterValues({seed, tolerance}),
+        'uint32',
+        GPU_KMEANS_PARAMETER_LENGTH
+      ),
+      output: {
+        labels: labels.view,
+        centers: centers.view,
+        sizes: sizes.view,
+        squaredDistances: squaredDistances.view,
+        inertia: inertia.view,
+        status: {iterationCount: iterationCount.view, converged: converged.view}
+      }
     })
   );
   const result = {
@@ -193,7 +208,11 @@ async function runKMeans(
     centers: await readFloat32(centers.buffer, options.k * 2),
     sizes: await readUint32(sizes.buffer, options.k),
     squaredDistances: await readFloat32(squaredDistances.buffer, rows),
-    convergence: await readUint32(convergence.buffer, 2),
+    // [iterationCount, converged], the former two-word convergence layout.
+    convergence: [
+      (await readUint32(iterationCount.buffer, 1))[0],
+      (await readUint32(converged.buffer, 1))[0]
+    ],
     inertia: (await readFloat32(inertia.buffer, 1))[0]
   };
   rig.destroy();
@@ -202,7 +221,7 @@ async function runKMeans(
 
 it("GPUKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-finite rows", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const positions = createBlobs(5, 150);
   for (const [k, iterations] of [
     [3, 5],
@@ -234,7 +253,7 @@ it("GPUKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-finite 
 
 it('GPUKMeans center reduction handles many chunks, k=1, k not dividing 256, and k=256', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // 20000 rows: 79 chunks of 256 rows, last chunk partial.
   const positions = createBlobs(9, 6667);
   const valid = positions.length / 2 - 2;
@@ -270,7 +289,7 @@ it('GPUKMeans center reduction handles many chunks, k=1, k not dividing 256, and
 
 it('GPUKMeans stops at a fixed point and reports iterations used', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const positions = createBlobs(5, 150);
   const full = computeKMeansOracle(positions, 3, 30);
   const result = await runKMeans(device, positions, {k: 3, iterations: 30});
@@ -290,7 +309,7 @@ it('GPUKMeans stops at a fixed point and reports iterations used', async () => {
 
 it('GPUKMeans leaves centers empty when there are fewer valid points than k', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const positions = new Float32Array([1, 1, NaN, 2, 5, 5, 9, 9, 3, NaN]);
   const result = await runKMeans(device, positions, {k: 5, iterations: 3});
   expect(result.sizes).toEqual([1, 1, 1, 0, 0]);
@@ -306,10 +325,30 @@ it('GPUKMeans leaves centers empty when there are fewer valid points than k', as
   expect(result.squaredDistances[0]).toBe(0);
 });
 
+it('GPUKMeans does not report convergence when the center update overflows float32', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Three finite rows at x = 2e38: the f32 coordinate sum 6e38 overflows, so the center becomes
+  // +infinity and every later shift is infinite or NaN. Skipping those shifts used to leave the
+  // largest shift at 0 and report convergence after one iteration.
+  const positions = new Float32Array([2e38, 0, 2e38, 0, 2e38, 0]);
+  const result = await runKMeans(device, positions, {k: 1, iterations: 4});
+  expect(result.centers[0]).toBe(Infinity);
+  expect(result.convergence).toEqual([4, 0]);
+  // NaN rows stay noise and do not block convergence of the finite rows.
+  const withNaN = await runKMeans(device, new Float32Array([1, 1, NaN, 2, 3, 3]), {
+    k: 1,
+    iterations: 4
+  });
+  expect(withNaN.labels[1]).toBe(GPU_SPATIAL_CLUSTERING_NOISE);
+  expect(withNaN.convergence[1]).toBe(1);
+  expect(Array.from(withNaN.centers)).toEqual([2, 2]);
+});
+
 for (const fixture of SKLEARN_RELOCATION_FIXTURES) {
   it(`GPUKMeans relocates empty clusters like scikit-learn (${fixture.name})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const positions = new Float32Array(fixture.positions);
     // The duplicated first rows are the 'first-valid' centers, so the duplicates start empty.
     for (const [steps, expected] of Object.entries(fixture.steps)) {
@@ -328,7 +367,7 @@ for (const fixture of SKLEARN_RELOCATION_FIXTURES) {
 
 it('GPUKMeans moves still-empty clusters to the largest cluster when all points coincide', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Every distance is 0, so scikit-learn relocates nothing and averages the empty centers onto the
   // largest cluster.
   const positions = new Float32Array([3, 4, 3, 4, 3, 4, 3, 4]);
@@ -340,7 +379,7 @@ it('GPUKMeans moves still-empty clusters to the largest cluster when all points 
 
 it("GPUKMeans 'kmeans++' is deterministic per seed and recovers separated blobs", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const positions = createBlobs(8, 120);
   const outcomes = [];
   for (const seed of [1, 2, 3, 4]) {
@@ -378,7 +417,7 @@ it("GPUKMeans 'kmeans++' is deterministic per seed and recovers separated blobs"
 
 it('GPUKMeans reports the total inertia of the returned clustering', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const positions = createBlobs(5, 150);
   const expected = computeKMeansOracle(positions, 3, 8);
   const result = await runKMeans(device, positions, {k: 3, iterations: 8});
@@ -387,7 +426,7 @@ it('GPUKMeans reports the total inertia of the returned clustering', async () =>
 
 it('GPUKMeans restartCount returns the lowest-inertia restart (ties: lowest index)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const positions = createBlobs(11, 240);
   const options = {k: 6, iterations: 30, initialization: 'kmeans++' as const, seed: 3};
   const restartCount = 5;
@@ -414,7 +453,7 @@ it('GPUKMeans restartCount returns the lowest-inertia restart (ties: lowest inde
 
 it('GPUKMeans reaches the scikit-learn inertia on a well-separated scene for every seed', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Oracle: scikit-learn 1.9.1 KMeans, fix/work/C/U7/kmeans-sklearn.py (see the node spec).
   const sklearnInertia = 3707.8660708989237;
   const positions = createSeparatedBlobScene(4, 60);

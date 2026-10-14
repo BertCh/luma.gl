@@ -28,6 +28,7 @@ import {
   createRandom,
   getOracleGroupKeys
 } from './group-geometry-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const ORIGIN: [number, number] = [100000, 200000];
 
@@ -139,7 +140,7 @@ async function run(
           'float32',
           groups
         ),
-        overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)
+        status: {overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)}
       }
     })
   );
@@ -184,9 +185,7 @@ for (const [seed, groupCount, noiseLabel, weighted] of [
 ] as const) {
   it(`GPUGroupGeometry matches the CPU oracle (seed ${seed}, ${groupCount} groups, noise ${noiseLabel}, weighted ${weighted})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createScene(seed, 2000, groupCount, noiseLabel);
     const actual = await run(device, scene, {weighted});
     const keys = getOracleGroupKeys(scene.positions, scene.labels, groupCount, noiseLabel);
@@ -240,9 +239,7 @@ for (const [seed, groupCount, noiseLabel, weighted] of [
 
 it('GPUGroupGeometry medoid breaks exact ties with the lowest row index and flags oversize groups', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Group 0: rows 1 and 3 are the identical central point (tie, lowest index 1 wins); group 1 is
   // large enough to exceed the medoid cap of 5 rows.
   const points: number[] = [-4, 0, 0, 0, 4, 0, 0, 0, 0, 3];

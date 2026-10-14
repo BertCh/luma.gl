@@ -14,6 +14,7 @@ import {
   separateNearEpsilonPairs
 } from '../spatial-clustering/spatial-clustering-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** DBSCAN neighborhood radius in scene units (an algorithm parameter, not a comparison tolerance). */
 const EPSILON = 4;
@@ -23,9 +24,7 @@ const EXTENT = 100;
 
 it('addClusterAndOutlineRecipe clusters points and outlines each cluster with its convex hull', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = separateNearEpsilonPairs(
     createClusteredPoints(3, {
       pointCount: 400,
@@ -65,7 +64,10 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
     const areas = fixture.output('areas', 'float32', MAXIMUM_CLUSTERS);
     const perimeters = fixture.output('perimeters', 'float32', MAXIMUM_CLUSTERS);
     const recipe = addClusterAndOutlineRecipe(fixture.graph, {
-      positions: fixture.input('positions', positions, 'float32x2', pointCount),
+      points: {
+        kind: 'points',
+        positions: fixture.input('positions', positions, 'float32x2', pointCount)
+      },
       spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
       clusteringParameters: fixture.parameters(
         'clustering-parameters',
@@ -86,9 +88,9 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
         clusterCount: count.view,
         hullOffsets: hullOffsets.view,
         hullPositions: hullPositions.view,
-        hullOverflow: hullOverflow.view,
         areas: areas.view,
-        perimeters: perimeters.view
+        perimeters: perimeters.view,
+        status: {hullOverflow: hullOverflow.view}
       },
       scratch: {
         counts: memberCounts.view,
@@ -165,14 +167,15 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
 
 it('addClusterAndOutlineRecipe rejects non-great-circle longitude/latitude contexts', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new RecipeTestFixture(device, 'cluster-outline-recipe-lon-lat');
   try {
     expect(() =>
       addClusterAndOutlineRecipe(fixture.graph, {
-        positions: fixture.input('positions', new Float32Array(8), 'float32x2', 4),
+        points: {
+          kind: 'points',
+          positions: fixture.input('positions', new Float32Array(8), 'float32x2', 4)
+        },
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb'},
         clusteringParameters: fixture.parameters(
           'clustering-parameters',

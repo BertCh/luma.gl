@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getTerrainPixelDirection} from '../../../src/gpu-terrain/terrain-grid-utils';
+import {getRasterPixelDirection} from '../../../src/analysis-core/raster-grid';
 import {getGPUTerrainHorizonDirection} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
-import {getTerrainIlluminationGroundCellSize} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
+import {
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 import {createXorshiftRandom as createRandom} from '../terrain-oracle-utils';
 
 /** Inputs of the float64 horizon oracle. */
@@ -17,13 +19,15 @@ export type HorizonOracleOptions = {
   directionCount: number;
   /** Ray sample distances in pixels. */
   stepDistances: ArrayLike<number>;
-  cellSize: [number, number];
+  cellSize: readonly [number, number];
   zFactor?: number;
   curvatureCoefficient?: number;
   maximumDistance?: number;
+  /** Grid world y of the top edge of row 0: latitude degrees or EPSG:3857 meters. */
   northEdge?: number;
+  /** Grid world y of the bottom edge of the last row, same units as `northEdge`. */
   southEdge?: number;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   rowDirection?: 'south' | 'north';
   /** Also compute nadir horizons (z factor negated) and `negativeOpenness`. */
   computeNadir?: boolean;
@@ -116,12 +120,10 @@ export function computeTerrainHorizon(options: HorizonOracleOptions): HorizonOra
     result.anisotropicSkyViewFactor = new Array(pixelCount).fill(NaN);
   }
   for (let row = 0; row < height; row++) {
-    const ground = getTerrainIlluminationGroundCellSize(
+    const ground = getRasterGroundCellSize(
       options.cellSizeMode ?? 'uniform',
-      options.cellSize,
-      options.northEdge ?? 0,
-      options.southEdge ?? 0,
-      row,
+      {cellSize: options.cellSize, northEdge: options.northEdge, southEdge: options.southEdge},
+      row + 0.5,
       height
     );
     for (let column = 0; column < width; column++) {
@@ -139,7 +141,7 @@ export function computeTerrainHorizon(options: HorizonOracleOptions): HorizonOra
         // The sector direction is part of the contributor contract (float32, snapped axis
         // components). It is a ground direction: on anisotropic cells the pixel step is
         // normalize(direction / groundCell), so the ray keeps the sector's ground azimuth.
-        const [dx, dy] = getTerrainPixelDirection(
+        const [dx, dy] = getRasterPixelDirection(
           getGPUTerrainHorizonDirection(sector, directionCount, options.rowDirection ?? 'south'),
           ground
         );

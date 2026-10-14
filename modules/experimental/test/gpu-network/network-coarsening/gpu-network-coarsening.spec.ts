@@ -27,6 +27,7 @@ import {
   type CoarseningCSR,
   type CoarseningOracleResult
 } from './network-coarsening-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   nodeCount: number;
@@ -91,35 +92,40 @@ class Fixture {
     const {positions, vertexValues} = options;
     this.contributor = new GPUNetworkCoarsening({
       id: 'coarse',
-      offsets: input('offsets', 'uint32', csr.offsets) as never,
-      neighbors: input('neighbors', 'uint32', csr.neighbors) as never,
-      directed: options.directed,
-      vertexMask:
-        options.vertexMask && (input('vertex-mask', 'uint32', options.vertexMask) as never),
-      edgeMask: options.edgeMask && (input('edge-mask', 'uint32', options.edgeMask) as never),
-      weights: options.weighted ? (input('weights', 'float32', csr.weights) as never) : undefined,
-      labels: input('labels', 'uint32', options.labels) as never,
-      positions:
-        positions &&
-        (view('positions', 'float32x2', createInputBuffer(device, positions), nodeCount) as never),
-      vertexValues: vertexValues && (input('values', 'float32', vertexValues) as never),
-      groupCapacity,
-      groupVertexCount: output('group-counts', 'uint32', groupCapacity, 1) as never,
-      groupIntraEdgeCount: output('intra-count', 'uint32', groupCapacity, 1) as never,
-      groupIntraWeight: output('intra-weight', 'float32', groupCapacity, 1) as never,
-      groupCentroid: positions && (output('centroid', 'float32x2', groupCapacity, 2) as never),
-      groupBounds: positions && (output('bounds', 'float32x4', groupCapacity, 4) as never),
-      groupValueSum: vertexValues && (output('value-sum', 'float32', groupCapacity, 1) as never),
-      edges: {
-        ids: output('edge-ids', 'uint32', edgeCapacity, 1) as never,
-        count: output('edge-count', 'uint32', 1, 1) as never,
-        overflow: output('edge-overflow', 'uint32', 1, 1) as never,
-        requiredCount: output('edge-total', 'uint32', 1, 1) as never
+      topology: {
+        offsets: input('offsets', 'uint32', csr.offsets) as never,
+        neighbors: input('neighbors', 'uint32', csr.neighbors) as never,
+        weights: options.weighted ? (input('weights', 'float32', csr.weights) as never) : undefined,
+        nodePositions:
+          positions &&
+          (view('positions', 'float32x2', createInputBuffer(device, positions), nodeCount) as never)
       },
-      edgeTargets: output('edge-targets', 'uint32', edgeCapacity, 1) as never,
-      edgeCounts: output('edge-counts', 'uint32', edgeCapacity, 1) as never,
-      edgeWeights: output('edge-weights', 'float32', edgeCapacity, 1) as never,
-      summary: output('summary', 'uint32', 8, 1) as never
+      directed: options.directed,
+      nodeMask: options.vertexMask && (input('vertex-mask', 'uint32', options.vertexMask) as never),
+      edgeMask: options.edgeMask && (input('edge-mask', 'uint32', options.edgeMask) as never),
+      labels: input('labels', 'uint32', options.labels) as never,
+      nodeValues: vertexValues && (input('values', 'float32', vertexValues) as never),
+      groupCapacity,
+      output: {
+        groupNodeCount: output('group-counts', 'uint32', groupCapacity, 1) as never,
+        groupIntraEdgeCount: output('intra-count', 'uint32', groupCapacity, 1) as never,
+        groupIntraWeight: output('intra-weight', 'float32', groupCapacity, 1) as never,
+        groupCentroid: positions && (output('centroid', 'float32x2', groupCapacity, 2) as never),
+        groupBounds: positions && (output('bounds', 'float32x4', groupCapacity, 4) as never),
+        groupValueSum: vertexValues && (output('value-sum', 'float32', groupCapacity, 1) as never),
+        edges: {
+          ids: output('edge-ids', 'uint32', edgeCapacity, 1) as never,
+          status: {
+            count: output('edge-count', 'uint32', 1, 1) as never,
+            overflow: output('edge-overflow', 'uint32', 1, 1) as never,
+            requiredCount: output('edge-total', 'uint32', 1, 1) as never
+          }
+        },
+        edgeTargetGroups: output('edge-targets', 'uint32', edgeCapacity, 1) as never,
+        edgeCounts: output('edge-counts', 'uint32', edgeCapacity, 1) as never,
+        edgeWeights: output('edge-weights', 'float32', edgeCapacity, 1) as never,
+        summary: output('summary', 'uint32', 8, 1) as never
+      }
     });
     this.graph.add(this.contributor);
   }
@@ -257,14 +263,14 @@ function createCase(
 for (const directed of [false, true]) {
   it(`GPUNetworkCoarsening matches the oracle on a random ${directed ? 'directed' : 'undirected'} graph`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const fixture = createCase(device, 11, directed);
     const result = await fixture.run();
     const expected = expectMatches(result, fixture);
     expect(expected.edges.length).toBeGreaterThan(20);
     expect(expected.summary[4]).toBeGreaterThan(0);
     const summary = decodeGPUNetworkCoarseningSummary(result.summary);
-    expect(summary.liveVertexCount).toBe(300);
+    expect(summary.liveNodeCount).toBe(300);
     expect(summary.groupCount).toBe(16);
     if (!directed) {
       expect(result.edgeIds.slice(0, result.count).every((s, i) => s < result.edgeTargets[i])).toBe(
@@ -277,7 +283,7 @@ for (const directed of [false, true]) {
 
 it('GPUNetworkCoarsening honors vertex and edge masks and is repeatable', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 300;
   const slotCount = buildCoarseningCSR(
     nodeCount,
@@ -297,7 +303,7 @@ it('GPUNetworkCoarsening honors vertex and edge masks and is repeatable', async 
 
 it('GPUNetworkCoarsening handles self-loops and unweighted undirected graphs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const csr = buildCoarseningCSR(5, [
     [0, 0, 1],
     [1, 1, 1],
@@ -327,7 +333,7 @@ it('GPUNetworkCoarsening handles self-loops and unweighted undirected graphs', a
 
 it('GPUNetworkCoarsening reports label overflow and excludes those vertices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const fixture = createCase(device, 31, false, {
     labels: createLabels(300, 16, 32, 0.1)
   });
@@ -341,7 +347,7 @@ it('GPUNetworkCoarsening reports label overflow and excludes those vertices', as
 
 it('GPUNetworkCoarsening clamps the superedge list and keeps the smallest keys', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const fixture = createCase(device, 41, false, {edgeCapacity: 25});
   const result = await fixture.run();
   const expected = expectMatches(result, fixture);
@@ -354,7 +360,7 @@ it('GPUNetworkCoarsening clamps the superedge list and keeps the smallest keys',
 
 it('GPUNetworkCoarsening is exact on a larger graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 5000;
   const csr = buildCoarseningCSR(
     nodeCount,
@@ -377,7 +383,7 @@ it('GPUNetworkCoarsening is exact on a larger graph', async () => {
 for (const directed of [false, true]) {
   it(`GPUNetworkCoarsening matches the oracle with few heavy groups (${directed ? 'directed' : 'undirected'})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     // Three groups and thousands of edges: every superedge is a run far longer than one
     // invocation's chunk of sorted slots, and every row folds many intra-group slots.
     const nodeCount = 600;

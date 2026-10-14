@@ -14,12 +14,11 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPUNetworkIsochrones cell minimum folds -0 and skips negative caller costs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Two cells, keys (1, 0) and (2, 0). Cell 0 holds nodes 0 (-0, facility 7) and 1 (+0, facility
   // 3): -0 equals +0, so the tie goes to the lower facility 3. Cell 1 holds nodes 2 (-5, facility
   // 1, skipped) and 3 (4, facility 9).

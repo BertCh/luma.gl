@@ -11,8 +11,10 @@ import {
   GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH,
   GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE,
   GPUSolarIrradiance,
+  type GPUSolarIrradianceOutput,
   type GPUSolarIrradianceProps
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-solar-irradiance';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 it('getGPUSolarIrradianceSunTable samples midpoints with real durations', () => {
@@ -104,20 +106,22 @@ it('GPUSolarIrradiance validates props and schedules chunked nodes', () => {
   let instance = 0;
   const width = 4;
   const height = 3;
-  const create = (overrides: Partial<GPUSolarIrradianceProps> = {}) => {
+  const create = (
+    overrides: Partial<Omit<GPUSolarIrradianceProps, 'output'>> = {},
+    outputOverrides?: GPUSolarIrradianceOutput
+  ) => {
     instance++;
     const view = (name: string, length: number) =>
       createTransientView(graph, `${name}-${instance}`, 'float32', length);
     return new GPUSolarIrradiance({
       id: `irradiance-${instance}`,
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       directionCount: 8,
       horizon: view('horizon', width * height * 8),
       sunTable: view('table', 10 * 4),
       sampleCapacity: 10,
-      settings: view('settings', 8),
-      sunHours: view('hours', width * height),
+      parameters: view('parameters', 8),
+      output: outputOverrides ?? {sunHours: view('hours', width * height)},
       ...overrides
     });
   };
@@ -125,14 +129,18 @@ it('GPUSolarIrradiance validates props and schedules chunked nodes', () => {
   const single = create();
   expect(single.getCommandNodes(graph).length).toBe(1);
   expect(create({samplesPerNode: 4}).getCommandNodes(graph).length).toBe(3);
-  const all = create({
-    insolation: float('all-insolation'),
-    validity: createTransientView(graph, 'all-validity', 'uint32', width * height),
-    slope: float('all-slope'),
-    aspect: float('all-aspect'),
-    skyViewFactor: float('all-svf'),
-    samplesPerNode: 5
-  });
+  const all = create(
+    {
+      slope: float('all-slope'),
+      aspect: float('all-aspect'),
+      skyViewFactor: float('all-svf'),
+      samplesPerNode: 5
+    },
+    {
+      insolation: float('all-insolation'),
+      outputValidity: createTransientView(graph, 'all-validity', 'uint32', width * height)
+    }
+  );
   // Two accumulation nodes (8 storage bindings each) and one validity node.
   expect(all.getCommandNodes(graph).length).toBe(3);
   const unorm = create({
@@ -150,11 +158,11 @@ it('GPUSolarIrradiance validates props and schedules chunked nodes', () => {
   expect(() => create({sampleCapacity: 0})).toThrow(/sampleCapacity/);
   expect(() => create({samplesPerNode: 0})).toThrow(/samplesPerNode/);
   expect(() => create({sampleCapacity: 11})).toThrow(/sunTable/);
-  expect(() => create({sunHours: undefined})).toThrow(/at least one output/);
+  expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({slope: float('lonely-slope')})).toThrow(/together/);
   const shared = float('shared');
-  expect(() => create({sunHours: shared, insolation: shared})).toThrow(/share buffers/);
-  expect(() => create({settings: createTransientView(graph, 'short', 'float32', 4)})).toThrow(
+  expect(() => create({}, {sunHours: shared, insolation: shared})).toThrow(/share buffers/);
+  expect(() => create({parameters: createTransientView(graph, 'short', 'float32', 4)})).toThrow(
     /at least 8/
   );
 });

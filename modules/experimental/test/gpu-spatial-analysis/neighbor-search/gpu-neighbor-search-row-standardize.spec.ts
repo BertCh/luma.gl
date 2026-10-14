@@ -21,6 +21,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // NEVER COMPILED ON A DEVICE: the compile-time `rowStandardize` constant in the weights kernel and
 // the normalized GPUSpatialLag kernel have not run on a GPU yet.
@@ -59,9 +60,7 @@ function computeExpectedLag(): number[] {
 
 it('a compile-time row-standardized distance band re-normalizes over masked neighbors in GPUSpatialLag', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = VALUES.length;
   const capacity = 16;
   const graph = new GPUCommandGraph(device, {id: 'row-standardize-lag'});
@@ -95,13 +94,13 @@ it('a compile-time row-standardized distance band re-normalizes over masked neig
     weightTransform: 'row',
     positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', rows),
     parameters: parameters.importToGraph(graph),
-    weights: {
+    output: {
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
       weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity),
-      distances: importGraphBuffer(graph, 'distances', buffers.distances, 'float32', capacity)
-    },
-    overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+      distances: importGraphBuffer(graph, 'distances', buffers.distances, 'float32', capacity),
+      status: {overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)}
+    }
   });
   expect(isGPUSpatialWeightsRowStandardized(search.outputWeights)).toBe(true);
   graph.add(search);

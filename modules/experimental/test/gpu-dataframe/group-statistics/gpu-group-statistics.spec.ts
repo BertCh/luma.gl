@@ -23,6 +23,8 @@ import {
   createRandom,
   type GroupStatisticsOracleResult
 } from './group-statistics-oracle';
+import {ORDER_STATISTIC_EDGE_POLICY} from '../dataframe-edge-policy';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SUM_SCALE = 65536;
 const ALL_STATISTICS: GPUGroupStatistic[] = [
@@ -224,9 +226,11 @@ async function createRun(harness: Harness, scene: Scene) {
     output: {
       keys: importGraphBuffer(graph, 'out-keys', outputBuffers.keys, keyFormat, capacity) as never,
       counts: importGraphBuffer(graph, 'out-counts', outputBuffers.counts, 'uint32', capacity),
-      count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
+      status: {
+        count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', 1),
+        overflow: importGraphBuffer(graph, 'out-overflow', outputBuffers.overflow, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'out-total', outputBuffers.total, 'uint32', 1)
+      }
     }
   });
   graph.add(contributor);
@@ -570,9 +574,7 @@ function createScene(options: SceneOptions): Scene {
 
 it('GPUGroupStatistics computes every statistic for u32 keys, a mask and NaN values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const scene = createScene({
     seed: 11,
@@ -595,9 +597,7 @@ it('GPUGroupStatistics computes every statistic for u32 keys, a mask and NaN val
 
 it('GPUGroupStatistics matches the oracle for u64 keys that differ in the high word, 3 columns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const scene = createScene({
     seed: 23,
@@ -626,9 +626,7 @@ it('GPUGroupStatistics matches the oracle for u64 keys that differ in the high w
 
 it('GPUGroupStatistics keeps the smallest keys on capacity overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const keyBits of [32, 64] as const) {
     const harness = new Harness(device);
     const scene = createScene({
@@ -668,9 +666,7 @@ it('GPUGroupStatistics keeps the smallest keys on capacity overflow', async () =
 
 it('GPUGroupStatistics percentile fractions, values and masks change without a rebuild', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const scene = createScene({
     seed: 77,
@@ -691,7 +687,7 @@ it('GPUGroupStatistics percentile fractions, values and masks change without a r
   expectMatchesOracle(second, rewritten, 'fractions B');
   expect(run.compiled).toBe(compiled);
   expect(second.columns[0].percentiles).not.toEqual(first.columns[0].percentiles);
-  // Out-of-range and non-finite fractions clamp / give NaN.
+  // Out-of-range and non-finite fractions give NaN (the shared order-statistic policy).
   const odd = {...scene, fractions: [-3, 7, NaN]};
   run.parameters!.write(Float32Array.from(odd.fractions));
   expectMatchesOracle(await run.run(), odd, 'fractions odd');
@@ -716,9 +712,7 @@ it('GPUGroupStatistics percentile fractions, values and masks change without a r
 
 it('GPUGroupStatistics encodes bitwise identically twice and handles an all-masked input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const scene = createScene({
     seed: 91,
@@ -750,9 +744,7 @@ it('GPUGroupStatistics encodes bitwise identically twice and handles an all-mask
 
 it('GPUGroupStatistics handles every statistic alone and a contributor with no columns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const sets: GPUGroupStatistic[][] = [
     ...ALL_STATISTICS.map(statistic => [statistic]),
@@ -784,9 +776,7 @@ it('GPUGroupStatistics handles every statistic alone and a contributor with no c
 
 it('GPUGroupStatistics treats a large constant group as zero variance despite mean rounding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const rows = 6000;
   const keys = Array.from({length: rows}, (_, row) => (row < 5000 ? 9n : BigInt(row % 3)));
@@ -818,9 +808,7 @@ it('GPUGroupStatistics treats a large constant group as zero variance despite me
 
 it('GPUGroupStatistics dense mode returns one row per key with empty keys at count 0 and NaN', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const keyCount = 60;
   const random = createRandom(77);
   const emptyKeys = new Set([3, 17, 59]);
@@ -890,9 +878,7 @@ it('GPUGroupStatistics dense mode returns one row per key with empty keys at cou
 
 it('GPUGroupStatistics dense mode validates its options', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const harness = new Harness(device);
   const graph = new GPUCommandGraph(device, {id: 'dense-validation'});
   const view = (words: number) =>
@@ -908,8 +894,7 @@ it('GPUGroupStatistics dense mode validates its options', async () => {
   const output = (rows: number) => ({
     keys: view(rows),
     counts: view(rows),
-    count: view(1),
-    overflow: view(1)
+    status: {count: view(1), overflow: view(1)}
   });
   expect(
     () => new GPUGroupStatistics({keys: view(8), keyCount: 4, columns: [], output: output(5)})
@@ -927,4 +912,39 @@ it('GPUGroupStatistics dense mode validates its options', async () => {
     () => new GPUGroupStatistics({keys: view(8), keyCount: 0, columns: [], output: output(4)})
   ).toThrow(/keyCount/);
   harness.destroy();
+});
+
+it('GPUGroupStatistics percentiles follow the shared order-statistic edge policy (B-14)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // One group per policy row (key = row index); every distinct probability is one fraction.
+  const fractions = [...new Set(ORDER_STATISTIC_EDGE_POLICY.map(row => row.probability))];
+  const keys: bigint[] = [];
+  const values: number[] = [];
+  for (const [index, row] of ORDER_STATISTIC_EDGE_POLICY.entries()) {
+    for (const value of row.values) {
+      keys.push(BigInt(index));
+      values.push(value);
+    }
+  }
+  const harness = new Harness(device);
+  const run = await createRun(harness, {
+    keyBits: 32,
+    keys,
+    columns: [{values: Float32Array.from(values), statistics: ['percentiles']}],
+    fractions,
+    capacity: ORDER_STATISTIC_EDGE_POLICY.length
+  });
+  try {
+    const actual = await run.run();
+    const percentiles = actual.columns[0].percentiles!;
+    for (const [index, row] of ORDER_STATISTIC_EDGE_POLICY.entries()) {
+      const fraction = fractions.findIndex(value => Object.is(value, row.probability));
+      const value = percentiles[index * fractions.length + fraction];
+      expect(Object.is(value, row.expected), `${row.name}: ${value}`).toBe(true);
+    }
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
 });

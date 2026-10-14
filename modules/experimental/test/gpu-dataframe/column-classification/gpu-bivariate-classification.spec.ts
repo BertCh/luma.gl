@@ -10,7 +10,7 @@ import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-cont
 import {GPUBivariateClassification} from '../../../src/gpu-dataframe/column-classification/gpu-bivariate-classification';
 import {
   getGPUBivariateClassificationParameterValues,
-  type GPUBivariateClassificationParameterOptions
+  type GPUBivariateClassificationSettings
 } from '../../../src/gpu-dataframe/column-classification/bivariate-classification-parameters';
 import {packGPUColor} from '../../../src/gpu-dataframe/column-classification/color-scale-parameters';
 import {computeBivariateClassificationOnCPU} from './bivariate-classification-oracle';
@@ -20,6 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NONE = 0xffffffff;
 const NO_DATA = 0x0a0b0c0d;
@@ -49,7 +50,7 @@ type Frame = {
   breaksX: number[];
   breaksY: number[];
   palette: number[];
-  options: GPUBivariateClassificationParameterOptions;
+  options: GPUBivariateClassificationSettings;
 };
 
 type Result = {classIds: Uint32Array; colors: Uint32Array; classCounts: Uint32Array};
@@ -234,9 +235,7 @@ function createScene(seed: number, rows: number, maximumClassCount: number): Sce
 
 it('GPUBivariateClassification classifies 3x3 and 4x4 grids and changes frames without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(3, 3000, 4);
   const fixture = createFixture(device, scene);
   const palette9 = createGridPalette(3);
@@ -303,9 +302,7 @@ it('GPUBivariateClassification classifies 3x3 and 4x4 grids and changes frames w
 
 it('GPUBivariateClassification applies value-by-alpha per frame and treats NaN alpha as minimum', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(8, 2500, 3);
   // Hand-checkable rows: the first five use a class-0 palette entry with alpha 200.
   scene.valuesX.set([1, 1, 1, 1, 1]);
@@ -350,9 +347,7 @@ it('GPUBivariateClassification applies value-by-alpha per frame and treats NaN a
 
 it('GPUBivariateClassification ignores value-by-alpha without an alphaValues view', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(4, 500, 3);
   delete scene.alphaValues;
   const fixture = createFixture(device, scene);
@@ -372,9 +367,7 @@ it('GPUBivariateClassification ignores value-by-alpha without an alphaValues vie
 
 it('GPUBivariateClassification is bitwise reproducible', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(21, 4000, 4);
   const fixture = createFixture(device, scene);
   const frame: Frame = {

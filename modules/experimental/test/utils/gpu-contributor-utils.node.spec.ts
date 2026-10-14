@@ -33,19 +33,23 @@ test('captureGraphCommandNodes records addToGraph-style nodes without scheduling
   device.destroy();
 });
 
-test('captureGraphCommandNodes bridges experimental addToGraph contributors', () => {
+test('captureGraphCommandNodes bridges the geospatial addToGraph-style passes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device, {id: 'capture-geospatial'});
   const left = createTransientView(graph, 'left', 'float32x2', 4);
   const right = createTransientView(graph, 'right', 'float32x2', 4);
   const output = createTransientView(graph, 'distance', 'float32', 4);
+  const originalAddComputePass = graph.addComputePass;
 
-  const nodes = captureGraphCommandNodes(graph, () => {
-    new GPUPairwisePointDistance({id: 'distance', left, right, output}).addToGraph(graph);
-  });
+  // The geospatial classes schedule through the upstream `addGeospatialPass` helper and return the
+  // captured nodes from `getCommandNodes`.
+  const nodes = new GPUPairwisePointDistance({id: 'distance', left, right, output}).getCommandNodes(
+    graph
+  );
 
   expect(nodes.length).toBeGreaterThan(0);
   expect(nodes.every(node => node.id.startsWith('distance'))).toBe(true);
+  expect(graph.addComputePass, 'graph methods are restored').toBe(originalAddComputePass);
   device.destroy();
 });
 
@@ -93,14 +97,15 @@ test('contributor validation helpers enforce graph membership and compact output
   expect(() => validateGraphViewsBelongToGraph('contributor', graph, [foreign])).toThrow(
     /target graph/
   );
-  expect(() => validateCompactOutput('contributor', {ids, count, overflow})).not.toThrow();
+  expect(() =>
+    validateCompactOutput('contributor', {ids, status: {count, overflow}})
+  ).not.toThrow();
   expect(() =>
     validateCompactOutput('contributor', {
       ids,
-      count: createTransientView(graph, 'empty-count', 'uint32', 0),
-      overflow
+      status: {count: createTransientView(graph, 'empty-count', 'uint32', 0), overflow}
     })
-  ).toThrow(/count must contain one uint32 row/);
+  ).toThrow(/output\.status\.count must contain one uint32 row/);
   buffer.destroy();
   device.destroy();
 });

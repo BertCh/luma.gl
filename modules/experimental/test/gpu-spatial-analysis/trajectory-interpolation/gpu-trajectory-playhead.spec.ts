@@ -12,6 +12,7 @@ import {
 } from './trajectory-interpolation-fixtures';
 import {createPlayheadFixture, expectPlayheadParity} from './trajectory-interpolation-harness';
 import {computePlayheadOracle} from './trajectory-interpolation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** A playhead base where the edge-case rows straddle a low-word wrap of the Int64 words. */
 const WRAP_BASE = 397n * 2n ** 32n - 20n;
@@ -22,17 +23,19 @@ const SAMPLE_TIMES = [0, 5, 10, 12, 15, 20, 40, 101, 110];
 
 it('GPUTrajectoryPlayhead matches the oracle on edge cases without rebuilding per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = packTracks(EDGE_CASE_TRACKS);
   const capacity = 3;
   const fixture = createPlayheadFixture(device, tracks, capacity);
-  for (const maxGap of [0, 10]) {
+  for (const maximumGap of [0, 10]) {
     for (const playhead of EDGE_PLAYHEADS) {
-      const expected = computePlayheadOracle(tracks, {kind: 'float32', value: playhead}, maxGap);
-      const actual = await fixture.run(playhead, maxGap);
-      expectPlayheadParity(actual, expected, capacity, `t=${playhead} gap=${maxGap}`);
+      const expected = computePlayheadOracle(
+        tracks,
+        {kind: 'float32', value: playhead},
+        maximumGap
+      );
+      const actual = await fixture.run(playhead, maximumGap);
+      expectPlayheadParity(actual, expected, capacity, `t=${playhead} gap=${maximumGap}`);
       if (SAMPLE_TIMES.includes(playhead)) {
         // Exact sample times reproduce stored positions bit-exactly.
         expect(actual.positions, `exact t=${playhead}`).toEqual(expected.positions);
@@ -67,36 +70,34 @@ it('GPUTrajectoryPlayhead matches the oracle on edge cases without rebuilding pe
 
 it('GPUTrajectoryPlayhead Int64 words are exact across a low-word wrap with fractional playheads', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const floatTracks = packTracks(EDGE_CASE_TRACKS);
   const tracks = packTracks(EDGE_CASE_TRACKS, WRAP_BASE);
   expect(tracks.wordTimes[0] % 2n ** 32n > tracks.wordTimes[3] % 2n ** 32n).toBe(true);
   const capacity = 7;
   const fixture = createPlayheadFixture(device, tracks, capacity);
-  for (const maxGap of [0, 10]) {
+  for (const maximumGap of [0, 10]) {
     for (const playhead of EDGE_PLAYHEADS) {
       const integer = Math.floor(playhead);
       const fraction = playhead - integer;
       const expected = computePlayheadOracle(
         tracks,
         {kind: 'words', integer: WRAP_BASE + BigInt(integer), fraction},
-        maxGap
+        maximumGap
       );
       // The word path at ~7.3e12 reproduces the relative float32 path at ~0.
       const relative = computePlayheadOracle(
         floatTracks,
         {kind: 'float32', value: playhead},
-        maxGap
+        maximumGap
       );
       expect(expected.status).toEqual(relative.status);
       expect(expected.positions).toEqual(relative.positions);
       const actual = await fixture.run(
         fraction === 0 ? WRAP_BASE + BigInt(integer) : Number(WRAP_BASE) + playhead,
-        maxGap
+        maximumGap
       );
-      expectPlayheadParity(actual, expected, capacity, `words t=${playhead} gap=${maxGap}`);
+      expectPlayheadParity(actual, expected, capacity, `words t=${playhead} gap=${maximumGap}`);
     }
   }
   // A fraction just above a sample time leaves the exact-fix branch.
@@ -111,9 +112,7 @@ it('GPUTrajectoryPlayhead Int64 words are exact across a low-word wrap with frac
 
 it('GPUTrajectoryPlayhead matches the oracle on random tracks with duplicates and overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [seed, wordBase] of [
     [1, undefined],
     [2, undefined],
@@ -124,7 +123,7 @@ it('GPUTrajectoryPlayhead matches the oracle on random tracks with duplicates an
     const capacity = 150;
     const fixture = createPlayheadFixture(device, tracks, capacity);
     let activeSeen = 0;
-    for (const [playhead, maxGap] of [
+    for (const [playhead, maximumGap] of [
       [50, 0],
       [137, 25],
       [400, 30],
@@ -140,11 +139,11 @@ it('GPUTrajectoryPlayhead matches the oracle on random tracks with duplicates an
               integer: wordBase + BigInt(playhead),
               fraction: 0
             },
-        maxGap
+        maximumGap
       );
       const actual = await fixture.run(
         wordBase === undefined ? playhead : wordBase + BigInt(playhead),
-        maxGap
+        maximumGap
       );
       expectPlayheadParity(actual, expected, capacity, `seed ${seed} t=${playhead}`);
       activeSeen = Math.max(activeSeen, expected.activeTracks.length);

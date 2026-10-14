@@ -149,6 +149,7 @@ it('GPUGeographicallyWeightedRegression builds the documented node sequence', ()
     );
   expect(ids(CONFIGURATIONS[0])).toEqual([
     'g-validate',
+    'g-ladder-init',
     'g-candidates',
     'g-tile-candidates',
     'g-select',
@@ -167,6 +168,7 @@ it('GPUGeographicallyWeightedRegression builds the documented node sequence', ()
   ]);
   expect(ids(CONFIGURATIONS[4])).toEqual([
     'g-validate',
+    'g-ladder-init',
     'g-candidates',
     'g-tile-candidates',
     'g-select',

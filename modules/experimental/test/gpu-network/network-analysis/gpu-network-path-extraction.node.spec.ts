@@ -2,19 +2,27 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {getResourceBuffer} from '../network-resource-buffers';
 import {expect, it} from 'vitest';
 import {
   GPUNetworkPathExtraction,
+  type GPUNetworkPathExtractionEdges,
+  type GPUNetworkPathExtractionOutput,
   type GPUNetworkPathExtractionProps
 } from '../../../src/gpu-network/network-analysis/gpu-network-path-extraction';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 function createOutput(graph: GPUCommandGraph, prefix: string, capacity: number) {
   return {
     ids: createTransientView(graph, `${prefix}-ids`, 'uint32', capacity),
-    count: createTransientView(graph, `${prefix}-count`, 'uint32', 1),
-    overflow: createTransientView(graph, `${prefix}-overflow`, 'uint32', 1)
+    status: {
+      count: createTransientView(graph, `${prefix}-count`, 'uint32', 1),
+      overflow: createTransientView(graph, `${prefix}-overflow`, 'uint32', 1)
+    }
   };
 }
 
@@ -31,13 +39,25 @@ function createProps(
   };
 }
 
-function createEdges(graph: GPUCommandGraph) {
+function createEdges(graph: GPUCommandGraph): GPUNetworkPathExtractionEdges {
   return {
-    offsets: createTransientView(graph, 'offsets', 'uint32', 9),
-    neighbors: createTransientView(graph, 'neighbors', 'uint32', 10),
-    weights: createTransientView(graph, 'weights', 'float32', 10),
+    topology: {
+      offsets: createTransientView(graph, 'offsets', 'uint32', 9),
+      neighbors: createTransientView(graph, 'neighbors', 'uint32', 10),
+      weights: createTransientView(graph, 'weights', 'float32', 10)
+    },
     output: createOutput(graph, 'edge-out', 16)
   };
+}
+
+/** Props with extra output views merged into the default output bag. */
+function createPropsWithOutput(
+  graph: GPUCommandGraph,
+  output: Partial<GPUNetworkPathExtractionOutput>,
+  overrides: Partial<GPUNetworkPathExtractionProps> = {}
+): GPUNetworkPathExtractionProps {
+  const props = createProps(graph, overrides);
+  return {...props, output: {...props.output, ...output}};
 }
 
 it('GPUNetworkPathExtraction schedules nodes without and with edges', () => {
@@ -104,28 +124,47 @@ it('GPUNetworkPathExtraction validates props', () => {
   expect(() =>
     create({targetCount: createTransientView(graph, 'target-count', 'uint32', 2)})
   ).toThrow(/targetCount/);
-  expect(() => create({pathOffsets: createTransientView(graph, 'offsets4', 'uint32', 4)})).toThrow(
-    /pathOffsets/
-  );
-  expect(() => create({pathCosts: createTransientView(graph, 'path-costs', 'float32', 5)})).toThrow(
-    /pathCosts length/
-  );
-  expect(() => create({pathFound: createTransientView(graph, 'path-found', 'uint32', 5)})).toThrow(
-    /pathFound length/
-  );
-  for (const maxPathLength of [0, 65537, 2.5]) {
-    expect(() => create({maxPathLength})).toThrow(/maxPathLength/);
+  expect(() => create({targetCount: 5})).toThrow(/targetCount must be an integer in \[0, 4\]/);
+  const withOutput = (output: Partial<GPUNetworkPathExtractionOutput>) =>
+    create({output: {...base.output, ...output}});
+  expect(() =>
+    withOutput({lineOffsets: createTransientView(graph, 'offsets4', 'uint32', 4)})
+  ).toThrow(/output.lineOffsets/);
+  expect(() =>
+    withOutput({pathCosts: createTransientView(graph, 'path-costs', 'float32', 5)})
+  ).toThrow(/output.pathCosts length/);
+  expect(() =>
+    withOutput({pathFound: createTransientView(graph, 'path-found', 'uint32', 5)})
+  ).toThrow(/output.pathFound length/);
+  for (const maximumPathLength of [0, 65537, 2.5]) {
+    expect(() => create({maximumPathLength})).toThrow(/maximumPathLength/);
   }
   const edges = createEdges(graph);
+  const withTopology = (topology: Partial<GPUNetworkPathExtractionEdges['topology']>) =>
+    create({edges: {...edges, topology: {...edges.topology, ...topology}}});
   expect(() =>
-    create({edges: {...edges, offsets: createTransientView(graph, 'offsets8', 'uint32', 8)}})
-  ).toThrow(/edges.offsets/);
+    withTopology({offsets: createTransientView(graph, 'offsets8', 'uint32', 8)})
+  ).toThrow(/edges.topology must contain one node per predecessors row/);
   expect(() =>
-    create({edges: {...edges, weights: createTransientView(graph, 'weights9', 'float32', 9)}})
-  ).toThrow(/edges.weights/);
+    withTopology({weights: createTransientView(graph, 'weights9', 'float32', 9)})
+  ).toThrow(/edges topology.weights length/);
+  expect(() => withTopology({weights: undefined as never})).toThrow(
+    /edges topology.weights is required/
+  );
   expect(() =>
     create({edges: {...edges, edgeIds: createTransientView(graph, 'edge-ids9', 'uint32', 9)}})
   ).toThrow(/edges.edgeIds/);
+  expect(() =>
+    create({
+      edges: {
+        ...edges,
+        output: {
+          ...edges.output,
+          lineOffsets: createTransientView(graph, 'edge-offsets4', 'uint32', 4)
+        }
+      }
+    })
+  ).toThrow(/edges.output.lineOffsets/);
   expect(() =>
     create({costs: createTransientView(graph, 'uint-costs', 'uint32', 8) as never})
   ).toThrow(/costs/);
@@ -133,15 +172,22 @@ it('GPUNetworkPathExtraction validates props', () => {
   expect(() =>
     create({
       costs: graph.createDataView(shared, {format: 'float32', length: 8}),
-      pathCosts: graph.createDataView(shared, {format: 'float32', length: 4})
+      output: {
+        ...base.output,
+        pathCosts: graph.createDataView(shared, {format: 'float32', length: 4})
+      }
     })
   ).toThrow(/separate buffers/);
+  const sharedOutput = createOutput(graph, 'shared-out', 16);
   expect(() =>
     create({
       output: {
-        ...createOutput(graph, 'shared-out', 16),
+        ...sharedOutput,
         ids: graph.createDataView(shared, {format: 'uint32', length: 16}),
-        count: graph.createDataView(shared, {format: 'uint32', length: 1})
+        status: {
+          ...sharedOutput.status,
+          count: graph.createDataView(shared, {format: 'uint32', length: 1})
+        }
       }
     })
   ).toThrow(/separate buffers/);
@@ -149,5 +195,56 @@ it('GPUNetworkPathExtraction validates props', () => {
   expect(() =>
     new GPUNetworkPathExtraction(createProps(otherGraph)).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
+  device.destroy();
+});
+
+it('GPUNetworkPathExtraction reports no path found when the search did not converge', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const converged = createTransientView(graph, 'converged', 'uint32', 1);
+  const nodes = new GPUNetworkPathExtraction(
+    createPropsWithOutput(
+      graph,
+      {
+        pathFound: createTransientView(graph, 'found', 'uint32', 4),
+        pathCosts: createTransientView(graph, 'path-costs', 'float32', 4)
+      },
+      {
+        id: 'paths',
+        predecessorsComplete: converged,
+        targetCount: createTransientView(graph, 'target-count', 'uint32', 1)
+      }
+    )
+  ).getCommandNodes(graph);
+  // Review B-24: a NONE predecessor is a source only when the search converged, so the status
+  // reset copies the flag and the measure pass requires it before reporting a path found.
+  const status = nodes.find(node => node.id === 'paths-clear');
+  expect(status?.resources?.map(resource => getResourceBuffer(resource))).toContain(converged);
+  const sources = getParsedKernelSources(nodes);
+  expect(sources.get('paths-measure')).toContain(
+    'state == 1u && atomicLoad(&status[statusOffset + 1u]) != 0u'
+  );
+  const other = new GPUCommandGraph(createNullWebGPUDevice());
+  expect(
+    () =>
+      new GPUNetworkPathExtraction(
+        createProps(other, {predecessorsComplete: createTransientView(other, 'two', 'uint32', 2)})
+      )
+  ).toThrow(/predecessorsComplete must contain exactly one row/);
+});
+
+it('GPUNetworkPathExtraction bakes a numeric targetCount without a binding', () => {
+  const device = createNullWebGPUDevice();
+  const getSource = (targetCount: (graph: GPUCommandGraph) => number | GraphDataView<'uint32'>) => {
+    const graph = new GPUCommandGraph(device);
+    const nodes = new GPUNetworkPathExtraction(
+      createProps(graph, {id: 'paths', targetCount: targetCount(graph)})
+    ).getCommandNodes(graph);
+    return getParsedKernelSources(nodes).get('paths-measure');
+  };
+  expect(getSource(() => 2)).toContain('index < 2u');
+  expect(getSource(() => 2)).not.toContain('targetCount[');
+  expect(getSource(graph => createTransientView(graph, 'target-count', 'uint32', 1))).toContain(
+    'index < targetCount[targetCountOffset]'
+  );
   device.destroy();
 });

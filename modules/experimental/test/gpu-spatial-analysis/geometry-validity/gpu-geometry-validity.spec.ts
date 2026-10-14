@@ -18,6 +18,7 @@ import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contr
 import {createSegmentGeometry} from '../segment-intersection/segment-geometry-harness';
 import type {OracleSegmentFeature} from '../segment-intersection/segment-intersection-oracle';
 import {SHAPELY_VALIDITY_FIXTURE} from './shapely-validity-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BIT = GPU_GEOMETRY_VALIDITY_BIT;
 type Point = [number, number];
@@ -136,9 +137,10 @@ async function runValidity(
   graph.add(
     new GPUGeometryValidity({
       polygons: geometry,
-      mask: mask.view,
-      overflow: overflow.view,
-      intersectionCount: intersectionCount.view,
+      output: {
+        mask: mask.view,
+        status: {overflow: overflow.view, intersectionCount: intersectionCount.view}
+      },
       intersectionCapacity: options.intersectionCapacity ?? 256,
       ringClosure: options.ringClosure,
       orientation: options.orientation
@@ -160,9 +162,7 @@ async function runValidity(
 
 it('GPUGeometryValidity masks match pinned expectations and Shapely validity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {names, features} = buildScene();
   const result = await runValidity(device, features);
   expect(result.overflow).toBe(0);
@@ -173,14 +173,16 @@ it('GPUGeometryValidity masks match pinned expectations and Shapely validity', a
   for (const entry of MANUAL_CASES) {
     expect(byName(entry.name), `${entry.name} mask`).toBe(entry.implicit);
   }
-  // Agreement with Shapely: structural validity equals is_valid, except repeated vertices, which
-  // OGC accepts and this mask reports.
+  // Agreement with Shapely: structural validity equals is_valid. GEOS accepts repeated vertices,
+  // so repeatedVertex is a report-only bit outside the structural mask.
   let shapelyInvalid = 0;
   for (const entry of SHAPELY_VALIDITY_FIXTURE) {
     const structurallyValid = (byName(entry.name) & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) === 0;
     if (entry.name === 'repeated_vertex') {
-      expect(structurallyValid, 'repeated vertices are reported').toBe(false);
-      continue;
+      expect(
+        byName(entry.name) & GPU_GEOMETRY_VALIDITY_BIT.repeatedVertex,
+        'bit still reported'
+      ).not.toBe(0);
     }
     shapelyInvalid += entry.shapelyValid ? 0 : 1;
     expect(structurallyValid, `${entry.name}: ${entry.reason}`).toBe(entry.shapelyValid);
@@ -191,9 +193,7 @@ it('GPUGeometryValidity masks match pinned expectations and Shapely validity', a
 
 it('GPUGeometryValidity honors ring closure and orientation conventions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {names, features} = buildScene();
   const explicit = await runValidity(device, features, {ringClosure: 'explicit'});
   for (const entry of MANUAL_CASES) {
@@ -222,9 +222,7 @@ it('GPUGeometryValidity honors ring closure and orientation conventions', async 
 
 it('GPUGeometryValidity finds a self-intersection among many valid polygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A grid of valid squares with holes (touching neighbors share only corners), plus a few bowties.
   const features: OracleSegmentFeature[] = [];
   const badRows = new Set<number>();
@@ -270,9 +268,7 @@ it('GPUGeometryValidity finds a self-intersection among many valid polygons', as
 
 it('GPUGeometryValidity validates its props', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'geometry-validity-props'});
   const buffers: Buffer[] = [];
   const features: OracleSegmentFeature[] = [
@@ -297,13 +293,16 @@ it('GPUGeometryValidity validates its props', async () => {
     importGraphBuffer(graph, name, createOutputBuffer(device, length), 'uint32', length);
   const base = {
     polygons: geometry,
-    mask: view('mask', 1),
-    overflow: view('overflow', 1),
+    output: {mask: view('mask', 1), status: {overflow: view('overflow', 1)}},
     intersectionCapacity: 4
   };
-  expect(() => new GPUGeometryValidity({...base, mask: view('wrong-mask', 3)})).toThrow(
-    /feature count/
-  );
+  expect(
+    () =>
+      new GPUGeometryValidity({
+        ...base,
+        output: {...base.output, mask: view('wrong-mask', 3)}
+      })
+  ).toThrow(/feature count/);
   expect(() => new GPUGeometryValidity({...base, intersectionCapacity: 0})).toThrow(
     /intersectionCapacity/
   );
@@ -339,9 +338,7 @@ function createSubdividedSquare(size: number, step: number): Point[] {
 
 it('GPUGeometryValidity checks large rings and holes in large shells cooperatively', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const clockwise = (ring: Point[]) => [...ring].reverse();
   const holeSquare = (x: number, y: number, size: number): Point[] =>
     clockwise([
@@ -447,9 +444,7 @@ it('GPUGeometryValidity checks large rings and holes in large shells cooperative
 
 it('GPUGeometryValidity mixes many small rings with several large rings per workgroup block', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const clockwise = (ring: Point[]) => [...ring].reverse();
   const square = (x: number, y: number, size: number): Point[] => [
     [x, y],

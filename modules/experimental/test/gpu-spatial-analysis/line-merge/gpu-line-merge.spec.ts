@@ -19,6 +19,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {LINE_MERGE_LINES, LINE_MERGE_SHAPELY_CHAINS} from './line-merge-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Vertex = number[];
 
@@ -42,10 +43,10 @@ async function runLineMerge(
   const lineCount = lines.length;
   const graph = new GPUCommandGraph(device, {id: 'line-merge'});
   const buffers: Buffer[] = [];
-  const input = (
+  const input = <Format extends 'uint32' | 'float32x2'>(
     id: string,
     values: Float32Array | Uint32Array,
-    format: 'uint32' | 'float32x2'
+    format: Format
   ) => {
     const buffer = createInputBuffer(device, values);
     buffers.push(buffer);
@@ -57,7 +58,11 @@ async function runLineMerge(
       format === 'uint32' ? values.length : values.length / 2
     );
   };
-  const output = (id: string, format: 'uint32' | 'float32x2', length: number) => {
+  const output = <Format extends 'uint32' | 'float32x2'>(
+    id: string,
+    format: Format,
+    length: number
+  ) => {
     const buffer = createOutputBuffer(device, format === 'uint32' ? length : length * 2);
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, id, buffer, format, length)};
@@ -77,7 +82,7 @@ async function runLineMerge(
       output: {
         chainOffsets: chainOffsets.view,
         positions: positions.view,
-        count: count.view,
+        status: {count: count.view},
         lineChains: lineChains.view,
         lineOrders: lineOrders.view,
         lineReversed: lineReversed.view
@@ -119,7 +124,7 @@ async function runLineMerge(
  * closed rings also of every rotation (shapely may start a ring anywhere).
  */
 function canonicalize(chain: Vertex[]): Vertex[] {
-  const text = (vertices: Vertex[]) => JSON.stringify(vertices);
+  const text = (vertices: unknown) => JSON.stringify(vertices);
   const variants: Vertex[][] = [chain, [...chain].reverse()];
   const isClosed = text(chain[0]) === text(chain[chain.length - 1]);
   if (isClosed) {
@@ -142,9 +147,7 @@ function sortChains(chains: Vertex[][]): Vertex[][] {
 
 it('GPULineMerge matches shapely linemerge on a mixed fixture', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runLineMerge(device, LINE_MERGE_LINES);
   expect(sortChains(result.chains)).toEqual(sortChains(LINE_MERGE_SHAPELY_CHAINS));
   // Every line sits in exactly one chain, in order 0..n-1 per chain.
@@ -167,9 +170,7 @@ it('GPULineMerge matches shapely linemerge on a mixed fixture', async () => {
 
 it('GPULineMerge orients paths from the lower endpoint id and ignores degenerate lines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Line 0 runs right, line 1 is stored reversed; the end of line 0 (id 1) joins the end of line 1
   // (id 3), the free ends are ids 0 and 2, so the chain starts at line 0's start and runs right.
   const lines: Vertex[][] = [
@@ -203,11 +204,40 @@ it('GPULineMerge orients paths from the lower endpoint id and ignores degenerate
   expect(result.lineReversed).toEqual([0, 1, 0, 0]);
 });
 
+it('GPULineMerge never joins lines at a NaN endpoint', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Review D S-9: the finite test of the endpoint keys is a bit test, which Metal cannot fold
+  // away. Lines 0 and 1 meet only at (NaN, 3); lines 2 and 3 meet at (5, 5) and join.
+  const lines: Vertex[][] = [
+    [
+      [0, 0],
+      [Number.NaN, 3]
+    ],
+    [
+      [Number.NaN, 3],
+      [4, 4]
+    ],
+    [
+      [6, 6],
+      [5, 5]
+    ],
+    [
+      [5, 5],
+      [6, 4]
+    ]
+  ];
+  const result = await runLineMerge(device, lines);
+  const [first, second, third, fourth] = result.lineChains;
+  expect(third).not.toBe(GPU_LINE_MERGE_NONE);
+  expect(third).toBe(fourth);
+  expect(first === GPU_LINE_MERGE_NONE || first !== second).toBe(true);
+  expect(first).not.toBe(third);
+});
+
 it('GPULineMerge ranks long shuffled paths and rings with list ranking', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A 700-line path and a 130-line ring, plus a short path, all shuffled with random directions.
   let seed = 12345;
   const random = () => {
@@ -461,7 +491,7 @@ const DIRECTED_CASES: Record<string, {lines: Vertex[][]; chains: Vertex[][]}> = 
 
 /** Directed chains keep orientation; closed rings may start anywhere, so rotate to the smallest. */
 function canonicalizeDirected(chain: Vertex[]): Vertex[] {
-  const text = (vertices: Vertex[]) => JSON.stringify(vertices);
+  const text = (vertices: unknown) => JSON.stringify(vertices);
   if (text(chain[0]) !== text(chain[chain.length - 1])) {
     return chain;
   }
@@ -481,9 +511,7 @@ function sortDirectedChains(chains: Vertex[][]): Vertex[][] {
 
 it('GPULineMerge directed matches shapely line_merge(directed=True)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [name, {lines, chains}] of Object.entries(DIRECTED_CASES)) {
     const result = await runLineMerge(device, lines, true);
     expect(sortDirectedChains(result.chains), name).toEqual(sortDirectedChains(chains));

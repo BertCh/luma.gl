@@ -29,7 +29,7 @@ export type ScanOracleInput = {
   rateDirection?: 'high' | 'low' | 'both';
   maximumClusters: number;
   seed: number;
-  permutations: number;
+  permutationCount: number;
 };
 
 export type ScanOracleCluster = {
@@ -289,7 +289,7 @@ export function computeScanOracle(input: ScanOracleInput) {
     return low;
   };
 
-  for (let replicate = 0; replicate < input.permutations; replicate++) {
+  for (let replicate = 0; replicate < input.permutationCount; replicate++) {
     const counts = new Uint32Array(cells);
     if (model === 'poisson') {
       const chunk = Math.ceil(totalCases / CASE_BLOCKS);
@@ -365,7 +365,7 @@ export function computeScanOracle(input: ScanOracleInput) {
     const best = observed[bestCenter];
     const members = new Set(lists[bestCenter].slice(0, best.zoneCount).map(entry => entry.zone));
     let exceeding = 0;
-    for (let replicate = 1; replicate <= input.permutations; replicate++) {
+    for (let replicate = 1; replicate <= input.permutationCount; replicate++) {
       if (maxima[replicate] >= best.ratio) exceeding++;
     }
     clusters.push({
@@ -376,7 +376,7 @@ export function computeScanOracle(input: ScanOracleInput) {
       logLikelihoodRatio: best.ratio,
       observedCases: best.cases,
       expectedCases: best.expected,
-      pValue: (exceeding + 1) / (input.permutations + 1),
+      pValue: (exceeding + 1) / (input.permutationCount + 1),
       radius: Math.sqrt(lists[bestCenter][best.zoneCount - 1].distance),
       truncatedByZoneCap: truncatedCenters[bestCenter]
     });
@@ -440,6 +440,6 @@ export function createRegionalClusterScene(
     windowShape: 'circle',
     maximumClusters: 4,
     seed: 777,
-    permutations: 99
+    permutationCount: 99
   };
 }

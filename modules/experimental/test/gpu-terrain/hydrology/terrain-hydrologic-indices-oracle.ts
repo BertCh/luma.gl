@@ -4,23 +4,25 @@
 
 import {
   GPU_RASTER_D8_DIRECTIONS,
-  getRasterD8Distance,
-  getRasterGroundCellSize
+  getRasterD8Distance
 } from '../../../src/gpu-raster/cost-distance/raster-grid-utils';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {
   getGPUTerrainHydrologicIndicesParameterValues,
   type GPUTerrainHydrologicIndicesSettings
 } from '../../../src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+import {
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 
 /** Inputs of {@link computeHydrologicIndices}. NaN elevation marks an invalid cell. */
 export type HydrologicIndicesOracleInput = {
   elevation: Float32Array;
   accumulation: Float32Array;
-  width: number;
-  height: number;
+  grid: GPURasterMetadata;
   settings: GPUTerrainHydrologicIndicesSettings;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
 };
 
 /** Outputs of {@link computeHydrologicIndices}, float64. */
@@ -38,10 +40,11 @@ export type HydrologicIndicesOracleResult = {
 export function computeHydrologicIndices(
   input: HydrologicIndicesOracleInput
 ): HydrologicIndicesOracleResult {
-  const {elevation, accumulation, width, height} = input;
+  const {elevation, accumulation} = input;
+  const {width, height} = input.grid;
   const cellSizeMode = input.cellSizeMode ?? 'uniform';
-  const packed = getGPUTerrainHydrologicIndicesParameterValues(input.settings);
-  const gridSettings = {
+  const packed = getGPUTerrainHydrologicIndicesParameterValues(input.settings, input.grid);
+  const georeference = {
     cellSize: [packed[0], packed[1]] as [number, number],
     northEdge: packed[2],
     southEdge: packed[3]
@@ -82,15 +85,15 @@ export function computeHydrologicIndices(
       if (!Number.isFinite(neighborValue)) {
         continue;
       }
-      const distance = getRasterD8Distance(cellSizeMode, direction, row, height, gridSettings);
+      const distance = getRasterD8Distance(cellSizeMode, direction, row, height, georeference);
       steepest = Math.max(steepest, (center - neighborValue) / distance);
     }
     const tangent = Math.max(steepest, minimumSlope);
     const [groundX, groundY] = getRasterGroundCellSize(
       cellSizeMode,
+      georeference,
       row + 0.5,
-      height,
-      gridSettings
+      height
     );
     const catchment = area / Math.sqrt(groundX * groundY);
     result.slope[cell] = tangent;

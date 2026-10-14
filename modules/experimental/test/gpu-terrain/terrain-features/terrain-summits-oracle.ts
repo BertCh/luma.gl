@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis/gpu-terrain-derivatives';
+import type {GPURasterCellSizeMode} from '../../../src/analysis-core/raster-grid';
 import {getOracleGroundCellSize} from '../terrain-oracle-utils';
 
 const f32 = Math.fround;
@@ -10,13 +10,13 @@ const NAN_STATUS_HEIGHT = Number.NaN;
 
 /** Options shared by both oracles. */
 export type TerrainFeaturesOracleOptions = {
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   maximumRadiusPixels?: number;
 };
 
 /** Ground cell size for a row, float64 formula rounded to float32. Mirrors the kernel's model. */
 export function getOracleCellSize(
-  mode: GPUTerrainCellSizeMode,
+  mode: GPURasterCellSizeMode,
   row: number,
   height: number,
   cellSizeX: number,

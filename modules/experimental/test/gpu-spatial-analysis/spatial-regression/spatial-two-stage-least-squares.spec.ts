@@ -46,6 +46,7 @@ import {
   fitSpatialTwoStageLeastSquaresOnCPU,
   type TwoStageOracleResult
 } from './spatial-two-stage-least-squares-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = ReturnType<typeof createLagScene>;
 type Result = {status: number; table: Float32Array; summary: Float32Array; residuals: Float32Array};
@@ -124,7 +125,7 @@ async function runTwoStage(
           'float32',
           GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1)},
         residuals: importGraphBuffer(graph, 'residuals', residualBuffer, 'float32', rows)
       }
     })
@@ -191,9 +192,7 @@ function expectParity(actual: Result, expected: TwoStageOracleResult): void {
 
 it('GPUSpatialTwoStageLeastSquares matches the dense float64 oracle and recovers rho', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createLagScene(12, 21, 0.5, true);
   const expected = fitSpatialTwoStageLeastSquaresOnCPU(
     scene.weights,
@@ -215,9 +214,7 @@ it('GPUSpatialTwoStageLeastSquares matches the dense float64 oracle and recovers
 
 it('GPUSpatialTwoStageLeastSquares matches spreg GM_Lag including Anselin-Kelejian', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const reference = SPREG_TWO_STAGE_REFERENCE;
   const actual = await runTwoStage(device, createLagScene(12, 21, 0.5, true));
   expect(actual.status).toBe(0);
@@ -242,9 +239,7 @@ it('GPUSpatialTwoStageLeastSquares matches spreg GM_Lag including Anselin-Keleji
 
 it('GPUSpatialTwoStageLeastSquares matches the oracle on binary weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createLagScene(10, 8, 0.12, false);
   const expected = fitSpatialTwoStageLeastSquaresOnCPU(
     scene.weights,
@@ -257,9 +252,7 @@ it('GPUSpatialTwoStageLeastSquares matches the oracle on binary weights', async 
 
 it('GPUSpatialTwoStageLeastSquares matches spreg GM_Lag on asymmetric directed kNN weights (k = 3)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [count, seed, reference] of [
     [60, 13, SPREG_ASYMMETRIC_KNN_REFERENCE.scene_60_13.twoStage],
     [90, 29, SPREG_ASYMMETRIC_KNN_REFERENCE.scene_90_29.twoStage]
@@ -288,9 +281,7 @@ it('GPUSpatialTwoStageLeastSquares matches spreg GM_Lag on asymmetric directed k
 
 it('GPUSpatialTwoStageLeastSquares instrumentOrder 2 matches spreg GM_Lag(w_lags=2) and the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scenes = [
     [createLagScene(12, 21, 0.5, true), SPREG_TWO_STAGE_ORDER_TWO_REFERENCE.lattice],
     [
@@ -348,9 +339,7 @@ for (const name of Object.keys(DIAGNOSTIC_SCENES) as (keyof typeof DIAGNOSTIC_SC
   for (const order of [1, 2] as const) {
     it(`GPUSpatialTwoStageLeastSquares diagnostics match the numpy pins on ${name}, order ${order}`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const reference = SPREG_TWO_STAGE_DIAGNOSTICS_REFERENCE[name];
       const fixture = order === 1 ? reference.order1 : reference.order2;
       const actual = await runTwoStage(device, DIAGNOSTIC_SCENES[name](), undefined, order);
@@ -430,9 +419,7 @@ for (const name of Object.keys(DIAGNOSTIC_SCENES) as (keyof typeof DIAGNOSTIC_SC
 
 it('GPUSpatialTwoStageLeastSquares separates a weak first stage from a strong one', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const weak = await runTwoStage(device, createWeakInstrumentScene(80, 7));
   const strong = await runTwoStage(device, createNearestNeighborScene(60, 3, 13, 0.6, false));
   expect(weak.summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_F]).toBeLessThan(10);
@@ -443,9 +430,7 @@ it('GPUSpatialTwoStageLeastSquares separates a weak first stage from a strong on
 
 it('GPUSpatialTwoStageLeastSquares fits 8 predictors with order 1 and 5 with order 2', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [predictorCount, order] of [
     [8, 1],
     [5, 2]
@@ -493,9 +478,7 @@ it('GPUSpatialTwoStageLeastSquares fits 8 predictors with order 1 and 5 with ord
 for (const order of [1, 2] as const) {
   it(`GPUSpatialTwoStageLeastSquares Belsley condition number stays accurate near 8000, order ${order}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const reference =
       order === 1
         ? TWO_STAGE_ILL_CONDITIONED_REFERENCE.order1

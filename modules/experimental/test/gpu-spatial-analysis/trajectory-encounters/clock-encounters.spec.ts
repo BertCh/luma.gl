@@ -28,6 +28,7 @@ import {
 } from '../trajectory-interpolation/trajectory-interpolation-fixtures';
 import type {OracleTracks} from '../trajectory-interpolation/trajectory-interpolation-oracle';
 import {computeEncountersOracle} from './encounters-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 1000, 1000] as const;
 const BUCKET_COUNT = 24;
@@ -168,35 +169,39 @@ async function runClockEncounters(
     ),
     clock: clock.importToGraph(graph),
     bucketCount: BUCKET_COUNT,
-    samples: importGraphBuffer(graph, 'o-samples', out.samples, 'float32x2', sampleCount),
-    bucketTimes: importGraphBuffer(
-      graph,
-      'o-bucket-times',
-      out.bucketTimes,
-      'float32',
-      BUCKET_COUNT
-    ),
     distance: importGraphBuffer(graph, 'distance', input(Float32Array.of(distance)), 'float32', 1),
     cellSize: Math.max(distance, 40),
     bounds: BOUNDS,
     hitCapacity: 16384,
-    pairs: {
-      candidateOverflow: importGraphBuffer(
-        graph,
-        'o-candidate-overflow',
-        out.candidateOverflow,
-        'uint32',
-        1
-      ),
-      output: {
+    output: {
+      pairs: {
         ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', PAIR_CAPACITY),
-        count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)
+        },
+        partners: importGraphBuffer(graph, 'o-partners', out.partners, 'uint32', PAIR_CAPACITY),
+        firstBuckets: importGraphBuffer(graph, 'o-first', out.first, 'uint32', PAIR_CAPACITY),
+        bucketCounts: importGraphBuffer(graph, 'o-counts', out.counts, 'uint32', PAIR_CAPACITY),
+        firstTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', PAIR_CAPACITY)
       },
-      partners: importGraphBuffer(graph, 'o-partners', out.partners, 'uint32', PAIR_CAPACITY),
-      firstBuckets: importGraphBuffer(graph, 'o-first', out.first, 'uint32', PAIR_CAPACITY),
-      bucketCounts: importGraphBuffer(graph, 'o-counts', out.counts, 'uint32', PAIR_CAPACITY),
-      firstTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', PAIR_CAPACITY)
+      status: {
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'o-candidate-overflow',
+          out.candidateOverflow,
+          'uint32',
+          1
+        )
+      },
+      samples: importGraphBuffer(graph, 'o-samples', out.samples, 'float32x2', sampleCount),
+      bucketTimes: importGraphBuffer(
+        graph,
+        'o-bucket-times',
+        out.bucketTimes,
+        'float32',
+        BUCKET_COUNT
+      )
     }
   });
   const compiled = graph.compile();
@@ -246,9 +251,7 @@ function expectSamplesMatch(actual: number[], expected: Float32Array, label: str
 
 it('addClockEncounters resamples to a common clock and matches the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const trackCount = 160;
   const tracks = packTracks(createWindowedTracks(21, trackCount));
   const clocks = [
@@ -296,9 +299,7 @@ it('addClockEncounters resamples to a common clock and matches the oracle', asyn
 
 it('addClockEncounters with Int64 word timestamps matches float32 timestamps', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = createWindowedTracks(22, 80);
   const relative = packTracks(rows);
   const wordBase = 397n * 2n ** 32n - 20n;

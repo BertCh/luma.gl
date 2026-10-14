@@ -14,7 +14,7 @@ import {
   type GPUNetworkSubgraphFilterState
 } from '../../../src/gpu-network/network-subgraph-filter';
 import {
-  getGPUTimeWindowWordParameterValues,
+  getGPUTimeWindowFilterWordParameterValues,
   getInt64TimeWords
 } from '../../../src/gpu-dataframe/time-window-filter/time-words';
 import {
@@ -30,6 +30,7 @@ import {
   type NetworkEdge
 } from '../network-reachability/network-reachability-oracle';
 import {computeSubgraphOracle, type SubgraphOracleResult} from './network-subgraph-filter-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   nodeCount: number;
@@ -74,7 +75,7 @@ class Fixture {
   readonly buffer: Record<string, Buffer> = {};
   compiled?: CompiledGPUCommandGraph<void>;
   private readonly layout: {
-    vertexColumnCount: number;
+    nodeColumnCount: number;
     edgeColumnCount: number;
     hasEdgeTimes: boolean;
   };
@@ -141,7 +142,7 @@ class Fixture {
       );
     }
     this.layout = {
-      vertexColumnCount: this.vertexColumns.length,
+      nodeColumnCount: this.vertexColumns.length,
       edgeColumnCount: this.edgeColumns.length,
       hasEdgeTimes: Boolean(this.edgeTimes)
     };
@@ -159,22 +160,26 @@ class Fixture {
     const inducedCapacity = options.inducedCapacity ?? slotCount;
     const compact = (name: string, capacity: number) => ({
       ids: output(`${name}-ids`, capacity),
-      count: output(`${name}-count`, 1),
-      overflow: output(`${name}-overflow`, 1),
-      requiredCount: output(`${name}-total`, 1)
+      status: {
+        count: output(`${name}-count`, 1),
+        overflow: output(`${name}-overflow`, 1),
+        requiredCount: output(`${name}-total`, 1)
+      }
     });
     this.contributor = new GPUNetworkSubgraphFilter({
       id: 'sub',
-      offsets: view('offsets', input('offsets', this.csr.offsets), nodeCount + 1, 'uint32'),
-      neighbors: view('neighbors', input('neighbors', this.csr.neighbors), slotCount, 'uint32'),
+      topology: {
+        offsets: view('offsets', input('offsets', this.csr.offsets), nodeCount + 1, 'uint32'),
+        neighbors: view('neighbors', input('neighbors', this.csr.neighbors), slotCount, 'uint32')
+      },
       directed: options.directed,
-      vertexMask: options.vertexMask
+      nodeMask: options.vertexMask
         ? view('vertex-mask', input('vertexMaskIn', options.vertexMask), nodeCount, 'uint32')
         : undefined,
       edgeMask: options.edgeMask
         ? view('edge-mask', input('edgeMaskIn', options.edgeMask), slotCount, 'uint32')
         : undefined,
-      vertexColumns: this.vertexColumns.map((values, i) =>
+      nodeColumns: this.vertexColumns.map((values, i) =>
         view(`vc${i}`, input(`vc${i}`, values), nodeCount, 'float32')
       ),
       edgeColumns: this.edgeColumns.map((values, i) =>
@@ -194,22 +199,24 @@ class Fixture {
       parameters: parameterLength
         ? view('parameters', this.buffer['parameters'], parameterLength, 'float32')
         : undefined,
-      timeWordParameters: options.edgeTimeWords
+      uint32Parameters: options.edgeTimeWords
         ? view('twp', this.buffer['timeWordParameters'], 8, 'uint32')
         : undefined,
       dropIsolated: options.dropIsolated,
       pairUndirectedSlots: options.pairUndirectedSlots,
       output: {
-        vertexMask: output('vertex-mask-out', nodeCount),
+        nodeMask: output('vertex-mask-out', nodeCount),
         edgeMask: output('edge-mask-out', slotCount),
         counts: output('counts', 4),
-        liveVertices: compact('lv', liveVertexCapacity),
+        liveNodes: compact('lv', liveVertexCapacity),
         liveEdgeSlots: compact('ls', liveSlotCapacity),
-        inducedCSR: {
+        inducedTopology: {
           offsets: output('io', nodeCount + 1),
           neighbors: output('in', inducedCapacity),
           sourceSlots: output('is', inducedCapacity),
-          overflow: output('iov', 1)
+          status: {
+            overflow: output('iov', 1)
+          }
         }
       }
     });
@@ -222,7 +229,7 @@ class Fixture {
   }
 
   setTimeWindow(window: {start: number | bigint; end: number | bigint}): void {
-    this.buffer['timeWordParameters'].write(getGPUTimeWindowWordParameterValues(window));
+    this.buffer['timeWordParameters'].write(getGPUTimeWindowFilterWordParameterValues(window));
     this.window = window;
   }
 
@@ -239,7 +246,7 @@ class Fixture {
       vertexMask: options.vertexMask,
       edgeMask: options.edgeMask,
       vertexColumns: this.vertexColumns,
-      vertexRanges: state.vertexRanges,
+      vertexRanges: state.nodeRanges,
       edgeColumns: this.edgeColumns,
       edgeRanges: state.edgeRanges,
       edgeTimes: this.edgeTimes,
@@ -320,7 +327,7 @@ function expectMatches(actual: RunResult, expected: SubgraphOracleResult, caps =
 }
 
 const RANGES: GPUNetworkSubgraphFilterState = {
-  vertexRanges: [
+  nodeRanges: [
     [10, 90],
     [0, 70]
   ],
@@ -330,7 +337,7 @@ const RANGES: GPUNetworkSubgraphFilterState = {
 
 it('GPUNetworkSubgraphFilter matches the oracle on a directed random graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 300;
   const edges = [...createRandomNetwork(11, nodeCount, 900), [4, 4, 1] as NetworkEdge];
   const fixture = new Fixture(device, {
@@ -360,7 +367,7 @@ it('GPUNetworkSubgraphFilter matches the oracle on a directed random graph', asy
 
 it('GPUNetworkSubgraphFilter matches the oracle on an undirected graph with consistent slots', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 250;
   const edges = [
     ...createSymmetricEdges(createRandomNetwork(3, nodeCount, 500)),
@@ -377,7 +384,7 @@ it('GPUNetworkSubgraphFilter matches the oracle on an undirected graph with cons
       dropIsolated
     });
     fixture.setState({
-      vertexRanges: [[0, 85], null],
+      nodeRanges: [[0, 85], null],
       edgeRanges: [[10, 90], [0, 100], null],
       edgeTimeWindow: [5, 95]
     });
@@ -419,7 +426,7 @@ it('GPUNetworkSubgraphFilter matches the oracle on an undirected graph with cons
 
 it('GPUNetworkSubgraphFilter changes ranges between encodings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 200;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -432,14 +439,14 @@ it('GPUNetworkSubgraphFilter changes ranges between encodings without recompilin
   });
   const states: GPUNetworkSubgraphFilterState[] = [
     {},
-    {vertexRanges: [[20, 60]]},
+    {nodeRanges: [[20, 60]]},
     {edgeRanges: [[0, 30]], edgeTimeWindow: [0, 50]},
     {
-      vertexRanges: [[0, 100.5]],
+      nodeRanges: [[0, 100.5]],
       edgeRanges: [[40, 100]],
       edgeTimeWindow: [25, 75]
     },
-    {vertexRanges: [[90, 10]]},
+    {nodeRanges: [[90, 10]]},
     {}
   ];
   let compiled: unknown;
@@ -460,7 +467,7 @@ it('GPUNetworkSubgraphFilter changes ranges between encodings without recompilin
 
 it('GPUNetworkSubgraphFilter filters exact Int64 word times and edits the window', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 150;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -491,7 +498,7 @@ it('GPUNetworkSubgraphFilter filters exact Int64 word times and edits the window
 
 it('GPUNetworkSubgraphFilter handles more columns than one kernel can bind', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 120;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -501,7 +508,7 @@ it('GPUNetworkSubgraphFilter handles more columns than one kernel can bind', asy
     edgeColumnCount: 9
   });
   fixture.setState({
-    vertexRanges: Array.from({length: 8}, () => [5, 99] as const),
+    nodeRanges: Array.from({length: 8}, () => [5, 99] as const),
     edgeRanges: Array.from({length: 9}, () => [3, 99] as const)
   });
   const actual = await fixture.run();
@@ -512,7 +519,7 @@ it('GPUNetworkSubgraphFilter handles more columns than one kernel can bind', asy
 
 it('GPUNetworkSubgraphFilter reports compact and induced overflow without corrupting results', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 200;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -549,7 +556,7 @@ function getSlotMap(fixture: Fixture): Map<string, number[]> {
 
 it('GPUNetworkSubgraphFilter pairs undirected slots whose per-slot values differ', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 120;
   // Asymmetric columns, caller edge masks and a parallel edge pair.
   const edges = [
@@ -590,7 +597,7 @@ it('GPUNetworkSubgraphFilter pairs undirected slots whose per-slot values differ
 
 it('GPUNetworkSubgraphFilter pairs and compacts a star with a hub row and parallel edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // One hub row of 2000 slots with a few parallel edges, a size where the hub must not be
   // serialised on one invocation and a binary row search must cross many empty rows.
   const leafCount = 2000;
@@ -607,7 +614,7 @@ it('GPUNetworkSubgraphFilter pairs and compacts a star with a hub row and parall
     symmetric: true,
     dropIsolated: true
   });
-  fixture.setState({vertexRanges: [[0, 70]], edgeRanges: [[20, 80]]});
+  fixture.setState({nodeRanges: [[0, 70]], edgeRanges: [[20, 80]]});
   const actual = await fixture.run();
   const expected = fixture.oracle();
   expectMatches(actual, expected);

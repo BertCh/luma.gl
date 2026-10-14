@@ -13,7 +13,7 @@ import {
   GPUSinusoidalProjection,
   type GPUPointSpatialQueryKind
 } from '../../src/geospatial';
-import type {GPUSpatialContext} from '../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../src/analysis-core/contracts/spatial-context';
 import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
 
 const LONGITUDE_LATITUDE: GPUSpatialContext = {
@@ -44,7 +44,7 @@ describe('geospatial planar kernels reject longitude/latitude', () => {
       expect(
         () =>
           new GPUPairwisePointSegmentDistance({
-            points: left,
+            positions: left,
             segmentStarts: right,
             segmentEnds: position(`end-${spatialContext.metric}`),
             output,
@@ -63,12 +63,12 @@ describe('geospatial planar kernels reject longitude/latitude', () => {
     expect(
       () =>
         new GPUPairwisePointLinestringNearest({
-          points: createTransientView(graph, 'points', 'float32x2', 1),
-          linestringPositions: createTransientView(graph, 'vertices', 'float32x2', 2),
-          geometryOffsets: createTransientView(graph, 'geometry-offsets', 'uint32', 2),
-          linestringOffsets: createTransientView(graph, 'linestring-offsets', 'uint32', 2),
-          output: createTransientView(graph, 'output', 'float32', 1),
-          spatialContext: LONGITUDE_LATITUDE
+          queryPositions: createTransientView(graph, 'points', 'float32x2', 1),
+          positions: createTransientView(graph, 'vertices', 'float32x2', 2),
+          featureOffsets: createTransientView(graph, 'geometry-offsets', 'uint32', 2),
+          lineOffsets: createTransientView(graph, 'linestring-offsets', 'uint32', 2),
+          spatialContext: LONGITUDE_LATITUDE,
+          output: {distances: createTransientView(graph, 'output', 'float32', 1)}
         })
     ).toThrow(/project positions to a planar frame first/);
   });
@@ -77,8 +77,10 @@ describe('geospatial planar kernels reject longitude/latitude', () => {
     const graph = createGraph();
     const output = {
       ids: createTransientView(graph, 'ids', 'uint32', 4),
-      count: createTransientView(graph, 'count', 'uint32', 1),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      status: {
+        count: createTransientView(graph, 'count', 'uint32', 1),
+        overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      }
     };
     const positions = createTransientView(graph, 'positions', 'float32x2', 4);
     const create = (kind: GPUPointSpatialQueryKind, spatialContext: GPUSpatialContext) =>
@@ -86,7 +88,7 @@ describe('geospatial planar kernels reject longitude/latitude', () => {
         id: `query-${kind}-${spatialContext.metric}`,
         positions,
         kind,
-        query: createTransientView(
+        parameters: createTransientView(
           graph,
           `query-${kind}-${spatialContext.metric}`,
           'float32',
@@ -117,11 +119,17 @@ describe('GPUHaversineDistance units', () => {
     // R1 = (2a + b) / 3 with a = 6378137, b = a (1 - 1 / 298.257223563) = 6371008.771415 m
     // (python3 -I); the IUGG rounds it to 6371008.8 m.
     expect(meters.units).toBe('meters');
-    expect(meters.radius).toBe(6371008.8);
+    expect(meters.sphereRadius).toBe(6371008.8);
     const kilometers = new GPUHaversineDistance({left, right, output, units: 'kilometers'});
-    expect(kilometers.radius).toBeCloseTo(6371.0088, 9);
-    const custom = new GPUHaversineDistance({left, right, output, units: 'kilometers', radius: 1});
-    expect(custom.radius).toBe(1);
+    expect(kilometers.sphereRadius).toBeCloseTo(6371.0088, 9);
+    const custom = new GPUHaversineDistance({
+      left,
+      right,
+      output,
+      units: 'kilometers',
+      sphereRadius: 1
+    });
+    expect(custom.sphereRadius).toBe(1);
     expect(
       () =>
         new GPUHaversineDistance({

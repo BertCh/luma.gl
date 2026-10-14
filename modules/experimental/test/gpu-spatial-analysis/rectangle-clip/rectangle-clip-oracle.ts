@@ -38,19 +38,19 @@ export function clipSegment(a: Point, b: Point, rect: Rectangle): [number, numbe
   return [t0, t1];
 }
 
-/** Clips open paths; surviving segments join when neither end is clipped at the shared vertex. */
+/** Clips open lines; surviving segments join when neither end is clipped at the shared vertex. */
 export function clipLines(
-  paths: Point[][],
+  lines: Point[][],
   rect: Rectangle
-): {paths: Point[][]; sourcePaths: number[]} {
+): {lines: Point[][]; sourceLineIndices: number[]} {
   const output: Point[][] = [];
-  const sourcePaths: number[] = [];
-  paths.forEach((path, pathIndex) => {
+  const sourceLineIndices: number[] = [];
+  lines.forEach((line, lineIndex) => {
     let current: Point[] | undefined;
     let previousUnclippedEnd = false;
-    for (let index = 0; index + 1 < path.length; index++) {
-      const a = path[index];
-      const b = path[index + 1];
+    for (let index = 0; index + 1 < line.length; index++) {
+      const a = line[index];
+      const b = line[index + 1];
       const clip = clipSegment(a, b, rect);
       if (!clip) {
         current = undefined;
@@ -66,12 +66,12 @@ export function clipLines(
       } else {
         current = [start, end];
         output.push(current);
-        sourcePaths.push(pathIndex);
+        sourceLineIndices.push(lineIndex);
       }
       previousUnclippedEnd = clip[1] === 1;
     }
   });
-  return {paths: output, sourcePaths};
+  return {lines: output, sourceLineIndices};
 }
 
 /** f64 Sutherland-Hodgman for one ring in the same stage order as the GPU (left, right, bottom, top). */

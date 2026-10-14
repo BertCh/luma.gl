@@ -98,14 +98,18 @@ export async function runScaleJoin(
     engine: options.engine,
     distance: options.distance,
     candidateCapacity: capacity,
-    pairs: {
-      leftIds: leftIds.view,
-      rightIds: rightIds.view,
-      count: count.view,
-      overflow: overflow.view
-    },
-    relate: options.matrix ? relate.view : undefined,
-    uncertainCount: uncertain.view
+    output: {
+      pairs: {
+        leftIds: leftIds.view,
+        rightIds: rightIds.view,
+        status: {
+          count: count.view,
+          overflow: overflow.view
+        }
+      },
+      relate: options.matrix ? relate.view : undefined,
+      status: {uncertainCount: uncertain.view}
+    }
   });
   graph.add(join);
   const compiled = graph.compile();

@@ -10,8 +10,8 @@ import {
   getGPUColorScaleParameterValues,
   packGPUColor
 } from '../../../src/gpu-dataframe/column-classification/index';
-import {getGPUPermutationParameterValues} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
-import {getGPUSpatialAutocorrelationParameterValues} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
+import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
+import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {addHotSpotAnalysisRecipe} from '../../../src/gpu-spatial-analysis/recipes/index';
 import {
   aggregateCellsOnCPU,
@@ -29,6 +29,7 @@ import {
 } from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {computeLocalPermutationOracle} from '../permutation-inference/permutation-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const RESOLUTION = 8;
 const CELL_CAPACITY = 256;
@@ -147,6 +148,8 @@ async function runQuadbinScene(
     multipleTesting: 'none' | 'benjamini-hochberg';
     minimumNeighbors?: number;
     extras?: boolean;
+    /** Neighbor slots of the grid-disk CSR; defaults to 8 per study row (no truncation). */
+    neighborCapacity?: number;
   }
 ) {
   const positions = createScene();
@@ -158,21 +161,23 @@ async function runQuadbinScene(
   const polygon = getStudyTiles();
   const [west, , , north] = webMercatorTileBounds(polygon.x0, polygon.y0, RESOLUTION);
   const [, south, east] = webMercatorTileBounds(polygon.x1, polygon.y1, RESOLUTION);
-  const permutationParameters = {seed: 7, permutations: 199, significanceLevel: 0.05};
+  const permutationParameters = {seed: 7, permutationCount: 199, significanceLevel: 0.05};
 
   const fixture = new RecipeTestFixture(device, 'hot-spot-recipe-test');
   try {
     const {graph} = fixture;
     const cap = CELL_CAPACITY;
+    const slots = options.neighborCapacity ?? cap * 8;
     const outputs = {
       cells: fixture.output('cells', 'uint32x2', cap),
       tableCount: fixture.output('table-count', 'uint32', 1),
       tableOverflow: fixture.output('table-overflow', 'uint32', 1),
       values: fixture.output('values', 'float32', cap),
       offsets: fixture.output('weights-offsets', 'uint32', cap + 1),
-      neighbors: fixture.output('weights-neighbors', 'uint32', cap * 8),
-      weightValues: fixture.output('weights-values', 'float32', cap * 8),
+      neighbors: fixture.output('weights-neighbors', 'uint32', slots),
+      weightValues: fixture.output('weights-values', 'float32', slots),
       weightsOverflow: fixture.output('weights-overflow', 'uint32', 1),
+      weightsRequiredCount: fixture.output('weights-required-count', 'uint32', 1),
       zScores: fixture.output('z-scores', 'float32', cap),
       bins: fixture.output('bins', 'sint32', cap),
       neighborCounts: fixture.output('neighbor-counts', 'uint32', cap),
@@ -201,7 +206,8 @@ async function runQuadbinScene(
         family: 'quadbin',
         resolution: RESOLUTION,
         studyArea: {
-          polygonPositions: fixture.input(
+          kind: 'polygons',
+          positions: fixture.input(
             'study-polygon',
             Float32Array.from([west, south, east, south, east, north, west, north]),
             'float32x2',
@@ -212,20 +218,23 @@ async function runQuadbinScene(
           ringOffsets: fixture.input('study-rings', Uint32Array.from([0, 4]), 'uint32', 2),
           candidateCapacity: 1024
         },
-        cellCapacity: cap
+        cellCapacity: cap,
+        ...(options.neighborCapacity === undefined
+          ? {}
+          : {neighborCapacity: options.neighborCapacity})
       },
       minimumNeighbors: options.minimumNeighbors,
       multipleTesting: options.multipleTesting,
-      parameters: fixture.parameters(
+      settings: options.extras ? permutationParameters : {},
+      parameters: fixture.parameterBuffer(
         'autocorrelation-parameters',
         'float32',
-        getGPUSpatialAutocorrelationParameterValues({})
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
       scratch: {
         table: {
           cells: outputs.cells.view,
-          count: outputs.tableCount.view,
-          overflow: outputs.tableOverflow.view
+          status: {count: outputs.tableCount.view, overflow: outputs.tableOverflow.view}
         },
         values: outputs.values.view,
         weights: {
@@ -235,12 +244,9 @@ async function runQuadbinScene(
         }
       },
       outputs: {
-        weightsOverflow: outputs.weightsOverflow.view,
         zScores: outputs.zScores.view,
         bins: outputs.bins.view,
         neighborCounts: outputs.neighborCounts.view,
-        invalidCount: outputs.invalidCount.view,
-        pointsOutsideStudyArea: outputs.outside.view,
         ...(options.extras
           ? {
               permutation: {
@@ -255,15 +261,21 @@ async function runQuadbinScene(
                 classIndices: outputs.classIndices.view
               }
             }
-          : {})
+          : {}),
+        status: {
+          weightsOverflow: outputs.weightsOverflow.view,
+          weightsRequiredCount: outputs.weightsRequiredCount.view,
+          invalidCount: outputs.invalidCount.view,
+          pointsOutsideStudyArea: outputs.outside.view
+        }
       },
       ...(options.extras
         ? {
             permutation: {
-              parameters: fixture.parameters(
+              parameters: fixture.parameterBuffer(
                 'permutation-parameters',
                 'uint32',
-                getGPUPermutationParameterValues(permutationParameters)
+                GPU_PERMUTATION_PARAMETER_LENGTH
               ),
               maximumPermutations: 199
             },
@@ -306,9 +318,10 @@ async function runQuadbinScene(
       tableOverflow: (await fixture.readUint32(outputs.tableOverflow, 1))[0],
       values: await fixture.readFloat32(outputs.values, cap),
       offsets: await fixture.readUint32(outputs.offsets, cap + 1),
-      neighbors: await fixture.readUint32(outputs.neighbors, cap * 8),
-      weightValues: await fixture.readFloat32(outputs.weightValues, cap * 8),
+      neighbors: await fixture.readUint32(outputs.neighbors, slots),
+      weightValues: await fixture.readFloat32(outputs.weightValues, slots),
       weightsOverflow: (await fixture.readUint32(outputs.weightsOverflow, 1))[0],
+      weightsRequiredCount: (await fixture.readUint32(outputs.weightsRequiredCount, 1))[0],
       zScores: await fixture.readFloat32(outputs.zScores, cap),
       bins: await fixture.readInt32(outputs.bins, cap),
       neighborCounts: await fixture.readUint32(outputs.neighborCounts, cap),
@@ -328,9 +341,7 @@ async function runQuadbinScene(
 
 it('addHotSpotAnalysisRecipe analyses every study-area cell, zeros included, with grid-disk neighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const run = await runQuadbinScene(device, {multipleTesting: 'none'});
   const {oracle, rows} = run;
   // The study table is the deduplicated, sorted cover; the points are joined onto it.
@@ -338,6 +349,7 @@ it('addHotSpotAnalysisRecipe analyses every study-area cell, zeros included, wit
   expect(run.tableOverflow).toBe(0);
   expect(run.gpuKeys).toEqual(oracle.studyKeys);
   expect(run.weightsOverflow).toBe(0);
+  expect(run.weightsRequiredCount).toBe(oracle.neighbors.length);
   // Empty study cells (the hole) are rows with value 0, not masked out.
   const emptyCells = oracle.counts.filter(count => count === 0).length;
   expect(emptyCells).toBeGreaterThanOrEqual(20);
@@ -365,7 +377,11 @@ it('addHotSpotAnalysisRecipe analyses every study-area cell, zeros included, wit
 
   // Gi* on the density of all study cells (no occupied-only masking) matches the oracle.
   const density = oracle.counts.map((count, row) => (2 * count) / oracle.areas[row]);
-  const expected = computeHotSpotOracle({weights: oracle.weights, values: density});
+  const expected = computeHotSpotOracle({
+    weights: oracle.weights,
+    // The oracle reads plain numbers; the type only names the GPU column format.
+    values: density as unknown as Float32Array
+  });
   const neighborTotals = oracle.offsets.slice(1).map((end, row) => end - oracle.offsets[row]);
   let invalid = 0;
   let coldSpots = 0;
@@ -402,11 +418,35 @@ it('addHotSpotAnalysisRecipe analyses every study-area cell, zeros included, wit
   expect(run.recipe.inference.multipleTesting).toBe('none');
 }, 120000);
 
+it('addHotSpotAnalysisRecipe reports a truncated grid-disk CSR in the weights stage', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 100 slots hold the first rows of the CSR only (the full table has several hundred).
+  const capacity = 100;
+  const run = await runQuadbinScene(device, {multipleTesting: 'none', neighborCapacity: capacity});
+  const {oracle, rows} = run;
+  const total = oracle.neighbors.length;
+  expect(total).toBeGreaterThan(capacity);
+  // Rule 9: the overflow flag and the unclamped total for the capacity grow loop.
+  expect(run.weightsOverflow).toBe(1);
+  expect(run.weightsRequiredCount).toBe(total);
+  const weightsStage = run.recipe.status.stages.find(entry => entry.stage === 'weights');
+  expect(weightsStage?.status.overflow).toBe(run.recipe.status.weightsOverflow);
+  expect(weightsStage?.status.requiredCount).toBe(run.recipe.status.weightsRequiredCount);
+  // Offsets are clamped to the capacity; rows that fit keep the exact neighbors.
+  for (let row = 0; row <= rows; row++) {
+    expect(run.offsets[row], `offset ${row}`).toBe(Math.min(oracle.offsets[row], capacity));
+  }
+  for (let row = 0; row < rows && oracle.offsets[row + 1] <= capacity; row++) {
+    for (let slot = oracle.offsets[row]; slot < oracle.offsets[row + 1]; slot++) {
+      expect(run.neighbors[slot], `neighbor slot ${slot}`).toBe(oracle.neighbors[slot]);
+    }
+  }
+}, 120000);
+
 it('addHotSpotAnalysisRecipe defaults to Benjamini-Hochberg and is never looser than uncorrected', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const uncorrected = await runQuadbinScene(device, {multipleTesting: 'none'});
   const corrected = await runQuadbinScene(device, {multipleTesting: 'benjamini-hochberg'});
   expect(corrected.recipe.inference.multipleTesting).toBe('benjamini-hochberg');
@@ -424,9 +464,7 @@ it('addHotSpotAnalysisRecipe defaults to Benjamini-Hochberg and is never looser 
 
 it('addHotSpotAnalysisRecipe confirms with permutations and colors the z-scores (no guard)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const run: SceneRun = await runQuadbinScene(device, {
     multipleTesting: 'none',
     minimumNeighbors: 0,
@@ -435,7 +473,11 @@ it('addHotSpotAnalysisRecipe confirms with permutations and colors the z-scores 
   const {oracle, rows} = run;
   expect(run.invalidCount).toBe(0);
   const density = oracle.counts.map((count, row) => (2 * count) / oracle.areas[row]);
-  const expected = computeHotSpotOracle({weights: oracle.weights, values: density});
+  const expected = computeHotSpotOracle({
+    weights: oracle.weights,
+    // The oracle reads plain numbers; the type only names the GPU column format.
+    values: density as unknown as Float32Array
+  });
   for (let row = 0; row < rows; row++) {
     expect(isClose(run.zScores[row], expected.zScores[row], 2e-3, 1e-3), `z row ${row}`).toBe(true);
   }
@@ -494,9 +536,7 @@ function cellAreaKm2(name: string): number {
 
 it('addHotSpotAnalysisRecipe on H3 uses gridDisk(2) neighbors and cell-area density', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createSeededRandom(21);
   const points: number[] = [];
   for (let index = 0; index < 600; index++) {
@@ -522,7 +562,8 @@ it('addHotSpotAnalysisRecipe on H3 uses gridDisk(2) neighbors and cell-area dens
         family: 'h3',
         resolution: H3_RESOLUTION,
         studyArea: {
-          polygonPositions: fixture.input(
+          kind: 'polygons',
+          positions: fixture.input(
             'study-polygon',
             Float32Array.from([-100, 36, -93, 36, -93, 42, -100, 42]),
             'float32x2',
@@ -539,21 +580,21 @@ it('addHotSpotAnalysisRecipe on H3 uses gridDisk(2) neighbors and cell-area dens
         cellCapacity: cap
       },
       analyze: 'density',
-      parameters: fixture.parameters(
+      parameters: fixture.parameterBuffer(
         'autocorrelation-parameters',
         'float32',
-        getGPUSpatialAutocorrelationParameterValues({})
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
       multipleTesting: 'none',
       scratch: {
-        table: {cells: cells.view, count: tableCount.view},
+        table: {cells: cells.view, status: {count: tableCount.view}},
         values: values.view,
         weights: {offsets: offsets.view, neighbors: neighbors.view}
       },
       outputs: {
         zScores: zScores.view,
         neighborCounts: neighborCounts.view,
-        invalidCount: invalidCount.view
+        status: {invalidCount: invalidCount.view}
       }
     });
     expect(recipe.table).toBeDefined();
@@ -635,9 +676,7 @@ it('addHotSpotAnalysisRecipe on H3 uses gridDisk(2) neighbors and cell-area dens
 
 it('addHotSpotAnalysisRecipe analyses a dense lattice with queen weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 12;
   const height = 10;
   const random = createSeededRandom(9);
@@ -686,16 +725,15 @@ it('addHotSpotAnalysisRecipe analyses a dense lattice with queen weights', async
           height,
           neighborCapacity: width * height * 8
         },
-        parameters: fixture.parameters(
+        parameters: fixture.parameterBuffer(
           'autocorrelation-parameters',
           'float32',
-          getGPUSpatialAutocorrelationParameterValues({})
+          GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
         ),
         minimumNeighbors,
         outputs: {
-          weightsOverflow: overflow.view,
           zScores: zScores.view,
-          invalidCount: invalid.view
+          status: {weightsOverflow: overflow.view, invalidCount: invalid.view}
         }
       });
       expect(recipe.inference.testedRowsDefinition).toBe(

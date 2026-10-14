@@ -21,6 +21,7 @@ import {
   type SpatialJoinRunOptions,
   type SpatialJoinRunResult
 } from './spatial-join-sort-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -87,9 +88,7 @@ function createRandomPoints(count: number, extent: number, seed: number): Point[
 
 it('GPUPointInPolygonJoin spatialSort matches the unsorted join and the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const columns = 45;
   const features = createShuffledOverlappingGrid(columns, 5);
   const points = createRandomPoints(1500, columns + 0.25, 6);
@@ -106,9 +105,7 @@ it('GPUPointInPolygonJoin spatialSort matches the unsorted join and the oracle',
 
 it('GPUPointInPolygonJoin spatialSort handles empty features, one feature, and zero extent', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Empty features interleaved with real ones sort last but keep their rows.
   const squares = Array.from({length: 20}, (_, index) =>
     createSquareFeature((index * 7) % 13, (index * 5) % 11, 2)
@@ -156,9 +153,7 @@ it('GPUPointInPolygonJoin spatialSort handles empty features, one feature, and z
 
 it('GPUPointInPolygonJoin spatialSort still reports leaf overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createShuffledOverlappingGrid(8, 9);
   const points = createRandomPoints(200, 8, 10);
   const {unsorted, sorted} = await runPolygonJoin(device, features, points, {
@@ -171,9 +166,7 @@ it('GPUPointInPolygonJoin spatialSort still reports leaf overflow', async () => 
 
 it('GPUNearestFeatureJoin spatialSort matches the unsorted join and the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(21);
   const fround = (value: number) => Math.fround(value);
   const segments: [Point, Point][] = Array.from({length: 1500}, () => {
@@ -208,9 +201,7 @@ it('GPUNearestFeatureJoin spatialSort matches the unsorted join and the oracle',
 
 it('GPUNearestFeatureJoin spatialSort keeps the smallest-row tie-break', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Lattice point features in shuffled rows; query points sit at cell centers so four features are
   // exactly equidistant.
   const lattice: Point[] = [];
@@ -244,9 +235,7 @@ it('GPUNearestFeatureJoin spatialSort keeps the smallest-row tie-break', async (
 
 it('GPUNearestFeatureJoin spatialSort handles one feature, empty features, and leaf overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = createRandomPoints(100, 10, 41);
   let result = await runNearestJoin(device, {starts: [[5, 5]]}, points, 3, {
     candidateCapacity: 256

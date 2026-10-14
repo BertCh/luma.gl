@@ -6,18 +6,21 @@ import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUVariogram} from '../../../src/gpu-dataframe/pair-statistics/gpu-variogram';
-import {getPairStatisticsUnitVarianceOnCPU} from '../../../src/gpu-dataframe/pair-statistics/pair-statistics-fixed-point-unit';
+import {getPairStatisticsUnitVarianceOnCPU} from './pair-statistics-unit-oracle';
 import {
   getGPUVariogramParameterValues,
   GPU_VARIOGRAM_PARAMETER_LENGTH,
   GPU_VARIOGRAM_STATISTICS_LENGTH,
-  type GPUVariogramParameters
+  type GPUVariogramSettings
 } from '../../../src/gpu-dataframe/pair-statistics/variogram-parameters';
 import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
-import {createRandom} from './pair-statistics-oracle';
+import {createRandom, forEachPair, isNearBinEdge} from './pair-statistics-oracle';
 import {computeVariogramOnCPU} from './variogram-oracle';
 import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
 import {VARIOGRAM_OUTLIER_REFERENCES} from './variogram-outlier-reference';
+import {getVariogramReferenceMismatches, VARIOGRAM_REFERENCE} from './variogram-reference';
+import {VARIOGRAM_EDGE_POLICY} from '../dataframe-edge-policy';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -69,12 +72,14 @@ function createHarness(
         gridSize,
         lagCount,
         directionCount,
-        semivariances: views.outputs.semivariances as never,
-        pairCounts: views.outputs.pairCounts as never,
-        meanDistances: views.outputs.meanDistances as never,
-        robustSemivariances: views.outputs.robustSemivariances as never,
-        statistics: views.outputs.statistics as never,
-        overflow: views.outputs.overflow as never
+        output: {
+          semivariances: views.outputs.semivariances as never,
+          pairCounts: views.outputs.pairCounts as never,
+          meanDistances: views.outputs.meanDistances as never,
+          robustSemivariances: views.outputs.robustSemivariances as never,
+          statistics: views.outputs.statistics as never,
+          status: {overflow: views.outputs.overflow as never}
+        }
       })
   });
 }
@@ -91,14 +96,12 @@ function expectClose(label: string, actual: number, expected: number, tolerance:
 
 it('GPUVariogram matches the f64 oracle across per-frame distances without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAnisotropicScene(5, 2500);
   const lagCount = 12;
   const harness = createHarness(device, scene, lagCount, 1);
   try {
-    const frames: GPUVariogramParameters[] = [
+    const frames: GPUVariogramSettings[] = [
       {bounds: BOUNDS, maximumDistance: 6},
       {bounds: BOUNDS, maximumDistance: 30},
       {bounds: BOUNDS, maximumDistance: 400},
@@ -164,9 +167,7 @@ it('GPUVariogram matches the f64 oracle across per-frame distances without rebui
 
 it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAnisotropicScene(9, 2000);
   const lagCount = 6;
   const directionCount = 4;
@@ -177,7 +178,20 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
       const frame = {bounds: BOUNDS, maximumDistance: 12, azimuthOffset};
       const result = await harness.run(getGPUVariogramParameterValues(frame));
       const oracle = computeVariogramOnCPU(scene, frame, lagCount, directionCount);
-      // f32 atan2 may move a pair lying within a few ulps of a sector edge.
+      // A-25: f32 atan2 (and f32 lag division) may move a pair lying within a few ulps of a sector
+      // (or lag) edge into the neighboring bin, changing two counts by one. Bound the difference by
+      // twice the pairs within 1e-5 rad of a sector edge (about 80 f32 ulps of pi; the GPU angle
+      // error is a few ulps) or near a lag edge, instead of an unexplained 4.
+      const sectorWidth = Math.PI / directionCount;
+      let edgePairs = 0;
+      forEachPair(scene, frame, 'unordered', ({deltaX, deltaY, distance}) => {
+        const angle = Math.atan2(deltaY, deltaX) - Math.fround(azimuthOffset);
+        const scaled = (angle - Math.floor(angle / Math.PI) * Math.PI) / sectorWidth;
+        const nearSectorEdge = Math.abs(scaled - Math.round(scaled)) * sectorWidth < 1e-5;
+        if (nearSectorEdge || isNearBinEdge(distance, frame.maximumDistance, lagCount)) {
+          edgePairs++;
+        }
+      });
       let countDifference = 0;
       for (let bin = 0; bin < binCount; bin++) {
         countDifference += Math.abs(result.pairCounts[bin] - oracle.pairCounts[bin]);
@@ -190,7 +204,10 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
           );
         }
       }
-      expect(countDifference).toBeLessThanOrEqual(4);
+      expect(
+        countDifference,
+        `offset ${azimuthOffset} edge pairs ${edgePairs}`
+      ).toBeLessThanOrEqual(2 * edgePairs);
       expect(
         result.pairCounts.reduce((sum, count) => sum + count, 0),
         'every pair lands in exactly one sector'
@@ -215,9 +232,7 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
 
 it('GPUVariogram reports NaN for empty lags and zero for constant values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Four points on a line 1 apart: lags of width 1 over [0, 8] see pairs only at 1, 2 and 3.
   const positions = new Float32Array([0, 0, 1, 0, 2, 0, 3, 0]);
   const values = new Float32Array([5, 5, 5, 5]);
@@ -236,8 +251,10 @@ it('GPUVariogram reports NaN for empty lags and zero for constant values', async
         parameters: views.parameters,
         gridSize: [4, 4],
         lagCount: 8,
-        semivariances: views.outputs.semivariances as never,
-        pairCounts: views.outputs.pairCounts as never
+        output: {
+          semivariances: views.outputs.semivariances as never,
+          pairCounts: views.outputs.pairCounts as never
+        }
       })
   });
   try {
@@ -255,16 +272,14 @@ it('GPUVariogram reports NaN for empty lags and zero for constant values', async
 
 it('GPUVariogram bins are bitwise independent of the cell lattice, including direction sectors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The pair loop walks the forward half of the 3x3 cell stencil. Any lattice must meet every pair
   // exactly once: a single cell (plain all-pairs), a thin strip, a lattice finer than the points
   // and a coarse one all have to give the same integer pair sums.
   const scene = createAnisotropicScene(11, 1800);
   const lagCount = 8;
   const directionCount = 4;
-  const frame: GPUVariogramParameters = {bounds: BOUNDS, maximumDistance: 9, azimuthOffset: 0.2};
+  const frame: GPUVariogramSettings = {bounds: BOUNDS, maximumDistance: 9, azimuthOffset: 0.2};
   let reference: Awaited<ReturnType<ReturnType<typeof createHarness>['run']>> | undefined;
   for (const gridSize of [
     [1, 1],
@@ -297,9 +312,7 @@ it('GPUVariogram bins are bitwise independent of the cell lattice, including dir
 
 it('GPUVariogram keeps the typical semivariance when one outlier or sentinel inflates the range', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // N(0, 1) values on 4000 seeded points plus one outlier (2e4 or 1e5 standard deviations), either
   // isolated (it joins no pair but stretches the value range: a range-pegged unit rounded every
   // typical term to 0 and lost 83% to 100% of the semivariance) or embedded among its neighbors
@@ -330,9 +343,11 @@ it('GPUVariogram keeps the typical semivariance when one outlier or sentinel inf
           parameters: views.parameters,
           gridSize: [32, 32],
           lagCount,
-          semivariances: views.outputs.semivariances as never,
-          pairCounts: views.outputs.pairCounts as never,
-          overflow: views.outputs.overflow as never
+          output: {
+            semivariances: views.outputs.semivariances as never,
+            pairCounts: views.outputs.pairCounts as never,
+            status: {overflow: views.outputs.overflow as never}
+          }
         })
     });
     try {
@@ -362,3 +377,66 @@ it('GPUVariogram keeps the typical semivariance when one outlier or sentinel inf
     }
   }
 }, 120000);
+
+it('GPUVariogram matches the scikit-gstat references, including an embedded 2e4 sentinel', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Fixture: test/oracles/dataframe-variogram.py (scikit-gstat 1.0.24). Lattice positions keep
+  // every pair at least nearestEdgeDistance from a lag edge, so pair counts must match exactly;
+  // value tolerances are the derived fixed-point bounds stored with each scene.
+  const {positions, bounds, maximumDistance, lagCount, scenes} = VARIOGRAM_REFERENCE;
+  const mismatches: string[] = [];
+  for (const [name, scene] of Object.entries(scenes)) {
+    const harness = createHarness(
+      device,
+      {
+        positions: Float32Array.from(positions),
+        values: Float32Array.from(scene.values),
+        mask: new Uint32Array(scene.values.length).fill(1)
+      },
+      lagCount,
+      1
+    );
+    try {
+      const result = await harness.run(
+        getGPUVariogramParameterValues({bounds: [...bounds], maximumDistance})
+      );
+      expect(result.overflow, name).toEqual([0]);
+      mismatches.push(...getVariogramReferenceMismatches(name, result, scene));
+    } finally {
+      harness.destroy();
+    }
+  }
+  expect(mismatches).toEqual([]);
+}, 120000);
+
+it('GPUVariogram follows the variogram edge policy', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const row of VARIOGRAM_EDGE_POLICY) {
+    const harness = createHarness(
+      device,
+      {
+        positions: Float32Array.from(row.positions),
+        values: Float32Array.from(row.values),
+        mask: Uint32Array.from(row.mask ?? row.values.map(() => 1))
+      },
+      2,
+      1,
+      [4, 4]
+    );
+    try {
+      // Raw parameters: the CPU packer refuses a non-positive maximum distance.
+      const parameters = new Float32Array(GPU_VARIOGRAM_PARAMETER_LENGTH);
+      parameters.set(row.parameters);
+      const result = await harness.run(parameters);
+      expect(result.pairCounts, row.name).toEqual(row.expectedPairCounts);
+      for (const [lag, expected] of row.expectedSemivariances.entries()) {
+        const actual = result.semivariances[lag];
+        expect(Object.is(actual, expected), `${row.name} lag ${lag}: ${actual}`).toBe(true);
+      }
+    } finally {
+      harness.destroy();
+    }
+  }
+});

@@ -17,10 +17,11 @@ import {
   isCoveredByTriangles,
   type Point
 } from './outline-geometry-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const JOIN_SEGMENTS = 12;
 
-const PATHS: Point[][] = [
+const LINES: Point[][] = [
   [
     [0, 0],
     [10, 0],
@@ -40,32 +41,38 @@ const PATHS: Point[][] = [
   ]
 ];
 
-function flatten(paths: Point[][]) {
+function flatten(lines: Point[][]) {
   const positions: number[] = [];
   const offsets = [0];
-  for (const path of paths) {
-    for (const [x, y] of path) {
+  for (const line of lines) {
+    for (const [x, y] of line) {
       positions.push(x, y);
     }
     offsets.push(positions.length / 2);
   }
-  return {vertices: paths.flat(), positions: new Float32Array(positions), offsets};
+  return {vertices: lines.flat(), positions: new Float32Array(positions), offsets};
 }
 
-for (const geometryType of ['points', 'lines', 'rings'] as GPUOutlineGeometryType[]) {
+for (const geometryType of ['points', 'lines', 'polygons'] as GPUOutlineGeometryType[]) {
   it(`GPUOutlineGeometry builds ${geometryType} like the f64 oracle and covers the offset region`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
-    const {vertices, positions, offsets} = flatten(PATHS);
+    requireTestDevice(device);
+    const {vertices, positions, offsets} = flatten(LINES);
     const verticesPerInput = getGPUOutlineGeometryVerticesPerInput(JOIN_SEGMENTS);
     const fixture = createGeometryFixture(device, {
       inputs: {
         positions: {values: positions, format: 'float32x2'},
         ...(geometryType === 'points'
           ? {}
-          : {pathOffsets: {values: new Uint32Array(offsets), format: 'uint32'}})
+          : {lineOffsets: {values: new Uint32Array(offsets), format: 'uint32'}}),
+        ...(geometryType === 'polygons'
+          ? {
+              identity: {
+                values: Uint32Array.from({length: offsets.length}, (_, index) => index),
+                format: 'uint32' as const
+              }
+            }
+          : {})
       },
       outputs: {
         output: {format: 'float32x2', length: vertices.length * verticesPerInput}
@@ -73,8 +80,16 @@ for (const geometryType of ['points', 'lines', 'rings'] as GPUOutlineGeometryTyp
       create: ({inputs, outputs, parameters}) =>
         new GPUOutlineGeometry({
           positions: inputs['positions'] as never,
-          pathOffsets: inputs['pathOffsets'] as never,
-          geometryType,
+          ...(geometryType === 'points'
+            ? {geometryType}
+            : geometryType === 'lines'
+              ? {geometryType, lineOffsets: inputs['lineOffsets'] as never}
+              : {
+                  geometryType,
+                  featureOffsets: inputs['identity'] as never,
+                  polygonOffsets: inputs['identity'] as never,
+                  ringOffsets: inputs['lineOffsets'] as never
+                }),
           joinSegments: JOIN_SEGMENTS,
           parameters,
           output: {positions: outputs['output'] as never}
@@ -107,20 +122,20 @@ for (const geometryType of ['points', 'lines', 'rings'] as GPUOutlineGeometryTyp
       for (let sample = 0; sample < 400; sample++) {
         const point: Point = [random() * 60 - 12, random() * 40 - 14];
         let nearest = Infinity;
-        PATHS.forEach((path, pathIndex) => {
-          if (geometryType === 'points' || path.length === 1) {
-            for (const vertex of path) {
+        LINES.forEach((line, lineIndex) => {
+          if (geometryType === 'points' || line.length === 1) {
+            for (const vertex of line) {
               nearest = Math.min(nearest, Math.hypot(point[0] - vertex[0], point[1] - vertex[1]));
             }
           }
-          const last = geometryType === 'rings' ? path.length : path.length - 1;
+          const last = geometryType === 'polygons' ? line.length : line.length - 1;
           for (let segment = 0; geometryType !== 'points' && segment < last; segment++) {
             nearest = Math.min(
               nearest,
-              getPointSegmentDistance(point, path[segment], path[(segment + 1) % path.length])
+              getPointSegmentDistance(point, line[segment], line[(segment + 1) % line.length])
             );
           }
-          void pathIndex;
+          void lineIndex;
         });
         if (nearest <= distance * inscribed * 0.98) {
           insideChecked++;
@@ -140,21 +155,19 @@ for (const geometryType of ['points', 'lines', 'rings'] as GPUOutlineGeometryTyp
 
 it('GPUOutlineGeometry offsets spherical vertices by meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = new Float32Array([10, 60, 10.01, 60]);
   const verticesPerInput = getGPUOutlineGeometryVerticesPerInput(8);
   const fixture = createGeometryFixture(device, {
     inputs: {
       positions: {values: positions, format: 'float32x2'},
-      pathOffsets: {values: new Uint32Array([0, 2]), format: 'uint32'}
+      lineOffsets: {values: new Uint32Array([0, 2]), format: 'uint32'}
     },
     outputs: {output: {format: 'float32x2', length: 2 * verticesPerInput}},
     create: ({inputs, outputs, parameters}) =>
       new GPUOutlineGeometry({
         positions: inputs['positions'] as never,
-        pathOffsets: inputs['pathOffsets'] as never,
+        lineOffsets: inputs['lineOffsets'] as never,
         geometryType: 'lines',
         spatialContext: {
           coordinateSpace: 'longitude-latitude',

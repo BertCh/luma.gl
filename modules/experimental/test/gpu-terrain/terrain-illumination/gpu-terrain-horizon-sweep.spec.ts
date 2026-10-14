@@ -16,7 +16,12 @@ import {
   type GPUTerrainHorizonSettings
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import {getTerrainHorizonSweepNode} from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -27,6 +32,7 @@ import {
   computeTerrainHorizonSweepBruteForce,
   computeTerrainHorizonSweepHull
 } from './terrain-horizon-sweep-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Opt in with `VITE_TERRAIN_SWEEP_BENCHMARK=true npx vitest run --project headless <this file>`.
 const RUN_BENCHMARK =
@@ -39,7 +45,7 @@ type SweepFixtureOptions = {
   height: number;
   directionCount: number;
   maximumRadius: number;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   rowDirection?: 'south' | 'north';
   zFactorSign?: 1 | -1;
   /** `horizon` stores every angle pixel-major, `sine` accumulates `sin(max(h, 0))` per pixel. */
@@ -47,8 +53,9 @@ type SweepFixtureOptions = {
 };
 
 type SweepFixture = {
-  run(settings: GPUTerrainHorizonSettings): Promise<number[]>;
-  submit(settings: GPUTerrainHorizonSettings): void;
+  /** Packs `settings` on `frameGrid` (default: 10 m square cells), runs, and reads back. */
+  run(settings: GPUTerrainHorizonSettings, frameGrid?: GPURasterMetadata): Promise<number[]>;
+  submit(settings: GPUTerrainHorizonSettings, frameGrid?: GPURasterMetadata): void;
   compiled: {destroy(): void};
   destroy(): void;
 };
@@ -62,28 +69,25 @@ function createSweepFixture(
   const {width, height, directionCount} = options;
   const pixelCount = width * height;
   const graph = new GPUCommandGraph(device, {id: 'terrain-sweep-test'});
+  // Canonical elevation: NaN exactly where a pixel is invalid (the sweep has no validity binding).
   const values = createInputBuffer(
     device,
-    Float32Array.from(elevation, value => (Number.isFinite(value) ? value : 0))
-  );
-  const validity = createInputBuffer(
-    device,
-    Uint32Array.from(elevation, value => (Number.isFinite(value) ? 1 : 0))
+    Float32Array.from(elevation, value => (Number.isFinite(value) ? value : Number.NaN))
   );
   const outputLength = options.output === 'horizon' ? pixelCount * directionCount : pixelCount;
   const output = createOutputBuffer(device, outputLength);
+  const defaultGrid = makeGPURasterMetadata({width, height, cellSize: 10});
   const settings = new GPUParameterBuffer(device, {
     id: 'sweep-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainHorizonParameterValues({cellSize: [10, 10]})
+    values: getGPUTerrainHorizonParameterValues({}, defaultGrid)
   });
   graph.add({
     id: 'sweep-harness',
     getCommandNodes: nodeGraph => {
       const hull = createTransientView(nodeGraph, 'sweep-hull', 'uint32', pixelCount);
       const valuesView = importGraphBuffer(nodeGraph, 'values', values, 'float32', pixelCount);
-      const validityView = importGraphBuffer(nodeGraph, 'validity', validity, 'uint32', pixelCount);
       const settingsView = settings.importToGraph(nodeGraph);
       const outputView = importGraphBuffer(nodeGraph, 'out', output, 'float32', outputLength);
       return Array.from({length: directionCount}, (_, sector) =>
@@ -100,7 +104,6 @@ function createSweepFixture(
           cellSizeMode: options.cellSizeMode ?? 'uniform',
           zFactorSign: options.zFactorSign ?? 1,
           elevationValues: valuesView,
-          elevationValidity: validityView,
           settings: settingsView,
           hull,
           outputBindings: [{name: 'out', view: outputView, type: 'f32', access: 'read_write'}],
@@ -118,19 +121,18 @@ const SECTOR: u32 = ${sector}u;`,
   const compiled = graph.compile();
   return {
     compiled,
-    submit(values) {
-      settings.write(getGPUTerrainHorizonParameterValues(values));
+    submit(values, frameGrid = defaultGrid) {
+      settings.write(getGPUTerrainHorizonParameterValues(values, frameGrid));
       submitGraph(device, compiled, undefined);
     },
-    async run(values) {
-      this.submit(values);
+    async run(values, frameGrid) {
+      this.submit(values, frameGrid);
       return readFloat32(output, outputLength);
     },
     destroy() {
       compiled.destroy();
       settings.destroy();
       values.destroy();
-      validity.destroy();
       output.destroy();
     }
   };
@@ -170,16 +172,14 @@ function createNoisyTerrain(width: number, height: number, seed: number): Float3
 
 it('sweep kernel matches the float64 brute force on random terrain with nodata', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 48;
   const height = 40;
   const elevation = createNoisyTerrain(width, height, 21);
-  const settingsList: GPUTerrainHorizonSettings[] = [
-    {cellSize: [10, 10]},
-    {cellSize: [10, 12], zFactor: 2},
-    {cellSize: [10, 10], curvatureCoefficient: 1e-3, maximumDistance: 95}
+  const settingsList: {settings: GPUTerrainHorizonSettings; cellSize: [number, number]}[] = [
+    {settings: {}, cellSize: [10, 10]},
+    {settings: {zFactor: 2}, cellSize: [10, 12]},
+    {settings: {curvatureCoefficient: 1e-3, maximumDistance: 95}, cellSize: [10, 10]}
   ];
   for (const [directionCount, maximumRadius] of [
     [8, 12],
@@ -194,15 +194,15 @@ it('sweep kernel matches the float64 brute force on random terrain with nodata',
       maximumRadius,
       output: 'horizon'
     });
-    for (const settings of settingsList) {
-      const actual = await fixture.run(settings);
+    for (const {settings, cellSize} of settingsList) {
+      const actual = await fixture.run(settings, makeGPURasterMetadata({width, height, cellSize}));
       const expected = computeTerrainHorizonSweepBruteForce({
         width,
         height,
         elevation,
         directionCount,
         maximumRadius,
-        cellSize: [settings.cellSize[0], settings.cellSize[1]],
+        cellSize,
         zFactor: settings.zFactor,
         curvatureCoefficient: settings.curvatureCoefficient,
         maximumDistance: settings.maximumDistance
@@ -218,17 +218,20 @@ it('sweep kernel matches the float64 brute force on random terrain with nodata',
 
 it('sweep kernel supports north rows, Web Mercator cells, and the nadir pass', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 32;
   const height = 24;
   const elevation = createNoisyTerrain(width, height, 5);
-  const settings: GPUTerrainHorizonSettings = {
-    cellSize: [20, 20],
-    northEdge: 0.3,
-    southEdge: 0.32
-  };
+  // 20 km cells in EPSG:3857 meters from normalized Web Mercator y 0.3 (about 58 degrees north);
+  // the z factor restores slopes of the former 20 m cells.
+  const mercatorGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [20000, 20000],
+    origin: [0, getOracleWebMercatorY(0.3)],
+    rowDirection: 'north'
+  });
+  const settings: GPUTerrainHorizonSettings = {zFactor: 1000};
   for (const zFactorSign of [1, -1] as const) {
     const fixture = createSweepFixture(device, elevation, {
       width,
@@ -240,7 +243,7 @@ it('sweep kernel supports north rows, Web Mercator cells, and the nadir pass', a
       zFactorSign,
       output: 'horizon'
     });
-    const actual = await fixture.run(settings);
+    const actual = await fixture.run(settings, mercatorGrid);
     const expected = computeTerrainHorizonSweepBruteForce({
       width,
       height,
@@ -249,10 +252,8 @@ it('sweep kernel supports north rows, Web Mercator cells, and the nadir pass', a
       maximumRadius: 10,
       rowDirection: 'north',
       cellSizeMode: 'web-mercator',
-      cellSize: [20, 20],
-      northEdge: 0.3,
-      southEdge: 0.32,
-      zFactor: zFactorSign
+      ...getRasterGridGeoreference(mercatorGrid),
+      zFactor: 1000 * zFactorSign
     });
     expect(actual.filter(angle => angle > 5).length).toBeGreaterThan(30);
     expectCloseToOracle(actual, expected.horizon, 2e-3);
@@ -262,9 +263,7 @@ it('sweep kernel supports north rows, Web Mercator cells, and the nadir pass', a
 
 it('sweep kernel follows ground azimuths on a 60 N geographic grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Anisotropic cells (55.8 m x 111.4 m): the kernel derives the line family from the reference
   // row's cell size, and the oracle does the same through getTerrainSweepGroundLineGeometry. The
   // node spec 'sweep ground geometry fixtures stay clear of rounding ties' checks that no sector of
@@ -272,11 +271,13 @@ it('sweep kernel follows ground azimuths on a 60 N geographic grid', async () =>
   const width = 32;
   const height = 24;
   const elevation = createNoisyTerrain(width, height, 7);
-  const settings: GPUTerrainHorizonSettings = {
-    cellSize: [0.001, 0.001],
-    northEdge: 60.012,
-    southEdge: 59.988
-  };
+  // 24 rows of 0.001 degrees from 60.012 to 59.988 north.
+  const geographicGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: 0.001,
+    origin: [0, 60.012]
+  });
   const fixture = createSweepFixture(device, elevation, {
     width,
     height,
@@ -285,7 +286,7 @@ it('sweep kernel follows ground azimuths on a 60 N geographic grid', async () =>
     cellSizeMode: 'geographic',
     output: 'horizon'
   });
-  const actual = await fixture.run(settings);
+  const actual = await fixture.run({}, geographicGrid);
   const expected = computeTerrainHorizonSweepBruteForce({
     width,
     height,
@@ -293,9 +294,7 @@ it('sweep kernel follows ground azimuths on a 60 N geographic grid', async () =>
     directionCount: 12,
     maximumRadius: 12,
     cellSizeMode: 'geographic',
-    cellSize: [0.001, 0.001],
-    northEdge: 60.012,
-    southEdge: 59.988
+    ...getRasterGridGeoreference(geographicGrid)
   });
   expect(actual.filter(angle => angle > 5).length).toBeGreaterThan(30);
   expectCloseToOracle(actual, expected.horizon, 2e-3);
@@ -304,9 +303,7 @@ it('sweep kernel follows ground azimuths on a 60 N geographic grid', async () =>
 
 it('sweep kernel reports exact zero on planes and analytic angles on ramps and walls', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 41;
   const height = 21;
   const flat = new Float32Array(width * height).fill(4321.123);
@@ -318,7 +315,7 @@ it('sweep kernel reports exact zero on planes and analytic angles on ramps and w
     output: 'horizon'
   });
   for (const zFactor of [1, 0.3, 1.37]) {
-    const result = await flatFixture.run({cellSize: [10, 10], zFactor});
+    const result = await flatFixture.run({zFactor});
     expect(result.every(angle => angle === 0)).toBe(true);
   }
   flatFixture.destroy();
@@ -332,7 +329,7 @@ it('sweep kernel reports exact zero on planes and analytic angles on ramps and w
     maximumRadius: 8,
     output: 'horizon'
   });
-  const rampResult = await rampFixture.run({cellSize: [10, 10]});
+  const rampResult = await rampFixture.run({});
   const center = 10 * width + 20;
   const expected = (Math.atan(0.37) * 180) / Math.PI;
   expect(rampResult[center * 8 + 2]).toBeCloseTo(expected, 4); // east
@@ -358,10 +355,10 @@ it('sweep kernel reports exact zero on planes and analytic angles on ramps and w
       maximumRadius,
       output: 'horizon'
     });
-    const wallResult = await wallFixture.run({cellSize: [10, 10]});
+    const wallResult = await wallFixture.run({});
     expect(wallResult[(10 * width + 20) * 8 + 2]).toBeCloseTo(expectedAngle, 4);
     // Maximum distance 95 m excludes the wall at 100 m regardless of the pixel radius.
-    const limited = await wallFixture.run({cellSize: [10, 10], maximumDistance: 95});
+    const limited = await wallFixture.run({maximumDistance: 95});
     expect(limited[(10 * width + 20) * 8 + 2]).toBeCloseTo(0, 4);
     wallFixture.destroy();
   }
@@ -382,9 +379,7 @@ function createGentleTerrain(width: number, height: number): Float32Array {
 
 it('sweep kernel agrees statistically with the ray march', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 64;
   const height = 64;
   const rough = createSmoothTerrain(width, height, 13);
@@ -404,7 +399,7 @@ it('sweep kernel agrees statistically with the ray march', async () => {
         maximumRadius,
         output: 'sine'
       });
-      const sine = await fixture.run({cellSize: [10, 10]});
+      const sine = await fixture.run({});
       const march = computeTerrainHorizon({
         width,
         height,
@@ -452,9 +447,7 @@ async function measure(device: Device, submit: () => void): Promise<number> {
 
 it.skipIf(!RUN_BENCHMARK)('sweep vs march timing on 1024^2', {timeout: 600000}, async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const size = 1024;
   const pixelCount = size * size;
   const elevation = createSmoothTerrain(size, size, 3);
@@ -487,23 +480,23 @@ it.skipIf(!RUN_BENCHMARK)('sweep vs march timing on 1024^2', {timeout: 600000}, 
       maximumRadius,
       output: 'sine'
     });
-    const sweepMilliseconds = await measure(device, () => sweep.submit({cellSize: [10, 10]}));
-    const sine = await sweep.run({cellSize: [10, 10]});
+    const sweepMilliseconds = await measure(device, () => sweep.submit({}));
+    const sine = await sweep.run({});
     sweep.destroy();
 
     const graph = new GPUCommandGraph(device, {id: 'march'});
     const values = createInputBuffer(device, elevation);
     const svf: Buffer = createOutputBuffer(device, pixelCount);
+    const marchGrid = makeGPURasterMetadata({width: size, height: size, cellSize: 10});
     const settings = new GPUParameterBuffer(device, {
-      id: 'march-settings',
+      id: 'march-parameters',
       format: 'float32',
       length: 8,
-      values: getGPUTerrainHorizonParameterValues({cellSize: [10, 10]})
+      values: getGPUTerrainHorizonParameterValues({}, marchGrid)
     });
     graph.add(
       new GPUTerrainHorizon({
-        width: size,
-        height: size,
+        grid: marchGrid,
         maximumRadius,
         directionCount: 16,
         elevation: {
@@ -514,8 +507,8 @@ it.skipIf(!RUN_BENCHMARK)('sweep vs march timing on 1024^2', {timeout: 600000}, 
             values: importGraphBuffer(graph, 'elevation', values, 'float32', pixelCount)
           }
         },
-        settings: settings.importToGraph(graph),
-        skyViewFactor: importGraphBuffer(graph, 'svf', svf, 'float32', pixelCount)
+        parameters: settings.importToGraph(graph),
+        output: {skyViewFactor: importGraphBuffer(graph, 'svf', svf, 'float32', pixelCount)}
       })
     );
     const compiled = graph.compile();

@@ -39,7 +39,7 @@ function createProps(
     output: {
       tests: view('float32', 18),
       summary: view('float32', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH),
-      status: view('uint32', 1)
+      status: {code: view('uint32', 1)}
     },
     ...overrides
   };
@@ -70,7 +70,7 @@ it('GPUSpatialRegressionDiagnostics validates its inputs', () => {
       output: {
         tests: view('float32', 17),
         summary: view('float32', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH),
-        status: view('uint32', 1)
+        status: {code: view('uint32', 1)}
       }
     },
     /output.tests/
@@ -80,7 +80,7 @@ it('GPUSpatialRegressionDiagnostics validates its inputs', () => {
       output: {
         tests: view('float32', 18),
         summary: view('float32', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH - 1),
-        status: view('uint32', 1)
+        status: {code: view('uint32', 1)}
       }
     },
     /output.summary/

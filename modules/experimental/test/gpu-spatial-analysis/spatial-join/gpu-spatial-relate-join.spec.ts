@@ -35,6 +35,7 @@ import {
 import {RELATE_KINDS, getRandomRelateSeeds, getRelateSide} from './spatial-relate-scenes';
 import {createRandom} from '../segment-intersection/segment-intersection-oracle';
 import {SHAPELY_RELATE_FIXTURES} from './shapely-relate-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const INTERSECTS_PATTERNS = ['T********', '*T*******', '***T*****', '****T****'];
 
@@ -143,20 +144,23 @@ async function runJoin(
       excludeSameRow: options.excludeSameRow,
       prepared,
       candidateCapacity: capacity,
-      pairs: isAnti
-        ? undefined
-        : {
-            leftIds: leftIds.view,
-            rightIds: rightIds.view,
-            count: count.view,
-            overflow: overflow.view
-          },
-      relate: options.relate ? relate.view : undefined,
-      unmatched: isAnti
-        ? {ids: unmatchedIds.view, count: unmatchedCount.view, overflow: unmatchedOverflow.view}
-        : undefined,
-      candidateCount: candidateCount.view,
-      uncertainCount: uncertain.view
+      output: {
+        pairs: isAnti
+          ? undefined
+          : {
+              leftIds: leftIds.view,
+              rightIds: rightIds.view,
+              status: {count: count.view, overflow: overflow.view}
+            },
+        relate: options.relate ? relate.view : undefined,
+        unmatched: isAnti
+          ? {
+              ids: unmatchedIds.view,
+              status: {count: unmatchedCount.view, overflow: unmatchedOverflow.view}
+            }
+          : undefined,
+        status: {candidateCount: candidateCount.view, uncertainCount: uncertain.view}
+      }
     })
   );
   const compiled = graph.compile();
@@ -218,9 +222,7 @@ function getShapelyPairs(bits: string, rightCount: number): [number, number][] {
 
 it('GPUSpatialPredicateJoin relate pattern emits Shapely DE-9IM matrices for all kinds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let total = 0;
   for (const leftKind of RELATE_KINDS) {
     for (const rightKind of RELATE_KINDS) {
@@ -231,7 +233,7 @@ it('GPUSpatialPredicateJoin relate pattern emits Shapely DE-9IM matrices for all
         pattern: INTERSECTS_PATTERNS,
         relate: true
       });
-      const expectedPairs = getShapelyPairs(fixture.predicates.intersects, rights.length);
+      const expectedPairs = getShapelyPairs(fixture.predicates['intersects'], rights.length);
       expect(result.overflow, label).toBe(0);
       expect(result.pairs, label).toEqual(expectedPairs);
       const expectedMatrices = expectedPairs.map(([row, column]) => {
@@ -263,9 +265,7 @@ it('GPUSpatialPredicateJoin relate pattern emits Shapely DE-9IM matrices for all
 
 it('GPUSpatialPredicateJoin named predicates match Shapely for all kinds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const predicates: GPUSpatialPredicate[] = [
     'covers',
     'coveredBy',
@@ -296,9 +296,7 @@ it('GPUSpatialPredicateJoin named predicates match Shapely for all kinds', async
 
 it('GPUSpatialPredicateJoin intersects, contains and within agree with their relate masks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let total = 0;
   for (const leftKind of RELATE_KINDS) {
     for (const rightKind of RELATE_KINDS) {
@@ -325,9 +323,7 @@ it('GPUSpatialPredicateJoin intersects, contains and within agree with their rel
 
 it("GPUSpatialPredicateJoin how: 'anti' emits unmatched left rows", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let total = 0;
   for (const [leftKind, rightKind] of [
     ['points', 'polygons'],
@@ -354,9 +350,7 @@ it("GPUSpatialPredicateJoin how: 'anti' emits unmatched left rows", async () => 
 
 it('GPUSpatialPredicateJoin relate handles Shapely reference cases on the GPU', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const squares = [rectangle(0, 0, 2, 2), rectangle(2, 0, 2, 2), rectangle(0, 0, 2, 2)];
   const shared = await runJoin(device, 'polygons', [squares[0]], 'polygons', [squares[1]], {
     predicate: 'relate',
@@ -411,32 +405,30 @@ it('GPUSpatialPredicateJoin relate handles Shapely reference cases on the GPU', 
 
 it('GPUSpatialPredicateJoin rejects invalid relate configurations', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'relate-validation'});
   const buffers: Buffer[] = [];
   const geometry = createGeometry(device, graph, 'g', 'points', [point(0, 0)], buffers);
   const ids = importGraphBuffer(graph, 'ids', createOutputBuffer(device, 1), 'uint32', 1);
   const scalar = importGraphBuffer(graph, 'scalar', createOutputBuffer(device, 1), 'uint32', 1);
   const base = {left: geometry, right: geometry, candidateCapacity: 1};
-  const pairs = {leftIds: ids, rightIds: ids, count: scalar, overflow: scalar};
-  expect(() => new GPUSpatialPredicateJoin({...base, predicate: 'relate', pairs} as never)).toThrow(
-    /pattern/
-  );
+  const output = {pairs: {leftIds: ids, rightIds: ids, status: {count: scalar, overflow: scalar}}};
+  expect(
+    () => new GPUSpatialPredicateJoin({...base, predicate: 'relate', output} as never)
+  ).toThrow(/pattern/);
   expect(
     () =>
-      new GPUSpatialPredicateJoin({...base, predicate: 'intersects', pattern: 'T********', pairs})
+      new GPUSpatialPredicateJoin({...base, predicate: 'intersects', pattern: 'T********', output})
   ).toThrow(/pattern requires/);
   expect(
-    () => new GPUSpatialPredicateJoin({...base, predicate: 'relate', pattern: 'F********', pairs})
+    () => new GPUSpatialPredicateJoin({...base, predicate: 'relate', pattern: 'F********', output})
   ).toThrow(/disjoint/);
   expect(
-    () => new GPUSpatialPredicateJoin({...base, predicate: 'relate', pattern: 'T*', pairs})
+    () => new GPUSpatialPredicateJoin({...base, predicate: 'relate', pattern: 'T*', output})
   ).toThrow(/nine characters/);
-  expect(() => new GPUSpatialPredicateJoin({...base, predicate: 'touches', how: 'anti'})).toThrow(
-    /unmatched/
-  );
+  expect(
+    () => new GPUSpatialPredicateJoin({...base, predicate: 'touches', how: 'anti', output: {}})
+  ).toThrow(/unmatched/);
   for (const buffer of buffers) {
     buffer.destroy();
   }
@@ -444,9 +436,7 @@ it('GPUSpatialPredicateJoin rejects invalid relate configurations', async () => 
 
 it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'prepared-join'});
   const buffers: Buffer[] = [];
   const polygons = [rectangle(0, 0, 4, 4), rectangle(10, 10, 4, 4)];
@@ -479,11 +469,15 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
       predicate: 'within',
       prepared,
       candidateCapacity: 8,
-      pairs: {
-        leftIds: leftIds.view,
-        rightIds: rightIds.view,
-        count: count.view,
-        overflow: overflow.view
+      output: {
+        pairs: {
+          leftIds: leftIds.view,
+          rightIds: rightIds.view,
+          status: {
+            count: count.view,
+            overflow: overflow.view
+          }
+        }
       }
     })
   );
@@ -538,9 +532,7 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
 
 it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candidates', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {lefts, rights} = getScene('polygons', 'lines');
   const bounds = (feature: OracleFeature) => {
     const vertices =
@@ -605,12 +597,14 @@ it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candida
         right,
         prepared,
         distance: distance.importToGraph(graph),
-        pairs: {
+        output: {
           leftIds: leftIds.view,
           rightIds: rightIds.view,
-          count: count.view,
-          overflow: overflow.view,
-          requiredCount: total.view
+          status: {
+            count: count.view,
+            overflow: overflow.view,
+            requiredCount: total.view
+          }
         }
       })
     );
@@ -640,9 +634,7 @@ it('GPUSpatialJoinCandidates reads a per-frame distance and emits sorted candida
 
 it('GPUPointInPolygonJoin reuses a prepared polygon tree for animated points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'pip-prepared'});
   const buffers: Buffer[] = [];
   const polygons = createGeometry(
@@ -664,15 +656,17 @@ it('GPUPointInPolygonJoin reuses a prepared polygon tree for animated points', a
   graph.add(prepared);
   graph.add(
     new GPUPointInPolygonJoin({
-      points: importGraphBuffer(graph, 'points', pointBuffer, 'float32x2', 3),
-      polygonPositions: polygons.positions,
-      featureOffsets: polygons.featureOffsets,
-      polygonOffsets: polygons.polygonOffsets,
-      ringOffsets: polygons.ringOffsets,
+      points: {
+        kind: 'points',
+        positions: importGraphBuffer(graph, 'points', pointBuffer, 'float32x2', 3)
+      },
+      polygons,
       prepared,
       candidateCapacity: 8,
-      pointFeatureIds: importGraphBuffer(graph, 'assignments', assignments, 'uint32', 3),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+      output: {
+        pointFeatureIds: importGraphBuffer(graph, 'assignments', assignments, 'uint32', 3),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -699,9 +693,7 @@ function stepFloat32(value: number, steps: number): number {
 
 it('GPUSpatialPredicateJoin relate is exact on non-dyadic near-degenerate lines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const exact = await runJoin(
     device,
     'lines',
@@ -744,9 +736,7 @@ it('GPUSpatialPredicateJoin relate is exact on non-dyadic near-degenerate lines'
 
 it('GPUSpatialPredicateJoin relate is exact for lines against a diagonal polygon edge', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const f = Math.fround;
   const polygon = polygonWithRings([
     [f(0.1), f(0.1)],
@@ -786,9 +776,7 @@ it('GPUSpatialPredicateJoin relate is exact for lines against a diagonal polygon
 
 it('GPUSpatialPredicateJoin relate breaks edges by exact signs, not the f32 denominator', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // D-04 fixtures (all coordinates are f32-exact). Matrices are shapely 2.2.0 `relate`; the search
   // that found them is scratchpad fix/work/W2A/d04/d04b.py. The first two pairs are exactly
   // collinear overlapping segments on y = 3x whose f32 cross product of directions is nonzero; the
@@ -829,9 +817,7 @@ it('GPUSpatialPredicateJoin relate breaks edges by exact signs, not the f32 deno
 
 it('GPUSpatialPredicateJoin relate still counts non-finite input as uncertain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runJoin(
     device,
     'lines',
@@ -892,13 +878,17 @@ async function runPerFrame(
       distance: predicate === 'dwithin' ? distanceBuffer.importToGraph(graph) : undefined,
       engine: isRelate ? undefined : engine,
       candidateCapacity: capacity,
-      pairs: {
-        leftIds: leftIds.view,
-        rightIds: rightIds.view,
-        count: count.view,
-        overflow: overflow.view
-      },
-      relate: predicate === 'dwithin' ? undefined : relate.view
+      output: {
+        pairs: {
+          leftIds: leftIds.view,
+          rightIds: rightIds.view,
+          status: {
+            count: count.view,
+            overflow: overflow.view
+          }
+        },
+        relate: predicate === 'dwithin' ? undefined : relate.view
+      }
     })
   );
   const compiled = graph.compile();
@@ -932,9 +922,7 @@ async function runPerFrame(
 
 it('GPUSpatialPredicateJoin per-frame relate pattern equals the compile-time pattern', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {lefts, rights} = getScene('polygons', 'polygons');
   const settings: PerFrameSetting[] = [
     {pattern: 'T*T***T**'},
@@ -977,9 +965,7 @@ it('GPUSpatialPredicateJoin per-frame relate pattern equals the compile-time pat
 
 it('GPUSpatialPredicateJoin per-frame dwithin distance equals the compile-time distance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [leftKind, rightKind] of [
     ['polygons', 'polygons'],
     ['lines', 'polygons'],

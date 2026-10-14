@@ -4,3 +4,4 @@
 
 import './gpu-crossfilter.spec';
 import './gpu-crossfilter-attributes.spec';
+import './gpu-crossfilter-skip-cube.spec';

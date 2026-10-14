@@ -17,6 +17,7 @@ import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources
 } from '../../utils/gpu-contributor-test-utils';
+import {makeGPURasterBand, makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {computeTerrainFlow, TERRAIN_FLOW_DEMS} from './terrain-flow-oracle';
 
 const WIDTH = 31;
@@ -57,9 +58,8 @@ it('review C-03: unresolved accumulation no longer erases the main river from st
   const elevation = TERRAIN_FLOW_DEMS.valley(WIDTH, HEIGHT);
   const oracle = computeTerrainFlow({
     elevation,
-    width: WIDTH,
-    height: HEIGHT,
-    settings: {cellSize: [1, 1], streamThreshold: THRESHOLD}
+    grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
+    settings: {streamThreshold: THRESHOLD}
   });
   // Emulate an accumulation round limit: cells whose donor tree is taller than 8 stay NaN. Each
   // cell waits for all of its donors, so the unresolved set is closed downstream: the trunk.
@@ -113,23 +113,19 @@ it('streams, HAND and stream order kernels carry the unresolved stream word', ()
   let instance = 0;
   const view = <Format extends 'float32' | 'uint32'>(format: Format, length = cells) =>
     createTransientView(graph, `view-${instance++}`, format, length);
-  const band = () => ({
-    id: `band-${instance++}`,
-    format: 'float32' as const,
-    storage: {kind: 'buffer' as const, values: view('float32')}
-  });
+  const grid = makeGPURasterMetadata({width: 6, height: 5});
+  const band = () => makeGPURasterBand(view('float32'), grid, {id: `band-${instance++}`});
   expect(GPU_TERRAIN_FLOW_STREAM_UNRESOLVED).toBe(0xffffffff);
   expect(GPU_TERRAIN_DRAINAGE_UNRESOLVED).toBe(0xfffffffe);
 
   const flowSources = getGPUCommandNodeKernelSources(
     new GPUTerrainFlow({
       id: 'flow',
-      width: 6,
-      height: 5,
+      grid,
       elevation: band(),
-      settings: view('float32', 8),
-      streams: view('uint32'),
-      maxAccumulationIterations: 1
+      parameters: view('float32', 8),
+      output: {streams: view('uint32')},
+      maximumAccumulationIterations: 1
     }).getCommandNodes(graph)
   );
   const streams = flowSources.find(source => source.id.includes('flow-streams'));
@@ -138,13 +134,11 @@ it('streams, HAND and stream order kernels carry the unresolved stream word', ()
   const handSources = getGPUCommandNodeKernelSources(
     new GPUTerrainHeightAboveDrainage({
       id: 'hand',
-      width: 6,
-      height: 5,
+      grid,
       elevation: band(),
       flowDirections: view('uint32'),
       streams: view('uint32'),
-      heightAboveDrainage: view('float32'),
-      drainageCells: view('uint32')
+      output: {heightAboveDrainage: view('float32'), drainageCells: view('uint32')}
     }).getCommandNodes(graph)
   );
   const height = handSources.find(source => source.id.includes('hand-height'));
@@ -154,15 +148,38 @@ it('streams, HAND and stream order kernels carry the unresolved stream word', ()
   const orderSources = getGPUCommandNodeKernelSources(
     new GPUTerrainStreamOrder({
       id: 'order',
-      width: 6,
-      height: 5,
+      grid,
       flowDirections: view('uint32'),
       streams: view('uint32'),
-      streamOrder: view('uint32')
+      output: {streamOrder: view('uint32')}
     }).getCommandNodes(graph)
   );
-  const round = orderSources.find(source => source.id.includes('order-order-round-0'));
-  expect(round?.source).toContain('return streams[streamsOffset + cell] == 4294967295u;');
+  // Euler-tour path: unknown stream words and directions seed the poison pass.
+  const seeds = orderSources.find(source => source.id.includes('order-unknown-scatter'));
+  expect(seeds?.source).toContain('streams[streamsOffset + cell] == 4294967295u ||');
+  expect(seeds?.source).toContain('== UNRESOLVED_DIRECTION');
+
+  // Pull path (tour arrays above one storage binding): the same contract in the round kernel.
+  const narrowDevice = createNullWebGPUDevice();
+  Object.defineProperty(narrowDevice, 'limits', {
+    value: {...narrowDevice.limits, maxStorageBufferBindingSize: 1300}
+  });
+  const narrowGraph = new GPUCommandGraph(narrowDevice);
+  // 20 x 10 cells: the 1600 byte tour arrays exceed the limit, one cell word array does not.
+  const narrowGrid = makeGPURasterMetadata({width: 20, height: 10});
+  const narrowView = (name: string) => createTransientView(narrowGraph, name, 'uint32', 200);
+  const pullSources = getGPUCommandNodeKernelSources(
+    new GPUTerrainStreamOrder({
+      id: 'order',
+      grid: narrowGrid,
+      flowDirections: narrowView('pull-directions'),
+      streams: narrowView('pull-streams'),
+      output: {streamOrder: narrowView('pull-order')}
+    }).getCommandNodes(narrowGraph)
+  );
+  const round = pullSources.find(source => source.id.includes('order-order-round-0'));
+  expect(round?.source).toContain('return streams[streamsOffset + cell] == 4294967295u ||');
   expect(round?.source).toContain('if (isUnresolvedStream(index)) { return; }');
+  narrowDevice.destroy();
   device.destroy();
 });

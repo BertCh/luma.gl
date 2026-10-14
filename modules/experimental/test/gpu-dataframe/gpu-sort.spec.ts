@@ -18,6 +18,7 @@ import {GPURecordBatch, GPUTable} from '@luma.gl/experimental/gpu-tables';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {vi} from 'vitest';
+import {requireTestDevice} from '../utils/require-test-device';
 
 type GPUSortSourceSchema = {
   score: 'float32';
@@ -32,11 +33,7 @@ type GPUSortFixture = {
 
 it('GPUDataFrame stably sorts nullable floating-point batches without materializing source rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const createBufferSpy = vi.spyOn(device, 'createBuffer');
@@ -111,11 +108,7 @@ it('GPUDataFrame stably sorts nullable floating-point batches without materializ
 
 it('GPUDataFrame orders nulls, NaNs, signed integers, and full-width unsigned values explicitly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const nullableGraph = new GPUCommandGraph<GPUDataFrameQueryParameters>(device, {
@@ -178,11 +171,7 @@ it('GPUDataFrame orders nulls, NaNs, signed integers, and full-width unsigned va
 
 it('GPUDataFrame publishes filtered per-batch top-K rows and encoder-ordered parameter updates', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const graph = new GPUCommandGraph<GPUDataFrameQueryParameters>(device, {
@@ -269,11 +258,7 @@ it('GPUDataFrame publishes filtered per-batch top-K rows and encoder-ordered par
 
 it('GPUDataFrame supports zero, oversized, and preordered per-batch top-K limits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const emptyGraph = new GPUCommandGraph<GPUDataFrameQueryParameters>(device, {
@@ -328,11 +313,7 @@ it('GPUDataFrame supports zero, oversized, and preordered per-batch top-K limits
 
 it('GPUDataFrame sorts nullable derived columns and schema-only source tables', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const derivedGraph = new GPUCommandGraph<GPUDataFrameQueryParameters>(device, {
@@ -406,11 +387,7 @@ it('GPUDataFrame sorts nullable derived columns and schema-only source tables', 
 
 it('GPUDataFrame globally sorts stable nullable floating-point keys across preserved batches', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device, {sourceOffsets: [100, 400, 900]});
   const sorted = fixture.frame.sortByGlobal('score').compile(
@@ -461,11 +438,7 @@ it('GPUDataFrame globally sorts stable nullable floating-point keys across prese
 
 it('GPUDataFrame applies one globally stable top-K and reconciles source-aligned batch masks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const highest = fixture.frame
@@ -528,11 +501,7 @@ it('GPUDataFrame applies one globally stable top-K and reconciles source-aligned
 
 it('GPUDataFrame globally orders filtered derived keys and preserves reusable query parameters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const fixture = createGPUSortFixture(device);
   const compiled = fixture.frame
@@ -570,11 +539,7 @@ it('GPUDataFrame globally orders filtered derived keys and preserves reusable qu
 
 it('GPUDataFrame globally orders preserved batches through bounded three-dimensional sorting', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const originalLimits = device.limits;
   Object.defineProperty(device, 'limits', {

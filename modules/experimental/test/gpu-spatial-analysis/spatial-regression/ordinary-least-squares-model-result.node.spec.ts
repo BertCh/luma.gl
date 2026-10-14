@@ -175,11 +175,16 @@ for (const [name, scene] of Object.entries(SCENES)) {
       'jarqueBera',
       'koenkerBassett'
     ]);
-    expectRelative(result.tests.breuschPagan.statistic, reference.breuschPagan[0], 1e-5, 'bp');
-    expect(result.tests.breuschPagan.degreesOfFreedom).toBe(reference.breuschPagan[2]);
-    expectRelative(result.tests.koenkerBassett.statistic, reference.koenkerBassett[0], 1e-5, 'kb');
-    expect(result.tests.jarqueBera.degreesOfFreedom).toBe(2);
-    expectRelative(result.tests.jarqueBera.statistic, reference.jarqueBera[0], 1e-4, 'jb');
+    expectRelative(result.tests['breuschPagan'].statistic, reference.breuschPagan[0], 1e-5, 'bp');
+    expect(result.tests['breuschPagan'].degreesOfFreedom).toBe(reference.breuschPagan[2]);
+    expectRelative(
+      result.tests['koenkerBassett'].statistic,
+      reference.koenkerBassett[0],
+      1e-5,
+      'kb'
+    );
+    expect(result.tests['jarqueBera'].degreesOfFreedom).toBe(2);
+    expectRelative(result.tests['jarqueBera'].statistic, reference.jarqueBera[0], 1e-4, 'jb');
     expect(result.inference.alternative).toBe('two-sided');
   });
 }

@@ -112,7 +112,7 @@ export function costMatrixOracle(
   return matrix;
 }
 
-/** Scoring parameters mirrored from `GPUNetworkAccessibilityParameters`. */
+/** Scoring parameters mirrored from `GPUNetworkAccessibilitySettings`. */
 export type OracleParameters = {
   threshold: number;
   decay: 'none' | 'exponential' | 'power';
@@ -220,13 +220,13 @@ export function snapOracle(
   edgeTargets: ArrayLike<number>,
   options: {
     edgeCosts?: ArrayLike<number>;
-    maxSnapDistance?: number;
+    maximumSnapDistance?: number;
     metric?: NetworkMetricOracle;
   } = {}
 ): OracleSnap[] {
   const metric = options.metric ?? PLANAR_NETWORK_METRIC;
   const nodeCount = positions.length / 2;
-  const limit = options.maxSnapDistance ?? Infinity;
+  const limit = options.maximumSnapDistance ?? Infinity;
   const result: OracleSnap[] = [];
   for (let point = 0; point < points.length / 2; point++) {
     const px = points[point * 2];

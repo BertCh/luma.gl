@@ -10,7 +10,7 @@ import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   computeAdjacencyMatrixOrder,
-  encodeGPUAdjacencyMatrixWindow,
+  getGPUAdjacencyMatrixParameterValues,
   GPUAdjacencyMatrix,
   GPUAdjacencyMatrixOrder
 } from '../../../src/gpu-network/adjacency-matrix';
@@ -27,6 +27,7 @@ import {
   createMatrixEdges,
   type MatrixOracleOptions
 } from './adjacency-matrix-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   nodeCount: number;
@@ -79,15 +80,15 @@ class Fixture {
     this.windowBuffer = track(
       createInputBuffer(
         device,
-        encodeGPUAdjacencyMatrixWindow(
-          options.window ?? {
+        getGPUAdjacencyMatrixParameterValues({
+          ...(options.window ?? {
             rowStart: 0,
             rowEnd: nodeCount,
             colStart: 0,
             colEnd: nodeCount
-          },
+          }),
           resolution
-        )
+        })
       )
     );
     this.textureReadback = track(createOutputBuffer(device, cells));
@@ -117,27 +118,29 @@ class Fixture {
     }
     this.contributor = new GPUAdjacencyMatrix({
       id: 'matrix',
-      offsets: input('offsets', this.csr.offsets)!,
-      neighbors: input('neighbors', this.csr.neighbors)!,
-      weights: importGraphBuffer(
-        this.graph,
-        'm-weights',
-        weights,
-        'float32',
-        this.csr.weights.length
-      ),
+      topology: {
+        offsets: input('offsets', this.csr.offsets)!,
+        neighbors: input('neighbors', this.csr.neighbors)!,
+        weights: importGraphBuffer(
+          this.graph,
+          'm-weights',
+          weights,
+          'float32',
+          this.csr.weights.length
+        )
+      },
       directed: options.directed,
       mirrorSlots: options.mirrorSlots,
-      vertexMask: input('vertex-mask', options.vertexMask),
+      nodeMask: input('vertex-mask', options.vertexMask),
       edgeMask: input('edge-mask', options.edgeMask),
       order: input('order', options.order),
-      window: importUint('window', this.windowBuffer, 4),
+      parameters: importUint('window', this.windowBuffer, 4),
       resolution,
       output: {
         counts: importUint('counts', this.counts, cells),
         weightSums: importUint('weight-sums', this.weightSums, cells),
-        maxCount: importUint('max-count', this.maxCount, 1),
-        maxWeightSum: importUint('max-weight-sum', this.maxWeightSum, 1),
+        maximumCount: importUint('max-count', this.maxCount, 1),
+        maximumWeightSum: importUint('max-weight-sum', this.maxWeightSum, 1),
         texture: textureView as never,
         textureStatistic: 'count'
       }
@@ -176,7 +179,9 @@ class Fixture {
   }
 
   setWindow(window: NonNullable<MatrixOracleOptions['window']>): void {
-    this.windowBuffer.write(encodeGPUAdjacencyMatrixWindow(window, this.options.resolution));
+    this.windowBuffer.write(
+      getGPUAdjacencyMatrixParameterValues({...window, resolution: this.options.resolution})
+    );
   }
 
   oracle(overrides: Partial<MatrixOracleOptions> = {}) {
@@ -245,7 +250,7 @@ function createMask(length: number, deadFraction: number, seed: number): Uint32A
 
 it('GPUAdjacencyMatrix matches the oracle with the identity order, undirected and symmetric', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 100;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -266,7 +271,7 @@ it('GPUAdjacencyMatrix matches the oracle with the identity order, undirected an
 
 it('GPUAdjacencyMatrix matches the oracle for directed graphs with a permutation and R not dividing N', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 257;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -283,7 +288,7 @@ it('GPUAdjacencyMatrix matches the oracle for directed graphs with a permutation
 
 it('GPUAdjacencyMatrix handles masks on a both-directions CSR', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 120;
   const edges = createBothDirections(createMatrixEdges(21, nodeCount, 300));
   const fixture = new Fixture(device, {
@@ -302,7 +307,7 @@ it('GPUAdjacencyMatrix handles masks on a both-directions CSR', async () => {
 
 it('GPUAdjacencyMatrix mirrorSlots makes an edge-list CSR symmetric and equals the both-directions CSR', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 90;
   const edges = createMatrixEdges(51, nodeCount, 350);
   const order = createPermutation(nodeCount, 4);
@@ -335,7 +340,7 @@ it('GPUAdjacencyMatrix mirrorSlots makes an edge-list CSR symmetric and equals t
 
 it('GPUAdjacencyMatrix rewrites bins for a new zoom window without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 200;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -364,7 +369,7 @@ it('GPUAdjacencyMatrix rewrites bins for a new zoom window without recompiling',
 
 it('GPUAdjacencyMatrix culls rows outside a zoom window, including mirrored rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 200;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -387,7 +392,7 @@ it('GPUAdjacencyMatrix culls rows outside a zoom window, including mirrored rows
 
 it('GPUAdjacencyMatrix writes an r32float texture of the counts', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const nodeCount = 64;
   const fixture = new Fixture(device, {
     nodeCount,
@@ -404,7 +409,7 @@ it('GPUAdjacencyMatrix writes an r32float texture of the counts', async () => {
 
 it('GPUAdjacencyMatrixOrder matches the CPU helper for group and tie keys', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const [count, withTies] of [
     [40, true],
     [700, true],
@@ -427,7 +432,7 @@ it('GPUAdjacencyMatrixOrder matches the CPU helper for group and tie keys', asyn
         tieKeys: withTies
           ? importGraphBuffer(graph, 'ties', tieBuffer, 'uint32', count)
           : undefined,
-        order: importGraphBuffer(graph, 'order', orderBuffer, 'uint32', count)
+        output: {order: importGraphBuffer(graph, 'order', orderBuffer, 'uint32', count)}
       })
     );
     const compiled = graph.compile();

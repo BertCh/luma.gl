@@ -84,7 +84,6 @@ export function createBufferResult(
       ringOffsets: ringOffsets.view,
       sourceIds: sourceIds.view
     },
-    sourceIds: sourceIds.view,
     status: {
       count: count.view,
       requiredCount: requiredCount.view,

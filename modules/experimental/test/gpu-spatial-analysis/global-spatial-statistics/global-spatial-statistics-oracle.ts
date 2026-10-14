@@ -398,7 +398,7 @@ export function computeGlobalSpatialStatisticsOracle(input: {
   mask?: Uint32Array;
   /** Island policy, as `GPUGlobalSpatialStatistics` (default 'exclude'). */
   islands?: 'exclude' | 'keep';
-  /** Re-standardize rows over their active neighbors (`weights.info.transform === 'row'`). */
+  /** Re-standardize rows over their active neighbors (`weights.information.transform === 'row'`). */
   standardized?: boolean;
   /** Analytic tail of the p-values (default 'two-sided'). */
   alternative?: Alternative;
@@ -519,14 +519,15 @@ export function computeGlobalSpatialStatisticsOracle(input: {
     islandCount: island.filter(Boolean).length,
     moran: getStatistic(
       (scale * moranCross) / sumSquares,
-      moranExpected,
+      // E[I] = -1 / (n - 1) and E[C] = 1 are undefined below two rows.
+      n >= 2 ? moranExpected : NaN,
       orNaN(moranNormality),
       orNaN(moranRandomization),
       alternative
     ),
     geary: getStatistic(
       ((n - 1) * gearySum) / (2 * s0 * sumSquares),
-      1,
+      n >= 2 ? 1 : NaN,
       orNaN(gearyNormality),
       orNaN(gearyRandomization),
       alternative
@@ -577,7 +578,7 @@ export function computeGlobalSpatialStatisticsOracle(input: {
     result.joinCount = {
       ...(Object.fromEntries(
         Object.keys(result.joinCount).map(key => [key, NaN])
-      ) as JoinCountOracle),
+      ) as unknown as JoinCountOracle),
       ordered: [0, 0, 0]
     };
   }
@@ -616,6 +617,7 @@ export function getPermutationMoments(
 export function getDenseMatrix(weights: CPUSpatialWeights): number[][] {
   return getDenseWeights(
     weights,
-    Array.from({length: weights.offsets.length - 1}, () => true)
+    Array.from({length: weights.offsets.length - 1}, () => true),
+    false
   ).matrix;
 }

@@ -5,6 +5,8 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {addHotSpotAnalysisRecipe} from '../../../src/gpu-spatial-analysis/recipes/index';
+import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
+import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {computeHotSpotOracle} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {ESDA_GI_STAR_LATTICE} from './hot-spot-esda-fixture';
@@ -17,7 +19,7 @@ it('the Gi* oracle reproduces esda G_Local(star=True) including a cold spot of z
       neighbors: Uint32Array.from(fixture.neighbors),
       weights: new Float32Array(fixture.neighbors.length).fill(1)
     },
-    values: Float64Array.from(fixture.values)
+    values: Float64Array.from(fixture.values) as unknown as Float32Array
   });
   for (const [row, expected] of fixture.zScores.entries()) {
     expect(oracle.zScores[row], `row ${row}`).toBeCloseTo(expected, 6);
@@ -38,7 +40,8 @@ function createProps(graph: GPUCommandGraph, overrides: Record<string, unknown> 
       family: 'quadbin' as const,
       resolution: 6,
       studyArea: {
-        polygonPositions: view('polygon', 'float32x2', 4),
+        kind: 'polygons' as const,
+        positions: view('polygon', 'float32x2', 4),
         featureOffsets: view('features', 'uint32', 2),
         polygonOffsets: view('polygons', 'uint32', 2),
         ringOffsets: view('rings', 'uint32', 2),
@@ -47,7 +50,11 @@ function createProps(graph: GPUCommandGraph, overrides: Record<string, unknown> 
       cellCapacity: 32,
       ...overrides
     },
-    parameters: view('parameters', 'float32', 8)
+    parameters: new GPUParameterBuffer(graph.device, {
+      id: 'hot-spot-parameters',
+      format: 'float32',
+      length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+    })
   };
 }
 
@@ -89,7 +96,7 @@ it('addHotSpotAnalysisRecipe states its inference and exposes the guard and stud
     'minimum-neighbors'
   ]);
   expect(result.status.stages.at(-1)!.status.invalidCount).toBeDefined();
-  expect(result.weights.info?.provenance?.criterion).toBe('disk');
+  expect(result.weights.information?.provenance?.criterion).toBe('disk');
   expect(result.rowCount).toBe(32);
 });
 
@@ -146,11 +153,11 @@ it('addHotSpotAnalysisRecipe labels distance-band weights binary or row', () => 
       }) as never
     );
   };
-  expect(build().weights.info?.transform).toBe('binary');
-  expect(build(false).weights.info?.transform).toBe('binary');
+  expect(build().weights.information?.transform).toBe('binary');
+  expect(build(false).weights.information?.transform).toBe('binary');
   const row = build(true);
-  expect(row.weights.info?.transform).toBe('row');
-  expect(row.weights.info?.provenance?.criterion).toBe('distance-band');
+  expect(row.weights.information?.transform).toBe('row');
+  expect(row.weights.information?.provenance?.criterion).toBe('distance-band');
   expect(row.weights.status?.overflow).toBeDefined();
-  expect(row.intermediates.weights.info?.transform).toBe('row');
+  expect((row.intermediates['weights'] as typeof row.weights).information?.transform).toBe('row');
 });

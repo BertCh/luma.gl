@@ -95,7 +95,7 @@ it('nonstationarity oracle reproduces mgwr permutation fits (fixed and adaptive 
     const oracle = computeNonstationarityOnCPU(
       scene,
       settings,
-      reference.permutations,
+      reference.permutationCount,
       reference.seed
     );
     const expected = reference[name];

@@ -235,7 +235,7 @@ export type IsobandsScene = {
 function isSampleValid(scene: IsobandsScene, sample: number): boolean {
   const value = scene.values[sample];
   return (
-    !Number.isNaN(value) &&
+    Number.isFinite(value) &&
     (scene.noDataValue === undefined || value !== f32(scene.noDataValue)) &&
     (!scene.validity || scene.validity[sample] !== 0)
   );

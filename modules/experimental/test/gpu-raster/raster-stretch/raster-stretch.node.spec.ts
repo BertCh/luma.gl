@@ -10,7 +10,11 @@ import {
   GPU_RASTER_STRETCH_STATISTICS_INDEX,
   GPURasterStretch
 } from '../../../src/gpu-raster/raster-stretch';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeRasterStretchStatistics,
   getPaletteColorOnCPU,
@@ -84,7 +88,9 @@ it('raster-stretch parameter packer lays out settings and validates ranges', () 
   expect(() => getGPURasterStretchParameterValues({mode: 'jenks' as 'linear'})).toThrow(
     /not supported/
   );
-  expect(() => getGPURasterStretchParameterValues({}, new Float32Array(4))).toThrow(/target/);
+  expect(() => getGPURasterStretchParameterValues({}, new Float32Array(4))).toThrow(
+    /target must hold/
+  );
   expect(() => getGPURasterStretchParameterValues({window: [NaN, 0, 1, 1]})).toThrow(/window/);
 });
 
@@ -103,7 +109,7 @@ it('raster-stretch oracle replicates the documented definitions', () => {
   });
   const stats = computeRasterStretchStatistics(scene, parameters);
   expect(stats.validCount).toBe(11);
-  expect([stats.domainMin, stats.domainMax]).toEqual([0, 10]);
+  expect([stats.domainMinimum, stats.domainMaximum]).toEqual([0, 10]);
   expect(stats.total).toBe(11);
   expect(stats.cdf[15]).toBe(11);
   // 0th percentile is the lower edge of the first occupied bin, 100th the upper edge of the last.
@@ -137,7 +143,7 @@ it('GPURasterStretch validates props', () => {
   withGraph(graph => {
     const values = view(graph, 'float32', 12);
     const parameters = view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH);
-    const base = {values, width: 4, height: 3, parameters};
+    const base = {values, grid: makeGPURasterMetadata({width: 4, height: 3}), parameters};
     expect(() => new GPURasterStretch({...base, output: {}})).toThrow(/at least one output/);
     expect(
       () => new GPURasterStretch({...base, output: {colors: view(graph, 'uint32', 12)}})
@@ -170,8 +176,12 @@ it('GPURasterStretch validates props', () => {
     ).toThrow(/lutSize/);
     expect(
       () =>
-        new GPURasterStretch({...base, width: 0, output: {stretched: view(graph, 'float32', 12)}})
-    ).toThrow(/width/);
+        new GPURasterStretch({
+          ...base,
+          grid: makeGPURasterMetadata({width: 0, height: 3}),
+          output: {stretched: view(graph, 'float32', 12)}
+        })
+    ).toThrow(/grid dimensions/);
     expect(
       () =>
         new GPURasterStretch({
@@ -229,8 +239,7 @@ it('GPURasterStretch wires deterministic nodes within the binding limit', () => 
     const stretch = new GPURasterStretch({
       id: 'stretch',
       values: view(graph, 'float32', 12),
-      width: 4,
-      height: 3,
+      grid: makeGPURasterMetadata({width: 4, height: 3}),
       validity: view(graph, 'uint32', 12),
       regionMask: view(graph, 'uint32', 12),
       parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
@@ -268,13 +277,73 @@ it('GPURasterStretch wires deterministic nodes within the binding limit', () => 
   withGraph(graph => {
     const stretch = new GPURasterStretch({
       values: view(graph, 'float32', 12),
-      width: 4,
-      height: 3,
+      grid: makeGPURasterMetadata({width: 4, height: 3}),
       parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
       output: {histogram: view(graph, 'uint32', 1024)}
     });
     const ids = stretch.getCommandNodes(graph).map(node => node.id);
     expect(ids.some(id => id.endsWith('-apply') || id.endsWith('-lut'))).toBe(false);
     expect(ids.at(-1)).toBe('raster-stretch-finalize');
+  });
+});
+
+it('raster-stretch gamma is the display gamma t ** (1 / gamma)', () => {
+  const scene = {
+    values: Float32Array.from([0, 2.5, 5, 7.5, 10]),
+    width: 5,
+    height: 1,
+    binCount: 16,
+    lutSize: 4
+  };
+  // python3 -I: 0.25 ** (1 / 2) = 0.5; 0.25 ** (1 / 0.5) = 0.0625; 0.5 ** (1 / 2.2) = 0.7297400528407231
+  const expectations: [number, number, number][] = [
+    [2, 2.5, 0.5],
+    [0.5, 2.5, 0.0625],
+    [2.2, 5, 0.7297400528407231]
+  ];
+  for (const [gamma, value, expected] of expectations) {
+    const parameters = getGPURasterStretchParameterValues({gamma});
+    const stats = computeRasterStretchStatistics(scene, parameters);
+    expect(stretchValueOnCPU(value, parameters, stats, 16)).toBeCloseTo(expected, 6);
+  }
+  for (const gamma of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() => getGPURasterStretchParameterValues({gamma})).toThrow(/gamma/);
+  }
+  withGraph(graph => {
+    const stretch = new GPURasterStretch({
+      id: 'gamma',
+      values: view(graph, 'float32', 12),
+      grid: makeGPURasterMetadata({width: 4, height: 3}),
+      parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
+      output: {stretched: view(graph, 'float32', 12)}
+    });
+    const sources = getGPUCommandNodeKernelSources(stretch.getCommandNodes(graph));
+    expect(sources.some(({source}) => source.includes('pow(t, 1.0 / gamma)'))).toBe(true);
+  });
+});
+
+it('GPURasterStretch passes the workgroup size its cooperative WGSL assumes', () => {
+  withGraph(graph => {
+    const stretch = new GPURasterStretch({
+      id: 'size',
+      values: view(graph, 'float32', 12),
+      grid: makeGPURasterMetadata({width: 4, height: 3}),
+      parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
+      binCount: 64,
+      output: {histogram: view(graph, 'uint32', 64)}
+    });
+    const nodes = stretch.getCommandNodes(graph);
+    const sources = getGPUCommandNodeKernelSources(nodes);
+    const cooperative = sources.filter(({source}) => source.includes('var<workgroup> tileMinimum'));
+    expect(cooperative.length).toBeGreaterThan(0);
+    for (const {source} of cooperative) {
+      expect(source).toContain('array<u32, 256>');
+      expect(source).toContain('@workgroup_size(256)');
+    }
+    const privateHistogram = sources.filter(({source}) => source.includes('localHistogram'));
+    expect(privateHistogram.length).toBeGreaterThan(0);
+    for (const {source} of privateHistogram) {
+      expect(source).toContain('@workgroup_size(256)');
+    }
   });
 });

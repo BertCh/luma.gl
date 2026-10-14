@@ -13,7 +13,7 @@ import {
   getGPUTrajectoryMetricsParameterValues,
   GPUTrajectoryMetrics,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
-  type GPUTrajectoryStopParameters
+  type GPUTrajectoryMetricsSettings
 } from '../../../src/gpu-spatial-analysis/trajectory-analysis';
 import {
   createInputBuffer,
@@ -29,6 +29,7 @@ import {
   type TrajectoryOracleResult,
   type TrajectoryOracleTime
 } from './trajectory-metrics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SENTINEL = 0xffffffff;
 const WRAP_BASE = 397n * 2n ** 32n; // a low-word wrap in the 2023 epoch-ms range
@@ -93,7 +94,7 @@ async function runMetrics(
   device: Device,
   packed: ReturnType<typeof packRows>,
   time: TimeInput,
-  parameters: GPUTrajectoryStopParameters,
+  parameters: GPUTrajectoryMetricsSettings,
   capacity: number
 ): Promise<TimeResult> {
   const rowCount = packed.times.length;
@@ -162,22 +163,24 @@ async function runMetrics(
       ...timeProps,
       trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1),
       parameters: parameterBuffer.importToGraph(graph),
-      trackLengths: view('lengths', out.lengths, 'float32', trackCount),
-      trackDurations: view('durations', out.durations, 'float32', trackCount),
-      averageSpeeds: view('averages', out.averages, 'float32', trackCount),
-      maximumSpeeds: view('maxima', out.maxima, 'float32', trackCount),
-      trackStopCounts: view('stop-counts', out.stopCounts, 'uint32', trackCount),
-      stops: {
-        output: {
+      output: {
+        trackLengths: view('lengths', out.lengths, 'float32', trackCount),
+        trackDurations: view('durations', out.durations, 'float32', trackCount),
+        averageSpeeds: view('averages', out.averages, 'float32', trackCount),
+        maximumSpeeds: view('maxima', out.maxima, 'float32', trackCount),
+        trackStopCounts: view('stop-counts', out.stopCounts, 'uint32', trackCount),
+        stops: {
           ids: view('stop-ids', out.stopIds, 'uint32', capacity),
-          count: view('count', out.count, 'uint32', 1),
-          overflow: view('overflow', out.overflow, 'uint32', 1),
-          requiredCount: view('total', out.total, 'uint32', 1)
-        },
-        startRows: view('stop-starts', out.stopStarts, 'uint32', capacity),
-        endRows: view('stop-ends', out.stopEnds, 'uint32', capacity),
-        durations: view('stop-durations', out.stopDurations, 'float32', capacity),
-        centroids: view('stop-centroids', out.stopCentroids, 'float32x2', capacity)
+          status: {
+            count: view('count', out.count, 'uint32', 1),
+            overflow: view('overflow', out.overflow, 'uint32', 1),
+            requiredCount: view('total', out.total, 'uint32', 1)
+          },
+          startRows: view('stop-starts', out.stopStarts, 'uint32', capacity),
+          endRows: view('stop-ends', out.stopEnds, 'uint32', capacity),
+          durations: view('stop-durations', out.stopDurations, 'float32', capacity),
+          centroids: view('stop-centroids', out.stopCentroids, 'float32x2', capacity)
+        }
       }
     })
   );
@@ -296,12 +299,12 @@ function buildTracks(): Row[][] {
   return tracks;
 }
 
-const PARAMETERS: GPUTrajectoryStopParameters = {stopSpeedThreshold: 1, stopMinimumDuration: 5};
+const PARAMETERS: GPUTrajectoryMetricsSettings = {stopSpeedThreshold: 1, stopMinimumDuration: 5};
 
 async function expectWordParity(
   device: Device,
   trackRows: Row[][],
-  parameters: GPUTrajectoryStopParameters = PARAMETERS
+  parameters: GPUTrajectoryMetricsSettings = PARAMETERS
 ) {
   const packed = packRows(trackRows);
   const oracleTime = createBigIntOracleTime(packed.times);
@@ -319,9 +322,7 @@ async function expectWordParity(
 
 it('GPUTrajectoryMetrics Int64 words are exact for ms steps near 1.7e12 and across a low-word wrap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {packed, expected, result} = await expectWordParity(device, buildTracks());
   // The data has teeth: 3 tracks x 3 qualifying dwells, none of the 4 ms dwells.
   expect(expected.stops.length).toBe(9);
@@ -338,9 +339,7 @@ it('GPUTrajectoryMetrics Int64 words are exact for ms steps near 1.7e12 and acro
 
 it('GPUTrajectoryMetrics f32 absolute timestamps get the same data wrong (control)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const packed = packRows(buildTracks());
   const expected = computeTrajectoryOracle(
     packed.positionsTyped,
@@ -361,9 +360,7 @@ it('GPUTrajectoryMetrics f32 absolute timestamps get the same data wrong (contro
 
 it('GPUTrajectoryMetrics double-single timestamps match the double oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const packed = packRows(buildTracks());
   const oracleTime: TrajectoryOracleTime = createDoubleOracleTime(packed.numbers);
   for (const parameters of [
@@ -392,9 +389,7 @@ it('GPUTrajectoryMetrics double-single timestamps match the double oracle', asyn
 
 it('GPUTrajectoryMetrics handles pre-1970 and zero-crossing Int64 words', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pre1970 = -1_000_000_000_000n;
   const trackRows = [
     // Negative epoch-ms with a stop that crosses a 2^32 boundary of the two's complement words.
@@ -410,9 +405,7 @@ it('GPUTrajectoryMetrics handles pre-1970 and zero-crossing Int64 words', async 
 
 it('GPUTrajectoryMetrics Int64 words handle equal and backwards timestamps exactly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const base = WRAP_BASE - 2n;
   const trackRows: Row[][] = [
     [
@@ -444,9 +437,7 @@ it('GPUTrajectoryMetrics Int64 words handle equal and backwards timestamps exact
 
 it('GPUTrajectoryMetrics Int64 words keep multi-day durations within one f32 rounding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const day = 86_400_000n;
   const trackRows: Row[][] = [
     [

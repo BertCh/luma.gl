@@ -10,8 +10,8 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUNetworkIsochrones,
-  getGPUNetworkIsochroneParameterValues,
-  type GPUNetworkIsochroneSettings
+  getGPUNetworkIsochronesParameterValues,
+  type GPUNetworkIsochronesSettings
 } from '../../../src/gpu-network/network-isochrones';
 import {assembleRingsOnCPU} from '../../gpu-spatial-analysis/ring-assembly/ring-assembly-oracle';
 import {
@@ -42,6 +42,7 @@ import {
   getTriangleAreasPerBand,
   splatIsochroneRasterOnCPU
 } from './network-isochrones-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GRID = 9;
 const NODE_COUNT = GRID * GRID;
@@ -74,7 +75,7 @@ async function runRaster(
   device: Device,
   options: {
     mode: 'min' | 'max';
-    settings: GPUNetworkIsochroneSettings;
+    settings: GPUNetworkIsochronesSettings;
     maximumBufferPixels?: number;
     triangleCapacity?: number;
     maxIterations?: number;
@@ -109,7 +110,7 @@ async function runRaster(
     id: 'isochrone-parameters',
     format: 'float32',
     length: 12,
-    values: getGPUNetworkIsochroneParameterValues(options.settings)
+    values: getGPUNetworkIsochronesParameterValues(options.settings)
   });
   const breaks = new GPUParameterBuffer(device, {
     id: 'isochrone-breaks',
@@ -120,34 +121,38 @@ async function runRaster(
   run.parameters.push(parameters, breaks);
   graph.add(
     new GPUNetworkIsochrones({
-      offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', NODE_COUNT + 1),
-      neighbors: importGraphBuffer(
-        graph,
-        'neighbors',
-        input(csr.neighbors),
-        'uint32',
-        csr.neighbors.length
-      ),
-      weights: importGraphBuffer(
-        graph,
-        'weights',
-        input(csr.weights),
-        'float32',
-        csr.weights.length
-      ),
-      nodePositions: importGraphBuffer(
-        graph,
-        'positions',
-        input(positions),
-        'float32x2',
-        NODE_COUNT
-      ),
+      topology: {
+        offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', NODE_COUNT + 1),
+        neighbors: importGraphBuffer(
+          graph,
+          'neighbors',
+          input(csr.neighbors),
+          'uint32',
+          csr.neighbors.length
+        ),
+        weights: importGraphBuffer(
+          graph,
+          'weights',
+          input(csr.weights),
+          'float32',
+          csr.weights.length
+        ),
+        nodePositions: importGraphBuffer(
+          graph,
+          'positions',
+          input(positions),
+          'float32x2',
+          NODE_COUNT
+        )
+      },
       costs: importGraphBuffer(graph, 'costs', out.costs, 'float32', NODE_COUNT),
-      sources: importGraphBuffer(graph, 'sources', input(Uint32Array.of(0)), 'uint32', 1),
-      maxIterations: options.maxIterations ?? 128,
+      startNodes: importGraphBuffer(graph, 'sources', input(Uint32Array.of(0)), 'uint32', 1),
+      maximumIterations: options.maxIterations ?? 128,
       localIterations: options.localIterations,
-      converged: importGraphBuffer(graph, 'converged', out.converged, 'uint32', 1),
-      breaks: breaks.importToGraph(graph),
+      output: {
+        status: {converged: importGraphBuffer(graph, 'converged', out.converged, 'uint32', 1)}
+      },
+      costBreaks: breaks.importToGraph(graph),
       parameters: parameters.importToGraph(graph),
       raster: {
         width: WIDTH,
@@ -164,9 +169,11 @@ async function runRaster(
             3 * triangleCapacity
           ),
           triangleBands: importGraphBuffer(graph, 'bands', out.bands, 'uint32', triangleCapacity),
-          count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'total', out.total, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total', out.total, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1)
+          }
         }
       }
     })
@@ -185,14 +192,12 @@ async function runRaster(
   return {csr, positions, costs, values, count, overflow, converged, triangles, bands};
 }
 
-it('GPUNetworkIsochrones reports a search cut short by maxIterations', async () => {
+it('GPUNetworkIsochrones reports a search cut short by maximumIterations', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Review B-05: a search stopped by its round limit truncated the costs, and with them every
   // polygon, with no signal. One round of one local hop cannot cross the 16-hop 9 x 9 grid.
-  const settings: GPUNetworkIsochroneSettings = {
+  const settings: GPUNetworkIsochronesSettings = {
     breakCount: BREAKS.length,
     extent: [-100, -100, 900, 900]
   };
@@ -214,11 +219,9 @@ it('GPUNetworkIsochrones reports a search cut short by maxIterations', async () 
 for (const mode of ['min', 'max'] as const) {
   it(`GPUNetworkIsochrones raster (${mode}) matches the CPU splat and the band areas`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const extent: [number, number, number, number] = [-100, -100, 900, 900];
-    const settings: GPUNetworkIsochroneSettings = {
+    const settings: GPUNetworkIsochronesSettings = {
       breakCount: BREAKS.length,
       extent,
       bufferRadius: 30,
@@ -290,9 +293,7 @@ for (const mode of ['min', 'max'] as const) {
 
 it('GPUNetworkIsochrones min is never above max and the buffer widens the area', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const extent: [number, number, number, number] = [-100, -100, 900, 900];
   const base = {breakCount: BREAKS.length, extent, walkCostPerUnit: 0.05};
   const min = await runRaster(device, {mode: 'min', settings: {...base, bufferRadius: 30}});
@@ -371,7 +372,7 @@ async function runCellOutline(
     id: 'isochrone-cell-parameters',
     format: 'float32',
     length: 12,
-    values: getGPUNetworkIsochroneParameterValues({
+    values: getGPUNetworkIsochronesParameterValues({
       breakCount: 1,
       extent: [8.3, 47, 8.6, 47.3],
       cellCostLimit
@@ -386,32 +387,34 @@ async function runCellOutline(
   run.parameters.push(parameters, breaks);
   graph.add(
     new GPUNetworkIsochrones({
-      offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', NODE_COUNT + 1),
-      neighbors: importGraphBuffer(
-        graph,
-        'neighbors',
-        input(csr.neighbors),
-        'uint32',
-        csr.neighbors.length
-      ),
-      weights: importGraphBuffer(
-        graph,
-        'weights',
-        input(csr.weights),
-        'float32',
-        csr.weights.length
-      ),
-      nodePositions: importGraphBuffer(
-        graph,
-        'positions',
-        input(positions),
-        'float32x2',
-        NODE_COUNT
-      ),
+      topology: {
+        offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', NODE_COUNT + 1),
+        neighbors: importGraphBuffer(
+          graph,
+          'neighbors',
+          input(csr.neighbors),
+          'uint32',
+          csr.neighbors.length
+        ),
+        weights: importGraphBuffer(
+          graph,
+          'weights',
+          input(csr.weights),
+          'float32',
+          csr.weights.length
+        ),
+        nodePositions: importGraphBuffer(
+          graph,
+          'positions',
+          input(positions),
+          'float32x2',
+          NODE_COUNT
+        )
+      },
       costs: importGraphBuffer(graph, 'costs', out.costs, 'float32', NODE_COUNT),
-      sources: importGraphBuffer(graph, 'sources', input(Uint32Array.of(40)), 'uint32', 1),
-      maxIterations: 128,
-      breaks: breaks.importToGraph(graph),
+      startNodes: importGraphBuffer(graph, 'sources', input(Uint32Array.of(40)), 'uint32', 1),
+      maximumIterations: 128,
+      costBreaks: breaks.importToGraph(graph),
       parameters: parameters.importToGraph(graph),
       cellOutline: {
         family,
@@ -421,8 +424,10 @@ async function runCellOutline(
           cells: importGraphBuffer(graph, 'out-cells', out.cells, 'uint32x2', capacity),
           edgeIndices: importGraphBuffer(graph, 'edges', out.edges, 'uint32', capacity),
           endpoints: importGraphBuffer(graph, 'endpoints', out.endpoints, 'float32x4', capacity),
-          count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1)
+          }
         },
         rings: {
           normalizeWinding: true,
@@ -462,9 +467,11 @@ async function runCellOutline(
               'uint32',
               ringCapacity
             ),
-            count: importGraphBuffer(graph, 'ring-count', out.ringCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'ring-overflow', out.ringOverflow, 'uint32', 1),
-            openSegmentCount: importGraphBuffer(graph, 'ring-open', out.ringOpen, 'uint32', 1)
+            status: {
+              count: importGraphBuffer(graph, 'ring-count', out.ringCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'ring-overflow', out.ringOverflow, 'uint32', 1),
+              openSegmentCount: importGraphBuffer(graph, 'ring-open', out.ringOpen, 'uint32', 1)
+            }
           }
         }
       }
@@ -531,9 +538,7 @@ for (const [family, resolution] of [
 ] as const) {
   it(`GPUNetworkIsochrones cell outline (${family}) matches the CPU cell outline`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const result = await runCellOutline(device, family, resolution, 9);
     expect(result.overflow).toBe(0);
     expect(result.reachedCells).toBeGreaterThan(3);
@@ -551,9 +556,7 @@ for (const [family, resolution, limit] of [
 ] as const) {
   it(`GPUNetworkIsochrones cell rings (${family} ${resolution}, limit ${limit}) close the outline`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const result = await runCellOutline(device, family, resolution, limit);
     const {rings} = result;
     expect(rings.overflow).toBe(0);

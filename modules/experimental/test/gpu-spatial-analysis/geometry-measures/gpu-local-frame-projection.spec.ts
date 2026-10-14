@@ -6,8 +6,9 @@ import {Buffer} from '@luma.gl/core';
 import {expect, it} from 'vitest';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
-import {createGPULocalFrame} from '../../../src/gpu-spatial-analysis/contracts/local-frame';
+import {createGPULocalFrame} from '../../../src/analysis-core/contracts/local-frame';
 import {GPULocalFrameProjection} from '../../../src/gpu-spatial-analysis/geometry-measures/gpu-local-frame-projection';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Expected values come from the binary64 CPU frame, which local-frame.node.spec.ts pins to pyproj.
 const POINTS: readonly (readonly [number, number])[] = [
@@ -21,9 +22,7 @@ const POINTS: readonly (readonly [number, number])[] = [
 for (const kind of ['azimuthal-equidistant', 'lambert-equal-area'] as const) {
   it(`GPULocalFrameProjection projects binary64 lon/lat into a ${kind} frame`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const frame = createGPULocalFrame({origin: [8.5417, 47.3769], kind});
     const values = new Float64Array(POINTS.flat());
     const inputBuffer = device.createBuffer({
@@ -57,7 +56,7 @@ for (const kind of ['azimuthal-equidistant', 'lambert-equal-area'] as const) {
       bounds: [7.5, 46.5, 9.5, 48]
     });
     expect(contributor.spatialContext.frame?.id).toBe(frame.spatialContext.frame?.id);
-    contributor.addToGraph(graph);
+    graph.add(contributor);
     const compiled = graph.compile();
     const encoder = device.createCommandEncoder({id: 'local-frame-projection'});
     compiled.encode(encoder, {parameters: undefined});

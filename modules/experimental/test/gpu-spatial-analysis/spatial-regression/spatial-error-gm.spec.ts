@@ -36,6 +36,7 @@ import {
   type ErrorGMHomOracleResult,
   type ErrorGMOracleResult
 } from './spatial-error-gm-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = ReturnType<typeof createErrorScene>;
 type Result = {status: number; table: Float32Array; summary: Float32Array; residuals: Float32Array};
@@ -120,7 +121,7 @@ async function runErrorGM(
           'float32',
           GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1)},
         residuals: importGraphBuffer(graph, 'residuals', residualBuffer, 'float32', rows)
       }
     })
@@ -194,9 +195,7 @@ for (const [kind, count, seed, lambda] of [
 ] as const) {
   it(`GPUSpatialErrorGM matches the dense float64 oracle on ${kind} weights`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createErrorScene(count, seed, lambda, kind);
     const expected = fitSpatialErrorGMOnCPU(
       scene.weights,
@@ -224,9 +223,7 @@ for (const [kind, count, seed, lambda] of [
 
 it('GPUSpatialErrorGM reports a singular design', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createErrorScene(100, 3, 0.5, 'lattice-row-standardized');
   for (let row = 0; row < scene.response.length; row++) {
     scene.predictors[row * 2 + 1] = 2 * scene.predictors[row * 2];
@@ -241,9 +238,7 @@ it('GPUSpatialErrorGM reports a singular design', async () => {
 for (const name of ['lattice', 'knn'] as const) {
   it(`GPUSpatialErrorGM matches spreg GM_Error on the ${name} fixture`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const reference = SPREG_ERROR_GM_REFERENCE[name];
     const actual = await runErrorGM(
       device,
@@ -320,9 +315,7 @@ for (const [kind, count, seed, lambda] of [
 ] as const) {
   it(`GPUSpatialErrorGM homoskedastic matches the float64 GM_Error_Hom oracle on ${kind} weights`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createErrorScene(count, seed, lambda, kind);
     const expected = fitSpatialErrorGMHomOnCPU(
       scene.weights,
@@ -349,9 +342,7 @@ for (const [kind, count, seed, lambda] of [
 for (const name of ['lattice', 'knn', 'binary'] as const) {
   it(`GPUSpatialErrorGM homoskedastic matches spreg GM_Error_Hom and its conditioning on ${name}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const reference = SPREG_ERROR_GM_HOM_REFERENCE[name];
     const scene =
       name === 'binary'
@@ -438,9 +429,7 @@ for (const name of ['lattice', 'knn', 'binary'] as const) {
 
 it('GPUSpatialErrorGM kelejian-prucha keeps NaN for the lambda statistics and reports conditioning', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const reference = SPREG_ERROR_GM_HOM_REFERENCE.binary;
   const scene = createErrorScene(324, 9, 0.5, 'lattice-binary');
   const actual = await runErrorGM(device, scene, {estimator: 'kelejian-prucha'});
@@ -470,9 +459,7 @@ it('GPUSpatialErrorGM kelejian-prucha keeps NaN for the lambda statistics and re
 
 it('GPUSpatialErrorGM flags a lambda at the search bound without failing the fit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Strong dependence on binary weights: lambda / 4 = 0.24 sits next to the 0.2475 bound, and
   // the bound (not the spreg 0.99) is what keeps I - lambda W invertible for ||W||_inf = 4.
   const scene = createErrorScene(324, 9, 0.99, 'lattice-binary');
@@ -490,9 +477,7 @@ it('GPUSpatialErrorGM flags a lambda at the search bound without failing the fit
 
 it('GPUSpatialErrorGM with stochastic traces marks the lambda standard error as approximate', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createErrorScene(400, 31, 0.6, 'lattice-row-standardized');
   const exact = await runErrorGM(device, scene, {traceMode: 'exact'});
   const stochastic = await runErrorGM(device, scene, {
@@ -520,9 +505,7 @@ it('GPUSpatialErrorGM with stochastic traces marks the lambda standard error as 
 
 it('GPUSpatialErrorGM fits 15 predictors with both estimators', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createErrorScene(484, 7, 0.5, 'lattice-row-standardized', 15);
   const expectedHom = fitSpatialErrorGMHomOnCPU(
     scene.weights,

@@ -108,8 +108,14 @@ it('GPUSpatialPredicateJoin kernels parse for every kind pair, engine and metric
             left: createGeometry(graph, leftKind),
             right: createGeometry(graph, rightKind),
             candidateCapacity: 4096,
-            pairs: {leftIds: view('left-ids'), rightIds: view('right-ids')},
-            overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1),
+            output: {
+              pairs: {
+                leftIds: view('left-ids'),
+                rightIds: view('right-ids'),
+                status: {count: view('pair-count'), overflow: view('pair-overflow')}
+              },
+              status: {overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)}
+            },
             ...overrides
           } as never).getCommandNodes(graph)
         );
@@ -138,11 +144,17 @@ it('great-circle dwithin kernels use the straight-segment distance and a longitu
       distance: 1500,
       spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},
       candidateCapacity: 64,
-      pairs: {
-        leftIds: createTransientView(graph, 'gc-left-ids', 'uint32', 64),
-        rightIds: createTransientView(graph, 'gc-right-ids', 'uint32', 64)
-      },
-      overflow: createTransientView(graph, 'gc-overflow', 'uint32', 1)
+      output: {
+        pairs: {
+          leftIds: createTransientView(graph, 'gc-left-ids', 'uint32', 64),
+          rightIds: createTransientView(graph, 'gc-right-ids', 'uint32', 64),
+          status: {
+            count: createTransientView(graph, 'gc-count', 'uint32', 1),
+            overflow: createTransientView(graph, 'gc-pair-overflow', 'uint32', 1)
+          }
+        },
+        status: {overflow: createTransientView(graph, 'gc-overflow', 'uint32', 1)}
+      }
     }).getCommandNodes(graph)
   );
   const exact = captured.find(kernel => kernel.id === 'gc-exact');
@@ -169,14 +181,19 @@ it('GPUPointInPolygonJoin kernels parse for every boundary rule', () => {
     record(
       new GPUPointInPolygonJoin({
         id: `pip-${boundaryRule}`,
-        points: view('points', 'float32x2', 10),
-        polygonPositions: view('polygon-positions', 'float32x2', 20),
-        featureOffsets: view('feature-offsets', 'uint32', 5),
-        polygonOffsets: view('polygon-offsets', 'uint32', 5),
-        ringOffsets: view('ring-offsets', 'uint32', 6),
+        points: {kind: 'points', positions: view('points', 'float32x2', 10)},
+        polygons: {
+          kind: 'polygons',
+          positions: view('polygon-positions', 'float32x2', 20),
+          featureOffsets: view('feature-offsets', 'uint32', 5),
+          polygonOffsets: view('polygon-offsets', 'uint32', 5),
+          ringOffsets: view('ring-offsets', 'uint32', 6)
+        },
         candidateCapacity: 16,
-        pointFeatureIds: view('point-feature-ids', 'uint32', 10),
-        overflow: view('overflow', 'uint32', 1),
+        output: {
+          pointFeatureIds: view('point-feature-ids', 'uint32', 10),
+          status: {overflow: view('overflow', 'uint32', 1)}
+        },
         boundaryRule
       }).getCommandNodes(graph)
     );
@@ -198,15 +215,20 @@ it('GPUNearestFeatureJoin kernels parse with exact orientation for every feature
     record(
       new GPUNearestFeatureJoin({
         id,
-        points: createTransientView(graph, `${id}-points`, 'float32x2', 3),
+        queries: {
+          kind: 'points',
+          positions: createTransientView(graph, `${id}-points`, 'float32x2', 3)
+        },
         features: createGeometry(graph, kind),
         k: 2,
         ties: 'all',
         neighborCapacity: 2,
-        neighborIds: createTransientView(graph, `${id}-ids`, 'uint32', slotCount),
-        neighborCounts: createTransientView(graph, `${id}-counts`, 'uint32', 3),
-        neighborDistances: createTransientView(graph, `${id}-distances`, 'float32', slotCount),
-        overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)
+        output: {
+          neighborIds: createTransientView(graph, `${id}-ids`, 'uint32', slotCount),
+          neighborCounts: createTransientView(graph, `${id}-counts`, 'uint32', 3),
+          neighborDistances: createTransientView(graph, `${id}-distances`, 'float32', slotCount),
+          status: {overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)}
+        }
       }).getCommandNodes(graph)
     );
   }
@@ -228,19 +250,24 @@ it('great-circle GPUNearestFeatureJoin kernels parse for every feature kind and 
       new GPUNearestFeatureJoin({
         id,
         spatialContext,
-        points: createTransientView(graph, `${id}-points`, 'float32x2', 3),
+        queries: {
+          kind: 'points',
+          positions: createTransientView(graph, `${id}-points`, 'float32x2', 3)
+        },
         features: createGeometry(graph, kind),
         k: 2,
         ties: 'all',
         neighborCapacity: 2,
-        maxDistance: createTransientView(graph, `${id}-max`, 'float32', 1),
-        neighborIds: createTransientView(graph, `${id}-ids`, 'uint32', slotCount),
-        neighborCounts: createTransientView(graph, `${id}-counts`, 'uint32', 3),
-        neighborDistances: createTransientView(graph, `${id}-distances`, 'float32', slotCount),
-        neighborFootPoints: createTransientView(graph, `${id}-foot`, 'float32x2', slotCount),
-        neighborQueryPoints: createTransientView(graph, `${id}-query`, 'float32x2', slotCount),
-        neighborSegmentIndices: createTransientView(graph, `${id}-segments`, 'uint32', slotCount),
-        overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)
+        radius: createTransientView(graph, `${id}-max`, 'float32', 1),
+        output: {
+          neighborIds: createTransientView(graph, `${id}-ids`, 'uint32', slotCount),
+          neighborCounts: createTransientView(graph, `${id}-counts`, 'uint32', 3),
+          neighborDistances: createTransientView(graph, `${id}-distances`, 'float32', slotCount),
+          neighborFootPoints: createTransientView(graph, `${id}-foot`, 'float32x2', slotCount),
+          neighborQueryPoints: createTransientView(graph, `${id}-query`, 'float32x2', slotCount),
+          neighborSegmentIndices: createTransientView(graph, `${id}-segments`, 'uint32', slotCount),
+          status: {overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)}
+        }
       }).getCommandNodes(graph)
     );
   }
@@ -249,17 +276,22 @@ it('great-circle GPUNearestFeatureJoin kernels parse for every feature kind and 
     new GPUNearestFeatureJoin({
       id: nearestId,
       spatialContext,
-      points: createTransientView(graph, `${nearestId}-points`, 'float32x2', 3),
+      queries: {
+        kind: 'points',
+        positions: createTransientView(graph, `${nearestId}-points`, 'float32x2', 3)
+      },
       features: {
         kind: 'segments',
         starts: createTransientView(graph, `${nearestId}-starts`, 'float32x2', 4),
         ends: createTransientView(graph, `${nearestId}-ends`, 'float32x2', 4)
       },
       radius: createTransientView(graph, `${nearestId}-radius`, 'float32', 1),
-      nearestFeatureIds: createTransientView(graph, `${nearestId}-ids`, 'uint32', 3),
-      nearestDistances: createTransientView(graph, `${nearestId}-distances`, 'float32', 3),
-      featureCounts: createTransientView(graph, `${nearestId}-counts`, 'uint32', 4),
-      overflow: createTransientView(graph, `${nearestId}-overflow`, 'uint32', 1)
+      output: {
+        nearestFeatureIds: createTransientView(graph, `${nearestId}-ids`, 'uint32', 3),
+        nearestDistances: createTransientView(graph, `${nearestId}-distances`, 'float32', 3),
+        featureCounts: createTransientView(graph, `${nearestId}-counts`, 'uint32', 4),
+        status: {overflow: createTransientView(graph, `${nearestId}-overflow`, 'uint32', 1)}
+      }
     }).getCommandNodes(graph)
   );
   expect(parseCaptured(['GPUNearestFeatureJoin'])).toBeGreaterThan(12);
@@ -282,11 +314,16 @@ it('planar GPUNearestFeatureJoin kernels carry no great-circle code', () => {
   record(
     new GPUNearestFeatureJoin({
       id: 'pnn',
-      points: createTransientView(graph, 'pnn-points', 'float32x2', 3),
+      queries: {
+        kind: 'points',
+        positions: createTransientView(graph, 'pnn-points', 'float32x2', 3)
+      },
       features: createGeometry(graph, 'lines'),
-      neighborIds: createTransientView(graph, 'pnn-ids', 'uint32', 3),
-      neighborCounts: createTransientView(graph, 'pnn-counts', 'uint32', 3),
-      overflow: createTransientView(graph, 'pnn-overflow', 'uint32', 1)
+      output: {
+        neighborIds: createTransientView(graph, 'pnn-ids', 'uint32', 3),
+        neighborCounts: createTransientView(graph, 'pnn-counts', 'uint32', 3),
+        status: {overflow: createTransientView(graph, 'pnn-overflow', 'uint32', 1)}
+      }
     }).getCommandNodes(graph)
   );
   for (const kernel of captured.filter(kernel => kernel.operation === 'GPUNearestFeatureJoin')) {

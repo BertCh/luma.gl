@@ -34,8 +34,8 @@ function isInsideFeature(point: Point, feature: OraclePolygonFeature): boolean {
  * (no bounding-box prefilter, no crossing bound) and keeps the pieces whose midpoint is inside.
  */
 export function computeLineLengthPerPolygon(
-  paths: Point[][],
-  pathWeights: number[] | undefined,
+  lines: Point[][],
+  lineWeights: number[] | undefined,
   features: OraclePolygonFeature[],
   spherical = false,
   radius = 6371008.8
@@ -43,11 +43,11 @@ export function computeLineLengthPerPolygon(
   const lengths = new Float64Array(features.length);
   const weightedLengths = new Float64Array(features.length);
   const segmentCounts = new Uint32Array(features.length);
-  paths.forEach((path, pathIndex) => {
-    const weight = pathWeights ? pathWeights[pathIndex] : 1;
-    for (let vertex = 0; vertex + 1 < path.length; vertex++) {
-      const a = path[vertex];
-      const b = path[vertex + 1];
+  lines.forEach((line, lineIndex) => {
+    const weight = lineWeights ? lineWeights[lineIndex] : 1;
+    for (let vertex = 0; vertex + 1 < line.length; vertex++) {
+      const a = line[vertex];
+      const b = line[vertex + 1];
       const dx = b[0] - a[0];
       const dy = b[1] - a[1];
       if (dx === 0 && dy === 0) {

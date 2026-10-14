@@ -11,6 +11,7 @@ import {
 } from './trajectory-interpolation-fixtures';
 import {expectClose, runResample} from './trajectory-interpolation-harness';
 import {computeResampleOracle, type ResampleOracleResult} from './trajectory-interpolation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function expectResampleParity(
   actual: ResampleOracleResult,
@@ -24,9 +25,7 @@ function expectResampleParity(
 
 it('GPUTrajectoryResample matches the oracle on edge cases in time and arc-length spacing', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = packTracks(EDGE_CASE_TRACKS);
   for (const spacing of ['time', 'arc-length'] as const) {
     for (const sampleCount of [1, 2, 5, 17]) {
@@ -50,9 +49,7 @@ it('GPUTrajectoryResample matches the oracle on edge cases in time and arc-lengt
 
 it('GPUTrajectoryResample Int64 words match the relative float32 result', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const relative = packTracks(EDGE_CASE_TRACKS);
   const words = packTracks(EDGE_CASE_TRACKS, 397n * 2n ** 32n - 20n);
   for (const spacing of ['time', 'arc-length'] as const) {
@@ -104,9 +101,7 @@ function expectResampleParityWithinUlps(
 
 it('GPUTrajectoryResample matches the oracle on random tracks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [4, 5]) {
     const tracks = packTracks(createRandomTracks(seed, 400));
     for (const spacing of ['time', 'arc-length'] as const) {

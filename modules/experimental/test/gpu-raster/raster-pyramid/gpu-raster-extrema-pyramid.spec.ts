@@ -6,17 +6,20 @@ import type {Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/utils/wgsl-kernel-nodes';
 import {
-  createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
-  getRasterExtremaPyramidWGSL,
   GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM as EMPTY_MAXIMUM,
   GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MINIMUM as EMPTY_MINIMUM,
   GPURasterExtremaPyramid,
   type GPURasterExtremaPyramidFootprint
 } from '../../../src/gpu-raster/raster-pyramid';
+import {
+  createRasterExtremaPyramidNodes,
+  getRasterExtremaPyramidWGSL
+} from '../../../src/gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -25,6 +28,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeRasterExtremaPyramid} from './raster-pyramid-oracle';
 import {createSeededRandom} from '../../gpu-terrain/terrain-oracle-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Values with negatives, small fractions and large magnitudes, plus exact zeros. */
 function createValues(width: number, height: number, seed: number): Float32Array {
@@ -67,8 +71,9 @@ async function runPyramid(
   }
 ) {
   const {width, height} = options;
+  const grid = makeGPURasterMetadata({width, height});
   const pixelCount = width * height;
-  const layout = getGPURasterExtremaPyramidLayout(width, height, options);
+  const layout = getGPURasterExtremaPyramidLayout(grid, options);
   const inputBuffer = createInputBuffer(device, options.values);
   const validityBuffer = options.validity ? createInputBuffer(device, options.validity) : undefined;
   const maximumBuffer = createOutputBuffer(device, layout.length);
@@ -76,8 +81,7 @@ async function runPyramid(
   const graph = new GPUCommandGraph(device, {id: 'raster-pyramid-test'});
   graph.add(
     new GPURasterExtremaPyramid({
-      width,
-      height,
+      grid,
       firstBlockSize: options.firstBlockSize,
       footprint: options.footprint,
       input: {
@@ -99,14 +103,16 @@ async function runPyramid(
           ? importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', pixelCount)
           : undefined
       } as never,
-      maximum:
-        options.maximum === false
-          ? undefined
-          : importGraphBuffer(graph, 'maximum', maximumBuffer, 'float32', layout.length),
-      minimum:
-        options.minimum === false
-          ? undefined
-          : importGraphBuffer(graph, 'minimum', minimumBuffer, 'float32', layout.length)
+      output: {
+        maximum:
+          options.maximum === false
+            ? undefined
+            : importGraphBuffer(graph, 'maximum', maximumBuffer, 'float32', layout.length),
+        minimum:
+          options.minimum === false
+            ? undefined
+            : importGraphBuffer(graph, 'minimum', minimumBuffer, 'float32', layout.length)
+      }
     })
   );
   const compiled = graph.compile();
@@ -135,9 +141,7 @@ for (const {width, height} of CASES) {
     for (const footprint of ['cell', 'bilinear'] as const) {
       it(`GPURasterExtremaPyramid is bit-identical to the oracle (${width}x${height}, block ${firstBlockSize}, ${footprint})`, async () => {
         const device = await getWebGPUTestDevice();
-        if (!device) {
-          return;
-        }
+        requireTestDevice(device);
         const values = createValues(width, height, 7 + firstBlockSize);
         const validity = createValidity(width, height, 10, 99);
         const result = await runPyramid(device, {
@@ -172,9 +176,7 @@ for (const {width, height} of CASES) {
 
 it('GPURasterExtremaPyramid canonicalizes uint32 calibration and works without validity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 23;
   const raw = Uint32Array.from({length: width * height}, (_, index) => (index * 7919) % 4001);
@@ -196,9 +198,7 @@ it('GPURasterExtremaPyramid canonicalizes uint32 calibration and works without v
 
 it('GPURasterExtremaPyramid builds only the requested extremum and respects levelCount', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 23;
   const values = createValues(width, height, 3);
@@ -227,14 +227,14 @@ it('GPURasterExtremaPyramid builds only the requested extremum and respects leve
 
 it('combined output plus getRasterExtremaPyramidWGSL index the same cells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 23;
   const values = createValues(width, height, 21);
   const validity = createValidity(width, height, 10, 5);
-  const layout = getGPURasterExtremaPyramidLayout(width, height, {firstBlockSize: 2});
+  const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width, height}), {
+    firstBlockSize: 2
+  });
   const probeLevel = 2;
   const valuesBuffer = createInputBuffer(device, values);
   const validityBuffer = createInputBuffer(device, validity);

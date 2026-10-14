@@ -19,6 +19,7 @@ import {
   GREAT_CIRCLE_RADIUS,
   GREAT_CIRCLE_TRACK_CASES
 } from './track-similarity-great-circle-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Polyline = [number, number][];
 
@@ -67,16 +68,24 @@ async function runGreatCircle(
     new GPUTrackSimilarity({
       id: 'similarity',
       spatialContext: {...GREAT_CIRCLE, sphereRadius: options.sphereRadius},
-      positionsA: importGraphBuffer(graph, 'positions-a', input(packedA.positions), 'float32x2'),
-      offsetsA: importGraphBuffer(graph, 'offsets-a', input(packedA.offsets), 'uint32'),
-      positionsB: importGraphBuffer(graph, 'positions-b', input(packedB.positions), 'float32x2'),
-      offsetsB: importGraphBuffer(graph, 'offsets-b', input(packedB.offsets), 'uint32'),
+      linesA: {
+        kind: 'lines',
+        positions: importGraphBuffer(graph, 'positions-a', input(packedA.positions), 'float32x2'),
+        lineOffsets: importGraphBuffer(graph, 'offsets-a', input(packedA.offsets), 'uint32')
+      },
+      linesB: {
+        kind: 'lines',
+        positions: importGraphBuffer(graph, 'positions-b', input(packedB.positions), 'float32x2'),
+        lineOffsets: importGraphBuffer(graph, 'offsets-b', input(packedB.offsets), 'uint32')
+      },
       pairA: importGraphBuffer(graph, 'pair-a', input(indices), 'uint32'),
       pairB: importGraphBuffer(graph, 'pair-b', input(indices), 'uint32'),
-      hausdorff: importGraphBuffer(graph, 'o-hausdorff', out.hausdorff, 'float32', pairCount),
-      frechet: importGraphBuffer(graph, 'o-frechet', out.frechet, 'float32', pairCount),
-      maxDistance: importGraphBuffer(graph, 'o-max', out.maxDistance, 'float32', pairCount),
-      status: importGraphBuffer(graph, 'o-status', out.status, 'uint32', pairCount),
+      output: {
+        hausdorff: importGraphBuffer(graph, 'o-hausdorff', out.hausdorff, 'float32', pairCount),
+        frechet: importGraphBuffer(graph, 'o-frechet', out.frechet, 'float32', pairCount),
+        maximumDistance: importGraphBuffer(graph, 'o-max', out.maxDistance, 'float32', pairCount),
+        pairStatus: importGraphBuffer(graph, 'o-status', out.status, 'uint32', pairCount)
+      },
       densify: options.densify
     })
   );
@@ -102,9 +111,7 @@ function expectMeters(actual: number, expected: number, label: string): void {
 
 it('GPUTrackSimilarity great-circle matches numpy/pyproj oracles at mid latitude, high latitude and across the antimeridian', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runGreatCircle(device, {});
   for (const [index, [name, testCase]] of Object.entries(GREAT_CIRCLE_TRACK_CASES).entries()) {
     expect(result.status[index], `${name} status`).toBe(0);
@@ -117,9 +124,7 @@ it('GPUTrackSimilarity great-circle matches numpy/pyproj oracles at mid latitude
 
 it('GPUTrackSimilarity great-circle densifies with wrapped longitude deltas', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runGreatCircle(device, {densify: 0.5});
   for (const [index, [name, testCase]] of Object.entries(GREAT_CIRCLE_TRACK_CASES).entries()) {
     expectMeters(result.hausdorff[index], testCase.hausdorffDensify2, `${name} hausdorff`);
@@ -130,9 +135,7 @@ it('GPUTrackSimilarity great-circle densifies with wrapped longitude deltas', as
 
 it('GPUTrackSimilarity great-circle distances scale with sphereRadius', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const radius = 1_000_000;
   const result = await runGreatCircle(device, {sphereRadius: radius});
   for (const [index, [name, testCase]] of Object.entries(GREAT_CIRCLE_TRACK_CASES).entries()) {

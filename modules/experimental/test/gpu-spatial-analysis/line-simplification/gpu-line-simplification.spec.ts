@@ -31,11 +31,12 @@ import {
   createScene,
   createSpiralScene
 } from './line-simplification-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type ImportanceResult = {
   importanceBits: Uint32Array;
   converged: number;
-  roundCount: number;
+  iterationCount: number;
 };
 
 type SelectionResult = {
@@ -43,7 +44,7 @@ type SelectionResult = {
   count: number;
   overflow: number;
   requiredCount: number;
-  keepMask: number[];
+  outputMask: number[];
   lineCounts: number[];
   lineStarts: number[];
 };
@@ -65,10 +66,10 @@ type Fixture = {
 function createFixture(
   device: Device,
   scene: LineSimplificationScene,
-  options: {maximumRounds?: number; capacity?: number; finishSpanLimit?: number} = {}
+  options: {maximumIterations?: number; capacity?: number; finishSpanLimit?: number} = {}
 ): Fixture {
   const rowCount = scene.positions.length / 2;
-  const lineCount = scene.trackOffsets.length - 1;
+  const lineCount = scene.lineOffsets.length - 1;
   const capacity = options.capacity ?? rowCount;
   const buffers: Buffer[] = [];
   const input = (values: Float32Array | Uint32Array) => {
@@ -82,17 +83,17 @@ function createFixture(
     return buffer;
   };
   const positions = input(scene.positions);
-  const trackOffsets = input(scene.trackOffsets);
+  const lineOffsets = input(scene.lineOffsets);
   const timestamps = input(scene.timestamps ?? new Float32Array(rowCount));
   const importance = output(rowCount);
   const converged = output(1);
-  const roundCount = output(1);
+  const iterationCount = output(1);
   const outputs = {
     ids: output(capacity),
     count: output(1),
     overflow: output(1),
     requiredCount: output(1),
-    keepMask: output(rowCount),
+    outputMask: output(rowCount),
     lineCounts: output(lineCount),
     lineStarts: output(lineCount)
   };
@@ -104,21 +105,29 @@ function createFixture(
     new GPULineSimplification({
       id: 'importance',
       positions: importGraphBuffer(importanceGraph, 'positions', positions, 'float32x2', rowCount),
-      trackOffsets: importGraphBuffer(
+      lineOffsets: importGraphBuffer(
         importanceGraph,
         'offsets',
-        trackOffsets,
+        lineOffsets,
         'uint32',
         lineCount + 1
       ),
       timestamps: importGraphBuffer(importanceGraph, 'times', timestamps, 'float32', rowCount),
       metric: scene.metric,
-      maximumRounds: options.maximumRounds,
+      maximumIterations: options.maximumIterations,
       finishSpanLimit: options.finishSpanLimit,
       importance: importGraphBuffer(importanceGraph, 'importance', importance, 'float32', rowCount),
-      status: {
-        converged: importGraphBuffer(importanceGraph, 'converged', converged, 'uint32', 1),
-        roundCount: importGraphBuffer(importanceGraph, 'round-count', roundCount, 'uint32', 1)
+      output: {
+        status: {
+          converged: importGraphBuffer(importanceGraph, 'converged', converged, 'uint32', 1),
+          iterationCount: importGraphBuffer(
+            importanceGraph,
+            'round-count',
+            iterationCount,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -136,30 +145,25 @@ function createFixture(
     new GPULineSimplification({
       id: 'selection',
       positions: importGraphBuffer(selectionGraph, 'positions', positions, 'float32x2', rowCount),
-      trackOffsets: importGraphBuffer(
+      lineOffsets: importGraphBuffer(
         selectionGraph,
         'offsets',
-        trackOffsets,
+        lineOffsets,
         'uint32',
         lineCount + 1
       ),
       importance: importGraphBuffer(selectionGraph, 'importance', importance, 'float32', rowCount),
       computeImportance: false,
       parameters: parameterBuffer.importToGraph(selectionGraph),
-      selection: {
-        output: {
-          ids: importGraphBuffer(selectionGraph, 'o-ids', outputs.ids, 'uint32', capacity),
-          count: importGraphBuffer(selectionGraph, 'o-count', outputs.count, 'uint32', 1),
-          overflow: importGraphBuffer(selectionGraph, 'o-overflow', outputs.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(
-            selectionGraph,
-            'o-total',
-            outputs.requiredCount,
-            'uint32',
-            1
-          )
-        },
-        keepMask: importGraphBuffer(selectionGraph, 'o-mask', outputs.keepMask, 'uint32', rowCount),
+      output: {
+        ids: importGraphBuffer(selectionGraph, 'o-ids', outputs.ids, 'uint32', capacity),
+        outputMask: importGraphBuffer(
+          selectionGraph,
+          'o-mask',
+          outputs.outputMask,
+          'uint32',
+          rowCount
+        ),
         lineCounts: importGraphBuffer(
           selectionGraph,
           'o-line-counts',
@@ -173,7 +177,18 @@ function createFixture(
           outputs.lineStarts,
           'uint32',
           lineCount
-        )
+        ),
+        status: {
+          count: importGraphBuffer(selectionGraph, 'o-count', outputs.count, 'uint32', 1),
+          overflow: importGraphBuffer(selectionGraph, 'o-overflow', outputs.overflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(
+            selectionGraph,
+            'o-total',
+            outputs.requiredCount,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -186,7 +201,7 @@ function createFixture(
       return {
         importanceBits: Uint32Array.from(await readUint32(importance, rowCount)),
         converged: (await readUint32(converged, 1))[0],
-        roundCount: (await readUint32(roundCount, 1))[0]
+        iterationCount: (await readUint32(iterationCount, 1))[0]
       };
     },
     async select(tolerance) {
@@ -198,7 +213,7 @@ function createFixture(
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
         requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
-        keepMask: await readUint32(outputs.keepMask, rowCount),
+        outputMask: await readUint32(outputs.outputMask, rowCount),
         lineCounts: await readUint32(outputs.lineCounts, lineCount),
         lineStarts: await readUint32(outputs.lineStarts, lineCount)
       };
@@ -230,7 +245,7 @@ function expectSelectionParity(
   expect(actual.overflow).toBe(kept.length > capacity ? 1 : 0);
   expect(actual.ids).toEqual(kept.slice(0, capacity));
   const keptSet = new Set(kept);
-  expect(actual.keepMask).toEqual(actual.keepMask.map((_, row) => (keptSet.has(row) ? 1 : 0)));
+  expect(actual.outputMask).toEqual(actual.outputMask.map((_, row) => (keptSet.has(row) ? 1 : 0)));
   const ranges = getKeptLineRanges(scene, kept);
   expect(actual.lineCounts).toEqual(ranges.lineCounts);
   expect(actual.lineStarts).toEqual(ranges.lineStarts);
@@ -247,7 +262,7 @@ async function expectSceneParity(
   const actual = await fixture.computeImportance();
   const expected = computeParallelImportance(scene, 64);
   expect(actual.converged).toBe(1);
-  expect(actual.roundCount).toBe(expected.roundCount);
+  expect(actual.iterationCount).toBe(expected.iterationCount);
   expect(Array.from(actual.importanceBits)).toEqual(Array.from(expected.importanceBits));
   for (const tolerance of tolerances) {
     const kept = expectSelectionParity(
@@ -266,7 +281,7 @@ async function expectSceneParity(
   const finishing = createFixture(device, scene);
   const finished = await finishing.computeImportance();
   expect(finished.converged).toBe(1);
-  expect(finished.roundCount).toBeLessThanOrEqual(expected.roundCount);
+  expect(finished.iterationCount).toBeLessThanOrEqual(expected.iterationCount);
   expect(Array.from(finished.importanceBits)).toEqual(Array.from(expected.importanceBits));
   for (const tolerance of tolerances) {
     const kept = expectSelectionParity(
@@ -285,17 +300,13 @@ async function expectSceneParity(
 
 it('GPULineSimplification matches the oracle and Douglas-Peucker on corner cases', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   await expectSceneParity(device, createCornerCaseScene(), [0, 0.5, 1, 2 / Math.sqrt(10), 3]);
 });
 
 it('GPULineSimplification matches the oracle on many random tracks with varied lengths', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [1, 2]) {
     await expectSceneParity(
       device,
@@ -307,9 +318,7 @@ it('GPULineSimplification matches the oracle on many random tracks with varied l
 
 it('GPULineSimplification is bit-exact on unquantized float coordinates', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Inexact products and differences: a fused multiply-add anywhere would change the bits.
   const random = createRandom(9);
   const lines = Array.from({length: 1500}, () =>
@@ -320,9 +329,7 @@ it('GPULineSimplification is bit-exact on unquantized float coordinates', async 
 
 it('GPULineSimplification matches the oracle with the TD-TR time-ratio metric', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   await expectSceneParity(
     device,
     createRandomTracksScene(7, 200, 100, 'time-ratio'),
@@ -332,9 +339,7 @@ it('GPULineSimplification matches the oracle with the TD-TR time-ratio metric', 
 
 it('GPULineSimplification changes tolerance per frame without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomTracksScene(11, 100, 80);
   const capacity = 150;
   const fixture = createFixture(device, scene, {capacity});
@@ -352,19 +357,17 @@ it('GPULineSimplification changes tolerance per frame without recompiling', asyn
 
 it('GPULineSimplification reports a deep spiral that hits the round cap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createSpiralScene(300);
   const full = computeParallelImportance(scene, 1024);
-  const maximumRounds = 6;
-  expect(full.roundCount).toBeGreaterThan(maximumRounds);
+  const maximumIterations = 6;
+  expect(full.iterationCount).toBeGreaterThan(maximumIterations);
 
-  const capped = createFixture(device, scene, {maximumRounds, finishSpanLimit: 0});
+  const capped = createFixture(device, scene, {maximumIterations, finishSpanLimit: 0});
   const actual = await capped.computeImportance();
-  const expected = computeParallelImportance(scene, maximumRounds);
+  const expected = computeParallelImportance(scene, maximumIterations);
   expect(actual.converged).toBe(0);
-  expect(actual.roundCount).toBe(maximumRounds);
+  expect(actual.iterationCount).toBe(maximumIterations);
   expect(Array.from(actual.importanceBits)).toEqual(Array.from(expected.importanceBits));
   for (const tolerance of [0.5, 2, 5]) {
     const kept = new Set((await capped.select(tolerance)).ids);
@@ -375,12 +378,12 @@ it('GPULineSimplification reports a deep spiral that hits the round cap', async 
   capped.destroy();
 
   const uncapped = createFixture(device, scene, {
-    maximumRounds: full.roundCount,
+    maximumIterations: full.iterationCount,
     finishSpanLimit: 0
   });
   const converged = await uncapped.computeImportance();
   expect(converged.converged).toBe(1);
-  expect(converged.roundCount).toBe(full.roundCount);
+  expect(converged.iterationCount).toBe(full.iterationCount);
   expect(Array.from(converged.importanceBits)).toEqual(Array.from(full.importanceBits));
   for (const tolerance of [0.5, 2, 5]) {
     expect((await uncapped.select(tolerance)).ids).toEqual(
@@ -392,27 +395,25 @@ it('GPULineSimplification reports a deep spiral that hits the round cap', async 
 
 it('GPULineSimplification finishes small spirals within one round and keeps large ones exact', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A 30-interior-row spiral needs several rounds; the finishing lane solves it in the first.
   const small = createSpiralScene(32);
   const smallRounds = computeParallelImportance(small, 1024);
-  expect(smallRounds.roundCount).toBeGreaterThan(4);
-  const smallFixture = createFixture(device, small, {maximumRounds: 1});
+  expect(smallRounds.iterationCount).toBeGreaterThan(4);
+  const smallFixture = createFixture(device, small, {maximumIterations: 1});
   const smallResult = await smallFixture.computeImportance();
   expect(smallResult.converged).toBe(1);
-  expect(smallResult.roundCount).toBe(1);
+  expect(smallResult.iterationCount).toBe(1);
   expect(Array.from(smallResult.importanceBits)).toEqual(Array.from(smallRounds.importanceBits));
   smallFixture.destroy();
 
   // A long spiral: rounds shrink it until the remainder fits, and the result stays exact.
   const large = createSpiralScene(300);
   const largeRounds = computeParallelImportance(large, 1024);
-  const largeFixture = createFixture(device, large, {maximumRounds: 1024});
+  const largeFixture = createFixture(device, large, {maximumIterations: 1024});
   const largeResult = await largeFixture.computeImportance();
   expect(largeResult.converged).toBe(1);
-  expect(largeResult.roundCount).toBeLessThan(largeRounds.roundCount);
+  expect(largeResult.iterationCount).toBeLessThan(largeRounds.iterationCount);
   expect(Array.from(largeResult.importanceBits)).toEqual(Array.from(largeRounds.importanceBits));
   for (const tolerance of [0.5, 2, 5]) {
     expect((await largeFixture.select(tolerance)).ids).toEqual(
@@ -424,16 +425,14 @@ it('GPULineSimplification finishes small spirals within one round and keeps larg
 
 it('GPULineSimplification computes importance and selection in one graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomTracksScene(5, 20, 40);
   const rowCount = scene.positions.length / 2;
-  const lineCount = scene.trackOffsets.length - 1;
+  const lineCount = scene.lineOffsets.length - 1;
   const graph = new GPUCommandGraph(device, {id: 'line-both-graph'});
   const buffers = {
     positions: createInputBuffer(device, scene.positions),
-    offsets: createInputBuffer(device, scene.trackOffsets),
+    offsets: createInputBuffer(device, scene.lineOffsets),
     importance: createOutputBuffer(device, rowCount),
     ids: createOutputBuffer(device, rowCount),
     count: createOutputBuffer(device, 1),
@@ -448,12 +447,12 @@ it('GPULineSimplification computes importance and selection in one graph', async
   graph.add(
     new GPULineSimplification({
       positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', rowCount),
-      trackOffsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', lineCount + 1),
+      lineOffsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', lineCount + 1),
       importance: importGraphBuffer(graph, 'importance', buffers.importance, 'float32', rowCount),
       parameters: parameterBuffer.importToGraph(graph),
-      selection: {
-        output: {
-          ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', rowCount),
+      output: {
+        ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', rowCount),
+        status: {
           count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
         }

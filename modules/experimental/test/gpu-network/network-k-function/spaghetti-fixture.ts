@@ -129,7 +129,7 @@ export const SPAGHETTI_FIXTURE = {
     [5.655577, 6.546475]
   ] as [number, number][],
   bandCount: 12,
-  maxDistance: 9,
+  maximumDistance: 9,
   networkLength: 83.02004231118741,
   counts: [0, 18, 43, 85, 113, 163, 233, 285, 371, 450, 521, 574],
   k: [

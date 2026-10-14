@@ -108,8 +108,7 @@ export function computeGeomorphons(
   const isValid = (column: number, row: number) =>
     Number.isFinite(elevation[row * width + column]) && (!mask || mask[row * width + column] !== 0);
   const flatThreshold = (settings[5] * Math.PI) / 180;
-  const flatDistance = settings[6];
-  const flatThresholdHeight = Math.tan(flatThreshold) * flatDistance;
+  const requestedFlatDistance = settings[6];
   const zFactor = settings[2];
   const northSign = (options.rowDirection ?? 'south') === 'south' ? -1 : 1;
 
@@ -135,6 +134,14 @@ export function computeGeomorphons(
       );
       // Mirrors the GPU's 1e-5 relative guard that excludes samples exactly at the search limit.
       const searchDistance = options.searchRadius * cellY * 0.99999;
+      // GRASS r.geomorphon main.c: flat_distance <= skip_distance || flat_distance >=
+      // search_distance sets it to 0 (both in map units, here the row's north-south cell size).
+      const flatDistance =
+        requestedFlatDistance > skipRadius * cellY &&
+        requestedFlatDistance < options.searchRadius * cellY
+          ? requestedFlatDistance
+          : 0;
+      const flatThresholdHeight = Math.tan(flatThreshold) * flatDistance;
       const center = elevation[row * width + column];
       const digits: number[] = [];
       let minusCount = 0;

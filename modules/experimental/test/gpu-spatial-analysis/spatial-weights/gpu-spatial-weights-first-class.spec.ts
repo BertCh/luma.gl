@@ -16,6 +16,7 @@ import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from './spatial-weights-harness';
 import type {OracleCSR} from './spatial-weights-oracle';
 import {WEIGHTS_ORACLE} from './spatial-weights-u4-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const VIOLATION = GPU_SPATIAL_WEIGHTS_VIOLATION;
 
@@ -31,7 +32,7 @@ function createValidCSR(): OracleCSR {
 
 it('GPUSpatialWeightsValidation accepts a valid CSR and flags every kind of violation', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const valid = createValidCSR();
   const cases: {name: string; csr: OracleCSR; capacity?: number; flags: number[]}[] = [
     {name: 'valid', csr: valid, flags: [0, 0, 0, 0]},
@@ -91,8 +92,7 @@ it('GPUSpatialWeightsValidation accepts a valid CSR and flags every kind of viol
     rig.run(
       new GPUSpatialWeightsValidation({
         weights,
-        invalidCount: invalidCount.view,
-        flags: rowFlags.view
+        output: {flags: rowFlags.view, status: {invalidCount: invalidCount.view}}
       })
     );
     expect(await readUint32(rowFlags.buffer, 4), `${name} flags`).toEqual(flags);
@@ -105,8 +105,8 @@ it('GPUSpatialWeightsValidation accepts a valid CSR and flags every kind of viol
 
 it('GPUSpatialWeightsSummary counts islands as rows without an active slot, as libpysal islands', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
-  // Oracle: fix/work/A/oracle-u4-weights.py (libpysal 4.15): W built without the zero-weight entry,
+  requireTestDevice(device);
+  // Oracle: test/oracles/statistics-spatial-weights.py (libpysal 4.15): W built without the zero-weight entry,
   // islands [3, 4, 5], cardinalities [2, 2, 2, 0, 0, 0], s0 = 7, s1 = 21, s2 = 70. Row 4 lists
   // one zero-weight slot (4 -> 5) and rows 3 and 5 are empty.
   const csr: OracleCSR = {
@@ -124,9 +124,7 @@ it('GPUSpatialWeightsSummary counts islands as rows without an active slot, as l
   rig.run(
     new GPUSpatialWeightsSummary({
       weights,
-      statistics: statistics.view,
-      counts: counts.view,
-      cardinality: cardinality.view
+      output: {statistics: statistics.view, counts: counts.view, cardinality: cardinality.view}
     })
   );
   const [s0, s1, s2] = await readFloat32(statistics.buffer, 3);
@@ -145,8 +143,8 @@ it('GPUSpatialWeightsSummary counts islands as rows without an active slot, as l
 
 it('GPUSpatialWeightsTransform adaptive kernel matches libpysal Kernel(fixed=False) on kNN rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
-  // Oracle: fix/work/A/oracle-u4-weights.py (libpysal 4.15), k = 3, self slot removed. The k-th
+  requireTestDevice(device);
+  // Oracle: test/oracles/statistics-spatial-weights.py (libpysal 4.15), k = 3, self slot removed. The k-th
   // neighbor of each row keeps the eps tail weight (bandwidth = d_k * 1.0000001).
   const kernels: GPUSpatialWeightsKernel[] = [
     'triangular',
@@ -169,7 +167,7 @@ it('GPUSpatialWeightsTransform adaptive kernel matches libpysal Kernel(fixed=Fal
     const rig = new WeightsRig(device);
     const upload: GPUSpatialWeights = {
       ...rig.uploadWeights(csr, 0),
-      info: {
+      information: {
         rowCount: rows.length,
         transform: 'raw',
         symmetric: false,
@@ -213,7 +211,7 @@ it('GPUSpatialWeightsTransform adaptive kernel matches libpysal Kernel(fixed=Fal
         expect(actual[farthest], `${kernel} row ${row} tail`).toBeLessThan(1e-5);
       });
     }
-    expect(transform.outputWeights.info?.transform).toBe('kernel');
+    expect(transform.outputWeights.information?.transform).toBe('kernel');
     rig.destroy();
   }
 });

@@ -6,8 +6,8 @@ import {describe, expect, it} from 'vitest';
 import {
   createGPULocalFrame,
   type GPULocalFrameKind
-} from '../../../src/gpu-spatial-analysis/contracts/local-frame';
-import {getGPUSpatialContextCompatibility} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+} from '../../../src/analysis-core/contracts/local-frame';
+import {getGPUSpatialContextCompatibility} from '../../../src/analysis-core/contracts/spatial-context';
 
 // Oracle: <scratchpad>/fix/work/E/local-frame/oracle.py, pyproj 3.8.0 proj 9.8.1.
 // azimuthal-equidistant: +proj=aeqd +R=6371008.8; lambert-equal-area: +proj=laea +ellps=WGS84.

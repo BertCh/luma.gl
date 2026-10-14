@@ -11,20 +11,20 @@ import {
 } from '../../../src/gpu-spatial-analysis/outline-geometry/index';
 import {createGeometryFixture} from './geometry-fixture';
 import {OFFSET_CURVE_REFERENCE_CASES} from './offset-curve-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Reference values are pinned from shapely 2.1.2 (GEOS) `offset_curve`; see offset-curve-reference.ts.
 for (const referenceCase of OFFSET_CURVE_REFERENCE_CASES) {
   it(`GPUOffsetCurve matches shapely.offset_curve: ${referenceCase.name}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const {vertices, joinStyle, quadSegments, ring} = referenceCase;
     const rowsPerVertex = getGPUOffsetCurveRowsPerVertex(joinStyle, quadSegments);
     const fixture = createGeometryFixture(device, {
       inputs: {
         positions: {values: new Float32Array(vertices.flat()), format: 'float32x2'},
-        pathOffsets: {values: new Uint32Array([0, vertices.length]), format: 'uint32'}
+        lineOffsets: {values: new Uint32Array([0, vertices.length]), format: 'uint32'},
+        singleOffsets: {values: new Uint32Array([0, 1]), format: 'uint32'}
       },
       outputs: {
         output: {format: 'float32x2', length: vertices.length * rowsPerVertex},
@@ -33,8 +33,14 @@ for (const referenceCase of OFFSET_CURVE_REFERENCE_CASES) {
       create: ({inputs, outputs, parameters}) =>
         new GPUOffsetCurve({
           positions: inputs['positions'] as never,
-          pathOffsets: inputs['pathOffsets'] as never,
-          geometryType: ring ? 'rings' : 'lines',
+          ...(ring
+            ? {
+                geometryType: 'polygons' as const,
+                featureOffsets: inputs['singleOffsets'] as never,
+                polygonOffsets: inputs['singleOffsets'] as never,
+                ringOffsets: inputs['lineOffsets'] as never
+              }
+            : {geometryType: 'lines' as const, lineOffsets: inputs['lineOffsets'] as never}),
           joinStyle,
           quadSegments,
           parameters,

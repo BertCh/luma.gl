@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
   GPU_LOCAL_MORAN_QUADRANT,
-  type GPUSpatialAutocorrelationParameters
+  type GPUSpatialAutocorrelationSettings
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
 import {
   computeLocalMoranOracle,
@@ -31,6 +31,7 @@ import {
   isClose,
   type SpatialAutocorrelationReadback
 } from './spatial-autocorrelation-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** z-scores agree with the double-precision oracle within `2e-3 + 1e-3 |z|`. */
 const Z_ABSOLUTE_TOLERANCE = 2e-3;
@@ -109,9 +110,7 @@ function expectMatchesOracle(
 
 it('GPULocalMoran matches the oracle for hand-built CSR weights, levels and new values without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(11, 2000, RADII);
   for (const [radius, rowStandardize] of [
     [0.8, true],
@@ -174,9 +173,7 @@ it('GPULocalMoran matches the oracle for hand-built CSR weights, levels and new 
 
 it('GPULocalMoran consumes weights written by GPUNeighborSearch in the same graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(17, 2000, [3, 7.5, 12]);
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'local-moran',
@@ -216,9 +213,7 @@ it('GPULocalMoran consumes weights written by GPUNeighborSearch in the same grap
 
 it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed moments', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(23, 1500, [8]);
   const values = scene.values.slice();
   // Plant a low outlier at the row closest to the strongest hot bump.
@@ -236,7 +231,7 @@ it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed 
   const random = createSeededRandom(9);
   const mask = Uint32Array.from({length: values.length}, () => (random() < 0.7 ? 1 : 0));
   mask[outlier] = 1;
-  const parameters: GPUSpatialAutocorrelationParameters = {};
+  const parameters: GPUSpatialAutocorrelationSettings = {};
   const weights = createDistanceBandWeights(scene.positions, 8, {rowStandardize: true});
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'local-moran',
@@ -258,7 +253,7 @@ it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed 
     expect(result.localI[outlier]).toBeLessThan(0);
     expect(mask.some((flag, row) => flag === 0 && !Number.isNaN(result.zScores[row]))).toBe(false);
 
-    const fixedParameters: GPUSpatialAutocorrelationParameters = {
+    const fixedParameters: GPUSpatialAutocorrelationSettings = {
       ...parameters,
       fixedMoments: {count: 2000, mean: 99, variance: 9}
     };
@@ -284,13 +279,11 @@ it('GPULocalMoran finds a planted spatial outlier and honors the mask and fixed 
 
 it('GPULocalMoran quadrants follow the adjusted p-value of every multiple-testing method', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(41, 2500, [6]);
   const weights = createDistanceBandWeights(scene.positions, 6, {rowStandardize: true});
   for (const significanceLevel of [0.05, 0.1]) {
-    const parameters: GPUSpatialAutocorrelationParameters = {significanceLevel};
+    const parameters: GPUSpatialAutocorrelationSettings = {significanceLevel};
     const counts = new Map<string, number>();
     for (const method of [
       'none',
@@ -350,11 +343,9 @@ it('GPULocalMoran quadrants follow the adjusted p-value of every multiple-testin
 
 it('GPULocalMoran matches esda Moran_Local on a fixture with an island (keep, exclude, masked)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = getReferenceValues();
-  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0 Moran_Local, libpysal 4.15.0).
+  // Oracle: test/oracles/statistics-local-autocorrelation.py (esda 2.10.0 Moran_Local, libpysal 4.15.0).
   // Row-standardized weights are written for the full neighborhoods; the masked configuration is
   // esda on the subset W re-row-standardized, so the GPU must re-standardize masked neighbors.
   for (const [policy, mask, reference, count, islandCount] of [
@@ -406,9 +397,7 @@ it('GPULocalMoran matches esda Moran_Local on a fixture with an island (keep, ex
 
 it('GPULocalMoran counts positive-weight neighbors only and honors minimumNeighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = getReferenceValues();
   const weights = getReferenceWeights();
   // A zero-weight slot and a self slot per row are not neighbors: outputs are bitwise identical.
@@ -475,12 +464,10 @@ it('GPULocalMoran counts positive-weight neighbors only and honors minimumNeighb
 
 it("GPULocalMoran quadrantGating 'none' reports ungated quadrants from the signs of c and lag", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(41, 2500, [6]);
   const weights = createDistanceBandWeights(scene.positions, 6, {rowStandardize: true});
-  const parameters: GPUSpatialAutocorrelationParameters = {significanceLevel: 0.05};
+  const parameters: GPUSpatialAutocorrelationSettings = {significanceLevel: 0.05};
   const gated = createSpatialAutocorrelationHarness(device, {
     contributor: 'local-moran',
     scene,

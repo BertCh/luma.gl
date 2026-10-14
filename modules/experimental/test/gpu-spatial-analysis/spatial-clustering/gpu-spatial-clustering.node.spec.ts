@@ -9,9 +9,15 @@ import {
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  type GPUSpatialClusteringOutput,
   type GPUSpatialClusteringProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getParsedKernelSources,
+  getStorageBindingCount
+} from '../../utils/gpu-contributor-test-utils';
 import {getSpatialClusteringSharedWGSL} from '../../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-kernels';
 import {
   clusterGeographicPointsOracle,
@@ -23,25 +29,53 @@ import {
   ORACLE_NOISE
 } from './spatial-clustering-oracle';
 
+/** Input props and output views mixed in one flat object, split by {@link createProps}. */
+type ClusteringOverrides = Partial<Omit<GPUSpatialClusteringProps, 'output'>> &
+  Partial<GPUSpatialClusteringOutput>;
+
+const OUTPUT_KEYS = [
+  'labels',
+  'rootRows',
+  'coreFlags',
+  'clusterCount',
+  'clusters',
+  'drawInstanceCount',
+  'clusterSizes',
+  'clusterCentroids'
+] as const;
+
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUSpatialClusteringProps> = {},
+  overrides: ClusteringOverrides = {},
   rows: number = 16
 ): GPUSpatialClusteringProps {
+  const inputs: Record<string, unknown> = {};
+  const output: Record<string, unknown> = {
+    labels: createTransientView(graph, 'labels', 'uint32', rows)
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if ((OUTPUT_KEYS as readonly string[]).includes(key)) {
+      output[key] = value;
+    } else {
+      inputs[key] = value;
+    }
+  }
   return {
     positions: createTransientView(graph, 'positions', 'float32x2', rows),
     parameters: createTransientView(graph, 'parameters', 'float32', 8),
     gridSize: [8, 8],
-    labels: createTransientView(graph, 'labels', 'uint32', rows),
-    ...overrides
+    ...inputs,
+    output: output as GPUSpatialClusteringOutput
   };
 }
 
 function createCluster(graph: GPUCommandGraph, capacity: number) {
   return {
     ids: createTransientView(graph, 'cluster-ids', 'uint32', capacity),
-    count: createTransientView(graph, 'cluster-ids-count', 'uint32', 1),
-    overflow: createTransientView(graph, 'cluster-ids-overflow', 'uint32', 1)
+    status: {
+      count: createTransientView(graph, 'cluster-ids-count', 'uint32', 1),
+      overflow: createTransientView(graph, 'cluster-ids-overflow', 'uint32', 1)
+    }
   };
 }
 
@@ -111,7 +145,9 @@ it('GPUSpatialClustering schedules the label pipeline with prefixed unique IDs',
     'spatial-clustering-grid-bounds',
     'spatial-clustering-grid-positions',
     'spatial-clustering-grid-index',
+    'spatial-clustering-cell-positions',
     'spatial-clustering-core',
+    'spatial-clustering-cell-core-flags',
     'spatial-clustering-parents-init',
     'spatial-clustering-union',
     'spatial-clustering-resolve',
@@ -132,14 +168,19 @@ it('GPUSpatialClustering schedules the label pipeline with prefixed unique IDs',
 it('GPUSpatialClustering orders cluster outputs and publishes last', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const ids = new GPUSpatialClustering({
-    ...createProps(graph, {}, 16),
-    id: 'dbscan',
-    sumOrder: 'atomic',
-    clusters: createCluster(graph, 4),
-    clusterSizes: createTransientView(graph, 'sizes', 'uint32', 4),
-    clusterCentroids: createTransientView(graph, 'centroids', 'float32x2', 4)
-  })
+  const ids = new GPUSpatialClustering(
+    createProps(
+      graph,
+      {
+        id: 'dbscan',
+        sumOrder: 'atomic',
+        clusters: createCluster(graph, 4),
+        clusterSizes: createTransientView(graph, 'sizes', 'uint32', 4),
+        clusterCentroids: createTransientView(graph, 'centroids', 'float32x2', 4)
+      },
+      16
+    )
+  )
     .getCommandNodes(graph)
     .map(node => node.id);
   expect(ids.every(id => id.startsWith('dbscan-'))).toBe(true);
@@ -166,10 +207,7 @@ it('GPUSpatialClustering orders cluster outputs and publishes last', () => {
 it('GPUSpatialClustering schedules only scalar and cluster nodes for empty input', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const ids = new GPUSpatialClustering({
-    ...createProps(graph, {}, 0),
-    clusters: createCluster(graph, 2)
-  })
+  const ids = new GPUSpatialClustering(createProps(graph, {clusters: createCluster(graph, 2)}, 0))
     .getCommandNodes(graph)
     .map(node => node.id);
   expect(ids).toEqual(['spatial-clustering-cluster-count', 'spatial-clustering-publish']);
@@ -178,17 +216,19 @@ it('GPUSpatialClustering schedules only scalar and cluster nodes for empty input
 
 it('GPUSpatialClustering validates props', () => {
   const device = createNullWebGPUDevice();
-  const expectThrow = (
-    build: (graph: GPUCommandGraph) => Partial<GPUSpatialClusteringProps>,
-    pattern: RegExp
-  ) => {
+  const expectThrow = (build: (graph: GPUCommandGraph) => ClusteringOverrides, pattern: RegExp) => {
     const graph = new GPUCommandGraph(device);
     expect(() => new GPUSpatialClustering(createProps(graph, build(graph)))).toThrow(pattern);
   };
 
   expectThrow(() => ({gridSize: [0, 4]}), /gridSize/);
   expectThrow(() => ({gridSize: [2.5, 4]}), /gridSize/);
-  expectThrow(() => ({gridSize: [65536, 65536]}), /gridSize/);
+  // The device-derived grid maximum is checked at declaration.
+  const gridGraph = new GPUCommandGraph(device);
+  const largeGrid = new GPUSpatialClustering(createProps(gridGraph, {gridSize: [65536, 65536]}));
+  expect(() => largeGrid.getCommandNodes(gridGraph)).toThrow(
+    /spatial-clustering gridSize cells must be at most 33554431/
+  );
   expectThrow(
     graph => ({
       parameters: createTransientView(graph, 'short', 'float32', 7)
@@ -282,15 +322,20 @@ it('GPUSpatialClustering rejects views from another graph', () => {
 
 it('GPUSpatialClustering schedules sort nodes for centroids only with sumOrder sorted', () => {
   const device = createNullWebGPUDevice();
-  const getIds = (overrides: Partial<GPUSpatialClusteringProps>) => {
+  const getIds = (overrides: ClusteringOverrides) => {
     const graph = new GPUCommandGraph(device);
-    return new GPUSpatialClustering({
-      ...createProps(graph, {}, 16),
-      id: 'dbscan',
-      clusters: createCluster(graph, 4),
-      clusterCentroids: createTransientView(graph, 'centroids', 'float32x2', 4),
-      ...overrides
-    })
+    return new GPUSpatialClustering(
+      createProps(
+        graph,
+        {
+          id: 'dbscan',
+          clusters: createCluster(graph, 4),
+          clusterCentroids: createTransientView(graph, 'centroids', 'float32x2', 4),
+          ...overrides
+        },
+        16
+      )
+    )
       .getCommandNodes(graph)
       .map(node => node.id);
   };
@@ -319,7 +364,7 @@ it('GPUSpatialClustering resolves spatialContext: planar or great-circle only', 
   let serial = 0;
   const makeGraph = () =>
     new GPUCommandGraph(createNullWebGPUDevice(), {id: `clustering-context-${serial++}`});
-  const build = (overrides: Partial<GPUSpatialClusteringProps> = {}) => {
+  const build = (overrides: ClusteringOverrides = {}) => {
     const graph = makeGraph();
     return {graph, producer: new GPUSpatialClustering(createProps(graph, overrides))};
   };
@@ -420,4 +465,39 @@ it('geographic lattice cells bound every epsilon neighbor pair', () => {
       }
     }
   }
+});
+
+it('GPUSpatialClustering neighbor scans read cell-ordered copies (coalesced reads)', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const nodes = new GPUSpatialClustering(
+    createProps(graph, {denseBoxShortcut: true}, 64)
+  ).getCommandNodes(graph);
+  const kernels = getGPUCommandNodeKernelSources(nodes);
+  getParsedKernelSources(nodes);
+  const sourceOf = (id: string) => {
+    // Pipeline IDs carry the node ID plus a suffix; match the node ID exactly up to that suffix.
+    const kernel = kernels.find(entry => new RegExp(`(^|[^\\w-])${id}(?![\\w-])`).test(entry.id));
+    expect(kernel, id).toBeDefined();
+    return kernel?.source ?? '';
+  };
+  for (const id of [
+    'spatial-clustering-core',
+    'spatial-clustering-union',
+    'spatial-clustering-border'
+  ]) {
+    const source = sourceOf(id);
+    // The scan reads positions by cell slot, never by row.
+    expect(source, id).toMatch(/cellPositions\[cellPositionsOffset \+ slot \* 2u\]/);
+    expect(source, id).not.toMatch(/var<storage[^;]*>\s+positions\s*:/);
+  }
+  for (const id of ['spatial-clustering-union', 'spatial-clustering-border']) {
+    const source = sourceOf(id);
+    expect(source, id).toMatch(/cellCoreFlags\[cellCoreFlagsOffset \+ slot\]/);
+    expect(source, id).not.toMatch(/var<storage[^;]*>\s+coreFlags\s*:/);
+  }
+  for (const kernel of kernels) {
+    expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
+  }
+  device.destroy();
 });

@@ -9,8 +9,14 @@ import {
   GPUPycnophylactic
 } from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import {getSphericalRasterCellArea} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {GPUSpatialLag} from '../../../src/gpu-spatial-analysis/spatial-weights/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {WgslReflect} from 'wgsl_reflect';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {
   AREAL_NUMPY,
   PYCNOPHYLACTIC_NUMPY,
@@ -35,38 +41,60 @@ function setup() {
 it('GPUArealInterpolation declares nodes and validates its props', () => {
   const {graph, view} = setup();
   const props = {
+    grid: makeGPURasterMetadata({width: 8, height: 8}),
     sourceZones: view('uint32', 64),
     targetZones: view('uint32', 64),
-    sourceCount: 4,
-    targetCount: 3,
-    weights: {
-      offsets: view('uint32', 4),
-      neighbors: view('uint32', 8),
-      weights: view('float32', 8)
-    },
-    overflow: view('uint32', 1)
+    sourceZoneCount: 4,
+    targetZoneCount: 3,
+    output: {
+      weights: {
+        offsets: view('uint32', 4),
+        neighbors: view('uint32', 8),
+        weights: view('float32', 8)
+      },
+      status: {overflow: view('uint32', 1)}
+    }
   };
   const nodes = new GPUArealInterpolation(props).getCommandNodes(graph);
   expect(nodes.length).toBeGreaterThan(10);
-  expect(() => new GPUArealInterpolation({...props, targetCount: 4})).toThrow(/targetCount \+ 1/);
+  expect(() => new GPUArealInterpolation({...props, targetZoneCount: 4})).toThrow(
+    /targetZoneCount \+ 1/
+  );
   expect(() => new GPUArealInterpolation({...props, targetZones: view('uint32', 63)})).toThrow(
-    /same nonzero length/
+    /one row per grid cell/
   );
-  expect(() => new GPUArealInterpolation({...props, alternateWeights: view('float32', 7)})).toThrow(
-    /alternateWeights length/
-  );
+  expect(
+    () =>
+      new GPUArealInterpolation({
+        ...props,
+        output: {...props.output, alternateWeights: view('float32', 7)}
+      })
+  ).toThrow(/alternateWeights length/);
+  expect(
+    () =>
+      new GPUArealInterpolation({
+        ...props,
+        output: {...props.output, categoryShares: view('float32', 6)}
+      })
+  ).toThrow(/categoryShares needs categories/);
+  expect(
+    () =>
+      new GPUArealInterpolation({
+        ...props,
+        categories: {sourceCategories: view('uint32', 4), categoryCount: 2}
+      })
+  ).toThrow(/needs output.categoryShares/);
 });
 
 it('GPUPycnophylactic declares nodes per iteration and validates its props', () => {
   const {graph, view} = setup();
   const props = {
-    width: 8,
-    height: 4,
+    grid: makeGPURasterMetadata({width: 8, height: 4}),
     zones: view('uint32', 32),
     zoneCount: 3,
     totals: view('float32', 3),
-    iterations: 2,
-    output: view('float32', 32)
+    maximumIterations: 2,
+    output: {mass: view('float32', 32)}
   };
   const few = new GPUPycnophylactic(props).getCommandNodes(graph).length;
   const {graph: other, view: otherView} = setup();
@@ -74,24 +102,27 @@ it('GPUPycnophylactic declares nodes per iteration and validates its props', () 
     ...props,
     zones: otherView('uint32', 32),
     totals: otherView('float32', 3),
-    output: otherView('float32', 32),
-    iterations: 4
+    output: {mass: otherView('float32', 32)},
+    maximumIterations: 4
   }).getCommandNodes(other).length;
   expect(many).toBeGreaterThan(few);
-  expect(() => new GPUPycnophylactic({...props, iterations: -1})).toThrow(/iterations/);
+  expect(() => new GPUPycnophylactic({...props, maximumIterations: -1})).toThrow(
+    /maximumIterations/
+  );
   expect(() => new GPUPycnophylactic({...props, totals: view('float32', 2)})).toThrow(/totals/);
 });
 
-it('GPUSpatialLag accepts cross weights with sourceCount and columnCount', () => {
+it('GPUSpatialLag accepts cross weights with the source count derived from values', () => {
   const {graph, view} = setup();
   const weights = {
     offsets: view('uint32', 4),
     neighbors: view('uint32', 8),
     weights: view('float32', 8)
   };
-  const props = {weights, sourceCount: 5, values: view('float32', 10), output: view('float32', 6)};
-  expect(new GPUSpatialLag({...props, columnCount: 2}).getCommandNodes(graph)).toHaveLength(1);
-  expect(() => new GPUSpatialLag(props)).toThrow(/sourceCount \* columnCount/);
+  const props = {weights, values: view('float32', 10), output: view('float32', 6)};
+  // The load-balanced lag is a walk and a fixup node.
+  expect(new GPUSpatialLag({...props, columnCount: 2}).getCommandNodes(graph)).toHaveLength(2);
+  expect(() => new GPUSpatialLag(props)).toThrow(/rows \* columnCount/);
   expect(() => new GPUSpatialLag({...props, columnCount: 2, mask: view('uint32', 3)})).toThrow(
     /square/
   );
@@ -238,16 +269,19 @@ it('the areal oracle reproduces the numpy denominators, diagnostics and anchors'
 it('GPUArealInterpolation resolves spatial context, denominators and diagnostics', () => {
   const {graph, view} = setup();
   const props = {
+    grid: makeGPURasterMetadata({width: 8, height: 6}),
     sourceZones: view('uint32', 48),
     targetZones: view('uint32', 48),
-    sourceCount: 5,
-    targetCount: 3,
-    weights: {
-      offsets: view('uint32', 4),
-      neighbors: view('uint32', 12),
-      weights: view('float32', 12)
-    },
-    overflow: view('uint32', 1)
+    sourceZoneCount: 5,
+    targetZoneCount: 3,
+    output: {
+      weights: {
+        offsets: view('uint32', 4),
+        neighbors: view('uint32', 12),
+        weights: view('float32', 12)
+      },
+      status: {overflow: view('uint32', 1)}
+    }
   };
   const planar = new GPUArealInterpolation(props);
   expect(planar.spatialContext.coordinateSpace).toBe('planar');
@@ -268,16 +302,28 @@ it('GPUArealInterpolation resolves spatial context, denominators and diagnostics
     coordinateSpace: 'longitude-latitude',
     metric: 'great-circle'
   } as const;
-  const extent = view('float32', 4);
+  const parameters = view('float32', 4);
   expect(() => new GPUArealInterpolation({...props, spatialContext: longitudeLatitude})).toThrow(
-    /extent and width/
+    /need parameters/
   );
-  expect(() => new GPUArealInterpolation({...props, extent, width: 8})).toThrow(
+  expect(() => new GPUArealInterpolation({...props, parameters})).toThrow(
     /longitude-latitude spatialContext/
   );
   expect(
-    () => new GPUArealInterpolation({...props, spatialContext: longitudeLatitude, extent, width: 7})
-  ).toThrow(/dividing the cell count/);
+    () =>
+      new GPUArealInterpolation({
+        ...props,
+        spatialContext: longitudeLatitude,
+        parameters: view('float32', 3)
+      })
+  ).toThrow(/at least 4 values/);
+  expect(
+    () =>
+      new GPUArealInterpolation({
+        ...props,
+        grid: makeGPURasterMetadata({width: 7, height: 7})
+      })
+  ).toThrow(/one row per grid cell/);
   expect(
     () =>
       new GPUArealInterpolation({
@@ -292,26 +338,30 @@ it('GPUArealInterpolation resolves spatial context, denominators and diagnostics
     ...props,
     sourceZones: richGraph.view('uint32', 48),
     targetZones: richGraph.view('uint32', 48),
-    weights: {
-      offsets: richGraph.view('uint32', 4),
-      neighbors: richGraph.view('uint32', 12),
-      weights: richGraph.view('float32', 12)
+    output: {
+      weights: {
+        offsets: richGraph.view('uint32', 4),
+        neighbors: richGraph.view('uint32', 12),
+        weights: richGraph.view('float32', 12)
+      },
+      sourceAreas: richGraph.view('float32', 5),
+      sourceTransferredFractions: richGraph.view('float32', 5),
+      status: {overflow: richGraph.view('uint32', 1), invalidCount: richGraph.view('uint32', 1)}
     },
-    overflow: richGraph.view('uint32', 1),
     sourceAnchorCells: richGraph.view('uint32', 5),
-    sourceAreas: richGraph.view('float32', 5),
-    sourceTransferredFractions: richGraph.view('float32', 5),
-    invalidCount: richGraph.view('uint32', 1),
     spatialContext: longitudeLatitude,
-    extent: richGraph.view('float32', 4),
-    width: 8
+    parameters: richGraph.view('float32', 4)
   };
   expect(
     new GPUArealInterpolation(richProps).getCommandNodes(richGraph.graph).length
   ).toBeGreaterThan(baseline + 5);
   expect(
-    () => new GPUArealInterpolation({...richProps, sourceAreas: richGraph.view('float32', 4)})
-  ).toThrow(/sourceAreas must have sourceCount rows/);
+    () =>
+      new GPUArealInterpolation({
+        ...richProps,
+        output: {...richProps.output, sourceAreas: richGraph.view('float32', 4)}
+      })
+  ).toThrow(/sourceAreas must have sourceZoneCount rows/);
   expect(
     () => new GPUArealInterpolation({...richProps, sourceAnchorCells: richGraph.view('uint32', 4)})
   ).toThrow(/sourceAnchorCells/);
@@ -320,31 +370,36 @@ it('GPUArealInterpolation resolves spatial context, denominators and diagnostics
 it('GPUPycnophylactic resolves spatial context, tolerance, anchors and status', () => {
   const {graph, view} = setup();
   const props = {
-    width: 8,
-    height: 6,
+    grid: makeGPURasterMetadata({width: 8, height: 6}),
     zones: view('uint32', 48),
     zoneCount: 6,
     totals: view('float32', 6),
-    iterations: 4,
-    output: view('float32', 48)
+    maximumIterations: 4,
+    output: {mass: view('float32', 48)}
   };
   expect(new GPUPycnophylactic(props).spatialContext.coordinateSpace).toBe('planar');
   const longitudeLatitude = {
     coordinateSpace: 'longitude-latitude',
     metric: 'great-circle'
   } as const;
-  const extent = view('float32', 4);
+  const parameters = view('float32', 4);
   expect(() => new GPUPycnophylactic({...props, spatialContext: longitudeLatitude})).toThrow(
-    /extent and width/
+    /need parameters/
   );
-  expect(() => new GPUPycnophylactic({...props, extent})).toThrow(/longitude-latitude/);
-  expect(() => new GPUPycnophylactic({...props, converged: view('uint32', 1)})).toThrow(
-    /need a tolerance/
-  );
+  expect(() => new GPUPycnophylactic({...props, parameters})).toThrow(/longitude-latitude/);
+  expect(
+    () =>
+      new GPUPycnophylactic({
+        ...props,
+        output: {...props.output, status: {converged: view('uint32', 1)}}
+      })
+  ).toThrow(/need a tolerance/);
   expect(() => new GPUPycnophylactic({...props, zoneAnchorCells: view('uint32', 5)})).toThrow(
     /zoneCount rows/
   );
-  expect(() => new GPUPycnophylactic({...props, density: view('float32', 47)})).toThrow(/density/);
+  expect(
+    () => new GPUPycnophylactic({...props, output: {...props.output, density: view('float32', 47)}})
+  ).toThrow(/density/);
 
   const baseline = new GPUPycnophylactic(props).getCommandNodes(graph).length;
   const rich = setup();
@@ -352,17 +407,115 @@ it('GPUPycnophylactic resolves spatial context, tolerance, anchors and status', 
     ...props,
     zones: rich.view('uint32', 48),
     totals: rich.view('float32', 6),
-    output: rich.view('float32', 48),
+    output: {
+      mass: rich.view('float32', 48),
+      density: rich.view('float32', 48),
+      status: {
+        converged: rich.view('uint32', 1),
+        iterationCount: rich.view('uint32', 1),
+        invalidCount: rich.view('uint32', 1)
+      }
+    },
     spatialContext: longitudeLatitude,
-    extent: rich.view('float32', 4),
+    parameters: rich.view('float32', 4),
     tolerance: rich.view('float32', 1),
-    converged: rich.view('uint32', 1),
-    iterationLimitReached: rich.view('uint32', 1),
-    invalidCount: rich.view('uint32', 1),
-    zoneAnchorCells: rich.view('uint32', 6),
-    density: rich.view('float32', 48)
+    zoneAnchorCells: rich.view('uint32', 6)
   };
   expect(new GPUPycnophylactic(richProps).getCommandNodes(rich.graph).length).toBeGreaterThan(
     baseline * 1.5
   );
+});
+
+it('GPUPycnophylactic gates converged iterations (rule 13), copies nothing forward and keeps one pipeline per kernel (rule 12)', () => {
+  const build = (iterations: number) => {
+    const {graph, view} = setup();
+    return new GPUPycnophylactic({
+      id: 'pycno',
+      grid: makeGPURasterMetadata({width: 8, height: 4}),
+      zones: view('uint32', 32),
+      zoneCount: 3,
+      totals: view('float32', 3),
+      maximumIterations: iterations,
+      tolerance: view('float32', 1),
+      output: {
+        mass: view('float32', 32),
+        status: {converged: view('uint32', 1), iterationCount: view('uint32', 1)}
+      }
+    }).getCommandNodes(graph) as readonly {id: string; condition?: {mode: string}}[];
+  };
+  expect(getGPUCommandNodePipelineKeys(build(4)).size).toBe(
+    getGPUCommandNodePipelineKeys(build(3)).size
+  );
+  const nodes = build(3);
+  for (const stage of ['smooth', 'restore-apply', 'scale-apply', 'change']) {
+    expect(
+      nodes.find(node => node.id === `pycno-iteration-1-${stage}`)?.condition?.mode,
+      stage
+    ).toBe('indirect');
+  }
+  expect(nodes.find(node => node.id === 'pycno-iteration-1-converged')?.condition).toBeUndefined();
+  const ids = nodes.map(node => node.id);
+  expect(ids.indexOf('pycno-settle')).toBeGreaterThan(ids.indexOf('pycno-iteration-2-converged'));
+  for (const {id, source} of getGPUCommandNodeKernelSources(nodes)) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    // The converged-round copy of the whole surface is gone.
+    expect(source, id).not.toMatch(
+      /destination\[destinationOffset \+ index\] = source\[sourceOffset \+ index\]/
+    );
+  }
+});
+
+it('longitude/latitude cell areas mirror stored rows for a north-up placement and parse as WGSL', () => {
+  const longitudeLatitude = {
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle'
+  } as const;
+  const arealSetup = setup();
+  const areal = new GPUArealInterpolation({
+    id: 'mirror-areal',
+    grid: makeGPURasterMetadata({width: 8, height: 6}),
+    sourceZones: arealSetup.view('uint32', 48),
+    targetZones: arealSetup.view('uint32', 48),
+    sourceZoneCount: 2,
+    targetZoneCount: 2,
+    spatialContext: longitudeLatitude,
+    parameters: arealSetup.view('float32', 4),
+    output: {
+      weights: {
+        offsets: arealSetup.view('uint32', 3),
+        neighbors: arealSetup.view('uint32', 8),
+        weights: arealSetup.view('float32', 8)
+      },
+      status: {overflow: arealSetup.view('uint32', 1)}
+    }
+  });
+  const pycnophylacticSetup = setup();
+  const pycnophylactic = new GPUPycnophylactic({
+    id: 'mirror-pycno',
+    grid: makeGPURasterMetadata({width: 8, height: 6}),
+    zones: pycnophylacticSetup.view('uint32', 48),
+    zoneCount: 2,
+    totals: pycnophylacticSetup.view('float32', 2),
+    maximumIterations: 1,
+    spatialContext: longitudeLatitude,
+    parameters: pycnophylacticSetup.view('float32', 4),
+    output: {mass: pycnophylacticSetup.view('float32', 48)}
+  });
+  for (const [nodes, nodeId, functionName] of [
+    [areal.getCommandNodes(arealSetup.graph), 'mirror-areal-area-weights', 'getPlacedCellArea'],
+    [
+      pycnophylactic.getCommandNodes(pycnophylacticSetup.graph),
+      'mirror-pycno-cell-areas',
+      'getPlacedCellArea'
+    ]
+  ] as const) {
+    const kernel = getGPUCommandNodeKernelSources(nodes).find(({id}) => id === nodeId);
+    expect(kernel, nodeId).toBeDefined();
+    const source = kernel!.source;
+    expect(() => new WgslReflect(source), nodeId).not.toThrow();
+    // Stored rows are mirrored for a negative cell height and the area uses its magnitude.
+    expect(source, nodeId).toContain('select(row, HEIGHT - 1u - row, signedCellHeight < 0.0)');
+    expect(source, nodeId).toContain('abs(signedCellHeight)');
+    expect(source, nodeId).toContain(`${functionName}(index / WIDTH)`);
+  }
 });

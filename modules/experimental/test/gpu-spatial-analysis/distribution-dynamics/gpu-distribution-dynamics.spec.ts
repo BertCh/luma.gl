@@ -31,6 +31,7 @@ import {
   getOracleQuantile
 } from './distribution-oracle';
 import * as giddy from './markov-giddy-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NO_CLASS = 0xffffffff;
 
@@ -70,7 +71,7 @@ function expectClose(actual: number[], expected: number[], label: string, relati
 
 it('GPUClassAssignment follows the shared class rule with ties, NaN, infinities and mask', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const edges = [0, 10, 20, 30, 40];
   const values = [
     -5,
@@ -115,7 +116,7 @@ it('GPUClassAssignment follows the shared class rule with ties, NaN, infinities 
 
 it('GPUTransitionMatrix matches the oracle for conditions, period lag and invalid classes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const {rows, periods, classCount, conditionCount, periodLag, seed} of [
     {rows: 700, periods: 6, classCount: 5, conditionCount: 1, periodLag: 1, seed: 1},
     {rows: 333, periods: 7, classCount: 4, conditionCount: 3, periodLag: 2, seed: 2},
@@ -142,8 +143,7 @@ it('GPUTransitionMatrix matches the oracle for conditions, period lag and invali
     rig.run(
       new GPUTransitionMatrix({
         classes: rig.input(classes, 'uint32'),
-        rows,
-        periods,
+        periodCount: periods,
         classCount,
         periodLag,
         conditionClasses: conditionCount > 1 ? rig.input(conditions, 'uint32') : undefined,
@@ -174,7 +174,7 @@ it('GPUTransitionMatrix matches the oracle for conditions, period lag and invali
 
 it('GPUSpatialMarkov conditions transitions on pooled spatial-lag classes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rows = 90;
   const periods = 5;
   const classCount = 4;
@@ -212,8 +212,8 @@ it('GPUSpatialMarkov conditions transitions on pooled spatial-lag classes', asyn
       classes: rig.input(classes, 'uint32'),
       classCount,
       weights: rig.weights(csr),
-      periods,
-      lagMaximumClassCount: lagClassCount,
+      periodCount: periods,
+      maximumLagClassCount: lagClassCount,
       lagParameters: rig.input(
         getGPUClassBreaksParameterValues(
           {method: 'quantile', classCount: lagClassCount},
@@ -295,7 +295,7 @@ it('GPUSpatialMarkov conditions transitions on pooled spatial-lag classes', asyn
 
 it('GPULISAMarkov counts transitions between per-period LISA quadrants', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rows = 120;
   const periods = 4;
   const scene = createAutocorrelatedScene(3, rows, [16]);
@@ -324,7 +324,7 @@ it('GPULISAMarkov counts transitions between per-period LISA quadrants', async (
         neighbors: Array.from(weights.neighbors),
         weights: Array.from(weights.weights)
       }),
-      periods,
+      periodCount: periods,
       parameters: rig.input(parameters, 'float32'),
       gating: 'significance',
       output: {counts, rowTotals, quadrants}
@@ -373,15 +373,14 @@ const GIDDY_P = [
 
 it('GPUTransitionMatrix reproduces giddy Markov counts and probabilities', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rig = new AnalysisRig(device);
   const counts = rig.output('uint32', 16);
   const probabilities = rig.output('float32', 16);
   rig.run(
     new GPUTransitionMatrix({
       classes: rig.input(Uint32Array.from(GIDDY_CLASSES), 'uint32'),
-      rows: 40,
-      periods: 5,
+      periodCount: 5,
       classCount: 4,
       output: {counts, probabilities}
     })
@@ -393,8 +392,7 @@ it('GPUTransitionMatrix reproduces giddy Markov counts and probabilities', async
 
 it('GPUTransitionMatrix homogeneity, steady states and sparsity match giddy Spatial_Markov', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
-  const rows = 60;
+  requireTestDevice(device);
   const periods = 5;
   const classCount = 3;
   const conditionCount = 3;
@@ -407,8 +405,7 @@ it('GPUTransitionMatrix homogeneity, steady states and sparsity match giddy Spat
   rig.run(
     new GPUTransitionMatrix({
       classes: rig.input(Uint32Array.from(giddy.A_CLASSES), 'uint32'),
-      rows,
-      periods,
+      periodCount: periods,
       classCount,
       conditionClasses: rig.input(Uint32Array.from(giddy.A_CONDITIONS), 'uint32'),
       conditionCount,
@@ -447,7 +444,7 @@ it('GPUTransitionMatrix homogeneity, steady states and sparsity match giddy Spat
 
 it('GPUTransitionDiagnostics handles empty rows, periodic, reducible and dead-end chains like giddy', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const classCount = 4;
   for (const {name, counts: countValues, homogeneity: expected, steady, sparsity, converged} of [
     {
@@ -539,7 +536,7 @@ function createGridWeightsWithIsland(side: number): {
 
 it('GPULISAMarkov excludes NaN rows and islands and matches giddy LISA_Markov ungated', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const side = 6;
   const rows = side * side + 1;
   const periods = 4;
@@ -581,9 +578,9 @@ it('GPULISAMarkov excludes NaN rows and islands and matches giddy LISA_Markov un
         values: rig.input(values, 'float32'),
         weights: {
           ...rig.weights(csr),
-          info: {rowCount: rows, transform: 'row', symmetric: false}
+          information: {rowCount: rows, transform: 'row', symmetric: false}
         },
-        periods,
+        periodCount: periods,
         parameters: rig.input(getGPUSpatialAutocorrelationParameterValues({}), 'float32'),
         output: {counts, quadrants, ignored: ignoredView, steadyStates, stateSparsity}
       })

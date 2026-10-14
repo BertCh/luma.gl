@@ -15,6 +15,7 @@ import {
   createGridBandWeights,
   expectSegregationClose
 } from './segregation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const COLUMNS = 9;
 const ROWS = 7;
@@ -64,18 +65,17 @@ async function runSegregation(
   const theil = rig.output('float32', scaleCount * UNITS);
   rig.run(
     new GPUSegregation({
-      unitCount: UNITS,
       groupCount: GROUPS,
       groupCounts: rig.input(counts, 'float32'),
       scales,
       selfWeight: options.selfWeight,
-      atkinsonB: options.atkinsonB,
-      indices: indices.view,
-      local: {
-        environment: environment.view,
-        entropy: entropy.view,
-        dissimilarity: dissimilarity.view,
-        theil: theil.view
+      atkinsonInequalityAversion: options.atkinsonB,
+      output: {
+        indices: indices.view,
+        localEnvironment: environment.view,
+        localEntropy: entropy.view,
+        localDissimilarity: dissimilarity.view,
+        localTheil: theil.view
       }
     })
   );
@@ -102,7 +102,7 @@ async function runSegregation(
 
 it('GPUSegregation matches the oracle for the aspatial indices and a multiscale profile', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {actual, expected, layout} = await runSegregation(device, {
     radii: [null, 1.5, 3, 6],
     seed: 5
@@ -157,7 +157,7 @@ it('GPUSegregation matches the oracle for the aspatial indices and a multiscale 
 
 it('GPUSegregation aspatial D equals the textbook dissimilarity and exposures sum to one', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {actual, counts, layout} = await runSegregation(device, {radii: [null], seed: 8});
   for (let group = 0; group < GROUPS; group++) {
     expect(actual.indices[layout.dissimilarity + group]).toBeCloseTo(
@@ -178,7 +178,7 @@ it('GPUSegregation aspatial D equals the textbook dissimilarity and exposures su
 
 it('GPUSegregation local indices add up to the global ones', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {actual, layout} = await runSegregation(device, {
     radii: [2.5],
     selfWeight: 0.5,
@@ -204,7 +204,7 @@ it('GPUSegregation local indices add up to the global ones', async () => {
 
 it('GPUSegregation reports zero segregation for identical unit compositions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const counts = new Float32Array(UNITS * 2);
   for (let unit = 0; unit < UNITS; unit++) {
     const size = 10 + (unit % 5);
@@ -216,10 +216,9 @@ it('GPUSegregation reports zero segregation for identical unit compositions', as
   const indices = rig.output('float32', layout.stride);
   rig.run(
     new GPUSegregation({
-      unitCount: UNITS,
       groupCount: 2,
       groupCounts: rig.input(counts, 'float32'),
-      indices: indices.view
+      output: {indices: indices.view}
     })
   );
   const result = await indices.readFloat32();
@@ -250,15 +249,14 @@ async function runAspatial(
   const theil = rig.output('float32', unitCount);
   rig.run(
     new GPUSegregation({
-      unitCount,
       groupCount,
       groupCounts: rig.input(counts, 'float32'),
-      indices: indices.view,
-      local: {
-        environment: environment.view,
-        entropy: entropy.view,
-        dissimilarity: dissimilarity.view,
-        theil: theil.view
+      output: {
+        indices: indices.view,
+        localEnvironment: environment.view,
+        localEntropy: entropy.view,
+        localDissimilarity: dissimilarity.view,
+        localTheil: theil.view
       }
     })
   );
@@ -276,7 +274,7 @@ async function runAspatial(
 
 it('GPUSegregation writes NaN, not 0, for undefined indices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Empty total: everything undefined (the diversity too).
   const empty = await runAspatial(device, 2, new Float32Array(8));
   for (const value of empty.indices) expect(value).toBeNaN();

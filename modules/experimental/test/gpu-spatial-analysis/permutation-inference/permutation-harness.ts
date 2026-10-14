@@ -9,17 +9,17 @@ import {
   getGPUPermutationParameterValues,
   GPUGlobalPermutationTest,
   GPULocalPermutationTest,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   type GPUGlobalPermutationStatistic,
   type GPULocalJoinCountCase,
   type GPULocalPermutationStatistic,
-  type GPUPermutationParameters
+  type GPUPermutationSettings
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
 import type {
   GPUInferenceAlternative,
   GPUMultipleTestingMethod
-} from '../../../src/gpu-spatial-analysis/contracts';
+} from '../../../src/analysis-core/contracts';
 import type {GPUIslandPolicy} from '../../../src/gpu-spatial-analysis/spatial-weights';
 import {
   createInputBuffer,
@@ -35,7 +35,7 @@ const GARBAGE = 0x7f7f7f7f;
 /** Inputs uploaded once and rewritable between submissions. */
 type Scene = {
   weights: CPUSpatialWeights;
-  /** Mark the weights as row standardized (`info.transform === 'row'`). */
+  /** Mark the weights as row standardized (`information.transform === 'row'`). */
   rowStandardized?: boolean;
   values: Float32Array;
   secondValues?: Float32Array;
@@ -55,7 +55,7 @@ type SceneBuffers = {
 function createSceneBuffers(
   device: Device,
   scene: Scene,
-  parameters: GPUPermutationParameters
+  parameters: GPUPermutationSettings
 ): SceneBuffers {
   return {
     offsets: createInputBuffer(device, scene.weights.offsets),
@@ -74,7 +74,7 @@ function createSceneBuffers(
 }
 
 /** Parameters as the object API, or raw packed words (to exercise invalid counts). */
-type ParametersInput = GPUPermutationParameters | Uint32Array;
+type ParametersInput = GPUPermutationSettings | Uint32Array;
 
 function packParameters(parameters: ParametersInput): Uint32Array {
   return parameters instanceof Uint32Array
@@ -87,7 +87,7 @@ function importScene(graph: GPUCommandGraph, scene: Scene, buffers: SceneBuffers
   const capacity = scene.weights.neighbors.length;
   return {
     weights: {
-      info: scene.rowStandardized
+      information: scene.rowStandardized
         ? {rowCount: rows, transform: 'row' as const, symmetric: 'unknown' as const}
         : undefined,
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
@@ -116,6 +116,8 @@ function countBuilds(contributor: GPUCommandNodeProducer<unknown>): () => number
 /** Local permutation readback. */
 export type LocalPermutationReadback = {
   exceedances: number[];
+  /** `permutationCounts` output (only with `stopAfterExceedances`; empty otherwise). */
+  permutationCounts: number[];
   pseudoPValues: number[];
   adjustedPValues: number[];
   observed: number[];
@@ -134,22 +136,26 @@ export function createLocalPermutationHarness(
   options: {
     scene: Scene;
     statistic: GPULocalPermutationStatistic;
-    parameters: GPUPermutationParameters;
+    parameters: GPUPermutationSettings;
     maximumPermutations?: number;
     maximumNeighbors?: number;
     multipleTesting?: GPUMultipleTestingMethod;
     islands?: GPUIslandPolicy;
     alternative?: GPUInferenceAlternative;
     joinCase?: GPULocalJoinCountCase;
+    /** Besag-Clifford target; also requests the `permutationCounts` output. */
+    stopAfterExceedances?: number;
   }
 ) {
   const {scene} = options;
+  const withCounts = options.stopAfterExceedances !== undefined;
   const rows = scene.values.length;
   const withClasses = options.statistic === 'localGeary';
   const withQuadrants = options.statistic === 'localBivariateMoran';
   const buffers = createSceneBuffers(device, scene, options.parameters);
   const outputs = {
     exceedances: createOutputBuffer(device, rows),
+    permutationCounts: createOutputBuffer(device, rows),
     pseudoPValues: createOutputBuffer(device, rows),
     adjustedPValues: createOutputBuffer(device, rows),
     observed: createOutputBuffer(device, rows),
@@ -169,25 +175,31 @@ export function createLocalPermutationHarness(
     islands: options.islands,
     alternative: options.alternative,
     joinCase: options.joinCase,
-    classes: withClasses
-      ? importGraphBuffer(graph, 'classes', outputs.classes, 'uint32', rows)
-      : undefined,
-    quadrants: withQuadrants
-      ? importGraphBuffer(graph, 'quadrants', outputs.quadrants, 'uint32', rows)
-      : undefined,
-    exceedances: importGraphBuffer(graph, 'exceedances', outputs.exceedances, 'uint32', rows),
-    pseudoPValues: importGraphBuffer(graph, 'pseudo-p', outputs.pseudoPValues, 'float32', rows),
-    adjustedPValues: importGraphBuffer(
-      graph,
-      'adjusted-p',
-      outputs.adjustedPValues,
-      'float32',
-      rows
-    ),
-    islandCount: importGraphBuffer(graph, 'island-count', outputs.islandCount, 'uint32', 1),
-    observed: importGraphBuffer(graph, 'observed', outputs.observed, 'float32', rows),
-    significant: importGraphBuffer(graph, 'significant', outputs.significant, 'uint32', rows),
-    overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+    stopAfterExceedances: options.stopAfterExceedances,
+    output: {
+      permutationCounts: withCounts
+        ? importGraphBuffer(graph, 'permutation-counts', outputs.permutationCounts, 'uint32', rows)
+        : undefined,
+      classes: withClasses
+        ? importGraphBuffer(graph, 'classes', outputs.classes, 'uint32', rows)
+        : undefined,
+      quadrants: withQuadrants
+        ? importGraphBuffer(graph, 'quadrants', outputs.quadrants, 'uint32', rows)
+        : undefined,
+      exceedances: importGraphBuffer(graph, 'exceedances', outputs.exceedances, 'uint32', rows),
+      pseudoPValues: importGraphBuffer(graph, 'pseudo-p', outputs.pseudoPValues, 'float32', rows),
+      adjustedPValues: importGraphBuffer(
+        graph,
+        'adjusted-p',
+        outputs.adjustedPValues,
+        'float32',
+        rows
+      ),
+      islandCount: importGraphBuffer(graph, 'island-count', outputs.islandCount, 'uint32', 1),
+      observed: importGraphBuffer(graph, 'observed', outputs.observed, 'float32', rows),
+      significant: importGraphBuffer(graph, 'significant', outputs.significant, 'uint32', rows),
+      status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+    }
   });
   const getBuildCount = countBuilds(contributor);
   graph.add(contributor);
@@ -215,6 +227,7 @@ export function createLocalPermutationHarness(
       submitGraph(device, compiled, undefined);
       return {
         exceedances: await readUint32(outputs.exceedances, rows),
+        permutationCounts: withCounts ? await readUint32(outputs.permutationCounts, rows) : [],
         pseudoPValues: await readFloat32(outputs.pseudoPValues, rows),
         adjustedPValues: await readFloat32(outputs.adjustedPValues, rows),
         observed: await readFloat32(outputs.observed, rows),
@@ -248,18 +261,20 @@ export function createGlobalPermutationHarness(
   options: {
     scene: Scene;
     statistic: GPUGlobalPermutationStatistic;
-    parameters: GPUPermutationParameters;
+    parameters: GPUPermutationSettings;
     maximumPermutations: number;
     histogramBins?: number;
     islands?: GPUIslandPolicy;
     alternative?: GPUInferenceAlternative;
+    /** Besag-Clifford target (sequential batches). */
+    stopAfterExceedances?: number;
   }
 ) {
   const {scene, maximumPermutations} = options;
   const bins = options.histogramBins ?? 16;
   const buffers = createSceneBuffers(device, scene, options.parameters);
   const outputs = {
-    results: createOutputBuffer(device, GPU_GLOBAL_PERMUTATION_RESULT.length),
+    results: createOutputBuffer(device, GPU_GLOBAL_PERMUTATION_SUMMARY.length),
     referenceDistribution: createOutputBuffer(device, maximumPermutations),
     histogram: createOutputBuffer(device, bins)
   };
@@ -270,21 +285,24 @@ export function createGlobalPermutationHarness(
     alternative: options.alternative,
     islands: options.islands,
     maximumPermutations,
-    results: importGraphBuffer(
-      graph,
-      'results',
-      outputs.results,
-      'float32',
-      GPU_GLOBAL_PERMUTATION_RESULT.length
-    ),
-    referenceDistribution: importGraphBuffer(
-      graph,
-      'reference',
-      outputs.referenceDistribution,
-      'float32',
-      maximumPermutations
-    ),
-    histogram: importGraphBuffer(graph, 'histogram', outputs.histogram, 'uint32', bins)
+    stopAfterExceedances: options.stopAfterExceedances,
+    output: {
+      summary: importGraphBuffer(
+        graph,
+        'results',
+        outputs.results,
+        'float32',
+        GPU_GLOBAL_PERMUTATION_SUMMARY.length
+      ),
+      referenceDistribution: importGraphBuffer(
+        graph,
+        'reference',
+        outputs.referenceDistribution,
+        'float32',
+        maximumPermutations
+      ),
+      histogram: importGraphBuffer(graph, 'histogram', outputs.histogram, 'uint32', bins)
+    }
   });
   const getBuildCount = countBuilds(contributor);
   graph.add(contributor);
@@ -308,8 +326,8 @@ export function createGlobalPermutationHarness(
       }
       submitGraph(device, compiled, undefined);
       return {
-        results: await readFloat32(outputs.results, GPU_GLOBAL_PERMUTATION_RESULT.length),
-        resultBits: await readUint32(outputs.results, GPU_GLOBAL_PERMUTATION_RESULT.length),
+        results: await readFloat32(outputs.results, GPU_GLOBAL_PERMUTATION_SUMMARY.length),
+        resultBits: await readUint32(outputs.results, GPU_GLOBAL_PERMUTATION_SUMMARY.length),
         referenceDistribution: await readFloat32(
           outputs.referenceDistribution,
           maximumPermutations

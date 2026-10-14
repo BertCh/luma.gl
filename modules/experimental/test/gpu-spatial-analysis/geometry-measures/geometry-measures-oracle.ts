@@ -15,11 +15,25 @@ const WGS84_E = Math.sqrt(WGS84_E2);
 /** Nested geometry: features -> rings (or paths) -> `[x, y]` vertices. */
 export type NestedFeatures = number[][][][];
 
-/** Flat geometry layout consumed by `GPUGeometryMeasures`. */
+/**
+ * Ring counts of the polygons of each feature (`[2, 1]`: a polygon with a hole, then a polygon
+ * without). A feature that is not listed is one polygon owning all its rings.
+ */
+export type PolygonRingCounts = (number[] | undefined)[];
+
+/**
+ * Flat geometry layout consumed by `GPUGeometryMeasures`: the four-level polygon layout
+ * (`ringOffsets`, `polygonOffsets`, `featureOffsets`), the line layout (`ringOffsets` as line
+ * offsets, `featureRingOffsets` as feature-to-line offsets) and the multi-point layout
+ * (`pointOffsets`).
+ */
 export type FlatGeometry = {
   positions: Float32Array;
   ringOffsets: Uint32Array;
   featureRingOffsets: Uint32Array;
+  polygonOffsets: Uint32Array;
+  featureOffsets: Uint32Array;
+  pointOffsets: Uint32Array;
 };
 
 /** f64 measures of one feature. */
@@ -33,11 +47,16 @@ export type FeatureMeasures = {
 };
 
 /** Packs nested features into the flat layout (values rounded to f32). */
-export function createFlatGeometry(features: NestedFeatures): FlatGeometry {
+export function createFlatGeometry(
+  features: NestedFeatures,
+  polygonRingCounts: PolygonRingCounts = []
+): FlatGeometry {
   const values: number[] = [];
   const ringOffsets = [0];
   const featureRingOffsets = [0];
-  for (const feature of features) {
+  const polygonOffsets = [0];
+  const featureOffsets = [0];
+  features.forEach((feature, featureIndex) => {
     for (const ring of feature) {
       for (const vertex of ring) {
         values.push(vertex[0], vertex[1]);
@@ -45,11 +64,57 @@ export function createFlatGeometry(features: NestedFeatures): FlatGeometry {
       ringOffsets.push(values.length / 2);
     }
     featureRingOffsets.push(ringOffsets.length - 1);
-  }
+    let ringEnd = featureRingOffsets[featureIndex];
+    for (const ringCount of polygonRingCounts[featureIndex] ?? [feature.length]) {
+      ringEnd += ringCount;
+      polygonOffsets.push(ringEnd);
+    }
+    featureOffsets.push(polygonOffsets.length - 1);
+  });
   return {
     positions: new Float32Array(values),
     ringOffsets: new Uint32Array(ringOffsets),
-    featureRingOffsets: new Uint32Array(featureRingOffsets)
+    featureRingOffsets: new Uint32Array(featureRingOffsets),
+    polygonOffsets: new Uint32Array(polygonOffsets),
+    featureOffsets: new Uint32Array(featureOffsets),
+    pointOffsets: new Uint32Array(featureRingOffsets.map(ring => ringOffsets[ring]))
+  };
+}
+
+/**
+ * The geometry fields of `GPUGeometryMeasures` props for a flat layout: polygons use the
+ * four-level layout, lines use `lineOffsets` and `featureOffsets` (multi-lines), points use
+ * `featureOffsets` (multi-points).
+ *
+ * @param importOffsets Imports a `uint32` offsets array as a graph view.
+ */
+export function getMeasuresGeometryFields<Positions, Offsets>(
+  flat: FlatGeometry,
+  geometryType: 'lines' | 'polygons' | 'points',
+  positions: Positions,
+  importOffsets: (name: string, values: Uint32Array) => Offsets
+) {
+  if (geometryType === 'polygons') {
+    return {
+      geometryType,
+      positions,
+      ringOffsets: importOffsets('ring-offsets', flat.ringOffsets),
+      polygonOffsets: importOffsets('polygon-offsets', flat.polygonOffsets),
+      featureOffsets: importOffsets('feature-offsets', flat.featureOffsets)
+    };
+  }
+  if (geometryType === 'lines') {
+    return {
+      geometryType,
+      positions,
+      lineOffsets: importOffsets('line-offsets', flat.ringOffsets),
+      featureOffsets: importOffsets('feature-line-offsets', flat.featureRingOffsets)
+    };
+  }
+  return {
+    geometryType,
+    positions,
+    featureOffsets: importOffsets('point-offsets', flat.pointOffsets)
   };
 }
 
@@ -161,14 +226,15 @@ export function getSphericalBoxArea(
 
 /**
  * f64 reference of `GPUGeometryMeasures` for one feature, with the same definitions (local
- * origin, implicit ring closure, hole rules, equal-area cylindrical areas and centroids).
+ * origin, implicit ring closure, positional ring roles, equal-area cylindrical areas and centroids).
  */
 export function measureFeature(
   feature: number[][][],
   options: {
     isPolygon: boolean;
     coordinateSystem: 'planar' | 'spherical' | 'wgs84';
-    holeRule?: 'winding' | 'first-ring-exterior';
+    /** Ring counts of the polygons of the feature; default one polygon owning every ring. */
+    polygonRingCounts?: number[];
     radius?: number;
   }
 ): FeatureMeasures {
@@ -176,6 +242,16 @@ export function measureFeature(
   const radius = options.radius ?? 6371008.8;
   const isGeographic = coordinateSystem !== 'planar';
   const rings = feature.filter(ring => ring.length > 0);
+  // Ring index of every polygon start (the first ring of a polygon is its shell, whatever its
+  // winding). Counts are given over all rings, empty ones included.
+  const shellRings = new Set<number>();
+  let ringStart = 0;
+  for (const ringCount of options.polygonRingCounts ?? [feature.length]) {
+    if (feature[ringStart]?.length) {
+      shellRings.add(feature.slice(0, ringStart).filter(ring => ring.length > 0).length);
+    }
+    ringStart += ringCount;
+  }
   const vertexCount = rings.reduce((sum, ring) => sum + ring.length, 0);
   if (vertexCount === 0) {
     return {
@@ -253,8 +329,8 @@ export function measureFeature(
       ringMomentY += (y0 + y1) * cross;
     }
     let factor = 1;
-    if (options.holeRule === 'first-ring-exterior') {
-      factor = (ringIndex === 0 ? 1 : -1) * (ringCross >= 0 ? 1 : -1);
+    if (isPolygon) {
+      factor = (shellRings.has(ringIndex) ? 1 : -1) * (ringCross >= 0 ? 1 : -1);
     }
     crossSum += factor * ringCross;
     momentX += factor * ringMomentX;

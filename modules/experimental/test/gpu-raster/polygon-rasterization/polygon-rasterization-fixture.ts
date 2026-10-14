@@ -5,8 +5,10 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {
-  getGPUPolygonRasterizationExtentValues,
+  getGPUPolygonRasterizationParameterValues,
   GPUPolygonRasterization
 } from '../../../src/gpu-raster/polygon-rasterization';
 import {
@@ -15,6 +17,33 @@ import {
   readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import type {OraclePolygons} from './polygon-rasterization-oracle';
+
+/**
+ * Grid for an oracle extent `[originX, originY, cellWidth, cellHeight]`: row 0 is the row with the
+ * smallest y and rows advance toward larger y.
+ */
+export function makeExtentGrid(
+  width: number,
+  height: number,
+  extent: readonly [number, number, number, number]
+): GPURasterMetadata {
+  return makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [extent[2], extent[3]],
+    origin: [extent[0], extent[1]],
+    rowDirection: 'north'
+  });
+}
+
+/** Packed raster placement of an oracle extent, see {@link makeExtentGrid}. */
+export function getExtentParameterValues(
+  width: number,
+  height: number,
+  extent: readonly [number, number, number, number]
+): Float32Array {
+  return getGPUPolygonRasterizationParameterValues(makeExtentGrid(width, height, extent));
+}
 
 /** Rasterization graph plus the buffers a test reads or rewrites. */
 export type RasterizationFixture = {
@@ -51,7 +80,7 @@ export function createRasterizationFixture(
     id: 'extent',
     format: 'float32',
     length: 4,
-    values: getGPUPolygonRasterizationExtentValues(...props.extent)
+    values: getExtentParameterValues(width, height, props.extent)
   });
   const polygonBuffers = [
     createInputBuffer(device, polygons.positions),
@@ -68,10 +97,9 @@ export function createRasterizationFixture(
   const zonesView = importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount);
   const boundaryView = importGraphBuffer(graph, 'boundary', boundaryBuffer, 'uint32', cellCount);
   const contributor = new GPUPolygonRasterization({
-    width,
-    height,
-    extent: extentView,
-    polygonPositions: importGraphBuffer(
+    grid: makeExtentGrid(width, height, props.extent),
+    parameters: extentView,
+    positions: importGraphBuffer(
       graph,
       'positions',
       polygonBuffers[0],
@@ -100,10 +128,14 @@ export function createRasterizationFixture(
       polygons.ringOffsets.length
     ),
     crossingCapacity: props.crossingCapacity,
-    zones: zonesView,
-    boundary: boundaryView,
-    overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-    crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCountBuffer, 'uint32', 1)
+    output: {
+      zones: zonesView,
+      boundary: boundaryView,
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+        crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCountBuffer, 'uint32', 1)
+      }
+    }
   });
   graph.add(contributor);
   return {

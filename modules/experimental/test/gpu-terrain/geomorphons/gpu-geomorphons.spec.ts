@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_GEOMORPHON_FORMS,
@@ -19,7 +20,9 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {computeGeomorphons, type GeomorphonOracleOptions} from './geomorphons-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Outputs = {forms: number[]; ternary: number[]; pattern: number[]; validity: number[]};
 
@@ -57,8 +60,7 @@ function createFixture(
   });
   graph.add(
     new GPUGeomorphons({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height, cellSize: 10}),
       searchRadius: 6,
       elevation: {
         id: 'elevation',
@@ -71,11 +73,13 @@ function createFixture(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pixelCount)
           : undefined
       },
-      settings: settings.importToGraph(graph),
-      forms: importGraphBuffer(graph, 'forms', buffers.forms, 'uint32', pixelCount),
-      ternary: importGraphBuffer(graph, 'ternary', buffers.ternary, 'uint32', pixelCount),
-      pattern: importGraphBuffer(graph, 'pattern', buffers.pattern, 'uint32', pixelCount),
-      validity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount),
+      parameters: settings.importToGraph(graph),
+      output: {
+        forms: importGraphBuffer(graph, 'forms', buffers.forms, 'uint32', pixelCount),
+        ternary: importGraphBuffer(graph, 'ternary', buffers.ternary, 'uint32', pixelCount),
+        pattern: importGraphBuffer(graph, 'pattern', buffers.pattern, 'uint32', pixelCount),
+        outputValidity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+      },
       ...props
     })
   );
@@ -143,6 +147,9 @@ type Case = {
   name: string;
   options: GeomorphonOracleOptions;
   settings: Parameters<typeof getGPUGeomorphonsParameterValues>[0];
+  /** Cell size and top-left corner of the grid; the packer reads the georeference from it. */
+  cellSize: [number, number];
+  origin?: [number, number];
   props?: Partial<GPUGeomorphonsProps>;
 };
 
@@ -151,48 +158,74 @@ for (const comparison of ['anglev1', 'anglev2', 'anglev2-distance'] as const) {
   CASES.push({
     name: `${comparison} plain`,
     options: {searchRadius: 6, comparison},
-    settings: {cellSize: [10, 10]},
+    settings: {},
+    cellSize: [10, 10],
     props: {comparison}
   });
   CASES.push({
     name: `${comparison} flat distance`,
     options: {searchRadius: 6, comparison},
-    settings: {cellSize: [10, 10], flatDistance: 25, flatThresholdDegrees: 3, zFactor: 1.5},
+    settings: {flatDistance: 25, flatThresholdDegrees: 3, zFactor: 1.5},
+    cellSize: [10, 10],
+    props: {comparison}
+  });
+  // Review C-13: GRASS ignores flat_distance at or inside the skip distance (2 cells = 20 m) and
+  // at or beyond the search distance (60 m); both cases equal the plain run.
+  CASES.push({
+    name: `${comparison} flat distance inside the skip distance`,
+    options: {searchRadius: 6, skipRadius: 2, comparison},
+    settings: {flatDistance: 15, flatThresholdDegrees: 3, zFactor: 1.5},
+    cellSize: [10, 10],
+    props: {comparison, skipRadius: 2}
+  });
+  CASES.push({
+    name: `${comparison} flat distance beyond the search distance`,
+    options: {searchRadius: 6, comparison},
+    settings: {flatDistance: 60, flatThresholdDegrees: 3, zFactor: 1.5},
+    cellSize: [10, 10],
     props: {comparison}
   });
   CASES.push({
     name: `${comparison} skip 1 north rows`,
     options: {searchRadius: 6, skipRadius: 1, comparison, rowDirection: 'north'},
-    settings: {cellSize: [10, 10]},
+    settings: {},
+    cellSize: [10, 10],
     props: {comparison, skipRadius: 1, rowDirection: 'north'}
   });
 }
 CASES.unshift({
   name: 'uniform anisotropic 7x10',
   options: {searchRadius: 6},
-  settings: {cellSize: [7, 10]}
+  settings: {},
+  cellSize: [7, 10]
 });
 CASES.unshift({
   name: 'uniform anisotropic 10x7',
   options: {searchRadius: 6},
-  settings: {cellSize: [10, 7]}
+  settings: {},
+  cellSize: [10, 7]
 });
 CASES.push({
   name: 'geographic equator',
   options: {searchRadius: 6, cellSizeMode: 'geographic'},
-  settings: {cellSize: [0.0001, 0.0001]},
+  settings: {},
+  cellSize: [0.0001, 0.0001],
   props: {cellSizeMode: 'geographic'}
 });
 CASES.push({
   name: 'geographic',
   options: {searchRadius: 7, comparison: 'anglev2', cellSizeMode: 'geographic'},
-  settings: {cellSize: [0.0001, 0.0001], northEdge: 47, southEdge: 46.9},
+  settings: {},
+  cellSize: [0.0001, 0.0001],
+  origin: [0, 47],
   props: {searchRadius: 7, comparison: 'anglev2', cellSizeMode: 'geographic'}
 });
 CASES.push({
   name: 'web-mercator',
   options: {searchRadius: 5, cellSizeMode: 'web-mercator'},
-  settings: {cellSize: [12, 9], northEdge: 0.3, southEdge: 0.32},
+  settings: {},
+  cellSize: [12, 9],
+  origin: [0, getOracleWebMercatorY(0.3)],
   props: {searchRadius: 5, cellSizeMode: 'web-mercator'}
 });
 
@@ -202,20 +235,21 @@ for (const [terrainName, createTerrain] of [
 ] as const) {
   it(`GPUGeomorphons matches the GRASS oracle on ${terrainName} terrain`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const elevation = createTerrain(WIDTH, HEIGHT);
     for (const testCase of CASES) {
-      const settingsValues = getGPUGeomorphonsParameterValues(testCase.settings);
-      const fixture = createFixture(
-        device,
-        elevation,
-        WIDTH,
-        HEIGHT,
-        settingsValues,
-        testCase.props ?? {}
-      );
+      const grid = makeGPURasterMetadata({
+        width: WIDTH,
+        height: HEIGHT,
+        cellSize: testCase.cellSize,
+        origin: testCase.origin,
+        rowDirection: testCase.props?.rowDirection
+      });
+      const settingsValues = getGPUGeomorphonsParameterValues(testCase.settings, grid);
+      const fixture = createFixture(device, elevation, WIDTH, HEIGHT, settingsValues, {
+        grid,
+        ...testCase.props
+      });
       const compiled = fixture.graph.compile();
       submitGraph(device, compiled, undefined);
       const actual = await readOutputs(fixture, WIDTH * HEIGHT);
@@ -245,16 +279,15 @@ for (const [terrainName, createTerrain] of [
 
 it('GPUGeomorphons honors nodata and rewrites settings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createIntegerTerrain(WIDTH, HEIGHT);
   const mask = new Uint32Array(WIDTH * HEIGHT).fill(1);
   for (let index = 0; index < mask.length; index += 11) mask[index] = 0;
   for (let row = 14; row < 20; row++) {
     for (let column = 20; column < 26; column++) mask[row * WIDTH + column] = 0;
   }
-  const first = getGPUGeomorphonsParameterValues({cellSize: [10, 10]});
+  const grid = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 10});
+  const first = getGPUGeomorphonsParameterValues({}, grid);
   const fixture = createFixture(device, elevation, WIDTH, HEIGHT, first, {}, mask);
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
@@ -269,11 +302,7 @@ it('GPUGeomorphons honors nodata and rewrites settings without recompiling', asy
   expect(new Set(actual.validity)).toEqual(new Set([0, 1]));
   expect(actual.forms[16 * WIDTH + 22]).toBe(0);
 
-  const second = getGPUGeomorphonsParameterValues({
-    cellSize: [10, 10],
-    flatThresholdDegrees: 8,
-    zFactor: 0.5
-  });
+  const second = getGPUGeomorphonsParameterValues({flatThresholdDegrees: 8, zFactor: 0.5}, grid);
   fixture.settings.write(second);
   submitGraph(device, compiled, undefined);
   actual = await readOutputs(fixture, WIDTH * HEIGHT);
@@ -289,7 +318,7 @@ it('GPUGeomorphons honors nodata and rewrites settings without recompiling', asy
   );
 
   // Invalid settings invalidate every cell.
-  fixture.settings.write(getGPUGeomorphonsParameterValues({cellSize: [10, 10], zFactor: NaN}));
+  fixture.settings.write(getGPUGeomorphonsParameterValues({zFactor: NaN}, grid));
   submitGraph(device, compiled, undefined);
   actual = await readOutputs(fixture, WIDTH * HEIGHT);
   expect(actual.validity.every(value => value === 0)).toBe(true);
@@ -299,9 +328,7 @@ it('GPUGeomorphons honors nodata and rewrites settings without recompiling', asy
 
 it('GPUGeomorphons classifies synthetic landforms at the center', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const size = 21;
   const center = 10;
   const shapes: [string, (column: number, row: number) => number, number][] = [
@@ -321,7 +348,8 @@ it('GPUGeomorphons classifies synthetic landforms at the center', async () => {
     ['ridge', column => -0.5 * (column - center) ** 2, GPU_GEOMORPHON_FORMS.ridge],
     ['valley', column => 0.5 * (column - center) ** 2, GPU_GEOMORPHON_FORMS.valley]
   ];
-  const settingsValues = getGPUGeomorphonsParameterValues({cellSize: [10, 10]});
+  const grid = makeGPURasterMetadata({width: size, height: size, cellSize: 10});
+  const settingsValues = getGPUGeomorphonsParameterValues({}, grid);
   for (const [name, shape, expectedForm] of shapes) {
     const elevation = Float32Array.from({length: size * size}, (_, index) =>
       shape(index % size, Math.floor(index / size))
@@ -339,9 +367,7 @@ it('GPUGeomorphons classifies synthetic landforms at the center', async () => {
 
 it('GPUGeomorphons resolves integer ties toward the nearest sample and the comparison mode', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Heights 4, 8 along east give equal angles; nearest sample must win, so 3 cells out is not
   // a new zenith. Staircase rises 4 per cell east, and the surface is a plateau elsewhere.
   const size = 11;
@@ -349,7 +375,8 @@ it('GPUGeomorphons resolves integer ties toward the nearest sample and the compa
     const column = index % size;
     return column > 5 ? 4 * (column - 5) : 0;
   });
-  const settingsValues = getGPUGeomorphonsParameterValues({cellSize: [10, 10]});
+  const grid = makeGPURasterMetadata({width: size, height: size, cellSize: 10});
+  const settingsValues = getGPUGeomorphonsParameterValues({}, grid);
   for (const comparison of ['anglev1', 'anglev2', 'anglev2-distance'] as const) {
     const fixture = createFixture(device, elevation, size, size, settingsValues, {
       comparison,
@@ -372,6 +399,40 @@ it('GPUGeomorphons resolves integer ties toward the nearest sample and the compa
     // anglev1 reads the tie as flat (digit 1); both anglev2 modes resolve it to +1 (digit 2).
     const eastDigit = Math.floor(actual.pattern[5 * size + 5] / 3 ** 7) % 3;
     expect(eastDigit, comparison).toBe(comparison === 'anglev1' ? 1 : 2);
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
+});
+
+it('GPUGeomorphons gives an empty line of sight after the skip digit 0 in every comparison', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Flat 13 x 13 grid; east of the center the skipped first neighbor is valid and every sample
+  // beyond it is nodata. GRASS anglev2 reads its +-90 degree sentinel angles as a tie and gives
+  // +1 (digit 2); without a sample there is no evidence of relief, so the direction stays flat.
+  const size = 13;
+  const center = 6 * size + 6;
+  const elevation = new Float32Array(size * size);
+  const mask = new Uint32Array(size * size).fill(1);
+  for (let column = 8; column < size; column++) mask[6 * size + column] = 0;
+  const grid = makeGPURasterMetadata({width: size, height: size, cellSize: 10});
+  const settingsValues = getGPUGeomorphonsParameterValues({}, grid);
+  for (const comparison of ['anglev1', 'anglev2', 'anglev2-distance'] as const) {
+    const fixture = createFixture(
+      device,
+      elevation,
+      size,
+      size,
+      settingsValues,
+      {comparison, skipRadius: 1},
+      mask
+    );
+    const compiled = fixture.graph.compile();
+    submitGraph(device, compiled, undefined);
+    const actual = await readOutputs(fixture, size * size);
+    // Every direction digit 0 (stored as 1): sum of 3^direction over the eight directions.
+    expect(actual.pattern[center], comparison).toBe(3280);
+    expect(actual.forms[center], comparison).toBe(GPU_GEOMORPHON_FORMS.flat);
     compiled.destroy();
     destroyFixture(fixture);
   }

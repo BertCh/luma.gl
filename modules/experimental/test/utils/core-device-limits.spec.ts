@@ -19,6 +19,7 @@ import {
   getGPUGeographicallyWeightedRegressionParameterValues
 } from '../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
 import {GPUGeographicallyWeightedRegression} from '../../src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression';
+import {GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH} from '../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
 import {GPUParameterBuffer, importGraphBuffer} from '../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -60,7 +61,9 @@ async function runGeographicallyWeightedRegression(device: Device): Promise<numb
     length: getGPUGeographicallyWeightedRegressionParameterLength(LADDER_CAPACITY)
   });
   const coefficients = track(createOutputBuffer(device, rowCount * 3));
-  const summary = track(createOutputBuffer(device, 6));
+  const summary = track(
+    createOutputBuffer(device, GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH)
+  );
   const graph = new GPUCommandGraph(device, {id: 'core-limits-gwr'});
   graph.add(
     new GPUGeographicallyWeightedRegression({
@@ -104,7 +107,13 @@ async function runGeographicallyWeightedRegression(device: Device): Promise<numb
           'float32',
           rowCount * 3
         ),
-        summary: importGraphBuffer(graph, 'summary', summary, 'float32', 6)
+        summary: importGraphBuffer(
+          graph,
+          'summary',
+          summary,
+          'float32',
+          GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
+        )
       }
     })
   );
@@ -118,7 +127,7 @@ async function runGeographicallyWeightedRegression(device: Device): Promise<numb
   submitGraph(device, compiled, undefined);
   const result = [
     ...(await readFloat32(coefficients, rowCount * 3)),
-    ...(await readFloat32(summary, 6))
+    ...(await readFloat32(summary, GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH))
   ];
   compiled.destroy();
   parameterBuffer.destroy();
@@ -194,23 +203,31 @@ async function runSpatialEmpiricalBayesRates(device: Device): Promise<number[]> 
         'uint32',
         rows
       ),
-      spatialRates: importGraphBuffer(graph, 'spatialRates', output.spatialRates, 'float32', rows),
-      smoothedRates: importGraphBuffer(
-        graph,
-        'smoothedRates',
-        output.smoothedRates,
-        'float32',
-        rows
-      ),
-      priorMeans: importGraphBuffer(graph, 'priorMeans', output.priorMeans, 'float32', rows),
-      priorVariances: importGraphBuffer(
-        graph,
-        'priorVariances',
-        output.priorVariances,
-        'float32',
-        rows
-      )
-    } as ConstructorParameters<typeof GPUSpatialEmpiricalBayesRates>[0])
+      output: {
+        spatialRates: importGraphBuffer(
+          graph,
+          'spatialRates',
+          output.spatialRates,
+          'float32',
+          rows
+        ),
+        smoothedRates: importGraphBuffer(
+          graph,
+          'smoothedRates',
+          output.smoothedRates,
+          'float32',
+          rows
+        ),
+        priorMeans: importGraphBuffer(graph, 'priorMeans', output.priorMeans, 'float32', rows),
+        priorVariances: importGraphBuffer(
+          graph,
+          'priorVariances',
+          output.priorVariances,
+          'float32',
+          rows
+        )
+      }
+    })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);

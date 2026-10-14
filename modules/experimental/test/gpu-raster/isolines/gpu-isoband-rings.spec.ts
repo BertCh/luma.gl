@@ -7,6 +7,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUIsobandRings} from '../../../src/gpu-raster/isolines/gpu-isoband-rings';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {getGPUIsobandsParameterValues} from '../../../src/gpu-raster/isolines/isobands-parameters';
 import {
   createInputBuffer,
@@ -16,6 +17,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {buildIsobandTrianglesOnCPU, type IsobandsScene} from './isobands-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 24;
 const HEIGHT = 20;
@@ -67,9 +69,7 @@ function quantize(x: number, y: number): string {
 for (const integerSamples of [false, true]) {
   it(`GPUIsobandRings closes band boundary edges into rings that match the isoband triangles (${integerSamples ? 'integer samples' : 'smooth samples'})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createScene(integerSamples);
     const sampleCount = WIDTH * HEIGHT;
     const parameterBuffer = new GPUParameterBuffer(device, {
@@ -102,8 +102,7 @@ for (const integerSamples of [false, true]) {
     graph.add(
       new GPUIsobandRings({
         id: 'rings',
-        width: WIDTH,
-        height: HEIGHT,
+        grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', sampleCount),
         validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount),
         breaks: importGraphBuffer(graph, 'breaks', breaksBuffer, 'float32', MAXIMUM_BREAK_COUNT),
@@ -122,11 +121,13 @@ for (const integerSamples of [false, true]) {
           ringIsHole: importGraphBuffer(graph, 'rh', outputs.ringIsHole, 'uint32', RING_CAPACITY),
           ringShells: importGraphBuffer(graph, 'rs', outputs.ringShells, 'uint32', RING_CAPACITY),
           ringGroups: importGraphBuffer(graph, 'rg', outputs.ringGroups, 'uint32', RING_CAPACITY),
-          count: importGraphBuffer(graph, 'c', outputs.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'o', outputs.overflow, 'uint32', 1),
-          openSegmentCount: importGraphBuffer(graph, 'os', outputs.openSegmentCount, 'uint32', 1),
-          edgeCount: importGraphBuffer(graph, 'ec', outputs.edgeCount, 'uint32', 1),
-          edgeOverflow: importGraphBuffer(graph, 'eo', outputs.edgeOverflow, 'uint32', 1),
+          status: {
+            count: importGraphBuffer(graph, 'c', outputs.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'o', outputs.overflow, 'uint32', 1),
+            openSegmentCount: importGraphBuffer(graph, 'os', outputs.openSegmentCount, 'uint32', 1),
+            edgeCount: importGraphBuffer(graph, 'ec', outputs.edgeCount, 'uint32', 1),
+            edgeOverflow: importGraphBuffer(graph, 'eo', outputs.edgeOverflow, 'uint32', 1)
+          },
           polygons: {
             kind: 'polygons',
             positions: importGraphBuffer(
@@ -169,12 +170,13 @@ for (const integerSamples of [false, true]) {
       {breakCount: 5, firstBand: 2, lastBand: 4}
     ];
     for (const [frameIndex, frame] of frames.entries()) {
-      const parameters = getGPUIsobandsParameterValues({
-        ...frame,
-        width: WIDTH,
-        height: HEIGHT,
-        extent: [10, -5, 58, 35]
-      });
+      const parameters = getGPUIsobandsParameterValues(
+        {
+          ...frame,
+          extent: [10, -5, 58, 35]
+        },
+        makeGPURasterMetadata({width: WIDTH, height: HEIGHT})
+      );
       parameterBuffer.write(parameters);
       submitGraph(device, compiled, undefined);
       const label = `frame ${frameIndex}`;

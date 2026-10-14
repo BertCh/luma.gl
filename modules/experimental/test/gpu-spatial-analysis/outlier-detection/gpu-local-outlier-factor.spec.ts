@@ -17,6 +17,7 @@ import {
   RANDOM_FIXTURE,
   type LocalOutlierFactorFixture
 } from './outlier-detection-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -59,8 +60,7 @@ async function runLof(
           12
         ),
         gridSize: [4, 4],
-        weights: table.spatialWeights,
-        overflow: overflow.view
+        output: {...table.spatialWeights, status: {overflow: overflow.view}}
       })
     );
     neighbors = table.spatialWeights;
@@ -76,11 +76,13 @@ async function runLof(
     new GPULocalOutlierFactor({
       neighbors,
       parameters,
-      kDistance: kDistance.view,
-      localReachabilityDensity: density.view,
-      lof: lof.view,
-      outlier: outlier.view,
-      outlierCount: outlierCount.view
+      output: {
+        kDistance: kDistance.view,
+        localReachabilityDensity: density.view,
+        lof: lof.view,
+        outlier: outlier.view,
+        outlierCount: outlierCount.view
+      }
     })
   );
   rig.run(...producers);
@@ -96,7 +98,7 @@ async function runLof(
 
 it('GPULocalOutlierFactor matches scikit-learn on tie-free random points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const useNeighborSearch of [false, true]) {
     const label = useNeighborSearch ? 'neighbor-search' : 'uploaded';
     const start = performance.now();
@@ -104,7 +106,7 @@ it('GPULocalOutlierFactor matches scikit-learn on tie-free random points', async
     console.log(`lof ${label}: ${(performance.now() - start).toFixed(1)} ms`);
     expectClose(result.kDistance, RANDOM_FIXTURE.kDistance, `${label} kDistance`, 2e-6);
     expectClose(result.lof, RANDOM_FIXTURE.lof, `${label} lof`, 1e-4);
-    const expectedMask = RANDOM_FIXTURE.lof.map(value => (value > 1.5 ? 1 : 0));
+    const expectedMask = RANDOM_FIXTURE.lof.map((value): number => (value > 1.5 ? 1 : 0));
     expect(expectedMask.some(flag => flag === 1)).toBe(true);
     expect(result.outlier, `${label} mask`).toEqual(expectedMask);
     expect(result.count).toBe(expectedMask.reduce((sum, flag) => sum + flag, 0));
@@ -113,7 +115,7 @@ it('GPULocalOutlierFactor matches scikit-learn on tie-free random points', async
 
 it('GPULocalOutlierFactor keeps coincident points finite through the density floor', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLof(device, DUPLICATES_FIXTURE, 2, false);
   expectClose(result.lof, DUPLICATES_FIXTURE.lof, 'duplicates lof', 1e-3);
   for (let row = 0; row < 4; row++) {
@@ -124,7 +126,7 @@ it('GPULocalOutlierFactor keeps coincident points finite through the density flo
 
 it('GPULocalOutlierFactor flags nothing without a threshold (there is no default cut)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLof(device, RANDOM_FIXTURE, undefined, false);
   expectClose(result.lof, RANDOM_FIXTURE.lof, 'no-threshold lof', 1e-4);
   expect(RANDOM_FIXTURE.lof.some(value => value > 1.5)).toBe(true);

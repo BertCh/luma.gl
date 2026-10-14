@@ -17,6 +17,7 @@ import {createRandomWeights} from '../spatial-weights/spatial-weights-algebra-or
 import {ESDA_SPATIAL_EB_LOW_DISPERSION} from './eb-low-dispersion-fixture';
 import {ESDA_SPATIAL_EB_LATTICE} from './esda-spatial-eb-fixture';
 import {computeSpatialEmpiricalBayesOracle} from './spatial-empirical-bayes-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GARBAGE = 0x7f7f7f7f;
 
@@ -61,10 +62,12 @@ async function run(
         weights: importGraphBuffer(graph, 'weights', buffers[4]!, 'float32', slots)
       },
       mask: buffers[5] && importGraphBuffer(graph, 'mask', buffers[5], 'uint32', rows),
-      spatialRates: importGraphBuffer(graph, 'sr', outputs.spatialRate, 'float32', rows),
-      smoothedRates: importGraphBuffer(graph, 'sm', outputs.smoothed, 'float32', rows),
-      priorMeans: importGraphBuffer(graph, 'pm', outputs.priorMean, 'float32', rows),
-      priorVariances: importGraphBuffer(graph, 'pv', outputs.priorVariance, 'float32', rows)
+      output: {
+        spatialRates: importGraphBuffer(graph, 'sr', outputs.spatialRate, 'float32', rows),
+        smoothedRates: importGraphBuffer(graph, 'sm', outputs.smoothed, 'float32', rows),
+        priorMeans: importGraphBuffer(graph, 'pm', outputs.priorMean, 'float32', rows),
+        priorVariances: importGraphBuffer(graph, 'pv', outputs.priorVariance, 'float32', rows)
+      }
     })
   );
   const compiled = graph.compile();
@@ -95,9 +98,7 @@ function expectClose(actual: number[], expected: number[], label: string, relati
 
 it('GPUSpatialEmpiricalBayesRates matches the oracle on a hand-checked path graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Path 0-1-2-3 plus isolate 4.
   const events = Float32Array.from([10, 30, 20, 50, 7]);
   const populations = Float32Array.from([100, 200, 100, 400, 50]);
@@ -120,9 +121,7 @@ it('GPUSpatialEmpiricalBayesRates matches the oracle on a hand-checked path grap
 
 it('GPUSpatialEmpiricalBayesRates matches the oracle with random weights, masks and bad rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 600;
   let state = 7;
   const random = () => {
@@ -153,9 +152,7 @@ it('GPUSpatialEmpiricalBayesRates matches the oracle with random weights, masks 
 
 it('GPUSpatialEmpiricalBayesRates reproduces esda 2.10 Spatial_Rate and Spatial_Empirical_Bayes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = ESDA_SPATIAL_EB_LATTICE;
   const result = await run(device, {
     events: Float32Array.from(fixture.events),
@@ -170,9 +167,7 @@ it('GPUSpatialEmpiricalBayesRates reproduces esda 2.10 Spatial_Rate and Spatial_
 
 it('GPUSpatialEmpiricalBayesRates clamps local prior variance like esda on low-dispersion data', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = ESDA_SPATIAL_EB_LOW_DISPERSION;
   const result = await run(device, {
     events: Float32Array.from(fixture.events),

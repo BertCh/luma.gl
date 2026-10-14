@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/index';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/index';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
@@ -20,9 +20,11 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {makeExtentGrid} from './extent-grid';
 import {KRIGING_REFERENCE} from './kriging-reference';
 import {GREAT_CIRCLE_REFERENCE} from './great-circle-reference';
 import {KRIGING_ROBUSTNESS_REFERENCE} from './kriging-robustness-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * f32 solve of a 9 x 9 system against PyKrige float64. Values are compared relative to the data
@@ -35,9 +37,7 @@ const VARIANCE_TOLERANCE = 1e-4;
 
 it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values, width, height, extent, neighborCount, cases} = KRIGING_REFERENCE;
   const cellCount = width * height;
   const sampleCount = values.length;
@@ -57,8 +57,7 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
       positions: importGraphBuffer(graph, 'positions', positionBuffer, 'float32x2', sampleCount),
       values: importGraphBuffer(graph, 'values', valueBuffer, 'float32', sampleCount),
       parameters: parameterBuffer.importToGraph(graph),
-      width,
-      height,
+      grid: makeExtentGrid(width, height, extent),
       indexGridSize: [6, 6],
       indexBounds: [0, 0, 1000, 1000],
       maximumNeighborCount: 12,
@@ -71,12 +70,10 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
   const compiled = graph.compile();
   for (const reference of cases) {
     parameterBuffer.write(
-      getGPUKrigingParameterValues({
-        extent,
-        searchRadius: Infinity,
-        neighborCount,
-        variogram: reference
-      })
+      getGPUKrigingParameterValues(
+        {searchRadius: Infinity, neighborCount, variogram: reference},
+        makeExtentGrid(width, height, extent)
+      )
     );
     submitGraph(device, compiled, undefined);
     const actualValues = await readFloat32(valuesOut, cellCount);
@@ -103,12 +100,15 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
   const exactX = positions[2 * exactRow];
   const exactY = positions[2 * exactRow + 1];
   parameterBuffer.write(
-    getGPUKrigingParameterValues({
-      extent: [exactX - 62.5, exactY - 83.333333, exactX + 937.5, exactY + 916.666667],
-      searchRadius: Infinity,
-      neighborCount,
-      variogram: cases[0]
-    })
+    getGPUKrigingParameterValues(
+      {searchRadius: Infinity, neighborCount, variogram: cases[0]},
+      makeExtentGrid(width, height, [
+        exactX - 62.5,
+        exactY - 83.333333,
+        exactX + 937.5,
+        exactY + 916.666667
+      ])
+    )
   );
   submitGraph(device, compiled, undefined);
   const exactValues = await readFloat32(valuesOut, cellCount);
@@ -116,13 +116,10 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
 
   // A tiny radius leaves every cell without enough neighbors: nodata.
   parameterBuffer.write(
-    getGPUKrigingParameterValues({
-      extent,
-      searchRadius: 5,
-      neighborCount,
-      minimumNeighborCount: 3,
-      variogram: cases[0]
-    })
+    getGPUKrigingParameterValues(
+      {searchRadius: 5, neighborCount, minimumNeighborCount: 3, variogram: cases[0]},
+      makeExtentGrid(width, height, extent)
+    )
   );
   submitGraph(device, compiled, undefined);
   const sparse = await readFloat32(valuesOut, cellCount);
@@ -137,9 +134,7 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
 
 it('GPUKriging gives bitwise-identical rasters for any index grid because neighbors use a total order', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values, width, height, extent, neighborCount, cases} = KRIGING_REFERENCE;
   const cellCount = width * height;
   const sampleCount = values.length;
@@ -156,12 +151,10 @@ it('GPUKriging gives bitwise-identical rasters for any index grid because neighb
       id: `kriging-grid-parameters-${indexGridSize[0]}`,
       format: 'float32',
       length: GPU_KRIGING_PARAMETER_LENGTH,
-      values: getGPUKrigingParameterValues({
-        extent,
-        searchRadius: Infinity,
-        neighborCount,
-        variogram: cases[0]
-      })
+      values: getGPUKrigingParameterValues(
+        {searchRadius: Infinity, neighborCount, variogram: cases[0]},
+        makeExtentGrid(width, height, extent)
+      )
     });
     const valuesOut = createOutputBuffer(device, cellCount);
     const graph = new GPUCommandGraph(device, {id: `kriging-grid-${indexGridSize[0]}`});
@@ -171,8 +164,7 @@ it('GPUKriging gives bitwise-identical rasters for any index grid because neighb
         positions: importGraphBuffer(graph, 'positions', positionBuffer, 'float32x2', sampleCount),
         values: importGraphBuffer(graph, 'values', valueBuffer, 'float32', sampleCount),
         parameters: parameterBuffer.importToGraph(graph),
-        width,
-        height,
+        grid: makeExtentGrid(width, height, extent),
         indexGridSize,
         indexBounds: [0, 0, 1000, 1000],
         maximumNeighborCount: 12,
@@ -232,6 +224,8 @@ type KrigingRunResult = {
 async function runKriging(device: Device, options: KrigingRunOptions): Promise<KrigingRunResult> {
   const cellCount = options.width * options.height;
   const sampleCount = options.values.length;
+  // Rows advance north from the extent minimum, which packs the extent unchanged.
+  const grid = makeExtentGrid(options.width, options.height, options.extent);
   const buffers = [
     createInputBuffer(device, Float32Array.from(options.positions)),
     createInputBuffer(device, Float32Array.from(options.values)),
@@ -252,13 +246,15 @@ async function runKriging(device: Device, options: KrigingRunOptions): Promise<K
     id: 'kriging-run-parameters',
     format: 'float32',
     length: GPU_KRIGING_PARAMETER_LENGTH,
-    values: getGPUKrigingParameterValues({
-      extent: options.extent,
-      searchRadius: options.searchRadius ?? Infinity,
-      neighborCount: options.neighborCount,
-      minimumNeighborCount: options.minimumNeighborCount,
-      variogram: options.variogram
-    })
+    values: getGPUKrigingParameterValues(
+      {
+        searchRadius: options.searchRadius ?? Infinity,
+        neighborCount: options.neighborCount,
+        minimumNeighborCount: options.minimumNeighborCount,
+        variogram: options.variogram
+      },
+      grid
+    )
   });
   const graph = new GPUCommandGraph(device, {id: 'kriging-run'});
   graph.add(
@@ -271,16 +267,17 @@ async function runKriging(device: Device, options: KrigingRunOptions): Promise<K
         ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', sampleCount)
         : undefined,
       parameters: parameterBuffer.importToGraph(graph),
-      width: options.width,
-      height: options.height,
+      grid,
       indexGridSize: options.indexGridSize,
       indexBounds: options.indexBounds,
       maximumNeighborCount: options.maximumNeighborCount,
       output: {
         values: importGraphBuffer(graph, 'values-out', valuesOut, 'float32', cellCount),
         variance: importGraphBuffer(graph, 'variance-out', varianceOut, 'float32', cellCount),
-        invalidCount: importGraphBuffer(graph, 'invalid-out', invalidOut, 'uint32', 1),
-        uncertainCount: importGraphBuffer(graph, 'uncertain-out', uncertainOut, 'uint32', 1),
+        status: {
+          invalidCount: importGraphBuffer(graph, 'invalid-out', invalidOut, 'uint32', 1),
+          uncertainCount: importGraphBuffer(graph, 'uncertain-out', uncertainOut, 'uint32', 1)
+        },
         ...(options.crossValidation
           ? {
               crossValidationPrediction: importGraphBuffer(
@@ -352,9 +349,7 @@ function expectKrigingMatches(
 
 it('GPUKriging coalesces samples at identical positions and averages exact hits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: kriging_oracle.py F1. Rows 10-13 repeat positions of rows 0, 3, 3 and 6 with other
   // values, row 0 sits on a cell center, and all 14 samples fit in the 16-point neighborhood.
   const reference = KRIGING_ROBUSTNESS_REFERENCE.duplicates;
@@ -386,9 +381,7 @@ it('GPUKriging coalesces samples at identical positions and averages exact hits'
 
 it('GPUKriging rejects ill-conditioned systems as nodata and counts them', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: kriging_oracle.py F2. Twelve samples within 150 units under a Gaussian model with a
   // 1e-4 nugget: the f32 pivot ratio is 7.9e-6, so the old absolute pivot test (1e-6) accepted
   // the system and returned unreliable weights; the ratio test rejects it. The same samples with
@@ -431,9 +424,7 @@ it('GPUKriging rejects ill-conditioned systems as nodata and counts them', async
 
 it('GPUKriging counts nodata cells without enough neighbors as invalid, not uncertain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, values, width, height, extent, neighborCount, cases} = KRIGING_REFERENCE;
   const result = await runKriging(device, {
     positions,
@@ -456,9 +447,7 @@ it('GPUKriging counts nodata cells without enough neighbors as invalid, not unce
 
 it('GPUKriging folds a sample mask without exceeding eight storage buffers', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: kriging_oracle.py F3b, the reference raster with the masked rows removed. This run
   // binds mask, variance and both status counters, the maximum optional-output combination.
   const reference = KRIGING_ROBUSTNESS_REFERENCE.masked;
@@ -491,9 +480,7 @@ it('GPUKriging folds a sample mask without exceeding eight storage buffers', asy
 
 it('GPUKriging leave-one-out cross-validation krigs each sample from its other neighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: kriging_oracle.py F3, the 48 PyKrige reference samples, exponential model, k = 8.
   const reference = KRIGING_ROBUSTNESS_REFERENCE.leaveOneOut;
   const {positions, values, width, height, extent} = KRIGING_REFERENCE;
@@ -526,9 +513,7 @@ it('GPUKriging leave-one-out cross-validation krigs each sample from its other n
 
 it('GPUKriging is translation invariant at UTM-sized absolute coordinates', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: kriging_oracle.py F4. Positions sit on a 0.5 lattice, exactly representable in f32 at
   // 4e6 (ulp 0.25), so offsets from the extent minimum are exact and the raster must equal the
   // untranslated float64 result.
@@ -558,9 +543,7 @@ it('GPUKriging is translation invariant at UTM-sized absolute coordinates', asyn
 
 it('GPUKriging great-circle mode matches haversine ordinary kriging at 47 N', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Oracle: geo_oracle.py (haversine on R = 6371008.8 m, cross-checked against pyproj.Geod). The
   // range is in meters. Positions are absolute f32 lon/lat (about 0.4 m ulp at 8 E), so the bound
   // is 5e-4 of the data scale on values and 5e-3 on variance, not the planar 2e-5.

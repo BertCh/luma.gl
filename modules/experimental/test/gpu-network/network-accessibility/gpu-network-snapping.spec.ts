@@ -11,7 +11,7 @@ import {
   GPUNetworkSnapping,
   GPU_NETWORK_SNAPPING_NONE,
   type GPUNetworkSnappingProps,
-  type GPUNetworkSnappingSeedDirection
+  type GPUNetworkSnappingStartDirection
 } from '../../../src/gpu-network/network-accessibility';
 import {
   createInputBuffer,
@@ -33,6 +33,7 @@ import {
   getHaversineDistance,
   type NetworkMetricOracle
 } from '../network-metric-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type SnappingResult = {
   edges: number[];
@@ -41,17 +42,16 @@ type SnappingResult = {
   sourceCosts: number[];
   targetCosts: number[];
   positions: number[];
-  seedNodes: number[];
-  seedCosts: number[];
+  startNodes: number[];
+  startCosts: number[];
   overflow?: number;
 };
 
 type SnappingOptions = {
-  edgeInput: 'coo' | 'csr';
   edgeCosts?: boolean;
-  maxSnapDistance?: number;
+  maximumSnapDistance?: number;
   candidateCapacity?: number;
-  seedDirection?: GPUNetworkSnappingSeedDirection;
+  startDirection?: GPUNetworkSnappingStartDirection;
   /** Optional fixture and spatial context; defaults to the planar grid below. */
   fixture?: SnappingFixture;
 };
@@ -108,37 +108,41 @@ async function runSnapping(device: Device, options: SnappingOptions): Promise<Sn
     outputs[id] = buffer;
     return importGraphBuffer(graph, id, buffer, format, length);
   };
-  const maxSnapDistance =
-    options.maxSnapDistance !== undefined
+  const maximumSnapDistance =
+    options.maximumSnapDistance !== undefined
       ? new GPUParameterBuffer(device, {
           id: 'max-snap-distance',
           format: 'float32',
           length: 1,
-          values: Float32Array.from([options.maxSnapDistance])
+          values: Float32Array.from([options.maximumSnapDistance])
         })
       : undefined;
   const props: GPUNetworkSnappingProps = {
     id: 'snap',
     spatialContext: fixture.spatialContext,
-    points: input('points', fixture.points, 'float32x2'),
-    nodePositions: input('positions', fixture.positions, 'float32x2'),
-    edgeTargets: input('targets', fixture.csr.neighbors, 'uint32'),
-    ...(options.edgeInput === 'csr'
-      ? {offsets: input('offsets', fixture.csr.offsets, 'uint32')}
-      : {edgeSources: input('sources', fixture.csr.sources, 'uint32')}),
-    edgeCosts: options.edgeCosts ? input('costs', fixture.csr.weights, 'float32') : undefined,
-    maxSnapDistance: maxSnapDistance?.importToGraph(graph),
+    positions: input('points', fixture.points, 'float32x2'),
+    topology: {
+      offsets: input('offsets', fixture.csr.offsets, 'uint32'),
+      neighbors: input('targets', fixture.csr.neighbors, 'uint32'),
+      weights: options.edgeCosts ? input('costs', fixture.csr.weights, 'float32') : undefined,
+      nodePositions: input('positions', fixture.positions, 'float32x2')
+    },
+    maximumSnapDistance: maximumSnapDistance?.importToGraph(graph),
     candidateCapacity: options.candidateCapacity,
-    seedDirection: options.seedDirection,
-    snappedEdges: output('edges', 'uint32', pointCount),
-    snapFractions: output('fractions', 'float32', pointCount),
-    snapDistances: output('distances', 'float32', pointCount),
-    sourceCosts: output('sourceCosts', 'float32', pointCount),
-    targetCosts: output('targetCosts', 'float32', pointCount),
-    snappedPositions: output('positions-out', 'float32x2', pointCount),
-    seedNodes: output('seedNodes', 'uint32', pointCount * 2),
-    seedCosts: output('seedCosts', 'float32', pointCount * 2),
-    overflow: options.candidateCapacity ? output('overflow', 'uint32', 1) : undefined
+    startDirection: options.startDirection,
+    output: {
+      snappedEdges: output('edges', 'uint32', pointCount),
+      snapFractions: output('fractions', 'float32', pointCount),
+      snapDistances: output('distances', 'float32', pointCount),
+      sourceCosts: output('sourceCosts', 'float32', pointCount),
+      targetCosts: output('targetCosts', 'float32', pointCount),
+      snappedPositions: output('positions-out', 'float32x2', pointCount),
+      startNodes: output('startNodes', 'uint32', pointCount * 2),
+      startCosts: output('startCosts', 'float32', pointCount * 2),
+      status: {
+        overflow: options.candidateCapacity ? output('overflow', 'uint32', 1) : undefined
+      }
+    }
   };
   graph.add(new GPUNetworkSnapping(props));
   const compiled = graph.compile();
@@ -150,12 +154,12 @@ async function runSnapping(device: Device, options: SnappingOptions): Promise<Sn
     sourceCosts: await readFloat32(outputs['sourceCosts'], pointCount),
     targetCosts: await readFloat32(outputs['targetCosts'], pointCount),
     positions: await readFloat32(outputs['positions-out'], pointCount * 2),
-    seedNodes: await readUint32(outputs['seedNodes'], pointCount * 2),
-    seedCosts: await readFloat32(outputs['seedCosts'], pointCount * 2),
+    startNodes: await readUint32(outputs['startNodes'], pointCount * 2),
+    startCosts: await readFloat32(outputs['startCosts'], pointCount * 2),
     overflow: outputs['overflow'] ? (await readUint32(outputs['overflow'], 1))[0] : undefined
   };
   compiled.destroy();
-  maxSnapDistance?.destroy();
+  maximumSnapDistance?.destroy();
   for (const buffer of buffers) {
     buffer.destroy();
   }
@@ -166,16 +170,16 @@ function expectSnapsMatchOracle(
   result: SnappingResult,
   options: {
     edgeCosts?: boolean;
-    maxSnapDistance?: number;
-    seedDirection?: string;
+    maximumSnapDistance?: number;
+    startDirection?: string;
   }
 ): void {
   const expected = snapOracle(POINTS, GRID.positions, CSR.sources, CSR.neighbors, {
     edgeCosts: options.edgeCosts ? CSR.weights : undefined,
-    maxSnapDistance: options.maxSnapDistance
+    maximumSnapDistance: options.maximumSnapDistance
   });
   expect(result.edges).toEqual(expected.map(snap => snap.edge));
-  const direction = options.seedDirection ?? 'both';
+  const direction = options.startDirection ?? 'both';
   expected.forEach((snap, point) => {
     for (const [actual, value] of [
       [result.fractions[point], snap.fraction],
@@ -188,10 +192,10 @@ function expectSnapsMatchOracle(
     const isSnapped = snap.edge !== NONE;
     const useSource = isSnapped && direction !== 'forward';
     const useTarget = isSnapped && direction !== 'reverse';
-    expect(result.seedNodes[point * 2]).toBe(useSource ? CSR.sources[snap.edge] : NONE);
-    expect(result.seedNodes[point * 2 + 1]).toBe(useTarget ? CSR.neighbors[snap.edge] : NONE);
-    expect(result.seedCosts[point * 2]).toBeCloseTo(useSource ? snap.sourceCost : -1, 4);
-    expect(result.seedCosts[point * 2 + 1]).toBeCloseTo(useTarget ? snap.targetCost : -1, 4);
+    expect(result.startNodes[point * 2]).toBe(useSource ? CSR.sources[snap.edge] : NONE);
+    expect(result.startNodes[point * 2 + 1]).toBe(useTarget ? CSR.neighbors[snap.edge] : NONE);
+    expect(result.startCosts[point * 2]).toBeCloseTo(useSource ? snap.sourceCost : -1, 4);
+    expect(result.startCosts[point * 2 + 1]).toBeCloseTo(useTarget ? snap.targetCost : -1, 4);
     if (isSnapped) {
       const source = CSR.sources[snap.edge];
       const target = CSR.neighbors[snap.edge];
@@ -211,10 +215,8 @@ function expectSnapsMatchOracle(
 
 it('GPUNetworkSnapping exhaustive scan matches the oracle, including endpoint ties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const result = await runSnapping(device, {edgeInput: 'coo'});
+  requireTestDevice(device);
+  const result = await runSnapping(device, {});
   expectSnapsMatchOracle(result, {});
   // (3, 3) is node 27: every incident edge is at distance 0 and the smallest CSR row wins. That is
   // the in-edge 19 -> 27, so the point sits at fraction 1 with a zero cost to the edge target.
@@ -232,17 +234,14 @@ it('GPUNetworkSnapping exhaustive scan matches the oracle, including endpoint ti
   expect(result.edges[5]).not.toBe(GPU_NETWORK_SNAPPING_NONE);
 });
 
-it('GPUNetworkSnapping supports CSR input, edge costs, a snap limit, and seed directions', async () => {
+it('GPUNetworkSnapping supports edge costs, a snap limit, and start directions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  for (const seedDirection of ['both', 'forward', 'reverse'] as const) {
+  requireTestDevice(device);
+  for (const startDirection of ['both', 'forward', 'reverse'] as const) {
     const options = {
-      edgeInput: 'csr' as const,
       edgeCosts: true,
-      maxSnapDistance: 1.5,
-      seedDirection
+      maximumSnapDistance: 1.5,
+      startDirection
     };
     const result = await runSnapping(device, options);
     expectSnapsMatchOracle(result, options);
@@ -253,13 +252,10 @@ it('GPUNetworkSnapping supports CSR input, edge costs, a snap limit, and seed di
 
 it('GPUNetworkSnapping BVH candidate path matches the exhaustive scan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const options = {
-    edgeInput: 'coo' as const,
     edgeCosts: true,
-    maxSnapDistance: 1.5,
+    maximumSnapDistance: 1.5,
     candidateCapacity: 1024
   };
   const joined = await runSnapping(device, options);
@@ -318,12 +314,10 @@ function createAntimeridianFixture(): SnappingFixture {
 
 it('GPUNetworkSnapping great-circle scan matches the f64 oracle across the antimeridian', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createAntimeridianFixture();
   const metric: NetworkMetricOracle = createGreatCircleNetworkMetric();
-  const result = await runSnapping(device, {edgeInput: 'csr', fixture});
+  const result = await runSnapping(device, {fixture});
   const expected = snapOracle(
     fixture.points,
     fixture.positions,
@@ -363,16 +357,13 @@ it('GPUNetworkSnapping great-circle scan matches the f64 oracle across the antim
 
 it('GPUNetworkSnapping great-circle BVH candidate path matches the great-circle scan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createAntimeridianFixture();
   // 400 m covers every fixture point; the join's great-circle search ignores the capacity.
-  const scan = await runSnapping(device, {edgeInput: 'csr', fixture, maxSnapDistance: 400});
+  const scan = await runSnapping(device, {fixture, maximumSnapDistance: 400});
   const joined = await runSnapping(device, {
-    edgeInput: 'csr',
     fixture,
-    maxSnapDistance: 400,
+    maximumSnapDistance: 400,
     candidateCapacity: 4
   });
   expect(joined.edges).toEqual(scan.edges);
@@ -385,9 +376,7 @@ it('GPUNetworkSnapping great-circle BVH candidate path matches the great-circle 
 
 it('GPUNetworkSnapping ignores CSR rows past offsets[nodeCount]', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Review B-04: the edge-source expansion wrote only the live rows, so a tail row read a zero (or
   // an aliased transient's word) as its source and became a phantom edge from node 0. The tail
   // rows below target node 63 and node 7: phantom diagonals 0 -> 63 and 0 -> 7 pass through
@@ -401,9 +390,8 @@ it('GPUNetworkSnapping ignores CSR rows past offsets[nodeCount]', async () => {
   const liveEdgeCount = CSR.neighbors.length;
   for (const candidateCapacity of [undefined, 64]) {
     const options = {
-      edgeInput: 'csr' as const,
       edgeCosts: true,
-      maxSnapDistance: 1.5,
+      maximumSnapDistance: 1.5,
       candidateCapacity
     };
     const expected = await runSnapping(device, options);

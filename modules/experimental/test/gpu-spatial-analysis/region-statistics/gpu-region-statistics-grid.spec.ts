@@ -24,6 +24,7 @@ import {
   selectRows,
   VALUES
 } from './region-statistics-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const CANDIDATES_TRUNCATED = GPU_REGION_STATISTICS_FLAGS.candidatesTruncated;
 const DOMAIN_SIZE = 1000;
@@ -184,9 +185,7 @@ async function runRandomComparison(
   options: RunOptions
 ): Promise<boolean> {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return false;
-  }
+  requireTestDevice(device);
   const data = createRandomData(count + kind.length, count, options.integerValues);
   const harness = new GridStatisticsHarness({
     device,
@@ -257,9 +256,7 @@ it('GPURegionStatistics grid index matches brute force without output and with r
 
 it('GPURegionStatistics grid index matches the CPU fixtures', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rowCount = POSITIONS.length / 2;
   const cases = [
     {
@@ -316,9 +313,7 @@ it('GPURegionStatistics grid index matches the CPU fixtures', async () => {
 
 it('GPURegionStatistics grid index reports empty selections', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(7, 5000, true);
   const harness = new GridStatisticsHarness({
     device,
@@ -346,9 +341,7 @@ it('GPURegionStatistics grid index reports empty selections', async () => {
 
 it('GPURegionStatistics grid index flags candidate overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(11, 20000, true);
   const harness = new GridStatisticsHarness({
     device,
@@ -382,9 +375,7 @@ it('GPURegionStatistics grid index flags candidate overflow', async () => {
 
 it('GPURegionStatistics grid index flags rows missing from the index', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(13, 8000, true);
   // Three rows outside the index domain, one with a NaN position.
   data.positions.set([2500, 100], 10);
@@ -418,9 +409,7 @@ it('GPURegionStatistics grid index flags rows missing from the index', async () 
 
 it('GPURegionStatistics grid index keeps the same row order for IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const data = createRandomData(17, 10000, true);
   const harness = new GridStatisticsHarness({
     device,

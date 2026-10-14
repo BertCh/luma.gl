@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUVariogram,
+  type GPUVariogramOutput,
   type GPUVariogramProps
 } from '../../../src/gpu-dataframe/pair-statistics/gpu-variogram';
 import {
@@ -23,10 +24,11 @@ import {computeVariogramOnCPU} from './variogram-oracle';
 
 let serial = 0;
 
-function createProps(
-  graph: GPUCommandGraph,
-  overrides: Partial<GPUVariogramProps> = {}
-): GPUVariogramProps {
+type Overrides = Omit<Partial<GPUVariogramProps>, 'output'> & {
+  output?: Partial<GPUVariogramOutput>;
+};
+
+function createProps(graph: GPUCommandGraph, overrides: Overrides = {}): GPUVariogramProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
     length: number
@@ -37,15 +39,12 @@ function createProps(
     parameters: view('float32', GPU_VARIOGRAM_PARAMETER_LENGTH),
     gridSize: [4, 4],
     lagCount: 8,
-    semivariances: view('float32', 8),
-    ...overrides
+    ...overrides,
+    output: {semivariances: view('float32', 8), ...overrides.output}
   };
 }
 
-function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPUVariogramProps>,
-  message: RegExp
-): void {
+function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message: RegExp): void {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   expect(() => new GPUVariogram(createProps(graph, overrides(graph)))).toThrow(message);
@@ -88,24 +87,38 @@ it('GPUVariogram validates its inputs and outputs', () => {
   expectThrows(() => ({lagCount: 0}), /lagCount/);
   expectThrows(() => ({directionCount: 1.5}), /directionCount/);
   expectThrows(
-    graph => ({lagCount: 64, directionCount: 16, semivariances: view(graph, 'float32', 1024)}),
+    graph => ({
+      lagCount: 64,
+      directionCount: 16,
+      output: {semivariances: view(graph, 'float32', 1024)}
+    }),
     /512/
   );
   expectThrows(graph => ({values: view(graph, 'float32', 9)}), /values length/);
-  expectThrows(graph => ({semivariances: view(graph, 'float32', 7)}), /semivariances/);
-  expectThrows(graph => ({pairCounts: view(graph, 'uint32', 7)}), /pairCounts/);
-  expectThrows(graph => ({statistics: view(graph, 'float32', 4)}), /statistics/);
-  expectThrows(graph => ({overflow: view(graph, 'float32', 1)}), /overflow/);
   expectThrows(
-    graph => ({overflow: view(graph, 'uint32', 1), pairCounts: view(graph, 'uint32', 7)}),
-    /pairCounts/
+    graph => ({output: {semivariances: view(graph, 'float32', 7)}}),
+    /output\.semivariances/
+  );
+  expectThrows(graph => ({output: {pairCounts: view(graph, 'uint32', 7)}}), /output\.pairCounts/);
+  expectThrows(graph => ({output: {statistics: view(graph, 'float32', 4)}}), /output\.statistics/);
+  expectThrows(
+    graph => ({output: {status: {overflow: view(graph, 'float32', 1) as never}}}),
+    /overflow/
+  );
+  expectThrows(
+    graph => ({
+      output: {overflow: view(graph, 'uint32', 1), pairCounts: view(graph, 'uint32', 7)}
+    }),
+    /output\.pairCounts/
   );
   // 512 bins fill the 2048 accumulators with 4 channels; the robust channel needs a fifth.
   expectThrows(
     graph => ({
       lagCount: 512,
-      semivariances: view(graph, 'float32', 512),
-      robustSemivariances: view(graph, 'float32', 512)
+      output: {
+        semivariances: view(graph, 'float32', 512),
+        robustSemivariances: view(graph, 'float32', 512)
+      }
     }),
     /accumulators/
   );
@@ -113,7 +126,7 @@ it('GPUVariogram validates its inputs and outputs', () => {
   expectThrows(() => ({gridSize: [0, 4]}), /gridSize/);
   expectThrows(graph => {
     const shared = view(graph, 'float32', 10);
-    return {values: shared, semivariances: shared};
+    return {values: shared, output: {semivariances: shared}};
   }, /alias|overlap|disjoint|input/i);
 });
 
@@ -124,9 +137,12 @@ it('GPUVariogram emits deterministic node IDs', () => {
     const contributor = new GPUVariogram({
       ...createProps(graph),
       id: 'v',
-      pairCounts: createTransientView(graph, `counts-${serial++}`, 'uint32', 8),
-      statistics: createTransientView(graph, `stats-${serial++}`, 'float32', 5),
-      overflow: createTransientView(graph, `overflow-${serial++}`, 'uint32', 1)
+      output: {
+        ...createProps(graph).output,
+        pairCounts: createTransientView(graph, `counts-${serial++}`, 'uint32', 8),
+        statistics: createTransientView(graph, `stats-${serial++}`, 'float32', 5),
+        status: {overflow: createTransientView(graph, `overflow-${serial++}`, 'uint32', 1)}
+      }
     });
     return contributor.getCommandNodes(graph).map(node => node.id);
   };

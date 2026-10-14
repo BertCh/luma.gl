@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainCurvature,
@@ -22,16 +23,28 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {
   computeCurvaturesFromPartials,
   computeTerrainCurvature,
   ORACLE_CURVATURE_KINDS,
   type TerrainCurvatureOptions
 } from './terrain-curvature-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 20;
 const HEIGHT = 18;
 const PIXEL_COUNT = WIDTH * HEIGHT;
+
+/** Grid of the test raster with square cells of `cellSize` world units. */
+function makeGrid(
+  cellSize: number | readonly [number, number],
+  origin: readonly [number, number] = [0, 0]
+) {
+  return makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize, origin});
+}
+
+const UNIT_GRID = makeGrid(10);
 const METHODS: GPUTerrainCurvatureMethod[] = ['evans-young', 'zevenbergen-thorne', 'florinsky'];
 
 /** Largest error relative to the largest oracle magnitude per output, accumulated across tests. */
@@ -111,8 +124,7 @@ function createFixture(
   });
   graph.add(
     new GPUTerrainCurvature({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: UNIT_GRID,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -124,15 +136,17 @@ function createFixture(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', PIXEL_COUNT)
           : undefined
       },
-      settings: settings.importToGraph(graph),
-      curvatures: Object.fromEntries(
-        ORACLE_CURVATURE_KINDS.map(kind => [
-          kind,
-          importGraphBuffer(graph, `curvature-${kind}`, curvatures[kind], 'float32', PIXEL_COUNT)
-        ])
-      ),
-      ringCurvature: importGraphBuffer(graph, 'ring-output', ring, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validity, 'uint32', PIXEL_COUNT),
+      parameters: settings.importToGraph(graph),
+      output: {
+        curvatures: Object.fromEntries(
+          ORACLE_CURVATURE_KINDS.map(kind => [
+            kind,
+            importGraphBuffer(graph, `curvature-${kind}`, curvatures[kind], 'float32', PIXEL_COUNT)
+          ])
+        ),
+        ringCurvature: importGraphBuffer(graph, 'ring-output', ring, 'float32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(graph, 'validity', validity, 'uint32', PIXEL_COUNT)
+      },
       ...overrides
     })
   );
@@ -189,15 +203,13 @@ async function expectMatchesOracle(
 
 it('GPUTerrainCurvature matches the float64 oracle for every kind, method, and border mode', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSurface();
-  const settingsValues = getGPUTerrainCurvatureParameterValues({
-    cellSize: [10, 12],
-    zFactor: 1.5,
-    ringGains: [0.55, 0.45, 0.2, 0.1]
-  });
+  const grid = makeGrid([10, 12]);
+  const settingsValues = getGPUTerrainCurvatureParameterValues(
+    {zFactor: 1.5, ringGains: [0.55, 0.45, 0.2, 0.1]},
+    grid
+  );
   for (const method of METHODS) {
     for (const borderMode of ['clamp', 'nodata'] as const) {
       const options: TerrainCurvatureOptions = {
@@ -207,6 +219,7 @@ it('GPUTerrainCurvature matches the float64 oracle for every kind, method, and b
         ringSquash: borderMode === 'clamp' ? 'none' : 'pade-tanh'
       };
       const fixture = createFixture(device, elevation, settingsValues, {
+        grid,
         method,
         borderMode,
         ringRadii: [2, 5, 7],
@@ -234,9 +247,7 @@ it('GPUTerrainCurvature matches the float64 oracle for every kind, method, and b
 
 it('GPUTerrainCurvature reproduces exact quadratics and has convex hills positive', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // z = 1000 + a x^2 + b y^2 + c x y + d x + e y at cell centres in metres, x east, y north.
   const cell = 8;
   const a = -1 / 400;
@@ -251,9 +262,12 @@ it('GPUTerrainCurvature reproduces exact quadratics and has convex hills positiv
     const y = (centreRow - Math.floor(index / WIDTH)) * cell;
     return 1000 + a * x * x + b * y * y + c * x * y + d * x + e * y;
   });
-  const settingsValues = getGPUTerrainCurvatureParameterValues({cellSize: [cell, cell]});
+  const settingsValues = getGPUTerrainCurvatureParameterValues({}, makeGrid(cell));
   for (const method of METHODS) {
-    const fixture = createFixture(device, elevation, settingsValues, {method});
+    const fixture = createFixture(device, elevation, settingsValues, {
+      grid: makeGrid(cell),
+      method
+    });
     const compiled = fixture.graph.compile();
     submitGraph(device, compiled, undefined);
     for (const index of [8 * WIDTH + 9, 5 * WIDTH + 12, 11 * WIDTH + 6]) {
@@ -295,10 +309,8 @@ it('GPUTerrainCurvature reproduces exact quadratics and has convex hills positiv
 
 it('GPUTerrainCurvature gives zero curvature on planes and guards flat gradients', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const settingsValues = getGPUTerrainCurvatureParameterValues({cellSize: [10, 10]});
+  requireTestDevice(device);
+  const settingsValues = getGPUTerrainCurvatureParameterValues({}, UNIT_GRID);
   const plane = Float32Array.from(
     {length: PIXEL_COUNT},
     (_, index) => 2000 + 2 * (index % WIDTH) + 3 * Math.floor(index / WIDTH)
@@ -353,40 +365,54 @@ it('GPUTerrainCurvature gives zero curvature on planes and guards flat gradients
 
 it('GPUTerrainCurvature handles nodata, row direction, and cell size models', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSurface();
   const mask = new Uint32Array(PIXEL_COUNT).fill(1);
   mask[8 * WIDTH + 9] = 0;
   mask[3 * WIDTH + 14] = 0;
   const cases: {
     settings: GPUTerrainCurvatureSettings;
+    grid: GPURasterMetadata;
     options: TerrainCurvatureOptions;
     mask?: Uint32Array;
   }[] = [
-    {settings: {cellSize: [10, 10]}, options: {method: 'florinsky'}, mask},
-    {settings: {cellSize: [10, 10]}, options: {method: 'evans-young', borderMode: 'nodata'}, mask},
+    {settings: {}, grid: UNIT_GRID, options: {method: 'florinsky'}, mask},
     {
-      settings: {cellSize: [10, 10], zFactor: 0.5},
+      settings: {},
+      grid: UNIT_GRID,
+      options: {method: 'evans-young', borderMode: 'nodata'},
+      mask
+    },
+    {
+      settings: {zFactor: 0.5},
+      grid: UNIT_GRID,
       options: {method: 'zevenbergen-thorne', rowDirection: 'north'}
     },
     {
-      settings: {cellSize: [20, 20], northEdge: 0.25, southEdge: 0.375},
+      settings: {},
+      grid: makeGPURasterMetadata({
+        width: WIDTH,
+        height: HEIGHT,
+        cellSize: 20,
+        origin: [0, getOracleWebMercatorY(0.25)],
+        rowDirection: 'north'
+      }),
       options: {method: 'evans-young', cellSizeMode: 'web-mercator', rowDirection: 'north'}
     },
     {
-      settings: {cellSize: [0.0002, 0.0002], northEdge: 60, southEdge: 59.9},
+      settings: {},
+      grid: makeGrid(0.0002, [0, 60]),
       options: {method: 'florinsky', cellSizeMode: 'geographic'}
     }
   ];
-  for (const {settings, options, mask: caseMask} of cases) {
-    const settingsValues = getGPUTerrainCurvatureParameterValues(settings);
+  for (const {settings, grid, options, mask: caseMask} of cases) {
+    const settingsValues = getGPUTerrainCurvatureParameterValues(settings, grid);
     const fixture = createFixture(
       device,
       elevation,
       settingsValues,
       {
+        grid,
         method: options.method,
         borderMode: options.borderMode,
         rowDirection: options.rowDirection,
@@ -419,23 +445,19 @@ it('GPUTerrainCurvature handles nodata, row direction, and cell size models', as
 
 it('GPUTerrainCurvature rewrites settings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSurface();
-  const first = getGPUTerrainCurvatureParameterValues({cellSize: [10, 10]});
+  const first = getGPUTerrainCurvatureParameterValues({}, UNIT_GRID);
   const fixture = createFixture(device, elevation, first, {method: 'florinsky'});
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
   await expectMatchesOracle(fixture, elevation, first, {method: 'florinsky'}, undefined, 'first');
   const before = await readFloat32(fixture.curvatures.mean, PIXEL_COUNT);
 
-  const second = getGPUTerrainCurvatureParameterValues({
-    cellSize: [25, 15],
-    zFactor: 2,
-    flatGradient: 0.01,
-    ringGains: [0.2, 0.9]
-  });
+  const second = getGPUTerrainCurvatureParameterValues(
+    {zFactor: 2, flatGradient: 0.01, ringGains: [0.2, 0.9]},
+    makeGrid([25, 15])
+  );
   fixture.settings.write(second);
   submitGraph(device, compiled, undefined);
   await expectMatchesOracle(fixture, elevation, second, {method: 'florinsky'}, undefined, 'second');

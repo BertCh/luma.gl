@@ -5,7 +5,11 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUTerrainRGBDecode} from '../../../src/gpu-terrain/terrain-decode/gpu-terrain-rgb-decode';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {
   decodeMapboxFloat64,
   decodeTerrariumFloat64,
@@ -78,16 +82,22 @@ it('GPUTerrainRGBDecode validates props and schedules one node', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Record<string, unknown> = {}, extent: [number, number] = [4, 3]) => {
+  const create = (
+    overrides: Record<string, unknown> = {},
+    extent: [number, number] = [4, 3],
+    outputOverrides: Record<string, unknown> = {}
+  ) => {
     instance++;
     const pixelCount = extent[0] * extent[1];
     return new GPUTerrainRGBDecode({
-      width: extent[0],
-      height: extent[1],
+      grid: makeGPURasterMetadata({width: extent[0], height: extent[1]}),
       encoding: 'terrarium',
       input: {buffer: createTransientView(graph, `words-${instance}`, 'uint32', pixelCount)},
-      values: createTransientView(graph, `values-${instance}`, 'float32', pixelCount),
-      validity: createTransientView(graph, `validity-${instance}`, 'uint32', pixelCount),
+      output: {
+        values: createTransientView(graph, `values-${instance}`, 'float32', pixelCount),
+        outputValidity: createTransientView(graph, `validity-${instance}`, 'uint32', pixelCount),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
@@ -102,40 +112,74 @@ it('GPUTerrainRGBDecode validates props and schedules one node', () => {
   ).toEqual(['dem-decode']);
   expect(() => create({validRange: [-Infinity, Infinity]})).not.toThrow();
 
-  expect(() => create({width: 0})).toThrow(/dimensions/);
+  expect(() => create({}, [0, 3])).toThrow(/dimensions/);
   expect(() => create({encoding: 'png'})).toThrow(/encoding/);
   expect(() => create({input: {}})).toThrow(/exactly one/);
   expect(() =>
     create({input: {buffer: createTransientView(graph, 'short-words', 'uint32', 11)}})
   ).toThrow(/one packed RGBA8 word per pixel/);
-  expect(() => create({values: createTransientView(graph, 'short-values', 'float32', 11)})).toThrow(
-    /one value per pixel/
-  );
   expect(() =>
-    create({validity: createTransientView(graph, 'short-validity', 'uint32', 13)})
+    create({}, [4, 3], {values: createTransientView(graph, 'short-values', 'float32', 11)})
   ).toThrow(/one value per pixel/);
   expect(() =>
-    create({inputValidity: createTransientView(graph, 'short-input-validity', 'uint32', 5)})
-  ).toThrow(/inputValidity/);
+    create({}, [4, 3], {
+      outputValidity: createTransientView(graph, 'short-validity', 'uint32', 13)
+    })
+  ).toThrow(/one value per pixel/);
+  expect(() =>
+    create({validity: createTransientView(graph, 'short-input-validity', 'uint32', 5)})
+  ).toThrow(/validity must contain/);
   expect(() => create({noDataRGB: [0, 256, 0]})).toThrow(/noDataRGB/);
   expect(() => create({validRange: [10, -10]})).toThrow(/validRange/);
   expect(() => create({validRange: [Number.NaN, 1]})).toThrow(/validRange/);
   const words = createTransientView(graph, 'aliased-words', 'uint32', 12);
-  expect(() => create({input: {buffer: words}, validity: words})).toThrow(/share buffers/);
+  expect(() => create({input: {buffer: words}}, [4, 3], {outputValidity: words})).toThrow(
+    /share buffers/
+  );
   const sharedOutput = createTransientView(graph, 'shared-output', 'uint32', 12);
-  expect(() => create({validity: sharedOutput, inputValidity: sharedOutput})).toThrow(
+  expect(() => create({validity: sharedOutput}, [4, 3], {outputValidity: sharedOutput})).toThrow(
     /share buffers/
   );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainRGBDecode({
-      width: 2,
-      height: 2,
+      grid: makeGPURasterMetadata({width: 2, height: 2}),
       encoding: 'mapbox',
       input: {buffer: createTransientView(otherGraph, 'foreign-words', 'uint32', 4)},
-      values: createTransientView(otherGraph, 'foreign-values', 'float32', 4),
-      validity: createTransientView(otherGraph, 'foreign-validity', 'uint32', 4)
+      output: {
+        values: createTransientView(otherGraph, 'foreign-values', 'float32', 4),
+        outputValidity: createTransientView(otherGraph, 'foreign-validity', 'uint32', 4)
+      }
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
+  device.destroy();
+});
+
+it('GPUTerrainRGBDecode texture input is a linear WGSL kernel node with a sampled texture', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const handle = graph.createTransientTexture({
+    id: 'decode-texture',
+    format: 'rgba8unorm',
+    width: 4,
+    height: 3,
+    usage: 0x4 /* TEXTURE_BINDING */
+  } as never);
+  const texture = graph.createTextureView(handle, {mipLevelCount: 1});
+  const node = new GPUTerrainRGBDecode({
+    grid: makeGPURasterMetadata({width: 4, height: 3}),
+    encoding: 'terrarium',
+    input: {texture: texture as never},
+    output: {
+      values: createTransientView(graph, 'texture-values', 'float32', 12),
+      outputValidity: createTransientView(graph, 'texture-validity', 'uint32', 12)
+    }
+  }).getCommandNodes(graph)[0]!;
+  expect(node.resources).toContainEqual({texture, usage: 'sampled'});
+  const [recorded] = getGPUCommandNodeKernelSources([node]);
+  const source = recorded!.source;
+  expect(source).toContain('@binding(2) var sourceTexture: texture_2d<f32>;');
+  expect(source).toContain('vec2<i32>(i32(pixelIndex % WIDTH), i32(pixelIndex / WIDTH))');
+  expect(source).not.toContain('global_invocation_id');
   device.destroy();
 });

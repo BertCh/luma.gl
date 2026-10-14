@@ -37,7 +37,7 @@ function createProps(
       standardErrors: view('float32', 3),
       tStatistics: view('float32', 3),
       summary: view('float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
-      status: view('uint32', 1)
+      status: {code: view('uint32', 1)}
     },
     ...overrides
   };
@@ -73,7 +73,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
         summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
-        status: view(graph, 'uint32', 1)
+        status: {code: view(graph, 'uint32', 1)}
       }
     }),
     /coefficients must hold/
@@ -85,7 +85,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
         summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH - 1),
-        status: view(graph, 'uint32', 1)
+        status: {code: view(graph, 'uint32', 1)}
       }
     }),
     /summary must hold/
@@ -97,7 +97,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
         summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
-        status: view(graph, 'uint32', 1),
+        status: {code: view(graph, 'uint32', 1)},
         residuals: view(graph, 'float32', 19)
       }
     }),
@@ -112,7 +112,7 @@ it('GPUOrdinaryLeastSquares validates its inputs', () => {
         standardErrors: view(graph, 'float32', 3),
         tStatistics: view(graph, 'float32', 3),
         summary: view(graph, 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
-        status: view(graph, 'uint32', 1),
+        status: {code: view(graph, 'uint32', 1)},
         residuals: shared
       }
     };
@@ -163,7 +163,7 @@ it('default tile size caps the tile count at 4096', () => {
         'float32',
         GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
       ),
-      status: createTransientView(graph, 'u', 'uint32', 1)
+      status: {code: createTransientView(graph, 'u', 'uint32', 1)}
     }
   });
   expect(contributor.tileCount).toBeLessThanOrEqual(4096);
@@ -172,8 +172,10 @@ it('default tile size caps the tile count at 4096', () => {
 });
 
 it('parameter helper packs the ridge lambda', () => {
-  expect(Array.from(getGPUOrdinaryLeastSquaresParameterValues(2.5))).toEqual([2.5]);
-  expect(() => getGPUOrdinaryLeastSquaresParameterValues(1, new Float32Array(0))).toThrow(/hold/);
+  expect(Array.from(getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: 2.5}))).toEqual([2.5]);
+  expect(() =>
+    getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: 1}, new Float32Array(0))
+  ).toThrow(/hold/);
 });
 
 it('chi-square survival matches known critical values and the df = 2 closed form', () => {

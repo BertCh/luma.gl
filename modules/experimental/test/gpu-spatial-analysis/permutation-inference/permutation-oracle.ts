@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 import type {
   GPUInferenceAlternative,
   GPUMultipleTestingMethod
-} from '../../../src/gpu-spatial-analysis/contracts';
+} from '../../../src/analysis-core/contracts';
 import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing';
 import {getPermutationPValue} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-alternative';
 import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
@@ -24,7 +25,7 @@ import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutati
 
 const f32 = Math.fround;
 
-/** Oracle alternative: the shared inference union; `'less'` is accepted as `'lesser'`. */
+/** Oracle alternative: the shared inference union. */
 export type OracleAlternative = GPUInferenceAlternative;
 
 /** Exceedance count `M` and p-value multiplier for the alternative (see `getPermutationPValue`). */
@@ -228,6 +229,8 @@ export type LocalPermutationOracle = {
   exceedances: number[];
   /** Unadjusted pseudo p-values, NaN when not tested. */
   pseudoPValues: number[];
+  /** Permutations used per row (`P`, or the Besag-Clifford stopping index), 0xffffffff when not tested. */
+  permutationCounts: number[];
   /** Adjusted p-values for `multipleTesting`, NaN when not tested. */
   adjustedPValues: number[];
   observed: number[];
@@ -288,7 +291,7 @@ export function computeLocalPermutationOracle(input: {
   statistic: GPULocalPermutationStatistic;
   joinCase?: GPULocalJoinCountCase;
   seed: number;
-  permutations: number;
+  permutationCount: number;
   significanceLevel: number;
   maximumNeighbors: number;
   alternative?: OracleAlternative;
@@ -296,10 +299,12 @@ export function computeLocalPermutationOracle(input: {
   /** Weights are row standardized: re-standardize over the active slots. */
   rowStandardized?: boolean;
   multipleTesting?: GPUMultipleTestingMethod;
-  /** The contributor's compile-time maximum; a larger `permutations` is invalid. */
+  /** The contributor's compile-time maximum; a larger `permutationCount` is invalid. */
   maximumPermutations?: number;
+  /** Besag-Clifford target `h` (not for 'folded'): stop each row at its first `L` with `M(L) = h`. */
+  stopAfterExceedances?: number;
 }): LocalPermutationOracle {
-  const {weights, values, statistic, permutations} = input;
+  const {weights, values, statistic, permutationCount: permutations} = input;
   const alternative = input.alternative ?? 'two-sided';
   const keep = input.islands === 'keep';
   const rowCount = values.length;
@@ -363,6 +368,7 @@ export function computeLocalPermutationOracle(input: {
   const result: LocalPermutationOracle = {
     exceedances: [],
     pseudoPValues: [],
+    permutationCounts: [],
     adjustedPValues: [],
     observed: [],
     significant: [],
@@ -372,6 +378,9 @@ export function computeLocalPermutationOracle(input: {
     islandCount: compacted.islandCount
   };
   const multiplier = getOracleExceedance(alternative, 0, 0, permutations).multiplier;
+  const stopAfter = input.stopAfterExceedances;
+  /** Stopping index of each row that reached the target. */
+  const stoppedAt = new Map<number, number>();
   for (let row = 0; row < rowCount; row++) {
     const position = positions[row];
     const slots = position >= 0 ? getNeighborSlots(weights, positions, row) : [];
@@ -452,6 +461,13 @@ export function computeLocalPermutationOracle(input: {
       greater += simulated >= observed ? 1 : 0;
       lesser += simulated <= observed ? 1 : 0;
       simulatedValues.push(simulated);
+      if (
+        stopAfter !== undefined &&
+        getPermutationPValue(alternative, {greater, lesser}, permutations).exceedances >= stopAfter
+      ) {
+        stoppedAt.set(row, permutation + 1);
+        break;
+      }
     }
     const simulatedMean = simulatedValues.reduce((a, b) => a + b, 0) / permutations;
     const folded = simulatedValues.filter(
@@ -461,9 +477,15 @@ export function computeLocalPermutationOracle(input: {
       getPermutationPValue(alternative, {greater, lesser, folded}, permutations).exceedances
     );
   }
-  for (const exceedance of result.exceedances) {
+  for (const [row, exceedance] of result.exceedances.entries()) {
+    const used = stoppedAt.get(row);
+    result.permutationCounts.push(exceedance === 0xffffffff ? 0xffffffff : (used ?? permutations));
     result.pseudoPValues.push(
-      exceedance !== 0xffffffff ? getOraclePValue(exceedance, multiplier, permutations) : NaN
+      exceedance === 0xffffffff
+        ? NaN
+        : used !== undefined
+          ? f32(Math.min(multiplier * exceedance, used)) / f32(used)
+          : getOraclePValue(exceedance, multiplier, permutations)
     );
   }
   const method = input.multipleTesting ?? 'none';
@@ -476,7 +498,10 @@ export function computeLocalPermutationOracle(input: {
     result.significant.push(
       tested &&
         (method === 'none'
-          ? f32(Math.min(multiplier * (exceedance + 1), permutations + 1)) <= f32(level * scale)
+          ? stoppedAt.has(row)
+            ? f32(Math.min(multiplier * exceedance, stoppedAt.get(row)!)) <=
+              f32(level * f32(stoppedAt.get(row)!))
+            : f32(Math.min(multiplier * (exceedance + 1), permutations + 1)) <= f32(level * scale)
           : adjusted[row] <= level)
         ? 1
         : 0
@@ -532,13 +557,15 @@ export function computeGlobalPermutationOracle(input: {
   mask?: Uint32Array;
   statistic: 'moran' | 'geary' | 'getisOrdG' | 'bivariateMoran' | 'leesL';
   seed: number;
-  permutations: number;
+  permutationCount: number;
   alternative?: OracleAlternative;
   islands?: OracleIslands;
   /** Weights are row standardized: re-standardize over the active slots. */
   rowStandardized?: boolean;
+  /** Besag-Clifford target `h` (not for 'folded'): use only the first `L` permutations. */
+  stopAfterExceedances?: number;
 }): GlobalPermutationOracle {
-  const {weights, values, statistic, permutations} = input;
+  const {weights, values, statistic, permutationCount: permutations} = input;
   const alternative = input.alternative ?? 'two-sided';
   const lee = statistic === 'leesL';
   const bivariate = statistic === 'bivariateMoran' || lee;
@@ -582,7 +609,10 @@ export function computeGlobalPermutationOracle(input: {
   const key = getPermutationSeedKey(input.seed);
   const pairSums: number[] = [];
   for (let permutation = 0; permutation <= permutations; permutation++) {
-    const shuffle = permutation === 0 ? undefined : getSwapOrNotRounds(key, permutation, count);
+    const shuffle =
+      permutation === 0
+        ? undefined
+        : getSwapOrNotRounds(key, permutation, count, PHILOX_PURPOSES.permutationShuffle.id);
     const permute = (position: number) =>
       shuffle ? getSwapOrNotPermutationIndex(position, count, shuffle) : position;
     let sum = 0;

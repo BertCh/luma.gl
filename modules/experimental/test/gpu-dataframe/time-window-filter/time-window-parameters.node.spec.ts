@@ -4,16 +4,16 @@
 
 import {expect, it} from 'vitest';
 import {
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   splitTimestamps
 } from '../../../src/gpu-dataframe/time-window-filter';
 
-it('getGPUTimeWindowParameterValues packs high and low window parts', () => {
-  expect(Array.from(getGPUTimeWindowParameterValues({start: 10, end: 20}))).toEqual([
+it('getGPUTimeWindowFilterParameterValues packs high and low window parts', () => {
+  expect(Array.from(getGPUTimeWindowFilterParameterValues({start: 10, end: 20}))).toEqual([
     10, 0, 20, 0, 0, 0, 0, 0
   ]);
   const start = 1_700_000_015;
-  const values = getGPUTimeWindowParameterValues({
+  const values = getGPUTimeWindowFilterParameterValues({
     start,
     end: start + 1,
     startFadeDuration: 2
@@ -23,10 +23,14 @@ it('getGPUTimeWindowParameterValues packs high and low window parts', () => {
   expect(values[4]).toBe(2);
 
   const target = new Float32Array(8);
-  expect(getGPUTimeWindowParameterValues({start: 1, end: 2}, target)).toBe(target);
-  expect(() => getGPUTimeWindowParameterValues({start: 1, end: 2}, new Float32Array(4))).toThrow();
-  expect(() => getGPUTimeWindowParameterValues({start: 1, end: 2, endFadeDuration: -1})).toThrow();
-  expect(() => getGPUTimeWindowParameterValues({start: Number.NaN, end: 2})).toThrow();
+  expect(getGPUTimeWindowFilterParameterValues({start: 1, end: 2}, target)).toBe(target);
+  expect(() =>
+    getGPUTimeWindowFilterParameterValues({start: 1, end: 2}, new Float32Array(4))
+  ).toThrow();
+  expect(() =>
+    getGPUTimeWindowFilterParameterValues({start: 1, end: 2, endFadeDuration: -1})
+  ).toThrow();
+  expect(() => getGPUTimeWindowFilterParameterValues({start: Number.NaN, end: 2})).toThrow();
 });
 
 it('splitTimestamps splits values into exact float32 pairs', () => {

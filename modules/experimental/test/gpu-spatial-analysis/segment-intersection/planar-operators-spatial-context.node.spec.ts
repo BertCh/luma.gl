@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
-import {GPU_PLANAR_SPATIAL_CONTEXT} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import {GPU_PLANAR_SPATIAL_CONTEXT} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUAffineTransform} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-affine-transform';
 import {GPUGeometryCleanup} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-cleanup';
 import {GPUGeometryOrientation} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-orientation';

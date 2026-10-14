@@ -13,11 +13,11 @@ const fround = Math.fround;
 /** Tail of the Clark-Evans and quadrat tests. */
 export type PointPatternOracleAlternative = 'two-sided' | 'greater' | 'lesser';
 
-/** `'less'` is an alias of `'lesser'`. */
+/** Defaults to `'two-sided'`. */
 function resolveAlternative(
-  alternative: PointPatternOracleAlternative | 'less' | undefined
+  alternative: PointPatternOracleAlternative | undefined
 ): PointPatternOracleAlternative {
-  return alternative === 'less' ? 'lesser' : (alternative ?? 'two-sided');
+  return alternative ?? 'two-sided';
 }
 
 /** Per-frame options of the Clark-Evans and quadrat p-values. */
@@ -25,7 +25,7 @@ export type PointPatternOracleOptions = {
   /** Defaults to `'donnelly'`, like `getGPUPointPatternIndicesParameterValues`. */
   clarkEvansCorrection?: 'none' | 'donnelly';
   /** Defaults to `'two-sided'`. */
-  alternative?: PointPatternOracleAlternative | 'less';
+  alternative?: PointPatternOracleAlternative;
 };
 
 /**

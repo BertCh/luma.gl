@@ -11,7 +11,7 @@ import {
   getGPUTrajectoryMetricsParameterValues,
   GPUTrajectoryMetrics,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
-  type GPUTrajectoryStopParameters
+  type GPUTrajectoryMetricsSettings
 } from '../../../src/gpu-spatial-analysis/trajectory-analysis';
 import {
   createInputBuffer,
@@ -26,6 +26,7 @@ import {
   generateTrajectoryTracks,
   type TrajectoryTracks
 } from './trajectory-metrics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SENTINEL = 0xffffffff;
 const GARBAGE = 0x7f7f7f7f;
@@ -105,28 +106,30 @@ function createHarness(device: Device, tracks: TrajectoryTracks, capacity: numbe
       timestamps: importView('timestamps', timestampsBuffer, 'float32', rowCount),
       trackOffsets: importView('offsets', offsetsBuffer, 'uint32', trackCount + 1),
       parameters: parameters.importToGraph(graph),
-      trackLengths: importView('lengths', outputs.lengths, 'float32', trackCount),
-      trackDurations: importView('durations', outputs.durations, 'float32', trackCount),
-      averageSpeeds: importView('averages', outputs.averages, 'float32', trackCount),
-      maximumSpeeds: importView('maxima', outputs.maxima, 'float32', trackCount),
-      trackStopCounts: importView('stop-counts', outputs.stopCounts, 'uint32', trackCount),
-      stops: {
-        output: {
+      output: {
+        trackLengths: importView('lengths', outputs.lengths, 'float32', trackCount),
+        trackDurations: importView('durations', outputs.durations, 'float32', trackCount),
+        averageSpeeds: importView('averages', outputs.averages, 'float32', trackCount),
+        maximumSpeeds: importView('maxima', outputs.maxima, 'float32', trackCount),
+        trackStopCounts: importView('stop-counts', outputs.stopCounts, 'uint32', trackCount),
+        stops: {
           ids: importView('stop-ids', outputs.stopIds, 'uint32', capacity),
-          count: importView('count', outputs.count, 'uint32', 1),
-          overflow: importView('overflow', outputs.overflow, 'uint32', 1),
-          requiredCount: importView('total', outputs.total, 'uint32', 1)
-        },
-        startRows: importView('stop-starts', outputs.stopStarts, 'uint32', capacity),
-        endRows: importView('stop-ends', outputs.stopEnds, 'uint32', capacity),
-        durations: importView('stop-durations', outputs.stopDurations, 'float32', capacity),
-        centroids: importView('stop-centroids', outputs.stopCentroids, 'float32x2', capacity)
+          status: {
+            count: importView('count', outputs.count, 'uint32', 1),
+            overflow: importView('overflow', outputs.overflow, 'uint32', 1),
+            requiredCount: importView('total', outputs.total, 'uint32', 1)
+          },
+          startRows: importView('stop-starts', outputs.stopStarts, 'uint32', capacity),
+          endRows: importView('stop-ends', outputs.stopEnds, 'uint32', capacity),
+          durations: importView('stop-durations', outputs.stopDurations, 'float32', capacity),
+          centroids: importView('stop-centroids', outputs.stopCentroids, 'float32x2', capacity)
+        }
       }
     })
   );
   const compiled = graph.compile();
   return {
-    async run(stopParameters: GPUTrajectoryStopParameters): Promise<MetricsResult> {
+    async run(stopParameters: GPUTrajectoryMetricsSettings): Promise<MetricsResult> {
       parameters.write(getGPUTrajectoryMetricsParameterValues(stopParameters));
       submitGraph(device, compiled, undefined);
       const [count] = await readUint32(outputs.count, 1);
@@ -173,7 +176,7 @@ function expectCloseRelative(actual: number[], expected: number[], tolerance: nu
 function expectMatchesOracle(
   result: MetricsResult,
   tracks: TrajectoryTracks,
-  parameters: GPUTrajectoryStopParameters,
+  parameters: GPUTrajectoryMetricsSettings,
   capacity: number
 ): void {
   const expected = computeTrajectoryOracle(
@@ -214,13 +217,11 @@ function expectMatchesOracle(
   }
 }
 
-const PARAMETERS: GPUTrajectoryStopParameters = {stopSpeedThreshold: 1, stopMinimumDuration: 4};
+const PARAMETERS: GPUTrajectoryMetricsSettings = {stopSpeedThreshold: 1, stopMinimumDuration: 4};
 
 it('GPUTrajectoryMetrics matches the oracle on randomized tracks and new parameters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [1, 2, 3]) {
     const tracks = generateTrajectoryTracks(seed, 40, 5, 200, PARAMETERS.stopSpeedThreshold);
     const parameterSets = [
@@ -248,9 +249,7 @@ it('GPUTrajectoryMetrics matches the oracle on randomized tracks and new paramet
 
 it('GPUTrajectoryMetrics handles dwell boundaries and minimum duration equality', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const parameters = {stopSpeedThreshold: 1, stopMinimumDuration: 3};
   const tracks = createTracksFromRows([
     // Track 0: dwell at the start (rows 0..3, duration 3), then moves, then dwell at the end
@@ -311,9 +310,7 @@ it('GPUTrajectoryMetrics handles dwell boundaries and minimum duration equality'
 
 it('GPUTrajectoryMetrics reports capacity overflow with unclamped totals', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = generateTrajectoryTracks(11, 40, 20, 100, 1);
   const expected = computeTrajectoryOracle(tracks, 1, 4);
   expect(expected.stops.length).toBeGreaterThan(5);
@@ -330,9 +327,7 @@ it('GPUTrajectoryMetrics reports capacity overflow with unclamped totals', async
 
 it('GPUTrajectoryMetrics handles empty and single-row input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const emptyTracks: TrajectoryTracks = {
     positions: new Float32Array(0),
     timestamps: new Float32Array(0),
@@ -362,9 +357,7 @@ it('GPUTrajectoryMetrics handles empty and single-row input', async () => {
 
 it('GPUTrajectoryMetrics ignores rows before the first track offset', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const generated = generateTrajectoryTracks(5, 12, 5, 40, 1);
   const leadingRowCount = 6;
   const tracks: TrajectoryTracks = {
@@ -391,9 +384,7 @@ it('GPUTrajectoryMetrics ignores rows before the first track offset', async () =
 
 it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = generateTrajectoryTracks(21, 20, 5, 60, 1);
   const rowCount = tracks.timestamps.length;
   const trackCount = tracks.trackOffsets.length - 1;
@@ -422,7 +413,7 @@ it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
       positions: importGraphBuffer(averageGraph, 'p', positions, 'float32x2', rowCount),
       timestamps: importGraphBuffer(averageGraph, 't', timestamps, 'float32', rowCount),
       trackOffsets: importGraphBuffer(averageGraph, 'o', offsets, 'uint32', trackCount + 1),
-      averageSpeeds: importGraphBuffer(averageGraph, 'a', averages, 'float32', trackCount)
+      output: {averageSpeeds: importGraphBuffer(averageGraph, 'a', averages, 'float32', trackCount)}
     })
   );
   const averageCompiled = averageGraph.compile();
@@ -440,7 +431,9 @@ it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
       timestamps: importGraphBuffer(countGraph, 't', timestamps, 'float32', rowCount),
       trackOffsets: importGraphBuffer(countGraph, 'o', offsets, 'uint32', trackCount + 1),
       parameters: parameters.importToGraph(countGraph),
-      trackStopCounts: importGraphBuffer(countGraph, 's', stopCounts, 'uint32', trackCount)
+      output: {
+        trackStopCounts: importGraphBuffer(countGraph, 's', stopCounts, 'uint32', trackCount)
+      }
     })
   );
   const countCompiled = countGraph.compile();
@@ -457,11 +450,13 @@ it('GPUTrajectoryMetrics supports minimal output subsets', async () => {
       timestamps: importGraphBuffer(idGraph, 't', timestamps, 'float32', rowCount),
       trackOffsets: importGraphBuffer(idGraph, 'o', offsets, 'uint32', trackCount + 1),
       parameters: parameters.importToGraph(idGraph),
-      stops: {
-        output: {
+      output: {
+        stops: {
           ids: importGraphBuffer(idGraph, 'i', stopIds, 'uint32', 4),
-          count: importGraphBuffer(idGraph, 'c', count, 'uint32', 1),
-          overflow: importGraphBuffer(idGraph, 'f', overflow, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(idGraph, 'c', count, 'uint32', 1),
+            overflow: importGraphBuffer(idGraph, 'f', overflow, 'uint32', 1)
+          }
         }
       }
     })

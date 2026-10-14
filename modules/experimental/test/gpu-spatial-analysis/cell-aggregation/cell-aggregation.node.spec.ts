@@ -14,7 +14,10 @@ import {
   type GPUCellTable
 } from '../../../src/gpu-spatial-analysis/cell-aggregation';
 import {getCellKeyLayout} from '../../../src/gpu-spatial-analysis/cell-aggregation/cell-keys';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {
   getQuadbinTileX,
   getQuadbinTileY,
@@ -45,8 +48,10 @@ function createTable(graph: GPUCommandGraph, capacity: number, columns = true): 
           maximums: view('float32', capacity)
         }
       : {}),
-    count: view('uint32', 1),
-    overflow: view('uint32', 1)
+    status: {
+      count: view('uint32', 1),
+      overflow: view('uint32', 1)
+    }
   };
 }
 
@@ -180,7 +185,10 @@ it('GPUCellAggregation validates props', () => {
       positions,
       output: {
         ...createTable(graph, 16),
-        count: createTransientView(graph, 'x', 'uint32', 0)
+        status: {
+          ...createTable(graph, 16).status,
+          count: createTransientView(graph, 'x', 'uint32', 0)
+        }
       }
     },
     /one uint32 row/
@@ -237,21 +245,22 @@ it('GPUCellRollup and GPUCellPyramid validate levels and columns', () => {
     () =>
       new GPUCellPyramid({
         ...rowProps,
-        levels: [
-          {resolution: 8, output: createTable(graph, 16)},
-          {resolution: 8, output: createTable(graph, 16)}
-        ]
+        resolutions: [8, 8],
+        output: {levels: [createTable(graph, 16), createTable(graph, 16)]}
       })
   ).toThrow(/strictly decrease/);
   // Coarse levels with sums get transient sums on intermediate levels.
   const pyramid = new GPUCellPyramid({
     ...rowProps,
-    levels: [
-      {resolution: 8, output: createTable(graph, 16, false)},
-      {resolution: 6, output: createTable(graph, 16, false)},
-      {resolution: 2, output: createTable(graph, 16)}
-    ],
-    levelCounts: createTransientView(graph, 'level-counts', 'uint32', 3)
+    resolutions: [8, 6, 2],
+    output: {
+      levels: [
+        createTable(graph, 16, false),
+        createTable(graph, 16, false),
+        createTable(graph, 16)
+      ],
+      levelCounts: createTransientView(graph, 'level-counts', 'uint32', 3)
+    }
   });
   const ids = pyramid.getCommandNodes(graph).map(node => node.id);
   expect(ids.filter(id => id.endsWith('-accumulate-sums'))).toEqual([
@@ -266,10 +275,37 @@ it('GPUCellRollup and GPUCellPyramid validate levels and columns', () => {
         levelCounts: createTransientView(graph, 'counts-e', 'uint32', 3),
         activeLevel: createTransientView(graph, 'active-e', 'uint32', 1),
         levelFirstRows: [0, 1],
-        output: {count: createTransientView(graph, 'count-e', 'uint32', 1)}
+        output: {status: {count: createTransientView(graph, 'count-e', 'uint32', 1)}}
       })
   ).toThrow(/levelFirstRows/);
   device.destroy();
+});
+
+it('GPUCellPyramid level publishes share one pipeline for N and N + 1 levels (rule 12)', () => {
+  const getPipelineCount = (levelCount: number, idPattern: RegExp) => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const {output: _output, resolution: _resolution, ...rowProps} = createProps(graph);
+    const resolutions = Array.from({length: levelCount}, (_, level) => 12 - level);
+    const pyramid = new GPUCellPyramid({
+      ...rowProps,
+      resolutions,
+      output: {
+        levels: resolutions.map(() => createTable(graph, 16)),
+        levelCounts: createTransientView(graph, `level-counts-${serial++}`, 'uint32', levelCount)
+      }
+    });
+    const count = getGPUCommandNodePipelineKeys(pyramid.getCommandNodes(graph), {idPattern}).size;
+    device.destroy();
+    return count;
+  };
+  // Each level used to publish into its own row of the packed levelCounts view, baking a
+  // different element offset into every level's publish kernel. (The roll-up key kernels still
+  // bake each level's resolution.)
+  const publish = /-level-\d+-publish$/;
+  expect(getPipelineCount(5, publish)).toBe(getPipelineCount(4, publish));
+  expect(getPipelineCount(4, publish)).toBeLessThanOrEqual(2);
+  expect(getPipelineCount(5, /-level-counts$/)).toBe(1);
 });
 
 it('cell operations declare their coordinate space', () => {

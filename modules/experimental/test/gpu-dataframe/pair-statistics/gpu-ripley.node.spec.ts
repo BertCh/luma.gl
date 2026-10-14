@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPURipley,
+  type GPURipleyOutput,
   type GPURipleyProps
 } from '../../../src/gpu-dataframe/pair-statistics/gpu-ripley';
 import {
@@ -19,10 +20,9 @@ import {computeRipleyOnCPU, getIsotropicWeightOnCPU} from './ripley-oracle';
 
 let serial = 0;
 
-function createProps(
-  graph: GPUCommandGraph,
-  overrides: Partial<GPURipleyProps> = {}
-): GPURipleyProps {
+type Overrides = Omit<Partial<GPURipleyProps>, 'output'> & {output?: Partial<GPURipleyOutput>};
+
+function createProps(graph: GPUCommandGraph, overrides: Overrides = {}): GPURipleyProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
     length: number
@@ -32,15 +32,12 @@ function createProps(
     parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
     gridSize: [4, 4],
     radiusCount: 8,
-    k: view('float32', 8),
-    ...overrides
+    ...overrides,
+    output: {k: view('float32', 8), ...overrides.output}
   };
 }
 
-function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPURipleyProps>,
-  message: RegExp
-): void {
+function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message: RegExp): void {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   expect(() => new GPURipley(createProps(graph, overrides(graph)))).toThrow(message);
@@ -83,19 +80,22 @@ it('GPURipley validates its inputs and outputs', () => {
   expectThrows(() => ({radiusCount: 0}), /radiusCount/);
   expectThrows(() => ({radiusCount: 257}), /radiusCount/);
   expectThrows(() => ({radiusCount: 2.5}), /radiusCount/);
-  expectThrows(graph => ({k: view(graph, 'float32', 7)}), /k must hold/);
-  expectThrows(graph => ({l: view(graph, 'float32', 7)}), /l must hold/);
-  expectThrows(graph => ({lMinusR: view(graph, 'float32', 7)}), /lMinusR/);
-  expectThrows(graph => ({pairCorrelation: view(graph, 'float32', 7)}), /pairCorrelation/);
-  expectThrows(graph => ({radii: view(graph, 'float32', 7)}), /radii/);
-  expectThrows(graph => ({pairCounts: view(graph, 'uint32', 7)}), /pairCounts/);
-  expectThrows(graph => ({k: view(graph, 'uint32', 8) as never}), /k/);
+  expectThrows(graph => ({output: {k: view(graph, 'float32', 7)}}), /output\.k must hold/);
+  expectThrows(graph => ({output: {l: view(graph, 'float32', 7)}}), /output\.l must hold/);
+  expectThrows(graph => ({output: {lMinusR: view(graph, 'float32', 7)}}), /lMinusR/);
+  expectThrows(
+    graph => ({output: {pairCorrelation: view(graph, 'float32', 7)}}),
+    /pairCorrelation/
+  );
+  expectThrows(graph => ({output: {radii: view(graph, 'float32', 7)}}), /radii/);
+  expectThrows(graph => ({output: {pairCounts: view(graph, 'uint32', 7)}}), /pairCounts/);
+  expectThrows(graph => ({output: {k: view(graph, 'uint32', 8) as never}}), /k/);
   expectThrows(graph => ({parameters: view(graph, 'float32', 4)}), /parameters/);
   expectThrows(graph => ({mask: view(graph, 'uint32', 9)}), /mask length/);
   expectThrows(() => ({gridSize: [0, 4]}), /gridSize/);
   expectThrows(graph => {
     const shared = view(graph, 'float32', 8);
-    return {parameters: shared, k: shared};
+    return {parameters: shared, output: {k: shared}};
   }, /alias|overlap|disjoint|input|share/i);
 });
 
@@ -104,7 +104,7 @@ it('GPURipley rejects views from another graph', () => {
   const graph = new GPUCommandGraph(device);
   const other = new GPUCommandGraph(device);
   const contributor = new GPURipley(
-    createProps(graph, {k: createTransientView(other, 'foreign-k', 'float32', 8)})
+    createProps(graph, {output: {k: createTransientView(other, 'foreign-k', 'float32', 8)}})
   );
   expect(() => contributor.getCommandNodes(graph)).toThrow(/target graph/);
   device.destroy();
@@ -119,10 +119,13 @@ it('GPURipley emits deterministic node IDs and only the finishing nodes it needs
     const contributor = new GPURipley({
       ...createProps(graph),
       id: 'r',
-      pairCounts: view('uint32', 8),
-      ...(withDerived
-        ? {l: view('float32', 8), pairCorrelation: view('float32', 8), radii: view('float32', 8)}
-        : {})
+      output: {
+        ...createProps(graph).output,
+        pairCounts: view('uint32', 8),
+        ...(withDerived
+          ? {l: view('float32', 8), pairCorrelation: view('float32', 8), radii: view('float32', 8)}
+          : {})
+      }
     });
     return contributor.getCommandNodes(graph).map(node => node.id);
   };

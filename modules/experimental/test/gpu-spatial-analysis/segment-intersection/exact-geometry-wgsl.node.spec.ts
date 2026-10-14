@@ -45,9 +45,9 @@ it('GPUDelaunayTessellation symbolic super-vertex kernels parse', () => {
         count: view('uint32', 1),
         requiredCount: view('uint32', 1),
         overflow: view('uint32', 1),
-        invalidCount: view('uint32', 1)
-      },
-      duplicateCount: view('uint32', 1)
+        invalidCount: view('uint32', 1),
+        duplicateCount: view('uint32', 1)
+      }
     }
   });
   expectKernelsParse(delaunay.getCommandNodes(graph), 'delaunay');
@@ -168,25 +168,34 @@ it('GPUZoneEvents exact tie-rule kernels parse', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const view = createViewFactory(graph);
   const zoneEvents = new GPUZoneEvents({
-    positions: view('float32x2', 8),
-    timestamps: view('float32', 8),
-    trackOffsets: view('uint32', 3),
-    edgeStarts: view('float32x2', 4),
-    edgeEnds: view('float32x2', 4),
-    edgeZones: view('uint32', 4),
-    zoneCount: 2,
-    candidateCapacity: 16,
-    maxEventsPerTrack: 4,
-    events: {
-      output: {ids: view('uint32', 8), count: view('uint32', 1), overflow: view('uint32', 1)},
-      eventTimes: view('float32', 8),
-      eventZones: view('uint32', 8),
-      eventTypes: view('uint32', 8),
-      eventRows: view('uint32', 8)
+    tracks: {
+      kind: 'trajectories',
+      positions: view('float32x2', 8),
+      timestamps: view('float32', 8),
+      trackOffsets: view('uint32', 3)
     },
-    dwellTimes: view('float32', 4),
-    visitCounts: view('uint32', 4),
-    trackEventCounts: view('uint32', 2)
+    zones: {
+      kind: 'polygons',
+      positions: view('float32x2', 8),
+      featureOffsets: view('uint32', 3),
+      polygonOffsets: view('uint32', 3),
+      ringOffsets: view('uint32', 3)
+    },
+    candidateCapacity: 16,
+    trackEventCapacity: 4,
+    output: {
+      events: {
+        ids: view('uint32', 8),
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)},
+        eventTimes: view('float32', 8),
+        eventZones: view('uint32', 8),
+        eventTypes: view('uint32', 8),
+        eventRows: view('uint32', 8)
+      },
+      dwellTimes: view('float32', 4),
+      visitCounts: view('uint32', 4),
+      trackEventCounts: view('uint32', 2)
+    }
   } as never);
   expectKernelsParse(zoneEvents.getCommandNodes(graph), 'zones');
 });

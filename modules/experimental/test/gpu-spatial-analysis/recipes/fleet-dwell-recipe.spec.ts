@@ -15,6 +15,7 @@ import {
 } from '../trajectory-analysis/trajectory-metrics-oracle';
 import {computeZoneEventsOracle, createRingEdges} from '../trajectory-zones/zone-events-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Three non-overlapping rectangles with fractional borders: `[zone id, x0, y0, x1, y1]`. */
 const RECTANGLES = [
@@ -33,9 +34,7 @@ function isInside(x: number, y: number, [, x0, y0, x1, y1]: (typeof RECTANGLES)[
 
 it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per zone', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const speedThreshold = 1;
   const minimumDuration = 3;
   const tracks = generateTrajectoryTracks(7, 40, 15, 30, speedThreshold);
@@ -67,14 +66,17 @@ it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per z
       maximums: fixture.output('zone-maximums', 'float32', 32)
     };
     const recipe = addFleetDwellRecipe(fixture.graph, {
-      positions: fixture.input('positions', tracks.positions, 'float32x2', rowCount),
-      timestamps: fixture.input('timestamps', tracks.timestamps, 'float32', rowCount),
-      trackOffsets: fixture.input(
-        'track-offsets',
-        Uint32Array.from(tracks.trackOffsets),
-        'uint32',
-        trackCount + 1
-      ),
+      trajectories: {
+        kind: 'trajectories',
+        positions: fixture.input('positions', tracks.positions, 'float32x2', rowCount),
+        timestamps: fixture.input('timestamps', tracks.timestamps, 'float32', rowCount),
+        trackOffsets: fixture.input(
+          'track-offsets',
+          Uint32Array.from(tracks.trackOffsets),
+          'uint32',
+          trackCount + 1
+        )
+      },
       parameters: fixture.parameters(
         'metrics-parameters',
         'float32',
@@ -85,38 +87,37 @@ it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per z
       ),
       stopCapacity,
       zones: {
-        polygonPositions: fixture.input('zone-positions', polygonPositions, 'float32x2', 12),
+        kind: 'polygons',
+        positions: fixture.input('zone-positions', polygonPositions, 'float32x2', 12),
         featureOffsets: fixture.input('feature-offsets', Uint32Array.of(0, 1, 2, 3), 'uint32', 4),
         polygonOffsets: fixture.input('polygon-offsets', Uint32Array.of(0, 1, 2, 3), 'uint32', 4),
         ringOffsets: fixture.input('ring-offsets', Uint32Array.of(0, 4, 8, 12), 'uint32', 4),
-        featureIds: fixture.input('zone-ids', Uint32Array.of(10, 20, 30), 'uint32', 3),
+        sourceIds: fixture.input('zone-ids', Uint32Array.of(10, 20, 30), 'uint32', 3),
         candidateCapacity: 4096
       },
       zoneCapacity: 32,
       outputs: {
         stops: {
           ids: outputs.ids.view,
-          count: outputs.count.view,
-          overflow: outputs.overflow.view,
           centroids: outputs.centroids.view,
-          durations: outputs.durations.view
+          durations: outputs.durations.view,
+          status: {count: outputs.count.view, overflow: outputs.overflow.view}
         },
-        joinOverflow: outputs.joinOverflow.view,
         table: {
           keys: outputs.keys.view,
           counts: outputs.counts.view,
-          count: outputs.tableCount.view,
-          overflow: outputs.tableOverflow.view,
           sumValues: outputs.sums.view,
           means: outputs.means.view,
-          maximums: outputs.maximums.view
-        }
+          maximums: outputs.maximums.view,
+          status: {count: outputs.tableCount.view, overflow: outputs.tableOverflow.view}
+        },
+        status: {joinOverflow: outputs.joinOverflow.view}
       },
       scratch: {stopZones: outputs.zones.view}
     });
     expect(recipe.contributors.length).toBe(3);
-    expect(recipe.outputs?.stops).toBe(recipe.stops);
-    expect(recipe.intermediates?.stopZones).toBe(recipe.stopZones);
+    expect(recipe.outputs?.['stops']).toBe(recipe.stops);
+    expect(recipe.intermediates?.['stopZones']).toBe(recipe.stopZones);
     expect(recipe.status?.stages.map(({stage}) => stage)).toEqual([
       'metrics',
       'zone-join',
@@ -182,9 +183,7 @@ it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per z
 
 it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = generateTrajectoryTracks(11, 36, 20, 40, 8);
   const rowCount = tracks.positions.length / 2;
   const trackCount = tracks.trackOffsets.length - 1;
@@ -202,8 +201,14 @@ it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', as
     zoneCount
   );
   expect(oracle.events.length).toBeGreaterThan(5);
-  const maxEventsPerTrack = 64;
-  expect(Math.max(...oracle.trackEventCounts)).toBeLessThanOrEqual(maxEventsPerTrack);
+  const trackEventCapacity = 64;
+  expect(Math.max(...oracle.trackEventCounts)).toBeLessThanOrEqual(trackEventCapacity);
+  // The zones as one single-ring polygon feature each, in zone order.
+  const zonePositions = Float32Array.from(
+    RECTANGLES.flatMap(([, x0, y0, x1, y1]) => rectangleRing(x0, y0, x1, y1))
+  );
+  const zoneOffsets = Uint32Array.from({length: zoneCount + 1}, (_, index) => index);
+  const zoneRingOffsets = Uint32Array.from({length: zoneCount + 1}, (_, index) => index * 4);
 
   const fixture = new RecipeTestFixture(device, 'fleet-dwell-zone-events-test');
   try {
@@ -211,7 +216,7 @@ it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', as
     const outputs = {
       eventCount: fixture.output('event-count', 'uint32', 1),
       eventOverflow: fixture.output('event-overflow', 'uint32', 1),
-      eventTypes: fixture.output('event-types', 'uint32', trackCount * maxEventsPerTrack),
+      eventTypes: fixture.output('event-types', 'uint32', trackCount * trackEventCapacity),
       candidateCount: fixture.output('candidate-count', 'uint32', 1),
       dwell: fixture.output('dwell', 'float32', cellCount),
       visits: fixture.output('visits', 'uint32', cellCount),
@@ -223,35 +228,41 @@ it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', as
       maximums: fixture.output('zone-maximums', 'float32', zoneCount)
     };
     const recipe = addFleetDwellZoneEventsRecipe(fixture.graph, {
-      positions: fixture.input('positions', tracks.positions, 'float32x2', rowCount),
-      timestamps: fixture.input('timestamps', tracks.timestamps, 'float32', rowCount),
-      trackOffsets: fixture.input(
-        'track-offsets',
-        Uint32Array.from(tracks.trackOffsets),
-        'uint32',
-        trackCount + 1
-      ),
-      edgeStarts: fixture.input('edge-starts', edges.starts, 'float32x2', edges.zones.length),
-      edgeEnds: fixture.input('edge-ends', edges.ends, 'float32x2', edges.zones.length),
-      edgeZones: fixture.input('edge-zones', edges.zones, 'uint32', edges.zones.length),
-      zoneCount,
+      trajectories: {
+        kind: 'trajectories',
+        positions: fixture.input('positions', tracks.positions, 'float32x2', rowCount),
+        timestamps: fixture.input('timestamps', tracks.timestamps, 'float32', rowCount),
+        trackOffsets: fixture.input(
+          'track-offsets',
+          Uint32Array.from(tracks.trackOffsets),
+          'uint32',
+          trackCount + 1
+        )
+      },
+      zones: {
+        kind: 'polygons',
+        positions: fixture.input('zone-positions', zonePositions, 'float32x2', zoneCount * 4),
+        featureOffsets: fixture.input('zone-features', zoneOffsets, 'uint32', zoneCount + 1),
+        polygonOffsets: fixture.input('zone-polygons', zoneOffsets, 'uint32', zoneCount + 1),
+        ringOffsets: fixture.input('zone-rings', zoneRingOffsets, 'uint32', zoneCount + 1)
+      },
       candidateCapacity: 1 << 16,
-      maxEventsPerTrack,
+      trackEventCapacity,
       outputs: {
         events: {
-          output: {count: outputs.eventCount.view, overflow: outputs.eventOverflow.view},
-          eventTypes: outputs.eventTypes.view
+          eventTypes: outputs.eventTypes.view,
+          status: {count: outputs.eventCount.view, overflow: outputs.eventOverflow.view}
         },
-        diagnostics: {candidateCount: outputs.candidateCount.view},
+        status: {candidateCount: outputs.candidateCount.view},
         dwellTimes: outputs.dwell.view,
         visitCounts: outputs.visits.view,
         table: {
           keys: outputs.keys.view,
           counts: outputs.counts.view,
-          count: outputs.count.view,
           sumValues: outputs.sums.view,
           means: outputs.means.view,
-          maximums: outputs.maximums.view
+          maximums: outputs.maximums.view,
+          status: {count: outputs.count.view}
         }
       }
     });

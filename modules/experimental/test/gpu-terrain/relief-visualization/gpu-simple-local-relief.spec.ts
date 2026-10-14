@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUSimpleLocalReliefParameterValues,
@@ -26,6 +27,7 @@ import {
   getMaximumMagnitude,
   punchHoles
 } from './relief-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 64;
 const HEIGHT = 48;
@@ -34,7 +36,7 @@ const PIXEL_COUNT = WIDTH * HEIGHT;
 async function runSimpleLocalRelief(
   device: Device,
   elevation: Float32Array,
-  radius: number,
+  maximumRadius: number,
   settingsList: GPUSimpleLocalReliefSettings[],
   check: (relief: number[], validity: number[], settings: GPUSimpleLocalReliefSettings) => void
 ): Promise<void> {
@@ -51,13 +53,14 @@ async function runSimpleLocalRelief(
   const graph = new GPUCommandGraph(device, {id: 'slrm-test'});
   graph.add(
     new GPUSimpleLocalRelief({
-      width: WIDTH,
-      height: HEIGHT,
-      radius,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
+      maximumRadius,
       elevation: createElevationBand(graph, device, elevation, buffers),
-      settings: settings.importToGraph(graph),
-      relief: importGraphBuffer(graph, 'relief', reliefBuffer, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      parameters: settings.importToGraph(graph),
+      output: {
+        relief: importGraphBuffer(graph, 'relief', reliefBuffer, 'float32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -77,9 +80,7 @@ async function runSimpleLocalRelief(
 
 it('GPUSimpleLocalRelief matches the RVT oracle with nodata and per-frame exaggeration', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 13);
   punchHoles(elevation, WIDTH, [
     [10, 10],
@@ -100,7 +101,7 @@ it('GPUSimpleLocalRelief matches the RVT oracle with nodata and per-frame exagge
           width: WIDTH,
           height: HEIGHT,
           elevation,
-          radius,
+          radius: settings.radius ?? radius,
           verticalExaggeration: settings.verticalExaggeration
         });
         expectClose(relief, expected, 2e-4, `radius ${radius}`);
@@ -114,9 +115,7 @@ it('GPUSimpleLocalRelief matches the RVT oracle with nodata and per-frame exagge
 
 it('GPUSimpleLocalRelief keeps centimetre precision on a 4000 m surface', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 5).map(value => value / 20 + 4000);
   punchHoles(elevation, WIDTH, [[20, 20]]);
   await runSimpleLocalRelief(device, elevation, 20, [{}], relief => {
@@ -135,9 +134,7 @@ it('GPUSimpleLocalRelief keeps centimetre precision on a 4000 m surface', async 
 
 it('GPUSimpleLocalRelief is zero on a plane and analytic on a bump', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const radius = 5;
   const plane = Float32Array.from(
     {length: PIXEL_COUNT},
@@ -160,4 +157,67 @@ it('GPUSimpleLocalRelief is zero on a plane and analytic on a bump', async () =>
     expect(relief[24 * WIDTH + 33]).toBeCloseTo((-2 * 10) / windowArea, 4);
     expect(Math.abs(relief[24 * WIDTH + 32 + radius + 1])).toBe(0);
   });
+});
+
+it('GPUSimpleLocalRelief serves every per-frame radius from one compiled graph', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const elevation = createSmoothTerrain(WIDTH, HEIGHT, 13);
+  punchHoles(elevation, WIDTH, [
+    [10, 10],
+    [11, 10],
+    [50, 30],
+    [0, 0]
+  ]);
+  const maximumRadius = 20;
+  const relieves: number[][] = [];
+  // One graph with maximumRadius 20 is rewritten per frame; each frame must match the oracle at
+  // its own radius. A radius of 0 (omitted) means maximumRadius; the oversized word clamps to it.
+  await runSimpleLocalRelief(
+    device,
+    elevation,
+    maximumRadius,
+    [{radius: 1}, {radius: 3, verticalExaggeration: 2}, {radius: 7}, {radius: 20}, {}, {radius: 1}],
+    (relief, validity, settings) => {
+      const radius = settings.radius ?? maximumRadius;
+      const expected = computeSimpleLocalReliefRVT({
+        width: WIDTH,
+        height: HEIGHT,
+        elevation,
+        radius,
+        verticalExaggeration: settings.verticalExaggeration
+      });
+      expectClose(relief, expected, 2e-4, `per-frame radius ${radius}`);
+      expect(validity).toEqual(expected.map(value => (Number.isNaN(value) ? 0 : 1)));
+      expect(getMaximumMagnitude(relief)).toBeGreaterThan(0.05);
+      relieves.push(relief);
+    }
+  );
+  // The radius is really read per frame: radius 1 and radius 20 differ, and the omitted radius is
+  // bit-identical to an explicit radius equal to maximumRadius.
+  expect(relieves[0].some((value, index) => Math.abs(value - relieves[3][index]) > 1e-3)).toBe(
+    true
+  );
+  expect(relieves[4]).toEqual(relieves[3]);
+  expect(relieves[5]).toEqual(relieves[0]);
+});
+
+it('GPUSimpleLocalRelief is translation invariant above the former absolute elevation limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const base = Float32Array.from({length: PIXEL_COUNT}, (_, index) => (index % 17) * 0.25);
+  base[0] = NaN;
+  let baseline: number[] = [];
+  for (const offset of [0, 1000000, -1000000]) {
+    await runSimpleLocalRelief(
+      device,
+      base.map(value => value + offset),
+      20,
+      [{}],
+      relief => {
+        if (offset === 0) baseline = relief;
+        else expect(relief).toEqual(baseline);
+      }
+    );
+  }
 });

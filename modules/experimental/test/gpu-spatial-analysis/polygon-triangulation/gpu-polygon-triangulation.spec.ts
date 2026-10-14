@@ -16,8 +16,18 @@ import {createSegmentGeometry} from '../segment-intersection/segment-geometry-ha
 import type {OracleSegmentFeature} from '../segment-intersection/segment-intersection-oracle';
 import {EARCUT_FIXTURE} from './polygon-triangulation-fixture';
 import {RANDOM_POLYGON_FIXTURE} from './polygon-triangulation-random-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
+
+/** The four-level layout of a generated polygon geometry, without the `kind` tag. */
+function getPolygonFields(geometry: ReturnType<typeof createSegmentGeometry>) {
+  if (geometry.kind !== 'polygons') {
+    throw new Error('expected polygons');
+  }
+  const {kind: _kind, ...fields} = geometry;
+  return fields;
+}
 
 type Triangulation = {
   indices: number[];
@@ -31,7 +41,11 @@ type Triangulation = {
 async function runTriangulation(
   device: Device,
   polygons: Point[][][],
-  options: {maximumWork?: number; useZOrderHash?: boolean} = {}
+  options: {
+    maximumWork?: number;
+    useZOrderHash?: boolean;
+    largePolygonMethod?: 'none' | 'monotone';
+  } = {}
 ): Promise<Triangulation> {
   const graph = new GPUCommandGraph(device, {id: 'polygon-triangulation'});
   const buffers: Buffer[] = [];
@@ -56,12 +70,11 @@ async function runTriangulation(
   const triangleCount = output('triangle-count', polygons.length);
   graph.add(
     new GPUPolygonTriangulation({
-      polygons: geometry,
-      indices: indices.view,
-      valid: valid.view,
-      triangleCount: triangleCount.view,
+      ...getPolygonFields(geometry),
+      output: {indices: indices.view, valid: valid.view, triangleCount: triangleCount.view},
       maximumWork: options.maximumWork,
-      useZOrderHash: options.useZOrderHash
+      useZOrderHash: options.useZOrderHash,
+      largePolygonMethod: options.largePolygonMethod
     })
   );
   const compiled = graph.compile();
@@ -129,9 +142,7 @@ function trianglesOverlap(first: Triangle, second: Triangle): boolean {
 
 it('GPUPolygonTriangulation covers Shapely polygon areas exactly without overlap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const polygons = EARCUT_FIXTURE.map(entry => entry.rings);
   const start = performance.now();
   const result = await runTriangulation(device, polygons);
@@ -177,9 +188,7 @@ it('GPUPolygonTriangulation covers Shapely polygon areas exactly without overlap
 
 it('GPUPolygonTriangulation flags broken and oversized polygons and keeps neighbors intact', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const square: Point[][] = [
     [
       [0, 0],
@@ -205,7 +214,11 @@ it('GPUPolygonTriangulation flags broken and oversized polygons and keeps neighb
   const wavy = EARCUT_FIXTURE.find(entry => entry.name === 'wavy_grid_holes')!.rings as Point[][];
   const polygons = [square, twoVertexShell, square, wavy, square];
   // The 2-vertex shell breaks the slice formula's exactness only by one polygon with 0 slots.
-  const result = await runTriangulation(device, polygons, {maximumWork: 5000});
+  // Isolate the Earcut work limit: the default monotone path can rescue work-exceeded polygons.
+  const result = await runTriangulation(device, polygons, {
+    maximumWork: 5000,
+    largePolygonMethod: 'none'
+  });
   expect(result.valid[0]).toBe(1);
   expect(result.valid[1]).toBe(0);
   expect(result.valid[2]).toBe(1);
@@ -233,9 +246,7 @@ it('GPUPolygonTriangulation flags broken and oversized polygons and keeps neighb
 
 it('GPUPolygonTriangulation validates its props', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'polygon-triangulation-props'});
   const buffers: Buffer[] = [];
   const geometry = createSegmentGeometry(
@@ -263,14 +274,18 @@ it('GPUPolygonTriangulation validates its props', async () => {
   }
   const view = (name: string, length: number) =>
     importGraphBuffer(graph, name, createOutputBuffer(device, length), 'uint32', length);
-  const base = {polygons: geometry, indices: view('indices', 3), valid: view('valid', 1)};
+  const base = {
+    ...getPolygonFields(geometry),
+    output: {indices: view('indices', 3), valid: view('valid', 1)}
+  };
   expect(getPolygonTriangulationIndexCount(3, 1, 1)).toBe(3);
-  expect(() => new GPUPolygonTriangulation({...base, indices: view('short', 2)})).toThrow(
-    /indices needs at least 3/
-  );
-  expect(() => new GPUPolygonTriangulation({...base, valid: view('wrong', 2)})).toThrow(
-    /polygon count/
-  );
+  expect(
+    () =>
+      new GPUPolygonTriangulation({...base, output: {...base.output, indices: view('short', 2)}})
+  ).toThrow(/indices needs at least 3/);
+  expect(
+    () => new GPUPolygonTriangulation({...base, output: {...base.output, valid: view('wrong', 2)}})
+  ).toThrow(/polygon count/);
   expect(() => new GPUPolygonTriangulation({...base, maximumWork: 0})).toThrow(/maximumWork/);
   for (const buffer of buffers) {
     buffer.destroy();
@@ -279,9 +294,7 @@ it('GPUPolygonTriangulation validates its props', async () => {
 
 it('GPUPolygonTriangulation matches Shapely areas on random valid polygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runTriangulation(
     device,
     RANDOM_POLYGON_FIXTURE.map(([rings]) => rings)
@@ -305,9 +318,7 @@ it('GPUPolygonTriangulation matches Shapely areas on random valid polygons', asy
 
 it('GPUPolygonTriangulation z-order hash gives the same triangles as the ring scan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Star-shaped outline with deep spikes (many reflex vertices) and two holes, above the 80
   // vertex threshold, next to a small polygon that stays unhashed.
   const spiky: Point[] = [];

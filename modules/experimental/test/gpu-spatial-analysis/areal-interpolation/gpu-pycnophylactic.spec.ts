@@ -4,10 +4,13 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {getGPUPolygonRasterizationParameterValues} from '../../../src/gpu-raster/polygon-rasterization/index';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {GPUPycnophylactic} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import {computePycnophylacticOracle, createBlockZones} from './areal-interpolation-oracle';
 import {expectClose, GraphRig} from './areal-interpolation-harness';
 import {PYCNOPHYLACTIC_NUMPY} from './change-of-support-numpy-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 20;
 const HEIGHT = 15;
@@ -26,14 +29,13 @@ async function runPycnophylactic(
   const output = rig.output('float32', WIDTH * HEIGHT);
   rig.run(
     new GPUPycnophylactic({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       zones: rig.input(zones, 'uint32'),
       zoneCount,
       totals: rig.input(totals, 'float32'),
-      iterations,
+      maximumIterations: iterations,
       kernel,
-      output: output.view
+      output: {mass: output.view}
     })
   );
   const actual = await output.readFloat32();
@@ -54,7 +56,7 @@ for (const kernel of ['rook', 'box'] as const) {
   for (const iterations of [0, 1, 6, 7]) {
     it(`GPUPycnophylactic matches the oracle (${kernel}, ${iterations} iterations)`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) return;
+      requireTestDevice(device);
       const {actual, expected, zones, zoneCount, totals} = await runPycnophylactic(
         device,
         iterations,
@@ -79,7 +81,7 @@ for (const kernel of ['rook', 'box'] as const) {
 
 it('GPUPycnophylactic (box) smooths the surface across zone borders', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const flat = await runPycnophylactic(device, 0, 'rook');
   const smooth = await runPycnophylactic(device, 6, 'box');
   const roughness = (values: number[]) => {
@@ -96,6 +98,15 @@ it('GPUPycnophylactic (box) smooths the surface across zone borders', async () =
 
 // Oracle: <scratchpad>/fix/work/D/change-of-support/pycnophylactic.py (numpy 2.5.4, float64),
 // pinned in change-of-support-numpy-fixtures.ts and reproduced by the TS oracle in the node spec.
+/** Reverses the row order of a row-major raster. */
+function mirrorRows(values: ArrayLike<number>, width: number, height: number): number[] {
+  const mirrored: number[] = [];
+  for (let row = height - 1; row >= 0; row--) {
+    for (let column = 0; column < width; column++) mirrored.push(values[row * width + column]);
+  }
+  return mirrored;
+}
+
 async function runNumpyFixture(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   options: {
@@ -104,6 +115,8 @@ async function runNumpyFixture(
     tolerance?: number;
     geographic?: boolean;
     density?: boolean;
+    /** Store rows north-up (row 0 northernmost): the same raster with its rows mirrored. */
+    northUp?: boolean;
   }
 ) {
   const {fixture} = PYCNOPHYLACTIC_NUMPY;
@@ -112,53 +125,75 @@ async function runNumpyFixture(
   const output = rig.output('float32', cellCount);
   const density = options.density ? rig.output('float32', cellCount) : undefined;
   const converged = rig.output('uint32', 1);
-  const limit = rig.output('uint32', 1);
+  const iterationCount = rig.output('uint32', 1);
   const invalid = rig.output('uint32', 1);
   const geographic = PYCNOPHYLACTIC_NUMPY.geographic;
+  // The fixture rows advance north from the origin; a north-up grid starts at the top edge and
+  // stores the mirrored rows.
+  const grid = makeGPURasterMetadata({
+    width: fixture.width,
+    height: fixture.height,
+    origin: [
+      10,
+      geographic.originLatitude + (options.northUp ? fixture.height * geographic.cellHeight : 0)
+    ],
+    cellSize: [geographic.cellWidth, geographic.cellHeight],
+    rowDirection: options.northUp ? 'south' : 'north'
+  });
+  const order = (values: ArrayLike<number>) =>
+    options.northUp ? mirrorRows(values, fixture.width, fixture.height) : Array.from(values);
   rig.run(
     new GPUPycnophylactic({
-      width: fixture.width,
-      height: fixture.height,
-      zones: rig.input(Uint32Array.from(fixture.zones), 'uint32'),
+      grid,
+      zones: rig.input(Uint32Array.from(order(fixture.zones)), 'uint32'),
       zoneCount: fixture.zoneCount,
       totals: rig.input(Float32Array.from(fixture.totals), 'float32'),
-      iterations: options.iterations,
-      output: output.view,
-      density: density?.view,
+      maximumIterations: options.iterations,
+      output: {
+        mass: output.view,
+        density: density?.view,
+        status: {
+          converged: options.tolerance === undefined ? undefined : converged.view,
+          iterationCount: options.tolerance === undefined ? undefined : iterationCount.view,
+          invalidCount: invalid.view
+        }
+      },
       zoneAnchorCells: options.anchors
-        ? rig.input(Uint32Array.from(fixture.anchors), 'uint32')
+        ? rig.input(
+            Uint32Array.from(
+              fixture.anchors.map(cell =>
+                options.northUp && cell < fixture.width * fixture.height
+                  ? (fixture.height - 1 - Math.floor(cell / fixture.width)) * fixture.width +
+                    (cell % fixture.width)
+                  : cell
+              )
+            ),
+            'uint32'
+          )
         : undefined,
       tolerance:
         options.tolerance === undefined
           ? undefined
           : rig.input(Float32Array.of(options.tolerance), 'float32'),
-      converged: options.tolerance === undefined ? undefined : converged.view,
-      iterationLimitReached: options.tolerance === undefined ? undefined : limit.view,
-      invalidCount: invalid.view,
       ...(options.geographic
         ? {
             spatialContext: {
               coordinateSpace: 'longitude-latitude',
               metric: 'great-circle'
             } as const,
-            extent: rig.input(
-              Float32Array.of(
-                10,
-                geographic.originLatitude,
-                geographic.cellWidth,
-                geographic.cellHeight
-              ),
-              'float32'
-            )
+            // Packed placement: [10, originLatitude, cellWidth, +-cellHeight] as before.
+            parameters: rig.input(getGPUPolygonRasterizationParameterValues(grid), 'float32')
           }
         : {})
     })
   );
+  const restore = (values: ArrayLike<number>) =>
+    options.northUp ? mirrorRows(values, fixture.width, fixture.height) : Array.from(values);
   const result = {
-    mass: await output.readFloat32(),
-    density: density ? await density.readFloat32() : undefined,
+    mass: restore(await output.readFloat32()),
+    density: density ? restore(await density.readFloat32()) : undefined,
     converged: (await converged.readUint32())[0],
-    limit: (await limit.readUint32())[0],
+    iterationCount: (await iterationCount.readUint32())[0],
     invalid: (await invalid.readUint32())[0]
   };
   rig.destroy();
@@ -167,7 +202,7 @@ async function runNumpyFixture(
 
 it('GPUPycnophylactic anchors keep the mass of zones without cells (numpy)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const without = await runNumpyFixture(device, {iterations: 6, anchors: false});
   expectClose(without.mass, PYCNOPHYLACTIC_NUMPY.planar6.mass, 'unanchored', 2e-3, 1e-3);
   expect(without.invalid).toBe(PYCNOPHYLACTIC_NUMPY.planar6.invalidCount);
@@ -179,22 +214,25 @@ it('GPUPycnophylactic anchors keep the mass of zones without cells (numpy)', asy
 
 it('GPUPycnophylactic stops at the tolerance and reports status (numpy)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const stopped = await runNumpyFixture(device, {
     iterations: 12,
     anchors: true,
     tolerance: PYCNOPHYLACTIC_NUMPY.tolerance
   });
   expectClose(stopped.mass, PYCNOPHYLACTIC_NUMPY.planarTolerance.mass, 'tolerance', 2e-3, 1e-3);
-  expect([stopped.converged, stopped.limit]).toEqual([1, 0]);
+  expect([stopped.converged, stopped.iterationCount]).toEqual([
+    1,
+    PYCNOPHYLACTIC_NUMPY.planarTolerance.flaggedAt
+  ]);
   const limited = await runNumpyFixture(device, {iterations: 3, anchors: true, tolerance: 1e-12});
   expectClose(limited.mass, PYCNOPHYLACTIC_NUMPY.planarLimit.mass, 'limit', 2e-3, 1e-3);
-  expect([limited.converged, limited.limit]).toEqual([0, 1]);
+  expect([limited.converged, limited.iterationCount]).toEqual([0, 3]);
 });
 
 it('GPUPycnophylactic smooths density per spherical cell area on a longitude/latitude raster (numpy)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runNumpyFixture(device, {
     iterations: 6,
     anchors: true,
@@ -210,4 +248,16 @@ it('GPUPycnophylactic smooths density per spherical cell area on a longitude/lat
     1e-12
   );
   expect(result.mass.reduce((sum, value) => sum + value, 0)).toBeCloseTo(507, 1);
+});
+
+it('GPUPycnophylactic gives a north-up longitude/latitude grid the mirrored result of a north-advancing one', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const options = {iterations: 6, anchors: true, geographic: true, density: true};
+  const northAdvancing = await runNumpyFixture(device, options);
+  const northUp = await runNumpyFixture(device, {...options, northUp: true});
+  // Cell areas follow the mirrored rows, so the result is the same raster stored upside down.
+  expectClose(northUp.mass, northAdvancing.mass, 'north-up mass', 1e-4, 1e-4);
+  expectClose(northUp.density!, northAdvancing.density!, 'north-up density', 1e-4, 1e-14);
+  expect(northUp.mass.reduce((sum, value) => sum + value, 0)).toBeCloseTo(507, 1);
 });

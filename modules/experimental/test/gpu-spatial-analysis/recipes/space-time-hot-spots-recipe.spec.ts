@@ -10,8 +10,9 @@ import {
   packGPUColor
 } from '../../../src/gpu-dataframe/index';
 import {
-  getGPUEmergingHotSpotParameterValues,
-  GPU_EMERGING_HOT_SPOT_CATEGORIES
+  getGPUEmergingHotSpotsParameterValues,
+  GPU_EMERGING_HOT_SPOTS_CATEGORIES,
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/emerging-hot-spots/index';
 import {addSpaceTimeHotSpotsRecipe} from '../../../src/gpu-spatial-analysis/recipes/space-time-hot-spots-recipe';
 import {
@@ -22,6 +23,7 @@ import {
   SLICE_EVENTS
 } from '../emerging-hot-spots/emerging-hot-spots-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 6;
 const HEIGHT = 5;
@@ -68,14 +70,13 @@ function createEvents() {
 
 it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging hot spots', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const events = createEvents();
   const eventCount = events.cellIds.length;
   const cube = {gridWidth: WIDTH, gridHeight: HEIGHT, sliceCount: SLICES, values: events.counts};
   const frame = {radius: 1.5, temporalWindow: 1};
-  const packed = getGPUEmergingHotSpotParameterValues(frame);
+  // The oracle reads the same packed layout the recipe writes from `frame`.
+  const packed = getGPUEmergingHotSpotsParameterValues(frame);
   // 18 codes: the 17 ArcGIS categories and UNDETERMINED.
   const palette = Array.from({length: 18}, (_, category) =>
     packGPUColor(category * 14, 255 - category * 14, 128)
@@ -106,7 +107,12 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
         height: HEIGHT,
         bounds: [0, 0, WIDTH, HEIGHT]
       },
-      parameters: fixture.parameters('emerging-parameters', 'float32', packed),
+      settings: frame,
+      parameters: fixture.parameterBuffer(
+        'emerging-parameters',
+        'float32',
+        GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+      ),
       outputs: {
         cube: cubeOutput.view,
         giZScores: giZScores.view,
@@ -129,6 +135,8 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
       alternative: 'two-sided',
       permutationCount: 0,
       multipleTesting: 'benjamini-hochberg',
+      // Derived from the packed settings: 1 - the default 0.95 confidence level.
+      significanceLevel: expect.closeTo(0.05, 12),
       testedRowsDefinition: 'valid space-time bins'
     });
     expect(Object.getPrototypeOf(recipe.inference)).toBe(Object.prototype);
@@ -166,11 +174,11 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
     // The designed clusters produce hot categories (1-8), and the quiet corner has no pattern.
     const hotCategories = gpuCategory.filter(
       value =>
-        value >= GPU_EMERGING_HOT_SPOT_CATEGORIES.NEW_HOT &&
-        value <= GPU_EMERGING_HOT_SPOT_CATEGORIES.HISTORICAL_HOT
+        value >= GPU_EMERGING_HOT_SPOTS_CATEGORIES.NEW_HOT &&
+        value <= GPU_EMERGING_HOT_SPOTS_CATEGORIES.HISTORICAL_HOT
     );
     expect(hotCategories.length).toBeGreaterThanOrEqual(3);
-    expect(gpuCategory[WIDTH * 4]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NO_PATTERN);
+    expect(gpuCategory[WIDTH * 4]).toBe(GPU_EMERGING_HOT_SPOTS_CATEGORIES.NO_PATTERN);
     expect(Math.max(...(await fixture.readUint32(hotSlices, CELLS)))).toBeGreaterThan(0);
 
     const gpuColors = await fixture.readUint32(colors, CELLS);
@@ -184,9 +192,7 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
 
 it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-range slices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const events = createEvents();
   const eventCount = events.cellIds.length;
   // Restrict to the first six months: later events fall outside the slices and are dropped.
@@ -242,10 +248,11 @@ it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-ra
           )
         }
       },
-      parameters: fixture.parameters(
+      settings: {temporalWindow: 1},
+      parameters: fixture.parameterBuffer(
         'emerging-parameters',
         'float32',
-        getGPUEmergingHotSpotParameterValues({temporalWindow: 1})
+        GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
       ),
       outputs: {cube: cubeOutput.view, giZScores: giZScores.view}
     });
@@ -261,9 +268,7 @@ it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-ra
 
 it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics path bit for bit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A few hundred events: a dense hot bin (atomic contention), sparse noise, positions outside the
   // lattice, cell ids out of range, months past the last slice, and masked events.
   const sliceCount = 9;
@@ -314,11 +319,14 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
       'sint32',
       2
     );
-    const parameters = fixture.parameters(
-      'emerging-parameters',
-      'float32',
-      getGPUEmergingHotSpotParameterValues({radius: 1.5, temporalWindow: 1})
-    );
+    const settings = {radius: 1.5, temporalWindow: 1};
+    let parameterSerial = 0;
+    const createParameters = () =>
+      fixture.parameterBuffer(
+        `emerging-parameters-${parameterSerial++}`,
+        'float32',
+        GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+      );
     const lattice = {
       kind: 'lattice',
       positions: fixture.input('positions', Float32Array.from(positions), 'float32x2', eventCount),
@@ -365,13 +373,14 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
           calendarParameters,
           slices: {step: 'month', origin: {year: 2023, month: 1}, count: sliceCount},
           cells,
-          parameters,
+          settings,
+          parameters: createParameters(),
           outputs: {
             cube: cube.view,
             giZScores: giZScores.view,
             category: category.view,
             // Asking for the overflow flag selects the sorted GPUGroupStatistics path.
-            ...(path === 'sorted' ? {groupOverflow: groupOverflow.view} : {})
+            ...(path === 'sorted' ? {status: {groupOverflow: groupOverflow.view}} : {})
           }
         });
         expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 3 : 2);
@@ -405,9 +414,7 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
 
 it('addSpaceTimeHotSpotsRecipe bins absolute time steps across year boundaries (python calendar reference)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // One cell, one event per reference timestamp. Expected slices come from python datetime
   // arithmetic (scratchpad/fix/work/B/b5_emerging_ref.py), independent of the shader formulas.
   const eventCount = SLICE_EVENTS.length;
@@ -431,11 +438,14 @@ it('addSpaceTimeHotSpotsRecipe bins absolute time steps across year boundaries (
       'sint32',
       2
     );
-    const parameters = fixture.parameters(
-      'emerging-parameters',
-      'float32',
-      getGPUEmergingHotSpotParameterValues({radius: 0, temporalWindow: 0})
-    );
+    const settings = {radius: 0, temporalWindow: 0};
+    let parameterSerial = 0;
+    const createParameters = () =>
+      fixture.parameterBuffer(
+        `emerging-parameters-${parameterSerial++}`,
+        'float32',
+        GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+      );
     const runs = SLICE_CASES.map((testCase, index) => {
       const [year, month, day, hour] = testCase.origin;
       const name = `${testCase.step}-${testCase.interval}-${index}`;
@@ -458,8 +468,9 @@ it('addSpaceTimeHotSpotsRecipe bins absolute time steps across year boundaries (
           height: 1,
           bounds: [0, 0, 1, 1]
         },
-        parameters,
-        outputs: {cube: cube.view, skippedEventCount: skipped.view}
+        settings,
+        parameters: createParameters(),
+        outputs: {cube: cube.view, status: {skippedEventCount: skipped.view}}
       });
       // The slice-range stage exposes the same count as invalidCount.
       expect(recipe.status.stages[0].stage).toBe('slice-range');

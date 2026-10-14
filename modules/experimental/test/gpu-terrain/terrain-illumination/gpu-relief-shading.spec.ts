@@ -5,6 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -26,43 +27,49 @@ import {
 import {createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {computeReliefShading, unpackColors} from './relief-shading-oracle';
 import {expectClose} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-const STYLES: GPUReliefShadingSettings[] = [
-  {cellSize: [10, 10]},
+/** A style and the ground cell size of the grid it is packed with. */
+type StyleCase = {cellSize: [number, number]; settings: GPUReliefShadingSettings};
+
+const STYLES: StyleCase[] = [
+  {cellSize: [10, 10], settings: {}},
   {
     cellSize: [10, 10],
-    zFactor: 2,
-    lights: [
-      {azimuthDegrees: 315, altitudeDegrees: 45, weight: 3},
-      {azimuthDegrees: 45, altitudeDegrees: 60},
-      {azimuthDegrees: 180, altitudeDegrees: 20, weight: 0.5}
-    ],
-    hillshadeStrength: 0.8,
-    skyViewStrength: 0.6,
-    textureShadeStrength: 0.02,
-    exposure: 1.2,
-    tintStrength: 0.5,
-    elevationStops: [
-      {elevation: 60, color: [0.3, 0.5, 0.3]},
-      {elevation: 110, color: [0.8, 0.75, 0.6]},
-      {elevation: 160, color: [1, 1, 1]}
-    ]
+    settings: {
+      zFactor: 2,
+      lights: [
+        {azimuthDegrees: 315, altitudeDegrees: 45, weight: 3},
+        {azimuthDegrees: 45, altitudeDegrees: 60},
+        {azimuthDegrees: 180, altitudeDegrees: 20, weight: 0.5}
+      ],
+      hillshadeStrength: 0.8,
+      skyViewStrength: 0.6,
+      textureShadeStrength: 0.02,
+      exposure: 1.2,
+      tintStrength: 0.5,
+      elevationStops: [
+        {elevation: 60, color: [0.3, 0.5, 0.3]},
+        {elevation: 110, color: [0.8, 0.75, 0.6]},
+        {elevation: 160, color: [1, 1, 1]}
+      ]
+    }
   },
   {
     cellSize: [12, 8],
-    lights: 'mdow',
-    lightWeighting: 'fixed',
-    warmColor: [1, 0.8, 0.6],
-    coolColor: [0.6, 0.7, 1],
-    elevationStops: [{elevation: 100, color: [0.9, 0.85, 0.7]}]
+    settings: {
+      lights: 'mdow',
+      lightWeighting: 'fixed',
+      warmColor: [1, 0.8, 0.6],
+      coolColor: [0.6, 0.7, 1],
+      elevationStops: [{elevation: 100, color: [0.9, 0.85, 0.7]}]
+    }
   }
 ];
 
 it('GPUReliefShading matches the oracle across per-frame styles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 40;
   const height = 32;
   const pixelCount = width * height;
@@ -86,39 +93,49 @@ it('GPUReliefShading matches the oracle across per-frame styles', async () => {
     id: 'relief-settings',
     format: 'float32',
     length: 80,
-    values: getGPUReliefShadingParameterValues(STYLES[0])
+    values: getGPUReliefShadingParameterValues(
+      STYLES[0].settings,
+      makeGPURasterMetadata({width, height, cellSize: STYLES[0].cellSize})
+    )
   });
   const graph = new GPUCommandGraph(device, {id: 'relief-shading-test'});
   const float = (id: string, buffer: (typeof inputs)[number]) =>
     importGraphBuffer(graph, id, buffer, 'float32', pixelCount);
   graph.add(
     new GPUReliefShading({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       elevation: {
         id: 'elevation',
         format: 'float32',
         storage: {kind: 'buffer', values: float('elevation', inputs[0])}
       },
-      settings: settings.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
       skyViewFactor: float('svf', inputs[1]),
       textureShade: float('texture-shade', inputs[2]),
-      hillshade: float('hillshade', outputs[0]),
-      relief: float('relief', outputs[1]),
-      color: importGraphBuffer(graph, 'color', outputs[2], 'uint32', pixelCount),
-      validity: importGraphBuffer(graph, 'validity', outputs[3], 'uint32', pixelCount)
+      output: {
+        hillshade: float('hillshade', outputs[0]),
+        relief: float('relief', outputs[1]),
+        color: importGraphBuffer(graph, 'color', outputs[2], 'uint32', pixelCount),
+        outputValidity: importGraphBuffer(graph, 'validity', outputs[3], 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
   const compileCount = 1;
   for (const style of STYLES) {
-    settings.write(getGPUReliefShadingParameterValues(style));
+    settings.write(
+      getGPUReliefShadingParameterValues(
+        style.settings,
+        makeGPURasterMetadata({width, height, cellSize: style.cellSize})
+      )
+    );
     submitGraph(device, compiled, undefined);
     const expected = computeReliefShading({
       width,
       height,
       elevation,
-      settings: style,
+      settings: style.settings,
+      cellSize: style.cellSize,
       skyViewFactor,
       textureShade
     });
@@ -142,9 +159,7 @@ it('GPUReliefShading matches the oracle across per-frame styles', async () => {
 
 it('GPUReliefShading with one light reproduces GPUTerrainDerivatives', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 24;
   const height = 20;
   const pixelCount = width * height;
@@ -154,31 +169,31 @@ it('GPUReliefShading with one light reproduces GPUTerrainDerivatives', async () 
     createOutputBuffer(device, pixelCount),
     createOutputBuffer(device, pixelCount)
   ];
+  const grid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [0.0001, 0.0001],
+    origin: [0, 40],
+    rowDirection: 'north'
+  });
   const parameterBuffers = [
     new GPUParameterBuffer(device, {
       id: 'relief-settings',
       format: 'float32',
       length: 80,
-      values: getGPUReliefShadingParameterValues({
-        cellSize: [10, 10],
-        zFactor: 1.5,
-        lights: [{azimuthDegrees: 300, altitudeDegrees: 35}],
-        northEdge: 40,
-        southEdge: 39.9
-      })
+      values: getGPUReliefShadingParameterValues(
+        {zFactor: 1.5, lights: [{azimuthDegrees: 300, altitudeDegrees: 35}]},
+        grid
+      )
     }),
     new GPUParameterBuffer(device, {
       id: 'derivative-settings',
       format: 'float32',
       length: 8,
-      values: getGPUTerrainDerivativesParameterValues({
-        cellSize: [10, 10],
-        zFactor: 1.5,
-        azimuthDegrees: 300,
-        altitudeDegrees: 35,
-        northEdge: 40,
-        southEdge: 39.9
-      })
+      values: getGPUTerrainDerivativesParameterValues(
+        {zFactor: 1.5, azimuthDegrees: 300, altitudeDegrees: 35},
+        grid
+      )
     })
   ];
   const graph = new GPUCommandGraph(device, {id: 'relief-vs-derivatives'});
@@ -192,36 +207,38 @@ it('GPUReliefShading with one light reproduces GPUTerrainDerivatives', async () 
   };
   graph.add(
     new GPUReliefShading({
-      width,
-      height,
+      grid,
       elevation: elevationBand,
-      settings: parameterBuffers[0].importToGraph(graph),
+      parameters: parameterBuffers[0].importToGraph(graph),
       cellSizeMode: 'geographic',
       rowDirection: 'north',
-      hillshade: importGraphBuffer(
-        graph,
-        'relief-hillshade',
-        reliefHillshade,
-        'float32',
-        pixelCount
-      )
+      output: {
+        hillshade: importGraphBuffer(
+          graph,
+          'relief-hillshade',
+          reliefHillshade,
+          'float32',
+          pixelCount
+        )
+      }
     })
   );
   graph.add(
     new GPUTerrainDerivatives({
-      width,
-      height,
+      grid,
       elevation: elevationBand,
-      settings: parameterBuffers[1].importToGraph(graph),
+      parameters: parameterBuffers[1].importToGraph(graph),
       cellSizeMode: 'geographic',
       rowDirection: 'north',
-      hillshade: importGraphBuffer(
-        graph,
-        'derivative-hillshade',
-        derivativeHillshade,
-        'float32',
-        pixelCount
-      )
+      output: {
+        hillshade: importGraphBuffer(
+          graph,
+          'derivative-hillshade',
+          derivativeHillshade,
+          'float32',
+          pixelCount
+        )
+      }
     })
   );
   const compiled = graph.compile();
@@ -238,12 +255,10 @@ it('GPUReliefShading with one light reproduces GPUTerrainDerivatives', async () 
 
 const IMHOF_STYLES: GPUReliefShadingSettings[] = [
   {
-    cellSize: [10, 10],
     lights: [{azimuthDegrees: 315, altitudeDegrees: 45}],
     lightWeighting: 'imhof-swing'
   },
   {
-    cellSize: [10, 10],
     zFactor: 1.5,
     lights: [
       {azimuthDegrees: 315, altitudeDegrees: 45, weight: 2},
@@ -263,7 +278,6 @@ const IMHOF_STYLES: GPUReliefShadingSettings[] = [
   },
   // Step contrast (high <= low), aspect weighting, zero curvature strength.
   {
-    cellSize: [10, 10],
     lights: 'mdow',
     curvatureStrength: 0,
     contrastLowElevation: 110,
@@ -271,17 +285,16 @@ const IMHOF_STYLES: GPUReliefShadingSettings[] = [
     contrastStrength: 1
   },
   // Plain MDOW with the new slots at their defaults.
-  {cellSize: [10, 10]}
+  {}
 ];
 
 it('GPUReliefShading imhof swing, curvature, and contrast match the oracle with every input bound', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 36;
   const height = 30;
   const pixelCount = width * height;
+  const grid = makeGPURasterMetadata({width, height, cellSize: 10});
   const elevation = createSmoothTerrain(width, height, 5);
   const random = createRandom(8);
   const skyViewFactor = Float32Array.from({length: pixelCount}, () => 0.6 + 0.4 * random());
@@ -296,7 +309,7 @@ it('GPUReliefShading imhof swing, curvature, and contrast match the oracle with 
     id: 'imhof-settings',
     format: 'float32',
     length: 80,
-    values: getGPUReliefShadingParameterValues(IMHOF_STYLES[0])
+    values: getGPUReliefShadingParameterValues(IMHOF_STYLES[0], grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'relief-imhof-test'});
   const float = (id: string, buffer: (typeof inputs)[number]) =>
@@ -304,34 +317,36 @@ it('GPUReliefShading imhof swing, curvature, and contrast match the oracle with 
   // Every optional input and output is bound: the compose kernel must stay within 8 bindings.
   graph.add(
     new GPUReliefShading({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
         storage: {kind: 'buffer', values: float('elevation', inputs[0])}
       },
-      settings: settings.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
       skyViewFactor: float('svf', inputs[1]),
       textureShade: float('texture-shade', inputs[2]),
       curvature: float('curvature', inputs[3]),
       imhofSwing: true,
-      hillshade: float('hillshade', outputs[0]),
-      relief: float('relief', outputs[1]),
-      color: importGraphBuffer(graph, 'color', outputs[2], 'uint32', pixelCount),
-      validity: importGraphBuffer(graph, 'validity', outputs[3], 'uint32', pixelCount)
+      output: {
+        hillshade: float('hillshade', outputs[0]),
+        relief: float('relief', outputs[1]),
+        color: importGraphBuffer(graph, 'color', outputs[2], 'uint32', pixelCount),
+        outputValidity: importGraphBuffer(graph, 'validity', outputs[3], 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
   const reliefSpans: number[] = [];
   for (const style of IMHOF_STYLES) {
-    settings.write(getGPUReliefShadingParameterValues(style));
+    settings.write(getGPUReliefShadingParameterValues(style, grid));
     submitGraph(device, compiled, undefined);
     const expected = computeReliefShading({
       width,
       height,
       elevation,
       settings: style,
+      cellSize: [10, 10],
       skyViewFactor,
       textureShade,
       curvature
@@ -366,12 +381,11 @@ it('GPUReliefShading imhof swing, curvature, and contrast match the oracle with 
 
 it('GPUReliefShading imhof swing lights east-facing slopes and swing 0 equals fixed exactly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 20;
   const height = 12;
   const pixelCount = width * height;
+  const grid = makeGPURasterMetadata({width, height, cellSize: 10});
   // Descends 20 m per 10 m pixel toward the east: a steep east-facing slope.
   const elevation = Float32Array.from(
     {length: pixelCount},
@@ -384,13 +398,12 @@ it('GPUReliefShading imhof swing lights east-facing slopes and swing 0 equals fi
     id: 'swing-settings',
     format: 'float32',
     length: 80,
-    values: getGPUReliefShadingParameterValues({cellSize: [10, 10], lights: light})
+    values: getGPUReliefShadingParameterValues({lights: light}, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'relief-swing-test'});
   graph.add(
     new GPUReliefShading({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -399,23 +412,24 @@ it('GPUReliefShading imhof swing lights east-facing slopes and swing 0 equals fi
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
         }
       },
-      settings: settings.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
       imhofSwing: true,
-      hillshade: importGraphBuffer(graph, 'hillshade', outputs[0], 'float32', pixelCount),
-      relief: importGraphBuffer(graph, 'relief', outputs[1], 'float32', pixelCount)
+      output: {
+        hillshade: importGraphBuffer(graph, 'hillshade', outputs[0], 'float32', pixelCount),
+        relief: importGraphBuffer(graph, 'relief', outputs[1], 'float32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
   const run = async (style: GPUReliefShadingSettings) => {
-    settings.write(getGPUReliefShadingParameterValues(style));
+    settings.write(getGPUReliefShadingParameterValues(style, grid));
     submitGraph(device, compiled, undefined);
     return readFloat32(outputs[0], pixelCount);
   };
   const interior = 5 * width + 10;
-  const fixed = await run({cellSize: [10, 10], lights: light, lightWeighting: 'fixed'});
-  const swung = await run({cellSize: [10, 10], lights: light, lightWeighting: 'imhof-swing'});
+  const fixed = await run({lights: light, lightWeighting: 'fixed'});
+  const swung = await run({lights: light, lightWeighting: 'imhof-swing'});
   const zeroSwing = await run({
-    cellSize: [10, 10],
     lights: light,
     lightWeighting: 'imhof-swing',
     imhofSwingDegrees: 0
@@ -427,14 +441,15 @@ it('GPUReliefShading imhof swing lights east-facing slopes and swing 0 equals fi
     width,
     height,
     elevation,
-    settings: {cellSize: [10, 10], lights: light, lightWeighting: 'imhof-swing'}
+    settings: {lights: light, lightWeighting: 'imhof-swing'},
+    cellSize: [10, 10]
   });
   expect(Math.abs(swung[interior] - expected.hillshade[interior])).toBeLessThan(1e-5);
   // Swing 0 reproduces fixed weighting bit for bit, and so does leaving the mode.
   expect(Array.from(new Uint32Array(new Float32Array(zeroSwing).buffer))).toEqual(
     Array.from(new Uint32Array(new Float32Array(fixed).buffer))
   );
-  const again = await run({cellSize: [10, 10], lights: light, lightWeighting: 'fixed'});
+  const again = await run({lights: light, lightWeighting: 'fixed'});
   expect(again).toEqual(fixed);
   compiled.destroy();
   settings.destroy();
@@ -443,19 +458,17 @@ it('GPUReliefShading imhof swing lights east-facing slopes and swing 0 equals fi
 
 it('GPUReliefShading new slots at zero reproduce the previous output exactly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 40;
   const height = 32;
   const pixelCount = width * height;
+  const grid = makeGPURasterMetadata({width, height, cellSize: 10});
   const elevation = createSmoothTerrain(width, height, 9);
   const random = createRandom(3);
   const skyViewFactor = Float32Array.from({length: pixelCount}, () => 0.6 + 0.4 * random());
   const inputs = [elevation, skyViewFactor].map(values => createInputBuffer(device, values));
   const outputs = Array.from({length: 3}, () => createOutputBuffer(device, pixelCount));
   const base: GPUReliefShadingSettings = {
-    cellSize: [10, 10],
     zFactor: 2,
     skyViewStrength: 0.6,
     exposure: 1.2,
@@ -465,25 +478,26 @@ it('GPUReliefShading new slots at zero reproduce the previous output exactly', a
     id: 'legacy-settings',
     format: 'float32',
     length: 80,
-    values: getGPUReliefShadingParameterValues(base)
+    values: getGPUReliefShadingParameterValues(base, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'relief-legacy-test'});
   const float = (id: string, buffer: (typeof inputs)[number]) =>
     importGraphBuffer(graph, id, buffer, 'float32', pixelCount);
   graph.add(
     new GPUReliefShading({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
         storage: {kind: 'buffer', values: float('elevation', inputs[0])}
       },
-      settings: settings.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
       skyViewFactor: float('svf', inputs[1]),
-      hillshade: float('hillshade', outputs[0]),
-      relief: float('relief', outputs[1]),
-      color: importGraphBuffer(graph, 'color', outputs[2], 'uint32', pixelCount)
+      output: {
+        hillshade: float('hillshade', outputs[0]),
+        relief: float('relief', outputs[1]),
+        color: importGraphBuffer(graph, 'color', outputs[2], 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -496,32 +510,45 @@ it('GPUReliefShading new slots at zero reproduce the previous output exactly', a
       await readUint32(outputs[2], pixelCount)
     ];
   };
-  const reference = await run(getGPUReliefShadingParameterValues(base));
+  const reference = await run(getGPUReliefShadingParameterValues(base, grid));
   // Slots 19 and 76-79 zero-filled, and non-zero low/high/curvature strength with strength 0.
-  const zeroed = getGPUReliefShadingParameterValues(base);
+  const zeroed = getGPUReliefShadingParameterValues(base, grid);
   zeroed.fill(0, 76, 80);
   zeroed[19] = 0;
   expect(await run(zeroed)).toEqual(reference);
-  const inert = getGPUReliefShadingParameterValues({
-    ...base,
-    contrastLowElevation: 50,
-    contrastHighElevation: 150,
-    contrastStrength: 0,
-    imhofSwingDegrees: 65
-  });
+  const inert = getGPUReliefShadingParameterValues(
+    {
+      ...base,
+      contrastLowElevation: 50,
+      contrastHighElevation: 150,
+      contrastStrength: 0,
+      imhofSwingDegrees: 65
+    },
+    grid
+  );
   expect(await run(inert)).toEqual(reference);
   // And the oracle still agrees, so this is not a comparison of two broken outputs.
-  const expected = computeReliefShading({width, height, elevation, settings: base, skyViewFactor});
+  const expected = computeReliefShading({
+    width,
+    height,
+    elevation,
+    settings: base,
+    cellSize: [10, 10],
+    skyViewFactor
+  });
   expectClose(await readFloat32(outputs[1], pixelCount), expected.relief, 2e-5);
   expect(new Set(reference[1]).size).toBeGreaterThan(50);
   // Turning the contrast on does change the output.
   const active = await run(
-    getGPUReliefShadingParameterValues({
-      ...base,
-      contrastLowElevation: 90,
-      contrastHighElevation: 130,
-      contrastStrength: 0.8
-    })
+    getGPUReliefShadingParameterValues(
+      {
+        ...base,
+        contrastLowElevation: 90,
+        contrastHighElevation: 130,
+        contrastStrength: 0.8
+      },
+      grid
+    )
   );
   expect(active[1]).not.toEqual(reference[1]);
   expect(GPU_RELIEF_SHADING_CONTRAST_PIVOT).toBe(0.72);
@@ -532,12 +559,11 @@ it('GPUReliefShading new slots at zero reproduce the previous output exactly', a
 
 it('GPUReliefShading adds curvature directly in the compose kernel when bindings allow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 30;
   const height = 24;
   const pixelCount = width * height;
+  const grid = makeGPURasterMetadata({width, height, cellSize: 10});
   const elevation = createSmoothTerrain(width, height, 14);
   const random = createRandom(2);
   const curvature = Float32Array.from({length: pixelCount}, () => -0.03 + 0.06 * random());
@@ -545,7 +571,6 @@ it('GPUReliefShading adds curvature directly in the compose kernel when bindings
   const inputs = [elevation, curvature].map(values => createInputBuffer(device, values));
   const outputs = [createOutputBuffer(device, pixelCount), createOutputBuffer(device, pixelCount)];
   const style: GPUReliefShadingSettings = {
-    cellSize: [10, 10],
     curvatureStrength: 20,
     contrastLowElevation: 80,
     contrastHighElevation: 140,
@@ -555,13 +580,12 @@ it('GPUReliefShading adds curvature directly in the compose kernel when bindings
     id: 'direct-curvature-settings',
     format: 'float32',
     length: 80,
-    values: getGPUReliefShadingParameterValues(style)
+    values: getGPUReliefShadingParameterValues(style, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'relief-direct-curvature'});
   graph.add(
     new GPUReliefShading({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -570,15 +594,24 @@ it('GPUReliefShading adds curvature directly in the compose kernel when bindings
           values: importGraphBuffer(graph, 'elevation', inputs[0], 'float32', pixelCount)
         }
       },
-      settings: settings.importToGraph(graph),
+      parameters: settings.importToGraph(graph),
       curvature: importGraphBuffer(graph, 'curvature', inputs[1], 'float32', pixelCount),
-      relief: importGraphBuffer(graph, 'relief', outputs[0], 'float32', pixelCount),
-      validity: importGraphBuffer(graph, 'validity', outputs[1], 'uint32', pixelCount)
+      output: {
+        relief: importGraphBuffer(graph, 'relief', outputs[0], 'float32', pixelCount),
+        outputValidity: importGraphBuffer(graph, 'validity', outputs[1], 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const expected = computeReliefShading({width, height, elevation, settings: style, curvature});
+  const expected = computeReliefShading({
+    width,
+    height,
+    elevation,
+    settings: style,
+    cellSize: [10, 10],
+    curvature
+  });
   const relief = await readFloat32(outputs[0], pixelCount);
   expectClose(relief, expected.relief, 2e-5);
   expect((await readUint32(outputs[1], pixelCount))[50]).toBe(0);

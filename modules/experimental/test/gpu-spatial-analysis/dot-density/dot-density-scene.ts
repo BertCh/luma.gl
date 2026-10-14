@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {DotDensityCPUPolygons} from '../../../src/gpu-spatial-analysis/dot-density/dot-density-cpu';
+import type {DotDensityCPUPolygons} from './dot-density-cpu';
 
 /** One feature: polygons, each a list of rings (shell first), each a list of `[x, y]`. */
 export type SceneFeature = number[][][][];
@@ -26,7 +26,7 @@ export function createPolygonColumns(features: SceneFeature[]): DotDensityCPUPol
     featureOffsets.push(polygonOffsets.length - 1);
   }
   return {
-    polygonPositions: new Float32Array(positions),
+    positions: new Float32Array(positions),
     featureOffsets: new Uint32Array(featureOffsets),
     polygonOffsets: new Uint32Array(polygonOffsets),
     ringOffsets: new Uint32Array(ringOffsets)

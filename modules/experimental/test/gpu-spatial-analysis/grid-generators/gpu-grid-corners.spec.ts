@@ -13,13 +13,12 @@ import {
 } from '../../../src/gpu-spatial-analysis/grid-generators';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
 import {generateGridCorners} from './grid-generator-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 for (const gridType of ['square', 'hex', 'hexFlat'] as const) {
   it(`GPUGridGenerator unique ${gridType} corners match the polygon vertex union across frames`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const publicType = gridType === 'square' ? 'square' : 'hex';
     for (const [columns, rows] of [
       [1, 1],
@@ -90,9 +89,7 @@ for (const gridType of ['square', 'hex', 'hexFlat'] as const) {
 
 it('GPUGridGenerator masks corner points independently of polygon intersection, including hole boundaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // GeoPandas 1.2 make_grid(feature_type='corners', intersect=True) tests each unique point,
   // not its incident cells: https://geopandas.org/en/latest/docs/reference/api/geopandas.GeoSeries.make_grid.html
   const fixture = createGeometryFixture(device, {
@@ -101,7 +98,9 @@ it('GPUGridGenerator masks corner points independently of polygon intersection, 
         format: 'float32x2',
         values: Float32Array.from([0, 0, 3, 0, 3, 3, 0, 3, 1, 1, 2, 1, 2, 2, 1, 2])
       },
-      ringOffsets: {format: 'uint32', values: Uint32Array.from([0, 4, 8])}
+      ringOffsets: {format: 'uint32', values: Uint32Array.from([0, 4, 8])},
+      featureOffsets: {format: 'uint32', values: Uint32Array.from([0, 1])},
+      polygonOffsets: {format: 'uint32', values: Uint32Array.from([0, 2])}
     },
     outputs: {
       positions: {format: 'float32x2', length: 64},
@@ -115,7 +114,13 @@ it('GPUGridGenerator masks corner points independently of polygon intersection, 
         columns: 4,
         rows: 4,
         parameters,
-        extent: {positions: inputs['extent'] as never, ringOffsets: inputs['ringOffsets'] as never},
+        extent: {
+          kind: 'polygons',
+          positions: inputs['extent'] as never,
+          featureOffsets: inputs['featureOffsets'] as never,
+          polygonOffsets: inputs['polygonOffsets'] as never,
+          ringOffsets: inputs['ringOffsets'] as never
+        },
         output: {
           positions: outputs['positions'] as never,
           corners: outputs['corners'] as never,
@@ -160,9 +165,7 @@ it('GPUGridGenerator masks corner points independently of polygon intersection, 
 for (const gridType of ['square', 'hex', 'hexFlat', 'triangle'] as const) {
   it(`GPUGridGenerator ${gridType} neighbours share bit-identical vertices`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     // D-14: vertices were computed per cell (`lower + w`, `center + R * (cos, sin)`), so the copies
     // of a shared vertex differed by an ulp (560 of 1999 square neighbour pairs at origin -122.5,
     // w 0.01; every shared hex vertex). Every copy now comes from one lattice expression, which the

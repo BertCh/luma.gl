@@ -4,12 +4,12 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUSegmentRingAssembly} from '../../../src/gpu-spatial-analysis/ring-assembly';
+import {GPUSegmentRingAssembly} from '../../../src/analysis-core/ring-assembly';
 import {
   createNullWebGPUDevice,
-  getGPUCommandNodeKernelSources
+  getGPUCommandNodeKernelSources,
+  getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
-import {getStorageBindingCount} from '../space-time-tests/wgsl-memory';
 
 it('GPUSegmentRingAssembly kernels stay within 8 storage bindings', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'ring-limits'});
@@ -27,8 +27,10 @@ it('GPUSegmentRingAssembly kernels stay within 8 storage bindings', () => {
       ringOffsets: view('uint32', 5),
       positions: view('float32x2', 32),
       ringShells: view('uint32', 4),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {
+        count: view('uint32', 1),
+        overflow: view('uint32', 1)
+      }
     }
   }).getCommandNodes(graph);
   const sources = getGPUCommandNodeKernelSources(nodes);

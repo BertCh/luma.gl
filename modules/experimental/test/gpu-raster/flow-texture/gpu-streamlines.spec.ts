@@ -8,15 +8,17 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
-  generateStreamlinesOnCPU,
   getGPUStreamlinesParameterValues,
-  getGPUStreamlinesWordParameterValues,
+  getGPUStreamlinesUint32ParameterValues,
   GPUStreamlines,
+  type GPUStreamlinesSettings
+} from '../../../src/gpu-raster/flow-texture';
+import {
+  generateStreamlinesOnCPU,
   traceStreamlineCandidatesOnCPU,
-  type GPUStreamlinesSettings,
   type StreamlineCandidates,
   type StreamlinesCPUConfig
-} from '../../../src/gpu-raster/flow-texture';
+} from '../../../src/gpu-raster/flow-texture/streamlines-cpu';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -25,6 +27,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createUniformField, createVortexField, type TestField} from './flow-texture-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Result = {
   ids: number[];
@@ -48,7 +51,7 @@ function createFixture(
   device: Device,
   field: TestField,
   config: StreamlinesCPUConfig,
-  roundCount: number
+  maximumIterations: number
 ): Fixture {
   const seedCount = config.seedColumns * config.seedRows;
   const stride = 2 * config.stepsPerDirection + 1;
@@ -100,34 +103,44 @@ function createFixture(
       seedColumns: config.seedColumns,
       seedRows: config.seedRows,
       stepsPerDirection: config.stepsPerDirection,
-      roundCount,
+      maximumIterations,
       parameters: parameterBuffer.importToGraph(graph),
-      wordParameters: wordBuffer.importToGraph(graph),
+      uint32Parameters: wordBuffer.importToGraph(graph),
       output: {
         lines: {
           ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', config.lineCapacity),
-          count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
+          }
         },
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           graph,
           'path-offsets',
           outputs.pathOffsets,
           'uint32',
           config.lineCapacity + 1
         ),
-        points: importGraphBuffer(
+        positions: importGraphBuffer(
           graph,
           'points',
           outputs.points,
           'float32x2',
           config.pointCapacity
         ),
-        pointCount: importGraphBuffer(graph, 'point-count', outputs.pointCount, 'uint32', 1),
-        unconverged: importGraphBuffer(graph, 'unconverged', outputs.unconverged, 'uint32', 1),
+        positionCount: importGraphBuffer(graph, 'point-count', outputs.pointCount, 'uint32', 1),
+        status: {
+          iterationLimitReached: importGraphBuffer(
+            graph,
+            'unconverged',
+            outputs.unconverged,
+            'uint32',
+            1
+          )
+        },
         candidates: {
-          points: importGraphBuffer(
+          positions: importGraphBuffer(
             graph,
             'candidates',
             outputs.candidates,
@@ -143,7 +156,7 @@ function createFixture(
   return {
     async run(settings) {
       parameterBuffer.write(getGPUStreamlinesParameterValues(settings));
-      wordBuffer.write(getGPUStreamlinesWordParameterValues(settings));
+      wordBuffer.write(getGPUStreamlinesUint32ParameterValues(settings));
       submitGraph(device, compiled, undefined);
       const [count] = await readUint32(outputs.count, 1);
       const [pointCount] = await readUint32(outputs.pointCount, 1);
@@ -192,7 +205,7 @@ function expectPruningMatchesOracle(
     field,
     config,
     getGPUStreamlinesParameterValues(settings),
-    getGPUStreamlinesWordParameterValues(settings),
+    getGPUStreamlinesUint32ParameterValues(settings),
     actual.candidates
   );
   expect(actual.unconverged).toBe(0);
@@ -226,9 +239,7 @@ const VORTEX_SETTINGS: GPUStreamlinesSettings = {
 
 it('GPUStreamlines traces like the CPU oracle and prunes exactly like the greedy pass', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const field = createVortexField(32, 0.1);
   const fixture = createFixture(device, field, VORTEX_CONFIG, 64);
   try {
@@ -238,7 +249,7 @@ it('GPUStreamlines traces like the CPU oracle and prunes exactly like the greedy
       field,
       VORTEX_CONFIG,
       getGPUStreamlinesParameterValues(VORTEX_SETTINGS),
-      getGPUStreamlinesWordParameterValues(VORTEX_SETTINGS)
+      getGPUStreamlinesUint32ParameterValues(VORTEX_SETTINGS)
     );
     let spanMismatches = 0;
     let maximumDrift = 0;
@@ -283,9 +294,7 @@ it('GPUStreamlines traces like the CPU oracle and prunes exactly like the greedy
 
 it('GPUStreamlines spaces straight lines on a uniform field and never shares a grid cell', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const field = createUniformField(16, 16, 1, 0);
   const config: StreamlinesCPUConfig = {
     seedColumns: 16,
@@ -312,7 +321,7 @@ it('GPUStreamlines spaces straight lines on a uniform field and never shares a g
       field,
       config,
       getGPUStreamlinesParameterValues(settings),
-      getGPUStreamlinesWordParameterValues(settings)
+      getGPUStreamlinesUint32ParameterValues(settings)
     );
     expect(actual.ids).toEqual(endToEnd.ids);
     const owner = new Map<number, number>();
@@ -338,9 +347,7 @@ it('GPUStreamlines spaces straight lines on a uniform field and never shares a g
 
 it('GPUStreamlines reports capacity overflow, non-convergence, replays and reseeds without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const field = createVortexField(32, 0.1);
   const smallConfig = {...VORTEX_CONFIG, lineCapacity: 8, pointCapacity: 200};
   const small = createFixture(device, field, smallConfig, 64);
@@ -371,7 +378,7 @@ it('GPUStreamlines reports capacity overflow, non-convergence, replays and resee
       field,
       VORTEX_CONFIG,
       getGPUStreamlinesParameterValues(VORTEX_SETTINGS),
-      getGPUStreamlinesWordParameterValues(VORTEX_SETTINGS),
+      getGPUStreamlinesUint32ParameterValues(VORTEX_SETTINGS),
       actual.candidates
     );
     expect(actual.count).toBeGreaterThan(0);

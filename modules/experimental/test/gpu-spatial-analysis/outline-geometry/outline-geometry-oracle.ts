@@ -7,19 +7,19 @@ export type Point = [number, number];
 /** f64 reference of the planar triangle list of `GPUOutlineGeometry`. */
 export function buildOutlineTriangles(
   vertices: Point[],
-  pathOffsets: number[] | undefined,
-  geometryType: 'points' | 'lines' | 'rings',
+  lineOffsets: number[] | undefined,
+  geometryType: 'points' | 'lines' | 'polygons',
   distance: number,
   joinSegments: number
 ): Point[] {
   const output: Point[] = [];
-  const findPath = (row: number) => {
-    if (!pathOffsets) {
+  const findLine = (row: number) => {
+    if (!lineOffsets) {
       return -1;
     }
-    for (let path = 0; path + 1 < pathOffsets.length; path++) {
-      if (row >= pathOffsets[path] && row < pathOffsets[path + 1]) {
-        return path;
+    for (let line = 0; line + 1 < lineOffsets.length; line++) {
+      if (row >= lineOffsets[line] && row < lineOffsets[line + 1]) {
+        return line;
       }
     }
     return -1;
@@ -36,13 +36,13 @@ export function buildOutlineTriangles(
       );
     }
     let next = -1;
-    const path = geometryType === 'points' ? -1 : findPath(row);
-    if (path >= 0 && pathOffsets) {
-      const start = pathOffsets[path];
-      const end = pathOffsets[path + 1];
+    const line = geometryType === 'points' ? -1 : findLine(row);
+    if (line >= 0 && lineOffsets) {
+      const start = lineOffsets[line];
+      const end = lineOffsets[line + 1];
       if (row + 1 < end) {
         next = row + 1;
-      } else if (geometryType === 'rings' && end - start >= 2) {
+      } else if (geometryType === 'polygons' && end - start >= 2) {
         next = start;
       }
     }

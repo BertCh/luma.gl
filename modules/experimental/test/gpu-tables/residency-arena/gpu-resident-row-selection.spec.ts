@@ -132,9 +132,11 @@ async function createFullHarness(
       sourceIds: options.sourceIds ? view('sourceIds', ROW_CAPACITY) : undefined,
       output: {
         ids: view('ids', capacity),
-        count: view('count', 1),
-        overflow: view('overflow', 1),
-        requiredCount: view('total', 1)
+        status: {
+          count: view('count', 1),
+          overflow: view('overflow', 1),
+          requiredCount: view('total', 1)
+        }
       },
       outputMask: view('mask', ROW_CAPACITY),
       drawInstanceCount: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0))
@@ -269,8 +271,10 @@ it('GPUResidentRowSelection works with only a live mask and full-size output', a
       liveMask: importGraphBuffer(graph, 'live', buffers.live, 'uint32', ROW_CAPACITY),
       output: {
         ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', ROW_CAPACITY),
-        count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+        }
       }
     })
   );

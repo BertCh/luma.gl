@@ -25,7 +25,9 @@ import {
   readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom, createSmoothTerrain, getVisibleDiskFraction} from './terrain-horizon-oracle';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
 import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type CastShadowResult = {
   sunVisibility: number[];
@@ -52,19 +54,18 @@ function createCastShadowFixture(
     horizonAngle: createOutputBuffer(device, pixelCount),
     validity: createOutputBuffer(device, pixelCount)
   };
+  const defaultGrid = makeGPURasterMetadata({width, height, cellSize: 10});
   const settings = new GPUParameterBuffer(device, {
-    id: 'cast-shadow-settings',
+    id: 'cast-shadow-parameters',
     format: 'float32',
     length: GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
-    values: getGPUTerrainCastShadowParameterValues({
-      cellSize: [10, 10],
-      azimuthDegrees: 0,
-      altitudeDegrees: 0
-    })
+    values: getGPUTerrainCastShadowParameterValues(
+      {azimuthDegrees: 0, altitudeDegrees: 0},
+      defaultGrid
+    )
   });
   const contributor = new GPUTerrainCastShadow({
-    width,
-    height,
+    grid: defaultGrid,
     maximumRadius: options.maximumRadius,
     rowDirection: options.rowDirection,
     cellSizeMode: options.cellSizeMode,
@@ -76,24 +77,36 @@ function createCastShadowFixture(
         values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
       }
     },
-    settings: settings.importToGraph(graph),
-    sunVisibility: importGraphBuffer(
-      graph,
-      'sun-visibility',
-      buffers.sunVisibility,
-      'float32',
-      pixelCount
-    ),
-    horizonAngle: importGraphBuffer(graph, 'horizon', buffers.horizonAngle, 'float32', pixelCount),
-    validity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+    parameters: settings.importToGraph(graph),
+    output: {
+      sunVisibility: importGraphBuffer(
+        graph,
+        'sun-visibility',
+        buffers.sunVisibility,
+        'float32',
+        pixelCount
+      ),
+      horizonAngle: importGraphBuffer(
+        graph,
+        'horizon',
+        buffers.horizonAngle,
+        'float32',
+        pixelCount
+      ),
+      outputValidity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+    }
   });
   graph.add(contributor);
   const compiled = graph.compile();
   return {
     contributor,
-    async run(values: GPUTerrainCastShadowSettings): Promise<CastShadowResult> {
+    /** Packs `values` on `frameGrid` (default: 10 m square cells) and reads the outputs back. */
+    async run(
+      values: GPUTerrainCastShadowSettings,
+      frameGrid: GPURasterMetadata = defaultGrid
+    ): Promise<CastShadowResult> {
       // The packer takes no row direction or cell size mode: the contributor owns both.
-      settings.write(getGPUTerrainCastShadowParameterValues(values));
+      settings.write(getGPUTerrainCastShadowParameterValues(values, frameGrid));
       submitGraph(device, compiled, undefined);
       return {
         sunVisibility: await readFloat32(buffers.sunVisibility, pixelCount),
@@ -134,9 +147,7 @@ function expectNaNPattern(actual: number[], expected: number[]): number {
 
 it('GPUTerrainCastShadow matches the float64 brute force along the sun line', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 52;
   const height = 44;
   const random = createRandom(4);
@@ -153,12 +164,7 @@ it('GPUTerrainCastShadow matches the float64 brute force along the sun line', as
   const azimuths = [0, 37, 90, 135, 200, 270, 311];
   const horizons: number[][] = [];
   for (const azimuthDegrees of azimuths) {
-    const settings = {
-      cellSize: [10, 10] as [number, number],
-      azimuthDegrees,
-      altitudeDegrees,
-      angularRadiusDegrees
-    };
+    const settings = {azimuthDegrees, altitudeDegrees, angularRadiusDegrees};
     const actual = await fixture.run(settings);
     const expected = computeTerrainHorizonSweepBruteForce({
       width,
@@ -190,9 +196,7 @@ it('GPUTerrainCastShadow matches the float64 brute force along the sun line', as
 
 it('GPUTerrainCastShadow mirrors the sun line for north-advancing rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Only the contributor knows rowDirection 'north'; the brute force walks the north-row pixel
   // direction (sin az, +cos az) directly, which the node spec shows is the same line family.
   const width = 52;
@@ -207,7 +211,6 @@ it('GPUTerrainCastShadow mirrors the sun line for north-advancing rows', async (
   });
   for (const azimuthDegrees of [0, 37, 135, 200, 311]) {
     const actual = await fixture.run({
-      cellSize: [10, 10],
       azimuthDegrees,
       altitudeDegrees: 12,
       angularRadiusDegrees: 0.5
@@ -228,9 +231,7 @@ it('GPUTerrainCastShadow mirrors the sun line for north-advancing rows', async (
 
 it('GPUTerrainCastShadow follows a 45 degree ground sun azimuth on a 60 N geographic grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The settings packer gets no cell size mode; only the contributor is geographic. One 1000 m
   // pillar P = (42, 2) on flat ground and the observer O = (2, 22) (true ground bearing 45.048
   // degrees). python3 -I, WGS84 (a = 6378137, f = 1 / 298.257223563): at the reference row 12
@@ -246,14 +247,11 @@ it('GPUTerrainCastShadow follows a 45 degree ground sun azimuth on a 60 N geogra
     maximumRadius: 46,
     cellSizeMode: 'geographic'
   });
-  const result = await fixture.run({
-    cellSize: [0.001, 0.001],
-    northEdge: 60.012,
-    southEdge: 59.988,
-    azimuthDegrees: 45,
-    altitudeDegrees: 10,
-    angularRadiusDegrees: 0.5
-  });
+  // 24 rows of 0.001 degrees from 60.012 to 59.988 north.
+  const result = await fixture.run(
+    {azimuthDegrees: 45, altitudeDegrees: 10, angularRadiusDegrees: 0.5},
+    makeGPURasterMetadata({width, height, cellSize: 0.001, origin: [0, 60.012]})
+  );
   const observer = 22 * width + 2;
   expect(result.horizonAngle[observer]).toBeCloseTo(17.57561688017635, 3);
   // The whole disk is below the 17.6 degree horizon (acos(-1) / PI in f32).
@@ -263,9 +261,7 @@ it('GPUTerrainCastShadow follows a 45 degree ground sun azimuth on a 60 N geogra
 
 it('GPUTerrainCastShadow casts a wall shadow of length H / tan(altitude)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 61;
   const height = 21;
   const elevation = new Float32Array(width * height);
@@ -277,7 +273,6 @@ it('GPUTerrainCastShadow casts a wall shadow of length H / tan(altitude)', async
   // Wall of 20 m on 10 m cells: pixel k columns behind it has horizon atan(2 / k); it is shadowed
   // while that exceeds 30 degrees, i.e. k < 2 / tan(30) = 3.46 -> columns 31..33.
   const east = await fixture.run({
-    cellSize: [10, 10],
     azimuthDegrees: 270,
     altitudeDegrees,
     angularRadiusDegrees: 0
@@ -294,7 +289,6 @@ it('GPUTerrainCastShadow casts a wall shadow of length H / tan(altitude)', async
   }
   // Mirrored: sun in the east shadows the pixels west of the wall.
   const west = await fixture.run({
-    cellSize: [10, 10],
     azimuthDegrees: 90,
     altitudeDegrees,
     angularRadiusDegrees: 0
@@ -305,7 +299,6 @@ it('GPUTerrainCastShadow casts a wall shadow of length H / tan(altitude)', async
   }
   // A soft disk makes a penumbra at the shadow edge (column 34: horizon 26.6, alt 30, radius 5).
   const soft = await fixture.run({
-    cellSize: [10, 10],
     azimuthDegrees: 270,
     altitudeDegrees,
     angularRadiusDegrees: 5
@@ -320,20 +313,17 @@ it('GPUTerrainCastShadow casts a wall shadow of length H / tan(altitude)', async
 
 it('GPUTerrainCastShadow handles a sun below the horizon and a high sun on a plane', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 20;
   const height = 16;
   const plane = new Float32Array(width * height).fill(1234.5);
   plane[3 * width + 3] = NaN;
   const fixture = createCastShadowFixture(device, plane, width, height);
   const night = await fixture.run({
-    cellSize: [10, 10],
     azimuthDegrees: 123,
     altitudeDegrees: -10
   });
-  const day = await fixture.run({cellSize: [10, 10], azimuthDegrees: 123, altitudeDegrees: 60});
+  const day = await fixture.run({azimuthDegrees: 123, altitudeDegrees: 60});
   for (let index = 0; index < width * height; index++) {
     if (index === 3 * width + 3) {
       expect(Number.isNaN(night.sunVisibility[index])).toBe(true);
@@ -351,9 +341,7 @@ it('GPUTerrainCastShadow handles a sun below the horizon and a high sun on a pla
 
 it('GPUTerrainCastShadow equals GPUSolarShadowMask fed by the sweep horizon at exact azimuths', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 40;
   const height = 36;
   const random = createRandom(9);
@@ -381,8 +369,7 @@ it('GPUTerrainCastShadow equals GPUSolarShadowMask fed by the sweep horizon at e
   });
   graph.add(
     new GPUSolarShadowMask({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       directionCount,
       horizon: importGraphBuffer(
         graph,
@@ -391,8 +378,16 @@ it('GPUTerrainCastShadow equals GPUSolarShadowMask fed by the sweep horizon at e
         'float32',
         pixelCount * directionCount
       ),
-      settings: maskSettings.importToGraph(graph),
-      sunVisibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'float32', pixelCount)
+      parameters: maskSettings.importToGraph(graph),
+      output: {
+        sunVisibility: importGraphBuffer(
+          graph,
+          'visibility',
+          visibilityBuffer,
+          'float32',
+          pixelCount
+        )
+      }
     })
   );
   const compiled = graph.compile();
@@ -402,7 +397,7 @@ it('GPUTerrainCastShadow equals GPUSolarShadowMask fed by the sweep horizon at e
     maskSettings.write(getGPUSolarShadowMaskParameterValues(sun));
     submitGraph(device, compiled, undefined);
     const mask = await readFloat32(visibilityBuffer, pixelCount);
-    const cast = await fixture.run({cellSize: [10, 10], ...sun});
+    const cast = await fixture.run(sun);
     expect(cast.sunVisibility.filter(value => value > 0.99).length).toBeGreaterThan(100);
     expect(cast.sunVisibility.filter(value => value < 0.01).length).toBeGreaterThan(20);
     const worst = expectNaNPattern(cast.sunVisibility, mask);

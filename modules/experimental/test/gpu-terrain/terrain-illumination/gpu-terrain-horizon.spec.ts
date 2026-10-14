@@ -36,19 +36,33 @@ import {
   type HorizonOracleResult
 } from './terrain-horizon-oracle';
 import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-oracle';
-import {getTerrainGroundCellSize} from '../../../src/gpu-terrain/terrain-grid-utils';
+import {
+  getRasterGridGeoreference,
+  getRasterGroundCellSize
+} from '../../../src/analysis-core/raster-grid';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {expectClose} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type HorizonFixture = {
-  run(settings: GPUTerrainHorizonSettings): Promise<HorizonOracleResult>;
+  /** Writes the packed parameters for `settings` on `frameGrid` (default: 10 m square cells). */
+  run(
+    settings: GPUTerrainHorizonSettings,
+    frameGrid?: GPURasterMetadata
+  ): Promise<HorizonOracleResult>;
   compileCount: number;
   destroy(): void;
 };
 
 type FixtureOptions = Omit<
   GPUTerrainHorizonProps,
-  'elevation' | 'settings' | 'horizon' | 'skyViewFactor' | 'positiveOpenness' | 'validity'
-> & {withHorizon?: boolean};
+  'elevation' | 'parameters' | 'grid' | 'output'
+> & {
+  width: number;
+  height: number;
+  withHorizon?: boolean;
+};
 
 function createHorizonFixture(
   device: Device,
@@ -67,16 +81,18 @@ function createHorizonFixture(
     positiveOpenness: createOutputBuffer(device, pixelCount),
     validity: createOutputBuffer(device, pixelCount)
   };
+  const defaultGrid = makeGPURasterMetadata({width, height, cellSize: 10});
   const settings = new GPUParameterBuffer(device, {
-    id: 'horizon-settings',
+    id: 'horizon-parameters',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainHorizonParameterValues({cellSize: [10, 10]})
+    values: getGPUTerrainHorizonParameterValues({}, defaultGrid)
   });
-  const {withHorizon: _, ...contributorOptions} = options;
+  const {withHorizon: _, width: __, height: ___, ...contributorOptions} = options;
   graph.add(
     new GPUTerrainHorizon({
       ...contributorOptions,
+      grid: defaultGrid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -85,32 +101,40 @@ function createHorizonFixture(
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
         }
       },
-      settings: settings.importToGraph(graph),
-      horizon: buffers.horizon
-        ? importGraphBuffer(
-            graph,
-            'horizon',
-            buffers.horizon,
-            'float32',
-            pixelCount * directionCount
-          )
-        : undefined,
-      skyViewFactor: importGraphBuffer(graph, 'svf', buffers.skyViewFactor, 'float32', pixelCount),
-      positiveOpenness: importGraphBuffer(
-        graph,
-        'openness',
-        buffers.positiveOpenness,
-        'float32',
-        pixelCount
-      ),
-      validity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+      parameters: settings.importToGraph(graph),
+      output: {
+        horizon: buffers.horizon
+          ? importGraphBuffer(
+              graph,
+              'horizon',
+              buffers.horizon,
+              'float32',
+              pixelCount * directionCount
+            )
+          : undefined,
+        skyViewFactor: importGraphBuffer(
+          graph,
+          'svf',
+          buffers.skyViewFactor,
+          'float32',
+          pixelCount
+        ),
+        positiveOpenness: importGraphBuffer(
+          graph,
+          'openness',
+          buffers.positiveOpenness,
+          'float32',
+          pixelCount
+        ),
+        outputValidity: importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
   const fixture: HorizonFixture = {
     compileCount: 1,
-    async run(values) {
-      settings.write(getGPUTerrainHorizonParameterValues(values));
+    async run(values, frameGrid = defaultGrid) {
+      settings.write(getGPUTerrainHorizonParameterValues(values, frameGrid));
       submitGraph(device, compiled, undefined);
       return {
         horizon: buffers.horizon
@@ -142,9 +166,7 @@ function expectOracle(actual: HorizonOracleResult, expected: HorizonOracleResult
 
 it('GPUTerrainHorizon sees a flat sky on a plane and a raised horizon in a pit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 9;
   const height = 9;
   const flat = new Float32Array(width * height).fill(50);
@@ -154,7 +176,7 @@ it('GPUTerrainHorizon sees a flat sky on a plane and a raised horizon in a pit',
     directionCount: 8,
     maximumRadius: 6
   });
-  const flatResult = await flatFixture.run({cellSize: [10, 10]});
+  const flatResult = await flatFixture.run({});
   expect(flatResult.horizon.every(value => value === 0)).toBe(true);
   expect(flatResult.skyViewFactor.every(value => value === 1)).toBe(true);
   expect(flatResult.positiveOpenness.every(value => value === 90)).toBe(true);
@@ -172,7 +194,7 @@ it('GPUTerrainHorizon sees a flat sky on a plane and a raised horizon in a pit',
     directionCount: 8,
     maximumRadius: 1
   });
-  const pitResult = await pitFixture.run({cellSize: [10, 10]});
+  const pitResult = await pitFixture.run({});
   const diagonal = (Math.atan(1 - (1 - Math.SQRT1_2) ** 2) * 180) / Math.PI;
   const expected = [45, diagonal, 45, diagonal, 45, diagonal, 45, diagonal];
   for (let sector = 0; sector < 8; sector++) {
@@ -185,9 +207,7 @@ it('GPUTerrainHorizon sees a flat sky on a plane and a raised horizon in a pit',
 
 it('GPUTerrainHorizon matches the oracle on random terrain with nodata', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 48;
   const height = 40;
   const elevation = createSmoothTerrain(width, height, 7);
@@ -207,13 +227,13 @@ it('GPUTerrainHorizon matches the oracle on random terrain with nodata', async (
       stepGrowth
     });
     const stepDistances = getGPUTerrainHorizonStepDistances(maximumRadius, stepGrowth);
-    const settingsList: GPUTerrainHorizonSettings[] = [
-      {cellSize: [10, 10]},
-      {cellSize: [10, 12], zFactor: 2},
-      {cellSize: [10, 10], curvatureCoefficient: 1e-3, maximumDistance: 95}
+    const settingsList: {settings: GPUTerrainHorizonSettings; cellSize: [number, number]}[] = [
+      {settings: {}, cellSize: [10, 10]},
+      {settings: {zFactor: 2}, cellSize: [10, 12]},
+      {settings: {curvatureCoefficient: 1e-3, maximumDistance: 95}, cellSize: [10, 10]}
     ];
-    for (const settings of settingsList) {
-      const actual = await fixture.run(settings);
+    for (const {settings, cellSize} of settingsList) {
+      const actual = await fixture.run(settings, makeGPURasterMetadata({width, height, cellSize}));
       expectOracle(
         actual,
         computeTerrainHorizon({
@@ -222,7 +242,7 @@ it('GPUTerrainHorizon matches the oracle on random terrain with nodata', async (
           elevation,
           directionCount,
           stepDistances,
-          cellSize: [settings.cellSize[0], settings.cellSize[1]],
+          cellSize,
           zFactor: settings.zFactor,
           curvatureCoefficient: settings.curvatureCoefficient,
           maximumDistance: settings.maximumDistance
@@ -237,17 +257,22 @@ it('GPUTerrainHorizon matches the oracle on random terrain with nodata', async (
 
 it('GPUTerrainHorizon supports north rows, Web Mercator cells, and sky-view-only output', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 32;
   const height = 24;
   const elevation = createSmoothTerrain(width, height, 3);
-  const settings: GPUTerrainHorizonSettings = {
-    cellSize: [20, 20],
-    northEdge: 0.3,
-    southEdge: 0.32
-  };
+  // 20 km cells in EPSG:3857 meters starting at normalized Web Mercator y 0.3 (about 58 degrees
+  // north); rows advance north, so the grid is placed with the north-advancing affine. The z
+  // factor restores slopes of the former 20 m cells.
+  const settings: GPUTerrainHorizonSettings = {zFactor: 1000};
+  const mercatorGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [20000, 20000],
+    origin: [0, getOracleWebMercatorY(0.3)],
+    rowDirection: 'north'
+  });
+  const georeference = getRasterGridGeoreference(mercatorGrid);
   const options = {
     width,
     height,
@@ -257,16 +282,15 @@ it('GPUTerrainHorizon supports north rows, Web Mercator cells, and sky-view-only
     cellSizeMode: 'web-mercator' as const
   };
   const full = createHorizonFixture(device, elevation, options);
-  const fullResult = await full.run(settings);
+  const fullResult = await full.run(settings, mercatorGrid);
   expectOracle(
     fullResult,
     computeTerrainHorizon({
       ...options,
       elevation,
       stepDistances: getGPUTerrainHorizonStepDistances(10),
-      cellSize: [20, 20],
-      northEdge: 0.3,
-      southEdge: 0.32
+      zFactor: 1000,
+      ...georeference
     })
   );
   full.destroy();
@@ -274,7 +298,7 @@ it('GPUTerrainHorizon supports north rows, Web Mercator cells, and sky-view-only
     ...options,
     withHorizon: false
   });
-  const skyResult = await skyOnly.run(settings);
+  const skyResult = await skyOnly.run(settings, mercatorGrid);
   expect(skyResult.skyViewFactor).toEqual(fullResult.skyViewFactor);
   expect(skyResult.positiveOpenness).toEqual(fullResult.positiveOpenness);
   skyOnly.destroy();
@@ -282,19 +306,19 @@ it('GPUTerrainHorizon supports north rows, Web Mercator cells, and sky-view-only
 
 it('GPUTerrainHorizon marches ground azimuths on a 60 degrees north geographic grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 0.001 degree cells at 60 N are 55.8 m by 111.4 m; a 45 degree sector must step about two
   // columns per row, not along the pixel diagonal (which would be a 26.6 degree ground ray).
   const width = 32;
   const height = 24;
   const elevation = createSmoothTerrain(width, height, 5);
-  const settings: GPUTerrainHorizonSettings = {
-    cellSize: [0.001, 0.001],
-    northEdge: 60.012,
-    southEdge: 59.988
-  };
+  // 24 rows of 0.001 degrees from 60.012 to 59.988 north.
+  const geographicGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: 0.001,
+    origin: [0, 60.012]
+  });
   const options = {
     width,
     height,
@@ -304,14 +328,12 @@ it('GPUTerrainHorizon marches ground azimuths on a 60 degrees north geographic g
   };
   const fixture = createHorizonFixture(device, elevation, options);
   expectOracle(
-    await fixture.run(settings),
+    await fixture.run({}, geographicGrid),
     computeTerrainHorizon({
       ...options,
       elevation,
       stepDistances: getGPUTerrainHorizonStepDistances(10),
-      cellSize: [0.001, 0.001],
-      northEdge: 60.012,
-      southEdge: 59.988
+      ...getRasterGridGeoreference(geographicGrid)
     })
   );
   fixture.destroy();
@@ -319,21 +341,25 @@ it('GPUTerrainHorizon marches ground azimuths on a 60 degrees north geographic g
 
 it('GPUTerrainHorizon march and sweep follow a 45 degree ground azimuth at 60 N', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  // Independent analytic pins (the oracle above shares getTerrainPixelDirection). python3 -I with
+  requireTestDevice(device);
+  // Independent analytic pins (the oracle above shares getRasterPixelDirection). python3 -I with
   // WGS84 a = 6378137, f = 1 / 298.257223563, e2 = f (2 - f), w = 1 - e2 sin^2(lat),
   // N = a / sqrt(w), M = a (1 - e2) / w^1.5, cell = [N cos(lat), M] PI / 180 * 0.001.
   const width = 48;
   const height = 24;
-  const settings: GPUTerrainHorizonSettings = {
-    cellSize: [0.001, 0.001],
-    northEdge: 60.012,
-    southEdge: 59.988
-  };
+  const geographicGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: 0.001,
+    origin: [0, 60.012]
+  });
   const sector = 1; // 45 degrees of 8 sectors
-  const [cellX, cellY] = getTerrainGroundCellSize('geographic', [0.001, 0.001], 60, 60, 0, 1);
+  const [cellX, cellY] = getRasterGroundCellSize(
+    'geographic',
+    {cellSize: [0.001, 0.001], northEdge: 60, southEdge: 60},
+    0.5,
+    1
+  );
 
   // March: a ground plane rising k = 0.5 toward true north-east has horizon atan(k) =
   // 26.565051177077994 degrees along the 45 degree ground ray. Bilinear samples of a plane are
@@ -352,7 +378,7 @@ it('GPUTerrainHorizon march and sweep follow a 45 degree ground azimuth at 60 N'
     maximumRadius: 10,
     cellSizeMode: 'geographic'
   });
-  const marchHorizon = (await march.run(settings)).horizon;
+  const marchHorizon = (await march.run({}, geographicGrid)).horizon;
   for (let row = 1; row < height; row++) {
     for (let column = 0; column < width - 1; column++) {
       const angle = marchHorizon[(row * width + column) * 8 + sector];
@@ -377,22 +403,21 @@ it('GPUTerrainHorizon march and sweep follow a 45 degree ground azimuth at 60 N'
     algorithm: 'sweep',
     cellSizeMode: 'geographic'
   });
-  const sweepHorizon = (await sweep.run(settings)).horizon;
+  const sweepHorizon = (await sweep.run({}, geographicGrid)).horizon;
   expect(sweepHorizon[(22 * width + 2) * 8 + sector]).toBeCloseTo(17.57561688017635, 3);
   sweep.destroy();
 });
 
 it('GPUTerrainHorizon gives identical results however the sectors are split over dispatches', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const elevation = createSmoothTerrain(width, height, 11);
   elevation[7 * width + 9] = NaN;
   elevation[20 * width + 30] = NaN;
-  const settings: GPUTerrainHorizonSettings = {cellSize: [10, 12], zFactor: 1.5};
+  const settings: GPUTerrainHorizonSettings = {zFactor: 1.5};
+  const grid = makeGPURasterMetadata({width, height, cellSize: [10, 12]});
   for (const directionCount of [8, 7]) {
     const options = {width, height, directionCount, maximumRadius: 14, stepGrowth: 1.2};
     const fused = createHorizonFixture(device, elevation, options);
@@ -401,8 +426,8 @@ it('GPUTerrainHorizon gives identical results however the sectors are split over
       ...options,
       maximumStepsPerDispatch: 1
     });
-    const fusedResult = await fused.run(settings);
-    const chunkedResult = await chunked.run(settings);
+    const fusedResult = await fused.run(settings, grid);
+    const chunkedResult = await chunked.run(settings, grid);
     // The two kernels are compiled separately, so fused multiply-add choices may differ by an ulp.
     expectClose(chunkedResult.horizon, fusedResult.horizon, 1e-4);
     expectClose(chunkedResult.skyViewFactor, fusedResult.skyViewFactor, 1e-6);
@@ -417,9 +442,7 @@ it('GPUTerrainHorizon gives identical results however the sectors are split over
 // would turn a flat plane at a large elevation into spurious nonzero horizons.
 it('GPUTerrainHorizon keeps a high-elevation flat plane exactly flat for any z factor', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 24;
   const height = 24;
   const flat = new Float32Array(width * height).fill(4321.123);
@@ -430,7 +453,7 @@ it('GPUTerrainHorizon keeps a high-elevation flat plane exactly flat for any z f
     maximumRadius: 20
   });
   for (const zFactor of [1.37, 0.3, 2.9]) {
-    const result = await fixture.run({cellSize: [10, 10], zFactor});
+    const result = await fixture.run({zFactor});
     const worstHorizon = result.horizon.reduce(
       (worst, value) => Math.max(worst, Math.abs(value)),
       0
@@ -451,9 +474,7 @@ it('GPUTerrainHorizon keeps a high-elevation flat plane exactly flat for any z f
 
 it('GPUTerrainHorizon matches analytic and float64 horizons on a tilted high-elevation plane', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 48;
   const height = 48;
   const directionCount = 16;
@@ -468,7 +489,7 @@ it('GPUTerrainHorizon matches analytic and float64 horizons on a tilted high-ele
     directionCount,
     maximumRadius: 6
   });
-  const result = await fixture.run({cellSize: [10, 10]});
+  const result = await fixture.run({});
   let worstAxis = 0;
   let worstOther = 0;
   let nonTrivial = 0;
@@ -499,9 +520,7 @@ it('GPUTerrainHorizon matches analytic and float64 horizons on a tilted high-ele
 
 it('GPUTerrainHorizon matches float64 on a tilted plane with curvature and a long radius', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 64;
   const height = 64;
   const directionCount = 8;
@@ -515,8 +534,7 @@ it('GPUTerrainHorizon matches float64 on a tilted plane with curvature and a lon
     directionCount,
     maximumRadius: 60
   });
-  const settings = {cellSize: [10, 10] as [number, number], curvatureCoefficient: 6.8e-8};
-  const actual = await fixture.run(settings);
+  const actual = await fixture.run({curvatureCoefficient: 6.8e-8});
   const expected = computeTerrainHorizon({
     width,
     height,
@@ -571,6 +589,7 @@ async function runExtendedHorizon(
   },
   settings: GPUTerrainHorizonSettings
 ): Promise<ExtendedOutputs> {
+  // Every extended run uses 10 m square cells.
   const {width, height, directionCount, horizonFormat} = options;
   const pixelCount = width * height;
   const elementCount = pixelCount * directionCount;
@@ -586,15 +605,18 @@ async function runExtendedHorizon(
     validity: createOutputBuffer(device, pixelCount)
   };
   const settingsBuffer = new GPUParameterBuffer(device, {
-    id: 'horizon-extended-settings',
+    id: 'horizon-extended-parameters',
     format: 'float32',
     length: 12,
-    values: getGPUTerrainHorizonParameterValues(settings, new Float32Array(12))
+    values: getGPUTerrainHorizonParameterValues(
+      settings,
+      makeGPURasterMetadata({width, height, cellSize: 10}),
+      new Float32Array(12)
+    )
   });
   graph.add(
     new GPUTerrainHorizon({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height, cellSize: 10}),
       directionCount,
       maximumRadius: options.maximumRadius,
       horizonFormat,
@@ -607,34 +629,36 @@ async function runExtendedHorizon(
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
         }
       },
-      settings: settingsBuffer.importToGraph(graph),
-      horizon:
-        horizonFormat === 'unorm16'
-          ? importGraphBuffer(graph, 'horizon', outputs.horizon, 'uint32', horizonLength)
-          : importGraphBuffer(graph, 'horizon', outputs.horizon, 'float32', horizonLength),
-      skyViewFactor: importGraphBuffer(graph, 'svf', outputs.svf, 'float32', pixelCount),
-      positiveOpenness: importGraphBuffer(
-        graph,
-        'positive',
-        outputs.positive,
-        'float32',
-        pixelCount
-      ),
-      negativeOpenness: importGraphBuffer(
-        graph,
-        'negative',
-        outputs.negative,
-        'float32',
-        pixelCount
-      ),
-      anisotropicSkyViewFactor: importGraphBuffer(
-        graph,
-        'anisotropic',
-        outputs.anisotropic,
-        'float32',
-        pixelCount
-      ),
-      validity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount)
+      parameters: settingsBuffer.importToGraph(graph),
+      output: {
+        horizon:
+          horizonFormat === 'unorm16'
+            ? importGraphBuffer(graph, 'horizon', outputs.horizon, 'uint32', horizonLength)
+            : importGraphBuffer(graph, 'horizon', outputs.horizon, 'float32', horizonLength),
+        skyViewFactor: importGraphBuffer(graph, 'svf', outputs.svf, 'float32', pixelCount),
+        positiveOpenness: importGraphBuffer(
+          graph,
+          'positive',
+          outputs.positive,
+          'float32',
+          pixelCount
+        ),
+        negativeOpenness: importGraphBuffer(
+          graph,
+          'negative',
+          outputs.negative,
+          'float32',
+          pixelCount
+        ),
+        anisotropicSkyViewFactor: importGraphBuffer(
+          graph,
+          'anisotropic',
+          outputs.anisotropic,
+          'float32',
+          pixelCount
+        ),
+        outputValidity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -662,9 +686,7 @@ async function runExtendedHorizon(
 
 it('GPUTerrainHorizon writes negative openness and anisotropic sky-view factor matching float64', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 36;
   const height = 30;
   const elevation = createSmoothTerrain(width, height, 13);
@@ -686,7 +708,6 @@ it('GPUTerrainHorizon writes negative openness and anisotropic sky-view factor m
     {azimuthDegrees: 100, level: 3, minimumWeight: 0.2}
   ]) {
     const settings = {
-      cellSize: [10, 10] as [number, number],
       zFactor: 1.5,
       anisotropyAzimuthDegrees: anisotropy.azimuthDegrees,
       anisotropyLevel: anisotropy.level,
@@ -728,9 +749,7 @@ it('GPUTerrainHorizon writes negative openness and anisotropic sky-view factor m
 
 it('GPUTerrainHorizon negative openness sees a peak as a pit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 9;
   const height = 9;
   const center = 4 * width + 4;
@@ -743,10 +762,10 @@ it('GPUTerrainHorizon negative openness sees a peak as a pit', async () => {
   } as const;
   const peak = new Float32Array(width * height).fill(50);
   peak[center] = 60;
-  const peakResult = await runExtendedHorizon(device, peak, options, {cellSize: [10, 10]});
+  const peakResult = await runExtendedHorizon(device, peak, options, {});
   const pit = new Float32Array(width * height).fill(50);
   pit[center] = 40;
-  const pitResult = await runExtendedHorizon(device, pit, options, {cellSize: [10, 10]});
+  const pitResult = await runExtendedHorizon(device, pit, options, {});
   // The inverted peak is the pit: nadir openness of the peak equals positive openness of the pit.
   expect(peakResult.negativeOpenness[center]).toBeCloseTo(pitResult.positiveOpenness[center], 4);
   expect(peakResult.negativeOpenness[center]).toBeLessThan(80);
@@ -758,9 +777,7 @@ it('GPUTerrainHorizon negative openness sees a peak as a pit', async () => {
 
 it('GPUTerrainHorizon unorm16 horizon matches the quantised float32 horizon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 17;
   const height = 13;
   const elevation = createSmoothTerrain(width, height, 5);
@@ -769,7 +786,7 @@ it('GPUTerrainHorizon unorm16 horizon matches the quantised float32 horizon', as
   // 7 is odd: width * height * 7 = 1547 elements, so the last word is half used.
   for (const directionCount of [8, 7]) {
     const base = {width, height, directionCount, maximumRadius: 10};
-    const settings = {cellSize: [10, 10] as [number, number]};
+    const settings = {};
     const reference = await runExtendedHorizon(
       device,
       elevation,
@@ -835,9 +852,7 @@ it('unorm16 horizon codec round-trips within half a step and flags invalid as 0'
 
 it('GPUTerrainHorizon sweep algorithm matches the float64 digital-line oracle for every output', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 40;
   const height = 33;
   const directionCount = 16;
@@ -851,7 +866,6 @@ it('GPUTerrainHorizon sweep algorithm matches the float64 digital-line oracle fo
     [60, 'unorm16']
   ] as const) {
     const settings = {
-      cellSize: [10, 10] as [number, number],
       zFactor: 1.3,
       curvatureCoefficient: 2e-4,
       anisotropyAzimuthDegrees: anisotropy.azimuthDegrees,

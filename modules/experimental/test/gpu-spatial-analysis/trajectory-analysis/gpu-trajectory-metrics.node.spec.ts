@@ -8,33 +8,40 @@ import {
   getGPUTrajectoryMetricsParameterValues,
   GPUTrajectoryMetrics,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
+  type GPUTrajectoryMetricsOutput,
   type GPUTrajectoryMetricsProps
 } from '../../../src/gpu-spatial-analysis/trajectory-analysis';
 import {getSegmentedReductionNodes} from '../../../src/gpu-spatial-analysis/trajectory-analysis/trajectory-metrics-kernels';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {countDistinctPipelines} from '../../utils/gpu-contributor-test-utils';
 
 let uniqueIndex = 0;
 const unique = (id: string) => `${id}-${uniqueIndex++}`;
 
+type MetricsOverrides = Partial<Omit<GPUTrajectoryMetricsProps, 'output'>> & {
+  output?: Partial<GPUTrajectoryMetricsOutput>;
+};
+
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUTrajectoryMetricsProps> = {}
+  overrides: MetricsOverrides = {}
 ): GPUTrajectoryMetricsProps {
+  const {output, ...rest} = overrides;
   return {
     spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     positions: createTransientView(graph, unique('positions'), 'float32x2', 8),
     timestamps: createTransientView(graph, unique('timestamps'), 'float32', 8),
     trackOffsets: createTransientView(graph, unique('offsets'), 'uint32', 3),
     parameters: createTransientView(graph, unique('parameters'), 'float32', 4),
-    trackLengths: createTransientView(graph, unique('lengths'), 'float32', 2),
-    ...overrides
+    output: {trackLengths: createTransientView(graph, unique('lengths'), 'float32', 2), ...output},
+    ...rest
   };
 }
 
 function createStops(graph: GPUCommandGraph, capacity: number = 4) {
   return {
-    output: {
-      ids: createTransientView(graph, unique('stop-ids'), 'uint32', capacity),
+    ids: createTransientView(graph, unique('stop-ids'), 'uint32', capacity),
+    status: {
       count: createTransientView(graph, unique('stop-count'), 'uint32', 1),
       overflow: createTransientView(graph, unique('stop-overflow'), 'uint32', 1)
     }
@@ -88,16 +95,18 @@ it('GPUTrajectoryMetrics orders and prefixes stop nodes', () => {
   const ids = new GPUTrajectoryMetrics(
     createProps(graph, {
       id: 'tm',
-      trackDurations: createTransientView(graph, 'durations', 'float32', 2),
-      averageSpeeds: createTransientView(graph, 'averages', 'float32', 2),
-      maximumSpeeds: createTransientView(graph, 'maxima', 'float32', 2),
-      trackStopCounts: createTransientView(graph, 'stop-counts', 'uint32', 2),
-      stops: {
-        ...createStops(graph),
-        startRows: createTransientView(graph, 'starts', 'uint32', 4),
-        endRows: createTransientView(graph, 'ends', 'uint32', 4),
-        centroids: createTransientView(graph, 'centroids', 'float32x2', 4),
-        durations: createTransientView(graph, 'stop-durations', 'float32', 4)
+      output: {
+        trackDurations: createTransientView(graph, 'durations', 'float32', 2),
+        averageSpeeds: createTransientView(graph, 'averages', 'float32', 2),
+        maximumSpeeds: createTransientView(graph, 'maxima', 'float32', 2),
+        trackStopCounts: createTransientView(graph, 'stop-counts', 'uint32', 2),
+        stops: {
+          ...createStops(graph),
+          startRows: createTransientView(graph, 'starts', 'uint32', 4),
+          endRows: createTransientView(graph, 'ends', 'uint32', 4),
+          centroids: createTransientView(graph, 'centroids', 'float32x2', 4),
+          durations: createTransientView(graph, 'stop-durations', 'float32', 4)
+        }
       }
     })
   )
@@ -136,8 +145,10 @@ it('GPUTrajectoryMetrics schedules only stop counts when stops are absent', () =
   const graph = new GPUCommandGraph(device);
   const ids = new GPUTrajectoryMetrics(
     createProps(graph, {
-      trackLengths: undefined,
-      trackStopCounts: createTransientView(graph, 'stop-counts', 'uint32', 2)
+      output: {
+        trackLengths: undefined,
+        trackStopCounts: createTransientView(graph, 'stop-counts', 'uint32', 2)
+      }
     })
   )
     .getCommandNodes(graph)
@@ -157,35 +168,55 @@ it('GPUTrajectoryMetrics validates props', () => {
     format: Format,
     length: number
   ) => createTransientView(graph, id, format, length);
-  const create = (overrides: Partial<GPUTrajectoryMetricsProps>) =>
+  const create = (overrides: MetricsOverrides) =>
     new GPUTrajectoryMetrics(createProps(graph, overrides));
 
   expect(() => create({})).not.toThrow();
   expect(() => create({timestamps: view('t7', 'float32', 7)})).toThrow(/timestamps length/);
   expect(() => create({trackOffsets: view('o1', 'uint32', 1)})).toThrow(/at least two rows/);
-  expect(() => create({trackLengths: view('l3', 'float32', 3)})).toThrow(/track count/);
-  expect(() => create({maximumSpeeds: view('m3', 'float32', 3)})).toThrow(/maximumSpeeds/);
+  expect(() =>
+    create({
+      output: {trackLengths: view('l3', 'float32', 3)}
+    })
+  ).toThrow(/track count/);
+  expect(() =>
+    create({
+      output: {maximumSpeeds: view('m3', 'float32', 3)}
+    })
+  ).toThrow(/maximumSpeeds/);
   expect(() => create({parameters: view('p3', 'float32', 3)})).toThrow(/parameters must hold/);
-  expect(() => create({trackLengths: undefined, trackDurations: undefined})).toThrow(
-    /at least one output/
-  );
-  expect(() => create({parameters: undefined, stops: createStops(graph)})).toThrow(/parameters/);
-  expect(() => create({parameters: undefined, trackStopCounts: view('c2', 'uint32', 2)})).toThrow(
+  expect(() =>
+    create({
+      output: {trackLengths: undefined, trackDurations: undefined}
+    })
+  ).toThrow(/at least one output/);
+  expect(() => create({parameters: undefined, output: {stops: createStops(graph)}})).toThrow(
     /parameters/
   );
-  expect(() => create({trackStopCounts: view('c3', 'uint32', 3)})).toThrow(/trackStopCounts/);
   expect(() =>
-    create({stops: {...createStops(graph, 4), startRows: view('s3', 'uint32', 3)}})
+    create({parameters: undefined, output: {trackStopCounts: view('c2', 'uint32', 2)}})
+  ).toThrow(/parameters/);
+  expect(() =>
+    create({
+      output: {trackStopCounts: view('c3', 'uint32', 3)}
+    })
+  ).toThrow(/trackStopCounts/);
+  expect(() =>
+    create({
+      output: {stops: {...createStops(graph, 4), startRows: view('s3', 'uint32', 3)}}
+    })
   ).toThrow(/stop capacity/);
   expect(() =>
-    create({stops: {...createStops(graph, 4), centroids: view('c4', 'float32', 4) as never}})
+    create({
+      output: {stops: {...createStops(graph, 4), centroids: view('c4', 'float32', 4) as never}}
+    })
   ).toThrow(/centroids/);
 
   const shared = graph.createTransientBuffer({id: 'shared', byteLength: 256, usage: 128});
   expect(() =>
     create({
-      trackLengths: graph.createDataView(shared, {format: 'float32', length: 2}),
-      timestamps: graph.createDataView(shared, {format: 'float32', length: 8, byteOffset: 64})
+      timestamps: graph.createDataView(shared, {format: 'float32', length: 8, byteOffset: 64}),
+      output: {trackLengths: graph.createDataView(shared, {format: 'float32', length: 2})}
     })
   ).toThrow(/must not share buffers/);
 
@@ -217,7 +248,7 @@ it('getSegmentedReductionNodes chunks segments above the dispatch limit', () => 
 it('GPUTrajectoryMetrics validates word and double-single timestamp inputs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const create = (overrides: Partial<GPUTrajectoryMetricsProps>) =>
+  const create = (overrides: MetricsOverrides) =>
     new GPUTrajectoryMetrics(createProps(graph, overrides));
   const words = (id: string, length: number) =>
     createTransientView(graph, unique(id), 'uint32x2', length);
@@ -242,14 +273,16 @@ it('GPUTrajectoryMetrics validates word and double-single timestamp inputs', () 
 
 it('GPUTrajectoryMetrics splits step and qualify kernels only for double-single times', () => {
   const device = createNullWebGPUDevice();
-  const getIds = (getOverrides: (graph: GPUCommandGraph) => Partial<GPUTrajectoryMetricsProps>) => {
+  const getIds = (getOverrides: (graph: GPUCommandGraph) => MetricsOverrides) => {
     const graph = new GPUCommandGraph(device);
     const props = createProps(graph, {
-      trackDurations: createTransientView(graph, unique('durations'), 'float32', 2),
-      maximumSpeeds: createTransientView(graph, unique('maxima'), 'float32', 2),
-      trackStopCounts: createTransientView(graph, unique('stop-counts'), 'uint32', 2),
-      stops: createStops(graph),
-      ...getOverrides(graph)
+      ...getOverrides(graph),
+      output: {
+        trackDurations: createTransientView(graph, unique('durations'), 'float32', 2),
+        maximumSpeeds: createTransientView(graph, unique('maxima'), 'float32', 2),
+        trackStopCounts: createTransientView(graph, unique('stop-counts'), 'uint32', 2),
+        stops: createStops(graph)
+      }
     });
     return new GPUTrajectoryMetrics(props).getCommandNodes(graph).map(node => node.id);
   };
@@ -276,5 +309,30 @@ it('GPUTrajectoryMetrics splits step and qualify kernels only for double-single 
     expect(ids).not.toContain('trajectory-metrics-steps-runs');
     expect(ids).not.toContain('trajectory-metrics-run-qualify-tracks');
   }
+  device.destroy();
+});
+
+it('getSegmentedReductionNodes chunks share one pipeline however many there are', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const countPipelines = (segmentCount: number) => {
+    const nodes = getSegmentedReductionNodes(
+      graph,
+      {
+        id: `reduce-${segmentCount}`,
+        input: createTransientView(graph, unique('input'), 'float32', segmentCount * 2),
+        segmentOffsets: createTransientView(graph, unique('segments'), 'uint32', segmentCount + 1),
+        output: createTransientView(graph, unique('sums'), 'float32', segmentCount),
+        operation: 'sum'
+      },
+      // Not a multiple of 64: the stride must round down so chunk offsets stay 256-byte aligned.
+      100
+    );
+    return {nodeCount: nodes.length, pipelines: countDistinctPipelines(nodes)};
+  };
+  const three = countPipelines(250);
+  const four = countPipelines(350);
+  expect(four.nodeCount).toBeGreaterThan(three.nodeCount);
+  expect(four.pipelines).toBe(three.pipelines);
   device.destroy();
 });

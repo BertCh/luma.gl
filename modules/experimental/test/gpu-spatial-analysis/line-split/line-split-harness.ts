@@ -96,21 +96,23 @@ export async function runLineSplit(
         lineOffsets: input('line-offsets', arrays.lineOffsets, 'uint32')
       },
       intersectionCapacity: options.intersectionCapacity ?? 512,
-      pieces: {
-        geometry: {
-          kind: 'lines',
-          positions: positions.view,
-          lineOffsets: offsets.view
-        },
-        sourceIds: lineIds.view,
-        status: {
-          count: count.view,
-          overflow: overflow.view,
-          candidateOverflow: candidateOverflow.view,
-          requiredCount: requiredCount.view
-        },
-        vertexCount: vertexCount.view,
-        requiredVertexCount: requiredVertexCount.view
+      output: {
+        pieces: {
+          geometry: {
+            kind: 'lines',
+            positions: positions.view,
+            lineOffsets: offsets.view
+          },
+          sourceIds: lineIds.view,
+          status: {
+            count: count.view,
+            overflow: overflow.view,
+            candidateOverflow: candidateOverflow.view,
+            requiredCount: requiredCount.view,
+            vertexCount: vertexCount.view,
+            requiredVertexCount: requiredVertexCount.view
+          }
+        }
       }
     })
   );

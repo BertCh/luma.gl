@@ -5,8 +5,10 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUSkaterRegionsParameterValues,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPU_SKATER_NO_CUT,
+  GPU_SKATER_REGIONS_PARAMETER_LENGTH,
   GPURegionPartitionEvaluation,
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree
@@ -20,6 +22,7 @@ import {
   evaluatePartition,
   getSquaredDistance
 } from './spatial-regionalization-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Csr = {offsets: number[]; neighbors: number[]};
 
@@ -76,8 +79,7 @@ async function buildForest(device: Device, csr: Csr, values: number[], columns: 
       values: rig.input(new Float32Array(values), 'float32', values.length),
       columnCount: columns,
       standardize: false,
-      treeEdgeFlags: flags.view,
-      componentLabels: componentLabels.view
+      output: {treeEdgeFlags: flags.view, componentLabels: componentLabels.view}
     })
   );
   const compiled = rig.graph.compile();
@@ -91,7 +93,7 @@ async function buildForest(device: Device, csr: Csr, values: number[], columns: 
 
 it('GPUSpatialWeightsMinimumSpanningTree handles a monotone path, random lattices and forests', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Costs (i + 1)^2 grow along the path, so every row's cheapest link points down the path and
   // Boruvka hooks one chain of every row: the pointer-jumping depth is at its maximum.
   for (const rows of [2, 3, 255, 257, 1500]) {
@@ -197,7 +199,7 @@ function runGreedyOracle(
 
 it('GPUSkaterRegions matches a greedy f64 oracle on a deep path and a lattice tree', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(5);
   const scenes: {name: string; csr: Csr; minimumSize: number}[] = [
     {name: 'path-600', csr: createPath(600), minimumSize: 1},
@@ -229,7 +231,14 @@ it('GPUSkaterRegions matches a greedy f64 oracle on a deep path and a lattice tr
       'uint32',
       csr.neighbors.length
     );
-    const parameters = rig.input(new Uint32Array([cutCount + 1, minimumSize]), 'uint32', 2);
+    const parameters = rig.input(
+      getGPUSkaterRegionsParameterValues({
+        regionCount: cutCount + 1,
+        minimumRegionSize: minimumSize
+      }),
+      'uint32',
+      GPU_SKATER_REGIONS_PARAMETER_LENGTH
+    );
     const labels = rig.output('uint32', rows);
     const regionCount = rig.output('uint32', 1);
     const cutEdges = rig.output('uint32', cutCount);
@@ -241,9 +250,7 @@ it('GPUSkaterRegions matches a greedy f64 oracle on a deep path and a lattice tr
         values: rig.input(new Float32Array(values), 'float32', rows),
         maximumRegionCount: cutCount + 1,
         parameters,
-        labels: labels.view,
-        regionCount: regionCount.view,
-        cutEdges: cutEdges.view
+        output: {labels: labels.view, regionCount: regionCount.view, cutEdges: cutEdges.view}
       })
     );
     const compiled = rig.graph.compile();
@@ -263,7 +270,7 @@ it('GPUSkaterRegions matches a greedy f64 oracle on a deep path and a lattice tr
 
 it('GPURegionPartitionEvaluation scales with the default label capacity and skewed region sizes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(31);
   const rows = 3001;
   const columns = 2;
@@ -297,9 +304,11 @@ it('GPURegionPartitionEvaluation scales with the default label capacity and skew
       columnCount: columns,
       labels: rig.input(new Uint32Array(labels), 'uint32', rows),
       weights,
-      summary: summary.view,
-      regionSizes: sizes.view,
-      regionWithinSsd: within.view
+      output: {
+        summary: summary.view,
+        regionSizes: sizes.view,
+        regionWithinSumOfSquares: within.view
+      }
     })
   );
   const compiled = rig.graph.compile();
@@ -319,10 +328,10 @@ it('GPURegionPartitionEvaluation scales with the default label capacity and skew
   expect(words[layout.ignoredRows]).toBe(rows - kept.length);
   expect(words[layout.minimumSize]).toBe(expected.minimumSize);
   expect(words[layout.maximumSize]).toBe(expected.maximumSize);
-  expect(Math.abs(words[layout.withinSsd] - expected.withinSsd)).toBeLessThan(
+  expect(Math.abs(words[layout.withinSumOfSquares] - expected.withinSsd)).toBeLessThan(
     1e-4 * expected.withinSsd
   );
-  expect(Math.abs(words[layout.totalSsd] - expected.totalSsd)).toBeLessThan(
+  expect(Math.abs(words[layout.totalSumOfSquares] - expected.totalSsd)).toBeLessThan(
     1e-4 * expected.totalSsd
   );
   const histogram = new Map<number, number>();

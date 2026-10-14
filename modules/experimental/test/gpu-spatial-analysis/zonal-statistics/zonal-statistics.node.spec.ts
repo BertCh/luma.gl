@@ -47,13 +47,13 @@ function createProps(
     id: 'z',
     features: {
       kind: 'polygons',
-      polygonPositions: view(graph, 'polygon-positions', 'float32x2', 20),
+      positions: view(graph, 'polygon-positions', 'float32x2', 20),
       featureOffsets: view(graph, 'feature-offsets', 'uint32', FEATURE_COUNT + 1),
       polygonOffsets: view(graph, 'polygon-offsets', 'uint32', 5),
       ringOffsets: view(graph, 'ring-offsets', 'uint32', 6),
       candidateCapacity: 16
     },
-    points: view(graph, 'points', 'float32x2', POINT_COUNT),
+    positions: view(graph, 'points', 'float32x2', POINT_COUNT),
     values: view(graph, 'values', 'float32', POINT_COUNT),
     output,
     ...overrides
@@ -106,7 +106,9 @@ it('GPUZonalStatistics validates props', () => {
   expect(() =>
     create(createProps(graph, {weights: out('short-weights', 'float32', POINT_COUNT - 1)}))
   ).toThrow(/weights length/);
-  expect(() => create(createProps(graph, {points: undefined}))).toThrow(/points are required/);
+  expect(() => create(createProps(graph, {positions: undefined}))).toThrow(
+    /positions are required/
+  );
   expect(() => create(createProps(graph, {}, {extent: out('extent', 'float32', 2)}))).toThrow(
     /extentStatistic/
   );
@@ -117,13 +119,19 @@ it('GPUZonalStatistics validates props', () => {
     create(createProps(graph, {}, {counts: out('short-counts', 'uint32', FEATURE_COUNT - 1)}))
   ).toThrow(/feature count/);
   expect(() =>
-    create(createProps(graph, {}, {uncertainCount: out('empty-uncertain', 'uint32', 0)}))
+    create(createProps(graph, {}, {status: {uncertainCount: out('empty-uncertain', 'uint32', 0)}}))
   ).toThrow(/uncertainCount must contain one uint32 row/);
   expect(() =>
-    create(createProps(graph, {}, {uncertainCount: out('float-uncertain', 'float32', 1) as never}))
+    create(
+      createProps(
+        graph,
+        {},
+        {status: {uncertainCount: out('float-uncertain', 'float32', 1) as never}}
+      )
+    )
   ).toThrow(/uncertainCount/);
   expect(() =>
-    create(createProps(graph, {}, {uncertainCount: out('uncertain', 'uint32', 1)}))
+    create(createProps(graph, {}, {status: {uncertainCount: out('uncertain', 'uint32', 1)}}))
   ).not.toThrow();
   expect(() => create(createProps(graph, {sumOrder: 'nearest' as never}))).toThrow(/sumOrder/);
   expect(() =>
@@ -243,7 +251,7 @@ it('GPUZonalStatistics schedules the atomic nodes in order', () => {
         minima: f('mn'),
         maxima: f('mx'),
         densities: f('d'),
-        overflow: view(graph, 'o', 'uint32', 1),
+        status: {overflow: view(graph, 'o', 'uint32', 1)},
         extent: view(graph, 'e', 'float32', 2),
         extentStatistic: 'density'
       }

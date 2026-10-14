@@ -28,6 +28,7 @@ import {
   type OraclePoint,
   type OracleSegmentFeature
 } from './segment-intersection-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type GPUHit = {
   left: number;
@@ -95,21 +96,25 @@ async function runIntersection(
       sameFeatureOnly: options.sameFeatureOnly,
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
-      pairs: {
-        leftIds: leftIds.view,
-        rightIds: rightIds.view,
-        count: count.view,
-        overflow: overflow.view,
-        requiredCount: total.view
-      },
-      uncertainCount: uncertain.view,
-      kinds: kinds.view,
-      points: points.view,
-      endPoints: endPoints.view,
-      leftFeatures: leftFeatures.view,
-      rightFeatures: rightFeatures.view,
-      leftRings: leftRings.view,
-      rightRings: rightRings.view
+      output: {
+        pairs: {
+          leftIds: leftIds.view,
+          rightIds: rightIds.view,
+          status: {
+            count: count.view,
+            overflow: overflow.view,
+            requiredCount: total.view
+          }
+        },
+        status: {uncertainCount: uncertain.view},
+        kinds: kinds.view,
+        points: points.view,
+        endPoints: endPoints.view,
+        leftFeatures: leftFeatures.view,
+        rightFeatures: rightFeatures.view,
+        leftRings: leftRings.view,
+        rightRings: rightRings.view
+      }
     })
   );
   const compiled = graph.compile();
@@ -204,9 +209,7 @@ const polygon = (...rings: OraclePoint[][]): OracleSegmentFeature => ({
 
 it('GPUSegmentIntersection classifies proper, touch, collinear and overlap pairs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const left = [
     line([0, 0], [4, 4]), // 0..1: crosses, touches, overlaps below
     line([10, 10], [12, 10]),
@@ -237,9 +240,7 @@ it('GPUSegmentIntersection classifies proper, touch, collinear and overlap pairs
 
 it('GPUSegmentIntersection is exact for nearly collinear random segments', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(7);
   // Points that are almost, but not exactly, on the line of another segment decide the orientation
   // by one ulp; a naive f32 determinant misses these. A small coordinate lattice adds exact ties.
@@ -280,9 +281,7 @@ it('GPUSegmentIntersection is exact for nearly collinear random segments', async
 
 it('GPUSegmentIntersection self mode finds kinks and skips adjacent segments', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const polygons: OracleSegmentFeature[] = [
     // 0: bowtie, edges (0,0)-(4,4) and (4,0)-(0,4) cross.
     polygon([
@@ -355,9 +354,7 @@ it('GPUSegmentIntersection self mode finds kinks and skips adjacent segments', a
 
 it('GPUSegmentIntersection self mode with sameFeatureOnly and between features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(11);
   const features: OracleSegmentFeature[] = [];
   for (let row = 0; row < 60; row++) {
@@ -401,9 +398,7 @@ it('GPUSegmentIntersection self mode with sameFeatureOnly and between features',
 
 it('GPUSegmentIntersection intersects lines with polygons across kinds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const lines = [line([-2, 2], [10, 2]), line([2, -2], [2, 10]), line([0, 0], [8, 0], [8, 8])];
   const polygons = [
     polygon(
@@ -436,9 +431,7 @@ it('GPUSegmentIntersection intersects lines with polygons across kinds', async (
 
 it('GPUSegmentIntersection reports overflow and keeps a sorted prefix', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const left: OracleSegmentFeature[] = [];
   const right: OracleSegmentFeature[] = [];
   for (let row = 0; row < 12; row++) {
@@ -457,9 +450,7 @@ it('GPUSegmentIntersection reports overflow and keeps a sorted prefix', async ()
 
 it('GPUSegmentIntersection flags pairs it cannot certify as uncertain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The first right segment forces an orientation whose terms span about 2^226: not certifiable.
   const left = [line([1e-30, 1e-30], [2e-30, 2e-30]), line([0, 0], [4, 4])];
   const right = [line([1.5e-30, 1.5e-30], [1e38, 1e38]), line([0, 4], [4, 0])];
@@ -477,9 +468,7 @@ it('GPUSegmentIntersection flags pairs it cannot certify as uncertain', async ()
 
 it('GPUSegmentIntersection skips degenerate and non-finite segments and validates props', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const left = [line([0, 0], [0, 0], [4, 4]), line([0, 0], [Number.NaN, 4], [1, 1])];
   const right = [line([0, 4], [4, 0]), line([2, 2], [2, 2])];
   const result = await runIntersection(device, left, right);
@@ -494,22 +483,25 @@ it('GPUSegmentIntersection skips degenerate and non-finite segments and validate
   const pairs = {
     leftIds: view('a', 4),
     rightIds: view('b', 4),
-    count: view('c', 1),
-    overflow: view('d', 1)
+    status: {count: view('c', 1), overflow: view('d', 1)}
   };
-  expect(
-    () =>
-      new GPUSegmentIntersection({left: geometry, pairs, sameFeatureOnly: true, right: geometry})
-  ).toThrow(/self mode/);
-  expect(() => new GPUSegmentIntersection({left: geometry, pairs, leafCapacity: 3})).toThrow(
-    /power of two/
-  );
   expect(
     () =>
       new GPUSegmentIntersection({
         left: geometry,
-        pairs,
-        kinds: view('e', 3)
+        output: {pairs},
+        sameFeatureOnly: true,
+        right: geometry
+      })
+  ).toThrow(/self mode/);
+  expect(
+    () => new GPUSegmentIntersection({left: geometry, output: {pairs}, leafCapacity: 3})
+  ).toThrow(/power of two/);
+  expect(
+    () =>
+      new GPUSegmentIntersection({
+        left: geometry,
+        output: {pairs, kinds: view('e', 3)}
       })
   ).toThrow(/pair capacity/);
   for (const buffer of buffers) {
@@ -519,9 +511,7 @@ it('GPUSegmentIntersection skips degenerate and non-finite segments and validate
 
 it('GPUSegmentIntersection agrees with Shapely on a pinned lattice scene', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const toLines = (segments: readonly (readonly (readonly number[])[])[]) =>
     segments.map(([a, b]) => line([a[0], a[1]], [b[0], b[1]]));
   const left = toLines(SHAPELY_SEGMENT_FIXTURE.left);
@@ -540,9 +530,7 @@ it('GPUSegmentIntersection agrees with Shapely on a pinned lattice scene', async
 
 it('GPUSegmentIntersection self mode on a shuffled multi-block scene equals the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Short random two-vertex lines in no spatial order: 4400 vertices (more than one bounds
   // reduction block), spatialSort on, so self-mode probes walk the tree in leaf order and the
   // sorted-order output must still equal the row-order oracle. A few long lines cross many.

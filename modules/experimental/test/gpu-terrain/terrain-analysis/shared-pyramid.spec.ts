@@ -10,6 +10,7 @@ import {
   type SharedPyramidMode,
   type SharedPyramidOutputs
 } from './shared-pyramid-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 96;
 const HEIGHT = 80;
@@ -28,9 +29,7 @@ async function runScene(
 
 it('shared pyramid results are bit-identical to march and to self-built pyramids', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const march = await runScene(device, 'march');
   const self = await runScene(device, 'self');
   const shared = await runScene(device, 'shared');

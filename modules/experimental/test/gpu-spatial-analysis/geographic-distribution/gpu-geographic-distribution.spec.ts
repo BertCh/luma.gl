@@ -11,7 +11,7 @@ import {
   getGPUGeographicDistributionParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPUGeographicDistribution,
-  type GPUGeographicDistributionParameters
+  type GPUGeographicDistributionSettings
 } from '../../../src/gpu-spatial-analysis/geographic-distribution';
 import {
   createInputBuffer,
@@ -24,6 +24,7 @@ import {
   computeGeographicDistribution,
   type GeographicDistributionOracleResult
 } from './geographic-distribution-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const VERTEX_COUNT = 16;
 const MEDIAN_ITERATIONS = 24;
@@ -99,9 +100,7 @@ type Outputs = Record<
 >;
 
 type Fixture = {
-  run(
-    parameters?: GPUGeographicDistributionParameters
-  ): Promise<GeographicDistributionOracleResult>;
+  run(parameters?: GPUGeographicDistributionSettings): Promise<GeographicDistributionOracleResult>;
   /** Number of `graph.compile()` calls beyond the first. */
   rebuildCount: number;
   destroy(): void;
@@ -183,7 +182,7 @@ function createFixture(
           ? importGraphBuffer(graph, 'line-ends', input(scene.lineEnds), 'float32x2', rows)
           : undefined,
       parameters: parameterBuffer.importToGraph(graph),
-      medianIterations: MEDIAN_ITERATIONS,
+      maximumMedianIterations: MEDIAN_ITERATIONS,
       reduction: options.reduction,
       polygonVertexCount: VERTEX_COUNT,
       output: {
@@ -279,7 +278,7 @@ function computeMedianObjectives(
 function expectParity(
   actual: GeographicDistributionOracleResult,
   scene: Scene,
-  parameters: GPUGeographicDistributionParameters,
+  parameters: GPUGeographicDistributionSettings,
   options: {
     useLines?: boolean;
     unweighted?: boolean;
@@ -298,7 +297,7 @@ function expectParity(
     lineEnds: options.useLines ? scene.lineEnds : undefined,
     groupCount: scene.groupCount,
     vertexCount: VERTEX_COUNT,
-    medianIterations: MEDIAN_ITERATIONS,
+    maximumMedianIterations: MEDIAN_ITERATIONS,
     ...parameters
   });
   expect(actual.counts).toEqual(expected.counts);
@@ -355,9 +354,7 @@ function expectParity(
 
 it('GPUGeographicDistribution matches the CPU oracle on random grouped weighted data', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [seed, groupCount] of [
     [1, 1],
     [2, 5],
@@ -387,9 +384,7 @@ it('GPUGeographicDistribution matches the CPU oracle on random grouped weighted 
 
 it('GPUGeographicDistribution works unweighted without groups and without a local origin', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(4, 1500, 1);
   const fixture = createFixture(device, scene, {
     unweighted: true,
@@ -411,9 +406,7 @@ it('GPUGeographicDistribution works unweighted without groups and without a loca
 
 it('GPUGeographicDistribution rings match the ellipse and circle definitions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(5, 2000, 3);
   const fixture = createFixture(device, scene);
   const parameters = {
@@ -452,9 +445,7 @@ it('GPUGeographicDistribution rings match the ellipse and circle definitions', a
 
 it('GPUGeographicDistribution computes linear directional means, including orientationOnly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(6, 2500, 4, true);
   const fixture = createFixture(device, scene, {useLines: true});
   for (const orientationOnly of [false, true]) {
@@ -488,9 +479,7 @@ it('GPUGeographicDistribution computes linear directional means, including orien
 
 it('GPUGeographicDistribution recovers a known ellipse, a single point and the median', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const known: Scene = {
     positions: Float32Array.from([-2, 0, 2, 0, 0, -1, 0, 1]),
     groupCount: 1
@@ -517,9 +506,7 @@ it('GPUGeographicDistribution recovers a known ellipse, a single point and the m
 
 it('GPUGeographicDistribution is bitwise reproducible across encodings', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(7, 6000, 9, true);
   const parameters = {origin: [100000, 200000] as [number, number]};
   const bits = (result: GeographicDistributionOracleResult) =>
@@ -541,12 +528,10 @@ it('GPUGeographicDistribution is bitwise reproducible across encodings', async (
 
 it('GPUGeographicDistribution changes parameters between encodings without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(8, 2000, 4, true);
   const fixture = createFixture(device, scene, {useLines: true});
-  const settings: GPUGeographicDistributionParameters[] = [
+  const settings: GPUGeographicDistributionSettings[] = [
     {origin: [100000, 200000]},
     {origin: [99990, 200010], standardDeviations: 3},
     {
@@ -572,9 +557,7 @@ it('GPUGeographicDistribution changes parameters between encodings without rebui
 
 it('GPUGeographicDistribution chunked and sorted reductions agree with the oracle and each other', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 20000 rows span many 256-row tiles and chunks (not a multiple of the tile); 200 groups use
   // one lane per group with a single slice; 300 groups exceed the chunked limit.
   const cases: [number, number, number, boolean][] = [
@@ -619,9 +602,7 @@ it('GPUGeographicDistribution chunked and sorted reductions agree with the oracl
 
 it('GPUGeographicDistribution chunked reduction handles a single included row and an all-excluded input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const single: Scene = {
     positions: Float32Array.from([3, 4]),
     groupCount: 1
@@ -641,4 +622,52 @@ it('GPUGeographicDistribution chunked reduction handles a single included row an
   expect(noneResult.weightSums).toEqual([0]);
   expect(noneResult.meanCenters[0]).toBeNaN();
   none.destroy();
+});
+
+// Rule 3: with origin [0, 0] the coordinates reach the kernels at 1e5 to 1e6. The median iterate is
+// held as an offset from the group's f32 mean centre, so steps can still fall below the default
+// 1e-3 tolerance (an absolute f32 iterate near 1e6 moves in ulps of 0.0625 and never converges).
+// Tolerance derivation: inputs are the same f32 values for GPU and oracle; the published centre is
+// one f32 rounding of anchor + offset (half an ulp of the magnitude), the oracle and GPU may stop
+// one step apart (each step at most medianTolerance), so 1 ulp + 2 * medianTolerance bounds it.
+it('GPUGeographicDistribution median converges at 1e5 to 1e6 coordinates with origin 0', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [shiftX, shiftY] of [
+    [0, 0],
+    [400000, 300000],
+    [900000, 800000]
+  ]) {
+    const scene = createScene(21, 6000, 4);
+    for (let row = 0; row < scene.positions.length / 2; row++) {
+      scene.positions[row * 2] += shiftX;
+      scene.positions[row * 2 + 1] += shiftY;
+    }
+    const parameters = {origin: [0, 0] as [number, number]};
+    for (const reduction of ['chunked', 'sorted'] as const) {
+      const fixture = createFixture(device, scene, {reduction});
+      const actual = await fixture.run(parameters);
+      fixture.destroy();
+      const expected = computeGeographicDistribution({
+        positions: scene.positions,
+        weights: scene.weights,
+        groupIds: scene.groupIds,
+        mask: scene.mask,
+        groupCount: scene.groupCount,
+        vertexCount: VERTEX_COUNT,
+        maximumMedianIterations: MEDIAN_ITERATIONS,
+        ...parameters
+      });
+      const label = `${reduction} shift ${shiftX}`;
+      const ulp = 2 ** (Math.floor(Math.log2(1e6 + 2e5)) - 23);
+      expect(expected.medianConverged.slice(0, 3), label).toEqual([1, 1, 1]);
+      expect(actual.medianConverged, label).toEqual(expected.medianConverged);
+      expectClose(
+        `${label} medianCenters`,
+        actual.medianCenters,
+        expected.medianCenters,
+        ulp + 2e-3
+      );
+    }
+  }
 });

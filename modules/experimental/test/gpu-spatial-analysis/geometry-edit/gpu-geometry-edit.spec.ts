@@ -7,7 +7,7 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
-  getGPUAffineTransformParameters,
+  getGPUAffineTransformParameterValues,
   getGPUGeometryCleanupParameterValues,
   getGPUGeometryOrientationParameterValues,
   GPUAffineTransform,
@@ -22,16 +22,24 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {decodeOracleFixture} from '../../oracles/oracle-fixture';
+import cleanupFixtureJSON from '../../oracles/fixtures/geometry-cleanup.json';
+import {createSeededRandom} from '../neighbor-search/neighbor-search-oracle';
 import {GEOMETRY_EDIT_FIXTURES} from './geometry-edit-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Ring = number[][];
 type Polygon = Ring[];
 
-/** Flattens polygons into GeoArrow-style positions and offsets. */
+/**
+ * Flattens polygons into the GeoArrow four-level layout: every polygon is one feature, so
+ * `featureOffsets` is `0..polygonCount`.
+ */
 function flattenPolygons(polygons: Polygon[]) {
   const positions: number[] = [];
   const ringOffsets = [0];
   const polygonOffsets = [0];
+  const featureOffsets = [0];
   for (const polygon of polygons) {
     for (const ring of polygon) {
       for (const [x, y] of ring) {
@@ -40,11 +48,13 @@ function flattenPolygons(polygons: Polygon[]) {
       ringOffsets.push(positions.length / 2);
     }
     polygonOffsets.push(ringOffsets.length - 1);
+    featureOffsets.push(polygonOffsets.length - 1);
   }
   return {
     positions: new Float32Array(positions),
     ringOffsets: new Uint32Array(ringOffsets),
-    polygonOffsets: new Uint32Array(polygonOffsets)
+    polygonOffsets: new Uint32Array(polygonOffsets),
+    featureOffsets: new Uint32Array(featureOffsets)
   };
 }
 
@@ -131,9 +141,7 @@ function expectPolygonsClose(
 
 it('GPUGeometryOrientation reverses rings and orients polygons like shapely', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const geometry = flattenPolygons(GEOMETRY_EDIT_FIXTURES.orientationInput);
   const vertexCount = geometry.positions.length / 2;
   const ringCount = geometry.ringOffsets.length - 1;
@@ -147,6 +155,8 @@ it('GPUGeometryOrientation reverses rings and orients polygons like shapely', as
       id: 'reverse',
       positions: views['positions'] as GraphDataView<'float32x2'>,
       ringOffsets: views['ringOffsets'] as GraphDataView<'uint32'>,
+      polygonOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      featureOffsets: views['featureOffsets'] as GraphDataView<'uint32'>,
       mode: 'reverse',
       output: {positions: reversedOutput.view as GraphDataView<'float32x2'>}
     })
@@ -157,6 +167,7 @@ it('GPUGeometryOrientation reverses rings and orients polygons like shapely', as
       positions: views['positions'] as GraphDataView<'float32x2'>,
       ringOffsets: views['ringOffsets'] as GraphDataView<'uint32'>,
       polygonOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      featureOffsets: views['featureOffsets'] as GraphDataView<'uint32'>,
       mode: 'orient-polygons',
       parameters: run.parameters,
       output: {
@@ -186,9 +197,7 @@ it('GPUGeometryOrientation reverses rings and orients polygons like shapely', as
 
 it('GPUAffineTransform matches shapely for fixed, center and centroid origins and per-feature matrices', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixtures = GEOMETRY_EDIT_FIXTURES;
   const geometry = flattenPolygons(fixtures.affineInput);
   const vertexCount = geometry.positions.length / 2;
@@ -202,9 +211,9 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
       id: 'global',
       positions: views['positions'] as GraphDataView<'float32x2'>,
       ringOffsets: views['ringOffsets'] as GraphDataView<'uint32'>,
-      featureRingOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      polygonOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      featureOffsets: views['featureOffsets'] as GraphDataView<'uint32'>,
       geometryType: 'polygons',
-      holeRule: 'first-ring-exterior',
       origins: ['center', 'centroid'],
       parameters: run.parameters,
       output: {positions: globalOutput.view as GraphDataView<'float32x2'>}
@@ -217,7 +226,9 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
       id: 'per-feature',
       positions: views['positions'] as GraphDataView<'float32x2'>,
       ringOffsets: views['ringOffsets'] as GraphDataView<'uint32'>,
-      featureRingOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      polygonOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      featureOffsets: views['featureOffsets'] as GraphDataView<'uint32'>,
+      geometryType: 'polygons',
       featureTransforms: importGraphBuffer(
         graph,
         'feature-matrices',
@@ -233,7 +244,7 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
   const runs = [
     {
       name: 'fixed origin',
-      values: getGPUAffineTransformParameters({
+      values: getGPUAffineTransformParameterValues({
         rotate: parameters.rotate,
         scale: parameters.scale as [number, number],
         skew: parameters.skew as [number, number],
@@ -244,7 +255,7 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
     },
     {
       name: 'center origin',
-      values: getGPUAffineTransformParameters({
+      values: getGPUAffineTransformParameterValues({
         rotate: parameters.rotate,
         scale: parameters.scale as [number, number],
         skew: parameters.skew as [number, number],
@@ -255,7 +266,7 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
     },
     {
       name: 'centroid rotate',
-      values: getGPUAffineTransformParameters({rotate: 77, origin: 'centroid'}),
+      values: getGPUAffineTransformParameterValues({rotate: 77, origin: 'centroid'}),
       expected: fixtures.affineCentroidRotate
     }
   ];
@@ -276,9 +287,7 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
 
 it('GPUGeometryCleanup snaps and removes repeated points like shapely, per-frame parameters', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const geometryType of ['lines', 'polygons'] as const) {
     const paths: Ring[] =
       geometryType === 'lines'
@@ -287,31 +296,43 @@ it('GPUGeometryCleanup snaps and removes repeated points like shapely, per-frame
     const geometry = flattenRings(paths);
     const vertexCount = geometry.positions.length / 2;
     const ringCount = geometry.ringOffsets.length - 1;
-    const run = createRun(
-      device,
-      {positions: geometry.positions, ringOffsets: geometry.ringOffsets},
-      4
-    );
+    const run = createRun(device, geometry, 4);
     const positionsOutput = run.output('out-positions', 'float32x2', vertexCount);
     const offsetsOutput = run.output('out-offsets', 'uint32', ringCount + 1);
     const count = run.output('out-count', 'uint32', 1);
     const overflow = run.output('out-overflow', 'uint32', 1);
     const total = run.output('out-total', 'uint32', 1);
     const collapsed = run.output('out-collapsed', 'uint32', 1);
+    const status = {
+      count: count.view as GraphDataView<'uint32'>,
+      overflow: overflow.view as GraphDataView<'uint32'>,
+      requiredCount: total.view as GraphDataView<'uint32'>
+    };
     run.graph.add(
       new GPUGeometryCleanup({
         positions: run.views['positions'] as GraphDataView<'float32x2'>,
-        ringOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
-        geometryType,
         parameters: run.parameters,
-        output: {
-          positions: positionsOutput.view as GraphDataView<'float32x2'>,
-          ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
-          count: count.view as GraphDataView<'uint32'>,
-          overflow: overflow.view as GraphDataView<'uint32'>,
-          requiredCount: total.view as GraphDataView<'uint32'>,
-          collapsedRings: collapsed.view as GraphDataView<'uint32'>
-        }
+        ...(geometryType === 'lines'
+          ? {
+              geometryType,
+              lineOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+              output: {
+                positions: positionsOutput.view as GraphDataView<'float32x2'>,
+                lineOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+                status
+              }
+            }
+          : {
+              geometryType,
+              ringOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+              polygonOffsets: run.views['polygonOffsets'] as GraphDataView<'uint32'>,
+              featureOffsets: run.views['featureOffsets'] as GraphDataView<'uint32'>,
+              output: {
+                positions: positionsOutput.view as GraphDataView<'float32x2'>,
+                ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+                status: {...status, collapsedCount: collapsed.view as GraphDataView<'uint32'>}
+              }
+            })
       })
     );
     const compiled = run.graph.compile();
@@ -356,9 +377,7 @@ it('GPUGeometryCleanup snaps and removes repeated points like shapely, per-frame
 
 it('GPUGeometryCleanup snaps Point features without deduplicating rows', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = new Float32Array([
     0.25, 0.25, 0.25, 0.25, -0.25, -0.75, 1.24, 1.26, -1.24, -1.26
   ]);
@@ -374,8 +393,10 @@ it('GPUGeometryCleanup snaps Point features without deduplicating rows', async (
       parameters: run.parameters,
       output: {
         positions: positionsOutput.view as GraphDataView<'float32x2'>,
-        count: count.view as GraphDataView<'uint32'>,
-        overflow: overflow.view as GraphDataView<'uint32'>
+        status: {
+          count: count.view as GraphDataView<'uint32'>,
+          overflow: overflow.view as GraphDataView<'uint32'>
+        }
       }
     })
   );
@@ -409,9 +430,7 @@ it('GPUGeometryCleanup snaps Point features without deduplicating rows', async (
 
 it('GPUGeometryCleanup reports Point capacity overflow', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = new Float32Array([0.1, 0.2, 1.1, 1.2, 2.1, 2.2, 3.1, 3.2]);
   const run = createRun(device, {positions}, 4);
   const capacity = 3;
@@ -426,9 +445,11 @@ it('GPUGeometryCleanup reports Point capacity overflow', async () => {
       parameters: run.parameters,
       output: {
         positions: positionsOutput.view as GraphDataView<'float32x2'>,
-        count: count.view as GraphDataView<'uint32'>,
-        overflow: overflow.view as GraphDataView<'uint32'>,
-        requiredCount: total.view as GraphDataView<'uint32'>
+        status: {
+          count: count.view as GraphDataView<'uint32'>,
+          overflow: overflow.view as GraphDataView<'uint32'>,
+          requiredCount: total.view as GraphDataView<'uint32'>
+        }
       }
     })
   );
@@ -446,9 +467,7 @@ it('GPUGeometryCleanup reports Point capacity overflow', async () => {
 
 it('GPUGeometryCleanup reports overflow with clamped offsets', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const paths: Ring[] = [
     [
       [0, 0],
@@ -477,15 +496,17 @@ it('GPUGeometryCleanup reports overflow with clamped offsets', async () => {
   run.graph.add(
     new GPUGeometryCleanup({
       positions: run.views['positions'] as GraphDataView<'float32x2'>,
-      ringOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+      lineOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
       geometryType: 'lines',
       parameters: run.parameters,
       output: {
         positions: positionsOutput.view as GraphDataView<'float32x2'>,
-        ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
-        count: count.view as GraphDataView<'uint32'>,
-        overflow: overflow.view as GraphDataView<'uint32'>,
-        requiredCount: total.view as GraphDataView<'uint32'>
+        lineOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+        status: {
+          count: count.view as GraphDataView<'uint32'>,
+          overflow: overflow.view as GraphDataView<'uint32'>,
+          requiredCount: total.view as GraphDataView<'uint32'>
+        }
       }
     })
   );
@@ -525,9 +546,7 @@ const SLIVER_COUNTER_CLOCKWISE_RINGS: Ring[] = [
 
 it('GPUGeometryOrientation judges sliver ring winding exactly', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const geometry = flattenPolygons(SLIVER_COUNTER_CLOCKWISE_RINGS.map(ring => [ring]));
   const vertexCount = geometry.positions.length / 2;
   const ringCount = geometry.ringOffsets.length - 1;
@@ -541,6 +560,7 @@ it('GPUGeometryOrientation judges sliver ring winding exactly', async () => {
       positions: views['positions'] as GraphDataView<'float32x2'>,
       ringOffsets: views['ringOffsets'] as GraphDataView<'uint32'>,
       polygonOffsets: views['polygonOffsets'] as GraphDataView<'uint32'>,
+      featureOffsets: views['featureOffsets'] as GraphDataView<'uint32'>,
       mode: 'orient-polygons',
       parameters: run.parameters,
       output: {
@@ -563,3 +583,254 @@ it('GPUGeometryOrientation judges sliver ring winding exactly', async () => {
   }
   run.destroy(compiled);
 });
+
+type CleanupFixture = {
+  cases: {
+    grid: number;
+    label: string;
+    lines: {name: string; coords: number[][]; expected: number[][]}[];
+    rings: {name: string; coords: number[][]; expected: number[][] | 'collapsed'}[];
+  }[];
+};
+
+type CleanupRunResult = {
+  /** Raw float32 bit patterns of the first `count` output vertices (NaN payloads included). */
+  bits: number[];
+  offsets: number[];
+  count: number;
+  collapsed: number;
+};
+
+/**
+ * Runs `GPUGeometryCleanup` over flat rings. `forceSequential` selects the `@internal` sequential
+ * per-ring pass; otherwise the GPU gate picks by tolerance. `frames` lists per-frame settings.
+ */
+async function runCleanupFrames(
+  device: Device,
+  geometry: {positions: Float32Array; ringOffsets: Uint32Array},
+  geometryType: 'lines' | 'polygons',
+  forceSequential: boolean,
+  frames: {gridSize?: number; tolerance?: number; removeRepeatedPoints?: boolean}[],
+  repeats: number = 1
+): Promise<{results: CleanupRunResult[]; milliseconds: number[]}> {
+  const vertexCount = geometry.positions.length / 2;
+  const ringCount = geometry.ringOffsets.length - 1;
+  const rings = {
+    ...geometry,
+    polygonOffsets: Uint32Array.from({length: ringCount + 1}, (_, index) => index),
+    featureOffsets: Uint32Array.from({length: ringCount + 1}, (_, index) => index)
+  };
+  const run = createRun(
+    device,
+    geometryType === 'lines'
+      ? {positions: geometry.positions, ringOffsets: geometry.ringOffsets}
+      : rings,
+    4
+  );
+  const positionsOutput = run.output('out-positions', 'float32x2', Math.max(vertexCount, 1));
+  const offsetsOutput = run.output('out-offsets', 'uint32', ringCount + 1);
+  const count = run.output('out-count', 'uint32', 1);
+  const overflow = run.output('out-overflow', 'uint32', 1);
+  const collapsed = run.output('out-collapsed', 'uint32', 1);
+  const status = {
+    count: count.view as GraphDataView<'uint32'>,
+    overflow: overflow.view as GraphDataView<'uint32'>
+  };
+  run.graph.add(
+    new GPUGeometryCleanup({
+      positions: run.views['positions'] as GraphDataView<'float32x2'>,
+      parameters: run.parameters,
+      forceSequentialRepeatRemoval: forceSequential,
+      ...(geometryType === 'lines'
+        ? {
+            geometryType,
+            lineOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+            output: {
+              positions: positionsOutput.view as GraphDataView<'float32x2'>,
+              lineOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+              status
+            }
+          }
+        : {
+            geometryType,
+            ringOffsets: run.views['ringOffsets'] as GraphDataView<'uint32'>,
+            polygonOffsets: run.views['polygonOffsets'] as GraphDataView<'uint32'>,
+            featureOffsets: run.views['featureOffsets'] as GraphDataView<'uint32'>,
+            output: {
+              positions: positionsOutput.view as GraphDataView<'float32x2'>,
+              ringOffsets: offsetsOutput.view as GraphDataView<'uint32'>,
+              status: {...status, collapsedCount: collapsed.view as GraphDataView<'uint32'>}
+            }
+          })
+    })
+  );
+  const compiled = run.graph.compile();
+  const results: CleanupRunResult[] = [];
+  const milliseconds: number[] = [];
+  for (const frame of frames) {
+    run.parameterBuffer.write(getGPUGeometryCleanupParameterValues(frame));
+    for (let repeat = 0; repeat < repeats; repeat++) {
+      const started = performance.now();
+      submitGraph(device, compiled, undefined);
+      // Reading the count waits for the whole graph.
+      const [outputCount] = await readUint32(count.buffer, 1);
+      milliseconds.push(performance.now() - started);
+      if (repeat === repeats - 1) {
+        results.push({
+          bits: await readUint32(positionsOutput.buffer, 2 * outputCount),
+          offsets: await readUint32(offsetsOutput.buffer, ringCount + 1),
+          count: outputCount,
+          collapsed: (await readUint32(collapsed.buffer, 1))[0]
+        });
+      }
+    }
+  }
+  run.destroy(compiled);
+  return {results, milliseconds};
+}
+
+it('GPUGeometryCleanup tolerance-0 parallel and sequential passes match shapely on adversarial paths', async () => {
+  const device = await getWebGPUTestDevice('core');
+  requireTestDevice(device);
+  const fixture = decodeOracleFixture<CleanupFixture>(cleanupFixtureJSON);
+  for (const testCase of fixture.cases) {
+    const lines = flattenRings(testCase.lines.map(entry => entry.coords));
+    const expectedLines = flattenRings(testCase.lines.map(entry => entry.expected));
+    for (const forceSequential of [false, true]) {
+      const {results} = await runCleanupFrames(device, lines, 'lines', forceSequential, [
+        {gridSize: testCase.grid, tolerance: 0, removeRepeatedPoints: true}
+      ]);
+      const [result] = results;
+      const label = `lines ${testCase.label} sequential=${forceSequential}`;
+      expect(result.offsets, label).toEqual(Array.from(expectedLines.ringOffsets));
+      // `+ 0` folds -0 into 0 (GEOS rounds small negatives to -0 under snapping).
+      expect(
+        Array.from(new Float32Array(Uint32Array.from(result.bits).buffer)).map(value => value + 0),
+        label
+      ).toEqual(Array.from(expectedLines.positions, value => value + 0));
+    }
+    // Rings: only those shapely keeps or collapses (at least four vertices).
+    const rings = testCase.rings.filter(entry => entry.coords.length >= 4);
+    const geometry = flattenRings(rings.map(entry => entry.coords));
+    const expected = flattenRings(
+      rings.map(entry => (entry.expected === 'collapsed' ? [] : entry.expected))
+    );
+    for (const forceSequential of [false, true]) {
+      const {results} = await runCleanupFrames(device, geometry, 'polygons', forceSequential, [
+        {gridSize: testCase.grid, tolerance: 0, removeRepeatedPoints: true}
+      ]);
+      const [result] = results;
+      const label = `rings ${testCase.label} sequential=${forceSequential}`;
+      expect(result.offsets, label).toEqual(Array.from(expected.ringOffsets));
+      expect(result.collapsed, label).toBe(
+        rings.filter(entry => entry.expected === 'collapsed').length
+      );
+      expect(
+        Array.from(new Float32Array(Uint32Array.from(result.bits).buffer)).map(value => value + 0),
+        label
+      ).toEqual(Array.from(expected.positions, value => value + 0));
+    }
+  }
+});
+
+it('GPUGeometryCleanup tolerance-0 parallel pass is bitwise identical to the sequential pass', async () => {
+  const device = await getWebGPUTestDevice('core');
+  requireTestDevice(device);
+  const random = createSeededRandom(77);
+  const alphabet = [0, -0, 1, 1.5, 2, Number.NaN, Infinity, -Infinity, 0.25, -3];
+  const rings: Ring[] = [];
+  for (let ring = 0; ring < 600; ring++) {
+    const length = ring % 50 === 0 ? 2000 : Math.floor(random() * 12);
+    const symbols = alphabet.slice(0, 2 + Math.floor(random() * (alphabet.length - 1)));
+    rings.push(
+      Array.from({length}, () => [
+        symbols[Math.floor(random() * symbols.length)],
+        symbols[Math.floor(random() * symbols.length)]
+      ])
+    );
+  }
+  rings.push(
+    Array.from({length: 5000}, () => [4, 4]),
+    [[7, 7]],
+    []
+  );
+  const geometry = flattenRings(rings);
+  const frames = [
+    {tolerance: 0},
+    {gridSize: 0.5, tolerance: 0},
+    {gridSize: 1, tolerance: 0, removeRepeatedPoints: false},
+    // Per-frame tolerance switches the GPU gate to the sequential pass inside one compiled graph.
+    {tolerance: 0.5},
+    {tolerance: 0}
+  ];
+  for (const geometryType of ['lines', 'polygons'] as const) {
+    const parallel = await runCleanupFrames(device, geometry, geometryType, false, frames);
+    const sequential = await runCleanupFrames(device, geometry, geometryType, true, frames);
+    frames.forEach((frame, index) => {
+      expect(parallel.results[index], `${geometryType} ${JSON.stringify(frame)}`).toEqual(
+        sequential.results[index]
+      );
+    });
+  }
+});
+
+/** One long ring (random walk with a fifth of the steps repeated) plus many small rings. */
+function createCleanupBenchmarkGeometry(longVertices: number, smallRings: number) {
+  const random = createSeededRandom(5);
+  const positions: number[] = [];
+  const ringOffsets = [0];
+  let x = 0;
+  let y = 0;
+  for (let vertex = 0; vertex < longVertices; vertex++) {
+    if (vertex === 0 || random() >= 0.2) {
+      x += Math.floor(random() * 5) - 2;
+      y += Math.floor(random() * 5) - 2;
+    }
+    positions.push(x, y);
+  }
+  ringOffsets.push(positions.length / 2);
+  for (let ring = 0; ring < smallRings; ring++) {
+    const cx = (ring % 316) * 4;
+    const cy = Math.floor(ring / 316) * 4;
+    for (const [dx, dy] of [
+      [0, 0],
+      [1, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+      [0, 1],
+      [0, 0]
+    ]) {
+      positions.push(cx + dx, cy + dy);
+    }
+    ringOffsets.push(positions.length / 2);
+  }
+  return {positions: new Float32Array(positions), ringOffsets: Uint32Array.from(ringOffsets)};
+}
+
+it('GPUGeometryCleanup A/B: tolerance-0 parallel passes vs forced sequential on a 1e6-vertex ring plus 1e5 small rings', async () => {
+  const device = await getWebGPUTestDevice('core');
+  requireTestDevice(device);
+  const geometry = createCleanupBenchmarkGeometry(1_000_000, 100_000);
+  const timings: Record<string, number> = {};
+  const outputs: CleanupRunResult[] = [];
+  for (const forceSequential of [true, false]) {
+    const {results, milliseconds} = await runCleanupFrames(
+      device,
+      geometry,
+      'lines',
+      forceSequential,
+      [{tolerance: 0}],
+      7
+    );
+    outputs.push(results[0]);
+    // Drop the first (pipeline compile) run and take the median of the rest.
+    const sorted = milliseconds.slice(1).sort((a, b) => a - b);
+    timings[forceSequential ? 'sequential' : 'parallel'] = sorted[Math.floor(sorted.length / 2)];
+  }
+  // eslint-disable-next-line no-console
+  console.log(
+    `GPUGeometryCleanup A/B tolerance 0 (1e6-vertex ring + 1e5 small rings): sequential ${timings['sequential'].toFixed(2)} ms, parallel ${timings['parallel'].toFixed(2)} ms`
+  );
+  expect(outputs[1]).toEqual(outputs[0]);
+}, 300_000);

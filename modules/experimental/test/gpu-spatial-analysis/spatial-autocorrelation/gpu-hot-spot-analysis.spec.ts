@@ -7,9 +7,9 @@ import {expect, it} from 'vitest';
 import {
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
   GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
-  type GPUSpatialAutocorrelationParameters
+  type GPUSpatialAutocorrelationSettings
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts';
 import {
   computeHotSpotOracle,
   createAutocorrelatedScene,
@@ -32,6 +32,7 @@ import {
   isClose,
   type SpatialAutocorrelationReadback
 } from './spatial-autocorrelation-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** z-scores agree with the double-precision oracle within `2e-3 + 1e-3 |z|`. */
 const Z_ABSOLUTE_TOLERANCE = 2e-3;
@@ -80,9 +81,7 @@ function expectMatchesOracle(
 
 it('GPUHotSpotAnalysis matches the Gi* oracle for hand-built CSR weights, self weights and new values without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(7, 2000, RADII);
   let significantRows = 0;
   for (const [radius, selfWeight, rowStandardize] of [
@@ -134,9 +133,7 @@ it('GPUHotSpotAnalysis matches the Gi* oracle for hand-built CSR weights, self w
 
 it('GPUHotSpotAnalysis consumes weights written by GPUNeighborSearch in the same graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(13, 2000, [3, 7.5, 12]);
   const harness = createSpatialAutocorrelationHarness(device, {
     contributor: 'hot-spot',
@@ -179,9 +176,7 @@ it('GPUHotSpotAnalysis consumes weights written by GPUNeighborSearch in the same
 
 it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const base = createAutocorrelatedScene(19, 1500, [6]);
   const values = base.values.slice();
   values[3] = NaN;
@@ -214,7 +209,7 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
     const full = await harness.run();
     expectMatchesOracle(full, computeHotSpotOracle({...scene, mask: everyRow, weights}), 'full');
     harness.writeMask(mask);
-    const fixedParameters: GPUSpatialAutocorrelationParameters = {
+    const fixedParameters: GPUSpatialAutocorrelationSettings = {
       fixedMoments: {
         count: full.globalStatistics[0],
         mean: full.globalStatistics[1],
@@ -233,9 +228,7 @@ it('GPUHotSpotAnalysis honors the mask, excluded values, and fixed moments', asy
 
 it('GPUHotSpotAnalysis bins follow the adjusted p-value of every multiple-testing method', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(31, 2500, [5, 9]);
   const levels = GPU_HOT_SPOT_SIGNIFICANCE_LEVELS;
   for (const radius of [5, 9]) {
@@ -306,39 +299,9 @@ it('GPUHotSpotAnalysis bins follow the adjusted p-value of every multiple-testin
   }
 }, 240000);
 
-it('GPUHotSpotAnalysis keeps the falseDiscoveryRate alias equal to benjamini-hochberg', async () => {
-  const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const scene = createAutocorrelatedScene(31, 1200, [6]);
-  const weights = toCsr(createDistanceBandWeights(scene.positions, 6));
-  const bins: number[][] = [];
-  for (const options of [
-    {falseDiscoveryRate: true},
-    {multipleTesting: 'benjamini-hochberg' as const}
-  ]) {
-    const harness = createSpatialAutocorrelationHarness(device, {
-      contributor: 'hot-spot',
-      scene,
-      weights,
-      ...options
-    });
-    try {
-      bins.push((await harness.run()).bins);
-    } finally {
-      harness.destroy();
-    }
-  }
-  expect(bins[0]).toEqual(bins[1]);
-  expect(bins[0].some(bin => bin !== 0)).toBe(true);
-}, 120000);
-
 it('GPUHotSpotAnalysis handles degenerate selections and out-of-range neighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(3, 64, [10]);
   const mask = new Uint32Array(64);
   mask[5] = 1;
@@ -422,12 +385,10 @@ function expectMatchesEsdaZScores(
 
 it('GPUHotSpotAnalysis matches esda G_Local on a fixture with an island (islands keep and exclude)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = getReferenceValues();
   const weights = getReferenceWeights();
-  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0, G_Local transform 'B').
+  // Oracle: test/oracles/statistics-local-autocorrelation.py (esda 2.10.0, G_Local transform 'B').
   // esda keeps the island in n (islands: 'keep'); its own z for the island is not compared.
   for (const [policy, mask, expectedStar, expectedGi, count] of [
     ['keep', undefined, REFERENCE.keep.giStar, REFERENCE.keep.gi, REFERENCE_ROW_COUNT],
@@ -479,9 +440,7 @@ function expectedMean(policy: 'keep' | 'exclude', mask: Uint32Array | undefined)
 
 it('GPUHotSpotAnalysis counts positive-weight neighbors only and honors minimumNeighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = getReferenceValues();
   const weights = getReferenceWeights();
   // The same neighborhoods with a zero-weight slot inserted before every row's last neighbor and a
@@ -558,12 +517,10 @@ it('GPUHotSpotAnalysis counts positive-weight neighbors only and honors minimumN
 
 it('GPUHotSpotAnalysis multipleTesting bins equal statsmodels on the esda Gi* p-values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = getReferenceValues();
   const weights = getReferenceWeights();
-  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0 G_Local Zs, statsmodels 0.15.0
+  // Oracle: test/oracles/statistics-local-autocorrelation.py (esda 2.10.0 G_Local Zs, statsmodels 0.15.0
   // multipletests bonferroni / holm / fdr_bh / fdr_by). The family is the 59 non-island rows.
   expect(REFERENCE.minimumMargin).toBeGreaterThan(1e-3);
   for (const method of [
@@ -600,9 +557,7 @@ it('GPUHotSpotAnalysis multipleTesting bins equal statsmodels on the esda Gi* p-
 
 it('GPUHotSpotAnalysis re-standardizes row-standardized weights over the unmasked neighbors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(53, 1500, [6]);
   const weights = createDistanceBandWeights(scene.positions, 6, {rowStandardize: true});
   const random = createSeededRandom(77);
@@ -642,9 +597,7 @@ it('GPUHotSpotAnalysis re-standardizes row-standardized weights over the unmaske
 
 it('GPUHotSpotAnalysis centers large-offset values with a second-pass mean', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createAutocorrelatedScene(61, 3000, [6]);
   // Mean about 1e6 with a spread of a few units: a single f32 tree sum loses the low bits.
   const values = Float32Array.from(scene.values, value => 1e6 + (value - 100));

@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUNetworkNeighborhood,
+  type GPUNetworkNeighborhoodOutput,
   type GPUNetworkNeighborhoodProps
 } from '../../../src/gpu-network/network-analysis/gpu-network-neighborhood';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -15,20 +16,34 @@ function createProps(
   overrides: Partial<GPUNetworkNeighborhoodProps> = {}
 ): GPUNetworkNeighborhoodProps {
   return {
-    offsets: createTransientView(graph, 'offsets', 'uint32', 9),
-    neighbors: createTransientView(graph, 'neighbors', 'uint32', 10),
-    seeds: createTransientView(graph, 'seeds', 'uint32', 2),
+    topology: {
+      offsets: createTransientView(graph, 'offsets', 'uint32', 9),
+      neighbors: createTransientView(graph, 'neighbors', 'uint32', 10)
+    },
+    startNodes: createTransientView(graph, 'seeds', 'uint32', 2),
     hops: createTransientView(graph, 'hops', 'uint32', 1),
-    hopDistances: createTransientView(graph, 'hop-distances', 'uint32', 8),
+    output: {hopDistances: createTransientView(graph, 'hop-distances', 'uint32', 8)},
     ...overrides
   };
+}
+
+/** Props with extra output views merged into the default output bag. */
+function createPropsWithOutput(
+  graph: GPUCommandGraph,
+  output: Partial<GPUNetworkNeighborhoodOutput>,
+  overrides: Partial<GPUNetworkNeighborhoodProps> = {}
+): GPUNetworkNeighborhoodProps {
+  const props = createProps(graph, overrides);
+  return {...props, output: {...props.output, ...output}};
 }
 
 function createOutput(graph: GPUCommandGraph, name: string, capacity: number) {
   return {
     ids: createTransientView(graph, `${name}-ids`, 'uint32', capacity),
-    count: createTransientView(graph, `${name}-count`, 'uint32', 1),
-    overflow: createTransientView(graph, `${name}-overflow`, 'uint32', 1)
+    status: {
+      count: createTransientView(graph, `${name}-count`, 'uint32', 1),
+      overflow: createTransientView(graph, `${name}-overflow`, 'uint32', 1)
+    }
   };
 }
 
@@ -36,13 +51,14 @@ it('GPUNetworkNeighborhood schedules nodes in order', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const contributor = new GPUNetworkNeighborhood({
-    ...createProps(graph),
+    ...createPropsWithOutput(graph, {
+      nodeMask: createTransientView(graph, 'node-mask', 'uint32', 8),
+      edgeMask: createTransientView(graph, 'edge-mask', 'uint32', 10),
+      nodes: createOutput(graph, 'nodes', 4),
+      edges: createOutput(graph, 'edges', 20)
+    }),
     id: 'hood',
-    maxHops: 2,
-    nodeMask: createTransientView(graph, 'node-mask', 'uint32', 8),
-    edgeMask: createTransientView(graph, 'edge-mask', 'uint32', 10),
-    nodes: createOutput(graph, 'nodes', 4),
-    edges: createOutput(graph, 'edges', 20)
+    maximumHops: 2
   });
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const positionOf = (id: string) => ids.indexOf(id);
@@ -81,11 +97,17 @@ it('GPUNetworkNeighborhood omits optional nodes and handles empty edge sets', ()
 
   const emptyGraph = new GPUCommandGraph(device);
   const emptyIds = new GPUNetworkNeighborhood({
-    ...createProps(emptyGraph, {
-      neighbors: createTransientView(emptyGraph, 'no-neighbors', 'uint32', 0)
-    }),
-    id: 'empty',
-    edges: createOutput(emptyGraph, 'edges', 4)
+    ...createPropsWithOutput(
+      emptyGraph,
+      {edges: createOutput(emptyGraph, 'edges', 4)},
+      {
+        topology: {
+          offsets: createTransientView(emptyGraph, 'empty-offsets', 'uint32', 9),
+          neighbors: createTransientView(emptyGraph, 'no-neighbors', 'uint32', 0)
+        }
+      }
+    ),
+    id: 'empty'
   })
     .getCommandNodes(emptyGraph)
     .map(node => node.id);
@@ -113,26 +135,80 @@ it('GPUNetworkNeighborhood validates props', () => {
     length: number,
     format: Format = 'uint32' as Format
   ) => createTransientView(graph, 'override', format, length);
-  expect(() => create(graph => ({offsets: view(graph, 8)}))).toThrow(/offsets/);
+  const withOutput = (
+    build: (
+      graph: GPUCommandGraph,
+      base: GPUNetworkNeighborhoodProps
+    ) => GPUNetworkNeighborhoodOutput
+  ) => create((graph, base) => ({output: build(graph, base)}));
+  expect(() =>
+    create((graph, base) => ({topology: {...base.topology, offsets: view(graph, 8)}}))
+  ).toThrow(/topology must contain one node per output.hopDistances row/);
+  expect(() =>
+    create((graph, base) => ({topology: {...base.topology, offsets: view(graph, 1)}}))
+  ).toThrow(/topology.offsets/);
+  expect(() =>
+    create((graph, base) => ({
+      topology: {...base.topology, weights: view(graph, 9, 'float32')}
+    }))
+  ).toThrow(/topology.weights length/);
   expect(() => create(graph => ({hops: view(graph, 2)}))).toThrow(/hops/);
-  expect(() => create(graph => ({seedCount: view(graph, 2)}))).toThrow(/seedCount/);
-  expect(() => create(() => ({maxHops: 0}))).toThrow(/maxHops/);
-  expect(() => create(() => ({maxHops: 1025}))).toThrow(/maxHops/);
-  expect(() => create(() => ({maxHops: 1.5}))).toThrow(/maxHops/);
+  expect(() => create(graph => ({startCount: view(graph, 2)}))).toThrow(/startCount/);
+  expect(() => create(() => ({startCount: 3}))).toThrow(
+    /startCount must be an integer in \[0, 2\]/
+  );
+  expect(() => create(() => ({maximumHops: 0}))).toThrow(/maximumHops/);
+  expect(() => create(() => ({maximumHops: 1025}))).toThrow(/maximumHops/);
+  expect(() => create(() => ({maximumHops: 1.5}))).toThrow(/maximumHops/);
   expect(() => create(graph => ({nodeIds: view(graph, 7)}))).toThrow(/nodeIds/);
   expect(() => create(graph => ({edgeIds: view(graph, 9)}))).toThrow(/edgeIds/);
-  expect(() => create(graph => ({edgeMask: view(graph, 9)}))).toThrow(/edgeMask/);
-  expect(() => create(graph => ({hopDistances: view(graph, 8, 'float32') as never}))).toThrow(
+  expect(() => withOutput((graph, base) => ({...base.output, edgeMask: view(graph, 9)}))).toThrow(
+    /edgeMask/
+  );
+  expect(() => withOutput(graph => ({hopDistances: view(graph, 8, 'float32') as never}))).toThrow(
     /hopDistances/
   );
-  expect(() => create((_, base) => ({nodeMask: base.hopDistances}))).toThrow(/separate buffers/);
   expect(() =>
-    create((graph, base) => ({nodes: {...createOutput(graph, 'alias', 2), ids: base.seeds}}))
+    withOutput((_, base) => ({...base.output, nodeMask: base.output.hopDistances}))
+  ).toThrow(/separate buffers/);
+  expect(() =>
+    withOutput((graph, base) => ({
+      ...base.output,
+      nodes: {...createOutput(graph, 'alias', 2), ids: base.startNodes}
+    }))
   ).toThrow(/outputs/);
   const graph = new GPUCommandGraph(device);
   const other = new GPUCommandGraph(device);
   expect(() => new GPUNetworkNeighborhood(createProps(other)).getCommandNodes(graph)).toThrow(
     /target graph/
   );
+  device.destroy();
+});
+
+it('GPUNetworkNeighborhood bakes a numeric startCount without a binding', () => {
+  const device = createNullWebGPUDevice();
+  const countResources = (
+    startCount: (graph: GPUCommandGraph) => number | GraphDataView<'uint32'>
+  ) => {
+    const graph = new GPUCommandGraph(device);
+    const nodes = new GPUNetworkNeighborhood({
+      ...createProps(graph),
+      id: 'hood',
+      startCount: startCount(graph)
+    }).getCommandNodes(graph);
+    return (nodes.find(node => node.id === 'hood-reachability-seed')?.resources ?? []).length;
+  };
+  const constant = countResources(() => 1);
+  const view = countResources(graph => createTransientView(graph, 'start-count', 'uint32', 1));
+  expect(view - constant).toBe(1);
+  device.destroy();
+});
+
+it('GPUNetworkNeighborhood keeps every written view in the output bag', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph);
+  expect(Object.keys(props.output)).toEqual(['hopDistances']);
+  expect('hopDistances' in props).toBe(false);
   device.destroy();
 });

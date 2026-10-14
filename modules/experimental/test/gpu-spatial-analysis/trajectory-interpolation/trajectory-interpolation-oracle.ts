@@ -98,11 +98,11 @@ function interpolate(start: number, end: number, fraction: number): number {
 export function computePlayheadOracle(
   tracks: OracleTracks,
   playhead: OraclePlayhead,
-  maxGap: number = 0
+  maximumGap: number = 0
 ): PlayheadOracleResult {
   const {positions, elevations, times} = tracks;
   const model = createPlayheadModel(times, playhead);
-  const gapLimit = fround(maxGap);
+  const gapLimit = fround(maximumGap);
   const trackCount = tracks.trackOffsets.length - 1;
   const result: PlayheadOracleResult = {
     positions: [],

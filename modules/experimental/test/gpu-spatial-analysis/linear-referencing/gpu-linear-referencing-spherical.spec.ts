@@ -5,6 +5,11 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
+import {
+  createSphericalBVHScene,
+  getArcDistanceOracle,
+  getNearestArcCandidates
+} from './spherical-arc-bvh-oracle';
 import {expect, it} from 'vitest';
 import {
   GPULinearReferencing,
@@ -24,14 +29,15 @@ import {
   PLANAR_NORMALIZED_EXPECTED,
   PLANAR_NORMALIZED_QUERIES,
   SPHERICAL_EVENTS,
-  SPHERICAL_PATH_LENGTHS,
-  SPHERICAL_PATH_OFFSETS,
+  SPHERICAL_LINE_LENGTHS,
+  SPHERICAL_LINE_OFFSETS,
   SPHERICAL_POINTS,
   SPHERICAL_POSITIONS,
   SPHERICAL_PROJECTIONS
 } from './spherical-oracle-values';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-const NO_PATH = 0xffffffff;
+const NO_LINE = 0xffffffff;
 /**
  * f32 longitude/latitude inputs plus f32 trigonometry: meters of slack on every length. One f32 ulp
  * of a longitude in [128, 180] degrees is 2^-16 degree = 1.7 m at the equator, so rounding the
@@ -85,7 +91,7 @@ async function runProjection(
   device: Device,
   coordinateSystem: 'planar' | 'spherical',
   positions: Float32Array,
-  pathOffsets: Uint32Array,
+  lineOffsets: Uint32Array,
   points: Float32Array,
   searchRadius: number
 ) {
@@ -93,7 +99,7 @@ async function runProjection(
   const pointCount = points.length / 2;
   const radius = new GPUParameterBuffer(device, {id: 'radius', format: 'float32', length: 1});
   const columns = {
-    pathIndices: helpers.output('o-path', 'uint32', pointCount),
+    lineIndices: helpers.output('o-line', 'uint32', pointCount),
     segmentIndices: helpers.output('o-segment', 'uint32', pointCount),
     fractions: helpers.output('o-fraction', 'float32', pointCount),
     footPoints: helpers.output('o-foot', 'float32x2', pointCount),
@@ -109,15 +115,15 @@ async function runProjection(
         coordinateSystem === 'spherical'
           ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
           : undefined,
-      points: helpers.input('points', points, 'float32x2'),
+      queryPositions: helpers.input('points', points, 'float32x2'),
       positions: helpers.input('positions', positions, 'float32x2'),
-      pathOffsets: helpers.input('path-offsets', pathOffsets, 'uint32'),
+      lineOffsets: helpers.input('line-offsets', lineOffsets, 'uint32'),
       radius: radius.importToGraph(helpers.graph),
       candidateCapacity: coordinateSystem === 'planar' ? 4096 : undefined,
-      output: Object.fromEntries(
-        Object.entries(columns).map(([name, column]) => [name, column.view])
-      ),
-      overflow: overflow.view
+      output: {
+        ...Object.fromEntries(Object.entries(columns).map(([name, column]) => [name, column.view])),
+        status: {overflow: overflow.view}
+      }
     })
   );
   const compiled = helpers.graph.compile();
@@ -126,7 +132,7 @@ async function runProjection(
   const sideBytes = await columns.sides.buffer.readAsync();
   const foot = await readFloat32(columns.footPoints.buffer, 2 * pointCount);
   const result = {
-    pathIndices: await readUint32(columns.pathIndices.buffer, pointCount),
+    lineIndices: await readUint32(columns.lineIndices.buffer, pointCount),
     segmentIndices: await readUint32(columns.segmentIndices.buffer, pointCount),
     fractions: await readFloat32(columns.fractions.buffer, pointCount),
     foot,
@@ -144,20 +150,18 @@ async function runProjection(
 
 it('GPULinearReferencing spherical matches pyproj Geod closest points on great-circle arcs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = new Float32Array(SPHERICAL_POSITIONS);
-  const pathOffsets = new Uint32Array(SPHERICAL_PATH_OFFSETS);
+  const lineOffsets = new Uint32Array(SPHERICAL_LINE_OFFSETS);
   const points = new Float32Array(SPHERICAL_POINTS);
   const started = performance.now();
-  const actual = await runProjection(device, 'spherical', positions, pathOffsets, points, 1e9);
+  const actual = await runProjection(device, 'spherical', positions, lineOffsets, points, 1e9);
   const elapsed = performance.now() - started;
   expect(actual.overflow).toBe(0);
   let worst = {distance: 0, measure: 0, foot: 0, normalized: 0};
   SPHERICAL_PROJECTIONS.forEach((expected, row) => {
     const label = `point ${row}`;
-    expect(actual.pathIndices[row], label).toBe(expected.path);
+    expect(actual.lineIndices[row], label).toBe(expected.line);
     const distanceError = Math.abs(actual.distances[row] - expected.distance);
     const measureError = Math.abs(actual.measures[row] - expected.measure);
     const footError =
@@ -166,7 +170,7 @@ it('GPULinearReferencing spherical matches pyproj Geod closest points on great-c
           Math.cos((expected.foot[1] * Math.PI) / 180),
         actual.foot[2 * row + 1] - expected.foot[1]
       ) * 111194.9;
-    const length = SPHERICAL_PATH_LENGTHS[expected.path];
+    const length = SPHERICAL_LINE_LENGTHS[expected.line];
     const normalizedError = Math.abs(actual.normalizedMeasures[row] - expected.normalized);
     worst = {
       distance: Math.max(worst.distance, distanceError),
@@ -189,30 +193,28 @@ it('GPULinearReferencing spherical matches pyproj Geod closest points on great-c
       `foot ${worst.foot.toFixed(2)}, normalized ${worst.normalized.toFixed(2)}; ${elapsed.toFixed(0)} ms`
   );
   // A per-frame radius in meters drops the far point (last row) but keeps near ones.
-  const nearRadius = await runProjection(device, 'spherical', positions, pathOffsets, points, 5e5);
+  const nearRadius = await runProjection(device, 'spherical', positions, lineOffsets, points, 5e5);
   const last = SPHERICAL_PROJECTIONS.length - 1;
   expect(SPHERICAL_PROJECTIONS[last].distance).toBeGreaterThan(5e5);
-  expect(nearRadius.pathIndices[last]).toBe(NO_PATH);
+  expect(nearRadius.lineIndices[last]).toBe(NO_LINE);
   expect(nearRadius.distances[last]).toBe(-1);
   expect(nearRadius.sides[last]).toBe(0);
   expect(nearRadius.normalizedMeasures[last]).toBeNaN();
-  expect(nearRadius.pathIndices[0]).toBe(SPHERICAL_PROJECTIONS[0].path);
+  expect(nearRadius.lineIndices[0]).toBe(SPHERICAL_PROJECTIONS[0].line);
   const nothing = await runProjection(
     device,
     'spherical',
     positions,
-    pathOffsets,
+    lineOffsets,
     points,
     Number.NaN
   );
-  expect(nothing.pathIndices.every(path => path === NO_PATH)).toBe(true);
+  expect(nothing.lineIndices.every(line => line === NO_LINE)).toBe(true);
 });
 
 it('GPULinearReferencing planar normalizedMeasures matches shapely line_locate_point(normalized=True)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const actual = await runProjection(
     device,
     'planar',
@@ -231,13 +233,13 @@ async function runLocate(
   coordinateSystem: 'planar' | 'spherical',
   measureMode: 'distance' | 'fraction',
   positions: Float32Array,
-  pathOffsets: Uint32Array,
-  eventPaths: number[],
+  lineOffsets: Uint32Array,
+  eventLineIndices: number[],
   eventMeasures: number[],
   eventOffsets?: number[]
 ) {
   const helpers = createGraphHelpers(device, `line-locate-${coordinateSystem}`);
-  const eventCount = eventPaths.length;
+  const eventCount = eventLineIndices.length;
   const output = {
     positions: helpers.output('o-positions', 'float32x2', eventCount),
     segmentIndices: helpers.output('o-segments', 'uint32', eventCount),
@@ -252,8 +254,8 @@ async function runLocate(
           : undefined,
       measureMode,
       positions: helpers.input('positions', positions, 'float32x2'),
-      pathOffsets: helpers.input('path-offsets', pathOffsets, 'uint32'),
-      eventPaths: helpers.input('event-paths', new Uint32Array(eventPaths), 'uint32'),
+      lineOffsets: helpers.input('line-offsets', lineOffsets, 'uint32'),
+      eventLineIndices: helpers.input('event-lines', new Uint32Array(eventLineIndices), 'uint32'),
       eventMeasures: helpers.input('event-measures', new Float32Array(eventMeasures), 'float32'),
       eventOffsets: eventOffsets
         ? helpers.input('event-offsets', new Float32Array(eventOffsets), 'float32')
@@ -279,12 +281,10 @@ async function runLocate(
 
 it('GPULineLocate spherical interpolates by meters and by fraction like pyproj Geod.fwd', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = new Float32Array(SPHERICAL_POSITIONS);
-  const pathOffsets = new Uint32Array(SPHERICAL_PATH_OFFSETS);
-  const eventPaths = SPHERICAL_EVENTS.map(event => event.path);
+  const lineOffsets = new Uint32Array(SPHERICAL_LINE_OFFSETS);
+  const eventLineIndices = SPHERICAL_EVENTS.map(event => event.line);
   const offsets = SPHERICAL_EVENTS.map(event => event.offset);
   for (const mode of ['fraction', 'distance'] as const) {
     const measures = SPHERICAL_EVENTS.map(event =>
@@ -295,8 +295,8 @@ it('GPULineLocate spherical interpolates by meters and by fraction like pyproj G
       'spherical',
       mode,
       positions,
-      pathOffsets,
-      eventPaths,
+      lineOffsets,
+      eventLineIndices,
       measures,
       offsets
     );
@@ -328,9 +328,7 @@ it('GPULineLocate spherical interpolates by meters and by fraction like pyproj G
 
 it('GPULineLocate planar fraction matches shapely line_interpolate_point(normalized=True)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const actual = await runLocate(
     device,
     'planar',
@@ -346,47 +344,9 @@ it('GPULineLocate planar fraction matches shapely line_interpolate_point(normali
   });
 });
 
-/** f64 distance in meters from a point to the great-circle arc `a..b` (endpoints included). */
-function getArcDistanceOracle(
-  point: readonly number[],
-  a: readonly number[],
-  b: readonly number[]
-): number {
-  const toVector = ([longitude, latitude]: readonly number[]) => {
-    const lambda = (longitude * Math.PI) / 180;
-    const phi = (latitude * Math.PI) / 180;
-    return [Math.cos(phi) * Math.cos(lambda), Math.cos(phi) * Math.sin(lambda), Math.sin(phi)];
-  };
-  const dot = (u: number[], v: number[]) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
-  const cross = (u: number[], v: number[]) => [
-    u[1] * v[2] - u[2] * v[1],
-    u[2] * v[0] - u[0] * v[2],
-    u[0] * v[1] - u[1] * v[0]
-  ];
-  const angle = (u: number[], v: number[]) => Math.atan2(Math.hypot(...cross(u, v)), dot(u, v));
-  const p = toVector(point);
-  const start = toVector(a);
-  const end = toVector(b);
-  let best = Math.min(angle(p, start), angle(p, end));
-  const normal = cross(start, end);
-  const normalLength = Math.hypot(...normal);
-  if (normalLength > 1e-12) {
-    // The point's foot on the great circle lies on the arc when it is between both endpoints.
-    const unit = normal.map(value => value / normalLength);
-    const foot = cross(unit, cross(p, unit));
-    const arcAngle = angle(start, end);
-    if (angle(start, foot) <= arcAngle && angle(foot, end) <= arcAngle) {
-      best = Math.min(best, Math.abs(Math.asin(Math.max(-1, Math.min(1, dot(p, unit))))));
-    }
-  }
-  return best * 6371008.8;
-}
-
 it('GPULinearReferencing spherical prunes by bounding caps without changing nearest segments', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Many short and a few very long arcs spread over the globe, including the antimeridian, the
   // high latitudes and a zero-length segment, so cap pruning meets large and tiny half-angles.
   let state = 12345;
@@ -394,13 +354,13 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
     return state / 4294967296;
   };
-  const pathOffsets = [0];
+  const lineOffsets = [0];
   const vertices: number[][] = [];
-  for (let path = 0; path < 12; path++) {
+  for (let line = 0; line < 12; line++) {
     let longitude = random() * 360 - 180;
     let latitude = random() * 150 - 75;
     const count = 4 + Math.floor(random() * 60);
-    const step = path % 4 === 0 ? 25 : 0.4;
+    const step = line % 4 === 0 ? 25 : 0.4;
     for (let vertex = 0; vertex < count; vertex++) {
       vertices.push([longitude, latitude]);
       if (vertex === 2) {
@@ -409,7 +369,7 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
       longitude = ((longitude + (random() - 0.4) * step + 540) % 360) - 180;
       latitude = Math.max(-80, Math.min(80, latitude + (random() - 0.5) * step));
     }
-    pathOffsets.push(vertices.length);
+    lineOffsets.push(vertices.length);
   }
   const points: number[][] = [];
   for (let index = 0; index < 150; index++) {
@@ -427,7 +387,7 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
     device,
     'spherical',
     new Float32Array(vertices.flat()),
-    new Uint32Array(pathOffsets),
+    new Uint32Array(lineOffsets),
     new Float32Array(points.flat()),
     1e9
   );
@@ -435,8 +395,8 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
   let ambiguous = 0;
   points.forEach((point, index) => {
     const distances: {row: number; distance: number}[] = [];
-    for (let path = 0; path + 1 < pathOffsets.length; path++) {
-      for (let row = pathOffsets[path]; row + 1 < pathOffsets[path + 1]; row++) {
+    for (let line = 0; line + 1 < lineOffsets.length; line++) {
+      for (let row = lineOffsets[line]; row + 1 < lineOffsets[line + 1]; row++) {
         distances.push({
           row,
           distance: getArcDistanceOracle(point, vertices[row], vertices[row + 1])
@@ -452,10 +412,10 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
       // four times the single-point bound.
     ).toBeLessThanOrEqual(METER_TOLERANCE * 4);
     if (distances[1].distance - distances[0].distance > 15) {
-      const path = pathOffsets.findIndex((offset, p) => distances[0].row < pathOffsets[p + 1]);
-      expect(actual.pathIndices[index], `point ${index} path`).toBe(path);
+      const line = lineOffsets.findIndex((offset, p) => distances[0].row < lineOffsets[p + 1]);
+      expect(actual.lineIndices[index], `point ${index} line`).toBe(line);
       expect(actual.segmentIndices[index], `point ${index} segment`).toBe(
-        distances[0].row - pathOffsets[path]
+        distances[0].row - lineOffsets[line]
       );
     } else {
       ambiguous++;
@@ -464,3 +424,70 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
   expect(ambiguous).toBeLessThan(points.length * 0.8);
   device.destroy?.();
 });
+
+it('GPULinearReferencing spherical arc BVH matches a brute-force scan on 5000 arcs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {vertices, lineOffsets, points, bulgeLine, tieLine} = createSphericalBVHScene();
+  for (const searchRadius of [1e9, 150_000]) {
+    const actual = await runProjection(
+      device,
+      'spherical',
+      new Float32Array(vertices.flat()),
+      new Uint32Array(lineOffsets),
+      new Float32Array(points.flat()),
+      searchRadius
+    );
+    expect(actual.overflow).toBe(0);
+    let ambiguous = 0;
+    points.forEach((point, index) => {
+      const {best, secondDistance, competingLineDistance} = getNearestArcCandidates(
+        point,
+        vertices,
+        lineOffsets
+      );
+      const label = `radius ${searchRadius} point ${index}`;
+      if (best.distance > searchRadius + METER_TOLERANCE * 4) {
+        expect(actual.lineIndices[index], label).toBe(NO_LINE);
+        return;
+      }
+      if (best.distance > searchRadius - METER_TOLERANCE * 4) {
+        // Within rounding of the radius: either answer is valid.
+        return;
+      }
+      expect(Math.abs(actual.distances[index] - best.distance), label).toBeLessThanOrEqual(
+        METER_TOLERANCE * 4
+      );
+      const selectedLine = actual.lineIndices[index];
+      const selectedRow = lineOffsets[selectedLine] + actual.segmentIndices[index];
+      expect(selectedLine, `${label} selected line`).toBeLessThan(lineOffsets.length - 1);
+      expect(selectedRow + 1, `${label} selected segment`).toBeLessThan(
+        lineOffsets[selectedLine + 1]
+      );
+      expect(
+        getArcDistanceOracle(point, vertices[selectedRow], vertices[selectedRow + 1]) -
+          best.distance,
+        `${label} selected segment oracle distance`
+      ).toBeLessThanOrEqual(METER_TOLERANCE * 4);
+      // Adjacent segments share endpoints, so their distances can be exactly tied over a
+      // whole region. Only competing lines count toward the fixture's ambiguity fraction.
+      if (competingLineDistance - best.distance > 15) {
+        expect(actual.lineIndices[index], `${label} line`).toBe(best.line);
+      } else {
+        ambiguous++;
+      }
+      if (secondDistance - best.distance > 15) {
+        expect(actual.segmentIndices[index], `${label} segment`).toBe(
+          best.row - lineOffsets[best.line]
+        );
+      }
+    });
+    expect(ambiguous).toBeLessThan(points.length * 0.2);
+    if (searchRadius > 1e8) {
+      expect(actual.lineIndices[0], 'bulge apex').toBe(bulgeLine);
+      // Exact duplicates tie bitwise: the lower row (the first copy) wins.
+      expect(actual.lineIndices[2], 'duplicate tie').toBe(tieLine);
+    }
+  }
+  device.destroy?.();
+}, 120000);

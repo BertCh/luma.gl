@@ -18,6 +18,7 @@ import {
 import {compareCellTablesOnCPU} from '../cell-table-compare/cell-table-compare-oracle';
 import {createSeededRandom} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const RESOLUTION = 8;
 const TABLE_CAPACITY = 96;
@@ -57,9 +58,7 @@ function toOracleCells(positions: Float32Array) {
 
 it('addPeriodComparisonRecipe aggregates two periods, compares them and colors the change', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const periods = createPeriods();
   const oracle = compareCellTablesOnCPU(
     toOracleCells(periods.before),
@@ -110,8 +109,7 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
           zScore: zScore.view,
           ratio: ratio.view,
           percentChange: percentChange.view,
-          count: count.view,
-          overflow: overflow.view
+          status: {count: count.view, overflow: overflow.view}
         },
         breaks: breaks.view,
         classCount: classCount.view,

@@ -21,7 +21,9 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {makeExtentGrid} from '../spatial-interpolation/extent-grid';
 import {KERNEL_DENSITY_ORACLE} from './kernel-density-oracle-values';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * GPU versus float64 oracle (sklearn / numpy / scipy dblquad, see kernel-density-oracle-values.ts):
@@ -54,6 +56,8 @@ async function runKernelDensity(
   const weights = [...field.weights, ...(options.extraRows?.weights ?? [])];
   const pointCount = positions.length / 2;
   const cellCount = field.columns * field.rows;
+  // Rows advance north from the window minimum, as the old extent props did.
+  const grid = makeExtentGrid(field.columns, field.rows, WINDOW);
   const buffers: Buffer[] = [];
   const track = (buffer: Buffer) => {
     buffers.push(buffer);
@@ -88,8 +92,7 @@ async function runKernelDensity(
           )
         : undefined,
       parameters: parameterBuffer.importToGraph(graph),
-      width: field.columns,
-      height: field.rows,
+      grid,
       indexGridSize: [4, 3],
       indexBounds: WINDOW,
       kernel: options.kernel,
@@ -100,17 +103,23 @@ async function runKernelDensity(
         weightSum: options.readStatus
           ? importGraphBuffer(graph, 'weight-sum-out', weightSumOut, 'float32', 1)
           : undefined,
-        invalidCount: options.readStatus
-          ? importGraphBuffer(graph, 'invalid-count-out', invalidCountOut, 'uint32', 1)
+        status: options.readStatus
+          ? {
+              invalidCount: importGraphBuffer(
+                graph,
+                'invalid-count-out',
+                invalidCountOut,
+                'uint32',
+                1
+              )
+            }
           : undefined
       }
     })
   );
   const compiled = graph.compile();
   try {
-    parameterBuffer.write(
-      getGPUKernelDensityParameterValues({extent: WINDOW, bandwidth: field.bandwidth})
-    );
+    parameterBuffer.write(getGPUKernelDensityParameterValues({bandwidth: field.bandwidth}, grid));
     submitGraph(device, compiled, undefined);
     return {
       values: Float32Array.from(await readFloat32(valuesOut, cellCount)),
@@ -137,9 +146,7 @@ function expectField(actual: Float32Array, expected: readonly number[], label: s
 
 it('GPUKernelDensity matches sklearn, numpy and dblquad for every kernel and edge correction', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const testCase of field.cases) {
     const run = await runKernelDensity(device, {
       kernel: testCase.kernel as GPUKernelDensityKernel,
@@ -156,9 +163,7 @@ it('GPUKernelDensity matches sklearn, numpy and dblquad for every kernel and edg
 
 it('GPUKernelDensity probability output divides by the included weight', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const testCase = field.cases.find(
     candidate =>
       candidate.kernel === 'gaussian' && candidate.edgeCorrection === 'none' && candidate.weighted
@@ -181,9 +186,7 @@ it('GPUKernelDensity probability output divides by the included weight', async (
 
 it('GPUKernelDensity excludes non-finite, negative and out-of-domain rows and counts them', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const testCase = field.cases.find(
     candidate =>
       candidate.kernel === 'gaussian' && candidate.edgeCorrection === 'none' && candidate.weighted

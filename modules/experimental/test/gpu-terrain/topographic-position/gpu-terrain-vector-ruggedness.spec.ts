@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUTerrainVectorRuggednessParameterValues,
@@ -24,10 +25,19 @@ import {
   type VectorRuggednessOracleOptions
 } from './terrain-ruggedness-oracle';
 import {createSeededRandom} from '../terrain-oracle-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 11;
 const HEIGHT = 9;
 const PIXEL_COUNT = WIDTH * HEIGHT;
+
+/** Grid of the test raster with square cells of `cellSize` world units. */
+function makeGrid(
+  cellSize: number,
+  options: {origin?: [number, number]; rowDirection?: 'south' | 'north'} = {}
+) {
+  return makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize, ...options});
+}
 
 function createTerrain(): Float32Array {
   const random = createSeededRandom(987);
@@ -62,8 +72,7 @@ function createFixture(
   });
   graph.add(
     new GPUTerrainVectorRuggedness({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGrid(10),
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -75,9 +84,11 @@ function createFixture(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', PIXEL_COUNT)
           : undefined
       },
-      settings: settings.importToGraph(graph),
-      vectorRuggedness: importGraphBuffer(graph, 'vrm', vrm, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validity, 'uint32', PIXEL_COUNT),
+      parameters: settings.importToGraph(graph),
+      output: {
+        vectorRuggedness: importGraphBuffer(graph, 'vrm', vrm, 'float32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(graph, 'validity', validity, 'uint32', PIXEL_COUNT)
+      },
       ...overrides
     })
   );
@@ -121,15 +132,13 @@ async function expectOracle(
 
 it('GPUTerrainVectorRuggedness is zero on a plane and positive on rough terrain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const settings = getGPUTerrainVectorRuggednessParameterValues({cellSize: [10, 10]});
+  requireTestDevice(device);
+  const settings = getGPUTerrainVectorRuggednessParameterValues({}, makeGrid(10));
   const plane = Float32Array.from(
     {length: PIXEL_COUNT},
     (_, index) => 2 * (index % WIDTH) + 3 * Math.floor(index / WIDTH)
   );
-  const planeFixture = createFixture(device, plane, settings, {radius: 2});
+  const planeFixture = createFixture(device, plane, settings, {maximumRadius: 2});
   let compiled = planeFixture.graph.compile();
   submitGraph(device, compiled, undefined);
   const planeValues = await readFloat32(planeFixture.vrm, PIXEL_COUNT);
@@ -165,11 +174,9 @@ it('GPUTerrainVectorRuggedness is zero on a plane and positive on rough terrain'
 
 it('GPUTerrainVectorRuggedness matches the oracle for radius, border, and nodata variants', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createTerrain();
-  const settings = getGPUTerrainVectorRuggednessParameterValues({cellSize: [8, 8], zFactor: 1.5});
+  const grid = makeGrid(8);
   const mask = new Uint32Array(PIXEL_COUNT).fill(1);
   for (const index of [12, 13, 45, 46, 60, 98]) {
     mask[index] = 0;
@@ -177,13 +184,14 @@ it('GPUTerrainVectorRuggedness matches the oracle for radius, border, and nodata
   const errors: Record<string, number> = {};
   // Radius 3 and 12 take the separable row/column path (12 clips every window to the grid).
   for (const radius of [1, 3, 12]) {
+    const settings = getGPUTerrainVectorRuggednessParameterValues({zFactor: 1.5, radius}, grid);
     for (const borderMode of ['clamp', 'nodata'] as const) {
       for (const useMask of [false, true]) {
         const fixture = createFixture(
           device,
           terrain,
           settings,
-          {radius, borderMode},
+          {grid, maximumRadius: radius, borderMode},
           useMask ? mask : undefined
         );
         const compiled = fixture.graph.compile();
@@ -210,19 +218,16 @@ it('GPUTerrainVectorRuggedness matches the oracle for radius, border, and nodata
 
 it('GPUTerrainVectorRuggedness handles geographic mode, north rows, and settings rewrites', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createTerrain();
-  const geographic = getGPUTerrainVectorRuggednessParameterValues({
-    cellSize: [0.0005, 0.0005],
-    northEdge: 60,
-    southEdge: 59.95
-  });
+  const northGrid = (latitude: number) =>
+    makeGrid(0.0005, {origin: [0, latitude], rowDirection: 'north'});
+  const geographic = getGPUTerrainVectorRuggednessParameterValues({radius: 3}, northGrid(60));
   const fixture = createFixture(device, terrain, geographic, {
+    grid: northGrid(60),
     cellSizeMode: 'geographic',
     rowDirection: 'north',
-    radius: 3
+    maximumRadius: 3
   });
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
@@ -235,12 +240,10 @@ it('GPUTerrainVectorRuggedness handles geographic mode, north rows, and settings
   const before = await readFloat32(fixture.vrm, PIXEL_COUNT);
   expect(before.some(value => value > 0.001)).toBe(true);
 
-  const updated = getGPUTerrainVectorRuggednessParameterValues({
-    cellSize: [0.0005, 0.0005],
-    zFactor: 4,
-    northEdge: 30,
-    southEdge: 29.95
-  });
+  const updated = getGPUTerrainVectorRuggednessParameterValues(
+    {zFactor: 4, radius: 3},
+    northGrid(30)
+  );
   fixture.settings.write(updated);
   submitGraph(device, compiled, undefined);
   await expectOracle(fixture, terrain, updated, options);
@@ -248,4 +251,70 @@ it('GPUTerrainVectorRuggedness handles geographic mode, north rows, and settings
   expect(after.some((value, index) => Math.abs(value - before[index]) > 1e-4)).toBe(true);
   compiled.destroy();
   destroyFixture(fixture);
+});
+
+it('GPUTerrainVectorRuggedness serves every per-frame radius from one pipeline set', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const terrain = createTerrain();
+  const grid = makeGrid(8);
+  const mask = new Uint32Array(PIXEL_COUNT).fill(1);
+  for (const index of [12, 13, 45, 46, 60, 98]) {
+    mask[index] = 0;
+  }
+  // maximumRadius 2 takes the direct window sum, 5 and 12 the separable row and column passes
+  // (12 clips every window to the grid). One compiled graph per maximum is rewritten per frame.
+  for (const [maximumRadius, radii] of [
+    [2, [1, 2]],
+    [5, [1, 2, 3, 4, 5]],
+    [12, [1, 3, 7, 12]]
+  ] as const) {
+    const fixture = createFixture(
+      device,
+      terrain,
+      getGPUTerrainVectorRuggednessParameterValues({zFactor: 1.5}, grid),
+      {grid, maximumRadius},
+      mask
+    );
+    const compiled = fixture.graph.compile();
+    const results = new Map<number, number[]>();
+    for (const radius of radii) {
+      const settings = getGPUTerrainVectorRuggednessParameterValues({zFactor: 1.5, radius}, grid);
+      fixture.settings.write(settings);
+      submitGraph(device, compiled, undefined);
+      await expectOracle(fixture, terrain, settings, {radius}, mask);
+      results.set(radius, await readFloat32(fixture.vrm, PIXEL_COUNT));
+    }
+    if (radii.length > 1) {
+      // Different radii give different images, so the per-frame word is really read.
+      const first = results.get(radii[0])!;
+      const last = results.get(radii[radii.length - 1])!;
+      expect(last.some((value, index) => Math.abs(value - first[index]) > 1e-4)).toBe(true);
+    }
+    // An omitted radius (word 0) and an explicit radius equal to the maximum are bit-identical.
+    const omitted = getGPUTerrainVectorRuggednessParameterValues({zFactor: 1.5}, grid);
+    fixture.settings.write(omitted);
+    submitGraph(device, compiled, undefined);
+    const omittedValues = await readFloat32(fixture.vrm, PIXEL_COUNT);
+    await expectOracle(fixture, terrain, omitted, {radius: maximumRadius}, mask);
+    const explicit = getGPUTerrainVectorRuggednessParameterValues(
+      {zFactor: 1.5, radius: maximumRadius},
+      grid
+    );
+    fixture.settings.write(explicit);
+    submitGraph(device, compiled, undefined);
+    expect(Array.from(await readFloat32(fixture.vrm, PIXEL_COUNT))).toEqual(
+      Array.from(omittedValues)
+    );
+    // A radius above the maximum written to the buffer directly clamps to the maximum.
+    const oversized = Float32Array.from(explicit);
+    oversized[5] = maximumRadius + 7;
+    fixture.settings.write(oversized);
+    submitGraph(device, compiled, undefined);
+    expect(Array.from(await readFloat32(fixture.vrm, PIXEL_COUNT))).toEqual(
+      Array.from(omittedValues)
+    );
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
 });

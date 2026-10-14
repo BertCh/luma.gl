@@ -7,9 +7,10 @@ import {expect, it} from 'vitest';
 import {GPUArealInterpolation} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import {GPUSpatialLag} from '../../../src/gpu-spatial-analysis/spatial-weights/index';
 import {
-  getGPUPolygonRasterizationExtentValues,
+  getGPUPolygonRasterizationParameterValues,
   GPUPolygonRasterization
 } from '../../../src/gpu-raster/polygon-rasterization';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {
   computeArealOracle,
   computeTransferOracle,
@@ -18,6 +19,7 @@ import {
 } from './areal-interpolation-oracle';
 import {createSeededRandom, expectClose, GraphRig} from './areal-interpolation-harness';
 import {AREAL_NUMPY} from './change-of-support-numpy-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -83,43 +85,42 @@ async function runCase(
   const twoColumnOutput = rig.output('float32', target.zoneCount * 2);
   rig.run(
     new GPUArealInterpolation({
+      grid: makeGPURasterMetadata({width, height}),
       sourceZones: rig.input(source.zones, 'uint32'),
       targetZones: rig.input(target.zones, 'uint32'),
-      sourceCount: source.zoneCount,
-      targetCount: target.zoneCount,
+      sourceZoneCount: source.zoneCount,
+      targetZoneCount: target.zoneCount,
       cellWeights: cellWeights ? rig.input(cellWeights, 'float32') : undefined,
       denominator: options.denominator,
       mode: options.mode,
-      weights: arealWeights,
-      alternateWeights: alternate.view,
-      areas: areas.view,
-      overflow: overflow.view,
-      totalPairs: totalPairs.view,
       categories: {
         sourceCategories: rig.input(categories, 'uint32'),
-        categoryCount: 3,
-        output: shares.view
+        categoryCount: 3
+      },
+      output: {
+        weights: arealWeights,
+        alternateWeights: alternate.view,
+        areas: areas.view,
+        categoryShares: shares.view,
+        status: {overflow: overflow.view, requiredPairCount: totalPairs.view}
       }
     }),
     // The roadmap composition: GPUSpatialLag over the cross (target to source) area-share weights.
     new GPUSpatialLag({
       id: 'lag-extensive',
       weights: extensiveWeights,
-      sourceCount: source.zoneCount,
       values: sourceValuesView,
       output: extensiveTransfer.view
     }),
     new GPUSpatialLag({
       id: 'lag-intensive',
       weights: intensiveWeights,
-      sourceCount: source.zoneCount,
       values: sourceValuesView,
       output: intensiveTransfer.view
     }),
     new GPUSpatialLag({
       id: 'lag-columns',
       weights: extensiveWeights,
-      sourceCount: source.zoneCount,
       columnCount: 2,
       values: twoColumns,
       output: twoColumnOutput.view
@@ -147,7 +148,7 @@ for (const denominator of ['zone', 'overlap'] as const) {
   for (const masked of [false, true]) {
     it(`GPUArealInterpolation matches the oracle (${denominator}, ${masked ? 'dasymetric' : 'plain'})`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) return;
+      requireTestDevice(device);
       const {expected, actual, sourceValues, categories, pairCount, targetCount} = await runCase(
         device,
         {denominator, mode: 'extensive', masked, capacitySlack: 5}
@@ -214,7 +215,7 @@ for (const denominator of ['zone', 'overlap'] as const) {
 
 it('GPUArealInterpolation writes intensive weights to weights.weights when mode is intensive', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {expected, actual} = await runCase(device, {
     denominator: 'zone',
     mode: 'intensive',
@@ -228,7 +229,7 @@ it('GPUArealInterpolation writes intensive weights to weights.weights when mode 
 
 it('GPUArealInterpolation conserves extensive mass over the shared extent with overlap denominators', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {actual, sourceValues, expected} = await runCase(device, {
     denominator: 'overlap',
     mode: 'extensive',
@@ -246,7 +247,7 @@ it('GPUArealInterpolation conserves extensive mass over the shared extent with o
 
 it('GPUArealInterpolation flags capacity overflow and clamps the offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 12;
   const source = createBlockZones(width, 12, 4, 4);
   const target = createBlockZones(width, 12, 3, 3, {shiftX: 1});
@@ -267,13 +268,15 @@ it('GPUArealInterpolation flags capacity overflow and clamps the offsets', async
   const totalPairs = rig.output('uint32', 1);
   rig.run(
     new GPUArealInterpolation({
+      grid: makeGPURasterMetadata({width, height: 12}),
       sourceZones: rig.input(source.zones, 'uint32'),
       targetZones: rig.input(target.zones, 'uint32'),
-      sourceCount: source.zoneCount,
-      targetCount: target.zoneCount,
-      weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
-      overflow: overflow.view,
-      totalPairs: totalPairs.view
+      sourceZoneCount: source.zoneCount,
+      targetZoneCount: target.zoneCount,
+      output: {
+        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+        status: {overflow: overflow.view, requiredPairCount: totalPairs.view}
+      }
     })
   );
   expect((await overflow.readUint32())[0]).toBe(1);
@@ -288,7 +291,7 @@ it('GPUArealInterpolation flags capacity overflow and clamps the offsets', async
 
 it('GPUArealInterpolation composes with GPUPolygonRasterization on a common grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const rectangle = (x0: number, y0: number, x1: number, y1: number) => [
     x0,
     y0,
@@ -317,25 +320,26 @@ it('GPUArealInterpolation composes with GPUPolygonRasterization on a common grid
   const width = 64;
   const height = 32;
   const rig = new GraphRig(device);
-  const extent = rig.input(
-    getGPUPolygonRasterizationExtentValues(0, 0, 16 / width, 8 / height),
-    'float32'
-  );
+  const grid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [16 / width, 8 / height],
+    rowDirection: 'north'
+  });
+  const parameters = rig.input(getGPUPolygonRasterizationParameterValues(grid), 'float32');
   const rasterize = (id: string, polygons: ReturnType<typeof toPolygons>) => {
     const zones = rig.output('uint32', width * height);
     const rasterOverflow = rig.output('uint32', 1);
     const producer = new GPUPolygonRasterization({
       id,
-      width,
-      height,
-      extent,
-      polygonPositions: rig.input(polygons.positions, 'float32x2', polygons.positions.length / 2),
+      grid,
+      parameters,
+      positions: rig.input(polygons.positions, 'float32x2', polygons.positions.length / 2),
       featureOffsets: rig.input(polygons.featureOffsets, 'uint32'),
       polygonOffsets: rig.input(polygons.polygonOffsets, 'uint32'),
       ringOffsets: rig.input(polygons.ringOffsets, 'uint32'),
       crossingCapacity: 1024,
-      zones: zones.view,
-      overflow: rasterOverflow.view
+      output: {zones: zones.view, status: {overflow: rasterOverflow.view}}
     });
     return {zones, producer};
   };
@@ -351,17 +355,19 @@ it('GPUArealInterpolation composes with GPUPolygonRasterization on a common grid
     sourceRaster.producer,
     targetRaster.producer,
     new GPUArealInterpolation({
+      grid,
       sourceZones: sourceRaster.zones.view,
       targetZones: targetRaster.zones.view,
-      sourceCount: 2,
-      targetCount: 3,
-      weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
-      alternateWeights: intensive.view,
-      overflow: overflow.view
+      sourceZoneCount: 2,
+      targetZoneCount: 3,
+      output: {
+        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+        alternateWeights: intensive.view,
+        status: {overflow: overflow.view}
+      }
     }),
     new GPUSpatialLag({
       weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
-      sourceCount: 2,
       values: rig.input(Float32Array.of(80, 160), 'float32'),
       output: total.view
     })
@@ -394,7 +400,7 @@ const TOBLER_INTENSIVE = [
 
 it('GPUArealInterpolation plus GPUSpatialLag matches tobler area_interpolate on aligned rectangles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const source = createBlockZones(24, 18, 7, 5);
   const target = createBlockZones(24, 18, 6, 8, {shiftX: 2, shiftY: 3});
   expect(source.zoneCount).toBe(16);
@@ -411,25 +417,26 @@ it('GPUArealInterpolation plus GPUSpatialLag matches tobler area_interpolate on 
   const valuesView = rig.input(values, 'float32');
   rig.run(
     new GPUArealInterpolation({
+      grid: makeGPURasterMetadata({width: 24, height: 18}),
       sourceZones: rig.input(source.zones, 'uint32'),
       targetZones: rig.input(target.zones, 'uint32'),
-      sourceCount: 16,
-      targetCount: 15,
-      weights: {offsets: offsets.view, neighbors: neighbors.view, weights: extensiveWeights.view},
-      alternateWeights: intensiveWeights.view,
-      overflow: overflow.view
+      sourceZoneCount: 16,
+      targetZoneCount: 15,
+      output: {
+        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: extensiveWeights.view},
+        alternateWeights: intensiveWeights.view,
+        status: {overflow: overflow.view}
+      }
     }),
     new GPUSpatialLag({
       id: 'tobler-extensive',
       weights: {offsets: offsets.view, neighbors: neighbors.view, weights: extensiveWeights.view},
-      sourceCount: 16,
       values: valuesView,
       output: extensive.view
     }),
     new GPUSpatialLag({
       id: 'tobler-intensive',
       weights: {offsets: offsets.view, neighbors: neighbors.view, weights: intensiveWeights.view},
-      sourceCount: 16,
       values: valuesView,
       output: intensive.view
     })
@@ -445,7 +452,7 @@ it('GPUArealInterpolation plus GPUSpatialLag matches tobler area_interpolate on 
 for (const denominator of ['zone', 'overlap'] as const) {
   it(`GPUArealInterpolation unweighted fast path equals the generic path bitwise (${denominator})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const width = 384;
     const height = 384;
     const source = createBlockZones(width, height, 37, 29, {holeSeed: 4, holeRate: 0.05});
@@ -475,16 +482,19 @@ for (const denominator of ['zone', 'overlap'] as const) {
       const areas = rig.output('float32', capacity);
       const overflow = rig.output('uint32', 1);
       const producer = new GPUArealInterpolation({
+        grid: makeGPURasterMetadata({width, height}),
         sourceZones: rig.input(source.zones, 'uint32'),
         targetZones: rig.input(target.zones, 'uint32'),
-        sourceCount: source.zoneCount,
-        targetCount: target.zoneCount,
+        sourceZoneCount: source.zoneCount,
+        targetZoneCount: target.zoneCount,
         denominator,
         unweightedFastPath,
-        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
-        alternateWeights: alternate.view,
-        areas: areas.view,
-        overflow: overflow.view
+        output: {
+          weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+          alternateWeights: alternate.view,
+          areas: areas.view,
+          status: {overflow: overflow.view}
+        }
       });
       const start = performance.now();
       rig.run(producer);
@@ -529,7 +539,7 @@ for (const [sourceColumns, sourceRows, targetColumns, targetRows] of [
 ] as const) {
   it(`GPUArealInterpolation sorts only the zone-id bits (${sourceColumns}x${sourceRows} sources, ${targetColumns}x${targetRows} targets)`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const width = 110;
     const height = 100;
     const source = createBlockZones(
@@ -562,14 +572,17 @@ for (const [sourceColumns, sourceRows, targetColumns, targetRows] of [
     const overflow = rig.output('uint32', 1);
     rig.run(
       new GPUArealInterpolation({
+        grid: makeGPURasterMetadata({width, height}),
         sourceZones: rig.input(source.zones, 'uint32'),
         targetZones: rig.input(target.zones, 'uint32'),
-        sourceCount: source.zoneCount,
-        targetCount: target.zoneCount,
+        sourceZoneCount: source.zoneCount,
+        targetZoneCount: target.zoneCount,
         denominator: 'overlap',
-        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
-        areas: areas.view,
-        overflow: overflow.view
+        output: {
+          weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+          areas: areas.view,
+          status: {overflow: overflow.view}
+        }
       })
     );
     expect((await overflow.readUint32())[0]).toBe(0);
@@ -595,6 +608,8 @@ async function runNumpyArealCase(
       | {extensive?: 'zone' | 'overlap'; intensive?: 'zone' | 'overlap'};
     anchors?: boolean;
     geographic?: boolean;
+    /** Store rows north-up (row 0 northernmost): the same raster with its rows mirrored. */
+    northUp?: boolean;
   }
 ) {
   const {fixture} = AREAL_NUMPY;
@@ -612,23 +627,37 @@ async function runNumpyArealCase(
   const fractions = rig.output('float32', fixture.sourceCount);
   const invalid = rig.output('uint32', 1);
   const geographic = AREAL_NUMPY.geographic;
+  // The fixture rows advance north from the origin; a north-up grid starts at the top edge and
+  // stores the mirrored rows.
+  const grid = makeGPURasterMetadata({
+    width: fixture.width,
+    height: fixture.height,
+    origin: [
+      10,
+      geographic.originLatitude + (options.northUp ? fixture.height * geographic.cellHeight : 0)
+    ],
+    cellSize: [geographic.cellWidth, geographic.cellHeight],
+    rowDirection: options.northUp ? 'south' : 'north'
+  });
+  const mirrorCell = (cell: number) =>
+    options.northUp && cell < fixture.width * fixture.height
+      ? (fixture.height - 1 - Math.floor(cell / fixture.width)) * fixture.width +
+        (cell % fixture.width)
+      : cell;
+  // Zone rasters hold the zone per cell; mirroring permutes the cells.
+  const order = (zones: readonly number[]) =>
+    Uint32Array.from(zones.map((_, cell) => zones[mirrorCell(cell)]));
   rig.run(
     new GPUArealInterpolation({
-      sourceZones: rig.input(Uint32Array.from(fixture.sourceZones), 'uint32'),
-      targetZones: rig.input(Uint32Array.from(fixture.targetZones), 'uint32'),
-      sourceCount: fixture.sourceCount,
-      targetCount: fixture.targetCount,
+      grid,
+      sourceZones: rig.input(order(fixture.sourceZones), 'uint32'),
+      targetZones: rig.input(order(fixture.targetZones), 'uint32'),
+      sourceZoneCount: fixture.sourceCount,
+      targetZoneCount: fixture.targetCount,
       denominator: options.denominator,
       mode: 'extensive',
-      weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
-      alternateWeights: alternate.view,
-      areas: areas.view,
-      overflow: overflow.view,
-      sourceAreas: sourceAreas.view,
-      sourceTransferredFractions: fractions.view,
-      invalidCount: invalid.view,
       sourceAnchorCells: options.anchors
-        ? rig.input(Uint32Array.from(fixture.anchors), 'uint32')
+        ? rig.input(Uint32Array.from(fixture.anchors.map(mirrorCell)), 'uint32')
         : undefined,
       ...(options.geographic
         ? {
@@ -636,18 +665,17 @@ async function runNumpyArealCase(
               coordinateSpace: 'longitude-latitude',
               metric: 'great-circle'
             } as const,
-            width: fixture.width,
-            extent: rig.input(
-              Float32Array.of(
-                10,
-                geographic.originLatitude,
-                geographic.cellWidth,
-                geographic.cellHeight
-              ),
-              'float32'
-            )
+            parameters: rig.input(getGPUPolygonRasterizationParameterValues(grid), 'float32')
           }
-        : {})
+        : {}),
+      output: {
+        weights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
+        alternateWeights: alternate.view,
+        areas: areas.view,
+        sourceAreas: sourceAreas.view,
+        sourceTransferredFractions: fractions.view,
+        status: {overflow: overflow.view, invalidCount: invalid.view}
+      }
     })
   );
   const actual = {
@@ -679,7 +707,7 @@ async function runNumpyArealCase(
 
 it('GPUArealInterpolation uses extensive zone and intensive overlap denominators by default (numpy)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   await runNumpyArealCase(device, 'default', {});
   await runNumpyArealCase(device, 'zoneZone', {denominator: 'zone'});
   await runNumpyArealCase(device, 'overlapOverlap', {denominator: 'overlap'});
@@ -687,12 +715,20 @@ it('GPUArealInterpolation uses extensive zone and intensive overlap denominators
 
 it('GPUArealInterpolation anchors keep a source smaller than a cell (numpy)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   await runNumpyArealCase(device, 'defaultAnchored', {anchors: true});
 });
 
 it('GPUArealInterpolation weights cells by spherical area on a longitude/latitude raster (numpy)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   await runNumpyArealCase(device, 'geographicDefault', {geographic: true});
+});
+
+it('GPUArealInterpolation gives a north-up longitude/latitude grid the result of a north-advancing one', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The same rasters stored upside down; cell areas must follow the mirrored rows. A negative
+  // packed cell height used to zero every weight. Same numpy reference as the north-advancing case.
+  await runNumpyArealCase(device, 'geographicDefault', {geographic: true, northUp: true});
 });

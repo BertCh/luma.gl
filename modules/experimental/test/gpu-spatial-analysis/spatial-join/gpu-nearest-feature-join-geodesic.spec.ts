@@ -17,6 +17,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {GEODESIC_NEAREST_SCENES, type GeodesicNearestScene} from './geodesic-nearest-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GREAT_CIRCLE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
 /** Meters of absolute slack: float32 longitude/latitude quantization is about 1 m at 100 degrees. */
@@ -49,10 +50,10 @@ async function runNeighbors(
 ): Promise<NeighborsRun> {
   const graph = new GPUCommandGraph(device, {id: 'geodesic-neighbors'});
   const buffers: Buffer[] = [];
-  const input = (
+  const input = <Format extends 'float32x2' | 'uint32'>(
     name: string,
     values: Float32Array | Uint32Array,
-    format: 'float32x2' | 'uint32'
+    format: Format
   ) => {
     const buffer = createInputBuffer(device, values);
     buffers.push(buffer);
@@ -90,19 +91,24 @@ async function runNeighbors(
   graph.add(
     new GPUNearestFeatureJoin({
       spatialContext: GREAT_CIRCLE,
-      points: input('queries', Float32Array.from(scene.queries.flat()), 'float32x2'),
+      queries: {
+        kind: 'points',
+        positions: input('queries', Float32Array.from(scene.queries.flat()), 'float32x2')
+      },
       features: {
         kind: 'lines',
         positions: input('positions', Float32Array.from(vertices.flat()), 'float32x2'),
         lineOffsets: input('line-offsets', Uint32Array.from(lineOffsets), 'uint32')
       },
       k: options.k,
-      maxDistance: maxDistance?.importToGraph(graph),
-      neighborIds: importGraphBuffer(graph, 'ids', ids, 'uint32', slots),
-      neighborDistances: importGraphBuffer(graph, 'distances', distances, 'float32', slots),
-      neighborFootPoints: importGraphBuffer(graph, 'foot', foot, 'float32x2', slots),
-      neighborCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', queryCount),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+      radius: maxDistance?.importToGraph(graph),
+      output: {
+        neighborIds: importGraphBuffer(graph, 'ids', ids, 'uint32', slots),
+        neighborDistances: importGraphBuffer(graph, 'distances', distances, 'float32', slots),
+        neighborFootPoints: importGraphBuffer(graph, 'foot', foot, 'float32x2', slots),
+        neighborCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', queryCount),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -137,9 +143,7 @@ async function runNeighbors(
 for (const [name, scene] of Object.entries(GEODESIC_NEAREST_SCENES)) {
   it(`GPUNearestFeatureJoin great-circle neighbors match the oracle (${name})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const k = 2;
     const result = await runNeighbors(device, scene, {k});
     expect(result.overflow).toBe(0);
@@ -173,10 +177,8 @@ for (const [name, scene] of Object.entries(GEODESIC_NEAREST_SCENES)) {
 
 it('GPUNearestFeatureJoin great-circle neighbors honor a per-frame maxDistance in meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const scene = GEODESIC_NEAREST_SCENES.equator;
+  requireTestDevice(device);
+  const scene = GEODESIC_NEAREST_SCENES['equator'];
   // Between the second (3145 m) and third (3336 m) feature of query 0.
   const result = await runNeighbors(device, scene, {k: 3, maxDistance: 3200});
   expect(result.counts).toEqual([2, 1]);
@@ -193,10 +195,8 @@ it('GPUNearestFeatureJoin great-circle neighbors honor a per-frame maxDistance i
 
 it('GPUNearestFeatureJoin great-circle nearest-feature mode returns the nearest segment in meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const scene = GEODESIC_NEAREST_SCENES.antimeridian;
+  requireTestDevice(device);
+  const scene = GEODESIC_NEAREST_SCENES['antimeridian'];
   const graph = new GPUCommandGraph(device, {id: 'geodesic-nearest-feature'});
   const buffers: Buffer[] = [];
   const input = (name: string, values: Float32Array) => {
@@ -224,17 +224,22 @@ it('GPUNearestFeatureJoin great-circle nearest-feature mode returns the nearest 
   graph.add(
     new GPUNearestFeatureJoin({
       spatialContext: GREAT_CIRCLE,
-      points: input('queries', Float32Array.from(scene.queries.flat())),
+      queries: {
+        kind: 'points',
+        positions: input('queries', Float32Array.from(scene.queries.flat()))
+      },
       features: {
         kind: 'segments',
         starts: input('starts', Float32Array.from(scene.features.flatMap(edge => edge[0]))),
         ends: input('ends', Float32Array.from(scene.features.flatMap(edge => edge[1])))
       },
       radius: radius.importToGraph(graph),
-      nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', queryCount),
-      nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', queryCount),
-      featureCounts: importGraphBuffer(graph, 'counts', featureCounts, 'uint32', featureCount),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+      output: {
+        nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', queryCount),
+        nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', queryCount),
+        featureCounts: importGraphBuffer(graph, 'counts', featureCounts, 'uint32', featureCount),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();

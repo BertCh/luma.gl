@@ -10,6 +10,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryPort} from '../../../src/analysis-core/contracts/index';
 import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights';
 import {
   createOutputBuffer,
@@ -17,7 +18,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import type {OracleCSR} from './spatial-weights-oracle';
+import type {OracleCSR, PolygonLayout} from './spatial-weights-oracle';
 
 const GARBAGE = 0x7f7f7f7f;
 
@@ -65,6 +66,17 @@ export class WeightsRig {
     return {
       view: importGraphBuffer(this.graph, `output-${this.serial++}`, buffer, format, length),
       buffer
+    };
+  }
+
+  /** Imports a four-level polygon layout as a polygon geometry port. */
+  polygons(layout: PolygonLayout): GPUPolygonGeometryPort {
+    return {
+      kind: 'polygons',
+      positions: this.input(layout.positions, 'float32x2', layout.positions.length / 2),
+      ringOffsets: this.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
+      polygonOffsets: this.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
+      featureOffsets: this.input(layout.featureOffsets, 'uint32', layout.featureOffsets.length)
     };
   }
 

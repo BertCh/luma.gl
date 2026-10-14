@@ -7,8 +7,7 @@
 // true values and compared to the GPU with a stated float32 tolerance.
 
 import {getScaledValue} from '../../gpu-spatial-analysis/cell-aggregation/cell-aggregation-oracle';
-
-const f = Math.fround;
+import {getLinearOrderStatistic} from '../order-statistic-oracle';
 
 /** Deterministic mulberry32 generator in [0, 1). */
 export function createRandom(seed: number): () => number {
@@ -78,23 +77,11 @@ export function canonicalizeValue(value: number): number {
 
 /**
  * Linear-interpolation quantile of ascending canonical finite f32 values with the kernel's f32
- * arithmetic: `h = f32(n - 1) * p`, `lo + (hi - lo) * (h - floor h)`.
+ * arithmetic, on the shared order-statistic policy: NaN for an empty sample or a fraction that is
+ * NaN or outside `[0, 1]` (not clamped).
  */
 export function interpolateQuantile(sorted: readonly number[], fraction: number): number {
-  const count = sorted.length;
-  if (count === 0 || !Number.isFinite(fraction)) {
-    return NaN;
-  }
-  const p = Math.min(Math.max(f(fraction), 0), 1);
-  const h = f(f(count - 1) * p);
-  const floorH = Math.floor(h);
-  const lowIndex = Math.min(floorH, count - 1);
-  const low = sorted[lowIndex];
-  if (lowIndex + 1 >= count) {
-    return low;
-  }
-  const high = sorted[lowIndex + 1];
-  return f(low + f(f(high - low) * f(h - floorH)));
+  return getLinearOrderStatistic(sorted, fraction);
 }
 
 function getVariance(variance: 'sample' | 'population', count: number, m2: number): number {

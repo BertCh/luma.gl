@@ -36,8 +36,7 @@ function createProps(
     cells: view('uint32x2', 32),
     output: {
       cells: view('uint32x2', 16),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     },
     ...overrides
   };
@@ -68,8 +67,10 @@ it('GPUCellCompaction validates props', () => {
       cells,
       output: {
         cells,
-        count: createTransientView(graph, 'alias-count', 'uint32', 1),
-        overflow: createTransientView(graph, 'alias-overflow', 'uint32', 1)
+        status: {
+          count: createTransientView(graph, 'alias-count', 'uint32', 1),
+          overflow: createTransientView(graph, 'alias-overflow', 'uint32', 1)
+        }
       }
     },
     /input|alias|disjoint|overlap/i
@@ -78,7 +79,10 @@ it('GPUCellCompaction validates props', () => {
     {
       output: {
         ...createProps(graph).output,
-        count: createTransientView(graph, 'empty-count', 'uint32', 0)
+        status: {
+          ...createProps(graph).output.status,
+          count: createTransientView(graph, 'empty-count', 'uint32', 0)
+        }
       }
     },
     /one uint32 row/

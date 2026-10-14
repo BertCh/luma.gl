@@ -43,16 +43,14 @@ it('GPUSpatialWeightsTranspose validates props and declares nodes', () => {
       new GPUSpatialWeightsTranspose({
         weights: input,
         columnCount: 6,
-        output: weights(6, 10),
-        asymmetricSlots: view('uint32', 1)
+        output: {...weights(6, 10), asymmetricSlots: view('uint32', 1)}
       })
   ).toThrow(/square/);
   expect(
     () =>
       new GPUSpatialWeightsTranspose({
         weights: input,
-        output: weights(4, 10),
-        asymmetricSlots: view('uint32', 2)
+        output: {...weights(4, 10), asymmetricSlots: view('uint32', 2)}
       })
   ).toThrow(/one uint32/);
   expect(

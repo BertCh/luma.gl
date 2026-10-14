@@ -7,7 +7,7 @@ import {
   createGPURegressionModelResult,
   getGPURegressionPredictorNames,
   GPU_REGRESSION_PRECISION_CONDITION_LIMIT
-} from '../../../src/gpu-spatial-analysis/contracts/model-result';
+} from '../../../src/analysis-core/contracts/model-result';
 
 const coefficient = (name: string, estimate: number) => ({
   name,

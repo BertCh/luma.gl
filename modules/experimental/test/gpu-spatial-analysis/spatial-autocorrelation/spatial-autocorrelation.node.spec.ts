@@ -9,7 +9,9 @@ import {
   GPUHotSpotAnalysis,
   GPULocalMoran,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  type GPUHotSpotAnalysisOutput,
   type GPUHotSpotAnalysisProps,
+  type GPULocalMoranOutput,
   type GPULocalMoranProps
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
 import {
@@ -17,7 +19,17 @@ import {
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   GPULocalGeary
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  GPUGammaStatistic,
+  GPUSpatialPearson
+} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  CORE_WORKGROUP_STORAGE_LIMIT_BYTES,
+  getStorageBindingCount,
+  getWorkgroupMemoryBytes
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeHotSpotOracle,
   createDistanceBandWeights,
@@ -45,46 +57,77 @@ function createWeightsViews(graph: GPUCommandGraph, rows = 10) {
   };
 }
 
+/** Test overrides mix props and `output` fields; `output` fields are moved into the bag. */
+type HotSpotOverrides = Partial<GPUHotSpotAnalysisProps> & Partial<GPUHotSpotAnalysisOutput>;
+type LocalMoranOverrides = Partial<GPULocalMoranProps> & Partial<GPULocalMoranOutput>;
+
 function createHotSpotProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUHotSpotAnalysisProps> = {}
+  overrides: HotSpotOverrides = {}
 ): GPUHotSpotAnalysisProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2' | 'sint32'>(
     format: Format,
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
+  const {zScores, bins, pValues, adjustedPValues, neighborCounts, globalStatistics, ...props} =
+    overrides;
+  const has = (name: string) => name in overrides;
   return {
     weights: createWeightsViews(graph),
     values: view('float32', 10),
     parameters: view('float32', GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH),
-    zScores: view('float32', 10),
-    bins: view('sint32', 10),
-    pValues: view('float32', 10),
-    ...overrides
+    ...props,
+    output: {
+      zScores: has('zScores') ? zScores! : view('float32', 10),
+      bins: has('bins') ? bins : view('sint32', 10),
+      pValues: has('pValues') ? pValues : view('float32', 10),
+      adjustedPValues,
+      neighborCounts,
+      globalStatistics
+    }
   };
 }
 
 function createLocalMoranProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPULocalMoranProps> = {}
+  overrides: LocalMoranOverrides = {}
 ): GPULocalMoranProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
+  const {
+    zScores,
+    localI,
+    spatialLag,
+    quadrants,
+    pValues,
+    adjustedPValues,
+    neighborCounts,
+    globalStatistics,
+    ...props
+  } = overrides;
+  const has = (name: string) => name in overrides;
   return {
     weights: createWeightsViews(graph),
     values: view('float32', 10),
     parameters: view('float32', GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH),
-    zScores: view('float32', 10),
-    localI: view('float32', 10),
-    quadrants: view('uint32', 10),
-    ...overrides
+    ...props,
+    output: {
+      zScores: has('zScores') ? zScores! : view('float32', 10),
+      localI: has('localI') ? localI : view('float32', 10),
+      quadrants: has('quadrants') ? quadrants : view('uint32', 10),
+      spatialLag,
+      pValues,
+      adjustedPValues,
+      neighborCounts,
+      globalStatistics
+    }
   };
 }
 
 function expectHotSpotThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPUHotSpotAnalysisProps>,
+  overrides: (graph: GPUCommandGraph) => HotSpotOverrides,
   message: RegExp
 ): void {
   const device = createNullWebGPUDevice();
@@ -115,7 +158,7 @@ it('getGPUSpatialAutocorrelationParameterValues packs and validates the layout',
     )
   ).toEqual([0.25, 1, 100, 2, 4, 0, 0, 0]);
   expect(() => getGPUSpatialAutocorrelationParameterValues({significanceLevel: NaN})).toThrow(
-    /finite/
+    /significanceLevel/
   );
   expect(() => getGPUSpatialAutocorrelationParameterValues({significanceLevel: 1})).toThrow(
     /significanceLevel/
@@ -305,7 +348,7 @@ it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
   );
   expectHotSpotThrows(
     graph => ({parameters: createTransientView(graph, 'short-parameters', 'float32', 7)}),
-    /parameters must hold 8/
+    /parameters length must be an integer in \[8,/
   );
   expectHotSpotThrows(
     graph => ({mask: createTransientView(graph, 'short-mask', 'uint32', 3)}),
@@ -330,19 +373,22 @@ it('GPUHotSpotAnalysis and GPULocalMoran reject invalid properties', () => {
         offsets: createTransientView(graph, 'one', 'uint32', 1)
       }
     }),
-    /at least two entries/
+    /offsets length/
   );
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const base = createLocalMoranProps(graph);
-  expect(() => new GPULocalMoran({...base, zScores: base.values})).toThrow(
-    /outputs must not share/
-  );
+  expect(
+    () => new GPULocalMoran({...base, output: {...base.output, zScores: base.values as never}})
+  ).toThrow(/outputs must not share/);
   expect(
     () =>
       new GPULocalMoran({
         ...base,
-        quadrants: createTransientView(graph, 'short-quadrants', 'uint32', 2)
+        output: {
+          ...base.output,
+          quadrants: createTransientView(graph, 'short-quadrants', 'uint32', 2)
+        }
       })
   ).toThrow(/quadrants length/);
   device.destroy();
@@ -395,34 +441,14 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
   device.destroy();
 });
 
-it('multipleTesting, falseDiscoveryRate, islands and minimumNeighbors are validated', () => {
+it('multipleTesting, islands and minimumNeighbors are validated', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  // The deprecated boolean is an alias of benjamini-hochberg.
   expect(
-    new GPUHotSpotAnalysis(createHotSpotProps(graph, {falseDiscoveryRate: true})).multipleTesting
-  ).toBe('benjamini-hochberg');
-  expect(
-    new GPULocalMoran(createLocalMoranProps(graph, {falseDiscoveryRate: true})).multipleTesting
-  ).toBe('benjamini-hochberg');
-  expect(
-    new GPUHotSpotAnalysis(
-      createHotSpotProps(graph, {falseDiscoveryRate: true, multipleTesting: 'benjamini-hochberg'})
-    ).multipleTesting
+    new GPUHotSpotAnalysis(createHotSpotProps(graph, {multipleTesting: 'benjamini-hochberg'}))
+      .multipleTesting
   ).toBe('benjamini-hochberg');
   expect(new GPUHotSpotAnalysis(createHotSpotProps(graph)).multipleTesting).toBe('none');
-  expect(
-    () =>
-      new GPUHotSpotAnalysis(
-        createHotSpotProps(graph, {falseDiscoveryRate: true, multipleTesting: 'holm'})
-      )
-  ).toThrow(/falseDiscoveryRate/);
-  expect(
-    () =>
-      new GPULocalMoran(
-        createLocalMoranProps(graph, {falseDiscoveryRate: false, multipleTesting: 'bonferroni'})
-      )
-  ).toThrow(/falseDiscoveryRate/);
   expect(
     () =>
       new GPULocalMoran(
@@ -462,7 +488,7 @@ it('multipleTesting, falseDiscoveryRate, islands and minimumNeighbors are valida
           GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
         ),
         islands: 'drop' as never,
-        result: {statistic: createTransientView(graph, 'geary-result', 'float32', 10)}
+        output: {statistic: createTransientView(graph, 'geary-result', 'float32', 10)}
       })
   ).toThrow(/islands/);
   // globalStatistics reports [n, mean, variance, sd, islandCount].
@@ -484,7 +510,7 @@ it('getInferenceMetadata describes the p-values for a legend', () => {
   expect(hotSpot.getInferenceMetadata().testedRowsDefinition).toMatch(/8 active neighbors/);
   expect(hotSpot.getInferenceMetadata().significanceLevel).toBeUndefined();
   const moran = new GPULocalMoran(createLocalMoranProps(graph, {islands: 'keep'}));
-  expect(moran.getInferenceMetadata(0.01)).toMatchObject({
+  expect(moran.getInferenceMetadata({significanceLevel: 0.01})).toMatchObject({
     alternative: 'two-sided',
     permutationCount: 0,
     multipleTesting: 'none',
@@ -497,7 +523,7 @@ it('getInferenceMetadata describes the p-values for a legend', () => {
 
 /** CPU oracle outputs against the esda configurations of the reference fixture. */
 it('the CPU oracles reproduce esda G_Local, Moran_Local and statsmodels on the island fixture', () => {
-  // Oracle values: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0, statsmodels 0.15.0).
+  // Oracle values: test/oracles/statistics-local-autocorrelation.py (esda 2.10.0, statsmodels 0.15.0).
   const values = getReferenceValues();
   const weights = getReferenceWeights();
   const rowWeights = getReferenceWeights({rowStandardize: true});
@@ -582,4 +608,124 @@ it('the CPU oracles reproduce esda G_Local, Moran_Local and statsmodels on the i
   }
   expect(REFERENCE.multipleTesting.none.bins).toEqual(REFERENCE.noneBinsFromZ);
   expect(GPU_HOT_SPOT_SIGNIFICANCE_LEVELS).toEqual([0.1, 0.05, 0.01]);
+});
+
+function getEdgeAssociationSources(
+  kind: 'pearson' | 'gamma',
+  rows: number,
+  withMask: boolean
+): {nodeIds: string[]; sources: {id: string; source: string}[]} {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `edge-${serial++}`, format, length);
+  const props = {
+    weights: {
+      offsets: view('uint32', rows + 1),
+      neighbors: view('uint32', rows * 4),
+      weights: view('float32', rows * 4)
+    },
+    values: view('float32', rows),
+    secondValues: view('float32', rows),
+    mask: withMask ? view('uint32', rows) : undefined,
+    output: {statistic: view('float32', 1)}
+  };
+  const nodes =
+    kind === 'pearson'
+      ? new GPUSpatialPearson(props).getCommandNodes(graph)
+      : new GPUGammaStatistic(props).getCommandNodes(graph);
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  device.destroy();
+  return {nodeIds: nodes.map(node => node.id), sources};
+}
+
+it('Pearson and Gamma reduce edges in three fixed-order stages without atomics', () => {
+  for (const kind of ['pearson', 'gamma'] as const) {
+    for (const withMask of [false, true]) {
+      const {nodeIds, sources} = getEdgeAssociationSources(kind, 70000, withMask);
+      const prefix = kind === 'pearson' ? 'spatial-pearson' : 'gamma-statistic';
+      expect(nodeIds).toEqual([`${prefix}-moments`, `${prefix}-centered`, `${prefix}-statistic`]);
+      expect(sources.map(({id}) => id)).toEqual(nodeIds);
+      for (const {id, source} of sources) {
+        expect(source, id).not.toContain('atomic');
+        expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
+        expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBe(3 * 256 * 4);
+        expect(getWorkgroupMemoryBytes(source)).toBeLessThanOrEqual(
+          CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+        );
+        // 70000 rows / 256 lanes = 274 > 256: the workgroup count is capped.
+        expect(source, id).toContain('const GROUPS: u32 = 256u;');
+      }
+      // Row filtering stays in both row passes only; the final kernel reads partials.
+      expect(sources[0].source).toContain('isFiniteFloat(values[valuesOffset + row])');
+      expect(sources[1].source).toContain('isFiniteFloat(values[valuesOffset + row])');
+      expect(sources[2].source).not.toContain('valuesOffset + row');
+      expect(sources[0].source.includes('maskOffset + row')).toBe(withMask);
+      expect(getStorageBindingCount(sources[2].source)).toBe(2);
+    }
+  }
+});
+
+it('Pearson and Gamma use one workgroup for small inputs and size groups from the row count', () => {
+  const small = getEdgeAssociationSources('pearson', 100, false).sources;
+  expect(small[0].source).toContain('const GROUPS: u32 = 1u;');
+  const medium = getEdgeAssociationSources('pearson', 1000, false).sources;
+  expect(medium[0].source).toContain('const GROUPS: u32 = 4u;');
+});
+
+it('uint32 values add exactly one conversion node, float32 values add none', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const counts = createTransientView(graph, 'counts', 'uint32', 10);
+  const moranIds = (values: GPULocalMoranProps['values'], id: string) =>
+    new GPULocalMoran(createLocalMoranProps(graph, {id, values}))
+      .getCommandNodes(graph)
+      .map(node => node.id);
+  const fromCounts = moranIds(counts, 'moran-counts');
+  const fromFloats = moranIds(createTransientView(graph, 'floats', 'float32', 10), 'moran-floats');
+  expect(fromCounts[0]).toBe('moran-counts-values-to-float32');
+  expect(fromCounts.filter(id => id.endsWith('-to-float32'))).toHaveLength(1);
+  expect(fromFloats.some(id => id.endsWith('-to-float32'))).toBe(false);
+  expect(fromCounts.length).toBe(fromFloats.length + 1);
+  const hotSpotIds = new GPUHotSpotAnalysis(createHotSpotProps(graph, {id: 'gi', values: counts}))
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(hotSpotIds[0]).toBe('gi-values-to-float32');
+  const pearsonIds = new GPUSpatialPearson({
+    id: 'pearson',
+    weights: createWeightsViews(graph),
+    values: counts,
+    secondValues: createTransientView(graph, 'second-counts', 'uint32', 10),
+    output: {statistic: createTransientView(graph, 'pearson-out', 'float32', 1)}
+  })
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(pearsonIds.slice(0, 2)).toEqual([
+    'pearson-values-to-float32',
+    'pearson-second-values-to-float32'
+  ]);
+  // Other formats are still rejected.
+  expectHotSpotThrows(
+    graph => ({values: createTransientView(graph, 'signed', 'sint32', 10) as never}),
+    /values/
+  );
+  device.destroy();
+});
+
+it('getInferenceMetadata validates the settings exactly as the packer does', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const moran = new GPULocalMoran(createLocalMoranProps(graph));
+  const hotSpot = new GPUHotSpotAnalysis(createHotSpotProps(graph));
+  for (const settings of [{significanceLevel: 0}, {significanceLevel: 1.5}]) {
+    expect(() => getGPUSpatialAutocorrelationParameterValues(settings)).toThrow(
+      /significanceLevel/
+    );
+    expect(() => moran.getInferenceMetadata(settings)).toThrow(/significanceLevel/);
+    expect(() => hotSpot.getInferenceMetadata(settings)).toThrow(/significanceLevel/);
+  }
+  const fixedMoments = {count: 1, mean: 0, variance: 1};
+  expect(() => moran.getInferenceMetadata({fixedMoments})).toThrow(/fixedMoments/);
+  expect(moran.getInferenceMetadata().significanceLevel).toBe(0.05);
+  device.destroy();
 });

@@ -5,7 +5,7 @@
 import {GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-spatial-weights-transform';
 import {
   GPU_NEIGHBOR_SEARCH_KERNEL,
-  type GPUNeighborSearchParameters
+  type GPUNeighborSearchSettings
 } from '../../../src/gpu-spatial-analysis/neighbor-search';
 
 const f32 = Math.fround;
@@ -17,7 +17,7 @@ export type NeighborSearchOracleInput = {
   queryPositions?: Float32Array;
   mask?: Uint32Array;
   queryMask?: Uint32Array;
-  parameters: GPUNeighborSearchParameters;
+  parameters: GPUNeighborSearchSettings;
   k?: number;
 };
 
@@ -50,7 +50,7 @@ export function createSeededRandom(seed: number): () => number {
 export function getNeighborWeight(
   distance: number,
   bandwidth: number,
-  parameters: GPUNeighborSearchParameters
+  parameters: GPUNeighborSearchSettings
 ): number {
   const weightKind = parameters.weightKind ?? 'binary';
   let weight = 1;

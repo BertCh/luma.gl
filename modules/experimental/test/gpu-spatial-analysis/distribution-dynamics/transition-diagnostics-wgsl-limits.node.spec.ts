@@ -11,13 +11,11 @@ import {
 } from '../../../src/gpu-spatial-analysis/distribution-dynamics/gpu-transition-diagnostics';
 import {
   createNullWebGPUDevice,
-  getGPUCommandNodeKernelSources
-} from '../../utils/gpu-contributor-test-utils';
-import {
+  getGPUCommandNodeKernelSources,
   CORE_PRIVATE_MEMORY_LIMIT_BYTES,
   getPrivateMemoryBytes,
   getStorageBindingCount
-} from '../space-time-tests/wgsl-memory';
+} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
 

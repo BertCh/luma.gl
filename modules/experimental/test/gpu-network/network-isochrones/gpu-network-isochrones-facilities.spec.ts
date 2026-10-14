@@ -10,7 +10,7 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUNetworkIsochrones,
-  getGPUNetworkIsochroneParameterValues
+  getGPUNetworkIsochronesParameterValues
 } from '../../../src/gpu-network/network-isochrones';
 import {
   h3ToBigInt,
@@ -35,6 +35,7 @@ import {
   createGridNetwork,
   dijkstra
 } from '../network-reachability/network-reachability-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GRID = 9;
 const NODE_COUNT = GRID * GRID;
@@ -70,9 +71,7 @@ for (const [family, resolution] of [
 ] as const) {
   it(`GPUNetworkIsochrones labels ${family} cell rings and raster pixels by facility`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const csr = buildCSR(NODE_COUNT, createGridNetwork(5, GRID, GRID));
     const positions = new Float32Array(2 * NODE_COUNT);
     for (let node = 0; node < NODE_COUNT; node++) {
@@ -124,7 +123,7 @@ for (const [family, resolution] of [
       id: 'facility-parameters',
       format: 'float32',
       length: 12,
-      values: getGPUNetworkIsochroneParameterValues({
+      values: getGPUNetworkIsochronesParameterValues({
         breakCount: BREAKS.length,
         extent,
         bufferRadius: 0.003,
@@ -140,30 +139,38 @@ for (const [family, resolution] of [
     const graph = new GPUCommandGraph(device, {id: 'isochrone-facilities'});
     graph.add(
       new GPUNetworkIsochrones({
-        offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', NODE_COUNT + 1),
-        neighbors: importGraphBuffer(
-          graph,
-          'neighbors',
-          input(csr.neighbors),
-          'uint32',
-          csr.neighbors.length
-        ),
-        weights: importGraphBuffer(
-          graph,
-          'weights',
-          input(csr.weights),
-          'float32',
-          csr.weights.length
-        ),
-        nodePositions: importGraphBuffer(
-          graph,
-          'positions',
-          input(positions),
-          'float32x2',
-          NODE_COUNT
-        ),
+        topology: {
+          offsets: importGraphBuffer(
+            graph,
+            'offsets',
+            input(csr.offsets),
+            'uint32',
+            NODE_COUNT + 1
+          ),
+          neighbors: importGraphBuffer(
+            graph,
+            'neighbors',
+            input(csr.neighbors),
+            'uint32',
+            csr.neighbors.length
+          ),
+          weights: importGraphBuffer(
+            graph,
+            'weights',
+            input(csr.weights),
+            'float32',
+            csr.weights.length
+          ),
+          nodePositions: importGraphBuffer(
+            graph,
+            'positions',
+            input(positions),
+            'float32x2',
+            NODE_COUNT
+          )
+        },
         costs: importGraphBuffer(graph, 'costs', out.costs, 'float32', NODE_COUNT),
-        sources: importGraphBuffer(
+        startNodes: importGraphBuffer(
           graph,
           'sources',
           input(Uint32Array.from(FACILITIES)),
@@ -171,8 +178,8 @@ for (const [family, resolution] of [
           FACILITIES.length
         ),
         assignments: importGraphBuffer(graph, 'assignments', out.assignments, 'uint32', NODE_COUNT),
-        maxIterations: 128,
-        breaks: breaks.importToGraph(graph),
+        maximumIterations: 128,
+        costBreaks: breaks.importToGraph(graph),
         parameters: parameters.importToGraph(graph),
         raster: {
           width: WIDTH,
@@ -201,8 +208,10 @@ for (const [family, resolution] of [
               'uint32',
               triangleCapacity
             ),
-            count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1)
+            status: {
+              count: importGraphBuffer(graph, 'count', out.count, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'overflow', out.overflow, 'uint32', 1)
+            }
           }
         },
         cellOutline: {
@@ -228,8 +237,16 @@ for (const [family, resolution] of [
               segmentCapacity
             ),
             groups: importGraphBuffer(graph, 'groups', out.groups, 'uint32', segmentCapacity),
-            count: importGraphBuffer(graph, 'outline-count', out.outlineCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'outline-overflow', out.outlineOverflow, 'uint32', 1)
+            status: {
+              count: importGraphBuffer(graph, 'outline-count', out.outlineCount, 'uint32', 1),
+              overflow: importGraphBuffer(
+                graph,
+                'outline-overflow',
+                out.outlineOverflow,
+                'uint32',
+                1
+              )
+            }
           },
           rings: {
             normalizeWinding: true,
@@ -255,9 +272,11 @@ for (const [family, resolution] of [
                 'uint32',
                 ringCapacity
               ),
-              count: importGraphBuffer(graph, 'ring-count', out.ringCount, 'uint32', 1),
-              overflow: importGraphBuffer(graph, 'ring-overflow', out.ringOverflow, 'uint32', 1),
-              openSegmentCount: importGraphBuffer(graph, 'ring-open', out.ringOpen, 'uint32', 1)
+              status: {
+                count: importGraphBuffer(graph, 'ring-count', out.ringCount, 'uint32', 1),
+                overflow: importGraphBuffer(graph, 'ring-overflow', out.ringOverflow, 'uint32', 1),
+                openSegmentCount: importGraphBuffer(graph, 'ring-open', out.ringOpen, 'uint32', 1)
+              }
             }
           }
         }

@@ -23,6 +23,7 @@ import {
   type SpatialJoinRun,
   type SpatialJoinRunOptions
 } from './spatial-join-sort-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 type Curve = 'morton' | 'hilbert';
@@ -79,7 +80,10 @@ function createBufferSelectionRun(
   const overflow = output('overflow', 1);
   graph.add(
     new GPUBufferSelection({
-      points: input('points', Float32Array.from(points.flat()), pointCount),
+      points: {
+        kind: 'points',
+        positions: input('points', Float32Array.from(points.flat()), pointCount)
+      },
       features: {
         kind: 'segments',
         starts: input(
@@ -93,9 +97,11 @@ function createBufferSelectionRun(
       candidateCapacity: options.candidateCapacity,
       spatialSort: options.spatialSort,
       spatialSortCurve: options.spatialSortCurve,
-      outputMask: mask.view,
-      nearestFeatureIds: nearest.view,
-      overflow: overflow.view
+      output: {
+        outputMask: mask.view,
+        nearestFeatureIds: nearest.view,
+        status: {overflow: overflow.view}
+      }
     })
   );
   const compiled = graph.compile();
@@ -197,9 +203,7 @@ function sortRowMajor(segments: [Point, Point][]): [Point, Point][] {
 /** Identical-result check plus a paired timing table (Morton against Hilbert, `console.log`). */
 it('spatial join curve A/B: Morton vs Hilbert', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const columns = 120;
   const squares = [];
   for (let row = 0; row < columns; row++) {

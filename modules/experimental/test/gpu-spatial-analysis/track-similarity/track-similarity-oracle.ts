@@ -21,7 +21,7 @@ export function densifyPolyline(polyline: Polyline, densify: number = 0): Polyli
       points.push([x0 + ((x1 - x0) * part) / parts, y0 + ((y1 - y0) * part) / parts]);
     }
   }
-  points.push(polyline[polyline.length - 1]);
+  points.push([...polyline[polyline.length - 1]]);
   return points;
 }
 

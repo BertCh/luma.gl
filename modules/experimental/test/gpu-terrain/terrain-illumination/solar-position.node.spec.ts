@@ -8,6 +8,7 @@ import {
   getGPUSolarPositionParameterValues,
   GPU_SOLAR_SUNRISE_ALTITUDE_DEGREES,
   GPUSolarPosition,
+  type GPUSolarPositionOutput,
   type GPUSolarPositionProps
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-solar-position';
 import {
@@ -114,32 +115,38 @@ it('GPUSolarPosition validates views and schedules one node', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUSolarPositionProps> = {}) => {
+  const create = (
+    overrides: Partial<Omit<GPUSolarPositionProps, 'output'>> = {},
+    outputOverrides?: GPUSolarPositionOutput
+  ) => {
     instance++;
     return new GPUSolarPosition({
       positions: createTransientView(graph, `positions-${instance}`, 'float32x2', 10),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 4),
-      altitude: createTransientView(graph, `altitude-${instance}`, 'float32', 10),
+      parameters: createTransientView(graph, `parameters-${instance}`, 'float32', 4),
+      output: outputOverrides ?? {
+        altitude: createTransientView(graph, `altitude-${instance}`, 'float32', 10)
+      },
       ...overrides
     });
   };
   const contributor = create();
   expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual(['solar-position-sun']);
-  expect(() => create({altitude: undefined})).toThrow(/at least one output/);
-  expect(() => create({azimuth: createTransientView(graph, 'short', 'float32', 9)})).toThrow(
+  expect(() => create({}, {})).toThrow(/at least one output/);
+  expect(() => create({}, {azimuth: createTransientView(graph, 'short', 'float32', 9)})).toThrow(
     /10 float32/
   );
   expect(() =>
-    create({
-      daylight: createTransientView(graph, 'daylight-f', 'float32', 10) as never
-    })
+    create({}, {daylight: createTransientView(graph, 'daylight-f', 'float32', 10) as never})
   ).toThrow();
   expect(() =>
-    create({
-      settings: createTransientView(graph, 'settings-3', 'float32', 3)
-    })
-  ).toThrow(/settings/);
+    create(
+      {parameters: createTransientView(graph, 'parameters-3', 'float32', 3)},
+      {
+        altitude: createTransientView(graph, 'altitude-p', 'float32', 10)
+      }
+    )
+  ).toThrow(/parameters/);
   const shared = createTransientView(graph, 'shared', 'float32', 10);
-  expect(() => create({altitude: shared, azimuth: shared})).toThrow(/share buffers/);
+  expect(() => create({}, {altitude: shared, azimuth: shared})).toThrow(/share buffers/);
   device.destroy();
 });

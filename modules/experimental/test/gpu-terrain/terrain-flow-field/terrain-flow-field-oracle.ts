@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getRasterD8Distance} from '../../../src/gpu-raster/cost-distance/raster-grid-utils';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {
-  getRasterD8Distance,
-  getRasterGroundCellSize
-} from '../../../src/gpu-raster/cost-distance/raster-grid-utils';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 import {
   getGPUTerrainFlowFieldParameterValues,
   type GPUTerrainFlowFieldSettings
@@ -15,10 +16,9 @@ import {
 /** Inputs of {@link computeTerrainFlowField}. NaN elevation marks an invalid cell. */
 export type TerrainFlowFieldOracleInput = {
   elevation: Float32Array;
-  width: number;
-  height: number;
+  grid: GPURasterMetadata;
   settings: GPUTerrainFlowFieldSettings;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
 };
 
 /**
@@ -27,10 +27,11 @@ export type TerrainFlowFieldOracleInput = {
  * Settings are read back from the packed float32 values the GPU sees.
  */
 export function computeTerrainFlowField(input: TerrainFlowFieldOracleInput): Float64Array {
-  const {elevation, width, height} = input;
+  const {elevation} = input;
+  const {width, height} = input.grid;
   const cellSizeMode = input.cellSizeMode ?? 'uniform';
-  const packed = getGPUTerrainFlowFieldParameterValues(input.settings);
-  const gridSettings = {
+  const packed = getGPUTerrainFlowFieldParameterValues(input.settings, input.grid);
+  const georeference = {
     cellSize: [packed[0], packed[1]] as [number, number],
     northEdge: packed[2],
     southEdge: packed[3]
@@ -61,7 +62,7 @@ export function computeTerrainFlowField(input: TerrainFlowFieldOracleInput): Flo
       }
       let gradientX = 0;
       if (column1 > column0) {
-        const [groundX] = getRasterGroundCellSize(cellSizeMode, row + 0.5, height, gridSettings);
+        const [groundX] = getRasterGroundCellSize(cellSizeMode, georeference, row + 0.5, height);
         gradientX =
           (exaggeration * (at(column1, row) - at(column0, row))) / ((column1 - column0) * groundX);
       }
@@ -69,10 +70,10 @@ export function computeTerrainFlowField(input: TerrainFlowFieldOracleInput): Flo
       if (row1 > row0) {
         let spanY = 0;
         if (row1 > row) {
-          spanY += getRasterD8Distance(cellSizeMode, 2, row, height, gridSettings);
+          spanY += getRasterD8Distance(cellSizeMode, 2, row, height, georeference);
         }
         if (row0 < row) {
-          spanY += getRasterD8Distance(cellSizeMode, 6, row, height, gridSettings);
+          spanY += getRasterD8Distance(cellSizeMode, 6, row, height, georeference);
         }
         gradientY = (exaggeration * (at(column, row1) - at(column, row0))) / spanY;
       }

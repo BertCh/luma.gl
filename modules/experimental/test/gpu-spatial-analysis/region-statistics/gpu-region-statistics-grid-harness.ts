@@ -162,7 +162,7 @@ export class GridStatisticsHarness {
       };
       const props: GPURegionStatisticsProps = {
         id: `${id}-${tag}`,
-        selection:
+        region:
           options.selectionKind === 'rectangle'
             ? {kind: 'rectangle', bounds: this.bounds.importToGraph(graph)}
             : options.selectionKind === 'radius'
@@ -184,29 +184,33 @@ export class GridStatisticsHarness {
         histogram: this.binCount
           ? {binCount: this.binCount, domain: options.histogramDomain}
           : undefined,
-        summary: importGraphBuffer(
-          graph,
-          'summary',
-          buffers.summary,
-          'uint32',
-          getGPURegionStatisticsSummaryLength(this.binCount)
-        )
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'summary',
+            buffers.summary,
+            'uint32',
+            getGPURegionStatisticsSummaryLength(this.binCount)
+          )
+        }
       };
       if (options.withOutput) {
         buffers.ids = createOutputBuffer(device, this.rowCount);
         buffers.count = createOutputBuffer(device, 1);
         buffers.overflow = createOutputBuffer(device, 1);
         buffers.total = createOutputBuffer(device, 1);
-        props.output = {
+        props.output.selectedRows = {
           ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', this.rowCount),
-          count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
+          }
         };
       }
       if (options.withOutputMask) {
         buffers.mask = createOutputBuffer(device, this.rowCount);
-        props.outputMask = importGraphBuffer(graph, 'mask', buffers.mask, 'uint32', this.rowCount);
+        props.output.mask = importGraphBuffer(graph, 'mask', buffers.mask, 'uint32', this.rowCount);
       }
       return {props, buffers};
     };

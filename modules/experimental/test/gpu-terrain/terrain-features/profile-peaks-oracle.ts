@@ -7,9 +7,9 @@ const f32 = Math.fround;
 /** Options of {@link findProfilePeaksOracle}. */
 export type ProfilePeaksOracleOptions = {
   window: number;
-  minProminence: number;
-  minSide?: number;
-  nms?: number;
+  minimumProminence: number;
+  minimumSide?: number;
+  suppressionRadius?: number;
   wrap?: boolean;
 };
 
@@ -50,8 +50,8 @@ export function findProfilePeaksOracle(
   offsets: Uint32Array | number[],
   options: ProfilePeaksOracleOptions
 ): ProfilePeaksOracleResult {
-  const minSide = options.minSide ?? 4;
-  const nms = options.nms ?? Math.max(2, Math.round(options.window / 4));
+  const minimumSide = options.minimumSide ?? 4;
+  const nms = options.suppressionRadius ?? Math.max(2, Math.round(options.window / 4));
   const wrap = options.wrap ?? false;
   const result: ProfilePeaksOracleResult = {
     peaks: [],
@@ -126,11 +126,11 @@ export function findProfilePeaksOracle(
       };
       const left = walk(-1);
       const right = walk(1);
-      if (left.valid < minSide || right.valid < minSide) {
+      if (left.valid < minimumSide || right.valid < minimumSide) {
         continue;
       }
       const prominence = f32(peak - Math.max(left.lowest, right.lowest));
-      if (prominence < options.minProminence) {
+      if (prominence < options.minimumProminence) {
         continue;
       }
       const previous = neighbor(local, -1);

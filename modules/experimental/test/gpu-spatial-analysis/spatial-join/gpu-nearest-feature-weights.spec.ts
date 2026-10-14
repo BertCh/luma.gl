@@ -10,6 +10,7 @@ import {readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
 import {assertValidCSR} from '../spatial-weights/spatial-weights-oracle';
 import {createRandom} from './spatial-join-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -48,7 +49,7 @@ async function runAdapter(
   }
 ) {
   const device = await getWebGPUTestDevice();
-  if (!device) return undefined;
+  requireTestDevice(device);
   const rig = new WeightsRig(device);
   const joinK = options.selfJoin ? options.k + 1 : options.k;
   const slots = queries.length * joinK;
@@ -66,14 +67,16 @@ async function runAdapter(
     rig.input(Float32Array.from(values.flat()), 'float32x2', values.length);
   rig.run(
     new GPUNearestFeatureJoin({
-      points: points(queries),
+      queries: {kind: 'points', positions: points(queries)},
       features: {kind: 'points', positions: points(features)},
       k: joinK,
-      maxDistance,
-      neighborIds: ids.view,
-      neighborCounts: counts.view,
-      neighborDistances: distances.view,
-      overflow: joinOverflow.view
+      radius: maxDistance,
+      output: {
+        neighborIds: ids.view,
+        neighborCounts: counts.view,
+        neighborDistances: distances.view,
+        status: {overflow: joinOverflow.view}
+      }
     }),
     new GPUNearestFeatureWeights({
       neighborIds: ids.view,
@@ -83,8 +86,7 @@ async function runAdapter(
       k: options.k,
       excludeSelf: options.selfJoin,
       weightType: options.weightType,
-      weights: output.spatialWeights,
-      overflow: overflow.view
+      output: {...output.spatialWeights, status: {overflow: overflow.view}}
     })
   );
   const csr = await output.read();
@@ -250,8 +252,7 @@ it('GPUNearestFeatureWeights validates its props', () => {
         neighborIds: view,
         neighborCounts: view,
         slotCapacity: 0,
-        weights: {} as never,
-        overflow: view
+        output: {} as never
       })
   ).toThrow(/slotCapacity/);
 });

@@ -23,6 +23,7 @@ import {
   computeCompositeScoreOnCPU,
   type CompositeScoreOracleResult
 } from './composite-score-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = {indicators: Float32Array; indicatorCount: number; mask?: Uint32Array};
 
@@ -206,9 +207,7 @@ const SETTINGS: GPUCompositeScoreSettings[] = [
 
 it('GPUCompositeScore matches the CPU oracle across scalers and aggregations without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(3000, 5, 11);
   const fixture = createFixture(device, scene);
   try {
@@ -236,9 +235,7 @@ it('GPUCompositeScore matches the CPU oracle across scalers and aggregations wit
 
 it('GPUCompositeScore averages tied ranks and the output is bitwise reproducible', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(1500, 3, 3);
   const fixture = createFixture(device, scene);
   try {
@@ -258,9 +255,7 @@ it('GPUCompositeScore averages tied ranks and the output is bitwise reproducible
 
 it('GPUCompositeScore writes NaN for every row when nothing is included', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene: Scene = {
     indicators: Float32Array.from([1, 2, 3, 4]),
     indicatorCount: 2,

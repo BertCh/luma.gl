@@ -14,9 +14,10 @@ import {
   getGPUTerrainHorizonStepDistances
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import {
-  getTerrainGroundCellSize,
-  type GPUTerrainCellSizeMode
-} from '../../../src/gpu-terrain/terrain-grid-utils';
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {computeTerrainHorizon, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {
   computeTerrainHorizonSweepBruteForce,
@@ -120,7 +121,12 @@ it('getTerrainSweepGroundLineGeometry follows a 45 degree ground azimuth on a 60
   // -0.5008424370927846 = -32823.209957312734 / 65536, so slopeFixed = -32823, and that line's
   // ground azimuth is atan2(cellX, 32823 / 65536 * cellY) = 45.00018324999883 degrees. The old
   // pixel diagonal (slopeFixed -65536) was a 26.60365263545291 degree ground ray.
-  const groundCell = getTerrainGroundCellSize('geographic', [0.001, 0.001], 60, 60, 0, 1);
+  const groundCell = getRasterGroundCellSize(
+    'geographic',
+    {cellSize: [0.001, 0.001], northEdge: 60, southEdge: 60},
+    0.5,
+    1
+  );
   const direction = getGPUTerrainHorizonDirection(1, 8);
   const geometry = getTerrainSweepGroundLineGeometry(direction, groundCell, 48, 24);
   expect(geometry).toMatchObject({xMajor: true, slopeFixed: -32823, travelSign: 1});
@@ -155,7 +161,7 @@ it('getTerrainSweepGroundLineGeometry follows a 45 degree ground azimuth on a 60
 // line, so the GPU lines equal the oracle's whatever the rounding.
 it('sweep ground geometry fixtures stay clear of rounding ties', () => {
   const fixtures: {
-    mode: GPUTerrainCellSizeMode;
+    mode: GPURasterCellSizeMode;
     cellSize: [number, number];
     northEdge: number;
     southEdge: number;
@@ -175,9 +181,10 @@ it('sweep ground geometry fixtures stay clear of rounding ties', () => {
     },
     {
       mode: 'web-mercator',
-      cellSize: [20, 20],
-      northEdge: 0.3,
-      southEdge: 0.32,
+      // 20 km cells from normalized Web Mercator y 0.3, as in the GPU sweep and horizon specs.
+      cellSize: [20000, 20000],
+      northEdge: getOracleWebMercatorY(0.3),
+      southEdge: getOracleWebMercatorY(0.3) + 24 * 20000,
       width: 32,
       height: 24,
       directionCounts: [12],
@@ -195,12 +202,10 @@ it('sweep ground geometry fixtures stay clear of rounding ties', () => {
   ];
   for (const fixture of fixtures) {
     const referenceRow = fixture.mode === 'uniform' ? 0 : Math.floor(fixture.height / 2);
-    const [cellX, cellY] = getTerrainGroundCellSize(
+    const [cellX, cellY] = getRasterGroundCellSize(
       fixture.mode,
-      fixture.cellSize,
-      fixture.northEdge,
-      fixture.southEdge,
-      referenceRow,
+      {cellSize: fixture.cellSize, northEdge: fixture.northEdge, southEdge: fixture.southEdge},
+      referenceRow + 0.5,
       fixture.height
     );
     for (const directionCount of fixture.directionCounts) {
@@ -315,8 +320,8 @@ it('hull sweep equals brute force with latitude-dependent cells and exact platea
     directionCount: 12,
     cellSize: [20, 20],
     cellSizeMode: 'web-mercator',
-    northEdge: 0.3,
-    southEdge: 0.33,
+    northEdge: getOracleWebMercatorY(0.3),
+    southEdge: getOracleWebMercatorY(0.33),
     maximumRadius: 12,
     maximumDistance: 400
   };

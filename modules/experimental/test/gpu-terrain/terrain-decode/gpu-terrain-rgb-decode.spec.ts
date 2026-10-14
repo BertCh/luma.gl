@@ -6,6 +6,7 @@ import {Texture, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphTextureView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainRGBDecode,
@@ -23,6 +24,7 @@ import {
   getFloat32Bits,
   INVALID_FLOAT_BITS
 } from './terrain-rgb-decode-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const EXHAUSTIVE_SIDE = 4096;
 const EXHAUSTIVE_PIXEL_COUNT = EXHAUSTIVE_SIDE * EXHAUSTIVE_SIDE;
@@ -50,7 +52,7 @@ async function runDecode(
   const outputValidity = createOutputBuffer(device, pixelCount);
   const disposables: {destroy(): void}[] = [outputValues, outputValidity];
   let input: GPUTerrainRGBDecodeProps['input'];
-  let inputValidityView: GPUTerrainRGBDecodeProps['inputValidity'];
+  let inputValidityView: GPUTerrainRGBDecodeProps['validity'];
   if (path === 'texture') {
     const texture = device.createTexture({
       id: 'encoded-rgb',
@@ -93,13 +95,14 @@ async function runDecode(
   const {inputValidity: _ignored, encoding, ...policy} = options;
   graph.add(
     new GPUTerrainRGBDecode({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       encoding: encoding ?? 'terrarium',
       input,
-      inputValidity: inputValidityView,
-      values: importGraphBuffer(graph, 'values', outputValues, 'float32', pixelCount),
-      validity: importGraphBuffer(graph, 'validity', outputValidity, 'uint32', pixelCount),
+      validity: inputValidityView,
+      output: {
+        values: importGraphBuffer(graph, 'values', outputValues, 'float32', pixelCount),
+        outputValidity: importGraphBuffer(graph, 'validity', outputValidity, 'uint32', pixelCount)
+      },
       ...policy
     })
   );
@@ -135,9 +138,7 @@ for (const encoding of ['terrarium', 'mapbox'] as GPUTerrainRGBEncoding[]) {
   for (const path of ['texture', 'buffer'] as const) {
     it(`GPUTerrainRGBDecode ${encoding} ${path} path is bit-exact for all 2^24 RGB triples`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const result = await runDecode(
         device,
         buildAllCodeWords(),
@@ -191,9 +192,7 @@ for (const path of ['buffer', 'texture'] as const) {
   for (const encoding of ['terrarium', 'mapbox'] as GPUTerrainRGBEncoding[]) {
     it(`GPUTerrainRGBDecode ${encoding} ${path} applies alpha, noDataRGB, validRange and clamp`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const cases: DecodeOptions[] = [
         {encoding},
         {encoding, alphaNoData: false, validRange: ALL_VALID_RANGE},
@@ -239,9 +238,7 @@ for (const path of ['buffer', 'texture'] as const) {
 
 it('GPUTerrainRGBDecode honours inputValidity and never lets a nodata value through', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Pixel 3 holds the blank-canvas -32768 colour but is flagged nodata: no output may carry it.
   const inputValidity = Uint32Array.from([1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1]);
   const result = await runDecode(device, SMALL_WORDS, 4, 3, 'buffer', {

@@ -15,12 +15,13 @@ import {
   computeLineLengthPerPolygon,
   type OraclePolygonFeature
 } from './line-length-per-polygon-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-function flattenPaths(paths: Point[][]) {
+function flattenLines(lines: Point[][]) {
   const positions: number[] = [];
   const offsets = [0];
-  for (const path of paths) {
-    for (const [x, y] of path) {
+  for (const line of lines) {
+    for (const [x, y] of line) {
       positions.push(x, y);
     }
     offsets.push(positions.length / 2);
@@ -66,24 +67,24 @@ type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
 function createFixture(
   device: Device,
-  paths: Point[][],
+  lines: Point[][],
   features: OraclePolygonFeature[],
   options: {
     weights?: number[];
     spherical?: boolean;
     units?: 'meters' | 'kilometers';
-    maximumCandidatePairs?: number;
-    maximumCrossings?: number;
+    pairCapacity?: number;
+    maximumCrossingCount?: number;
   } = {}
 ) {
-  const flat = flattenPaths(paths);
+  const flat = flattenLines(lines);
   const polygons = flattenPolygons(features);
   return createGeometryFixture(device, {
     inputs: {
       positions: {values: flat.positions, format: 'float32x2'},
-      pathOffsets: {values: flat.offsets, format: 'uint32'},
+      lineOffsets: {values: flat.offsets, format: 'uint32'},
       ...(options.weights
-        ? {pathWeights: {values: new Float32Array(options.weights), format: 'float32' as const}}
+        ? {lineWeights: {values: new Float32Array(options.weights), format: 'float32' as const}}
         : {}),
       polygonPositions: {values: polygons.positions, format: 'float32x2'},
       featureOffsets: {values: polygons.featureOffsets, format: 'uint32'},
@@ -99,8 +100,8 @@ function createFixture(
     create: ({inputs, outputs}) =>
       new GPULineLengthPerPolygon({
         positions: inputs['positions'] as never,
-        pathOffsets: inputs['pathOffsets'] as never,
-        pathWeights: inputs['pathWeights'] as never,
+        lineOffsets: inputs['lineOffsets'] as never,
+        lineWeights: inputs['lineWeights'] as never,
         polygons: {
           kind: 'polygons',
           positions: inputs['polygonPositions'] as never,
@@ -111,13 +112,15 @@ function createFixture(
         spatialContext: options.spherical
           ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: options.units}
           : undefined,
-        maximumCandidatePairs: options.maximumCandidatePairs,
-        maximumCrossings: options.maximumCrossings,
+        pairCapacity: options.pairCapacity,
+        maximumCrossingCount: options.maximumCrossingCount,
         output: {
           lengths: outputs['lengths'] as never,
           weightedLengths: options.weights ? (outputs['weightedLengths'] as never) : undefined,
           segmentCounts: outputs['segmentCounts'] as never,
-          overflow: outputs['overflow'] as never
+          status: {
+            overflow: outputs['overflow'] as never
+          }
         }
       })
   });
@@ -125,15 +128,13 @@ function createFixture(
 
 it('GPULineLengthPerPolygon clips lines against shells, holes and multipolygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: OraclePolygonFeature[] = [
     [[box(0, 0, 10, 10), box(4, 4, 6, 6).reverse()]],
     [[box(20, 0, 30, 10)], [box(40, 0, 50, 10)]],
     [[box(100, 100, 110, 110)]]
   ];
-  const paths: Point[][] = [
+  const lines: Point[][] = [
     [
       [-5, 5],
       [15, 5]
@@ -150,7 +151,7 @@ it('GPULineLengthPerPolygon clips lines against shells, holes and multipolygons'
       [3, 8]
     ]
   ];
-  const fixture = createFixture(device, paths, features, {weights: [1, 2, 3]});
+  const fixture = createFixture(device, lines, features, {weights: [1, 2, 3]});
   const result = await fixture.run();
   expect(result['overflow'][0]).toBe(0);
   // Line 0 inside box 0: 10 minus the 2-wide hole; line 2 fully inside, outside the hole.
@@ -165,9 +166,7 @@ it('GPULineLengthPerPolygon clips lines against shells, holes and multipolygons'
 
 it('GPULineLengthPerPolygon matches the f64 oracle on random lines and polygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(11);
   const extent = 100;
   const features: OraclePolygonFeature[] = Array.from({length: 40}, (_, index) => {
@@ -185,7 +184,7 @@ it('GPULineLengthPerPolygon matches the f64 oracle on random lines and polygons'
     }
     return feature;
   });
-  const paths: Point[][] = Array.from({length: 150}, () => {
+  const lines: Point[][] = Array.from({length: 150}, () => {
     let x = random() * extent;
     let y = random() * extent;
     return Array.from({length: 2 + Math.floor(random() * 5)}, () => {
@@ -194,8 +193,8 @@ it('GPULineLengthPerPolygon matches the f64 oracle on random lines and polygons'
       return [Math.fround(x), Math.fround(y)] as Point;
     });
   });
-  const weights = paths.map(() => Math.fround(0.5 + random() * 3));
-  const fixture = createFixture(device, paths, features, {weights});
+  const weights = lines.map(() => Math.fround(0.5 + random() * 3));
+  const fixture = createFixture(device, lines, features, {weights});
   const gpuStart = performance.now();
   const result = await fixture.run();
   const gpuMs = performance.now() - gpuStart;
@@ -207,14 +206,14 @@ it('GPULineLengthPerPolygon matches the f64 oracle on random lines and polygons'
     feature.map(polygon => polygon.map(ring => ring.map(([x, y]) => [x, y] as Point)))
   );
   const expected = computeLineLengthPerPolygon(
-    paths,
+    lines,
     weights.map(value => Math.fround(value)),
     rounded
   );
   const cpuMs = performance.now() - cpuStart;
   // eslint-disable-next-line no-console
   console.log(
-    `GPULineLengthPerPolygon timing (150 paths, 40 polygons): gpu first ${gpuMs.toFixed(1)} ms, gpu second ${gpuSecondMs.toFixed(1)} ms, cpu oracle ${cpuMs.toFixed(1)} ms`
+    `GPULineLengthPerPolygon timing (150 lines, 40 polygons): gpu first ${gpuMs.toFixed(1)} ms, gpu second ${gpuSecondMs.toFixed(1)} ms, cpu oracle ${cpuMs.toFixed(1)} ms`
   );
   expect(result['overflow'][0]).toBe(0);
   expect(Math.max(...result['lengths'])).toBeGreaterThan(10);
@@ -245,9 +244,7 @@ it('GPULineLengthPerPolygon matches the f64 oracle on random lines and polygons'
 
 it('GPULineLengthPerPolygon flags crossing and candidate overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A comb polygon crossed by one long line has many crossings.
   const teeth: Point[] = [[0, 0]];
   for (let tooth = 0; tooth < 6; tooth++) {
@@ -255,33 +252,33 @@ it('GPULineLengthPerPolygon flags crossing and candidate overflow', async () => 
   }
   teeth.push([12, -5], [0, -5]);
   const features: OraclePolygonFeature[] = [[[teeth]]];
-  const paths: Point[][] = [
+  const lines: Point[][] = [
     [
       [-1, 5],
       [13, 5]
     ]
   ];
-  const tight = createFixture(device, paths, features, {maximumCrossings: 2});
+  const tight = createFixture(device, lines, features, {maximumCrossingCount: 2});
   expect((await tight.run())['overflow'][0]).toBe(1);
   tight.destroy();
-  const roomy = createFixture(device, paths, features, {maximumCrossings: 32});
+  const roomy = createFixture(device, lines, features, {maximumCrossingCount: 32});
   const result = await roomy.run();
   expect(result['overflow'][0]).toBe(0);
-  const expected = computeLineLengthPerPolygon(paths, undefined, features);
+  const expected = computeLineLengthPerPolygon(lines, undefined, features);
   expectClose(result['lengths'][0], expected.lengths[0], 1e-5, 1e-5);
   expect(result['lengths'][0]).toBeGreaterThan(1);
   roomy.destroy();
   const small = createFixture(
     device,
     [
-      ...paths,
+      ...lines,
       [
         [0, 2],
         [12, 2]
       ]
     ],
     features,
-    {maximumCandidatePairs: 1}
+    {pairCapacity: 1}
   );
   expect((await small.run())['overflow'][0]).toBe(1);
   small.destroy();
@@ -289,19 +286,17 @@ it('GPULineLengthPerPolygon flags crossing and candidate overflow', async () => 
 
 it('GPULineLengthPerPolygon measures spherical pieces as great-circle distance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: OraclePolygonFeature[] = [[[box(0, 0, 10, 10)]]];
-  const paths: Point[][] = [
+  const lines: Point[][] = [
     [
       [-5, 5],
       [15, 5]
     ]
   ];
-  const fixture = createFixture(device, paths, features, {spherical: true});
+  const fixture = createFixture(device, lines, features, {spherical: true});
   const result = await fixture.run();
-  const expected = computeLineLengthPerPolygon(paths, undefined, features, true);
+  const expected = computeLineLengthPerPolygon(lines, undefined, features, true);
   expectClose(result['lengths'][0], expected.lengths[0], 1e-4, 1);
   expect(result['lengths'][0]).toBeGreaterThan(1e6);
   fixture.destroy();
@@ -309,20 +304,18 @@ it('GPULineLengthPerPolygon measures spherical pieces as great-circle distance',
 
 it('GPULineLengthPerPolygon honours kilometers units on the default sphere', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: OraclePolygonFeature[] = [[[box(0, 0, 10, 10)]]];
-  const paths: Point[][] = [
+  const lines: Point[][] = [
     [
       [-5, 5],
       [15, 5]
     ]
   ];
-  const fixture = createFixture(device, paths, features, {spherical: true, units: 'kilometers'});
+  const fixture = createFixture(device, lines, features, {spherical: true, units: 'kilometers'});
   const result = await fixture.run();
   // The oracle measures meters on the same default sphere.
-  const expected = computeLineLengthPerPolygon(paths, undefined, features, true);
+  const expected = computeLineLengthPerPolygon(lines, undefined, features, true);
   expectClose(result['lengths'][0], expected.lengths[0] / 1000, 1e-4, 1e-3);
   fixture.destroy();
 });

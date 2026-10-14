@@ -46,6 +46,12 @@ export type SpatialJoinRunOptions = {
   candidateCapacity: number;
   leafCapacity?: number;
   spatialSortCurve?: 'morton' | 'hilbert';
+  /** Hilbert processing order of the query points; omitted keeps the join default. */
+  querySort?: boolean;
+  /** Point-in-polygon exact refine through the y-slab edge index; omitted keeps the join default. */
+  edgeSlabs?: boolean;
+  /** Point-in-polygon boundary rule; default `'closed'` (the oracle's smallest-row rule). */
+  boundaryRule?: 'half-open' | 'closed' | 'open';
 };
 
 /** Compiles a point-in-polygon join over `features` and `points`. */
@@ -76,45 +82,57 @@ export function createPolygonJoinRun(
   graph.add(
     new GPUPointInPolygonJoin({
       id: 'pip-sort-join',
-      points: importGraphBuffer(graph, 'points', pointsBuffer, 'float32x2', pointCount),
-      polygonPositions: importGraphBuffer(
-        graph,
-        'polygon-positions',
-        positionsBuffer,
-        'float32x2',
-        arrays.polygonPositions.length / 2
-      ),
-      featureOffsets: importGraphBuffer(
-        graph,
-        'feature-offsets',
-        featureOffsetsBuffer,
-        'uint32',
-        arrays.featureOffsets.length
-      ),
-      polygonOffsets: importGraphBuffer(
-        graph,
-        'polygon-offsets',
-        polygonOffsetsBuffer,
-        'uint32',
-        arrays.polygonOffsets.length
-      ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        ringBuffer,
-        'uint32',
-        arrays.ringOffsets.length
-      ),
+      points: {
+        kind: 'points',
+        positions: importGraphBuffer(graph, 'points', pointsBuffer, 'float32x2', pointCount)
+      },
+      polygons: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
+          graph,
+          'polygon-positions',
+          positionsBuffer,
+          'float32x2',
+          arrays.polygonPositions.length / 2
+        ),
+        featureOffsets: importGraphBuffer(
+          graph,
+          'feature-offsets',
+          featureOffsetsBuffer,
+          'uint32',
+          arrays.featureOffsets.length
+        ),
+        polygonOffsets: importGraphBuffer(
+          graph,
+          'polygon-offsets',
+          polygonOffsetsBuffer,
+          'uint32',
+          arrays.polygonOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
+          graph,
+          'ring-offsets',
+          ringBuffer,
+          'uint32',
+          arrays.ringOffsets.length
+        )
+      },
       candidateCapacity: options.candidateCapacity,
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
       spatialSortCurve: options.spatialSortCurve,
+      querySort: options.querySort,
+      edgeSlabs: options.edgeSlabs,
       // The oracle assigns boundary points to the smallest row, which is the closed rule.
-      boundaryRule: 'closed',
-      pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
-      featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-      candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+      boundaryRule: options.boundaryRule ?? 'closed',
+      output: {
+        pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
+        featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -167,7 +185,10 @@ export function createNearestJoinRun(
   graph.add(
     new GPUNearestFeatureJoin({
       id: 'nearest-sort-join',
-      points: importGraphBuffer(graph, 'points', pointsBuffer, 'float32x2', pointCount),
+      queries: {
+        kind: 'points',
+        positions: importGraphBuffer(graph, 'points', pointsBuffer, 'float32x2', pointCount)
+      },
       features: endsBuffer
         ? {
             kind: 'segments',
@@ -183,11 +204,16 @@ export function createNearestJoinRun(
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
       spatialSortCurve: options.spatialSortCurve,
-      nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
-      nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
-      featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-      candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+      querySort: options.querySort,
+      output: {
+        nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
+        nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
+        featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();

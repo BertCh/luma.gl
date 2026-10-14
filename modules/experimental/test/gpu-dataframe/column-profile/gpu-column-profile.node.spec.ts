@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   getGPUColumnProfileParameterLength,
   getGPUColumnProfileParameterValues,
@@ -12,7 +13,11 @@ import {
   GPUColumnProfile,
   type GPUColumnProfileProps
 } from '../../../src/gpu-dataframe/column-profile';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeColumnProfileOracle,
   estimateHyperLogLog,
@@ -63,7 +68,7 @@ function expectThrows(
 
 it('GPUColumnProfile parameter helper packs domains column-major', () => {
   expect(getGPUColumnProfileParameterLength(3)).toBe(6);
-  const values = getGPUColumnProfileParameterValues([[1, 2], undefined, {lo: 5}], 3);
+  const values = getGPUColumnProfileParameterValues([[1, 2], undefined, {minimum: 5}], 3);
   expect(values[0]).toBe(1);
   expect(values[1]).toBe(2);
   expect(Number.isNaN(values[2])).toBe(true);
@@ -92,7 +97,7 @@ it('GPUColumnProfile parameter helper packs domains column-major', () => {
       1
     )
   ).toThrow(/exceed/);
-  expect(() => getGPUColumnProfileParameterValues([], 0)).toThrow(/positive/);
+  expect(() => getGPUColumnProfileParameterValues([], 0)).toThrow(/columnCount must be an integer/);
   expect(() => getGPUColumnProfileParameterValues([[1, 2]], 2, new Float32Array(3))).toThrow(
     /must hold 4/
   );
@@ -128,6 +133,59 @@ it('GPUColumnProfile emits deterministic node IDs', () => {
   expect(first.every(id => id.startsWith('profile-'))).toBe(true);
 });
 
+it('GPUColumnProfile pipelines do not grow with the column count', () => {
+  const build = (kind: 'numeric' | 'category' | 'mixed', columnCount: number) => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const columns = Array.from({length: columnCount}, (_, column) =>
+      kind === 'numeric' || (kind === 'mixed' && column === 0)
+        ? {values: createTransientView(graph, `n-${serial++}`, 'float32', 100)}
+        : {
+            values: createTransientView(graph, `c-${serial++}`, 'uint32', 100),
+            kind: 'category' as const,
+            categoryCount: 11 + column
+          }
+    );
+    const contributor = new GPUColumnProfile({
+      ...props,
+      columns,
+      parameters: createTransientView(graph, `p-${serial++}`, 'float32', 2 * columnCount),
+      output: {
+        statistics: createTransientView(
+          graph,
+          `s-${serial++}`,
+          'float32',
+          columnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT
+        ),
+        counts: createTransientView(graph, `k-${serial++}`, 'uint32', 2 * columnCount),
+        histograms: createTransientView(graph, `h-${serial++}`, 'uint32', 8 * columnCount),
+        hyperLogLogRegisters: createTransientView(
+          graph,
+          `r-${serial++}`,
+          'uint32',
+          64 * columnCount
+        ),
+        topCategories: createTransientView(graph, `t-${serial++}`, 'uint32', 3 * columnCount),
+        topCategoryCounts: createTransientView(graph, `u-${serial++}`, 'uint32', 3 * columnCount)
+      }
+    });
+    const nodes = contributor.getCommandNodes(graph);
+    device.destroy();
+    return nodes;
+  };
+  for (const kind of ['numeric', 'category', 'mixed'] as const) {
+    const two = build(kind, 2);
+    const three = build(kind, 3);
+    expect(getGPUCommandNodePipelineKeys(two).size, kind).toBe(
+      getGPUCommandNodePipelineKeys(three).size
+    );
+    for (const {id, source} of getGPUCommandNodeKernelSources(three)) {
+      expect(() => new WgslReflect(source), id).not.toThrow();
+    }
+  }
+});
+
 it('GPUColumnProfile skips optional nodes when outputs are absent', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -147,14 +205,14 @@ it('GPUColumnProfile skips optional nodes when outputs are absent', () => {
 });
 
 it('GPUColumnProfile validates its properties', () => {
-  expectThrows(() => ({columns: []}), /between 1 and 16 columns/);
+  expectThrows(() => ({columns: []}), /column count must be an integer in \[1, 16\]/);
   expectThrows(
     graph => ({
       columns: Array.from({length: 17}, () => ({
         values: createTransientView(graph, `many-${serial++}`, 'float32', 100)
       }))
     }),
-    /between 1 and 16 columns/
+    /column count must be an integer in \[1, 16\]/
   );
   expectThrows(() => ({histogramBinCount: 0}), /histogramBinCount/);
   expectThrows(() => ({histogramBinCount: 2.5}), /histogramBinCount/);

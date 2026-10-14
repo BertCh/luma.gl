@@ -6,10 +6,12 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPUPointHorizonVisibilityParameterValues,
+  GPU_POINT_HORIZON_MT_IMAGE_TARGET_IGNORE_DISTANCE,
   GPUPointHorizonVisibility,
   type GPUPointHorizonModelOptions,
   type GPUPointHorizonVisibilitySettings
@@ -22,11 +24,11 @@ import {
   readFloat32,
   readUint32
 } from '../../utils/gpu-contributor-test-utils';
-import {createFractalTerrain} from './point-horizon-oracle';
+import {createFractalTerrain, makeMercatorTestGrid} from './point-horizon-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type VisibilityConfig = {
-  width: number;
-  height: number;
+  grid: GPURasterMetadata;
   values: Float32Array;
   observers: readonly (readonly [number, number, number])[];
   /** `[column, row, height, observerIndex]` */
@@ -36,7 +38,8 @@ type VisibilityConfig = {
 };
 
 async function runVisibility(device: Device, config: VisibilityConfig) {
-  const {width, height, values, observers, targets, model} = config;
+  const {grid, values, observers, targets, model} = config;
+  const {width, height} = grid;
   const terrain = createInputBuffer(device, values);
   const observerBuffer = createInputBuffer(
     device,
@@ -47,7 +50,7 @@ async function runVisibility(device: Device, config: VisibilityConfig) {
     id: 'visibility-settings',
     format: 'float32',
     length: 12,
-    values: getGPUPointHorizonVisibilityParameterValues(config.settings)
+    values: getGPUPointHorizonVisibilityParameterValues(config.settings, grid)
   });
   const visibility = createOutputBuffer(device, targets.length);
   const details = createOutputBuffer(device, targets.length * 4);
@@ -55,8 +58,7 @@ async function runVisibility(device: Device, config: VisibilityConfig) {
   graph.add(
     new GPUPointHorizonVisibility({
       ...model,
-      width,
-      height,
+      grid,
       elevation: {
         id: 'terrain',
         format: 'float32',
@@ -73,9 +75,11 @@ async function runVisibility(device: Device, config: VisibilityConfig) {
         observers.length
       ),
       targets: importGraphBuffer(graph, 'targets', targetBuffer, 'float32x4', targets.length),
-      settings: settings.importToGraph(graph),
-      visibility: importGraphBuffer(graph, 'visibility', visibility, 'uint32', targets.length),
-      details: importGraphBuffer(graph, 'details', details, 'float32x4', targets.length)
+      parameters: settings.importToGraph(graph),
+      output: {
+        visibility: importGraphBuffer(graph, 'visibility', visibility, 'uint32', targets.length),
+        details: importGraphBuffer(graph, 'details', details, 'float32x4', targets.length)
+      }
     })
   );
   const compiled = graph.compile();
@@ -96,7 +100,8 @@ const MODEL: GPUPointHorizonModelOptions = {
   maximumDistance: 1000,
   cellSize: 10
 };
-const SETTINGS: GPUPointHorizonVisibilitySettings = {cellSize: [10, 10]};
+const GRID = makeGPURasterMetadata({width: SIZE, height: SIZE, cellSize: 10});
+const SETTINGS: GPUPointHorizonVisibilitySettings = {};
 const RIDGE_COLUMN = 40; // 200 m east of the observer at column 20
 const RIDGE_HEIGHT = 30;
 const OBSERVER: readonly [number, number, number] = [20, 64, 2];
@@ -114,13 +119,10 @@ function createRidgeTerrain(withRidge: boolean, peakGround = 0): Float32Array {
 
 it('GPUPointHorizonVisibility classifies targets behind a ridge', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const run = (values: Float32Array, targets: VisibilityConfig['targets'], model = MODEL) =>
     runVisibility(device, {
-      width: SIZE,
-      height: SIZE,
+      grid: GRID,
       values,
       observers: [OBSERVER],
       targets,
@@ -154,13 +156,10 @@ it('GPUPointHorizonVisibility classifies targets behind a ridge', async () => {
 
 it('GPUPointHorizonVisibility reports noData and outOfRange', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createRidgeTerrain(false);
   const result = await runVisibility(device, {
-    width: SIZE,
-    height: SIZE,
+    grid: GRID,
     values,
     observers: [OBSERVER, [-5, 10, 2]],
     targets: [
@@ -181,9 +180,7 @@ it('GPUPointHorizonVisibility reports noData and outOfRange', async () => {
 
 it('GPUPointHorizonVisibility web mercator agrees with a planar equivalent', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 192;
   const height = 192;
   const values = createFractalTerrain(width, height, 5, 500, 36);
@@ -202,22 +199,22 @@ it('GPUPointHorizonVisibility web mercator agrees with a planar equivalent', asy
     targets.push([column, row, 5, 0], [column, row, 900, 0]);
   }
   const base = {
-    width,
-    height,
     values,
     observers: [[96, 96, 10] as const],
     targets
   };
   const mercator = await runVisibility(device, {
     ...base,
-    settings: {worldPixelSize, originY, curvatureCoefficient: 2e-5},
+    grid: makeMercatorTestGrid(width, height, worldPixelSize, originY),
+    settings: {projection: 'web-mercator', curvatureCoefficient: 2e-5},
     model: {projection: 'web-mercator', maximumDistance: 2500, cellSize: 13, maximumLatitude: 50}
   });
   // At 50 degrees north a Web Mercator pixel is 19.1 m * cos(50) = 12.3 m in both directions.
   const pixelMeters = (40075016.68557849 / worldPixelSize) * Math.cos(latitude);
   const planar = await runVisibility(device, {
     ...base,
-    settings: {cellSize: [pixelMeters, pixelMeters], curvatureCoefficient: 2e-5},
+    grid: makeGPURasterMetadata({width, height, cellSize: pixelMeters}),
+    settings: {curvatureCoefficient: 2e-5},
     model: {projection: 'planar', maximumDistance: 2500, cellSize: 13}
   });
   const nonTrivial = new Set([...mercator.codes, ...planar.codes]);
@@ -235,4 +232,34 @@ it('GPUPointHorizonVisibility web mercator agrees with a planar equivalent', asy
       expect(mercator.codes[index]).toBe(planar.codes[index]);
     }
   }
+});
+
+it('review C-05: the default ignore stretch is one ground pixel, so a near ridge still occludes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A 30 m ridge 100 m east of the eye (2 m above flat ground at column 20) and a ground-level
+  // target 150 m east (column 35). The ridge subtends atan(28 / 100) = 15.6 degrees; the target is
+  // at atan(-2 / 150) = -0.76 degrees, so it is hidden. With the old 150 m default the occlusion
+  // march stopped at 150 - 150 = 0 m and the target came back visible.
+  const values = new Float32Array(SIZE * SIZE);
+  for (let row = 0; row < SIZE; row++) {
+    values[row * SIZE + 30] = RIDGE_HEIGHT;
+  }
+  const run = (settings: GPUPointHorizonVisibilitySettings) =>
+    runVisibility(device, {
+      grid: GRID,
+      values,
+      observers: [OBSERVER],
+      targets: [[35, 64, 0, 0]],
+      settings,
+      model: MODEL
+    });
+  // Default: stop = 150 - 10 m (one 10 m pixel along the east-west ray) includes the ridge.
+  expect((await run(SETTINGS)).codes[0]).toBe(V.hidden);
+  // The mt-image preset reproduces the previous behaviour.
+  const preset = await run({
+    ...SETTINGS,
+    targetIgnoreDistance: GPU_POINT_HORIZON_MT_IMAGE_TARGET_IGNORE_DISTANCE
+  });
+  expect(preset.codes[0]).toBe(V.visible);
 });

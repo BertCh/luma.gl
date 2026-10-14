@@ -8,15 +8,17 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
-  advanceParticlesOnCPU,
-  createParticleAdvectionCPUState,
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   GPUParticleAdvection,
   type GPUParticleAdvectionSettings,
-  type GPUParticleAdvectionWordSettings,
-  type ParticleAdvectionCPUState
+  type GPUParticleAdvectionUint32Settings
 } from '../../../src/gpu-raster/particle-advection';
+import {
+  advanceParticlesOnCPU,
+  createParticleAdvectionCPUState,
+  type ParticleAdvectionCPUState
+} from '../../../src/gpu-raster/particle-advection/particle-advection-cpu';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -24,6 +26,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Absolute position tolerance: a few f32 ulps at coordinates near 64. */
 const POSITION_TOLERANCE = 2e-4;
@@ -33,7 +36,7 @@ type Field = {velocities: Float32Array; width: number; height: number};
 type Fixture = {
   run(
     settings: GPUParticleAdvectionSettings,
-    words: GPUParticleAdvectionWordSettings
+    words: GPUParticleAdvectionUint32Settings
   ): Promise<ParticleAdvectionCPUState>;
   writeState(state: ParticleAdvectionCPUState): void;
   compileCount: number;
@@ -98,7 +101,7 @@ function createFixture(
       fieldWidth: field.width,
       fieldHeight: field.height,
       parameters: parameterBuffer.importToGraph(graph),
-      wordParameters: wordBuffer.importToGraph(graph),
+      uint32Parameters: wordBuffer.importToGraph(graph),
       state: {
         positions: importGraphBuffer(
           graph,
@@ -116,27 +119,29 @@ function createFixture(
           particleCount
         )
       },
-      previousPositions: importGraphBuffer(
-        graph,
-        'previous',
-        outputs.previous,
-        'float32x2',
-        particleCount
-      ),
-      speeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', particleCount),
-      trails:
-        trailLength > 0
-          ? {
-              positions: importGraphBuffer(
-                graph,
-                'trails',
-                outputs.trails,
-                'float32x2',
-                particleCount * trailLength
-              ),
-              length: trailLength
-            }
-          : undefined
+      output: {
+        previousPositions: importGraphBuffer(
+          graph,
+          'previous',
+          outputs.previous,
+          'float32x2',
+          particleCount
+        ),
+        speeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', particleCount),
+        trails:
+          trailLength > 0
+            ? {
+                positions: importGraphBuffer(
+                  graph,
+                  'trails',
+                  outputs.trails,
+                  'float32x2',
+                  particleCount * trailLength
+                ),
+                length: trailLength
+              }
+            : undefined
+      }
     })
   );
   const compiled = graph.compile();
@@ -146,7 +151,7 @@ function createFixture(
       parameterBuffer.write(
         getGPUParticleAdvectionParameterValues(settings, [field.width, field.height])
       );
-      wordBuffer.write(getGPUParticleAdvectionWordParameterValues(words));
+      wordBuffer.write(getGPUParticleAdvectionUint32ParameterValues(words));
       submitGraph(device, compiled, undefined);
       const state = createParticleAdvectionCPUState(particleCount, trailLength);
       state.positions.set(await readFloat32(outputs.positions, particleCount * 2));
@@ -225,9 +230,7 @@ const VORTEX_SETTINGS: GPUParticleAdvectionSettings = {
 
 it('GPUParticleAdvection matches the CPU oracle frame by frame on a vortex', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const field = createVortexField(64, 0.05);
   const particleCount = 2048;
   const trailLength = 8;
@@ -246,7 +249,7 @@ it('GPUParticleAdvection matches the CPU oracle frame by frame on a vortex', asy
         expected,
         field,
         getGPUParticleAdvectionParameterValues(VORTEX_SETTINGS, [64, 64]),
-        getGPUParticleAdvectionWordParameterValues(words),
+        getGPUParticleAdvectionUint32ParameterValues(words),
         trailLength
       );
       expectStateClose(actual, expected);
@@ -267,9 +270,7 @@ it('GPUParticleAdvection matches the CPU oracle frame by frame on a vortex', asy
 
 it('GPUParticleAdvection replays bitwise and changes parameters without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const field = createVortexField(32, 0.1);
   const runSequence = async () => {
     const fixture = createFixture(device, field, 512, 4);
@@ -315,9 +316,7 @@ it('GPUParticleAdvection replays bitwise and changes parameters without rebuildi
 
 it('GPUParticleAdvection respawns on NaN cells, field exit, age, slowness and fills trails', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 16 x 16 field moving +x at 1 unit per time; column 8 rows 0-3 are NaN; rows 12-15 are still.
   const size = 16;
   const velocities = new Float32Array(size * size * 2);
@@ -356,7 +355,7 @@ it('GPUParticleAdvection respawns on NaN cells, field exit, age, slowness and fi
       expected,
       field,
       getGPUParticleAdvectionParameterValues(settings, [size, size]),
-      getGPUParticleAdvectionWordParameterValues(words),
+      getGPUParticleAdvectionUint32ParameterValues(words),
       trailLength
     );
     expectStateClose(actual, expected);

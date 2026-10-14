@@ -6,7 +6,7 @@ import {Texture, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
+import {GPURasterTextureToBuffer, makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUTextureShadingParameterValues,
@@ -23,6 +23,7 @@ import {
 import {createSmoothTerrain} from './terrain-horizon-oracle';
 import {computeTextureShading} from './texture-shading-oracle';
 import {expectClose} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 64;
 const HEIGHT = 48;
@@ -52,8 +53,7 @@ async function runTextureShading(
   const graph = new GPUCommandGraph(device, {id: 'texture-shading-test'});
   graph.add(
     new GPUTextureShading({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       levelCount,
       baseSigma,
       downsampleLevels: options.downsampleLevels ?? false,
@@ -66,9 +66,17 @@ async function runTextureShading(
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', PIXEL_COUNT)
         }
       },
-      settings: settings.importToGraph(graph),
-      textureShade: importGraphBuffer(graph, 'texture-shade', outputBuffer, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      parameters: settings.importToGraph(graph),
+      output: {
+        textureShade: importGraphBuffer(
+          graph,
+          'texture-shade',
+          outputBuffer,
+          'float32',
+          PIXEL_COUNT
+        ),
+        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -116,9 +124,7 @@ async function runTextureShading(
 
 it('GPUTextureShading matches the normalized-convolution oracle with per-frame weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 13);
   for (const hole of [10 * WIDTH + 10, 10 * WIDTH + 11, 11 * WIDTH + 10, 30 * WIDTH + 50]) {
     elevation[hole] = NaN;
@@ -134,9 +140,7 @@ it('GPUTextureShading matches the normalized-convolution oracle with per-frame w
 
 it('GPUTextureShading downsampled levels stay within 1% of the exact output, with a nodata hole', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const solid = createSmoothTerrain(WIDTH, HEIGHT, 13);
   const holed = solid.slice();
   for (let row = 18; row < 30; row++) {
@@ -156,9 +160,7 @@ it('GPUTextureShading downsampled levels stay within 1% of the exact output, wit
 
 it('GPUTextureShading hasNodata false is exact on all-valid terrain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 5);
   await runTextureShading(device, elevation, 6, 1, [{detail: 0.5}], {hasNodata: false});
   await runTextureShading(device, elevation, 6, 1, [{detail: 0.5}], {
@@ -170,9 +172,7 @@ it('GPUTextureShading hasNodata false is exact on all-valid terrain', async () =
 
 it('GPUTextureShading returns zero on flat terrain and writes a texture', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const flat = new Float32Array(PIXEL_COUNT).fill(321);
   await runTextureShading(device, flat, 3, 1, [{detail: 0.5}]);
   if (!device.getTextureFormatCapabilities('r32float').store) {
@@ -210,8 +210,7 @@ it('GPUTextureShading returns zero on flat terrain and writes a texture', async 
   ) as never;
   graph.add(
     new GPUTextureShading({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       levelCount: 3,
       elevation: {
         id: 'elevation',
@@ -221,8 +220,8 @@ it('GPUTextureShading returns zero on flat terrain and writes a texture', async 
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', PIXEL_COUNT)
         }
       },
-      settings: settings.importToGraph(graph),
-      textureShadeTexture: textureView
+      parameters: settings.importToGraph(graph),
+      output: {textureShadeTexture: textureView}
     })
   );
   new GPURasterTextureToBuffer({

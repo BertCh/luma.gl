@@ -19,11 +19,12 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeVisvalingamImportance, getKeptRowsAboveTolerance} from './visvalingam-oracle';
 import {VISVALINGAM_REFERENCE_SCENES} from './visvalingam-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type VisvalingamRun = {
   importanceBits: Uint32Array;
   converged: number;
-  roundCount: number;
+  iterationCount: number;
   /** Kept rows (ascending) at each tolerance, from one compiled graph. */
   kept: number[][];
   keptLineCounts: number[][];
@@ -34,22 +35,22 @@ type VisvalingamRun = {
 async function runVisvalingam(
   device: Device,
   positions: Float32Array,
-  trackOffsets: Uint32Array,
+  lineOffsets: Uint32Array,
   tolerances: readonly number[],
-  options: {neighborhoodRadius?: number; maximumRounds?: number} = {}
+  options: {neighborhoodRadius?: number; maximumIterations?: number} = {}
 ): Promise<VisvalingamRun> {
   const rowCount = positions.length / 2;
-  const lineCount = trackOffsets.length - 1;
+  const lineCount = lineOffsets.length - 1;
   const buffers: Buffer[] = [];
   const track = <B extends Buffer>(buffer: B): B => {
     buffers.push(buffer);
     return buffer;
   };
   const positionBuffer = track(createInputBuffer(device, positions));
-  const offsetBuffer = track(createInputBuffer(device, trackOffsets));
+  const offsetBuffer = track(createInputBuffer(device, lineOffsets));
   const importance = track(createOutputBuffer(device, rowCount));
   const converged = track(createOutputBuffer(device, 1));
-  const roundCount = track(createOutputBuffer(device, 1));
+  const iterationCount = track(createOutputBuffer(device, 1));
   const ids = track(createOutputBuffer(device, rowCount));
   const count = track(createOutputBuffer(device, 1));
   const overflow = track(createOutputBuffer(device, 1));
@@ -66,20 +67,18 @@ async function runVisvalingam(
       method: 'visvalingam',
       ...options,
       positions: importGraphBuffer(graph, 'positions', positionBuffer, 'float32x2', rowCount),
-      trackOffsets: importGraphBuffer(graph, 'offsets', offsetBuffer, 'uint32', lineCount + 1),
+      lineOffsets: importGraphBuffer(graph, 'offsets', offsetBuffer, 'uint32', lineCount + 1),
       importance: importGraphBuffer(graph, 'importance', importance, 'float32', rowCount),
-      status: {
-        converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1),
-        roundCount: importGraphBuffer(graph, 'round-count', roundCount, 'uint32', 1)
-      },
       parameters: parameterBuffer.importToGraph(graph),
-      selection: {
-        output: {
-          ids: importGraphBuffer(graph, 'ids', ids, 'uint32', rowCount),
+      output: {
+        ids: importGraphBuffer(graph, 'ids', ids, 'uint32', rowCount),
+        lineCounts: importGraphBuffer(graph, 'line-counts', lineCounts, 'uint32', lineCount),
+        status: {
           count: importGraphBuffer(graph, 'count', count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
-        },
-        lineCounts: importGraphBuffer(graph, 'line-counts', lineCounts, 'uint32', lineCount)
+          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1),
+          iterationCount: importGraphBuffer(graph, 'round-count', iterationCount, 'uint32', 1)
+        }
       }
     })
   );
@@ -99,7 +98,7 @@ async function runVisvalingam(
   const result: VisvalingamRun = {
     importanceBits,
     converged: (await readUint32(converged, 1))[0],
-    roundCount: (await readUint32(roundCount, 1))[0],
+    iterationCount: (await readUint32(iterationCount, 1))[0],
     kept,
     keptLineCounts,
     compileCount: compileSpy.mock.calls.length
@@ -114,19 +113,17 @@ async function runVisvalingam(
 
 it('GPULineSimplification visvalingam equals the CPU mirror and simplify_coords_vw', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const name of ['hand', 'walk60', 'smooth120', 'walk300']) {
     const scene = VISVALINGAM_REFERENCE_SCENES[name];
     const positions = Float32Array.from(scene.positions);
     const rowCount = positions.length / 2;
-    const trackOffsets = Uint32Array.of(0, rowCount);
-    const run = await runVisvalingam(device, positions, trackOffsets, scene.tolerances);
-    const expected = computeVisvalingamImportance(positions, trackOffsets, 3, 256);
+    const lineOffsets = Uint32Array.of(0, rowCount);
+    const run = await runVisvalingam(device, positions, lineOffsets, scene.tolerances);
+    const expected = computeVisvalingamImportance(positions, lineOffsets, 3, 256);
     expect(Array.from(run.importanceBits), name).toEqual(Array.from(expected.importanceBits));
     expect(run.converged).toBe(1);
-    expect(run.roundCount).toBe(expected.roundCount);
+    expect(run.iterationCount).toBe(expected.iterationCount);
     expect(run.compileCount).toBe(0);
     let mismatched = 0;
     for (const [index, tolerance] of scene.tolerances.entries()) {
@@ -142,7 +139,7 @@ it('GPULineSimplification visvalingam equals the CPU mirror and simplify_coords_
     }
     // Pinned parity with the Rust reference: exact on the small scenes, below 1 percent otherwise.
     console.log(
-      `visvalingam ${name}: ${rowCount} rows, ${run.roundCount} rounds, ${mismatched} rows differ from simplify_coords_vw`
+      `visvalingam ${name}: ${rowCount} rows, ${run.iterationCount} rounds, ${mismatched} rows differ from simplify_coords_vw`
     );
     if (name === 'walk300') {
       expect(mismatched / (rowCount * scene.tolerances.length)).toBeLessThan(0.01);
@@ -154,28 +151,26 @@ it('GPULineSimplification visvalingam equals the CPU mirror and simplify_coords_
 
 it('GPULineSimplification visvalingam handles many lines, degenerate lines, and a round cap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const lines = [
-    VISVALINGAM_REFERENCE_SCENES.walk60.positions,
+    VISVALINGAM_REFERENCE_SCENES['walk60'].positions,
     [],
     [5, 5],
     [0, 0, 3, 4],
     // Collinear (areas 0) and duplicated vertices.
     [0, 0, 1, 0, 2, 0, 2, 0, 3, 0, 4, 0],
-    VISVALINGAM_REFERENCE_SCENES.smooth120.positions
+    VISVALINGAM_REFERENCE_SCENES['smooth120'].positions
   ];
-  const trackOffsets = new Uint32Array(lines.length + 1);
+  const lineOffsets = new Uint32Array(lines.length + 1);
   const flat: number[] = [];
   for (const [lineIndex, line] of lines.entries()) {
     flat.push(...line);
-    trackOffsets[lineIndex + 1] = flat.length / 2;
+    lineOffsets[lineIndex + 1] = flat.length / 2;
   }
   const positions = Float32Array.from(flat);
   const tolerances = [0, 0.5, 20, 200];
-  const run = await runVisvalingam(device, positions, trackOffsets, tolerances);
-  const expected = computeVisvalingamImportance(positions, trackOffsets, 3, 256);
+  const run = await runVisvalingam(device, positions, lineOffsets, tolerances);
+  const expected = computeVisvalingamImportance(positions, lineOffsets, 3, 256);
   expect(Array.from(run.importanceBits)).toEqual(Array.from(expected.importanceBits));
   for (const [index, tolerance] of tolerances.entries()) {
     expect(run.kept[index]).toEqual(getKeptRowsAboveTolerance(expected.importanceBits, tolerance));
@@ -185,8 +180,8 @@ it('GPULineSimplification visvalingam handles many lines, degenerate lines, and 
   expect(run.keptLineCounts[0].slice(1, 4)).toEqual([0, 1, 2]);
 
   // A tight round cap leaves undecided rows at +Infinity, never removing a kept row.
-  const capped = await runVisvalingam(device, positions, trackOffsets, [20], {maximumRounds: 3});
-  const cappedExpected = computeVisvalingamImportance(positions, trackOffsets, 3, 3);
+  const capped = await runVisvalingam(device, positions, lineOffsets, [20], {maximumIterations: 3});
+  const cappedExpected = computeVisvalingamImportance(positions, lineOffsets, 3, 3);
   expect(capped.converged).toBe(0);
   expect(cappedExpected.converged).toBe(false);
   expect(Array.from(capped.importanceBits)).toEqual(Array.from(cappedExpected.importanceBits));
@@ -197,14 +192,12 @@ it('GPULineSimplification visvalingam handles many lines, degenerate lines, and 
 
 it('GPULineSimplification visvalingam radius changes the result consistently with the mirror', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const positions = Float32Array.from(VISVALINGAM_REFERENCE_SCENES.walk300.positions);
-  const trackOffsets = Uint32Array.of(0, 300);
+  requireTestDevice(device);
+  const positions = Float32Array.from(VISVALINGAM_REFERENCE_SCENES['walk300'].positions);
+  const lineOffsets = Uint32Array.of(0, 300);
   for (const neighborhoodRadius of [1, 5]) {
-    const run = await runVisvalingam(device, positions, trackOffsets, [10], {neighborhoodRadius});
-    const expected = computeVisvalingamImportance(positions, trackOffsets, neighborhoodRadius, 256);
+    const run = await runVisvalingam(device, positions, lineOffsets, [10], {neighborhoodRadius});
+    const expected = computeVisvalingamImportance(positions, lineOffsets, neighborhoodRadius, 256);
     expect(Array.from(run.importanceBits), `radius ${neighborhoodRadius}`).toEqual(
       Array.from(expected.importanceBits)
     );

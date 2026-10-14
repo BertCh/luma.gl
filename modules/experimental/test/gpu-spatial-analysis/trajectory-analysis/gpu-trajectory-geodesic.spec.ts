@@ -28,6 +28,7 @@ import {
   getInitialBearingDegrees,
   interpolateGreatCircle
 } from './geodesic-trajectory-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GREAT_CIRCLE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
 const TRACK_DURATION = 100;
@@ -77,9 +78,7 @@ function createBuffers(device: Device) {
 
 it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings against pyproj', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = createOracleTracks();
   const rowCount = tracks.timestamps.length;
   const trackCount = tracks.trackOffsets.length - 1;
@@ -115,16 +114,18 @@ it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings again
         'uint32',
         trackCount + 1
       ),
-      trackLengths: importGraphBuffer(graph, 'lengths', outputs.lengths, 'float32', trackCount),
-      maximumSpeeds: importGraphBuffer(
-        graph,
-        'maximum',
-        outputs.maximumSpeeds,
-        'float32',
-        trackCount
-      ),
-      stepSpeeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', rowCount),
-      stepHeadings: importGraphBuffer(graph, 'headings', outputs.headings, 'float32', rowCount)
+      output: {
+        trackLengths: importGraphBuffer(graph, 'lengths', outputs.lengths, 'float32', trackCount),
+        maximumSpeeds: importGraphBuffer(
+          graph,
+          'maximum',
+          outputs.maximumSpeeds,
+          'float32',
+          trackCount
+        ),
+        stepSpeeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', rowCount),
+        stepHeadings: importGraphBuffer(graph, 'headings', outputs.headings, 'float32', rowCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -162,9 +163,7 @@ it('GPUTrajectoryMetrics measures great-circle meters, speeds and bearings again
 
 it('GPUTrajectoryResample slerps along great circles and keeps longitudes continuous', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = createOracleTracks();
   const rowCount = tracks.timestamps.length;
   const trackCount = tracks.trackOffsets.length - 1;
@@ -198,7 +197,9 @@ it('GPUTrajectoryResample slerps along great circles and keeps longitudes contin
       ),
       sampleCount,
       spacing: 'time',
-      samples: importGraphBuffer(graph, 'samples', samples, 'float32x2', trackCount * sampleCount)
+      output: {
+        samples: importGraphBuffer(graph, 'samples', samples, 'float32x2', trackCount * sampleCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -232,9 +233,7 @@ it('GPUTrajectoryResample slerps along great circles and keeps longitudes contin
 
 it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time unit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const tracks = createOracleTracks();
   const rowCount = tracks.timestamps.length;
   const trackCount = tracks.trackOffsets.length - 1;
@@ -276,15 +275,17 @@ it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time un
         trackCount + 1
       ),
       parameters: parameters.importToGraph(graph),
-      currentPositions: importGraphBuffer(
-        graph,
-        'current',
-        outputs.positions,
-        'float32x2',
-        trackCount
-      ),
-      headings: importGraphBuffer(graph, 'headings', outputs.headings, 'float32', trackCount),
-      speeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', trackCount)
+      output: {
+        currentPositions: importGraphBuffer(
+          graph,
+          'current',
+          outputs.positions,
+          'float32x2',
+          trackCount
+        ),
+        headings: importGraphBuffer(graph, 'headings', outputs.headings, 'float32', trackCount),
+        speeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', trackCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -314,9 +315,7 @@ it('GPUTrajectoryPlayhead interpolates positions, bearing and meters per time un
 
 it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian in meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Two buckets. Tracks 0 and 1 straddle the antimeridian at latitude 50: 143 m apart in bucket 0
   // (longitude gap 0.002 degrees * cos 50 * 111.2 km) and 71 m in bucket 1. Track 2 is far away.
   const samples = Float32Array.of(
@@ -362,28 +361,32 @@ it('GPUTrajectoryEncounters finds great-circle neighbors across the antimeridian
     cellSize: 2,
     bounds: [-180, -60, 180, 60],
     hitCapacity: 64,
-    pairs: {
-      candidateOverflow: importGraphBuffer(
-        graph,
-        'candidate-overflow',
-        outputs.candidateOverflow,
-        'uint32',
-        1
-      ),
-      output: {
+    output: {
+      pairs: {
         ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', pairCapacity),
-        count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+        },
+        partners: importGraphBuffer(graph, 'partners', outputs.partners, 'uint32', pairCapacity),
+        minimumDistances: importGraphBuffer(
+          graph,
+          'distances',
+          outputs.distances,
+          'float32',
+          pairCapacity
+        ),
+        bucketCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', pairCapacity)
       },
-      partners: importGraphBuffer(graph, 'partners', outputs.partners, 'uint32', pairCapacity),
-      minimumDistances: importGraphBuffer(
-        graph,
-        'distances',
-        outputs.distances,
-        'float32',
-        pairCapacity
-      ),
-      bucketCounts: importGraphBuffer(graph, 'counts', outputs.counts, 'uint32', pairCapacity)
+      status: {
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'candidate-overflow',
+          outputs.candidateOverflow,
+          'uint32',
+          1
+        )
+      }
     }
   });
   graph.add(encounters);

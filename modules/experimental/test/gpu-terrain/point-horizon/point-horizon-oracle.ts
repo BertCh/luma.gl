@@ -2,12 +2,37 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '../../../src/analysis-core/contracts/earth';
 import type {
   GPUPointHorizonDistanceLattice,
   GPUPointHorizonSegments
 } from '../../../src/gpu-terrain/point-horizon';
 
 const EARTH_RADIUS = 6371008.8;
+
+/**
+ * Grid of a Web Mercator window in EPSG:3857 meters: square pixels of `2 * pi * a / worldPixelSize`
+ * with the top edge of row 0 at world pixel row `originY` (the former `worldPixelSize` / `originY`
+ * settings).
+ */
+export function makeMercatorTestGrid(
+  width: number,
+  height: number,
+  worldPixelSize: number,
+  originY: number
+): GPURasterMetadata {
+  const cellSize = (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / worldPixelSize;
+  return makeGPURasterMetadata({
+    width,
+    height,
+    cellSize,
+    origin: [
+      -Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+      Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS - originY * cellSize
+    ]
+  });
+}
 
 /** Model of the float64 point-horizon oracle, mirroring the GPU topology and settings. */
 export type PointHorizonOracleModel = {

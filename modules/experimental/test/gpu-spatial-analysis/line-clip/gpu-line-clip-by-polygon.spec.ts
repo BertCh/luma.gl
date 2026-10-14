@@ -6,6 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {runLineClip, type Point} from './line-clip-harness';
 import {SHAPELY_LINE_CLIP_FIXTURE} from './shapely-line-clip-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SQUARE = [
   [
@@ -33,7 +34,7 @@ function getLength(piece: readonly (readonly number[])[]): number {
 
 it('GPULineClipByPolygon#clips a crossing line and keeps the outside parts for difference', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const line = [
     [-5, 5],
     [15, 5]
@@ -64,7 +65,7 @@ it('GPULineClipByPolygon#clips a crossing line and keeps the outside parts for d
 
 it('GPULineClipByPolygon#counts boundary pieces as inside and merges kept pieces', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineClip(
     device,
     [
@@ -125,7 +126,7 @@ it('GPULineClipByPolygon#counts boundary pieces as inside and merges kept pieces
 
 it('GPULineClipByPolygon#matches Shapely intersection and difference on random and edge lines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {lines, features, expected, simple, selfOverlap} = SHAPELY_LINE_CLIP_FIXTURE;
   for (const mode of ['inside', 'outside'] as const) {
     const start = performance.now();
@@ -184,7 +185,7 @@ it('GPULineClipByPolygon#matches Shapely intersection and difference on random a
 
 it('GPULineClipByPolygon#reports overflow and keeps a consistent prefix', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const lines = [
     [
       [-5, 2],
@@ -214,7 +215,7 @@ it('GPULineClipByPolygon#reports overflow and keeps a consistent prefix', async 
 
 it('GPULineClipByPolygon#orders a long skewed crossing stream with cooperative radix passes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const toothCount = 257;
   const ring: Point[] = [
     [0, 1],
@@ -252,7 +253,7 @@ it('GPULineClipByPolygon#orders a long skewed crossing stream with cooperative r
 
 it('GPULineClipByPolygon#compiles within the default storage buffer limit', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runLineClip(
     device,
     [

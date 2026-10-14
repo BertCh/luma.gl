@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainRuggedness,
@@ -20,6 +21,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainRuggedness} from './terrain-ruggedness-oracle';
 import {createSeededRandom} from '../terrain-oracle-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function createTerrain(width: number, height: number): Float32Array {
   const random = createSeededRandom(12345);
@@ -53,8 +55,7 @@ async function runRuggedness(
   };
   graph.add(
     new GPUTerrainRuggedness({
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -66,10 +67,18 @@ async function runRuggedness(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pixelCount)
           : undefined
       },
-      topographicPositionIndex: importGraphBuffer(graph, 'tpi', outputs.tpi, 'float32', pixelCount),
-      terrainRuggednessIndex: importGraphBuffer(graph, 'rug', outputs.rug, 'float32', pixelCount),
-      roughness: importGraphBuffer(graph, 'roughness', outputs.roughness, 'float32', pixelCount),
-      validity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount),
+      output: {
+        topographicPositionIndex: importGraphBuffer(
+          graph,
+          'tpi',
+          outputs.tpi,
+          'float32',
+          pixelCount
+        ),
+        terrainRuggednessIndex: importGraphBuffer(graph, 'rug', outputs.rug, 'float32', pixelCount),
+        roughness: importGraphBuffer(graph, 'roughness', outputs.roughness, 'float32', pixelCount),
+        outputValidity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount)
+      },
       ...options
     })
   );
@@ -108,9 +117,7 @@ const measuredErrors: Record<string, number> = {};
 
 it('GPUTerrainRuggedness reproduces a hand-computed 3x3 window', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const window = Float32Array.from([1, 2, 3, 4, 5, 6, 7, 8, 10]);
   const riley = await runRuggedness(device, window, 3, 3);
   expect(riley.validity).toEqual([0, 0, 0, 0, 1, 0, 0, 0, 0]);
@@ -125,9 +132,7 @@ it('GPUTerrainRuggedness reproduces a hand-computed 3x3 window', async () => {
 
 it('GPUTerrainRuggedness gives zero TPI and max-min roughness on a plane', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 6;
   const height = 5;
   const plane = Float32Array.from(
@@ -144,9 +149,7 @@ it('GPUTerrainRuggedness gives zero TPI and max-min roughness on a plane', async
 
 it('GPUTerrainRuggedness matches the gdaldem oracle for both edge modes and algorithms', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 9;
   const height = 7;
   const terrain = createTerrain(width, height);
@@ -195,9 +198,7 @@ it('GPUTerrainRuggedness matches the gdaldem oracle for both edge modes and algo
 
 it('GPUTerrainRuggedness extrapolates corners and tiny grids like gdaldem', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [width, height] of [
     [2, 2],
     [2, 5],
@@ -231,9 +232,7 @@ it('GPUTerrainRuggedness extrapolates corners and tiny grids like gdaldem', asyn
 
 it('GPUTerrainRuggedness supports single outputs and nodata edge mode on thin grids', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createTerrain(2, 2);
   const run = await runRuggedness(device, terrain, 2, 2);
   expect(run.validity).toEqual([0, 0, 0, 0]);

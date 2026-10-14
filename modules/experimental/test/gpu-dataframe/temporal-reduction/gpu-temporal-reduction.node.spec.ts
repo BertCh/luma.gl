@@ -7,11 +7,13 @@ import {expect, it} from 'vitest';
 import {
   getGPUTemporalReductionParameterValues,
   getGPUTemporalReductionWordParameterValues,
-  getOrderedFloatKey,
   GPUTemporalReduction,
-  reduceTemporalBucketsOnCPU,
   type GPUTemporalReductionProps
 } from '../../../src/gpu-dataframe/temporal-reduction';
+import {
+  getOrderedFloatKey,
+  reduceTemporalBucketsOnCPU
+} from '../../../src/gpu-dataframe/temporal-reduction/temporal-reduction-cpu';
 import {ADVERSARIAL_WIDTHS, createAdversarialEdgeScene} from './adversarial-edges';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -32,14 +34,13 @@ function createProps(
     bucketCount: 4,
     output: {
       counts: view('uint32', 12),
-      min: view('float32', 12),
-      max: view('float32', 12),
+      minimums: view('float32', 12),
+      maximums: view('float32', 12),
       first: view('float32', 12),
       last: view('float32', 12),
       occupiedSlots: {
         ids: view('uint32', 5),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1)
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
       }
     },
     ...overrides
@@ -90,12 +91,16 @@ it('reduceTemporalBucketsOnCPU reduces, breaks ties by row, and drops invalid ro
   });
   // cell 0 bucket 0: rows 0..3 -> first is time 0 with lowest row (1), last is time 3 (row 3).
   expect(result.count[0]).toBe(4);
-  expect([result.min[0], result.max[0], result.first[0], result.last[0]]).toEqual([10, 40, 20, 40]);
+  expect([result.minimums[0], result.maximums[0], result.first[0], result.last[0]]).toEqual([
+    10, 40, 20, 40
+  ]);
   // cell 1 bucket 1: rows 4 and 5 tie on time 5, both first and last are the lower row (50).
   expect(result.count[3]).toBe(2);
-  expect([result.min[3], result.max[3], result.first[3], result.last[3]]).toEqual([50, 60, 50, 50]);
+  expect([result.minimums[3], result.maximums[3], result.first[3], result.last[3]]).toEqual([
+    50, 60, 50, 50
+  ]);
   expect(result.occupiedSlots).toEqual([0, 3]);
-  expect(result.min[1]).toBeNaN();
+  expect(result.minimums[1]).toBeNaN();
 });
 
 it('reduceTemporalBucketsOnCPU word mode is exact beyond f32', () => {
@@ -154,10 +159,10 @@ it('GPUTemporalReduction rejects invalid properties', () => {
     return {
       output: {
         ...base.output,
-        min: createTransientView(graph, 'short-min', 'float32', 11)
+        minimums: createTransientView(graph, 'short-min', 'float32', 11)
       }
     };
-  }, /output.min/);
+  }, /output.minimums/);
   expectThrows(graph => {
     const base = createProps(graph);
     return {output: {...base.output, counts: base.cellIds as never}};

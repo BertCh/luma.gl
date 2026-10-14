@@ -31,6 +31,7 @@ import {
   createNonstationarityScene,
   type NonstationarityScene
 } from './geographically-weighted-regression-nonstationarity-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const LADDER_CAPACITY = 4;
 const MAXIMUM_PERMUTATIONS = 32;
@@ -48,7 +49,7 @@ async function runTest(
   scene: NonstationarityScene,
   settings: GPUGeographicallyWeightedRegressionSettings & {kernel?: 'gaussian' | 'bisquare'},
   seed: number,
-  permutations: number,
+  permutationCount: number,
   tileRowCount?: number,
   mask?: Uint32Array,
   indexGridSize?: false | readonly [number, number]
@@ -74,7 +75,7 @@ async function runTest(
   bandwidthParameters.write(
     getGPUGeographicallyWeightedRegressionParameterValues(settings, LADDER_CAPACITY)
   );
-  permutationParameters.write(getGPUPermutationParameterValues({seed, permutations}));
+  permutationParameters.write(getGPUPermutationParameterValues({seed, permutationCount}));
   const graph = new GPUCommandGraph(device, {id: 'nonstationarity-graph'});
   const outputs = {
     coefficients: track(createOutputBuffer(device, rows * p)),
@@ -84,10 +85,10 @@ async function runTest(
     summary: track(createOutputBuffer(device, GPU_GWR_NONSTATIONARITY_SUMMARY.length)),
     standardDeviations: track(createOutputBuffer(device, (MAXIMUM_PERMUTATIONS + 1) * p))
   };
-  const input = (
+  const input = <Format extends 'float32' | 'uint32' | 'float32x2'>(
     name: string,
     data: Float32Array | Uint32Array,
-    format: 'float32' | 'uint32' | 'float32x2',
+    format: Format,
     length: number
   ) => importGraphBuffer(graph, name, track(createInputBuffer(device, data)), format, length);
   const positions = input('positions', scene.positions, 'float32x2', rows);
@@ -171,9 +172,7 @@ function expectRelativelyClose(actual: number, expected: number, tolerance: numb
 
 it('GPUGeographicallyWeightedRegressionNonstationarityTest matches mgwr permutation fits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createNonstationarityScene(12, 77);
   const reference = MGWR_NONSTATIONARITY_REFERENCE;
   for (const [name, settings] of [
@@ -181,7 +180,13 @@ it('GPUGeographicallyWeightedRegressionNonstationarityTest matches mgwr permutat
     ['adaptive', {bandwidths: [20], bandwidthMode: 'adaptive' as const}]
   ] as const) {
     const expected = reference[name];
-    const actual = await runTest(device, scene, settings, reference.seed, reference.permutations);
+    const actual = await runTest(
+      device,
+      scene,
+      settings,
+      reference.seed,
+      reference.permutationCount
+    );
     // Every permutation's spread of local estimates equals mgwr's.
     expected.standardDeviations.forEach((row, run) =>
       row.forEach((value, column) =>
@@ -198,15 +203,15 @@ it('GPUGeographicallyWeightedRegressionNonstationarityTest matches mgwr permutat
       expect(actual.table[column * stride + GPU_GWR_NONSTATIONARITY_TABLE.exceedances]).toBe(count);
       expectRelativelyClose(
         actual.table[column * stride + GPU_GWR_NONSTATIONARITY_TABLE.pseudoPValue],
-        (count + 1) / (reference.permutations + 1),
+        (count + 1) / (reference.permutationCount + 1),
         1e-6,
         `${name} p ${column}`
       );
     });
     // The varying slope is significant, the constant one is not.
     expect(actual.table[stride + GPU_GWR_NONSTATIONARITY_TABLE.pseudoPValue]).toBeLessThan(0.1);
-    expect(actual.summary[GPU_GWR_NONSTATIONARITY_SUMMARY.permutations]).toBe(
-      reference.permutations
+    expect(actual.summary[GPU_GWR_NONSTATIONARITY_SUMMARY.permutationCount]).toBe(
+      reference.permutationCount
     );
     expect(actual.summary[GPU_GWR_NONSTATIONARITY_SUMMARY.locationCount]).toBe(144);
     expect(actual.summary[GPU_GWR_NONSTATIONARITY_SUMMARY.failedFitCount]).toBe(0);
@@ -238,9 +243,7 @@ it('GPUGeographicallyWeightedRegressionNonstationarityTest matches mgwr permutat
 
 it('GPUGeographicallyWeightedRegression localConditionNumber matches mgwr local_collinearity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const base = createNonstationarityScene(12, 77);
   const collinear = Float32Array.from(base.predictors);
   for (let row = 0; row < 144; row++) {
@@ -272,9 +275,7 @@ it('GPUGeographicallyWeightedRegression localConditionNumber matches mgwr local_
 
 it('GPUGeographicallyWeightedRegressionNonstationarityTest grid refits match the scan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createNonstationarityScene(12, 77);
   const rows = scene.response.length;
   const mask = new Uint32Array(rows).fill(1);

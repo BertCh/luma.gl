@@ -4,6 +4,8 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {
   GPU_TERRAIN_WEISS_LANDFORMS,
   GPUTerrainTopographicPosition,
@@ -15,6 +17,8 @@ import {
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createBand} from '../terrain-test-utils';
 
+const GRID = makeGPURasterMetadata({width: 6, height: 5, cellSize: [2, 3], origin: [0, 5]});
+
 it('GPUTerrainTopographicPosition builds one exact summed-area table and validates props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -22,11 +26,10 @@ it('GPUTerrainTopographicPosition builds one exact summed-area table and validat
   const create = (overrides: Partial<GPUTerrainTopographicPositionProps> = {}) => {
     instance++;
     return new GPUTerrainTopographicPosition({
-      width: 6,
-      height: 5,
+      grid: GRID,
       elevation: createBand(graph, `elevation-${instance}`, 30),
       scales: [{radius: 1}, {radius: 4, innerRadius: 2}],
-      deviationFromMean: createTransientView(graph, `dev-${instance}`, 'float32', 60),
+      output: {deviationFromMean: createTransientView(graph, `dev-${instance}`, 'float32', 60)},
       ...overrides
     });
   };
@@ -39,29 +42,31 @@ it('GPUTerrainTopographicPosition builds one exact summed-area table and validat
   expect(ids.filter(id => id.includes('-transpose-'))).toHaveLength(5);
   expect(ids.every(id => id.startsWith('terrain-topographic-position-'))).toBe(true);
 
-  expect(() => create({deviationFromMean: undefined})).toThrow(/at least one output/);
+  expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({scales: []})).toThrow(/scales must contain/);
   expect(() => create({scales: [{radius: 0}]})).toThrow(/integer radius/);
   expect(() => create({scales: [{radius: 2, innerRadius: 2}]})).toThrow(/innerRadius < radius/);
   expect(() => create({quantum: 0.003})).toThrow(/power of two/);
   expect(() =>
-    create({deviationFromMean: createTransientView(graph, 'short-dev', 'float32', 30)})
+    create({output: {deviationFromMean: createTransientView(graph, 'short-dev', 'float32', 30)}})
   ).toThrow(/must contain 60 values/);
   const shared = createTransientView(graph, 'shared', 'float32', 60);
-  expect(() => create({deviationFromMean: shared, topographicPositionIndex: shared})).toThrow(
-    /must not share buffers/
-  );
+  expect(() =>
+    create({output: {deviationFromMean: shared, topographicPositionIndex: shared}})
+  ).toThrow(/must not share buffers/);
 
-  // The table needs 3 * pixelCount words per binding.
-  const large = new GPUTerrainTopographicPosition({
-    id: 'large',
-    width: 8192,
-    height: 2048,
-    elevation: createBand(graph, 'large-elevation', 8192 * 2048),
-    scales: [{radius: 1}],
-    maximumDeviation: createTransientView(graph, 'large-dev', 'float32', 8192 * 2048)
-  });
-  expect(() => large.getCommandNodes(graph)).toThrow(/maxStorageBufferBindingSize/);
+  // The table needs 3 * pixelCount words per binding: at most 11184810 cells.
+  expect(() =>
+    new GPUTerrainTopographicPosition({
+      id: 'large',
+      grid: makeGPURasterMetadata({width: 8192, height: 2048}),
+      elevation: createBand(graph, 'large-elevation', 8192 * 2048),
+      scales: [{radius: 1}],
+      output: {
+        maximumDeviation: createTransientView(graph, 'large-dev', 'float32', 8192 * 2048)
+      }
+    }).getCommandNodes(graph)
+  ).toThrow('large grid cells must be at most 11184810');
 });
 
 it('GPUTerrainWeissLandforms composes position, slope, statistics, and classification', () => {
@@ -72,11 +77,10 @@ it('GPUTerrainWeissLandforms composes position, slope, statistics, and classific
     instance++;
     return new GPUTerrainWeissLandforms({
       id: `weiss-${instance}`,
-      width: 6,
-      height: 5,
+      grid: GRID,
       elevation: createBand(graph, `elevation-${instance}`, 30),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
-      landforms: createTransientView(graph, `landforms-${instance}`, 'uint32', 30),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 8),
+      output: {landforms: createTransientView(graph, `landforms-${instance}`, 'uint32', 30)},
       ...overrides
     });
   };
@@ -98,17 +102,30 @@ it('GPUTerrainWeissLandforms composes position, slope, statistics, and classific
   );
   expect(globalIds.some(id => id.startsWith('weiss-1-sum-0'))).toBe(true);
 
-  expect(Array.from(getGPUTerrainWeissLandformsParameterValues({cellSize: [2, 3]}))).toEqual([
-    2, 3, 1, 0, 0, 1, 5, 0
+  // Rows of 3 units advance south from y = 5 over 5 rows: edges 5 and -10.
+  expect(Array.from(getGPUTerrainWeissLandformsParameterValues({}, GRID))).toEqual([
+    2, 3, 1, 5, -10, 1, 5, 0
   ]);
+  const georeference = getRasterGridGeoreference(GRID);
+  expect(Array.from(getGPUTerrainWeissLandformsParameterValues({}, GRID).subarray(0, 5))).toEqual([
+    ...georeference.cellSize,
+    1,
+    georeference.northEdge,
+    georeference.southEdge
+  ]);
+  expect(() => getGPUTerrainWeissLandformsParameterValues({}, GRID, new Float32Array(7))).toThrow(
+    /getGPUTerrainWeissLandformsParameterValues/
+  );
   expect(GPU_TERRAIN_WEISS_LANDFORMS.mountainTop).toBe(10);
-  expect(() => create({landforms: undefined})).toThrow(/at least one output/);
+  expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({standardization: 'median' as never})).toThrow(/global or local/);
   expect(() => create({smallScale: {radius: 1.5}})).toThrow(/integer radius/);
   expect(() =>
-    create({settings: createTransientView(graph, 'short-settings', 'float32', 7)})
+    create({parameters: createTransientView(graph, 'short-settings', 'float32', 7)})
   ).toThrow(/at least 8/);
   expect(() =>
-    create({standardizedPosition: createTransientView(graph, 'short-std', 'float32', 30)})
+    create({
+      output: {standardizedPosition: createTransientView(graph, 'short-std', 'float32', 30)}
+    })
   ).toThrow(/two values per pixel/);
 });

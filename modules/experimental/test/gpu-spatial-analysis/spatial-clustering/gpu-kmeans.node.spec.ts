@@ -5,7 +5,9 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
+  getGPUKMeansParameterValues,
   GPUKMeans,
+  GPU_KMEANS_PARAMETER_LENGTH,
   GPUSpatialClustering
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {getKMeansRestartSeed} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-kmeans';
@@ -29,22 +31,26 @@ it('GPUKMeans validates props and declares nodes', () => {
   const make = () => ({
     positions: view('float32x2', 20),
     k: 3,
-    iterations: 2,
-    labels: view('uint32', 20),
-    centers: view('float32x2', 3)
+    maximumIterations: 2,
+    parameters: view('uint32', GPU_KMEANS_PARAMETER_LENGTH),
+    output: {labels: view('uint32', 20), centers: view('float32x2', 3)}
   });
   const base = make();
+  const output = (extra: object) => ({...base, output: {...base.output, ...extra}});
   expect(() => new GPUKMeans({...base, k: 0})).toThrow(/k must/);
   expect(() => new GPUKMeans({...base, k: 300})).toThrow(/k must/);
-  expect(() => new GPUKMeans({...base, iterations: 0})).toThrow(/iterations/);
+  expect(() => new GPUKMeans({...base, maximumIterations: 0})).toThrow(/maximumIterations/);
   expect(() => new GPUKMeans({...base, initialization: 'random' as 'kmeans++'})).toThrow(
     /initialization/
   );
-  expect(() => new GPUKMeans({...base, seed: -1})).toThrow(/seed/);
-  expect(() => new GPUKMeans({...base, tolerance: -1})).toThrow(/tolerance/);
-  expect(() => new GPUKMeans({...base, convergence: view('uint32', 3)})).toThrow(/convergence/);
-  expect(() => new GPUKMeans({...base, centers: view('float32x2', 4)})).toThrow(/centers length/);
-  expect(() => new GPUKMeans({...base, sizes: view('uint32', 2)})).toThrow(/sizes length/);
+  expect(() => new GPUKMeans({...base, parameters: view('uint32', 1)})).toThrow(/parameters/);
+  expect(() => getGPUKMeansParameterValues({seed: -1})).toThrow(/seed/);
+  expect(() => getGPUKMeansParameterValues({tolerance: -1})).toThrow(/tolerance/);
+  expect(() => new GPUKMeans(output({status: {converged: view('uint32', 2)}}))).toThrow(
+    /converged/
+  );
+  expect(() => new GPUKMeans(output({centers: view('float32x2', 4)}))).toThrow(/centers length/);
+  expect(() => new GPUKMeans(output({sizes: view('uint32', 2)}))).toThrow(/sizes length/);
   const first = new GPUKMeans({...base, initialization: 'first-valid'})
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -53,7 +59,7 @@ it('GPUKMeans validates props and declares nodes', () => {
   expect(first).toContain('kmeans-iteration-1-update');
   expect(first).toContain('kmeans-iteration-1-converge');
   expect(first.at(-1)).toMatch(/kmeans-final-sizes/);
-  const seeded = new GPUKMeans({...make(), id: 'seeded', initialization: 'kmeans++', seed: 9})
+  const seeded = new GPUKMeans({...make(), id: 'seeded', initialization: 'kmeans++'})
     .getCommandNodes(graph)
     .map(node => node.id);
   expect(seeded).toContain('seeded-seed-2-update');
@@ -68,7 +74,7 @@ it('GPUSpatialClustering declares dense-box nodes only when requested', () => {
     positions: createTransientView(graph, `${id}-positions`, 'float32x2', 16),
     parameters: createTransientView(graph, `${id}-parameters`, 'float32', 8),
     gridSize: [8, 8] as const,
-    labels: createTransientView(graph, `${id}-labels`, 'uint32', 16)
+    output: {labels: createTransientView(graph, `${id}-labels`, 'uint32', 16)}
   });
   const plain = new GPUSpatialClustering(props('plain'))
     .getCommandNodes(graph)
@@ -96,12 +102,12 @@ it("GPUKMeans defaults to 'kmeans++' and one restart, and validates restartCount
     format: Format,
     length: number
   ) => createTransientView(graph, `view-${serial++}`, format, length);
-  const make = (extra = {}) => ({
+  const make = (extra = {}, outputs = {}) => ({
     positions: view('float32x2', 20),
     k: 3,
-    iterations: 2,
-    labels: view('uint32', 20),
-    centers: view('float32x2', 3),
+    maximumIterations: 2,
+    parameters: view('uint32', GPU_KMEANS_PARAMETER_LENGTH),
+    output: {labels: view('uint32', 20), centers: view('float32x2', 3), ...outputs},
     ...extra
   });
   const defaults = new GPUKMeans(make());
@@ -113,7 +119,7 @@ it("GPUKMeans defaults to 'kmeans++' and one restart, and validates restartCount
   expect(() => new GPUKMeans(make({restartCount: 2, initialization: 'first-valid'}))).toThrow(
     /kmeans\+\+/
   );
-  expect(() => new GPUKMeans(make({inertia: view('float32', 2)}))).toThrow(/inertia/);
+  expect(() => new GPUKMeans(make({}, {inertia: view('float32', 2)}))).toThrow(/inertia/);
   expect(
     () =>
       new GPUKMeans(
@@ -124,12 +130,13 @@ it("GPUKMeans defaults to 'kmeans++' and one restart, and validates restartCount
   expect(single).toContain('kmeans-seed-2-update');
   expect(single.some(id => id.includes('restart'))).toBe(false);
   const multi = new GPUKMeans(
-    make({
-      id: 'multi',
-      restartCount: 3,
-      inertia: view('float32', 1),
-      convergence: view('uint32', 2)
-    })
+    make(
+      {id: 'multi', restartCount: 3},
+      {
+        inertia: view('float32', 1),
+        status: {iterationCount: view('uint32', 1), converged: view('uint32', 1)}
+      }
+    )
   )
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -142,6 +149,14 @@ it("GPUKMeans defaults to 'kmeans++' and one restart, and validates restartCount
     multi.indexOf('multi-publish-centers')
   );
   expect(multi.indexOf('multi-publish-centers')).toBeLessThan(multi.indexOf('multi-final-assign'));
+});
+
+it('getGPUKMeansParameterValues packs the seed and the tolerance bits', () => {
+  const values = getGPUKMeansParameterValues({seed: 0xfffffffe, tolerance: 0.25});
+  expect(values.length).toBe(GPU_KMEANS_PARAMETER_LENGTH);
+  expect(values[0]).toBe(0xfffffffe);
+  expect(new Float32Array(values.buffer)[1]).toBe(0.25);
+  expect(Array.from(getGPUKMeansParameterValues())).toEqual([0, 0]);
 });
 
 it('getKMeansRestartSeed is deterministic, keeps seed for restart 0 and separates restarts', () => {
@@ -258,10 +273,10 @@ it('GPUKMeans relocate kernel binds at most 8 storage buffers and runs once per 
   const nodes = new GPUKMeans({
     positions: view('float32x2', 20),
     k: 3,
-    iterations: 4,
+    maximumIterations: 4,
     initialization: 'first-valid',
-    labels: view('uint32', 20),
-    centers: view('float32x2', 3)
+    parameters: view('uint32', GPU_KMEANS_PARAMETER_LENGTH),
+    output: {labels: view('uint32', 20), centers: view('float32x2', 3)}
   })
     .getCommandNodes(graph)
     .map(node => node.id);

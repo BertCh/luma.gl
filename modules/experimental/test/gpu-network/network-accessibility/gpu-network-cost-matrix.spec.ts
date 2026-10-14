@@ -24,6 +24,7 @@ import {
   type AccessibilityCSR,
   type AccessibilitySeed
 } from './network-accessibility-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Flattens seed rows into seed views with explicit rows. */
 function flattenRows(rows: readonly (readonly AccessibilitySeed[])[]) {
@@ -50,8 +51,9 @@ async function runCostMatrix(
   rows: readonly (readonly AccessibilitySeed[])[],
   options: {
     laneCount?: number;
-    maxIterations?: number;
+    maximumIterations?: number;
     costLimit?: number;
+    targets?: readonly number[];
   } = {}
 ): Promise<{matrix: Float32Array; converged: number}> {
   const graph = new GPUCommandGraph(device, {id: 'cost-matrix'});
@@ -62,33 +64,36 @@ async function runCostMatrix(
     buffers.push(buffer);
     return buffer;
   };
-  const costsBuffer = createOutputBuffer(device, rows.length * nodeCount);
+  const columnCount = options.targets?.length ?? nodeCount;
+  const costsBuffer = createOutputBuffer(device, rows.length * columnCount);
   const convergedBuffer = createOutputBuffer(device, 1);
   const edgeCount = csr.neighbors.length;
   buffers.push(costsBuffer, convergedBuffer);
   graph.add(
     new GPUNetworkCostMatrix({
       id: 'matrix',
-      offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', nodeCount + 1),
-      neighbors: importGraphBuffer(graph, 'neighbors', input(csr.neighbors), 'uint32', edgeCount),
-      weights: importGraphBuffer(graph, 'weights', input(csr.weights), 'float32', edgeCount),
-      seedNodes: importGraphBuffer(
+      topology: {
+        offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', nodeCount + 1),
+        neighbors: importGraphBuffer(graph, 'neighbors', input(csr.neighbors), 'uint32', edgeCount),
+        weights: importGraphBuffer(graph, 'weights', input(csr.weights), 'float32', edgeCount)
+      },
+      startNodes: importGraphBuffer(
         graph,
-        'seed-nodes',
+        'start-nodes',
         input(Uint32Array.from(nodes)),
         'uint32',
         nodes.length
       ),
-      seedCosts: importGraphBuffer(
+      startCosts: importGraphBuffer(
         graph,
-        'seed-costs',
+        'start-costs',
         input(Float32Array.from(costs)),
         'float32',
         costs.length
       ),
-      seedRows: importGraphBuffer(
+      startRows: importGraphBuffer(
         graph,
-        'seed-rows',
+        'start-rows',
         input(Uint32Array.from(rowIds)),
         'uint32',
         rowIds.length
@@ -103,15 +108,28 @@ async function runCostMatrix(
               1
             )
           : undefined,
+      targetNodes: options.targets
+        ? importGraphBuffer(
+            graph,
+            'target-nodes',
+            input(Uint32Array.from(options.targets)),
+            'uint32',
+            options.targets.length
+          )
+        : undefined,
       laneCount: options.laneCount,
-      maxIterations: options.maxIterations ?? 16,
-      costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', rows.length * nodeCount),
-      converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+      maximumIterations: options.maximumIterations ?? 16,
+      output: {
+        costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', rows.length * columnCount),
+        status: {
+          converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const matrix = Float32Array.from(await readFloat32(costsBuffer, rows.length * nodeCount));
+  const matrix = Float32Array.from(await readFloat32(costsBuffer, rows.length * columnCount));
   const [converged] = await readUint32(convergedBuffer, 1);
   compiled.destroy();
   for (const buffer of buffers) {
@@ -140,9 +158,7 @@ const ZERO_WEIGHT_ROWS: AccessibilitySeed[][] = [
 
 it('GPUNetworkCostMatrix matches Dijkstra with zero-weight edges and disconnected components', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const csr = buildCSR(9, ZERO_WEIGHT_EDGES);
   const expected = costMatrixOracle(csr, 9, ZERO_WEIGHT_ROWS);
   // Spot checks of the fixture semantics.
@@ -173,9 +189,7 @@ it('GPUNetworkCostMatrix matches Dijkstra with zero-weight edges and disconnecte
 
 it('GPUNetworkCostMatrix honors a cost limit and partial last batches on a grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 20;
   const nodeCount = width * width;
   const {edges} = createGridFixture(3, width, width);
@@ -185,14 +199,14 @@ it('GPUNetworkCostMatrix honors a cost limit and partial last batches on a grid'
   ]);
   const unbounded = await runCostMatrix(device, csr, nodeCount, rows, {
     laneCount: 16,
-    maxIterations: 32
+    maximumIterations: 32
   });
   expect(unbounded.converged).toBe(1);
   expect(Array.from(unbounded.matrix)).toEqual(Array.from(costMatrixOracle(csr, nodeCount, rows)));
 
   const bounded = await runCostMatrix(device, csr, nodeCount, rows, {
     laneCount: 8,
-    maxIterations: 32,
+    maximumIterations: 32,
     costLimit: 20
   });
   expect(Array.from(bounded.matrix)).toEqual(
@@ -202,16 +216,14 @@ it('GPUNetworkCostMatrix honors a cost limit and partial last batches on a grid'
   // Too few rounds: the flag reports it.
   const truncated = await runCostMatrix(device, csr, nodeCount, rows, {
     laneCount: 37,
-    maxIterations: 1
+    maximumIterations: 1
   });
   expect(truncated.converged).toBe(0);
 });
 
 it('GPUNetworkCostMatrix default laneCount is bit-identical to laneCount 1', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 12;
   const nodeCount = width * width;
   const {edges} = createGridFixture(5, width, width);
@@ -219,9 +231,82 @@ it('GPUNetworkCostMatrix default laneCount is bit-identical to laneCount 1', asy
   const rows: AccessibilitySeed[][] = Array.from({length: nodeCount}, (_, row) => [
     {node: row, cost: 0}
   ]);
-  const options = {maxIterations: 32};
+  const options = {maximumIterations: 32};
   const defaults = await runCostMatrix(device, csr, nodeCount, rows, options);
   const single = await runCostMatrix(device, csr, nodeCount, rows, {...options, laneCount: 1});
   expect(defaults.converged).toBe(1);
   expect(new Uint32Array(defaults.matrix.buffer)).toEqual(new Uint32Array(single.matrix.buffer));
+});
+
+/** Picks the target columns out of a dense matrix; targets `>= nodeCount` are `+Infinity`. */
+function gatherDenseColumns(
+  dense: Float32Array,
+  nodeCount: number,
+  rowCount: number,
+  targets: readonly number[]
+): Float32Array {
+  const compact = new Float32Array(rowCount * targets.length);
+  for (let row = 0; row < rowCount; row++) {
+    targets.forEach((target, column) => {
+      compact[row * targets.length + column] =
+        target < nodeCount ? dense[row * nodeCount + target] : Infinity;
+    });
+  }
+  return compact;
+}
+
+it('GPUNetworkCostMatrix targetNodes equals the dense matrix columns bit for bit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 20;
+  const nodeCount = width * width;
+  const {edges} = createGridFixture(3, width, width);
+  const csr = buildCSR(nodeCount, edges);
+  const rows: AccessibilitySeed[][] = Array.from({length: 37}, (_, row) => [
+    {node: (row * 97) % nodeCount, cost: row % 3}
+  ]);
+  // Duplicates, an out-of-range target, and the NONE sentinel.
+  const targets = [5, 399, 5, 120, nodeCount + 7, 0, 120, NONE];
+  const base = {maximumIterations: 32};
+  const layouts = [
+    {name: 'one batch', laneCount: rows.length},
+    {name: 'multi batch with a short last batch', laneCount: 16},
+    {name: 'one lane per batch', laneCount: 1}
+  ];
+  for (const costLimit of [undefined, 20]) {
+    const dense = await runCostMatrix(device, csr, nodeCount, rows, {
+      ...base,
+      laneCount: 16,
+      costLimit
+    });
+    const oracle = costMatrixOracle(csr, nodeCount, rows, costLimit);
+    expect(Array.from(dense.matrix)).toEqual(Array.from(oracle));
+    const expected = gatherDenseColumns(dense.matrix, nodeCount, rows.length, targets);
+    for (const {name, laneCount} of layouts) {
+      const compact = await runCostMatrix(device, csr, nodeCount, rows, {
+        ...base,
+        laneCount,
+        costLimit,
+        targets
+      });
+      expect(compact.matrix.length, name).toBe(rows.length * targets.length);
+      expect(new Uint32Array(compact.matrix.buffer), name).toEqual(
+        new Uint32Array(expected.buffer)
+      );
+      expect(compact.converged, name).toBe(1);
+    }
+  }
+});
+
+it('GPUNetworkCostMatrix targetNodes keeps unreached targets at infinity', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const csr = buildCSR(9, ZERO_WEIGHT_EDGES);
+  const targets = [8, 0, 6, 0];
+  const dense = await runCostMatrix(device, csr, 9, ZERO_WEIGHT_ROWS, {laneCount: 3});
+  const compact = await runCostMatrix(device, csr, 9, ZERO_WEIGHT_ROWS, {laneCount: 3, targets});
+  expect(new Uint32Array(compact.matrix.buffer)).toEqual(
+    new Uint32Array(gatherDenseColumns(dense.matrix, 9, ZERO_WEIGHT_ROWS.length, targets).buffer)
+  );
+  expect(compact.matrix[0 * targets.length + 2]).toBe(Infinity);
 });

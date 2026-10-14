@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUInequality,
   type GPUInequalityProps
@@ -12,7 +13,10 @@ import {
   getGPUInequalityParameterValues,
   GPU_INEQUALITY_PARAMETER_LENGTH
 } from '../../../src/gpu-dataframe/composite-indicators/inequality-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {computeDiscreteGini, computeInequalityOnCPU, evaluateLorenz} from './inequality-oracle';
 
 let serial = 0;
@@ -91,7 +95,7 @@ it('GPUInequality validates props', () => {
   expectThrows(
     graph => ({
       output: {
-        count: createTransientView(graph, `c-${serial++}`, 'float32', 3) as never
+        counts: createTransientView(graph, `c-${serial++}`, 'float32', 3) as never
       }
     }),
     /count/
@@ -142,7 +146,7 @@ it('GPUInequality emits deterministic node IDs and only the passes its outputs n
         hoover: view('float32', 3),
         palma: view('float32', 3),
         mean: view('float32', 3),
-        count: view('uint32', 3),
+        counts: view('uint32', 3),
         lorenzKnots: view('float32', 15),
         globalSummary: view('float32', 8)
       }
@@ -262,4 +266,42 @@ it('computeInequalityOnCPU treats weights as population and applies the inclusio
   const zero = computeInequalityOnCPU({values: [0, 0], zoneIds: [0, 0], zoneCount: 1});
   expect(zero.mean[0]).toBe(0);
   expect(zero.gini[0]).toBeNaN();
+});
+
+it('GPUInequality global second-stage reductions run in 256-lane workgroups', () => {
+  // 300 * 256 + 7 rows and 600 zones make the strided loops run more than once; 100 rows and 3
+  // zones leave most lanes idle.
+  for (const [rowCount, zoneCount] of [
+    [300 * 256 + 7, 600],
+    [100, 3]
+  ]) {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const id = `two-stage-${rowCount}`;
+    const inequality = new GPUInequality(
+      createProps(graph, {
+        id,
+        values: createTransientView(graph, `v-${serial++}`, 'float32', rowCount),
+        zoneIds: createTransientView(graph, `z-${serial++}`, 'uint32', rowCount),
+        zoneCount,
+        output: {
+          gini: createTransientView(graph, `g-${serial++}`, 'float32', zoneCount),
+          globalSummary: createTransientView(graph, `s-${serial++}`, 'float32', 8)
+        }
+      })
+    );
+    const sources = getGPUCommandNodeKernelSources(inequality.getCommandNodes(graph));
+    for (const variant of ['global-sums', 'global-gini-tile-prefix', 'global-gini']) {
+      const kernels = sources.filter(({id: kernelId}) => kernelId.endsWith(`${id}-${variant}`));
+      expect(kernels.length, variant).toBe(1);
+      const source = kernels[0].source;
+      expect(() => new WgslReflect(source), variant).not.toThrow();
+      expect(source, variant).toContain('@workgroup_size(256)');
+      expect(source, variant).toContain('var<workgroup>');
+      expect(source, variant).toContain('workgroupBarrier()');
+      expect(source, variant).not.toContain('zone = 0u; zone < ZONE_COUNT');
+      expect(source, variant).not.toContain('tile = 0u; tile < GINI_TILE_COUNT');
+    }
+    device.destroy();
+  }
 });

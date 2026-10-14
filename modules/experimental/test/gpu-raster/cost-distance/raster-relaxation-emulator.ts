@@ -25,6 +25,12 @@ export type TiledRelaxationEmulatorInput = {
   sweepAfterIteration?: number;
   /** Every tile starts active (the tie phase) or none (seed kernels mark tiles). */
   activateAllTiles: boolean;
+  /**
+   * Continuation state of a previous execution, updated in place: the tile stamps and the
+   * cumulative iteration count. `maxIterations` is then the budget of this execution, the schedule
+   * and the stamps follow the cumulative count, and the returned `iterationCount` is cumulative.
+   */
+  state?: {stamps: Uint32Array; iterationCount: number};
 };
 
 /**
@@ -45,7 +51,9 @@ export function emulateTiledRelaxation(input: TiledRelaxationEmulatorInput): {
   const {width, height, values} = input;
   const tilesX = Math.ceil(width / TILE_SIZE);
   const tilesY = Math.ceil(height / TILE_SIZE);
-  const stamps = new Uint32Array(tilesX * tilesY).fill(input.activateAllTiles ? 1 : 0);
+  const stamps =
+    input.state?.stamps ?? new Uint32Array(tilesX * tilesY).fill(input.activateAllTiles ? 1 : 0);
+  const firstIteration = input.state?.iterationCount ?? 0;
   const edgeCosts = new Float64Array(width * height * 8);
   for (let cell = 0; cell < width * height; cell++) {
     for (let direction = 0; direction < 8; direction++) {
@@ -119,7 +127,11 @@ export function emulateTiledRelaxation(input: TiledRelaxationEmulatorInput): {
     return changed;
   };
 
-  for (let iteration = 0; iteration < input.maxIterations; iteration++) {
+  for (
+    let iteration = firstIteration;
+    iteration < firstIteration + input.maxIterations;
+    iteration++
+  ) {
     const cycle =
       input.sweepAfterIteration === undefined || iteration < input.sweepAfterIteration
         ? 0
@@ -154,9 +166,13 @@ export function emulateTiledRelaxation(input: TiledRelaxationEmulatorInput): {
         }
       }
     }
-    if (!changed) return {converged: true, iterationCount: iteration + 1};
+    if (!changed) {
+      if (input.state) input.state.iterationCount = iteration + 1;
+      return {converged: true, iterationCount: iteration + 1};
+    }
   }
-  return {converged: false, iterationCount: input.maxIterations};
+  if (input.state) input.state.iterationCount = firstIteration + input.maxIterations;
+  return {converged: false, iterationCount: firstIteration + input.maxIterations};
 }
 
 /** Returns the D8 neighbor of `cell` in `direction`, or -1 outside the grid. */

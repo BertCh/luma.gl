@@ -8,12 +8,11 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../utils/gpu-contributor-test-utils';
 import {createOutputBuffer, readUint32} from './gpu-contributor-test-utils';
+import {requireTestDevice} from './require-test-device';
 
 it('GPUParameterBuffer updates contributor inputs between encodings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
 
   const graph = new GPUCommandGraph(device, {id: 'parameter-buffer'});
   const selection = new GPUParameterBuffer(device, {

@@ -16,8 +16,8 @@ import {
 } from '../../../src/gpu-spatial-analysis/region-statistics';
 import {GPUResidentRowSelection} from '../../../src/gpu-tables/residency-arena';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '../../../src/gpu-dataframe/time-window-filter';
 import type {GPUCompactOutput} from '../../../src/utils/gpu-contributor-types';
@@ -70,9 +70,11 @@ function createCompactOutput(
     total,
     output: {
       ids: importGraphBuffer(graph, `${name}-ids`, ids, 'uint32', ROW_CAPACITY),
-      count: importGraphBuffer(graph, `${name}-count`, count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, `${name}-overflow`, overflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, `${name}-total`, total, 'uint32', 1)
+      status: {
+        count: importGraphBuffer(graph, `${name}-count`, count, 'uint32', 1),
+        overflow: importGraphBuffer(graph, `${name}-overflow`, overflow, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, `${name}-total`, total, 'uint32', 1)
+      }
     }
   };
 }
@@ -135,8 +137,8 @@ it('arena columns drive GPUTimeWindowFilter with an indirect draw; the live pred
   const window = new GPUParameterBuffer(device, {
     id: 'composition-window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues({start: 0, end: 0})
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({start: 0, end: 0})
   });
   const drawCommands = new DrawCommandBuffer(device, {
     id: 'composition-draw',
@@ -157,11 +159,13 @@ it('arena columns drive GPUTimeWindowFilter with an indirect draw; the live pred
       sourceIds,
       additionalPredicates: [{kind: 'selection', mask: views.liveMask}],
       window: windowView,
-      output: live.output,
-      drawInstanceCount: graph.importGPUData(
-        'composition-draw-count',
-        drawCommands.getInstanceCountData(0)
-      )
+      output: {
+        ...live.output,
+        drawInstanceCount: graph.importGPUData(
+          'composition-draw-count',
+          drawCommands.getInstanceCountData(0)
+        )
+      }
     })
   );
   // Negative control: the same filter without the live predicate sees stale rows.
@@ -189,7 +193,7 @@ it('arena columns drive GPUTimeWindowFilter with an indirect draw; the live pred
     mirror.churn(random, makeTile);
     sawEviction ||= keysBefore > 0 && mirror.arena.version > 1;
     const timeWindow = createRandomWindow(random);
-    window.write(getGPUTimeWindowParameterValues(timeWindow));
+    window.write(getGPUTimeWindowFilterParameterValues(timeWindow));
     submitGraph(device, compiled, undefined);
 
     const liveRows = getLiveRows(mirror);
@@ -251,8 +255,8 @@ it('GPUTimeWindowFilter outputMask composes with GPUResidentRowSelection tile ga
   const window = new GPUParameterBuffer(device, {
     id: 'composition-gate-window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues({start: 0, end: 0})
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({start: 0, end: 0})
   });
   const drawCommands = new DrawCommandBuffer(device, {
     id: 'composition-gate-draw',
@@ -271,8 +275,7 @@ it('GPUTimeWindowFilter outputMask composes with GPUResidentRowSelection tile ga
       id: 'time-only-filter',
       timestamps: views.columns['time'] as GraphDataView<'float32'>,
       window: window.importToGraph(graph),
-      output: timeOnly.output,
-      outputMask: timeMask
+      output: {...timeOnly.output, outputMask: timeMask}
     })
   );
   graph.add(
@@ -303,7 +306,7 @@ it('GPUTimeWindowFilter outputMask composes with GPUResidentRowSelection tile ga
   for (let state = 0; state < STATE_COUNT; state++) {
     mirror.churn(random, makeTile);
     const timeWindow = createRandomWindow(random);
-    window.write(getGPUTimeWindowParameterValues(timeWindow));
+    window.write(getGPUTimeWindowFilterParameterValues(timeWindow));
     const tileMask = Uint32Array.from({length: MAX_TILE_COUNT}, () => (random() < 0.5 ? 1 : 0));
     tileMaskBuffer.write(tileMask);
     submitGraph(device, compiled, undefined);
@@ -550,10 +553,18 @@ it('GPURegionStatistics automatic histogram domain ignores dead rows holding sta
   ): GPURegionStatistics =>
     new GPURegionStatistics({
       id: `stats-${name}`,
-      selection: {kind: 'mask', mask},
+      region: {kind: 'mask', mask},
       values,
       histogram: {binCount: HISTOGRAM_BIN_COUNT},
-      summary: importGraphBuffer(graph, `summary-${name}`, summaries[name], 'uint32', summaryLength)
+      output: {
+        summary: importGraphBuffer(
+          graph,
+          `summary-${name}`,
+          summaries[name],
+          'uint32',
+          summaryLength
+        )
+      }
     });
   graph.add(statistics('live', views.liveMask));
   // Negative control: an all-ones mask is the "automatic domain counted dead rows" failure.

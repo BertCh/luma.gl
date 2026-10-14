@@ -23,6 +23,7 @@ import {
   createWeights,
   type CPUWeights
 } from './neighborhood-summary-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GARBAGE = 0x7f7f7f7f;
 const ALL: GPUNeighborhoodSummaryStatistic[] = [
@@ -68,7 +69,7 @@ async function runSummary(
     statistics: GPUNeighborhoodSummaryStatistic[];
     maximumNeighbors?: number;
     categorical?: boolean;
-    /** Declares `weights.info.transform` 'row' (re-standardization over the active members). */
+    /** Declares `weights.information.transform` 'row' (re-standardization over the active members). */
     standardized?: boolean;
     /** Carries a nonzero `weights.status.overflow` (truncated weights). */
     truncated?: boolean;
@@ -101,7 +102,7 @@ async function runSummary(
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
       weights: importGraphBuffer(graph, 'weights', buffers.weights, 'float32', capacity),
-      info: options.standardized
+      information: options.standardized
         ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
         : undefined,
       status: buffers.weightsOverflow
@@ -123,16 +124,18 @@ async function runSummary(
     focalWeight: options.focalWeight,
     statistics: options.statistics,
     maximumNeighbors: options.maximumNeighbors,
-    output: statisticCount
-      ? importGraphBuffer(graph, 'output', outputs.output, 'float32', rows * statisticCount)
-      : undefined,
-    overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-    modes: options.categorical
-      ? importGraphBuffer(graph, 'modes', outputs.modes, 'uint32', rows)
-      : undefined,
-    entropy: options.categorical
-      ? importGraphBuffer(graph, 'entropy', outputs.entropy, 'float32', rows)
-      : undefined
+    output: {
+      table: statisticCount
+        ? importGraphBuffer(graph, 'output', outputs.output, 'float32', rows * statisticCount)
+        : undefined,
+      modes: options.categorical
+        ? importGraphBuffer(graph, 'modes', outputs.modes, 'uint32', rows)
+        : undefined,
+      entropy: options.categorical
+        ? importGraphBuffer(graph, 'entropy', outputs.entropy, 'float32', rows)
+        : undefined,
+      status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+    }
   });
   graph.add(contributor);
   const compiled = graph.compile();
@@ -163,9 +166,7 @@ function expectClose(actual: number, expected: number, label: string): void {
 for (const includeFocal of [false, true]) {
   it(`GPUNeighborhoodSummary matches the CPU oracle (includeFocal ${includeFocal})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createScene(600);
     const mask = Uint32Array.from({length: 600}, (_, row) => (row % 13 === 5 ? 0 : 1));
     scene.values[7] = NaN;
@@ -207,9 +208,7 @@ for (const includeFocal of [false, true]) {
 
 it('GPUNeighborhoodSummary mode breaks ties to the lowest category and entropy is exact on a small case', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Row 0: neighbors 1..4 with categories 9, 4, 4, 9, equal weights: a tie, so the lowest (4).
   // Row 1: neighbors 0 (category 7, weight 1) and 4 (category 9, weight 3): 9 wins by weight.
   // Row 2: one neighbor. Row 3: island. Row 4: neighbors 1 and 2 (categories 9 and 4): a tie.
@@ -251,9 +250,7 @@ it('GPUNeighborhoodSummary mode breaks ties to the lowest category and entropy i
 
 it('GPUNeighborhoodSummary ignores zero-weight slots (count, min, max, median, mode)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Row 0 lists neighbors 1 (weight 1), 2 (weight 0, value 100, category 1) and 3 (weight 2).
   // Zero-weight members would give count 3, max 100, median 3 and mode 1 (tie to the lowest).
   const weights = createWeights([
@@ -286,9 +283,7 @@ it('GPUNeighborhoodSummary ignores zero-weight slots (count, min, max, median, m
 
 it('GPUNeighborhoodSummary re-standardizes row-standardized weights over unmasked members', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(300);
   // Row-standardize the CSR (weights sum to 1 per non-island row) before masking.
   const standardizedWeights = Float32Array.from(scene.weights.weights);
@@ -327,9 +322,7 @@ it('GPUNeighborhoodSummary re-standardizes row-standardized weights over unmaske
 
 it('GPUNeighborhoodSummary writes NaN for every output when the weights are truncated', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(50);
   const result = await runSummary(device, scene, {
     statistics: ['count', 'mean'],

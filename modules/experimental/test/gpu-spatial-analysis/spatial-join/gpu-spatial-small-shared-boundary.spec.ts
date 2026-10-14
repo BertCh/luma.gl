@@ -12,6 +12,7 @@ import {
   hashFeatureCoordinates
 } from './spatial-relate-realistic-scenes';
 import {SHAPELY_SMALL_SHARED_HASHES, SHAPELY_SMALL_SHARED_RELATE} from './shapely-scale-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SCENE = createSmallSharedBoundaryScene(createRandom);
 
@@ -22,9 +23,7 @@ it('small shared-boundary scene is the one pinned by the Shapely fixtures', () =
 
 it('small features sharing boundaries match Shapely for every engine', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scenes = [
     ['small-cells-blocks', SCENE.cells, SCENE.blocks],
     ['small-cells-cells', SCENE.cells, SCENE.cells]

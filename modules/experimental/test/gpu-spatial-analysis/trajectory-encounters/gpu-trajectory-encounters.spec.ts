@@ -17,6 +17,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from '../trajectory-interpolation/trajectory-interpolation-fixtures';
 import {computeEncountersOracle} from './encounters-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 1000, 1000] as const;
 
@@ -110,31 +111,35 @@ async function runEncounters(
         'float32',
         bucketCount
       ),
-      pairs: {
-        candidateOverflow: importGraphBuffer(
-          graph,
-          'o-candidate-overflow',
-          out.candidateOverflow,
-          'uint32',
-          1
-        ),
-        output: {
+      output: {
+        pairs: {
           ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', pairCapacity),
-          count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+          },
+          partners: importGraphBuffer(graph, 'o-partners', out.partners, 'uint32', pairCapacity),
+          firstBuckets: importGraphBuffer(graph, 'o-first', out.first, 'uint32', pairCapacity),
+          minimumDistances: importGraphBuffer(
+            graph,
+            'o-distances',
+            out.distances,
+            'float32',
+            pairCapacity
+          ),
+          bucketCounts: importGraphBuffer(graph, 'o-counts', out.counts, 'uint32', pairCapacity),
+          firstTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', pairCapacity)
         },
-        partners: importGraphBuffer(graph, 'o-partners', out.partners, 'uint32', pairCapacity),
-        firstBuckets: importGraphBuffer(graph, 'o-first', out.first, 'uint32', pairCapacity),
-        minimumDistances: importGraphBuffer(
-          graph,
-          'o-distances',
-          out.distances,
-          'float32',
-          pairCapacity
-        ),
-        bucketCounts: importGraphBuffer(graph, 'o-counts', out.counts, 'uint32', pairCapacity),
-        firstTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', pairCapacity)
+        status: {
+          candidateOverflow: importGraphBuffer(
+            graph,
+            'o-candidate-overflow',
+            out.candidateOverflow,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
@@ -166,9 +171,7 @@ async function runEncounters(
 
 it('GPUTrajectoryEncounters matches the all-pairs oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const trackCount = 220;
   const bucketCount = 12;
   const samples = createSamples(5, trackCount, bucketCount);
@@ -221,9 +224,7 @@ it('GPUTrajectoryEncounters matches the all-pairs oracle', async () => {
 
 it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const trackCount = 220;
   const bucketCount = 12;
   const samples = createSamples(5, trackCount, bucketCount);
@@ -261,9 +262,7 @@ it('GPUTrajectoryEncounters clamps the distance to the cell size and flags overf
 
 it('GPUTrajectoryEncounters falls back to the three-pass sort when the packed key exceeds 32 bits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 12 track bits + 12 partner bits + 9 bucket bits = 33 > 32, so the stable LSD chain runs.
   const trackCount = 2100;
   const bucketCount = 260;

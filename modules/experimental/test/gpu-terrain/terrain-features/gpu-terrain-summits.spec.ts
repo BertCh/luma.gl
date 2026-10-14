@@ -23,13 +23,23 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSummits} from './terrain-summits-oracle';
+import {computeSummitsPreviousKernel} from './terrain-summits-range-model';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
+
+/** Packs summit settings for a unit-cell grid of `width` by `height`. */
+function packSummits(settings: GPUTerrainSummitsSettings, width: number, height: number) {
+  return getGPUTerrainSummitsParameterValues(settings, makeGPURasterMetadata({width, height}));
+}
 import {createHills, createNoise} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   values: Float32Array;
   validity?: Uint32Array;
   width: number;
   height: number;
+  grid?: GPURasterMetadata;
   settings: GPUTerrainSummitsSettings;
   capacity?: number;
   overflow?: boolean;
@@ -38,6 +48,7 @@ type FixtureOptions = {
 
 function createSummitsFixture(device: Device, options: FixtureOptions) {
   const {width, height} = options;
+  const grid = options.grid ?? makeGPURasterMetadata({width, height});
   const pixelCount = width * height;
   const capacity = options.capacity ?? pixelCount;
   const buffers: Buffer[] = [];
@@ -61,13 +72,12 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
     id: 'summit-settings',
     format: 'float32',
     length: GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH,
-    values: getGPUTerrainSummitsParameterValues(options.settings)
+    values: getGPUTerrainSummitsParameterValues(options.settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-summits-test'});
   graph.add(
     new GPUTerrainSummits({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -79,26 +89,38 @@ function createSummitsFixture(device: Device, options: FixtureOptions) {
           ? importGraphBuffer(graph, 'validity', validity, 'uint32', pixelCount)
           : undefined
       },
-      settings: settingsBuffer.importToGraph(graph),
-      summitMask: importGraphBuffer(graph, 'mask', mask, 'uint32', pixelCount),
-      drop: importGraphBuffer(graph, 'drop', drop, 'float32', pixelCount),
+      parameters: settingsBuffer.importToGraph(graph),
       output: {
-        ids: importGraphBuffer(graph, 'ids', ids, 'uint32', capacity),
-        count: importGraphBuffer(graph, 'count', count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'list-overflow', listOverflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'total', requiredCount, 'uint32', 1)
+        summitMask: importGraphBuffer(graph, 'mask', mask, 'uint32', pixelCount),
+        drop: importGraphBuffer(graph, 'drop', drop, 'float32', pixelCount),
+        summits: {
+          ids: importGraphBuffer(graph, 'ids', ids, 'uint32', capacity),
+          status: {
+            count: importGraphBuffer(graph, 'count', count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'list-overflow', listOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total', requiredCount, 'uint32', 1)
+          }
+        },
+        summitDrop: importGraphBuffer(graph, 'output-drop', outputDrop, 'float32', capacity),
+        status: options.overflow
+          ? {
+              radiusClamped: importGraphBuffer(
+                graph,
+                'radius-overflow',
+                radiusOverflow,
+                'uint32',
+                1
+              )
+            }
+          : undefined
       },
-      outputDrop: importGraphBuffer(graph, 'output-drop', outputDrop, 'float32', capacity),
-      overflow: options.overflow
-        ? importGraphBuffer(graph, 'radius-overflow', radiusOverflow, 'uint32', 1)
-        : undefined,
       ...options.contributor
     })
   );
   const compiled = graph.compile();
   return {
     async run(settings: GPUTerrainSummitsSettings = options.settings) {
-      settingsBuffer.write(getGPUTerrainSummitsParameterValues(settings));
+      settingsBuffer.write(getGPUTerrainSummitsParameterValues(settings, grid));
       submitGraph(device, compiled, undefined);
       const [listCount] = await readUint32(count, 1);
       return {
@@ -139,17 +161,15 @@ function expectMatchesOracle(
   );
 }
 
-const BASE: GPUTerrainSummitsSettings = {radius: 3, cellSize: [1, 1]};
+const BASE: GPUTerrainSummitsSettings = {radius: 3};
 
 it('GPUTerrainSummits finds Gaussian hill summits and matches the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 44;
   const height = 32;
   const values = createHills(width, height, HILLS);
-  const settings = {radius: 4, cellSize: [1, 1]} as const;
+  const settings = {radius: 4} as const;
   const fixture = createSummitsFixture(device, {values, width, height, settings});
   const result = await fixture.run();
   const expected = computeTerrainSummits(
@@ -157,7 +177,7 @@ it('GPUTerrainSummits finds Gaussian hill summits and matches the oracle', async
     undefined,
     width,
     height,
-    getGPUTerrainSummitsParameterValues(settings)
+    packSummits(settings, width, height)
   );
   expectMatchesOracle(result, expected);
   // Non-trivial: both hills yield their centre, and nothing else of note.
@@ -172,9 +192,7 @@ it('GPUTerrainSummits finds Gaussian hill summits and matches the oracle', async
 
 it('GPUTerrainSummits keeps the lowest index of a tied plateau and filters by minimum drop', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 16;
   const height = 12;
   const values = new Float32Array(width * height);
@@ -185,18 +203,12 @@ it('GPUTerrainSummits keeps the lowest index of a tied plateau and filters by mi
   }
   // A small bump with a drop of 2 away from the plateau.
   values[9 * width + 13] = 2;
-  const settings = {radius: 2, cellSize: [1, 1]} as const;
+  const settings = {radius: 2} as const;
   const fixture = createSummitsFixture(device, {values, width, height, settings});
   const result = await fixture.run();
   expectMatchesOracle(
     result,
-    computeTerrainSummits(
-      values,
-      undefined,
-      width,
-      height,
-      getGPUTerrainSummitsParameterValues(settings)
-    )
+    computeTerrainSummits(values, undefined, width, height, packSummits(settings, width, height))
   );
   const first = 3 * width + 4;
   expect(result.mask[first]).toBe(1);
@@ -212,22 +224,14 @@ it('GPUTerrainSummits keeps the lowest index of a tied plateau and filters by mi
   expect(filtered.mask[9 * width + 13]).toBe(0);
   expectMatchesOracle(
     filtered,
-    computeTerrainSummits(
-      values,
-      undefined,
-      width,
-      height,
-      getGPUTerrainSummitsParameterValues(strict)
-    )
+    computeTerrainSummits(values, undefined, width, height, packSummits(strict, width, height))
   );
   fixture.destroy();
 });
 
 it('GPUTerrainSummits matches the oracle on tie-heavy noise', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   for (const [seed, levels, radius] of [
@@ -236,7 +240,7 @@ it('GPUTerrainSummits matches the oracle on tie-heavy noise', async () => {
     [3, 25, 2.5]
   ] as const) {
     const values = createNoise(width, height, levels, seed);
-    const settings = {radius, cellSize: [1, 1]} as const;
+    const settings = {radius} as const;
     for (const incompleteNeighborhood of ['reject', 'ignore'] as const) {
       const fixture = createSummitsFixture(device, {
         values,
@@ -251,7 +255,7 @@ it('GPUTerrainSummits matches the oracle on tie-heavy noise', async () => {
         undefined,
         width,
         height,
-        getGPUTerrainSummitsParameterValues(settings),
+        packSummits(settings, width, height),
         {incompleteNeighborhood}
       );
       expect(expected.ids.length).toBeGreaterThan(3);
@@ -263,16 +267,14 @@ it('GPUTerrainSummits matches the oracle on tie-heavy noise', async () => {
 
 it('GPUTerrainSummits rejects or ignores grid edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 20;
   const height = 16;
   const values = createNoise(width, height, 50, 7);
   // Raise the corner and an edge pixel so they win their discs.
   values[0] = 1000;
   values[5 * width + width - 1] = 900;
-  const parameters = getGPUTerrainSummitsParameterValues(BASE);
+  const parameters = packSummits(BASE, width, height);
   const reject = createSummitsFixture(device, {values, width, height, settings: BASE});
   const rejected = await reject.run();
   expect(rejected.mask[0]).toBe(0);
@@ -304,9 +306,7 @@ it('GPUTerrainSummits rejects or ignores grid edges', async () => {
 
 it('GPUTerrainSummits never lets nodata bleed into a summit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 24;
   const height = 20;
   const values = Float32Array.from({length: width * height}, (_, index) => {
@@ -324,7 +324,7 @@ it('GPUTerrainSummits never lets nodata bleed into a summit', async () => {
     values[row * width + column] = sentinel;
     validity[row * width + column] = 0;
   }
-  const parameters = getGPUTerrainSummitsParameterValues(BASE);
+  const parameters = packSummits(BASE, width, height);
   const summit = 8 * width + 8;
 
   const reject = createSummitsFixture(device, {values, validity, width, height, settings: BASE});
@@ -357,9 +357,7 @@ it('GPUTerrainSummits never lets nodata bleed into a summit', async () => {
 
 it('GPUTerrainSummits fills compact output in ascending order and reports capacity overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 37;
   const height = 29;
   const values = createNoise(width, height, 1000, 11);
@@ -368,7 +366,7 @@ it('GPUTerrainSummits fills compact output in ascending order and reports capaci
     undefined,
     width,
     height,
-    getGPUTerrainSummitsParameterValues(BASE)
+    packSummits(BASE, width, height)
   );
   expect(expected.ids.length).toBeGreaterThan(6);
   expect([...expected.ids].sort((a, b) => a - b)).toEqual(expected.ids);
@@ -401,9 +399,7 @@ it('GPUTerrainSummits fills compact output in ascending order and reports capaci
 
 it('GPUTerrainSummits clamps the radius to maximumRadiusPixels and raises overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 40;
   const height = 30;
   const values = createNoise(width, height, 1000, 5);
@@ -411,7 +407,7 @@ it('GPUTerrainSummits clamps the radius to maximumRadiusPixels and raises overfl
     values,
     width,
     height,
-    settings: {radius: 3, cellSize: [1, 1]},
+    settings: {radius: 3},
     overflow: true,
     contributor: {maximumRadiusPixels: 4}
   });
@@ -425,11 +421,11 @@ it('GPUTerrainSummits clamps the radius to maximumRadiusPixels and raises overfl
       undefined,
       width,
       height,
-      getGPUTerrainSummitsParameterValues({radius: 3, cellSize: [1, 1]}),
+      packSummits({radius: 3}, width, height),
       options
     )
   );
-  const clamped = await fixture.run({radius: 7, cellSize: [1, 1]});
+  const clamped = await fixture.run({radius: 7});
   expect(clamped.radiusOverflow).toBe(1);
   // Clamped to radius 4: identical to an in-range request of 4.
   const reference = computeTerrainSummits(
@@ -437,12 +433,12 @@ it('GPUTerrainSummits clamps the radius to maximumRadiusPixels and raises overfl
     undefined,
     width,
     height,
-    getGPUTerrainSummitsParameterValues({radius: 4, cellSize: [1, 1]}),
+    packSummits({radius: 4}, width, height),
     options
   );
   expectMatchesOracle(clamped, {...reference, overflow: 1});
   expect(reference.ids.length).toBeGreaterThan(0);
-  const back = await fixture.run({radius: 4, cellSize: [1, 1]});
+  const back = await fixture.run({radius: 4});
   expect(back.radiusOverflow).toBe(0);
   fixture.destroy();
 });
@@ -455,25 +451,33 @@ it('GPUTerrainSummits follows per-row cell sizes in web-mercator and geographic 
   const width = 40;
   const height = 40;
   const values = createNoise(width, height, 100000, 21);
+  // Grids whose rows sit near normalized Web Mercator y 0.3 (54.7 degrees) and latitude 70.
   const cases = [
     {
       cellSizeMode: 'web-mercator' as const,
-      settings: {radius: 70, cellSize: [20, 20], northEdge: 0.3, southEdge: 0.45} as const
+      settings: {radius: 70},
+      grid: makeGPURasterMetadata({
+        width,
+        height,
+        cellSize: 20,
+        origin: [0, getOracleWebMercatorY(0.3)]
+      })
     },
     {
       cellSizeMode: 'geographic' as const,
-      settings: {radius: 90, cellSize: [0.0003, 0.0003], northEdge: 70, southEdge: 50} as const
+      settings: {radius: 90},
+      grid: makeGPURasterMetadata({width, height, cellSize: 0.0003, origin: [0, 70]})
     }
   ];
-  for (const {cellSizeMode, settings} of cases) {
-    const parameters = getGPUTerrainSummitsParameterValues(settings);
+  for (const {cellSizeMode, settings, grid} of cases) {
+    const parameters = getGPUTerrainSummitsParameterValues(settings, grid);
     const run = (override: Partial<GPUTerrainSummitsSettings> = {}) =>
       computeTerrainSummits(
         values,
         undefined,
         width,
         height,
-        getGPUTerrainSummitsParameterValues({...settings, ...override}),
+        getGPUTerrainSummitsParameterValues({...settings, ...override}, grid),
         {cellSizeMode, incompleteNeighborhood: 'ignore'}
       );
     const expected = run();
@@ -489,6 +493,7 @@ it('GPUTerrainSummits follows per-row cell sizes in web-mercator and geographic 
       values,
       width,
       height,
+      grid,
       settings,
       contributor: {cellSizeMode, incompleteNeighborhood: 'ignore'}
     });
@@ -502,24 +507,92 @@ it('GPUTerrainSummits follows per-row cell sizes in web-mercator and geographic 
 });
 
 it('getGPUTerrainSummitsParameterValues packs and validates settings', () => {
+  const grid = makeGPURasterMetadata({width: 4, height: 4, cellSize: [3, 5], origin: [0, 25]});
   expect(
-    Array.from(
-      getGPUTerrainSummitsParameterValues({
-        radius: 4,
-        minimumDrop: 2,
-        cellSize: [3, 5],
-        northEdge: 0.25,
-        southEdge: 0.5
-      })
-    )
-  ).toEqual([4, 2, 3, 5, 0.25, 0.5, 0, 0]);
-  expect(() => getGPUTerrainSummitsParameterValues({radius: 0, cellSize: [1, 1]})).toThrow(
-    /radius/
+    Array.from(getGPUTerrainSummitsParameterValues({radius: 4, minimumDrop: 2}, grid))
+  ).toEqual([4, 2, 3, 5, 25, 5, 0, 0]);
+  const unit = makeGPURasterMetadata({width: 1, height: 1});
+  expect(() => getGPUTerrainSummitsParameterValues({radius: 0}, unit)).toThrow(/radius/);
+  expect(() => getGPUTerrainSummitsParameterValues({radius: 1, minimumDrop: -1}, unit)).toThrow(
+    /minimumDrop/
   );
   expect(() =>
-    getGPUTerrainSummitsParameterValues({radius: 1, minimumDrop: -1, cellSize: [1, 1]})
-  ).toThrow(/minimumDrop/);
-  expect(() => getGPUTerrainSummitsParameterValues({radius: 1, cellSize: [1, 0]})).toThrow(
-    /cell size/
-  );
+    getGPUTerrainSummitsParameterValues(
+      {radius: 1},
+      makeGPURasterMetadata({width: 1, height: 1, cellSize: [1, 0]})
+    )
+  ).toThrow(/cell size/);
+});
+
+it('GPUTerrainSummits range search is bit-identical to the previous full disc scan', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const width = 47;
+  const height = 41;
+  const pixelCount = width * height;
+  const floatMaximum = 3.4028234663852886e38;
+  const makeCase = (label: string, fill: (pixel: number) => number, invalidEvery: number) => {
+    const values = new Float32Array(pixelCount);
+    const validity = new Uint32Array(pixelCount).fill(1);
+    for (let pixel = 0; pixel < pixelCount; pixel++) {
+      values[pixel] = fill(pixel);
+      if (invalidEvery > 0 && (pixel * 2654435761) % invalidEvery === 0) {
+        validity[pixel] = 0;
+        values[pixel] = 1e9;
+      }
+    }
+    return {label, values, validity: invalidEvery > 0 ? validity : undefined};
+  };
+  const cases = [
+    makeCase('noise', pixel => createNoise(width, height, 1000, 5)[pixel], 0),
+    makeCase('ties', pixel => createNoise(width, height, 3, 6)[pixel], 0),
+    makeCase('ties nodata', pixel => createNoise(width, height, 4, 7)[pixel], 37),
+    makeCase(
+      'extremes',
+      pixel => (pixel % 5 === 0 ? floatMaximum : pixel % 7 === 0 ? -floatMaximum : 1),
+      0
+    ),
+    makeCase('plateau', () => 2, 0)
+  ];
+  for (const testCase of cases) {
+    for (const incompleteNeighborhood of ['reject', 'ignore'] as const) {
+      for (const [radius, maximumRadiusPixels] of [
+        [3.3, 16],
+        [9, 16],
+        [40, 12] // clamped
+      ]) {
+        const settings = {radius, minimumDrop: 0.25};
+        const fixture = createSummitsFixture(device, {
+          values: testCase.values,
+          validity: testCase.validity,
+          width,
+          height,
+          settings,
+          overflow: true,
+          contributor: {incompleteNeighborhood, maximumRadiusPixels}
+        });
+        const result = await fixture.run();
+        const expected = computeSummitsPreviousKernel({
+          values: testCase.values,
+          validity: testCase.validity,
+          width,
+          height,
+          settings: packSummits(settings, width, height),
+          maximumRadiusPixels,
+          incompleteNeighborhood
+        });
+        const label = `${testCase.label} ${incompleteNeighborhood} r${radius}`;
+        expect(result.mask, label).toEqual(expected.mask);
+        expect(result.radiusOverflow, label).toBe(expected.radiusClamped);
+        result.drop.forEach((value, pixel) => {
+          expect(
+            Object.is(value, Math.fround(expected.drop[pixel])) ||
+              (Number.isNaN(value) && Number.isNaN(expected.drop[pixel])),
+            `${label} ${pixel}`
+          ).toBe(true);
+        });
+        fixture.destroy();
+      }
+    }
+  }
 });

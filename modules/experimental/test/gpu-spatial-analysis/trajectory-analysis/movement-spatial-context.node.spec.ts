@@ -16,6 +16,7 @@ import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   ENCOUNTER_REACH_ORACLE_CASES,
   GEODESIC_ORACLE_CASES,
+  GEODESIC_ORACLE_TOLERANCES,
   getCentralAngle,
   getEncounterMaximumDistance,
   getGreatCircleDistance,
@@ -36,13 +37,17 @@ function createGraph() {
 it('binary64 great-circle oracle functions match pyproj on the mean-radius sphere', () => {
   for (const testCase of GEODESIC_ORACLE_CASES) {
     const distance = getGreatCircleDistance(testCase.a, testCase.b);
-    expect(Math.abs(distance - testCase.distance)).toBeLessThan(1e-6 * testCase.distance);
+    expect(Math.abs(distance - testCase.distance)).toBeLessThan(
+      GEODESIC_ORACLE_TOLERANCES.distanceRelative * testCase.distance
+    );
     const bearing = getInitialBearingDegrees(testCase.a, testCase.b);
-    expect(Math.abs(bearing - testCase.bearingDegrees)).toBeLessThan(1e-9);
+    expect(Math.abs(bearing - testCase.bearingDegrees)).toBeLessThan(
+      GEODESIC_ORACLE_TOLERANCES.bearingDegrees
+    );
     for (const point of testCase.points) {
       const [longitude, latitude] = interpolateGreatCircle(testCase.a, testCase.b, point.fraction);
-      expect(Math.abs(longitude - point.lon)).toBeLessThan(1e-9);
-      expect(Math.abs(latitude - point.lat)).toBeLessThan(1e-9);
+      expect(Math.abs(longitude - point.lon)).toBeLessThan(GEODESIC_ORACLE_TOLERANCES.pointDegrees);
+      expect(Math.abs(latitude - point.lat)).toBeLessThan(GEODESIC_ORACLE_TOLERANCES.pointDegrees);
     }
     // Central angle times the radius is the distance by construction.
     expect(getCentralAngle(testCase.a, testCase.b) * 6371008.8).toBeCloseTo(distance, 6);
@@ -67,8 +72,10 @@ it('GPUTrajectoryMetrics accepts a great-circle context and rejects other geogra
     positions: createTransientView(graph, unique('positions'), 'float32x2', 8),
     timestamps: createTransientView(graph, unique('timestamps'), 'float32', 8),
     trackOffsets: createTransientView(graph, unique('offsets'), 'uint32', 3),
-    trackLengths: createTransientView(graph, unique('lengths'), 'float32', 2),
-    stepHeadings: createTransientView(graph, unique('headings'), 'float32', 8)
+    output: {
+      trackLengths: createTransientView(graph, unique('lengths'), 'float32', 2),
+      stepHeadings: createTransientView(graph, unique('headings'), 'float32', 8)
+    }
   };
   const metrics = new GPUTrajectoryMetrics({...props, spatialContext: GREAT_CIRCLE});
   expect(metrics.spatialContext).toEqual(GREAT_CIRCLE);
@@ -93,7 +100,7 @@ it('GPUTrajectoryMetrics accepts a great-circle context and rejects other geogra
         ...props,
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal'}
       })
-  ).toThrow(/ellipsoidal/);
+  ).toThrow(/great-circle metric/);
   expect(
     () =>
       new GPUTrajectoryMetrics({...props, spatialContext: {...GREAT_CIRCLE, units: 'kilometers'}})
@@ -118,8 +125,8 @@ it('GPUTrajectoryResample and GPUTrajectoryPlayhead accept a great-circle contex
     trackOffsets,
     spacing: 'arc-length',
     sampleCount: 4,
-    samples: createTransientView(graph, unique('samples'), 'float32x2', 8),
-    spatialContext: GREAT_CIRCLE
+    spatialContext: GREAT_CIRCLE,
+    output: {samples: createTransientView(graph, unique('samples'), 'float32x2', 8)}
   });
   expect(resample.spatialContext).toEqual(GREAT_CIRCLE);
   expect(resample.getCommandNodes(graph).map(node => node.id)).toContain(
@@ -130,9 +137,11 @@ it('GPUTrajectoryResample and GPUTrajectoryPlayhead accept a great-circle contex
     timestamps,
     trackOffsets,
     parameters: createTransientView(graph, unique('parameters'), 'float32', 4),
-    currentPositions: createTransientView(graph, unique('current'), 'float32x2', 2),
-    headings: createTransientView(graph, unique('headings'), 'float32', 2),
-    spatialContext: GREAT_CIRCLE
+    spatialContext: GREAT_CIRCLE,
+    output: {
+      currentPositions: createTransientView(graph, unique('current'), 'float32x2', 2),
+      headings: createTransientView(graph, unique('headings'), 'float32', 2)
+    }
   });
   expect(playhead.spatialContext).toEqual(GREAT_CIRCLE);
   expect(playhead.getCommandNodes(graph).length).toBeGreaterThan(1);
@@ -143,8 +152,8 @@ it('GPUTrajectoryResample and GPUTrajectoryPlayhead accept a great-circle contex
         timestamps,
         trackOffsets,
         parameters: createTransientView(graph, unique('parameters'), 'float32', 4),
-        currentPositions: createTransientView(graph, unique('current'), 'float32x2', 2),
-        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+        output: {currentPositions: createTransientView(graph, unique('current'), 'float32x2', 2)}
       })
   ).toThrow(/great-circle/);
 });
@@ -163,14 +172,13 @@ it('GPUTrajectoryEncounters derives a conservative great-circle search distance'
     cellSize: 2,
     bounds: [-180, -60, 180, 60] as [number, number, number, number],
     hitCapacity: 32,
-    pairs: {
-      candidateOverflow: view('uint32', 1),
-      output: {
+    output: {
+      pairs: {
         ids: view('uint32', 8),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1)
+        minimumDistances: view('float32', 8),
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
       },
-      minimumDistances: view('float32', 8)
+      status: {candidateOverflow: view('uint32', 1)}
     }
   };
   const planar = new GPUTrajectoryEncounters({
@@ -240,20 +248,25 @@ it('planar-only movement operators reject longitude-latitude contexts', () => {
     length: number
   ) => createTransientView(graph, unique('view'), format, length);
   const zoneProps = {
-    positions: view('float32x2', 8),
-    timestamps: view('float32', 8),
-    trackOffsets: view('uint32', 3),
-    edgeStarts: view('float32x2', 4),
-    edgeEnds: view('float32x2', 4),
-    edgeZones: view('uint32', 4),
-    zoneCount: 2,
+    tracks: {
+      kind: 'trajectories' as const,
+      positions: view('float32x2', 8),
+      timestamps: view('float32', 8),
+      trackOffsets: view('uint32', 3)
+    },
+    zones: {
+      kind: 'polygons' as const,
+      positions: view('float32x2', 8),
+      featureOffsets: view('uint32', 3),
+      polygonOffsets: view('uint32', 3),
+      ringOffsets: view('uint32', 3)
+    },
     candidateCapacity: 16,
-    maxEventsPerTrack: 4,
-    events: {
-      output: {
+    trackEventCapacity: 4,
+    output: {
+      events: {
         ids: view('uint32', 8),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1)
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
       }
     }
   };
@@ -264,11 +277,14 @@ it('planar-only movement operators reject longitude-latitude contexts', () => {
   );
 
   const similarityProps = {
-    positionsA: view('float32x2', 6),
-    offsetsA: view('uint32', 3),
+    linesA: {
+      kind: 'lines' as const,
+      positions: view('float32x2', 6),
+      lineOffsets: view('uint32', 3)
+    },
     pairA: view('uint32', 2),
     pairB: view('uint32', 2),
-    hausdorff: view('float32', 2)
+    output: {hausdorff: view('float32', 2)}
   };
   expect(new GPUTrackSimilarity(similarityProps).spatialContext).toEqual(PLANAR);
   // Track similarity gained a great-circle path (unit E7); zone events stay planar.

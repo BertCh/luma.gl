@@ -27,6 +27,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const LADDER_CAPACITY = 4;
 
@@ -156,7 +157,7 @@ const CASES = [
 for (const {name, ...settings} of CASES) {
   it(`GWR grid ${name} agrees with the scan on clustered, masked rows`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const scene = createScene(1500);
     const scan = await fit(device, scene, false, settings);
     // A grid finer than the cluster and a coarse one: both must agree with the scan.

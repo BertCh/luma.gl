@@ -83,7 +83,7 @@ it('the keyed Feistel permutation is a bijection for every domain size and diffe
 it('getGPUPermutationParameterValues packs the seed words, count and level bits', () => {
   const values = getGPUPermutationParameterValues({
     seed: 2 ** 40 + 5,
-    permutations: 999,
+    permutationCount: 999,
     significanceLevel: 0.01
   });
   expect(values.length).toBe(GPU_PERMUTATION_PARAMETER_LENGTH);
@@ -91,8 +91,8 @@ it('getGPUPermutationParameterValues packs the seed words, count and level bits'
   expect(values[1]).toBe(256);
   expect(values[2]).toBe(999);
   expect(new Float32Array(values.buffer)[3]).toBe(Math.fround(0.01));
-  expect(() => getGPUPermutationParameterValues({seed: -1, permutations: 9})).toThrow(/seed/);
-  expect(() => getGPUPermutationParameterValues({seed: 1, permutations: 0})).toThrow(
-    /permutations/
+  expect(() => getGPUPermutationParameterValues({seed: -1, permutationCount: 9})).toThrow(/seed/);
+  expect(() => getGPUPermutationParameterValues({seed: 1, permutationCount: 0})).toThrow(
+    /permutationCount/
   );
 });

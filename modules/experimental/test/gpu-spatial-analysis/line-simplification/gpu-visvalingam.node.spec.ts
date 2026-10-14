@@ -56,7 +56,7 @@ it('Visvalingam rounds stay within 1 percent of simplify_coords_vw on a 300-vert
 });
 
 it('Visvalingam round cap leaves undecided rows at +Infinity (superset)', () => {
-  const scene = VISVALINGAM_REFERENCE_SCENES.walk300;
+  const scene = VISVALINGAM_REFERENCE_SCENES['walk300'];
   const positions = Float32Array.from(scene.positions);
   const capped = computeVisvalingamImportance(positions, Uint32Array.of(0, 300), 3, 2);
   expect(capped.converged).toBe(false);
@@ -77,7 +77,7 @@ it('GPULineSimplification validates Visvalingam options', async () => {
   const create = (overrides: Record<string, unknown>) =>
     new GPULineSimplification({
       positions: view('float32x2', 5),
-      trackOffsets: view('uint32', 2),
+      lineOffsets: view('uint32', 2),
       importance: view('float32', 5),
       method: 'visvalingam',
       ...overrides
@@ -88,8 +88,8 @@ it('GPULineSimplification validates Visvalingam options', async () => {
   expect(() => create({neighborhoodRadius: 1.5})).toThrow(/neighborhoodRadius/);
   expect(() => create({metric: 'time-ratio'})).toThrow(/visvalingam/);
   expect(() => create({method: 'other'})).toThrow(/method/);
-  expect(create({}).maximumRounds).toBe(256);
-  expect(create({maximumRounds: 8}).maximumRounds).toBe(8);
+  expect(create({}).maximumIterations).toBe(256);
+  expect(create({maximumIterations: 8}).maximumIterations).toBe(8);
   const nodes = create({}).getCommandNodes(graph);
   expect(nodes.length).toBeGreaterThan(256 * 4);
 });

@@ -29,6 +29,7 @@ import {
   POLYGON_FEATURES,
   POLYGON_POINTS
 } from './spatial-join-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type JoinBufferName =
   | 'points'
@@ -83,80 +84,92 @@ function createJoinFixture(
     matchTotal: createOutputBuffer(device, 1)
   };
   const props: GPUPointInPolygonJoinProps = {
-    points: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', pointCount),
-    sourceIds: importGraphBuffer(graph, 'source-ids', buffers.sourceIds, 'uint32', pointCount),
-    polygonPositions: importGraphBuffer(
-      graph,
-      'polygon-positions',
-      buffers.polygonPositions,
-      'float32x2',
-      arrays.polygonPositions.length / 2
-    ),
-    featureOffsets: importGraphBuffer(
-      graph,
-      'feature-offsets',
-      buffers.featureOffsets,
-      'uint32',
-      arrays.featureOffsets.length
-    ),
-    polygonOffsets: importGraphBuffer(
-      graph,
-      'polygon-offsets',
-      buffers.polygonOffsets,
-      'uint32',
-      arrays.polygonOffsets.length
-    ),
-    ringOffsets: importGraphBuffer(
-      graph,
-      'ring-offsets',
-      buffers.ringOffsets,
-      'uint32',
-      arrays.ringOffsets.length
-    ),
-    featureIds: importGraphBuffer(graph, 'feature-ids', buffers.featureIds, 'uint32', featureCount),
+    points: {
+      kind: 'points',
+      positions: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', pointCount),
+      sourceIds: importGraphBuffer(graph, 'source-ids', buffers.sourceIds, 'uint32', pointCount)
+    },
+    polygons: {
+      kind: 'polygons',
+      positions: importGraphBuffer(
+        graph,
+        'polygon-positions',
+        buffers.polygonPositions,
+        'float32x2',
+        arrays.polygonPositions.length / 2
+      ),
+      featureOffsets: importGraphBuffer(
+        graph,
+        'feature-offsets',
+        buffers.featureOffsets,
+        'uint32',
+        arrays.featureOffsets.length
+      ),
+      polygonOffsets: importGraphBuffer(
+        graph,
+        'polygon-offsets',
+        buffers.polygonOffsets,
+        'uint32',
+        arrays.polygonOffsets.length
+      ),
+      ringOffsets: importGraphBuffer(
+        graph,
+        'ring-offsets',
+        buffers.ringOffsets,
+        'uint32',
+        arrays.ringOffsets.length
+      ),
+      sourceIds: importGraphBuffer(graph, 'feature-ids', buffers.featureIds, 'uint32', featureCount)
+    },
     candidateCapacity: 16,
     // These specs pin the closed rule (smallest row wins); the half-open default has its own spec.
     boundaryRule: 'closed',
-    pointFeatureIds: importGraphBuffer(
-      graph,
-      'point-feature-ids',
-      buffers.pointFeatureIds,
-      'uint32',
-      pointCount
-    ),
-    featureCounts: importGraphBuffer(
-      graph,
-      'feature-counts',
-      buffers.featureCounts,
-      'uint32',
-      featureCount
-    ),
-    overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-    candidateCount: importGraphBuffer(
-      graph,
-      'candidate-count',
-      buffers.candidateCount,
-      'uint32',
-      1
-    ),
-    uncertainCount: importGraphBuffer(
-      graph,
-      'uncertain-count',
-      buffers.uncertainCount,
-      'uint32',
-      1
-    ),
-    matches: {
-      ids: importGraphBuffer(
+    output: {
+      pointFeatureIds: importGraphBuffer(
         graph,
-        'match-ids',
-        buffers.matchIds,
+        'point-feature-ids',
+        buffers.pointFeatureIds,
         'uint32',
-        matchCapacity ?? pointCount
+        pointCount
       ),
-      count: importGraphBuffer(graph, 'match-count', buffers.matchCount, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'match-overflow', buffers.matchOverflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'match-total', buffers.matchTotal, 'uint32', 1)
+      featureCounts: importGraphBuffer(
+        graph,
+        'feature-counts',
+        buffers.featureCounts,
+        'uint32',
+        featureCount
+      ),
+      matches: {
+        ids: importGraphBuffer(
+          graph,
+          'match-ids',
+          buffers.matchIds,
+          'uint32',
+          matchCapacity ?? pointCount
+        ),
+        status: {
+          count: importGraphBuffer(graph, 'match-count', buffers.matchCount, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'match-overflow', buffers.matchOverflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'match-total', buffers.matchTotal, 'uint32', 1)
+        }
+      },
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+        candidateCount: importGraphBuffer(
+          graph,
+          'candidate-count',
+          buffers.candidateCount,
+          'uint32',
+          1
+        ),
+        uncertainCount: importGraphBuffer(
+          graph,
+          'uncertain-count',
+          buffers.uncertainCount,
+          'uint32',
+          1
+        )
+      }
     },
     ...overrides
   };
@@ -171,9 +184,7 @@ function destroyFixture(fixture: JoinFixture): void {
 
 it('GPUPointInPolygonJoin joins points to features and updates per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createJoinFixture(device, POLYGON_POINTS);
   fixture.graph.add(new GPUPointInPolygonJoin(fixture.props));
   const compiled = fixture.graph.compile();
@@ -214,9 +225,7 @@ it('GPUPointInPolygonJoin joins points to features and updates per frame', async
 
 it('GPUPointInPolygonJoin excludes boundary points when requested', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createJoinFixture(device, POLYGON_POINTS, {boundaryRule: 'open'});
   fixture.graph.add(new GPUPointInPolygonJoin(fixture.props));
   const compiled = fixture.graph.compile();
@@ -229,9 +238,7 @@ it('GPUPointInPolygonJoin excludes boundary points when requested', async () => 
 
 it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const containing = POLYGON_POINTS.map(point =>
     POLYGON_FEATURES.map((feature, row) =>
       classifyPointInFeature(point, feature) !== 'outside' ? row : -1
@@ -285,9 +292,7 @@ it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async ()
 
 it('GPUPointInPolygonJoin preserves point chunks and matches a random oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createJoinFixture(device, POLYGON_POINTS);
   const firstPoints = createInputBuffer(
     device,
@@ -300,16 +305,21 @@ it('GPUPointInPolygonJoin preserves point chunks and matches a random oracle', a
   graph.add(
     new GPUPointInPolygonJoin({
       ...fixture.props,
-      points: createVectorView('chunked-points', 'float32x2', [
-        importGraphBuffer(graph, 'p0', firstPoints, 'float32x2', 6),
-        importGraphBuffer(graph, 'p1', secondPoints, 'float32x2', 4)
-      ]),
-      pointFeatureIds: createVectorView('chunked-ids', 'uint32', [
-        importGraphBuffer(graph, 'i0', firstIds, 'uint32', 6),
-        importGraphBuffer(graph, 'i1', secondIds, 'uint32', 4)
-      ]),
-      sourceIds: undefined,
-      matches: undefined
+      points: {
+        kind: 'points',
+        positions: createVectorView('chunked-points', 'float32x2', [
+          importGraphBuffer(graph, 'p0', firstPoints, 'float32x2', 6),
+          importGraphBuffer(graph, 'p1', secondPoints, 'float32x2', 4)
+        ])
+      },
+      output: {
+        ...fixture.props.output,
+        pointFeatureIds: createVectorView('chunked-ids', 'uint32', [
+          importGraphBuffer(graph, 'i0', firstIds, 'uint32', 6),
+          importGraphBuffer(graph, 'i1', secondIds, 'uint32', 4)
+        ]),
+        matches: undefined
+      }
     })
   );
   let compiled = graph.compile();
@@ -339,11 +349,13 @@ it('GPUPointInPolygonJoin preserves point chunks and matches a random oracle', a
     const swap = Math.floor(random() * (index + 1));
     [lattice[index], lattice[swap]] = [lattice[swap], lattice[index]];
   }
-  const randomFixture = createJoinFixture(device, lattice, {
-    candidateCapacity: 1024,
-    featureIds: undefined
-  });
-  randomFixture.graph.add(new GPUPointInPolygonJoin(randomFixture.props));
+  const randomFixture = createJoinFixture(device, lattice, {candidateCapacity: 1024});
+  randomFixture.graph.add(
+    new GPUPointInPolygonJoin({
+      ...randomFixture.props,
+      polygons: {...randomFixture.props.polygons, sourceIds: undefined}
+    })
+  );
   compiled = randomFixture.graph.compile();
   submitGraph(device, compiled, undefined);
   const oracle = joinPointsInPolygons(lattice, POLYGON_FEATURES, true);

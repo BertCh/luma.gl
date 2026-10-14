@@ -17,6 +17,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {flattenLines, type Point} from '../../gpu-spatial-analysis/line-split/line-split-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type NodingResult = {
   nodeCount: number;
@@ -95,28 +96,34 @@ async function runNoding(
       },
       intersectionCapacity: 256,
       tolerance: tolerance.view,
-      pieces: {
-        geometry: {
-          kind: 'lines',
-          positions: piecePositions.view,
-          lineOffsets: pieceOffsets.view
+      output: {
+        pieces: {
+          geometry: {
+            kind: 'lines',
+            positions: piecePositions.view,
+            lineOffsets: pieceOffsets.view
+          },
+          sourceIds: pieceLines.view,
+          status: {count: pieceCount.view, overflow: pieceOverflow.view}
         },
-        sourceIds: pieceLines.view,
-        status: {count: pieceCount.view, overflow: pieceOverflow.view}
-      },
-      nodes: {
-        positions: nodePositions.view,
-        count: nodeCount.view,
-        requiredCount: totalNodeCount.view
-      },
-      edges: {fromNodes: from.view, toNodes: to.view, lengths: lengths.view},
-      csr: {
-        offsets: offsets.view,
-        neighbors: neighbors.view,
-        weights: weights.view,
-        edgeIds: edgeIds.view
-      },
-      overflow: overflow.view
+        nodes: {
+          positions: nodePositions.view,
+          status: {
+            count: nodeCount.view,
+            requiredCount: totalNodeCount.view
+          }
+        },
+        edges: {fromNodes: from.view, toNodes: to.view, lengths: lengths.view},
+        topology: {
+          offsets: offsets.view,
+          neighbors: neighbors.view,
+          weights: weights.view,
+          edgeIds: edgeIds.view
+        },
+        status: {
+          overflow: overflow.view
+        }
+      }
     })
   );
   let costs: ReturnType<typeof output> | undefined;
@@ -127,11 +134,13 @@ async function runNoding(
     sources.buffer.write(new Uint32Array([options.source]));
     graph.add(
       new GPUNetworkReachability({
-        offsets: offsets.view,
-        neighbors: neighbors.view,
-        weights: weights.view,
-        sources: sources.view,
-        costs: costs.view
+        topology: {
+          offsets: offsets.view,
+          neighbors: neighbors.view,
+          weights: weights.view
+        },
+        startNodes: sources.view,
+        output: {costs: costs.view}
       })
     );
   }
@@ -193,7 +202,7 @@ const GRID: Point[][] = [
 
 it('GPUNetworkNoding#nodes a grid: node and edge counts and CSR symmetry', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runNoding(device, GRID);
   // Nodes: 4 grid crossings, 4 road ends (0,-5) (0,15) (10,-5) (10,15), spur end (20,10).
   expect(result.nodeCount).toBe(9);
@@ -223,7 +232,7 @@ it('GPUNetworkNoding#nodes a grid: node and edge counts and CSR symmetry', async
 
 it('GPUNetworkNoding#snaps nearby end points within the tolerance and routes over the result', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // A path of three roads whose joints are 0.04 apart.
   const lines: Point[][] = [
     [
@@ -253,7 +262,7 @@ it('GPUNetworkNoding#snaps nearby end points within the tolerance and routes ove
 
 it('GPUNetworkNoding#reports node overflow and drops edges at nodes beyond the capacity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runNoding(device, GRID, {nodeCapacity: 5});
   expect(result.totalNodeCount).toBe(9);
   expect(result.nodeCount).toBe(5);
@@ -284,7 +293,7 @@ const UTM_LINES: Point[][] = [
 
 it('GPUNetworkNoding#snaps UTM-scale end points in exact cells relative to the end point origin', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // 0.5 m: origin (499900, 4600000); A's end and B's start both fall in x cell floor(200 / 0.5)
   // = floor(200.25 / 0.5) = 400 and y cell 0, so they share one node: 6 end points, 5 nodes.
   const snapped = await runNoding(device, UTM_LINES, {tolerance: 0.5});

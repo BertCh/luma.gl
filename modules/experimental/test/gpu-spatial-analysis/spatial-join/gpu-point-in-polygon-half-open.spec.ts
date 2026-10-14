@@ -20,6 +20,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {HALF_OPEN_SCENES} from './half-open-fixtures';
 import {buildPolygonFeatureArrays, type OraclePolygonFeature} from './spatial-join-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Stable IDs are `100 + original row`, so assignments can be compared after reordering rows. */
 const ID_BASE = 100;
@@ -50,59 +51,69 @@ async function joinWithRule(
   const overflow = output(1);
   graph.add(
     new GPUPointInPolygonJoin({
-      points: importGraphBuffer(
-        graph,
-        'points',
-        input(Float32Array.from(points.flat())),
-        'float32x2',
-        points.length
-      ),
-      polygonPositions: importGraphBuffer(
-        graph,
-        'polygon-positions',
-        input(arrays.polygonPositions),
-        'float32x2',
-        arrays.polygonPositions.length / 2
-      ),
-      featureOffsets: importGraphBuffer(
-        graph,
-        'feature-offsets',
-        input(arrays.featureOffsets),
-        'uint32',
-        arrays.featureOffsets.length
-      ),
-      polygonOffsets: importGraphBuffer(
-        graph,
-        'polygon-offsets',
-        input(arrays.polygonOffsets),
-        'uint32',
-        arrays.polygonOffsets.length
-      ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        input(arrays.ringOffsets),
-        'uint32',
-        arrays.ringOffsets.length
-      ),
-      featureIds: importGraphBuffer(
-        graph,
-        'feature-ids',
-        input(Uint32Array.from(originalRows.map(row => ID_BASE + row))),
-        'uint32',
-        features.length
-      ),
+      points: {
+        kind: 'points',
+        positions: importGraphBuffer(
+          graph,
+          'points',
+          input(Float32Array.from(points.flat())),
+          'float32x2',
+          points.length
+        )
+      },
+      polygons: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
+          graph,
+          'polygon-positions',
+          input(arrays.polygonPositions),
+          'float32x2',
+          arrays.polygonPositions.length / 2
+        ),
+        featureOffsets: importGraphBuffer(
+          graph,
+          'feature-offsets',
+          input(arrays.featureOffsets),
+          'uint32',
+          arrays.featureOffsets.length
+        ),
+        polygonOffsets: importGraphBuffer(
+          graph,
+          'polygon-offsets',
+          input(arrays.polygonOffsets),
+          'uint32',
+          arrays.polygonOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
+          graph,
+          'ring-offsets',
+          input(arrays.ringOffsets),
+          'uint32',
+          arrays.ringOffsets.length
+        ),
+        sourceIds: importGraphBuffer(
+          graph,
+          'feature-ids',
+          input(Uint32Array.from(originalRows.map(row => ID_BASE + row))),
+          'uint32',
+          features.length
+        )
+      },
       candidateCapacity: points.length * features.length,
       boundaryRule,
-      pointFeatureIds: importGraphBuffer(
-        graph,
-        'point-feature-ids',
-        pointFeatureIds,
-        'uint32',
-        points.length
-      ),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-      uncertainCount: importGraphBuffer(graph, 'uncertain-count', uncertainCount, 'uint32', 1)
+      output: {
+        pointFeatureIds: importGraphBuffer(
+          graph,
+          'point-feature-ids',
+          pointFeatureIds,
+          'uint32',
+          points.length
+        ),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          uncertainCount: importGraphBuffer(graph, 'uncertain-count', uncertainCount, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -137,9 +148,7 @@ function getPermutations(count: number): number[][] {
 for (const [name, scene] of Object.entries(HALF_OPEN_SCENES)) {
   it(`GPUPointInPolygonJoin half-open rule assigns boundary points once, independent of feature order (${name})`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     for (const permutation of getPermutations(scene.features.length)) {
       const features = permutation.map(row => scene.features[row]);
       // The default rule is the half-open one.
@@ -160,9 +169,7 @@ for (const [name, scene] of Object.entries(HALF_OPEN_SCENES)) {
 
 it('GPUPointInPolygonJoin closed rule keeps the smallest row, so a shared edge follows feature order', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {features, points} = HALF_OPEN_SCENES.squares;
   // (2, 1) lies on the edge shared by squares 0 and 1.
   const sharedEdge = points.findIndex(([x, y]) => x === 2 && y === 1);
@@ -183,9 +190,7 @@ it('GPUPointInPolygonJoin closed rule keeps the smallest row, so a shared edge f
 
 it('GPUPointInPolygonJoin open rule leaves every boundary point unassigned', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {features, points, owners} = HALF_OPEN_SCENES.squares;
   const {ids} = await joinWithRule(device, features, [0, 1, 2, 3], points, 'open');
   // Strictly interior probe points (1, 1) and (3, 3) keep their feature; boundary points do not.

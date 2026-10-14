@@ -4,12 +4,15 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUSpatialLagImpacts} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-lag-impacts';
 import {
   GPUSpatialWeightsTraces,
   type GPUSpatialWeightsTracesProps
 } from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-weights-traces';
 import {
+  GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
+  getGPUSpatialWeightsTracesParameterValues,
   getSpatialLagImpactsFromTraces,
   getSpatialLogDeterminantFromTraces,
   getSpatialLogDeterminantTruncationBound,
@@ -22,7 +25,10 @@ import {
   getSpatialWeightsTracesOnCPU,
   getSpatialWeightsTracesProbeValue
 } from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-weights-traces-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {
   createNearestNeighborScene,
   multiply,
@@ -88,8 +94,10 @@ it('GPUSpatialWeightsTraces validates its inputs and declares its kernels', () =
   expectThrows({maximumPower: 2.5}, /maximumPower/);
   expectThrows({mode: 'dense' as 'exact'}, /mode/);
   expectThrows({probeCount: 0}, /probeCount/);
-  expectThrows({seed: -1}, /seed/);
-  expectThrows({seed: 2 ** 32}, /seed/);
+  expectThrows({parameters: view('uint32', 0)}, /parameters/);
+  expect(() => getGPUSpatialWeightsTracesParameterValues({seed: -1})).toThrow(/seed/);
+  expect(() => getGPUSpatialWeightsTracesParameterValues({seed: 2 ** 32})).toThrow(/seed/);
+  expect(Array.from(getGPUSpatialWeightsTracesParameterValues({seed: 7}))).toEqual([7]);
   expectThrows({tileRowCount: 0}, /tileRowCount/);
   expectThrows(
     {output: {powerTraces: view('float32', 4), powerSums: view('float32', 5)}},
@@ -126,7 +134,7 @@ it('GPUSpatialWeightsTraces validates its inputs and declares its kernels', () =
       output: {
         powerTraces: view('float32', 5),
         powerSums: view('float32', 5),
-        approximation: view('uint32', 0)
+        status: {approximation: view('uint32', 0)}
       }
     },
     /approximation/
@@ -187,7 +195,7 @@ it('GPUSpatialWeightsTraces validates its inputs and declares its kernels', () =
         powerTraces: view('float32', 1),
         powerSums: view('float32', 1),
         gramTraces: view('float32', 4),
-        approximation: view('uint32', 1)
+        status: {approximation: view('uint32', 1)}
       }
     })
   )
@@ -198,6 +206,76 @@ it('GPUSpatialWeightsTraces validates its inputs and declares its kernels', () =
   expect(withGram.some(id => id.startsWith('gram-square-'))).toBe(true);
   expect(withGram).toContain('approximation');
   device.destroy();
+});
+
+// Rule 12: the power, the batch and the probe index never reach WGSL text or override constants,
+// so building at N and N + 1 powers or batches must give the same number of pipelines.
+function getTracesPipelineCount(options: {
+  mode: 'exact' | 'stochastic';
+  includeGram: boolean;
+  maximumPower: number;
+  rows: number;
+  probeCount?: number;
+  probeBatchSize?: number;
+}): {pipelines: number; batchCount: number; nodeCount: number} {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `pipelines-view-${serial++}`, format, length);
+  const {rows, maximumPower} = options;
+  const traces = new GPUSpatialWeightsTraces({
+    id: `pipelines-${serial++}`,
+    weights: {
+      offsets: view('uint32', rows + 1),
+      neighbors: view('uint32', rows * 3),
+      weights: view('float32', rows * 3)
+    },
+    maximumPower: options.maximumPower,
+    mode: options.mode,
+    includeGramTraces: options.includeGram,
+    ...(options.probeCount ? {probeCount: options.probeCount} : {}),
+    ...(options.probeBatchSize ? {probeBatchSize: options.probeBatchSize} : {}),
+    output: {
+      powerTraces: view('float32', maximumPower),
+      powerSums: view('float32', maximumPower),
+      ...(options.includeGram ? {gramTraces: view('float32', 4)} : {})
+    }
+  });
+  const nodes = traces.getCommandNodes(graph);
+  const pipelines = getGPUCommandNodePipelineKeys(nodes).size;
+  device.destroy();
+  return {
+    pipelines,
+    batchCount: Math.ceil(traces.probeTotal / traces.batchProbeCount),
+    nodeCount: nodes.length
+  };
+}
+
+it('GPUSpatialWeightsTraces builds the same pipelines at every power and batch count', () => {
+  for (const mode of ['exact', 'stochastic'] as const) {
+    for (const includeGram of [false, true]) {
+      const label = `${mode} gram=${includeGram}`;
+      const options = {mode, includeGram, rows: 20, probeCount: 10, probeBatchSize: 4};
+      // 10 probes in batches of 4: 3 batches with a short last batch.
+      const base = getTracesPipelineCount({...options, maximumPower: 4});
+      expect(base.batchCount, label).toBeGreaterThan(2);
+      expect(getTracesPipelineCount({...options, maximumPower: 5}).pipelines, label).toBe(
+        base.pipelines
+      );
+      expect(getTracesPipelineCount({...options, maximumPower: 9}).pipelines, label).toBe(
+        base.pipelines
+      );
+      // Batch counts B and B + 1 (and a last batch that is full): the pipelines are the same.
+      for (const probeBatchSize of [5, 3, 2, 1]) {
+        const result = getTracesPipelineCount({...options, probeBatchSize, maximumPower: 4});
+        expect(result.pipelines, `${label} batch ${probeBatchSize}`).toBe(base.pipelines);
+      }
+      // More nodes with more batches, same pipelines.
+      expect(
+        getTracesPipelineCount({...options, probeBatchSize: 2, maximumPower: 4}).nodeCount
+      ).toBeGreaterThan(base.nodeCount);
+    }
+  }
 });
 
 it('GPUSpatialLagImpacts validates its inputs and declares one kernel', () => {
@@ -500,4 +578,39 @@ it('WGSL series generators emit Horner evaluations and reject bad arguments', ()
     0
   );
   expect(getSpatialLogDeterminantFromTraces(rho, traces)).toBeCloseTo(direct, 14);
+});
+
+it('GPUSpatialWeightsTraces reads the probe seed per frame (rule 12, A-21)', () => {
+  // The seed is word 0 of `parameters`, copied into each probe batch slot on the GPU; it never
+  // reaches WGSL text, so two graphs with different seed buffers compile identical pipelines.
+  const device = createNullWebGPUDevice();
+  const getKeys = (seed: number) => {
+    const graph = new GPUCommandGraph(device);
+    const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+      createTransientView(graph, `seed-view-${serial++}`, format, length);
+    const parameters = new GPUParameterBuffer(device, {
+      id: `seed-${seed}`,
+      format: 'uint32',
+      length: GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
+      values: getGPUSpatialWeightsTracesParameterValues({seed})
+    }).importToGraph(graph);
+    const nodes = new GPUSpatialWeightsTraces({
+      id: 'seeded',
+      weights: {
+        offsets: view('uint32', 11),
+        neighbors: view('uint32', 30),
+        weights: view('float32', 30)
+      },
+      maximumPower: 4,
+      mode: 'stochastic',
+      probeCount: 16,
+      parameters,
+      output: {powerTraces: view('float32', 4), powerSums: view('float32', 4)}
+    }).getCommandNodes(graph);
+    return [...getGPUCommandNodePipelineKeys(nodes)].sort();
+  };
+  const first = getKeys(5);
+  expect(first.join('\n')).toContain('batchInformation[batchInformationOffset + 2u]');
+  expect(getKeys(6)).toEqual(first);
+  device.destroy();
 });

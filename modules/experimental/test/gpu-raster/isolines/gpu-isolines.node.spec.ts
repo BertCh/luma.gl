@@ -9,8 +9,14 @@ import {
   getGPUIsolinesParameterValues,
   GPU_ISOLINES_PARAMETER_LENGTH
 } from '../../../src/gpu-raster/isolines/isolines-parameters';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {computeIsolinesOnCPU, stitchIsolinesOnCPU, type IsolinesScene} from './isolines-oracle';
+import {
+  computeIsolinesOnCPU,
+  getPolylineVertices,
+  stitchIsolinesOnCPU,
+  type IsolinesScene
+} from './isolines-oracle';
 
 function createRandom(seed: number): () => number {
   let state = seed >>> 0 || 1;
@@ -42,21 +48,28 @@ function createRandomScene(seed: number, width: number, height: number): Isoline
 }
 
 it('getGPUIsolinesParameterValues packs and validates', () => {
-  const values = getGPUIsolinesParameterValues({
-    width: 4,
-    height: 5,
-    levelCount: 3,
-    extent: [10, 20, 18, 30]
-  });
+  const grid = makeGPURasterMetadata({width: 4, height: 5});
+  const values = getGPUIsolinesParameterValues({levelCount: 3, extent: [10, 20, 18, 30]}, grid);
   expect(values.length).toBe(GPU_ISOLINES_PARAMETER_LENGTH);
   expect(Array.from(values)).toEqual([3, 10, 20, 2, 2, 0, 0, 0]);
-  const settings = {width: 4, height: 4, levelCount: 1, extent: [0, 0, 1, 1]} as const;
-  expect(() => getGPUIsolinesParameterValues({...settings, width: 1})).toThrow(/width/);
-  expect(() => getGPUIsolinesParameterValues({...settings, levelCount: -1})).toThrow(/levelCount/);
-  expect(() => getGPUIsolinesParameterValues({...settings, extent: [0, 0, 0, 1]})).toThrow(
+  const settings = {levelCount: 1, extent: [0, 0, 1, 1]} as const;
+  const square = makeGPURasterMetadata({width: 4, height: 4});
+  expect(() =>
+    getGPUIsolinesParameterValues(settings, makeGPURasterMetadata({width: 1, height: 4}))
+  ).toThrow(/width/);
+  expect(() => getGPUIsolinesParameterValues({...settings, levelCount: -1}, square)).toThrow(
+    /levelCount/
+  );
+  expect(() => getGPUIsolinesParameterValues({...settings, extent: [0, 0, 0, 1]}, square)).toThrow(
     /extent/
   );
-  expect(() => getGPUIsolinesParameterValues(settings, new Float32Array(2))).toThrow(/target/);
+  // y-down extent
+  expect(() => getGPUIsolinesParameterValues({...settings, extent: [0, 1, 1, 0]}, square)).toThrow(
+    /extent/
+  );
+  expect(() => getGPUIsolinesParameterValues(settings, square, new Float32Array(2))).toThrow(
+    /target/
+  );
 });
 
 it('GPUIsolines validates views and schedules deterministic nodes', () => {
@@ -71,12 +84,10 @@ it('GPUIsolines validates views and schedules deterministic nodes', () => {
   const output = () => ({
     segments: view('segments', 'float32x4', 40),
     segmentLevels: view('segment-levels', 'uint32', 40),
-    count: view('count', 'uint32', 1),
-    overflow: view('overflow', 'uint32', 1)
+    status: {overflow: view('overflow', 'uint32', 1), count: view('count', 'uint32', 1)}
   });
   const base = {
-    width: 5,
-    height: 4,
+    grid: makeGPURasterMetadata({width: 5, height: 4}),
     values: view('raster', 'float32', 20),
     levels: view('levels', 'float32', 3),
     parameters: view('parameters', 'float32', GPU_ISOLINES_PARAMETER_LENGTH)
@@ -93,15 +104,21 @@ it('GPUIsolines validates views and schedules deterministic nodes', () => {
   const stitched = new GPUIsolines({
     ...base,
     id: 'stitched',
-    output: output(),
-    polylines: {
-      vertices: view('vertices', 'float32x2', 80),
-      polylineOffsets: view('polyline-offsets', 'uint32', 41),
-      polylineLevels: view('polyline-levels', 'uint32', 40),
-      polylineClosed: view('polyline-closed', 'uint32', 40),
-      polylineCount: view('polyline-count', 'uint32', 1),
-      vertexCount: view('vertex-count', 'uint32', 1),
-      overflow: view('polyline-overflow', 'uint32', 1)
+    output: {
+      ...output(),
+      polylines: {
+        vertices: view('vertices', 'float32x2', 80),
+        polylineOffsets: view('polyline-offsets', 'uint32', 41),
+        polylineLevels: view('polyline-levels', 'uint32', 40),
+        polylineClosed: view('polyline-closed', 'uint32', 40),
+        polylineCount: view('polyline-count', 'uint32', 1),
+        vertexCount: view('vertex-count', 'uint32', 1)
+      },
+      status: {
+        count: view('count', 'uint32', 1),
+        overflow: view('overflow', 'uint32', 1),
+        polylineOverflow: view('polyline-overflow', 'uint32', 1)
+      }
     }
   });
   const stitchedNodes = stitched.getCommandNodes(graph).map(node => node.id);
@@ -110,7 +127,14 @@ it('GPUIsolines validates views and schedules deterministic nodes', () => {
   expect(stitchedNodes.filter(id => /^stitched-jump-gate-\d+$/.test(id))).toHaveLength(4);
   expect(new Set(stitchedNodes).size).toBe(stitchedNodes.length);
 
-  expect(() => new GPUIsolines({...base, width: 1, output: output()})).toThrow(/width/);
+  expect(
+    () =>
+      new GPUIsolines({
+        ...base,
+        grid: makeGPURasterMetadata({width: 1, height: 4}),
+        output: output()
+      })
+  ).toThrow(/width/);
   expect(
     () => new GPUIsolines({...base, values: view('small', 'float32', 5), output: output()})
   ).toThrow(/values/);
@@ -128,6 +152,7 @@ it('oracle: every interior segment end has exactly one successor, borders and no
   for (let seed = 1; seed <= 12; seed++) {
     const width = 9 + (seed % 5) * 4;
     const height = 7 + (seed % 3) * 5;
+    // Integer levels (2, 5) hit integer samples exactly: zero-length bridges must keep chains.
     const scene = createRandomScene(seed, width, height);
     const segments = computeIsolinesOnCPU(scene, scene.levels.length);
     expect(segments.length).toBeGreaterThan(0);
@@ -157,7 +182,7 @@ it('oracle: every interior segment end has exactly one successor, borders and no
         cy * width + cx + 1,
         (cy + 1) * width + cx,
         (cy + 1) * width + cx + 1
-      ].some(sample => Number.isNaN(scene.values[sample]));
+      ].some(sample => !Number.isFinite(scene.values[sample]));
     };
     let interior = 0;
     segments.forEach((segment, index) => {
@@ -226,4 +251,65 @@ it('oracle: both saddle types resolve by the centre and orient high to the left'
   expect(direction[0] * towardHigh[1] - direction[1] * towardHigh[0]).toBeGreaterThan(0);
   // Level equal to every corner: all high, nothing emitted (plateau).
   expect(edges(makeCell(1, 1, 1, 1))).toEqual([]);
+});
+
+it('oracle: non-finite corners are nodata, so no NaN vertices or flipped saddles', () => {
+  const makeScene = (corners: number[]): IsolinesScene => ({
+    width: 2,
+    height: 2,
+    // Row-major: row 0 holds v0, v1; row 1 holds v3, v2.
+    values: Float32Array.from([corners[0], corners[1], corners[3], corners[2]]),
+    levels: [1],
+    extent: [0, 0, 2, 2]
+  });
+  for (const corners of [
+    [Infinity, 0, Infinity, 0],
+    [Infinity, 0, -Infinity, 0],
+    [2, -Infinity, 2, 0],
+    [3, 0, 3, Infinity]
+  ]) {
+    expect(computeIsolinesOnCPU(makeScene(corners), 1)).toEqual([]);
+  }
+  // A finite cell next to an infinite one still emits finite vertices.
+  const scene: IsolinesScene = {
+    width: 3,
+    height: 2,
+    values: Float32Array.from([0, 2, Infinity, 0, 2, -Infinity]),
+    levels: [1],
+    extent: [0, 0, 3, 2]
+  };
+  const segments = computeIsolinesOnCPU(scene, 1);
+  expect(segments).toHaveLength(1);
+  expect(segments[0].cell).toBe(0);
+  expect(segments[0].p0.concat(segments[0].p1).every(Number.isFinite)).toBe(true);
+});
+
+it('oracle: zero-length bridges keep chains and polyline vertices have no duplicates', () => {
+  // Integer raster, integer levels: corners sit exactly on levels.
+  const width = 6;
+  const height = 5;
+  const values = new Float32Array(width * height);
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      values[row * width + column] = (column * 2 + row * 3) % 5;
+    }
+  }
+  const scene: IsolinesScene = {width, height, values, levels: [0, 1, 2, 3], extent: [0, 0, 6, 5]};
+  const segments = computeIsolinesOnCPU(scene, 4);
+  const degenerate = segments.filter(
+    segment => segment.p0[0] === segment.p1[0] && segment.p0[1] === segment.p1[1]
+  );
+  expect(degenerate.length).toBeGreaterThan(0);
+  const {polylines} = stitchIsolinesOnCPU(segments);
+  const {vertices, offsets} = getPolylineVertices(polylines, segments);
+  for (let polyline = 0; polyline < polylines.length; polyline++) {
+    for (let vertex = offsets[polyline] + 1; vertex < offsets[polyline + 1]; vertex++) {
+      const same =
+        vertices[2 * vertex] === vertices[2 * vertex - 2] &&
+        vertices[2 * vertex + 1] === vertices[2 * vertex - 1];
+      expect(same, `polyline ${polyline} vertex ${vertex}`).toBe(false);
+    }
+  }
+  // A bridge joins its neighbours into one polyline: more segments than polyline vertices - 1.
+  expect(vertices.length / 2).toBeLessThan(segments.length + polylines.length);
 });

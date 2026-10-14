@@ -8,16 +8,13 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {GPUPairwisePointLinestringNearest} from '../../src/geospatial/gpu-pairwise-point-linestring-nearest';
+import {requireTestDevice} from '../utils/require-test-device';
 
 const NO_INDEX = 0xffffffff;
 
 it('GPUPairwisePointLinestringNearest covers multipart f32 topology and optional outputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   const pointValues = Float32Array.from([1, 1, 3, 4, 1, 1, 1.5, 1, 1, 0, 1, 0, 0, 0, 1, 1, 5, 1]);
   const linestringValues = Float32Array.from([
     0,
@@ -120,67 +117,75 @@ it('GPUPairwisePointLinestringNearest covers multipart f32 topology and optional
   expect(
     () =>
       new GPUPairwisePointLinestringNearest({
-        points,
-        linestringPositions,
-        geometryOffsets: importView(
+        queryPositions: points,
+        positions: linestringPositions,
+        featureOffsets: importView(
           graph,
           'short-geometry-offsets',
           geometryOffsetsBuffer,
           'uint32',
           geometryOffsetValues.length - 1
         ),
-        linestringOffsets,
-        output
+        lineOffsets: linestringOffsets,
+        output: {distances: output}
       }),
     'one geometry interval is required per point row'
-  ).toThrow(/one more row than points/);
+  ).toThrow(/one more row than queryPositions/);
   expect(
     () =>
       new GPUPairwisePointLinestringNearest({
-        points,
-        linestringPositions,
-        geometryOffsets,
-        linestringOffsets,
-        output: importView(
-          graph,
-          'physical-alias-output',
-          pointBuffer,
-          'float32',
-          pointValues.length / 2
-        )
+        queryPositions: points,
+        positions: linestringPositions,
+        featureOffsets: geometryOffsets,
+        lineOffsets: linestringOffsets,
+        output: {
+          distances: importView(
+            graph,
+            'physical-alias-output',
+            pointBuffer,
+            'float32',
+            pointValues.length / 2
+          )
+        }
       }),
     'distinct handles backed by one core buffer cannot alias'
-  ).toThrow(/output output and points must not overlap/);
+  ).toThrow(/output output.distances and queryPositions must not overlap/);
   expect(
     () =>
       new GPUPairwisePointLinestringNearest({
-        points,
-        linestringPositions,
-        geometryOffsets,
-        linestringOffsets,
-        output,
-        nearestPoints,
-        linestringIndices: importView(
-          graph,
-          'physical-alias-linestring-indices',
-          nearestPointBuffer,
-          'uint32',
-          pointValues.length / 2
-        )
+        queryPositions: points,
+        positions: linestringPositions,
+        featureOffsets: geometryOffsets,
+        lineOffsets: linestringOffsets,
+        output: {
+          distances: output,
+          nearestPositions: nearestPoints,
+          lineIndices: importView(
+            graph,
+            'physical-alias-linestring-indices',
+            nearestPointBuffer,
+            'uint32',
+            pointValues.length / 2
+          )
+        }
       }),
     'optional outputs cannot alias through distinct handles'
-  ).toThrow(/output linestringIndices and output nearestPoints must not overlap/);
+  ).toThrow(/output output.lineIndices and output output.nearestPositions must not overlap/);
 
-  new GPUPairwisePointLinestringNearest({
-    points,
-    linestringPositions,
-    geometryOffsets,
-    linestringOffsets,
-    output,
-    nearestPoints,
-    linestringIndices,
-    segmentIndices
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointLinestringNearest({
+      queryPositions: points,
+      positions: linestringPositions,
+      featureOffsets: geometryOffsets,
+      lineOffsets: linestringOffsets,
+      output: {
+        distances: output,
+        nearestPositions: nearestPoints,
+        lineIndices: linestringIndices,
+        segmentIndices
+      }
+    })
+  );
   const compiled = graph.compile();
   encode(device, compiled);
 
@@ -275,11 +280,7 @@ it('GPUPairwisePointLinestringNearest covers multipart f32 topology and optional
 
 it('GPUPairwisePointLinestringNearest invalidates malformed offset rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const pointValues = Float32Array.from([0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
   const linestringValues = Float32Array.from([0, 0, 2, 0, 0, 0, 2, 0]);
@@ -294,27 +295,19 @@ it('GPUPairwisePointLinestringNearest invalidates malformed offset rows', async 
   const segmentIndexBuffer = createOutputBuffer(device, 5, 4);
   const graph = new GPUCommandGraph(device, {id: 'pairwise-linestring-nearest-malformed'});
 
-  new GPUPairwisePointLinestringNearest({
-    points: importView(graph, 'points', pointBuffer, 'float32x2', 5),
-    linestringPositions: importView(
-      graph,
-      'linestring-positions',
-      linestringBuffer,
-      'float32x2',
-      4
-    ),
-    geometryOffsets: importView(graph, 'geometry-offsets', geometryOffsetsBuffer, 'uint32', 6),
-    linestringOffsets: importView(
-      graph,
-      'linestring-offsets',
-      linestringOffsetsBuffer,
-      'uint32',
-      5
-    ),
-    output: importView(graph, 'distances', distanceBuffer, 'float32', 5),
-    linestringIndices: importView(graph, 'linestring-indices', linestringIndexBuffer, 'uint32', 5),
-    segmentIndices: importView(graph, 'segment-indices', segmentIndexBuffer, 'uint32', 5)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointLinestringNearest({
+      queryPositions: importView(graph, 'points', pointBuffer, 'float32x2', 5),
+      positions: importView(graph, 'linestring-positions', linestringBuffer, 'float32x2', 4),
+      featureOffsets: importView(graph, 'geometry-offsets', geometryOffsetsBuffer, 'uint32', 6),
+      lineOffsets: importView(graph, 'linestring-offsets', linestringOffsetsBuffer, 'uint32', 5),
+      output: {
+        distances: importView(graph, 'distances', distanceBuffer, 'float32', 5),
+        lineIndices: importView(graph, 'linestring-indices', linestringIndexBuffer, 'uint32', 5),
+        segmentIndices: importView(graph, 'segment-indices', segmentIndexBuffer, 'uint32', 5)
+      }
+    })
+  );
   const compiled = graph.compile();
   encode(device, compiled);
 
@@ -374,11 +367,7 @@ it('GPUPairwisePointLinestringNearest invalidates malformed offset rows', async 
 
 it('GPUPairwisePointLinestringNearest keeps extreme finite f32 rows finite', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const pointValues = Float32Array.from([
     3e38, 1e38, -3e38, -1e38, 0.5, 1e30, 1e38, 1e38, 1, 1, 3e38, 0
@@ -397,26 +386,18 @@ it('GPUPairwisePointLinestringNearest keeps extreme finite f32 rows finite', asy
   const nearestPointBuffer = createOutputBuffer(device, 6, 8);
   const graph = new GPUCommandGraph(device, {id: 'pairwise-linestring-nearest-extreme'});
 
-  new GPUPairwisePointLinestringNearest({
-    points: importView(graph, 'points', pointBuffer, 'float32x2', 6),
-    linestringPositions: importView(
-      graph,
-      'linestring-positions',
-      linestringBuffer,
-      'float32x2',
-      12
-    ),
-    geometryOffsets: importView(graph, 'geometry-offsets', geometryOffsetsBuffer, 'uint32', 7),
-    linestringOffsets: importView(
-      graph,
-      'linestring-offsets',
-      linestringOffsetsBuffer,
-      'uint32',
-      7
-    ),
-    output: importView(graph, 'distances', distanceBuffer, 'float32', 6),
-    nearestPoints: importView(graph, 'nearest-points', nearestPointBuffer, 'float32x2', 6)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointLinestringNearest({
+      queryPositions: importView(graph, 'points', pointBuffer, 'float32x2', 6),
+      positions: importView(graph, 'linestring-positions', linestringBuffer, 'float32x2', 12),
+      featureOffsets: importView(graph, 'geometry-offsets', geometryOffsetsBuffer, 'uint32', 7),
+      lineOffsets: importView(graph, 'linestring-offsets', linestringOffsetsBuffer, 'uint32', 7),
+      output: {
+        distances: importView(graph, 'distances', distanceBuffer, 'float32', 6),
+        nearestPositions: importView(graph, 'nearest-points', nearestPointBuffer, 'float32x2', 6)
+      }
+    })
+  );
   const compiled = graph.compile();
   encode(device, compiled);
 
@@ -460,11 +441,7 @@ it('GPUPairwisePointLinestringNearest keeps extreme finite f32 rows finite', asy
 
 it('GPUPairwisePointLinestringNearest compiles independent optional outputs at nonzero offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const byteOffset = 16;
   const configurations = [
@@ -493,37 +470,41 @@ it('GPUPairwisePointLinestringNearest compiles independent optional outputs at n
       ? importView(graph, 'segment-index', segmentIndexBuffer, 'uint32', 1, byteOffset)
       : undefined;
 
-    new GPUPairwisePointLinestringNearest({
-      points: importView(graph, 'points', pointBuffer, 'float32x2', 1, byteOffset),
-      linestringPositions: importView(
-        graph,
-        'linestring-positions',
-        linestringBuffer,
-        'float32x2',
-        2,
-        byteOffset
-      ),
-      geometryOffsets: importView(
-        graph,
-        'geometry-offsets',
-        geometryOffsetsBuffer,
-        'uint32',
-        2,
-        byteOffset
-      ),
-      linestringOffsets: importView(
-        graph,
-        'linestring-offsets',
-        linestringOffsetsBuffer,
-        'uint32',
-        2,
-        byteOffset
-      ),
-      output: importView(graph, 'distance', distanceBuffer, 'float32', 1, byteOffset),
-      nearestPoints,
-      linestringIndices,
-      segmentIndices
-    }).addToGraph(graph);
+    graph.add(
+      new GPUPairwisePointLinestringNearest({
+        queryPositions: importView(graph, 'points', pointBuffer, 'float32x2', 1, byteOffset),
+        positions: importView(
+          graph,
+          'linestring-positions',
+          linestringBuffer,
+          'float32x2',
+          2,
+          byteOffset
+        ),
+        featureOffsets: importView(
+          graph,
+          'geometry-offsets',
+          geometryOffsetsBuffer,
+          'uint32',
+          2,
+          byteOffset
+        ),
+        lineOffsets: importView(
+          graph,
+          'linestring-offsets',
+          linestringOffsetsBuffer,
+          'uint32',
+          2,
+          byteOffset
+        ),
+        output: {
+          distances: importView(graph, 'distance', distanceBuffer, 'float32', 1, byteOffset),
+          nearestPositions: nearestPoints,
+          lineIndices: linestringIndices,
+          segmentIndices
+        }
+      })
+    );
     const compiled = graph.compile();
     encode(device, compiled);
 
@@ -560,11 +541,7 @@ it('GPUPairwisePointLinestringNearest compiles independent optional outputs at n
 
 it('GPUPairwisePointLinestringNearest preserves raw-binary64 projection deltas', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -614,52 +591,56 @@ it('GPUPairwisePointLinestringNearest preserves raw-binary64 projection deltas',
   const segmentIndexBuffer = createOutputBuffer(device, points.length, 4);
   const graph = new GPUCommandGraph(device, {id: 'pairwise-linestring-nearest-raw'});
 
-  new GPUPairwisePointLinestringNearest({
-    points: importView(graph, 'raw-points', pointBuffer, 'uint32x4', points.length),
-    linestringPositions: importView(
-      graph,
-      'raw-linestring-positions',
-      linestringBuffer,
-      'uint32x4',
-      linestringPositions.length
-    ),
-    geometryOffsets: importView(
-      graph,
-      'raw-geometry-offsets',
-      geometryOffsetsBuffer,
-      'uint32',
-      geometryOffsetValues.length
-    ),
-    linestringOffsets: importView(
-      graph,
-      'raw-linestring-offsets',
-      linestringOffsetsBuffer,
-      'uint32',
-      linestringOffsetValues.length
-    ),
-    output: importView(graph, 'raw-distances', distanceBuffer, 'float32x2', points.length),
-    nearestPoints: importView(
-      graph,
-      'raw-nearest-points',
-      nearestPointBuffer,
-      'float32x4',
-      points.length
-    ),
-    linestringIndices: importView(
-      graph,
-      'raw-linestring-indices',
-      linestringIndexBuffer,
-      'uint32',
-      points.length
-    ),
-    segmentIndices: importView(
-      graph,
-      'raw-segment-indices',
-      segmentIndexBuffer,
-      'uint32',
-      points.length
-    )
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointLinestringNearest({
+      queryPositions: importView(graph, 'raw-points', pointBuffer, 'uint32x4', points.length),
+      positions: importView(
+        graph,
+        'raw-linestring-positions',
+        linestringBuffer,
+        'uint32x4',
+        linestringPositions.length
+      ),
+      featureOffsets: importView(
+        graph,
+        'raw-geometry-offsets',
+        geometryOffsetsBuffer,
+        'uint32',
+        geometryOffsetValues.length
+      ),
+      lineOffsets: importView(
+        graph,
+        'raw-linestring-offsets',
+        linestringOffsetsBuffer,
+        'uint32',
+        linestringOffsetValues.length
+      ),
+      output: {
+        distances: importView(graph, 'raw-distances', distanceBuffer, 'float32x2', points.length),
+        nearestPositions: importView(
+          graph,
+          'raw-nearest-points',
+          nearestPointBuffer,
+          'float32x4',
+          points.length
+        ),
+        lineIndices: importView(
+          graph,
+          'raw-linestring-indices',
+          linestringIndexBuffer,
+          'uint32',
+          points.length
+        ),
+        segmentIndices: importView(
+          graph,
+          'raw-segment-indices',
+          segmentIndexBuffer,
+          'uint32',
+          points.length
+        )
+      }
+    })
+  );
   const compiled = graph.compile();
   encode(device, compiled);
 

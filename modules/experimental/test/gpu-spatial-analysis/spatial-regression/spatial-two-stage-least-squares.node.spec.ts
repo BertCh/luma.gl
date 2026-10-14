@@ -36,7 +36,11 @@ it('GPUSpatialTwoStageLeastSquares validates its inputs and declares its kernels
     predictors: view('float32', 20),
     response: view('float32', 10),
     predictorCount: 2,
-    output: {table: view('float32', 16), summary: view('float32', 16), status: view('uint32', 1)},
+    output: {
+      table: view('float32', 16),
+      summary: view('float32', 16),
+      status: {code: view('uint32', 1)}
+    },
     ...overrides
   });
   const expectThrows = (overrides: Partial<GPUSpatialTwoStageLeastSquaresProps>, message: RegExp) =>
@@ -50,7 +54,13 @@ it('GPUSpatialTwoStageLeastSquares validates its inputs and declares its kernels
   expectThrows({tileRowCount: 0}, /tileRowCount/);
   expectThrows({instrumentOrder: 3 as 2}, /instrumentOrder/);
   expectThrows(
-    {output: {table: view('float32', 15), summary: view('float32', 16), status: view('uint32', 1)}},
+    {
+      output: {
+        table: view('float32', 15),
+        summary: view('float32', 16),
+        status: {code: view('uint32', 1)}
+      }
+    },
     /output.table/
   );
   expect(
@@ -63,7 +73,7 @@ it('GPUSpatialTwoStageLeastSquares validates its inputs and declares its kernels
           output: {
             table: view('float32', 28),
             summary: view('float32', 16),
-            status: view('uint32', 1)
+            status: {code: view('uint32', 1)}
           }
         })
       )

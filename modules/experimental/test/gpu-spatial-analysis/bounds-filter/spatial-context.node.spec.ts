@@ -4,9 +4,13 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import {WgslReflect} from 'wgsl_reflect';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUBoundsFilter} from '../../../src/gpu-spatial-analysis/bounds-filter';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 const LONGITUDE_LATITUDE: GPUSpatialContext = {
   coordinateSpace: 'longitude-latitude',
@@ -26,11 +30,13 @@ it('GPUBoundsFilter accepts planar and plain longitude/latitude boxes', () => {
     new GPUBoundsFilter({
       spatialContext,
       bounds: view(graph, 'float32x4', 4),
-      box: view(graph, 'float32', 4),
+      parameters: view(graph, 'float32', 4),
       output: {
         ids: view(graph, 'uint32', 4),
-        count: view(graph, 'uint32', 1),
-        overflow: view(graph, 'uint32', 1)
+        status: {
+          count: view(graph, 'uint32', 1),
+          overflow: view(graph, 'uint32', 1)
+        }
       }
     });
   const plain: GPUSpatialContext = {coordinateSpace: 'longitude-latitude', metric: 'none'};
@@ -40,4 +46,26 @@ it('GPUBoundsFilter accepts planar and plain longitude/latitude boxes', () => {
   ).toThrow(/does not support discrete-grid/);
   expect(create(plain).spatialContext.coordinateSpace).toBe('longitude-latitude');
   expect(create().spatialContext.coordinateSpace).toBe('planar');
+});
+
+it('GPUBoundsFilter kernels parse and use the shared finite test once', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'bounds-filter-parse'});
+  const nodes = new GPUBoundsFilter({
+    bounds: view(graph, 'float32x4', 4),
+    parameters: view(graph, 'float32', 4),
+    output: {
+      ids: view(graph, 'uint32', 4),
+      status: {
+        count: view(graph, 'uint32', 1),
+        overflow: view(graph, 'uint32', 1)
+      }
+    }
+  }).getCommandNodes(graph);
+  const sources = getGPUCommandNodeKernelSources(nodes).filter(({source}) =>
+    source.includes('isFiniteBits(')
+  );
+  expect(sources).toHaveLength(1);
+  expect(() => new WgslReflect(sources[0].source)).not.toThrow();
+  expect(sources[0].source.split('fn isFiniteBits(').length - 1).toBe(1);
+  expect(sources[0].source).toContain('0x7f800000u');
 });

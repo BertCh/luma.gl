@@ -3,9 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import {getGPUPolygonRasterizationParameterValues} from '../../../src/gpu-raster/polygon-rasterization';
 import {expect, it} from 'vitest';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {getGPUPolygonRasterizationExtentValues} from '../../../src/gpu-raster/polygon-rasterization';
 import {
   createPolygons,
   NO_ZONE,
@@ -16,9 +17,11 @@ import {
 import {
   createRasterizationFixture,
   destroyRasterizationFixture,
+  getExtentParameterValues,
   readRasterization
 } from './polygon-rasterization-fixture';
 import {createExactScene, createRandomScene} from './polygon-rasterization-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Extent = readonly [number, number, number, number];
 
@@ -58,9 +61,7 @@ function expectMatchesOracle(
 
 it('GPUPolygonRasterization matches the oracle on holes, overlaps, sub-cell polygons, and center-aligned edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const polygons = createExactScene();
   const raster = {width: 16, height: 12, extent: [0, 0, 1, 1] as Extent};
   const fixture = createRasterizationFixture(device, {...raster, polygons, crossingCapacity: 256});
@@ -99,9 +100,7 @@ it('GPUPolygonRasterization matches the oracle on holes, overlaps, sub-cell poly
 
 it('GPUPolygonRasterization confines a non-finite vertex to its own polygon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createExactScene();
   const broken = createPolygons([
     [
@@ -152,9 +151,7 @@ it('GPUPolygonRasterization confines a non-finite vertex to its own polygon', as
 
 it('GPUPolygonRasterization matches the oracle on random polygons with holes and multipolygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [3, 17]) {
     const polygons = createRandomScene(seed, 60, 34, 26, 6);
     // Origin offset so polygons extend past every raster edge.
@@ -180,9 +177,7 @@ it('GPUPolygonRasterization matches the oracle on random polygons with holes and
 
 it('GPUPolygonRasterization follows per-frame extents and reports overflow without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const polygons = createRandomScene(29, 40, 30, 30, 5);
   const width = 40;
   const height = 40;
@@ -208,7 +203,7 @@ it('GPUPolygonRasterization follows per-frame extents and reports overflow witho
   const compiled = fixture.graph.compile();
   let overflowFrameCount = 0;
   for (const extent of extents) {
-    fixture.extent.write(getGPUPolygonRasterizationExtentValues(...extent));
+    fixture.extent.write(getExtentParameterValues(width, height, extent));
     submitGraph(device, compiled, undefined);
     const actual = await readRasterization(fixture);
     const expected = rasterizePolygonsOnCPU(polygons, {width, height, extent});
@@ -236,9 +231,7 @@ it('GPUPolygonRasterization follows per-frame extents and reports overflow witho
 
 it('GPUPolygonRasterization sorts with two stable passes when the packed key exceeds 32 bits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 65535;
   const height = 64;
   // About 1,300 polygons need 11 key bits; 64 * 65536 row-column keys need 22.
@@ -263,6 +256,37 @@ it('GPUPolygonRasterization sorts with two stable passes when the packed key exc
   expect(ambiguousMismatches).toBeLessThanOrEqual(32);
   expect(actual.crossingCount).toBe(expected.crossingCount);
   expect(new Set(actual.zones).size).toBeGreaterThan(500);
+  compiled.destroy();
+  destroyRasterizationFixture(fixture);
+});
+
+it('GPUPolygonRasterization mirrors the zone and boundary rasters for a north-up grid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const polygons = createExactScene();
+  const width = 16;
+  const height = 12;
+  const raster = {width, height, extent: [0, 0, 1, 1] as Extent};
+  const fixture = createRasterizationFixture(device, {...raster, polygons, crossingCapacity: 256});
+  const compiled = fixture.graph.compile();
+  submitGraph(device, compiled, undefined);
+  const southUp = await readRasterization(fixture);
+  // The same raster as a north-up image: row 0 is the northernmost row, the top edge is y = 12.
+  fixture.extent.write(
+    getGPUPolygonRasterizationParameterValues(
+      makeGPURasterMetadata({width, height, cellSize: [1, 1], origin: [0, height]})
+    )
+  );
+  submitGraph(device, compiled, undefined);
+  const northUp = await readRasterization(fixture);
+  const mirror = (values: number[]) =>
+    values.map(
+      (_, cell) => values[(height - 1 - Math.floor(cell / width)) * width + (cell % width)]
+    );
+  expect(northUp.zones).toEqual(mirror(southUp.zones));
+  expect(northUp.boundary).toEqual(mirror(southUp.boundary));
+  expect(northUp.zones.some(zone => zone !== NO_ZONE)).toBe(true);
+  expect(northUp.crossingCount).toBe(southUp.crossingCount);
   compiled.destroy();
   destroyRasterizationFixture(fixture);
 });

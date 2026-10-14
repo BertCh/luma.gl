@@ -6,7 +6,7 @@ import {describe, expect, it} from 'vitest';
 import {
   getSegmentPolygonizationDiagnostics,
   type PolygonizationSegment
-} from '../../../src/gpu-spatial-analysis/ring-assembly';
+} from '../../../src/analysis-core/ring-assembly';
 
 const SQUARE: PolygonizationSegment[] = [
   [0, 0, 1, 0],

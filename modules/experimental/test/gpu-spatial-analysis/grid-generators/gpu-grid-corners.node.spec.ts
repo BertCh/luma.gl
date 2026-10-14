@@ -32,7 +32,13 @@ it('GPUGridGenerator validates corner output capacities, types, dependencies and
     parameters: view('float32', 4),
     output: {corners: view('float32x2', 12)}
   };
-  const extent = {positions: view('float32x2', 4), ringOffsets: view('uint32', 2)};
+  const extent = {
+    kind: 'polygons' as const,
+    positions: view('float32x2', 4),
+    featureOffsets: view('uint32', 2),
+    polygonOffsets: view('uint32', 2),
+    ringOffsets: view('uint32', 2)
+  };
   expect(new GPUGridGenerator(base).cornerCount).toBe(12);
   expect(new GPUGridGenerator(base).getCommandNodes(graph).map(node => node.id)).toEqual([
     'grid-generator-corners'

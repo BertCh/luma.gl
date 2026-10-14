@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
@@ -23,6 +24,7 @@ import {
   computeFocalStatisticsOnCPU,
   type FocalStatisticsOracleResult
 } from './spatial-interpolation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * Tolerances against the oracle. `count`, `min`, `max`, `range`, and `sum` (f32 sums in the same
@@ -99,8 +101,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
           )
         : undefined,
       noDataValue: scene.noDataValue,
-      width: scene.width,
-      height: scene.height,
+      grid: makeGPURasterMetadata({width: scene.width, height: scene.height}),
       maximumRadius: scene.maximumRadius,
       parameters: parameterBuffer.importToGraph(graph),
       output: {
@@ -110,7 +111,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
         max: float('max'),
         range: float('range'),
         standardDeviation: float('standardDeviation'),
-        count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', cellCount)
+        counts: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', cellCount)
       }
     })
   );
@@ -208,9 +209,7 @@ function createRandomScene(seed: number, width: number, height: number): Scene {
 
 it('GPUFocalStatistics matches the CPU oracle as radius, shape, and policy change without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(1, 37, 23);
   const fixture = createFixture(device, scene);
   const frames: GPUFocalStatisticsSettings[] = [
@@ -241,9 +240,7 @@ it('GPUFocalStatistics matches the CPU oracle as radius, shape, and policy chang
 
 it('GPUFocalStatistics clips windows at raster edges and skips nodata', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene: Scene = {
     values: Float32Array.from([1, 2, 3, 4, NaN, 6, 7, 8, -9]),
     noDataValue: -9,

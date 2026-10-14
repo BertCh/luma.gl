@@ -18,6 +18,7 @@ import {
   getGeospatialDispatchLayout,
   getGeospatialInvocationIndexSource
 } from '../../src/geospatial/geospatial-utils';
+import {requireTestDevice} from '../utils/require-test-device';
 
 it('geospatial dispatch crosses the one-dimensional WebGPU limit without allocating rows', () => {
   const maximum = 65_535;
@@ -54,11 +55,7 @@ it('geospatial dispatch crosses the one-dimensional WebGPU limit without allocat
 
 it('GPUSinusoidalProjection matches cuSpatial sign, midpoint, and circumference', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const localValues = Float32Array.from([1, 0, -1, 0, 1, 60, 0, 0]);
   const circumferenceValues = Float32Array.from([180, 0]);
@@ -90,23 +87,29 @@ it('GPUSinusoidalProjection matches cuSpatial sign, midpoint, and circumference'
   const rawPositions = importView(graph, 'raw-positions', rawBuffer, 'uint32x4', 1);
   const rawOutput = importView(graph, 'raw-output', rawOutputBuffer, 'float32x2', 1);
 
-  new GPUSinusoidalProjection({
-    id: 'local-projection',
-    positions: localPositions,
-    output: localOutput
-  }).addToGraph(graph);
-  new GPUSinusoidalProjection({
-    id: 'circumference-projection',
-    positions: circumferencePositions,
-    output: circumferenceOutput,
-    origin: [-180, 0]
-  }).addToGraph(graph);
-  new GPUSinusoidalProjection({
-    id: 'raw-projection',
-    positions: rawPositions,
-    output: rawOutput,
-    origin: rawOrigin
-  }).addToGraph(graph);
+  graph.add(
+    new GPUSinusoidalProjection({
+      id: 'local-projection',
+      positions: localPositions,
+      output: localOutput
+    })
+  );
+  graph.add(
+    new GPUSinusoidalProjection({
+      id: 'circumference-projection',
+      positions: circumferencePositions,
+      output: circumferenceOutput,
+      origin: [-180, 0]
+    })
+  );
+  graph.add(
+    new GPUSinusoidalProjection({
+      id: 'raw-projection',
+      positions: rawPositions,
+      output: rawOutput,
+      origin: rawOrigin
+    })
+  );
 
   for (const origin of [
     [180 + Number.EPSILON * 180, 0],
@@ -173,9 +176,7 @@ it('GPUSinusoidalProjection matches cuSpatial sign, midpoint, and circumference'
 
 it('GPUSinusoidalProjection wraps longitude deltas only when asked', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Origin [179, 0]. Expected values (python3 -I, k = 40000 / 360 km per degree):
   // [-179, 0] is 2 degrees east across the antimeridian: unwrapped x = 358 k = 39777.777...,
   // wrapped x = -2 k = -222.222... (east is negative x). [178, 10] needs no wrap:
@@ -186,19 +187,23 @@ it('GPUSinusoidalProjection wraps longitude deltas only when asked', async () =>
   const wrappedBuffer = createOutputBuffer(device, values.byteLength);
   const graph = new GPUCommandGraph(device, {id: 'sinusoidal-wrap-test'});
   const positions = importView(graph, 'wrap-positions', inputBuffer, 'float32x2', 2);
-  new GPUSinusoidalProjection({
-    id: 'plain-projection',
-    positions,
-    output: importView(graph, 'plain-output', plainBuffer, 'float32x2', 2),
-    origin: [179, 0]
-  }).addToGraph(graph);
-  new GPUSinusoidalProjection({
-    id: 'wrapped-projection',
-    positions,
-    output: importView(graph, 'wrapped-output', wrappedBuffer, 'float32x2', 2),
-    origin: [179, 0],
-    wrapLongitude: true
-  }).addToGraph(graph);
+  graph.add(
+    new GPUSinusoidalProjection({
+      id: 'plain-projection',
+      positions,
+      output: importView(graph, 'plain-output', plainBuffer, 'float32x2', 2),
+      origin: [179, 0]
+    })
+  );
+  graph.add(
+    new GPUSinusoidalProjection({
+      id: 'wrapped-projection',
+      positions,
+      output: importView(graph, 'wrapped-output', wrappedBuffer, 'float32x2', 2),
+      origin: [179, 0],
+      wrapLongitude: true
+    })
+  );
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'sinusoidal-wrap-encoding'});
   compiled.encode(commandEncoder, {parameters: undefined});
@@ -220,11 +225,7 @@ it('GPUSinusoidalProjection wraps longitude deltas only when asked', async () =>
 
 it('GPUHaversineDistance covers f32 antimeridian, polar, and radius cases', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const leftValues = Float32Array.from([179.999, 0, 0, 89.999, -45, -80, 12, 34, 120, 0]);
   const rightValues = Float32Array.from([
@@ -254,28 +255,32 @@ it('GPUHaversineDistance covers f32 antimeridian, polar, and radius cases', asyn
   const right = importView(graph, 'right', inputBuffers[1], 'float32x2', 5);
   const output = importView(graph, 'output', outputBuffer, 'float32', 5);
   // Kilometers keep the documented 2 km envelope readable; meters are the default.
-  new GPUHaversineDistance({
-    id: 'f32-haversine',
-    left,
-    right,
-    output,
-    units: 'kilometers'
-  }).addToGraph(graph);
-  new GPUHaversineDistance({
-    id: 'custom-radius-haversine',
-    left: importView(graph, 'radius-left', inputBuffers[2], 'float32x2', 1),
-    right: importView(graph, 'radius-right', inputBuffers[3], 'float32x2', 1),
-    output: importView(graph, 'radius-output', radiusOutputBuffer, 'float32', 1),
-    radius: 1
-  }).addToGraph(graph);
+  graph.add(
+    new GPUHaversineDistance({
+      id: 'f32-haversine',
+      left,
+      right,
+      output,
+      units: 'kilometers'
+    })
+  );
+  graph.add(
+    new GPUHaversineDistance({
+      id: 'custom-radius-haversine',
+      left: importView(graph, 'radius-left', inputBuffers[2], 'float32x2', 1),
+      right: importView(graph, 'radius-right', inputBuffers[3], 'float32x2', 1),
+      output: importView(graph, 'radius-output', radiusOutputBuffer, 'float32', 1),
+      sphereRadius: 1
+    })
+  );
 
-  expect(() => new GPUHaversineDistance({left, right, output, radius: 0}), '').toThrow(
-    /positive and representable as float32/
+  expect(() => new GPUHaversineDistance({left, right, output, sphereRadius: 0}), '').toThrow(
+    /sphereRadius must be a positive float32/
   );
   expect(
-    () => new GPUHaversineDistance({left, right, output, radius: Number.MAX_VALUE}),
+    () => new GPUHaversineDistance({left, right, output, sphereRadius: Number.MAX_VALUE}),
     ''
-  ).toThrow(/positive and representable as float32/);
+  ).toThrow(/sphereRadius must be a positive float32/);
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'haversine-f32-envelope-encoding'});
@@ -316,11 +321,7 @@ it('GPUHaversineDistance covers f32 antimeridian, polar, and radius cases', asyn
 
 it('GPUHaversineDistance preserves raw binary64 coordinate deltas', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const rawLeft: Point[] = [
     [120, 45],
@@ -334,11 +335,13 @@ it('GPUHaversineDistance preserves raw binary64 coordinate deltas', async () => 
   const rightBuffer = createBuffer(device, encodeFloat64Points(rawRight), Buffer.STORAGE);
   const outputBuffer = createOutputBuffer(device, 8);
   const graph = new GPUCommandGraph(device, {id: 'haversine-raw-delta-test'});
-  new GPUHaversineDistance({
-    left: importView(graph, 'raw-left', leftBuffer, 'uint32x4', 2),
-    right: importView(graph, 'raw-right', rightBuffer, 'uint32x4', 2),
-    output: importView(graph, 'raw-output', outputBuffer, 'float32', 2)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUHaversineDistance({
+      left: importView(graph, 'raw-left', leftBuffer, 'uint32x4', 2),
+      right: importView(graph, 'raw-right', rightBuffer, 'uint32x4', 2),
+      output: importView(graph, 'raw-output', outputBuffer, 'float32', 2)
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'haversine-raw-delta-encoding'});
@@ -366,11 +369,7 @@ it('GPUHaversineDistance preserves raw binary64 coordinate deltas', async () => 
 
 it('point and point-to-segment f32 distances match CPU oracles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const floatPoints = Float32Array.from([3, 4, 1, 2, Number.NaN, 0]);
   const floatOtherPoints = Float32Array.from([0, 0, 1, 2, 0, 0]);
@@ -387,19 +386,23 @@ it('point and point-to-segment f32 distances match CPU oracles', async () => {
   const graph = new GPUCommandGraph(device, {id: 'f32-point-distance-oracle-test'});
   const floatPointView = importView(graph, 'float-points', inputBuffers[0], 'float32x2', 3);
 
-  new GPUPairwisePointDistance({
-    id: 'f32-point-distance',
-    left: floatPointView,
-    right: importView(graph, 'float-other', inputBuffers[1], 'float32x2', 3),
-    output: importView(graph, 'float-point-output', floatPointOutputBuffer, 'float32', 3)
-  }).addToGraph(graph);
-  new GPUPairwisePointSegmentDistance({
-    id: 'f32-segment-distance',
-    points: floatPointView,
-    segmentStarts: importView(graph, 'float-starts', inputBuffers[2], 'float32x2', 3),
-    segmentEnds: importView(graph, 'float-ends', inputBuffers[3], 'float32x2', 3),
-    output: importView(graph, 'float-segment-output', floatSegmentOutputBuffer, 'float32', 3)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointDistance({
+      id: 'f32-point-distance',
+      left: floatPointView,
+      right: importView(graph, 'float-other', inputBuffers[1], 'float32x2', 3),
+      output: importView(graph, 'float-point-output', floatPointOutputBuffer, 'float32', 3)
+    })
+  );
+  graph.add(
+    new GPUPairwisePointSegmentDistance({
+      id: 'f32-segment-distance',
+      positions: floatPointView,
+      segmentStarts: importView(graph, 'float-starts', inputBuffers[2], 'float32x2', 3),
+      segmentEnds: importView(graph, 'float-ends', inputBuffers[3], 'float32x2', 3),
+      output: importView(graph, 'float-segment-output', floatSegmentOutputBuffer, 'float32', 3)
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'f32-point-distance-oracle-encoding'});
@@ -435,11 +438,7 @@ it('point and point-to-segment f32 distances match CPU oracles', async () => {
 
 it('point and point-to-segment raw binary64 distances match CPU oracles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -466,19 +465,23 @@ it('point and point-to-segment raw binary64 distances match CPU oracles', async 
   const graph = new GPUCommandGraph(device, {id: 'raw-point-distance-oracle-test'});
   const rawPointView = importView(graph, 'raw-points', inputBuffers[0], 'uint32x4', 3);
 
-  new GPUPairwisePointDistance({
-    id: 'raw-point-distance',
-    left: rawPointView,
-    right: importView(graph, 'raw-other', inputBuffers[1], 'uint32x4', 3),
-    output: importView(graph, 'raw-point-output', rawPointOutputBuffer, 'float32x2', 3)
-  }).addToGraph(graph);
-  new GPUPairwisePointSegmentDistance({
-    id: 'raw-segment-distance',
-    points: rawPointView,
-    segmentStarts: importView(graph, 'raw-starts', inputBuffers[2], 'uint32x4', 3),
-    segmentEnds: importView(graph, 'raw-ends', inputBuffers[3], 'uint32x4', 3),
-    output: importView(graph, 'raw-segment-output', rawSegmentOutputBuffer, 'float32x2', 3)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointDistance({
+      id: 'raw-point-distance',
+      left: rawPointView,
+      right: importView(graph, 'raw-other', inputBuffers[1], 'uint32x4', 3),
+      output: importView(graph, 'raw-point-output', rawPointOutputBuffer, 'float32x2', 3)
+    })
+  );
+  graph.add(
+    new GPUPairwisePointSegmentDistance({
+      id: 'raw-segment-distance',
+      positions: rawPointView,
+      segmentStarts: importView(graph, 'raw-starts', inputBuffers[2], 'uint32x4', 3),
+      segmentEnds: importView(graph, 'raw-ends', inputBuffers[3], 'uint32x4', 3),
+      output: importView(graph, 'raw-segment-output', rawSegmentOutputBuffer, 'float32x2', 3)
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'raw-point-distance-oracle-encoding'});
@@ -514,11 +517,7 @@ it('point and point-to-segment raw binary64 distances match CPU oracles', async 
 
 it('precise planar distances scale extreme intermediate products', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -561,53 +560,57 @@ it('precise planar distances scale extreme intermediate products', async () => {
   const segmentOutputBuffer = createOutputBuffer(device, segmentPoints.length * 8);
   const graph = new GPUCommandGraph(device, {id: 'precise-distance-scaling-test'});
 
-  new GPUPairwisePointDistance({
-    left: importView(graph, 'scaling-point-left', pointLeftBuffer, 'uint32x4', pointLeft.length),
-    right: importView(
-      graph,
-      'scaling-point-right',
-      pointRightBuffer,
-      'uint32x4',
-      pointRight.length
-    ),
-    output: importView(
-      graph,
-      'scaling-point-output',
-      pointOutputBuffer,
-      'float32x2',
-      pointLeft.length
-    )
-  }).addToGraph(graph);
-  new GPUPairwisePointSegmentDistance({
-    points: importView(
-      graph,
-      'scaling-segment-points',
-      segmentPointBuffer,
-      'uint32x4',
-      segmentPoints.length
-    ),
-    segmentStarts: importView(
-      graph,
-      'scaling-segment-starts',
-      segmentStartBuffer,
-      'uint32x4',
-      segmentStarts.length
-    ),
-    segmentEnds: importView(
-      graph,
-      'scaling-segment-ends',
-      segmentEndBuffer,
-      'uint32x4',
-      segmentEnds.length
-    ),
-    output: importView(
-      graph,
-      'scaling-segment-output',
-      segmentOutputBuffer,
-      'float32x2',
-      segmentPoints.length
-    )
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointDistance({
+      left: importView(graph, 'scaling-point-left', pointLeftBuffer, 'uint32x4', pointLeft.length),
+      right: importView(
+        graph,
+        'scaling-point-right',
+        pointRightBuffer,
+        'uint32x4',
+        pointRight.length
+      ),
+      output: importView(
+        graph,
+        'scaling-point-output',
+        pointOutputBuffer,
+        'float32x2',
+        pointLeft.length
+      )
+    })
+  );
+  graph.add(
+    new GPUPairwisePointSegmentDistance({
+      positions: importView(
+        graph,
+        'scaling-segment-points',
+        segmentPointBuffer,
+        'uint32x4',
+        segmentPoints.length
+      ),
+      segmentStarts: importView(
+        graph,
+        'scaling-segment-starts',
+        segmentStartBuffer,
+        'uint32x4',
+        segmentStarts.length
+      ),
+      segmentEnds: importView(
+        graph,
+        'scaling-segment-ends',
+        segmentEndBuffer,
+        'uint32x4',
+        segmentEnds.length
+      ),
+      output: importView(
+        graph,
+        'scaling-segment-output',
+        segmentOutputBuffer,
+        'float32x2',
+        segmentPoints.length
+      )
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'precise-distance-scaling-encoding'});
@@ -671,11 +674,7 @@ it('precise planar distances scale extreme intermediate products', async () => {
 
 it('fixed kernels preserve vector chunks, empty chunks, and non-finite rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const graph = new GPUCommandGraph(device, {id: 'geospatial-chunk-topology-test'});
   const positions = importVector(graph, device, 'positions', 'float32x2', 2, [
@@ -717,26 +716,30 @@ it('fixed kernels preserve vector chunks, empty chunks, and non-finite rows', as
     [1, 0, 3]
   );
 
-  new GPUSinusoidalProjection({positions: positions.view, output: projection.view}).addToGraph(
-    graph
+  graph.add(new GPUSinusoidalProjection({positions: positions.view, output: projection.view}));
+  graph.add(
+    new GPUHaversineDistance({
+      left: positions.view,
+      right: otherPositions.view,
+      output: haversine.view
+    })
   );
-  new GPUHaversineDistance({
-    left: positions.view,
-    right: otherPositions.view,
-    output: haversine.view
-  }).addToGraph(graph);
-  new GPUPairwisePointDistance({
-    id: 'offset-f32-point-distance',
-    left: positions.view,
-    right: otherPositions.view,
-    output: pointDistances.view
-  }).addToGraph(graph);
-  new GPUPairwisePointSegmentDistance({
-    points: positions.view,
-    segmentStarts: segmentStarts.view,
-    segmentEnds: segmentEnds.view,
-    output: segmentDistances.view
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointDistance({
+      id: 'offset-f32-point-distance',
+      left: positions.view,
+      right: otherPositions.view,
+      output: pointDistances.view
+    })
+  );
+  graph.add(
+    new GPUPairwisePointSegmentDistance({
+      positions: positions.view,
+      segmentStarts: segmentStarts.view,
+      segmentEnds: segmentEnds.view,
+      output: segmentDistances.view
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'geospatial-chunk-topology-encoding'});
@@ -791,11 +794,7 @@ it('fixed kernels preserve vector chunks, empty chunks, and non-finite rows', as
 
 it('f32 point distance honors naturally aligned input and output offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
 
   const floatInputOffset = 264;
   const floatOutputOffset = 260;
@@ -812,12 +811,14 @@ it('f32 point distance honors naturally aligned input and output offsets', async
   const floatOutputBuffer = createOutputBuffer(device, floatOutputOffset + 4);
   const graph = new GPUCommandGraph(device, {id: 'geospatial-f32-aligned-offset-test'});
 
-  new GPUPairwisePointDistance({
-    id: 'offset-f32-point-distance',
-    left: importView(graph, 'float-left', floatLeftBuffer, 'float32x2', 1, floatInputOffset),
-    right: importView(graph, 'float-right', floatRightBuffer, 'float32x2', 1, floatInputOffset),
-    output: importView(graph, 'float-output', floatOutputBuffer, 'float32', 1, floatOutputOffset)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointDistance({
+      id: 'offset-f32-point-distance',
+      left: importView(graph, 'float-left', floatLeftBuffer, 'float32x2', 1, floatInputOffset),
+      right: importView(graph, 'float-right', floatRightBuffer, 'float32x2', 1, floatInputOffset),
+      output: importView(graph, 'float-output', floatOutputBuffer, 'float32', 1, floatOutputOffset)
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'geospatial-f32-offset-encoding'});
@@ -836,11 +837,7 @@ it('f32 point distance honors naturally aligned input and output offsets', async
 
 it('raw point distance honors naturally aligned input and output offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    void 0;
-    void 0;
-    return;
-  }
+  requireTestDevice(device);
   if (isSoftwareBackedDevice(device)) {
     void 0;
     void 0;
@@ -860,12 +857,14 @@ it('raw point distance honors naturally aligned input and output offsets', async
   const rawOutputBuffer = createOutputBuffer(device, rawOutputOffset + 8);
   const graph = new GPUCommandGraph(device, {id: 'geospatial-raw-aligned-offset-test'});
 
-  new GPUPairwisePointDistance({
-    id: 'offset-raw-point-distance',
-    left: importView(graph, 'raw-left', rawLeftBuffer, 'uint32x4', 1, rawInputOffset),
-    right: importView(graph, 'raw-right', rawRightBuffer, 'uint32x4', 1, rawInputOffset),
-    output: importView(graph, 'raw-output', rawOutputBuffer, 'float32x2', 1, rawOutputOffset)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointDistance({
+      id: 'offset-raw-point-distance',
+      left: importView(graph, 'raw-left', rawLeftBuffer, 'uint32x4', 1, rawInputOffset),
+      right: importView(graph, 'raw-right', rawRightBuffer, 'uint32x4', 1, rawInputOffset),
+      output: importView(graph, 'raw-output', rawOutputBuffer, 'float32x2', 1, rawOutputOffset)
+    })
+  );
 
   const compiled = graph.compile();
   const commandEncoder = device.createCommandEncoder({id: 'geospatial-raw-offset-encoding'});

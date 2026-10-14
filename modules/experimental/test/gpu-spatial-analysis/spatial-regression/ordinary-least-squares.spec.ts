@@ -37,6 +37,7 @@ import {
   type OrdinaryLeastSquaresScene
 } from './ordinary-least-squares-oracle';
 import {SPREG_ORDINARY_LEAST_SQUARES_REFERENCE} from './spreg-ols-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Result = {
   status: number;
@@ -122,7 +123,7 @@ function createFixture(
           'float32',
           GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'o-status', outputs.status, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'o-status', outputs.status, 'uint32', 1)},
         residuals: importGraphBuffer(graph, 'o-residuals', outputs.residuals, 'float32', rows),
         fitted: importGraphBuffer(graph, 'o-fitted', outputs.fitted, 'float32', rows)
       }
@@ -133,7 +134,7 @@ function createFixture(
   compileCount++;
   return {
     async run(ridgeLambda = 0) {
-      parameterBuffer.write(getGPUOrdinaryLeastSquaresParameterValues(ridgeLambda));
+      parameterBuffer.write(getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda}));
       submitGraph(device, compiled, undefined);
       const [status] = await readUint32(outputs.status, 1);
       return {
@@ -282,9 +283,7 @@ function bitsOf(result: Result): number[] {
 
 it('GPUOrdinaryLeastSquares reproduces a textbook regression', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene: OrdinaryLeastSquaresScene = {
     predictors: Float32Array.from([1, 2, 3, 4, 5]),
     response: Float32Array.from([2, 4, 5, 4, 5]),
@@ -305,9 +304,7 @@ it('GPUOrdinaryLeastSquares reproduces a textbook regression', async () => {
 
 it('GPUOrdinaryLeastSquares matches the float64 oracle on seeded noisy scenes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases = [
     {
       seed: 11,
@@ -347,25 +344,39 @@ it('GPUOrdinaryLeastSquares matches the float64 oracle on seeded noisy scenes', 
 
 it('GPUOrdinaryLeastSquares recovers y = 2 + 3 x1 - x2 from a seeded LCG with small noise', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createOrdinaryLeastSquaresScene(21, 20000, 2, [3, -1], 0.05);
   const fixture = createFixture(device, scene);
   const result = await fixture.run();
   expect(result.status).toBe(0);
-  expect(result.coefficients[0]).toBeCloseTo(2, 0);
   expect(Math.abs(result.coefficients[1] - 3)).toBeLessThan(1e-3);
   expect(Math.abs(result.coefficients[2] + 1)).toBeLessThan(1e-3);
+  // The intercept is mean(y) - b . mean(x) from the centered moments, so given the GPU slopes it is
+  // fixed by the f64 scene means up to f32 rounding of terms of magnitude <= 150 and of the Kahan
+  // merged means (about 3e-5; 1e-4 allowed). Against the truth it then moves only by the mean noise
+  // (|mean e| < 4 sigma / sqrt(n) = 8.2e-4 for sigma = 0.05 / sqrt(3)) and the slope errors times
+  // the predictor means (A-25: replaces a +-0.5 check).
+  const rows = scene.response.length;
+  let meanY = 0;
+  let meanX1 = 0;
+  let meanX2 = 0;
+  for (let row = 0; row < rows; row++) {
+    meanY += scene.response[row] / rows;
+    meanX1 += scene.predictors[row * 2] / rows;
+    meanX2 += scene.predictors[row * 2 + 1] / rows;
+  }
+  const [intercept, slope1, slope2] = result.coefficients;
+  expect(Math.abs(intercept - (meanY - slope1 * meanX1 - slope2 * meanX2))).toBeLessThan(1e-4);
+  expect(Math.abs(intercept - 2)).toBeLessThan(
+    8.2e-4 + 1e-4 + Math.abs(slope1 - 3) * meanX1 + Math.abs(slope2 + 1) * meanX2
+  );
   expect(result.summary[1]).toBeGreaterThan(0.9999);
   fixture.destroy();
 });
 
 it('GPUOrdinaryLeastSquares fits exactly linear data with R2 close to 1', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createOrdinaryLeastSquaresScene(31, 1000, 2, [3, -1], 0);
   const fixture = createFixture(device, scene);
   const result = await fixture.run();
@@ -379,9 +390,7 @@ it('GPUOrdinaryLeastSquares fits exactly linear data with R2 close to 1', async 
 
 it('GPUOrdinaryLeastSquares detects heteroskedastic residuals with Breusch-Pagan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createOrdinaryLeastSquaresScene(41, 4000, 1, [2, 0.5], 0);
   const random = createOrdinaryLeastSquaresRandom(99);
   for (let row = 0; row < 4000; row++) {
@@ -406,9 +415,7 @@ it('GPUOrdinaryLeastSquares detects heteroskedastic residuals with Breusch-Pagan
 
 it('GPUOrdinaryLeastSquares separates Breusch-Pagan from Koenker-Bassett and matches spreg', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Skewed heteroskedastic errors: spreg breusch_pagan and koenker_bassett differ by 8x.
   const scene = createHeteroskedasticOrdinaryLeastSquaresScene(41, 300);
   const reference = SPREG_ORDINARY_LEAST_SQUARES_REFERENCE.heteroskedastic;
@@ -438,9 +445,7 @@ it('GPUOrdinaryLeastSquares separates Breusch-Pagan from Koenker-Bassett and mat
 
 it('GPUOrdinaryLeastSquares reports Belsley and correlation conditioning and the precision warning', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases = [
     ['collinearModerate', createCollinearOrdinaryLeastSquaresScene(17, 200, 0.3), 0],
     ['collinearSevere', createCollinearOrdinaryLeastSquaresScene(19, 200, 0.03), 1]
@@ -483,9 +488,7 @@ it('GPUOrdinaryLeastSquares reports Belsley and correlation conditioning and the
 
 it('GPUOrdinaryLeastSquares reports singular and short designs through status', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const duplicate = createOrdinaryLeastSquaresScene(51, 200, 1, [2, 0], 0.1);
   for (let row = 0; row < 200; row++) {
     duplicate.predictors[row * 2 + 1] = duplicate.predictors[row * 2];
@@ -524,9 +527,7 @@ it('GPUOrdinaryLeastSquares reports singular and short designs through status', 
 
 it('GPUOrdinaryLeastSquares is bitwise deterministic across runs and graphs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createOrdinaryLeastSquaresScene(61, 6000, 3, [1, -2, 0.5], 1, {
     withMask: true,
     withNonFinite: true
@@ -543,9 +544,7 @@ it('GPUOrdinaryLeastSquares is bitwise deterministic across runs and graphs', as
 
 it('GPUOrdinaryLeastSquares changes the ridge penalty between encodings without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createOrdinaryLeastSquaresScene(71, 2000, 4, [3, -1, 2], 1);
   const fixture = createFixture(device, scene);
   let previousSlope = Infinity;
@@ -565,11 +564,40 @@ it('GPUOrdinaryLeastSquares changes the ridge penalty between encodings without 
   fixture.destroy();
 });
 
+it('GPUOrdinaryLeastSquares Kahan-merges the tile partials of 1e6 rows within the derived bound', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rows = 1_000_000;
+  const scene = createOrdinaryLeastSquaresScene(91, rows, 2, [3, -1], 0.5);
+  const fixture = createFixture(device, scene);
+  const result = await fixture.run();
+  const expected = fitOrdinaryLeastSquaresOnCPU(scene);
+  expect(expected.status).toBe(0);
+  expect(result.status).toBe(0);
+  // The row count is a Kahan merge of tile counts that are exact integers in f32 (a tile is at
+  // most 245 rows and the total is below 2^24), so it must be exact.
+  expect(result.summary[0]).toBe(rows);
+  // Derivation of the tolerance. The default tile has max(64, ceil(1e6 / 4096)) = 245 rows, so
+  // there are T = 4082 tiles. A tile partial is a plain f32 sum of at most 245 terms, so its
+  // relative error is at most (245 - 1) u with u = 2^-24 = 6e-8, i.e. 1.5e-5 (a random-walk
+  // estimate is sqrt(245) u = 1e-6). The cross-product sums of the centered design are sums of
+  // squares, so the terms are non-negative and the relative error of the total is bounded by the
+  // worst tile error, 1.5e-5, plus the Kahan merge's 2 u + O(T u^2) = 1.2e-7 + 7e-11, which is
+  // independent of T. A non-compensated f32 merge would add up to (T - 1) u = 2.4e-4 instead.
+  // The slopes inherit this bound times the condition number of the unit-variance 2-predictor
+  // design (below 4), so 1e-4 holds with a margin of 1.6 over the worst case, and tightens to
+  // about 2e-5 by the random-walk estimate. The standard errors and R2 are smooth functions of
+  // the same sums (square root and a ratio) and share the bound.
+  const relative = 1e-4;
+  expectClose('coefficients', result.coefficients, expected.coefficients, relative, 0.1);
+  expectClose('standardErrors', result.standardErrors, expected.standardErrors, relative, 1e-6);
+  expectClose('rSquared', [result.summary[1]], [expected.summary[1]], relative, 1);
+  fixture.destroy();
+}, 180_000);
+
 it('GPUOrdinaryLeastSquares supports the largest predictor count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const slopes = Array.from({length: 15}, (_, index) => ((index % 4) - 1.5) * 0.5);
   const scene = createOrdinaryLeastSquaresScene(81, 3000, 5, slopes, 1);
   const fixture = createFixture(device, scene);

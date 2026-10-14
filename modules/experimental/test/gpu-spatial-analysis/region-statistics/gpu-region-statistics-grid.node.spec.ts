@@ -30,16 +30,20 @@ function createProps(
   overrides: Partial<GPURegionStatisticsProps> = {}
 ): GPURegionStatisticsProps {
   return {
-    selection: {kind: 'rectangle', bounds: createTransientView(graph, 'bounds', 'float32', 4)},
+    region: {kind: 'rectangle', bounds: createTransientView(graph, 'bounds', 'float32', 4)},
     positions: createTransientView(graph, 'positions', 'float32x2', 12),
     values: createTransientView(graph, 'values', 'float32', 12),
     histogram: {binCount: 4},
     output: {
-      ids: createTransientView(graph, 'ids', 'uint32', 12),
-      count: createTransientView(graph, 'count', 'uint32', 1),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      summary: createTransientView(graph, 'summary', 'uint32', 12),
+      selectedRows: {
+        ids: createTransientView(graph, 'ids', 'uint32', 12),
+        status: {
+          count: createTransientView(graph, 'count', 'uint32', 1),
+          overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+        }
+      }
     },
-    summary: createTransientView(graph, 'summary', 'uint32', 12),
     spatialIndex: overrides.spatialIndex ?? {
       kind: 'grid',
       index: createIndex(graph),
@@ -72,10 +76,12 @@ it('GPURegionStatistics with spatialIndex orders query, gather, predicate, stati
   expect(order.every(index => index >= 0)).toBe(true);
   expect(ids.at(-1)).toBe('stats-summary');
   expect(new Set(ids).size).toBe(ids.length);
-  // Without output or outputMask the O(rowCount) mask nodes are skipped.
+  // Without selected rows or a mask output the O(rowCount) mask nodes are skipped.
   const noOutputGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  const noOutputProps = createProps(noOutputGraph);
   const noOutputIds = new GPURegionStatistics({
-    ...createProps(noOutputGraph, {output: undefined}),
+    ...noOutputProps,
+    output: {summary: noOutputProps.output.summary},
     id: 'stats'
   })
     .getCommandNodes(noOutputGraph)
@@ -89,7 +95,7 @@ it('GPURegionStatistics with spatialIndex compiles polygon bounds and radius que
   const polygonIds = new GPURegionStatistics({
     ...createProps(graph),
     id: 'stats',
-    selection: {
+    region: {
       kind: 'polygon',
       vertices: createTransientView(graph, 'vertices', 'float32x2', 8),
       vertexCount: createTransientView(graph, 'vertex-count', 'uint32', 1)
@@ -103,7 +109,7 @@ it('GPURegionStatistics with spatialIndex compiles polygon bounds and radius que
   const radiusIds = new GPURegionStatistics({
     ...createProps(radiusGraph),
     id: 'stats',
-    selection: {kind: 'radius', circle: createTransientView(radiusGraph, 'circle', 'float32', 3)}
+    region: {kind: 'radius', circle: createTransientView(radiusGraph, 'circle', 'float32', 3)}
   })
     .getCommandNodes(radiusGraph)
     .map(node => node.id);
@@ -117,7 +123,7 @@ it('GPURegionStatistics rejects unsupported spatialIndex combinations', () => {
     () =>
       new GPURegionStatistics(
         createProps(graph, {
-          selection: {
+          region: {
             kind: 'rectangle',
             bounds: createTransientView(graph, 'screen-bounds', 'float32', 4),
             screenTransform: createTransientView(graph, 'transform', 'float32', 20)
@@ -131,7 +137,7 @@ it('GPURegionStatistics rejects unsupported spatialIndex combinations', () => {
     () =>
       new GPURegionStatistics(
         createProps(graph, {
-          selection: {kind: 'pick-region', result: createTransientView(graph, 'pick', 'uint32', 12)}
+          region: {kind: 'pick-region', picks: createTransientView(graph, 'pick', 'uint32', 12)}
         })
       )
   ).toThrow(/spatialIndex supports/);

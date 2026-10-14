@@ -24,10 +24,11 @@ import {
   getVertexMeasures,
   locateAlong,
   projectOntoSegment,
-  type ReferencePaths
+  type ReferenceLines
 } from './linear-referencing-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-const NO_PATH = 0xffffffff;
+const NO_LINE = 0xffffffff;
 
 function createRandom(seed: number): () => number {
   let state = seed >>> 0 || 1;
@@ -37,20 +38,20 @@ function createRandom(seed: number): () => number {
   };
 }
 
-function createPaths(paths: number[][][]): ReferencePaths {
+function createLines(lines: number[][][]): ReferenceLines {
   const values: number[] = [];
-  const pathOffsets = [0];
-  for (const path of paths) {
-    for (const vertex of path) {
+  const lineOffsets = [0];
+  for (const line of lines) {
+    for (const vertex of line) {
       values.push(vertex[0], vertex[1]);
     }
-    pathOffsets.push(values.length / 2);
+    lineOffsets.push(values.length / 2);
   }
-  return {positions: new Float32Array(values), pathOffsets: new Uint32Array(pathOffsets)};
+  return {positions: new Float32Array(values), lineOffsets: new Uint32Array(lineOffsets)};
 }
 
 type ReferencingReadback = {
-  pathIndices: number[];
+  lineIndices: number[];
   segmentIndices: number[];
   fractions: number[];
   footPoints: number[][];
@@ -64,7 +65,7 @@ type ReferencingReadback = {
 
 function createReferencingFixture(
   device: Device,
-  paths: ReferencePaths,
+  lines: ReferenceLines,
   points: Float32Array,
   candidateCapacity: number
 ) {
@@ -74,7 +75,7 @@ function createReferencingFixture(
     return buffer;
   };
   const pointCount = points.length / 2;
-  const rowCount = paths.positions.length / 2;
+  const rowCount = lines.positions.length / 2;
   const graph = new GPUCommandGraph(device, {id: 'linear-referencing-fixture'});
   const radius = new GPUParameterBuffer(device, {
     id: 'radius',
@@ -82,7 +83,7 @@ function createReferencingFixture(
     length: 1
   });
   const outputs = {
-    pathIndices: track(createOutputBuffer(device, pointCount)),
+    lineIndices: track(createOutputBuffer(device, pointCount)),
     segmentIndices: track(createOutputBuffer(device, pointCount)),
     fractions: track(createOutputBuffer(device, pointCount)),
     footPoints: track(createOutputBuffer(device, 2 * pointCount)),
@@ -95,7 +96,7 @@ function createReferencingFixture(
   };
   graph.add(
     new GPULinearReferencing({
-      points: importGraphBuffer(
+      queryPositions: importGraphBuffer(
         graph,
         'points',
         track(createInputBuffer(device, points)),
@@ -105,22 +106,22 @@ function createReferencingFixture(
       positions: importGraphBuffer(
         graph,
         'positions',
-        track(createInputBuffer(device, paths.positions)),
+        track(createInputBuffer(device, lines.positions)),
         'float32x2',
         rowCount
       ),
-      pathOffsets: importGraphBuffer(
+      lineOffsets: importGraphBuffer(
         graph,
-        'path-offsets',
-        track(createInputBuffer(device, paths.pathOffsets)),
+        'line-offsets',
+        track(createInputBuffer(device, lines.lineOffsets)),
         'uint32',
-        paths.pathOffsets.length
+        lines.lineOffsets.length
       ),
       radius: radius.importToGraph(graph),
       candidateCapacity,
       spatialSort: true,
       output: {
-        pathIndices: importGraphBuffer(graph, 'o-path', outputs.pathIndices, 'uint32', pointCount),
+        lineIndices: importGraphBuffer(graph, 'o-line', outputs.lineIndices, 'uint32', pointCount),
         segmentIndices: importGraphBuffer(
           graph,
           'o-segment',
@@ -146,9 +147,9 @@ function createReferencingFixture(
           outputs.vertexMeasures,
           'float32',
           rowCount
-        )
-      },
-      overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1)
+        ),
+        status: {overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -160,7 +161,7 @@ function createReferencingFixture(
       const foot = await readFloat32(outputs.footPoints, 2 * pointCount);
       const sideBytes = await outputs.sides.readAsync();
       return {
-        pathIndices: await readUint32(outputs.pathIndices, pointCount),
+        lineIndices: await readUint32(outputs.lineIndices, pointCount),
         segmentIndices: await readUint32(outputs.segmentIndices, pointCount),
         fractions: await readFloat32(outputs.fractions, pointCount),
         footPoints: Array.from({length: pointCount}, (_, row) => foot.slice(2 * row, 2 * row + 2)),
@@ -185,18 +186,18 @@ function createReferencingFixture(
 
 function expectReferencingParity(
   actual: ReferencingReadback,
-  paths: ReferencePaths,
+  lines: ReferenceLines,
   points: Float32Array,
   radius: number
 ): number {
-  const measures = getVertexMeasures(paths);
+  const measures = getVertexMeasures(lines);
   let matched = 0;
   for (let point = 0; point < points.length / 2; point++) {
     const query = [points[2 * point], points[2 * point + 1]];
-    const expected = findNearestSegment(paths, measures, query, radius);
+    const expected = findNearestSegment(lines, measures, query, radius);
     const label = `point ${point}`;
     if (!expected) {
-      expect(actual.pathIndices[point], label).toBe(NO_PATH);
+      expect(actual.lineIndices[point], label).toBe(NO_LINE);
       expect(actual.distances[point], label).toBe(-1);
       expect(actual.sides[point], label).toBe(0);
       expect(actual.fractions[point], label).toBeNaN();
@@ -204,10 +205,10 @@ function expectReferencingParity(
       continue;
     }
     matched++;
-    expect(actual.pathIndices[point], label).not.toBe(NO_PATH);
-    const segmentRow = paths.pathOffsets[actual.pathIndices[point]] + actual.segmentIndices[point];
+    expect(actual.lineIndices[point], label).not.toBe(NO_LINE);
+    const segmentRow = lines.lineOffsets[actual.lineIndices[point]] + actual.segmentIndices[point];
     // f32 distances may order near-ties differently from f64: accept any segment as close.
-    const chosen = projectOntoSegment(paths, measures, query, segmentRow);
+    const chosen = projectOntoSegment(lines, measures, query, segmentRow);
     const scale = Math.max(1, Math.abs(query[0]), Math.abs(query[1]));
     expect(chosen.distance - expected.distance, label).toBeLessThanOrEqual(1e-5 * scale);
     if (chosen.segmentRow === expected.segmentRow) {
@@ -239,11 +240,9 @@ function expectReferencingParity(
 
 it('GPULinearReferencing matches brute force on random polylines and per-frame radii', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(3);
-  const pathList = Array.from({length: 120}, (_, index) => {
+  const lineList = Array.from({length: 120}, (_, index) => {
     if (index % 31 === 4) {
       return [];
     }
@@ -260,7 +259,7 @@ it('GPULinearReferencing matches brute force on random polylines and per-frame r
       return [x, y];
     });
   });
-  const paths = createPaths(pathList);
+  const lines = createLines(lineList);
   const pointCount = 2000;
   const points = new Float32Array(pointCount * 2);
   for (let point = 0; point < pointCount; point++) {
@@ -268,15 +267,15 @@ it('GPULinearReferencing matches brute force on random polylines and per-frame r
     points[2 * point + 1] = random() * 110 - 5;
   }
   // Exactly on vertices and on segment midpoints.
-  points.set([paths.positions[0], paths.positions[1], paths.positions[2], paths.positions[3]], 0);
-  const fixture = createReferencingFixture(device, paths, points, 400000);
+  points.set([lines.positions[0], lines.positions[1], lines.positions[2], lines.positions[3]], 0);
+  const fixture = createReferencingFixture(device, lines, points, 400000);
   for (const radius of [1.5, 5, 0.25, 12]) {
     const actual = await fixture.run(radius);
     expect(actual.overflow).toBe(0);
-    const matched = expectReferencingParity(actual, paths, points, radius);
+    const matched = expectReferencingParity(actual, lines, points, radius);
     expect(matched).toBeGreaterThan(0);
   }
-  const measures = getVertexMeasures(paths);
+  const measures = getVertexMeasures(lines);
   const actual = await fixture.run(1);
   actual.vertexMeasures.forEach((measure, row) => {
     if (!Number.isNaN(measures[row])) {
@@ -291,17 +290,15 @@ it('GPULinearReferencing matches brute force on random polylines and per-frame r
 
 it('GPULinearReferencing breaks ties on the smallest segment and reports sides', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const paths = createPaths([
+  requireTestDevice(device);
+  const lines = createLines([
     // An L: (0,0) -> (10,0) -> (10,10)
     [
       [0, 0],
       [10, 0],
       [10, 10]
     ],
-    // A parallel path at y = 4 running west: ties with path 0 at y = 2.
+    // A parallel line at y = 4 running west: ties with line 0 at y = 2.
     [
       [10, 4],
       [0, 4]
@@ -315,13 +312,13 @@ it('GPULinearReferencing breaks ties on the smallest segment and reports sides',
   ]);
   const points = new Float32Array([
     5,
-    2, // equidistant to path 0 segment 0 and path 1: smallest segment row wins
+    2, // equidistant to line 0 segment 0 and line 1: smallest segment row wins
     5,
-    -3, // right of path 0
+    -3, // right of line 0
     12,
     5, // right of the vertical leg (direction north, point east)
     8,
-    5, // left of the vertical leg, also 1 from path 1
+    5, // left of the vertical leg, also 1 from line 1
     10,
     0, // on the corner vertex: segment 0 at fraction 1
     20,
@@ -329,18 +326,18 @@ it('GPULinearReferencing breaks ties on the smallest segment and reports sides',
     25,
     -2
   ]);
-  const fixture = createReferencingFixture(device, paths, points, 1000);
+  const fixture = createReferencingFixture(device, lines, points, 1000);
   const actual = await fixture.run(100);
-  expectReferencingParity(actual, paths, points, 100);
-  expect(actual.pathIndices.slice(0, 5)).toEqual([0, 0, 0, 1, 0]);
+  expectReferencingParity(actual, lines, points, 100);
+  expect(actual.lineIndices.slice(0, 5)).toEqual([0, 0, 0, 1, 0]);
   expect(actual.segmentIndices[0]).toBe(0);
-  // Point 3 snaps to the westbound path 1, so it lies on that path's right.
+  // Point 3 snaps to the westbound line 1, so it lies on that line's right.
   expect(actual.sides.slice(0, 5)).toEqual([1, -1, -1, -1, 0]);
   expect(actual.measures[2]).toBe(15);
   expect(actual.distances[4]).toBe(0);
   expect(actual.fractions[4]).toBe(1);
   // Zero-length segment (row 5) wins the tie with segment row 6 at distance 1.
-  expect([actual.pathIndices[5], actual.segmentIndices[5], actual.fractions[5]]).toEqual([2, 0, 0]);
+  expect([actual.lineIndices[5], actual.segmentIndices[5], actual.fractions[5]]).toEqual([2, 0, 0]);
   expect(actual.measures[6]).toBe(5);
   expect(actual.signedOffsets[6]).toBe(-2);
   fixture.destroy();
@@ -348,12 +345,10 @@ it('GPULinearReferencing breaks ties on the smallest segment and reports sides',
 
 it('GPULinearReferencing reports candidate overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const paths = createPaths([Array.from({length: 50}, (_, index) => [index, index % 2])]);
+  requireTestDevice(device);
+  const lines = createLines([Array.from({length: 50}, (_, index) => [index, index % 2])]);
   const points = new Float32Array(Array.from({length: 100}, (_, index) => index / 2));
-  const fixture = createReferencingFixture(device, paths, points, 8);
+  const fixture = createReferencingFixture(device, lines, points, 8);
   const actual = await fixture.run(10);
   expect(actual.overflow).toBe(1);
   fixture.destroy();
@@ -361,11 +356,9 @@ it('GPULinearReferencing reports candidate overflow', async () => {
 
 it('GPULineLocate places events by distance and fraction, with offsets and per-frame animation', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(5);
-  const pathList = Array.from({length: 40}, (_, index) => {
+  const lineList = Array.from({length: 40}, (_, index) => {
     if (index === 7) {
       return [];
     }
@@ -382,20 +375,20 @@ it('GPULineLocate places events by distance and fraction, with offsets and per-f
       return [x, y];
     });
   });
-  const paths = createPaths(pathList);
-  const measures = getVertexMeasures(paths);
+  const lines = createLines(lineList);
+  const measures = getVertexMeasures(lines);
   const eventCount = 600;
-  const eventPaths = new Uint32Array(eventCount);
+  const eventLineIndices = new Uint32Array(eventCount);
   const eventMeasures = new Float32Array(eventCount);
   const eventOffsets = new Float32Array(eventCount);
   for (let event = 0; event < eventCount; event++) {
-    eventPaths[event] = event === 3 ? 999 : Math.floor(random() * 40);
+    eventLineIndices[event] = event === 3 ? 999 : Math.floor(random() * 40);
     eventMeasures[event] = random() * 60 - 5;
     eventOffsets[event] = event % 3 === 0 ? random() * 2 - 1 : 0;
   }
   // Exactly on a vertex measure.
-  eventPaths[0] = 0;
-  eventMeasures[0] = Math.fround(measures[paths.pathOffsets[0] + 1]);
+  eventLineIndices[0] = 0;
+  eventMeasures[0] = Math.fround(measures[lines.lineOffsets[0] + 1]);
   eventOffsets[0] = 0;
 
   for (const measureMode of ['distance', 'fraction'] as const) {
@@ -431,9 +424,9 @@ it('GPULineLocate places events by distance and fraction, with offsets and per-f
       );
     graph.add(
       new GPULineLocate({
-        positions: input('positions', paths.positions, 'float32x2'),
-        pathOffsets: input('path-offsets', paths.pathOffsets, 'uint32'),
-        eventPaths: input('event-paths', eventPaths, 'uint32'),
+        positions: input('positions', lines.positions, 'float32x2'),
+        lineOffsets: input('line-offsets', lines.lineOffsets, 'uint32'),
+        eventLineIndices: input('event-lines', eventLineIndices, 'uint32'),
         eventMeasures: input('event-measures', eventMeasures, 'float32'),
         eventOffsets: input('event-offsets', eventOffsets, 'float32'),
         measureMode,
@@ -489,14 +482,14 @@ it('GPULineLocate places events by distance and fraction, with offsets and per-f
         const measure =
           Math.fround(eventMeasures[event] * Math.fround(frame.measureScale)) +
           Math.fround(frame.measureOffset);
-        const expected = locateAlong(paths, measures, eventPaths[event], measure, {
+        const expected = locateAlong(lines, measures, eventLineIndices[event], measure, {
           fraction: measureMode === 'fraction',
           offset: eventOffsets[event]
         });
         const label = `${measureMode} event ${event}`;
-        // Measures within f32 rounding of a path end may clamp on one side only.
-        const pathEnd = paths.pathOffsets[Math.min(eventPaths[event], 39) + 1] - 1;
-        const total = measures[pathEnd] ?? 0;
+        // Measures within f32 rounding of a line end may clamp on one side only.
+        const lineEnd = lines.lineOffsets[Math.min(eventLineIndices[event], 39) + 1] - 1;
+        const total = measures[lineEnd] ?? 0;
         const target = measureMode === 'fraction' ? measure * total : measure;
         const nearEnd = Math.abs(target) < 1e-4 || Math.abs(target - total) < 1e-4;
         if (!nearEnd) {
@@ -507,9 +500,9 @@ it('GPULineLocate places events by distance and fraction, with offsets and per-f
           continue;
         }
         // Measures on a vertex may land on either neighbor segment in f32; positions agree anyway.
-        const pathStart = paths.pathOffsets[Math.min(eventPaths[event], 39)];
+        const lineStart = lines.lineOffsets[Math.min(eventLineIndices[event], 39)];
         const nearVertex = measures
-          .slice(pathStart, pathEnd + 1)
+          .slice(lineStart, lineEnd + 1)
           .some(vertexMeasure => Math.abs(vertexMeasure - target) < 1e-4);
         if (!nearVertex) {
           expect(segmentIndices[event], label).toBe(expected.segmentIndex);

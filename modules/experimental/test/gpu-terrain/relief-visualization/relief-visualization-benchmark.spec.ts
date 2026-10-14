@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -27,6 +28,7 @@ import {
 } from '../../../src/gpu-terrain/relief-visualization/gpu-simple-local-relief';
 import {createInputBuffer, createOutputBuffer} from '../../utils/gpu-contributor-test-utils';
 import {createSmoothTerrain} from '../terrain-illumination/terrain-horizon-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Opt in with `VITE_RELIEF_VISUALIZATION_BENCHMARK=true npx vitest run --project headless <this file>`.
 const RUN_BENCHMARK =
@@ -70,9 +72,8 @@ async function measureCase(
 
 it.skipIf(!RUN_BENCHMARK)('relief visualization 1024^2 timings', {timeout: 600000}, async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
+  const grid = makeGPURasterMetadata({width: SIZE, height: SIZE});
   const elevation = createSmoothTerrain(SIZE, SIZE, 1).map(value => value * 4);
   const settingsBuffers: GPUParameterBuffer<'float32'>[] = [];
   const createSettings = (values: Float32Array) => {
@@ -112,53 +113,49 @@ it.skipIf(!RUN_BENCHMARK)('relief visualization 1024^2 timings', {timeout: 60000
     await measureCase(device, 'SLRM radius 20', (graph, buffers) => {
       graph.add(
         new GPUSimpleLocalRelief({
-          width: SIZE,
-          height: SIZE,
-          radius: 20,
+          grid,
+          maximumRadius: 20,
           elevation: band(graph, buffers),
-          settings: slrmSettings.importToGraph(graph),
-          relief: output(graph, buffers, 'relief')
+          parameters: slrmSettings.importToGraph(graph),
+          output: {relief: output(graph, buffers, 'relief')}
         })
       );
     }),
     await measureCase(device, 'MSRM res 1, 1..20 m, s 1 (radii 0..10)', (graph, buffers) => {
       graph.add(
         new GPUMultiScaleRelief({
-          width: SIZE,
-          height: SIZE,
+          grid,
           resolution: 1,
           featureMinimum: 1,
           featureMaximum: 20,
           scalingFactor: 1,
           elevation: band(graph, buffers),
-          settings: msrmSettings.importToGraph(graph),
-          relief: output(graph, buffers, 'relief')
+          parameters: msrmSettings.importToGraph(graph),
+          output: {relief: output(graph, buffers, 'relief')}
         })
       );
     }),
     await measureCase(device, 'MSRM res 1, 3..200 m, s 2 (radii 1..100)', (graph, buffers) => {
       graph.add(
         new GPUMultiScaleRelief({
-          width: SIZE,
-          height: SIZE,
+          grid,
           resolution: 1,
           featureMinimum: 3,
           featureMaximum: 200,
           scalingFactor: 2,
           elevation: band(graph, buffers),
-          settings: msrmSettings.importToGraph(graph),
-          relief: output(graph, buffers, 'relief')
+          parameters: msrmSettings.importToGraph(graph),
+          output: {relief: output(graph, buffers, 'relief')}
         })
       );
     }),
     await measureCase(device, 'local dominance defaults (264 samples)', (graph, buffers) => {
       graph.add(
         new GPULocalDominance({
-          width: SIZE,
-          height: SIZE,
+          grid,
           elevation: band(graph, buffers),
-          settings: dominanceSettings.importToGraph(graph),
-          dominance: output(graph, buffers, 'dominance')
+          parameters: dominanceSettings.importToGraph(graph),
+          output: {dominance: output(graph, buffers, 'dominance')}
         })
       );
     }),
@@ -167,16 +164,17 @@ it.skipIf(!RUN_BENCHMARK)('relief visualization 1024^2 timings', {timeout: 60000
       buffers.push(colorBuffer);
       graph.add(
         new GPUReliefBlend({
-          width: SIZE,
-          height: SIZE,
+          grid,
           layers: [0, 1, 2, 3].map(layer => {
             const buffer = createInputBuffer(device, elevation);
             buffers.push(buffer);
             return importGraphBuffer(graph, `layer-${layer}`, buffer, 'float32', PIXEL_COUNT);
           }),
-          settings: blendSettings.importToGraph(graph),
-          blend: output(graph, buffers, 'blend'),
-          color: importGraphBuffer(graph, 'color', colorBuffer, 'uint32', PIXEL_COUNT)
+          parameters: blendSettings.importToGraph(graph),
+          output: {
+            blend: output(graph, buffers, 'blend'),
+            color: importGraphBuffer(graph, 'color', colorBuffer, 'uint32', PIXEL_COUNT)
+          }
         })
       );
     })

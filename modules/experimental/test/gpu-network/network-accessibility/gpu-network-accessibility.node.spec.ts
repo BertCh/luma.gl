@@ -8,7 +8,7 @@ import {
   GPUNetworkAccessibility,
   GPUNetworkCostMatrix,
   GPUNetworkSnapping,
-  encodeGPUNetworkAccessibilityParameters,
+  getGPUNetworkAccessibilityParameterValues,
   type GPUNetworkAccessibilityProps,
   type GPUNetworkCostMatrixProps,
   type GPUNetworkSnappingProps
@@ -28,15 +28,20 @@ function createView<Format extends 'uint32' | 'float32' | 'float32x2'>(
 
 function createMatrixProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUNetworkCostMatrixProps> = {}
+  overrides: Partial<GPUNetworkCostMatrixProps> = {},
+  topology: Partial<GPUNetworkCostMatrixProps['topology']> = {},
+  output: Partial<GPUNetworkCostMatrixProps['output']> = {}
 ): GPUNetworkCostMatrixProps {
   return {
     id: 'matrix',
-    offsets: createView(graph, 'uint32', 9),
-    neighbors: createView(graph, 'uint32', 12),
-    weights: createView(graph, 'float32', 12),
-    seedNodes: createView(graph, 'uint32', 10),
-    costs: createView(graph, 'float32', 5 * 8),
+    topology: {
+      offsets: createView(graph, 'uint32', 9),
+      neighbors: createView(graph, 'uint32', 12),
+      weights: createView(graph, 'float32', 12),
+      ...topology
+    },
+    startNodes: createView(graph, 'uint32', 10),
+    output: {costs: createView(graph, 'float32', 5 * 8), ...output},
     ...overrides
   };
 }
@@ -44,11 +49,10 @@ function createMatrixProps(
 it('GPUNetworkCostMatrix schedules lane expansion and one reachability per batch', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const contributor = new GPUNetworkCostMatrix({
-    ...createMatrixProps(graph),
-    seedsPerRow: 2,
+    ...createMatrixProps(graph, {}, {}, {status: {converged: createView(graph, 'uint32', 1)}}),
+    startsPerRow: 2,
     laneCount: 2,
-    maxIterations: 3,
-    converged: createView(graph, 'uint32', 1)
+    maximumIterations: 3
   });
   expect(contributor.rowCount).toBe(5);
   expect(contributor.nodeCount).toBe(8);
@@ -67,11 +71,10 @@ it('GPUNetworkCostMatrix schedules lane expansion and one reachability per batch
   const again = new GPUCommandGraph(createNullWebGPUDevice());
   expect(
     new GPUNetworkCostMatrix({
-      ...createMatrixProps(again),
-      seedsPerRow: 2,
+      ...createMatrixProps(again, {}, {}, {status: {converged: createView(again, 'uint32', 1)}}),
+      startsPerRow: 2,
       laneCount: 2,
-      maxIterations: 3,
-      converged: createView(again, 'uint32', 1)
+      maximumIterations: 3
     })
       .getCommandNodes(again)
       .map(node => node.id)
@@ -83,7 +86,9 @@ it('GPUNetworkCostMatrix validates shapes and lane counts', () => {
   expect(new GPUNetworkCostMatrix(createMatrixProps(graph)).laneCount).toBe(5);
   expect(
     () =>
-      new GPUNetworkCostMatrix(createMatrixProps(graph, {costs: createView(graph, 'float32', 13)}))
+      new GPUNetworkCostMatrix(
+        createMatrixProps(graph, {}, {}, {costs: createView(graph, 'float32', 13)})
+      )
   ).toThrow(/multiple of the node count/);
   expect(() => new GPUNetworkCostMatrix(createMatrixProps(graph, {laneCount: 6}))).toThrow(
     /laneCount/
@@ -92,17 +97,33 @@ it('GPUNetworkCostMatrix validates shapes and lane counts', () => {
     () =>
       new GPUNetworkCostMatrix(
         createMatrixProps(graph, {
-          seedCosts: createView(graph, 'float32', 3)
+          startCosts: createView(graph, 'float32', 3)
         })
       )
-  ).toThrow(/seedCosts length/);
+  ).toThrow(/startCosts length/);
   expect(
     () =>
-      new GPUNetworkCostMatrix(createMatrixProps(graph, {weights: createView(graph, 'float32', 2)}))
-  ).toThrow(/weights length/);
-  expect(() => new GPUNetworkCostMatrix(createMatrixProps(graph, {seedsPerRow: 0}))).toThrow(
-    /seedsPerRow/
+      new GPUNetworkCostMatrix(
+        createMatrixProps(graph, {}, {weights: createView(graph, 'float32', 2)})
+      )
+  ).toThrow(/topology.weights length/);
+  expect(() => new GPUNetworkCostMatrix(createMatrixProps(graph, {startsPerRow: 0}))).toThrow(
+    /startsPerRow/
   );
+  const missingWeights = createMatrixProps(graph);
+  expect(
+    () =>
+      new GPUNetworkCostMatrix({
+        ...missingWeights,
+        topology: {...missingWeights.topology, weights: undefined as never}
+      })
+  ).toThrow(/topology.weights is required/);
+  expect(
+    () =>
+      new GPUNetworkCostMatrix(
+        createMatrixProps(graph, {}, {offsets: createView(graph, 'float32' as never, 9) as never})
+      )
+  ).toThrow(/topology.offsets/);
 });
 
 function createAccessibilityProps(
@@ -131,11 +152,32 @@ it('GPUNetworkAccessibility schedules scores and catchment nodes', () => {
   );
   expect(contributor.rowCount).toBe(4);
   expect(contributor.nodeCount).toBe(10);
-  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
-    'access-scores',
-    'access-catchment-ratios',
-    'access-catchment-scores'
-  ]);
+  // A-19: the catchment composes GPUNetworkCostWeights (facility rows and the transpose) with the
+  // one floating catchment kernel, GPUCatchmentAccessibility.
+  const ids = contributor.getCommandNodes(graph).map(node => node.id);
+  expect(ids[0]).toBe('access-scores');
+  expect(ids.slice(-2)).toEqual(['access-catchment-ratios', 'access-catchment-scores']);
+  for (const side of ['facility', 'demand']) {
+    for (const stage of ['count', 'fill', 'finalize']) {
+      expect(ids).toContain(`access-catchment-${side}-weights-${stage}`);
+    }
+  }
+  expect(ids.indexOf('access-catchment-demand-weights-finalize')).toBeLessThan(
+    ids.indexOf('access-catchment-ratios')
+  );
+  const threeStep = new GPUNetworkAccessibility(
+    createAccessibilityProps(graph, {
+      id: 'access3',
+      catchment: {
+        method: '3sfca',
+        demand: createView(graph, 'float32', 10),
+        output: createView(graph, 'float32', 10)
+      }
+    })
+  );
+  expect(threeStep.getCommandNodes(graph).map(node => node.id)).toContain(
+    'access3-catchment-selection'
+  );
   const origin = new GPUNetworkAccessibility(
     createAccessibilityProps(graph, {
       orientation: 'origin-rows',
@@ -192,13 +234,13 @@ it('GPUNetworkAccessibility validates orientation, outputs, and parameters', () 
   ).toThrow(/multiple/);
 });
 
-it('encodeGPUNetworkAccessibilityParameters packs threshold, decay code, beta, minimum cost', () => {
-  expect(Array.from(encodeGPUNetworkAccessibilityParameters({threshold: 30}))).toEqual([
+it('getGPUNetworkAccessibilityParameterValues packs threshold, decay code, beta, minimum cost', () => {
+  expect(Array.from(getGPUNetworkAccessibilityParameterValues({threshold: 30}))).toEqual([
     30, 0, 0, 1
   ]);
   expect(
     Array.from(
-      encodeGPUNetworkAccessibilityParameters({
+      getGPUNetworkAccessibilityParameterValues({
         threshold: Infinity,
         decay: 'power',
         beta: 2,
@@ -207,7 +249,7 @@ it('encodeGPUNetworkAccessibilityParameters packs threshold, decay code, beta, m
     )
   ).toEqual([Infinity, 2, 2, 0.5]);
   expect(
-    encodeGPUNetworkAccessibilityParameters({
+    getGPUNetworkAccessibilityParameterValues({
       threshold: 1,
       decay: 'exponential'
     })[1]
@@ -216,15 +258,20 @@ it('encodeGPUNetworkAccessibilityParameters packs threshold, decay code, beta, m
 
 function createSnappingProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUNetworkSnappingProps> = {}
+  overrides: Partial<GPUNetworkSnappingProps> = {},
+  output: Partial<GPUNetworkSnappingProps['output']> = {},
+  topology: Partial<GPUNetworkSnappingProps['topology']> = {}
 ): GPUNetworkSnappingProps {
   return {
     id: 'snap',
-    points: createView(graph, 'float32x2', 6),
-    nodePositions: createView(graph, 'float32x2', 4),
-    edgeSources: createView(graph, 'uint32', 5),
-    edgeTargets: createView(graph, 'uint32', 5),
-    snappedEdges: createView(graph, 'uint32', 6),
+    positions: createView(graph, 'float32x2', 6),
+    topology: {
+      offsets: createView(graph, 'uint32', 5),
+      neighbors: createView(graph, 'uint32', 5),
+      nodePositions: createView(graph, 'float32x2', 4),
+      ...topology
+    },
+    output: {snappedEdges: createView(graph, 'uint32', 6), ...output},
     ...overrides
   };
 }
@@ -232,13 +279,19 @@ function createSnappingProps(
 it('GPUNetworkSnapping schedules a scan or a BVH join and optional outputs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const scan = new GPUNetworkSnapping(
-    createSnappingProps(graph, {
-      seedNodes: createView(graph, 'uint32', 12),
-      seedCosts: createView(graph, 'float32', 12),
-      snappedPositions: createView(graph, 'float32x2', 6)
-    })
+    createSnappingProps(
+      graph,
+      {},
+      {
+        startNodes: createView(graph, 'uint32', 12),
+        startCosts: createView(graph, 'float32', 12),
+        snappedPositions: createView(graph, 'float32x2', 6)
+      }
+    )
   );
   expect(scan.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'snap-edge-sources-clear',
+    'snap-edge-sources',
     'snap-scan',
     'snap-costs',
     'snap-positions',
@@ -246,12 +299,14 @@ it('GPUNetworkSnapping schedules a scan or a BVH join and optional outputs', () 
   ]);
   const joinGraph = new GPUCommandGraph(createNullWebGPUDevice());
   const join = new GPUNetworkSnapping(
-    createSnappingProps(joinGraph, {
-      edgeSources: undefined,
-      offsets: createView(joinGraph, 'uint32', 5),
-      maxSnapDistance: createView(joinGraph, 'float32', 1),
-      candidateCapacity: 64
-    })
+    createSnappingProps(
+      joinGraph,
+      {
+        maximumSnapDistance: createView(joinGraph, 'float32', 1),
+        candidateCapacity: 64
+      },
+      {status: {overflow: createView(joinGraph, 'uint32', 1)}}
+    )
   );
   const ids = join.getCommandNodes(joinGraph).map(node => node.id);
   // The edge-source rows are cleared first, so rows past offsets[nodeCount] are never stale.
@@ -262,37 +317,51 @@ it('GPUNetworkSnapping schedules a scan or a BVH join and optional outputs', () 
   expect(ids.at(-1)).toBe('snap-project');
 });
 
-it('GPUNetworkSnapping validates edge inputs, capacities, and output lengths', () => {
+it('GPUNetworkSnapping validates topology, capacities, and output lengths', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   expect(
     () =>
-      new GPUNetworkSnapping(createSnappingProps(graph, {offsets: createView(graph, 'uint32', 5)}))
-  ).toThrow(/exactly one of edgeSources and offsets/);
+      new GPUNetworkSnapping(
+        createSnappingProps(graph, {}, {}, {nodePositions: createView(graph, 'float32x2', 3)})
+      )
+  ).toThrow(/topology.nodePositions must contain one row per node/);
+  const missingPositions = createSnappingProps(graph);
+  expect(
+    () =>
+      new GPUNetworkSnapping({
+        ...missingPositions,
+        topology: {...missingPositions.topology, nodePositions: undefined as never}
+      })
+  ).toThrow(/topology.nodePositions is required/);
+  expect(
+    () =>
+      new GPUNetworkSnapping(
+        createSnappingProps(graph, {}, {}, {weights: createView(graph, 'float32', 4)})
+      )
+  ).toThrow(/topology.weights length/);
   expect(() => new GPUNetworkSnapping(createSnappingProps(graph, {candidateCapacity: 8}))).toThrow(
-    /requires maxSnapDistance/
+    /requires maximumSnapDistance/
   );
+  // Rule 9: a candidate capacity can drop candidates, so its overflow flag is required.
   expect(
     () =>
       new GPUNetworkSnapping(
         createSnappingProps(graph, {
-          seedNodes: createView(graph, 'uint32', 12)
+          candidateCapacity: 8,
+          maximumSnapDistance: createView(graph, 'float32', 1)
         })
+      )
+  ).toThrow(/candidateCapacity requires output\.status\.overflow/);
+  expect(
+    () =>
+      new GPUNetworkSnapping(
+        createSnappingProps(graph, {}, {startNodes: createView(graph, 'uint32', 12)})
       )
   ).toThrow(/together/);
   expect(
     () =>
       new GPUNetworkSnapping(
-        createSnappingProps(graph, {
-          snapFractions: createView(graph, 'float32', 5)
-        })
+        createSnappingProps(graph, {}, {snapFractions: createView(graph, 'float32', 5)})
       )
-  ).toThrow(/point count/);
-  expect(
-    () =>
-      new GPUNetworkSnapping(
-        createSnappingProps(graph, {
-          edgeCosts: createView(graph, 'float32', 4)
-        })
-      )
-  ).toThrow(/edgeCosts length/);
+  ).toThrow(/position count/);
 });

@@ -8,9 +8,10 @@ import {
   getMultipleTestingAdjustedPValues,
   GPUMultipleTestingAdjustment,
   resolveGPUMultipleTestingMethod,
+  type GPUMultipleTestingAdjustmentOutput,
   type GPUMultipleTestingAdjustmentProps
 } from '../../../src/gpu-spatial-analysis/multiple-testing';
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {MULTIPLE_TESTING_FIXTURES} from './multiple-testing-fixtures';
 
@@ -109,27 +110,35 @@ function createViews(graph: GPUCommandGraph) {
     createTransientView(graph, `view-${serial++}`, format, length);
   return {
     view,
-    common: {pValues: view('float32', 10), adjustedPValues: view('float32', 10)}
+    common: {pValues: view('float32', 10), output: {adjustedPValues: view('float32', 10)}}
   };
 }
 
 it('GPUMultipleTestingAdjustment validates its props and emits deterministic node IDs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'multiple-testing-validation'});
   const {view, common} = createViews(graph);
-  const create = (overrides: Partial<GPUMultipleTestingAdjustmentProps> = {}) =>
-    new GPUMultipleTestingAdjustment({...common, method: 'holm', ...overrides});
+  const create = (
+    overrides: Partial<GPUMultipleTestingAdjustmentProps> = {},
+    output: Partial<GPUMultipleTestingAdjustmentOutput> = {}
+  ) =>
+    new GPUMultipleTestingAdjustment({
+      ...common,
+      method: 'holm',
+      ...overrides,
+      output: {...common.output, ...output}
+    });
   expect(() => create()).not.toThrow();
   expect(() => create({method: 'sidak' as GPUMultipleTestingMethod})).toThrow(/method/);
-  expect(() => create({adjustedPValues: view('float32', 9)})).toThrow(/adjustedPValues length/);
-  expect(() => create({adjustedPValues: common.pValues})).toThrow(/share buffers/);
-  expect(() => create({adjustedPValues: view('uint32', 10) as never})).toThrow();
+  expect(() => create({}, {adjustedPValues: view('float32', 9)})).toThrow(/adjustedPValues length/);
+  expect(() => create({}, {adjustedPValues: common.pValues})).toThrow(/share buffers/);
+  expect(() => create({}, {adjustedPValues: view('uint32', 10) as never})).toThrow();
   expect(() => create({minimumFamilySize: -1})).toThrow(/minimumFamilySize/);
   expect(() => create({minimumFamilySize: 2 ** 24})).toThrow(/minimumFamilySize/);
   expect(() => create({minimumFamilySize: 2.5})).toThrow(/minimumFamilySize/);
-  expect(() => create({testedCount: view('uint32', 0)})).toThrow(/testedCount/);
-  expect(() => create({testedCount: common.pValues as never})).toThrow();
+  expect(() => create({}, {testedCount: view('uint32', 0)})).toThrow(/testedCount/);
+  expect(() => create({}, {testedCount: common.pValues as never})).toThrow();
   expect(() =>
-    create({testedCount: view('uint32', 1), adjustedPValues: view('float32', 10)})
+    create({}, {testedCount: view('uint32', 1), adjustedPValues: view('float32', 10)})
   ).not.toThrow();
 
   const otherGraph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'other-graph'});
@@ -141,8 +150,10 @@ it('GPUMultipleTestingAdjustment validates its props and emits deterministic nod
       id: 'mt',
       method,
       pValues: createTransientView(idsGraph, 'p', 'float32', 10),
-      adjustedPValues: createTransientView(idsGraph, 'a', 'float32', 10),
-      testedCount: withTestedCount ? createTransientView(idsGraph, 'n', 'uint32', 1) : undefined
+      output: {
+        adjustedPValues: createTransientView(idsGraph, 'a', 'float32', 10),
+        testedCount: withTestedCount ? createTransientView(idsGraph, 'n', 'uint32', 1) : undefined
+      }
     })
       .getCommandNodes(idsGraph)
       .map(node => node.id);
@@ -161,7 +172,7 @@ it('GPUMultipleTestingAdjustment validates its props and emits deterministic nod
     id: 'large',
     method: 'benjamini-yekutieli',
     pValues: createTransientView(largeGraph, 'p', 'float32', 70000),
-    adjustedPValues: createTransientView(largeGraph, 'a', 'float32', 70000)
+    output: {adjustedPValues: createTransientView(largeGraph, 'a', 'float32', 70000)}
   })
     .getCommandNodes(largeGraph)
     .map(node => node.id);

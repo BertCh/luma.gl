@@ -6,6 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {runSharedPaths, type Point} from './line-clip-harness';
 import {SHAPELY_SHARED_PATHS_FIXTURE} from './shapely-shared-paths-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function getLength(run: readonly (readonly number[])[]): number {
   let total = 0;
@@ -17,7 +18,7 @@ function getLength(run: readonly (readonly number[])[]): number {
 
 it('GPUSharedPaths#reports forward and backward runs along the left line', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runSharedPaths(
     device,
     [
@@ -69,7 +70,7 @@ it('GPUSharedPaths#reports forward and backward runs along the left line', async
 
 it('GPUSharedPaths#matches Shapely shared_paths on lattice walks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const {left, right, shared} = SHAPELY_SHARED_PATHS_FIXTURE;
   const start = performance.now();
   const result = await runSharedPaths(device, left as never, right as never);
@@ -136,7 +137,7 @@ it('GPUSharedPaths#matches Shapely shared_paths on lattice walks', async () => {
 
 it('GPUSharedPaths#reports overflow and keeps a consistent prefix', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const left = [
     [
       [0, 0],
@@ -170,7 +171,7 @@ it('GPUSharedPaths#reports overflow and keeps a consistent prefix', async () => 
 
 it('GPUSharedPaths#compiles within the default storage buffer limit', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runSharedPaths(
     device,
     [

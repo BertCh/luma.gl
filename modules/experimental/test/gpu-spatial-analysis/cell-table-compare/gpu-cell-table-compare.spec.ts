@@ -29,6 +29,7 @@ import {
   type CompareInputCell,
   type CompareResult
 } from './cell-table-compare-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SUM_SCALE = 65536;
 const EMPTY_KEY = 0xffffffff;
@@ -118,8 +119,10 @@ function importInputTable(graph: GPUCommandGraph, name: string, table: InputTabl
     cells: importGraphBuffer(graph, `${name}-cells`, table.cells, 'uint32x2', capacity),
     counts: importGraphBuffer(graph, `${name}-counts`, table.counts, 'uint32', capacity),
     sums: importGraphBuffer(graph, `${name}-sums`, table.sums, 'uint32x2', capacity),
-    count: importGraphBuffer(graph, `${name}-count`, table.count, 'uint32', 1),
-    overflow: importGraphBuffer(graph, `${name}-overflow`, table.overflow, 'uint32', 1)
+    status: {
+      count: importGraphBuffer(graph, `${name}-count`, table.count, 'uint32', 1),
+      overflow: importGraphBuffer(graph, `${name}-overflow`, table.overflow, 'uint32', 1)
+    }
   };
 }
 
@@ -172,9 +175,11 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
     ratio: view('ratio', 'float32'),
     percentChange: view('percentChange', 'float32'),
     zScore: view('zScore', 'float32'),
-    count: view('count', 'uint32', 1),
-    overflow: view('overflow', 'uint32', 1),
-    requiredCount: view('total', 'uint32', 1)
+    status: {
+      count: view('count', 'uint32', 1),
+      overflow: view('overflow', 'uint32', 1),
+      requiredCount: view('total', 'uint32', 1)
+    }
   };
 }
 
@@ -428,9 +433,7 @@ for (const [measure, zScore] of [
 ] as const) {
   it(`GPUCellTableCompare ${measure} measure with ${zScore} z-score matches the CPU oracle`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const fixture = new Fixture(device);
     // Table and union capacities are larger than every scenario, so the tails are exercised.
     const scenarios = getScenarios();
@@ -459,9 +462,7 @@ for (const [measure, zScore] of [
 
 it('GPUCellTableCompare bounds the union, keeps the smallest keys, and ORs input overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const before = createRandomTable(31, 300, 900);
   const after = createRandomTable(32, 300, 900);
@@ -511,9 +512,7 @@ it('GPUCellTableCompare bounds the union, keeps the smallest keys, and ORs input
 
 it('GPUCellTableCompare follows rewritten tables without recompiling and is deterministic', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = new Fixture(device);
   const capacity = 1500;
   const compare = createCompareFixture(fixture, {
@@ -569,9 +568,7 @@ it('GPUCellTableCompare follows rewritten tables without recompiling and is dete
 
 it('GPUCellTableCompare compares two real GPUCellAggregation periods in one graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const resolution = 6;
   for (const measure of ['count', 'sum'] as const) {
     const fixture = new Fixture(device);
@@ -606,8 +603,10 @@ it('GPUCellTableCompare compares two real GPUCellAggregation periods in one grap
         cells: view('cells', 'uint32x2', tableCapacity),
         counts: view('counts', 'uint32', tableCapacity),
         sums: view('sums', 'uint32x2', tableCapacity),
-        count: view('count', 'uint32', 1),
-        overflow: view('overflow', 'uint32', 1)
+        status: {
+          count: view('count', 'uint32', 1),
+          overflow: view('overflow', 'uint32', 1)
+        }
       };
     };
     const periodBefore = createTable('period-a');

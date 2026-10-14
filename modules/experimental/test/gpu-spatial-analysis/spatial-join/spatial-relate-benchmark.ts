@@ -25,6 +25,7 @@ import {
   createWobblyPolygon
 } from './spatial-relate-realistic-scenes';
 import {createRandom} from '../segment-intersection/segment-intersection-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * Relate-engine scaling benchmark on realistic (zip-code-like) polygons. Imported by the gated
@@ -309,13 +310,17 @@ async function timePredicate(
       pattern,
       distance,
       candidateCapacity: capacity,
-      pairs: {
-        leftIds: leftIds.view,
-        rightIds: rightIds.view,
-        count: count.view,
-        overflow: overflow.view
-      },
-      relate: wantsRelate ? relate.view : undefined
+      output: {
+        pairs: {
+          leftIds: leftIds.view,
+          rightIds: rightIds.view,
+          status: {
+            count: count.view,
+            overflow: overflow.view
+          }
+        },
+        relate: wantsRelate ? relate.view : undefined
+      }
     })
   );
   const compiled = graph.compile();
@@ -376,9 +381,7 @@ const BENCHMARK_PREDICATES: [
 
 it('spatial relate benchmark: realistic polygons and lines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const only = (globalThis as {RELATE_BENCHMARK_SCENARIO?: string}).RELATE_BENCHMARK_SCENARIO;
   for (const scenario of createScenarios()) {
     if (only && !scenario.name.startsWith(only)) {

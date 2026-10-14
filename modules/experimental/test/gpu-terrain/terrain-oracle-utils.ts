@@ -23,10 +23,19 @@ export function getOracleRadiiOfCurvature(latitudeDegrees: number): [number, num
 export type OracleCellSizeMode = 'uniform' | 'web-mercator' | 'geographic';
 
 /**
+ * EPSG:3857 y in meters of a normalized Web Mercator y in `[0, 1]` (0 at the north limit):
+ * `(0.5 - normalizedY) 2 PI a`. Specs use it to place grids at the latitudes the normalized
+ * edges used to name.
+ */
+export function getOracleWebMercatorY(normalizedY: number): number {
+  return (0.5 - normalizedY) * 2 * Math.PI * ORACLE_WGS84_SEMI_MAJOR_AXIS;
+}
+
+/**
  * Ground cell size of one row in the three cell size models, matching the GPU contributors.
  *
- * @param settings Settings array with the cell size at `[0]`, `[1]` and the north and south
- *   latitude or Mercator edges at `[northEdgeIndex]`, `[northEdgeIndex + 1]`.
+ * @param settings Packed parameters with the cell size at `[0]`, `[1]` and the north and south
+ *   latitude or EPSG:3857 y edges at `[northEdgeIndex]`, `[northEdgeIndex + 1]`.
  * @param row Raster row.
  * @param height Raster height in rows.
  * @param mode Cell size model.
@@ -48,8 +57,8 @@ export function getOracleGroundCellSize(
   const edge =
     settings[northEdgeIndex] + (settings[northEdgeIndex + 1] - settings[northEdgeIndex]) * fraction;
   if (mode === 'web-mercator') {
-    // EPSG:3857: geodetic latitude = atan(sinh(PI (1 - 2y))); ground = radius * cos(lat) / a.
-    const latitude = (Math.atan(Math.sinh(Math.PI * (1 - 2 * edge))) * 180) / Math.PI;
+    // EPSG:3857 y in meters: geodetic latitude = atan(sinh(y / a)); ground = radius * cos(lat) / a.
+    const latitude = (Math.atan(Math.sinh(edge / ORACLE_WGS84_SEMI_MAJOR_AXIS)) * 180) / Math.PI;
     const [meridional, primeVertical] = getOracleRadiiOfCurvature(latitude);
     const cosLatitude = Math.cos((latitude * Math.PI) / 180);
     return [

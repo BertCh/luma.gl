@@ -9,9 +9,9 @@ import {
   getGPUNeighborSearchParameterValues,
   GPUNeighborSearch,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  type GPUNeighborSearchParameters
+  type GPUNeighborSearchSettings
 } from '../../../src/gpu-spatial-analysis/neighbor-search';
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts';
 import type {
   GPUIslandPolicy,
   GPUSpatialWeights
@@ -22,7 +22,7 @@ import {
   GPULocalMoran,
   type GPULocalMoranQuadrantGating,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
-  type GPUSpatialAutocorrelationParameters
+  type GPUSpatialAutocorrelationSettings
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation';
 import {
   createInputBuffer,
@@ -49,7 +49,7 @@ export type SpatialAutocorrelationWeightsSource =
   | {
       kind: 'neighbor-search';
       positions: Float32Array;
-      parameters: GPUNeighborSearchParameters;
+      parameters: GPUNeighborSearchSettings;
       /** Slot capacity of the CSR the search writes. */
       capacity: number;
     };
@@ -79,8 +79,8 @@ export type SpatialAutocorrelationHarness = {
   /** Number of `getCommandNodes` calls, i.e. graph builds. Stays 1 across frames. */
   readonly buildCount: number;
   run(
-    parameters?: GPUSpatialAutocorrelationParameters | Float32Array,
-    neighborParameters?: GPUNeighborSearchParameters
+    parameters?: GPUSpatialAutocorrelationSettings | Float32Array,
+    neighborParameters?: GPUNeighborSearchSettings
   ): Promise<SpatialAutocorrelationReadback>;
   writeValues(values: Float32Array): void;
   writeMask(mask: Uint32Array): void;
@@ -94,14 +94,12 @@ export function createSpatialAutocorrelationHarness(
     contributor: 'hot-spot' | 'local-moran';
     scene: SpatialAutocorrelationScene;
     weights: SpatialAutocorrelationWeightsSource;
-    parameters?: GPUSpatialAutocorrelationParameters;
+    parameters?: GPUSpatialAutocorrelationSettings;
     gridSize?: readonly [number, number];
-    /** @deprecated Use `multipleTesting`. */
-    falseDiscoveryRate?: boolean;
     multipleTesting?: GPUMultipleTestingMethod;
     islands?: GPUIslandPolicy;
     minimumNeighbors?: number;
-    /** Declares `weights.info.transform === 'row'`, so rows are re-standardized after masking. */
+    /** Declares `weights.information.transform === 'row'`, so rows are re-standardized after masking. */
     rowStandardized?: boolean;
     /** Local Moran only. */
     quadrantGating?: GPULocalMoranQuadrantGating;
@@ -168,7 +166,7 @@ export function createSpatialAutocorrelationHarness(
     offsets: importGraphBuffer(graph, 'offsets', outputs.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', outputs.neighbors, 'uint32', capacity),
     weights: importGraphBuffer(graph, 'weights', outputs.weights, 'float32', capacity),
-    info: options.rowStandardized
+    information: options.rowStandardized
       ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
       : undefined
   };
@@ -189,8 +187,10 @@ export function createSpatialAutocorrelationHarness(
         gridSize: options.gridSize ?? [32, 32],
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
         parameters: neighborParameterBuffer.importToGraph(graph),
-        weights,
-        overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+        output: {
+          ...weights,
+          status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+        }
       })
     );
   }
@@ -199,10 +199,11 @@ export function createSpatialAutocorrelationHarness(
     values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', rows),
     parameters: parameterBuffer.importToGraph(graph),
     mask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows),
-    falseDiscoveryRate: options.falseDiscoveryRate,
     multipleTesting: options.multipleTesting,
     islands: options.islands,
-    minimumNeighbors: options.minimumNeighbors,
+    minimumNeighbors: options.minimumNeighbors
+  };
+  const commonOutput = {
     zScores: importGraphBuffer(graph, 'z-scores', outputs.zScores, 'float32', rows),
     pValues: importGraphBuffer(graph, 'p-values', outputs.pValues, 'float32', rows),
     adjustedPValues: importGraphBuffer(
@@ -232,14 +233,26 @@ export function createSpatialAutocorrelationHarness(
       ? new GPUHotSpotAnalysis({
           ...common,
           selfWeight: options.selfWeight,
-          bins: importGraphBuffer(graph, 'bins', outputs.bins, 'sint32', rows)
+          output: {
+            ...commonOutput,
+            bins: importGraphBuffer(graph, 'bins', outputs.bins, 'sint32', rows)
+          }
         })
       : new GPULocalMoran({
           ...common,
           quadrantGating: options.quadrantGating,
-          localI: importGraphBuffer(graph, 'local-i', outputs.localI, 'float32', rows),
-          spatialLag: importGraphBuffer(graph, 'spatial-lag', outputs.spatialLag, 'float32', rows),
-          quadrants: importGraphBuffer(graph, 'quadrants', outputs.quadrants, 'uint32', rows)
+          output: {
+            ...commonOutput,
+            localI: importGraphBuffer(graph, 'local-i', outputs.localI, 'float32', rows),
+            spatialLag: importGraphBuffer(
+              graph,
+              'spatial-lag',
+              outputs.spatialLag,
+              'float32',
+              rows
+            ),
+            quadrants: importGraphBuffer(graph, 'quadrants', outputs.quadrants, 'uint32', rows)
+          }
         });
   let buildCount = 0;
   const getCommandNodes = contributor.getCommandNodes.bind(contributor);

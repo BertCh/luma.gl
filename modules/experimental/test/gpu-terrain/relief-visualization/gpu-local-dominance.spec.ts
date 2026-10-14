@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -24,6 +25,7 @@ import {
   getMaximumMagnitude,
   punchHoles
 } from './relief-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 64;
 const HEIGHT = 48;
@@ -50,12 +52,13 @@ async function runLocalDominance(
   graph.add(
     new GPULocalDominance({
       ...geometry,
-      width: WIDTH,
-      height: HEIGHT,
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       elevation: createElevationBand(graph, device, elevation, buffers),
-      settings: settings.importToGraph(graph),
-      dominance: importGraphBuffer(graph, 'dominance', dominanceBuffer, 'float32', PIXEL_COUNT),
-      validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      parameters: settings.importToGraph(graph),
+      output: {
+        dominance: importGraphBuffer(graph, 'dominance', dominanceBuffer, 'float32', PIXEL_COUNT),
+        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', PIXEL_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -104,9 +107,7 @@ it('local dominance offsets use Python half-even rounding and RVT counts', () =>
 
 it('GPULocalDominance matches the RVT roll loop with nodata and per-frame settings', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 8).map(value => value / 5);
   punchHoles(elevation, WIDTH, [
     [30, 20],
@@ -150,9 +151,7 @@ it('GPULocalDominance matches the RVT roll loop with nodata and per-frame settin
 
 it('GPULocalDominance is 1 on a flat plane and a bump dominates its surroundings', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const flat = new Float32Array(PIXEL_COUNT).fill(1234.5);
   await runLocalDominance(device, flat, {}, [{}, {observerHeight: 3}], dominance => {
     // Every offset contributes obs / d * (2 d + inc), exactly the normalization.

@@ -20,6 +20,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from './terrain-horizon-oracle';
 import {getAngleDifference} from './solar-position-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const TIMESTAMPS = [
   Date.UTC(2026, 9, 4, 6, 15),
@@ -31,9 +32,7 @@ const TIMESTAMPS = [
 
 it('GPUSolarPosition matches getSolarPosition for many locations and per-frame times', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(42);
   const rowCount = 128;
   const positions = new Float32Array(rowCount * 2);
@@ -60,10 +59,12 @@ it('GPUSolarPosition matches getSolarPosition for many locations and per-frame t
     graph.add(
       new GPUSolarPosition({
         positions: importGraphBuffer(graph, 'positions', positionBuffer, 'float32x2', rowCount),
-        settings: settings.importToGraph(graph),
-        azimuth: importGraphBuffer(graph, 'azimuth', outputs[0], 'float32', rowCount),
-        altitude: importGraphBuffer(graph, 'altitude', outputs[1], 'float32', rowCount),
-        daylight: importGraphBuffer(graph, 'daylight', outputs[2], 'uint32', rowCount),
+        parameters: settings.importToGraph(graph),
+        output: {
+          azimuth: importGraphBuffer(graph, 'azimuth', outputs[0], 'float32', rowCount),
+          altitude: importGraphBuffer(graph, 'altitude', outputs[1], 'float32', rowCount),
+          daylight: importGraphBuffer(graph, 'daylight', outputs[2], 'uint32', rowCount)
+        },
         refraction
       })
     );

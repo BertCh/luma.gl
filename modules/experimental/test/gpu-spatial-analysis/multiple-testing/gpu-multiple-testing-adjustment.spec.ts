@@ -11,7 +11,7 @@ import {
   getMultipleTestingAdjustedPValues,
   GPUMultipleTestingAdjustment
 } from '../../../src/gpu-spatial-analysis/multiple-testing';
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -20,6 +20,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {MULTIPLE_TESTING_FIXTURES} from './multiple-testing-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GARBAGE = 0x7f7f7f7f;
 const METHODS: GPUMultipleTestingMethod[] = [
@@ -49,8 +50,10 @@ async function runAdjustment(
       pValues: importGraphBuffer(graph, 'p-values', input, 'float32', rows),
       method,
       minimumFamilySize,
-      adjustedPValues: importGraphBuffer(graph, 'adjusted', adjustedBuffer, 'float32', rows),
-      testedCount: importGraphBuffer(graph, 'tested-count', testedBuffer, 'uint32', 1)
+      output: {
+        adjustedPValues: importGraphBuffer(graph, 'adjusted', adjustedBuffer, 'float32', rows),
+        testedCount: importGraphBuffer(graph, 'tested-count', testedBuffer, 'uint32', 1)
+      }
     })
   );
   const compiled = graph.compile();
@@ -80,9 +83,7 @@ function expectClose(actual: ArrayLike<number>, expected: ArrayLike<number>, lab
 
 it('GPUMultipleTestingAdjustment matches the statsmodels oracle on every fixture and method', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const fixture of MULTIPLE_TESTING_FIXTURES) {
     const testedRows = fixture.pValues.filter(p => Number.isFinite(p)).length;
     const familySize = Math.max(testedRows, fixture.minimumFamilySize);
@@ -106,9 +107,7 @@ it('GPUMultipleTestingAdjustment matches the statsmodels oracle on every fixture
 
 it('GPUMultipleTestingAdjustment gives tied p-values identical adjusted values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = MULTIPLE_TESTING_FIXTURES.find(entry => entry.name === 'ties')!;
   for (const method of METHODS) {
     const {adjusted} = await runAdjustment(device, fixture.pValues, method, 0);
@@ -124,9 +123,7 @@ it('GPUMultipleTestingAdjustment gives tied p-values identical adjusted values',
 
 it('GPUMultipleTestingAdjustment handles an all-untested family and out-of-range p-values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const method of METHODS) {
     const untested = await runAdjustment(device, [Number.NaN, Number.NaN, Number.NaN], method, 0);
     expect(untested.familySize).toBe(0);
@@ -144,9 +141,7 @@ it('GPUMultipleTestingAdjustment handles an all-untested family and out-of-range
 
 it('GPUMultipleTestingAdjustment matches the CPU reference on 70k randomized rows (multi-block scans)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let state = 987654321;
   const random = () => {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;

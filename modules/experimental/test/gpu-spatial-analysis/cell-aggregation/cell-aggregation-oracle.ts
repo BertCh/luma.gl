@@ -7,7 +7,7 @@
 
 import {cellToParent as h3CellToParent, getResolution as h3GetResolution, isValidCell} from 'h3-js';
 import {QUADBIN_FIXED_POINT_CONSTANTS} from '../../../src/gpu-spatial-analysis/cell-aggregation/cell-keys';
-import {CELL_MAXIMUM_SCALED_VALUE} from '../../../src/gpu-spatial-analysis/cell-aggregation/cell-table';
+import {CELL_MAXIMUM_SCALED_VALUE} from '../../../src/analysis-core/cell-key-wgsl';
 
 const f = Math.fround;
 const Q = QUADBIN_FIXED_POINT_CONSTANTS;

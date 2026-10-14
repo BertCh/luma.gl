@@ -13,8 +13,11 @@ import {
   GPU_COST_DISTANCE_UNRESOLVED,
   GPU_RASTER_D8_DIRECTIONS,
   GPU_RASTER_MAXIMUM_ITERATIONS,
+  type GPUCostDistanceOutput,
   type GPUCostDistanceProps
 } from '../../../src/gpu-raster/cost-distance';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   computeCostDistance,
@@ -33,14 +36,17 @@ import {
 const WIDTH = 20;
 const HEIGHT = 10;
 const CELLS = WIDTH * HEIGHT;
+const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
 
-function createProps(
-  graph: GPUCommandGraph,
-  overrides: Partial<GPUCostDistanceProps> = {}
-): GPUCostDistanceProps {
+type PropsOverrides = Partial<Omit<GPUCostDistanceProps, 'output'>> & {
+  /** Merged over the default `costs` output. */
+  output?: Partial<GPUCostDistanceOutput>;
+};
+
+function createProps(graph: GPUCommandGraph, overrides: PropsOverrides = {}): GPUCostDistanceProps {
+  const {output, ...rest} = overrides;
   return {
-    width: WIDTH,
-    height: HEIGHT,
+    grid: GRID,
     friction: {
       id: 'friction',
       format: 'float32',
@@ -49,10 +55,10 @@ function createProps(
         values: createTransientView(graph, 'friction', 'float32', CELLS)
       }
     },
-    settings: createTransientView(graph, 'settings', 'float32', 8),
+    parameters: createTransientView(graph, 'settings', 'float32', 8),
     sources: createTransientView(graph, 'sources', 'uint32', 3),
-    costs: createTransientView(graph, 'costs', 'float32', CELLS),
-    ...overrides
+    ...rest,
+    output: {costs: createTransientView(graph, 'costs', 'float32', CELLS), ...output}
   };
 }
 
@@ -64,41 +70,54 @@ it('exports constants and packs settings', () => {
   expect(GPU_RASTER_D8_DIRECTIONS.map(direction => direction.code)).toEqual([
     1, 2, 4, 8, 16, 32, 64, 128
   ]);
-  expect(
-    Array.from(
-      getGPUCostDistanceParameterValues({
-        cellSize: [3, 4],
-        northEdge: 0.25,
-        southEdge: 0.5
-      })
-    )
-  ).toEqual([3, 4, 0.25, 0.5, Infinity, 0, 0, 0]);
-  expect(Array.from(getGPUCostDistanceParameterValues({cellSize: [1, 1], costLimit: 7}))[4]).toBe(
-    7
-  );
-  expect(() => getGPUCostDistanceParameterValues({cellSize: [1, 1]}, new Float32Array(4))).toThrow(
+  // Cell size and row edges come from the grid.
+  const grid = makeGPURasterMetadata({
+    width: WIDTH,
+    height: HEIGHT,
+    cellSize: [3, 4],
+    origin: [10, 100]
+  });
+  const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
+  expect(Array.from(getGPUCostDistanceParameterValues({}, grid))).toEqual([
+    cellSize[0],
+    cellSize[1],
+    northEdge,
+    southEdge,
+    Infinity,
+    0,
+    0,
+    0
+  ]);
+  expect([cellSize, northEdge, southEdge]).toEqual([[3, 4], 100, 60]);
+  expect(Array.from(getGPUCostDistanceParameterValues({costLimit: 7}, GRID))[4]).toBe(7);
+  expect(() => getGPUCostDistanceParameterValues({}, GRID, new Float32Array(4))).toThrow(
     /8 values/
   );
 });
 
 it('GPUCostDistance prefixes every node ID and grows one node per iteration and one gate per four', () => {
   const device = createNullWebGPUDevice();
-  const countNodes = (maxIterations: number) => {
+  const countNodes = (maximumIterations: number) => {
     const graph = new GPUCommandGraph(device);
     const contributor = new GPUCostDistance({
-      ...createProps(graph),
+      ...createProps(graph, {
+        output: {
+          backLinks: createTransientView(graph, 'back-links', 'uint32', CELLS),
+          bands: createTransientView(graph, 'bands', 'uint32', CELLS),
+          bandCounts: createTransientView(graph, 'band-counts', 'uint32', 2),
+          status: {
+            converged: createTransientView(graph, 'converged', 'uint32', 1),
+            iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
+          }
+        }
+      }),
       id: 'cd',
-      maxIterations,
-      maxTieIterations: 8,
+      maximumIterations,
+      maximumTieIterations: 8,
       sourceMask: createTransientView(graph, 'mask', 'uint32', CELLS),
-      backLinks: createTransientView(graph, 'back-links', 'uint32', CELLS),
-      bandThresholds: createTransientView(graph, 'thresholds', 'float32', 2),
-      bands: createTransientView(graph, 'bands', 'uint32', CELLS),
-      bandCounts: createTransientView(graph, 'band-counts', 'uint32', 2),
-      converged: createTransientView(graph, 'converged', 'uint32', 1),
-      iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
+      costBreaks: createTransientView(graph, 'thresholds', 'float32', 2)
     });
-    expect(contributor.maxIterations).toBe(maxIterations);
+    expect(contributor.maximumIterations).toBe(maximumIterations);
     return contributor.getCommandNodes(graph);
   };
   const small = countNodes(2);
@@ -123,16 +142,17 @@ it('GPUCostDistance prefixes every node ID and grows one node per iteration and 
   const relax = large.find(node => node.id === 'cd-relax-0');
   expect(relax?.condition).toMatchObject({source: 'gpu', mode: 'indirect'});
 
-  // The tie budget defaults to maxIterations and follows the cost phase's sweep schedule.
+  // The tie budget defaults to maximumIterations and follows the cost phase's sweep schedule.
   const tieGraph = new GPUCommandGraph(device);
   const tieContributor = new GPUCostDistance({
-    ...createProps(tieGraph),
+    ...createProps(tieGraph, {
+      output: {backLinks: createTransientView(tieGraph, 'tie-back-links', 'uint32', CELLS)}
+    }),
     id: 'tie',
-    maxIterations: 100,
-    sweepAfterIteration: 96,
-    backLinks: createTransientView(tieGraph, 'tie-back-links', 'uint32', CELLS)
+    maximumIterations: 100,
+    sweepAfterIteration: 96
   });
-  expect(tieContributor.maxTieIterations).toBe(100);
+  expect(tieContributor.maximumTieIterations).toBe(100);
   const tieNodes = tieContributor.getCommandNodes(tieGraph);
   const variantOf = (id: string) =>
     (tieNodes.find(node => node.id === id)?.workload as {variant?: string} | undefined)?.variant;
@@ -153,20 +173,21 @@ it('GPUCostDistance validates props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const base = createProps(graph);
-  const create = (overrides: Partial<GPUCostDistanceProps>) =>
-    new GPUCostDistance({...base, ...overrides});
-  expect(() => create({width: 0})).toThrow(/dimensions/);
-  expect(() => create({width: 1.5})).toThrow(/dimensions/);
-  expect(() => create({costs: createTransientView(graph, 'costs19', 'float32', 19)})).toThrow(
-    /costs must contain one value per cell/
-  );
+  const create = (overrides: PropsOverrides) =>
+    new GPUCostDistance({...base, ...overrides, output: {...base.output, ...overrides.output}});
+  const createWithGrid = (width: number) => create({grid: {...GRID, width}});
+  expect(() => createWithGrid(0)).toThrow(/dimensions/);
+  expect(() => createWithGrid(1.5)).toThrow(/dimensions/);
+  expect(() =>
+    create({output: {costs: createTransientView(graph, 'costs19', 'float32', 19)}})
+  ).toThrow(/output.costs must contain one value per cell/);
   expect(() =>
     create({
-      costs: createTransientView(graph, 'uint-costs', 'uint32', CELLS) as never
+      output: {costs: createTransientView(graph, 'uint-costs', 'uint32', CELLS) as never}
     })
-  ).toThrow(/costs/);
-  expect(() => create({settings: createTransientView(graph, 'settings7', 'float32', 7)})).toThrow(
-    /settings/
+  ).toThrow(/output.costs/);
+  expect(() => create({parameters: createTransientView(graph, 'settings7', 'float32', 7)})).toThrow(
+    /parameters/
   );
   expect(() => create({sources: undefined})).toThrow(/sources or sourceMask/);
   expect(() =>
@@ -182,32 +203,32 @@ it('GPUCostDistance validates props', () => {
   expect(() => create({sourceMask: createTransientView(graph, 'mask5', 'uint32', 5)})).toThrow(
     /sourceMask/
   );
-  expect(() => create({backLinks: createTransientView(graph, 'links5', 'uint32', 5)})).toThrow(
-    /backLinks/
-  );
-  for (const maxTieIterations of [0, 1025, 1.5]) {
-    expect(() => create({maxTieIterations})).toThrow(/maxTieIterations/);
+  expect(() =>
+    create({output: {backLinks: createTransientView(graph, 'links5', 'uint32', 5)}})
+  ).toThrow(/output.backLinks/);
+  for (const maximumTieIterations of [0, 1025, 1.5]) {
+    expect(() => create({maximumTieIterations})).toThrow(/maximumTieIterations/);
   }
-  for (const maxIterations of [0, 1025, 1.5]) {
-    expect(() => create({maxIterations})).toThrow(/maxIterations/);
+  for (const maximumIterations of [0, 1025, 1.5]) {
+    expect(() => create({maximumIterations})).toThrow(/maximumIterations/);
   }
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
-  expect(() => create({bands: createTransientView(graph, 'bands', 'uint32', CELLS)})).toThrow(
-    /bandThresholds/
-  );
-  const thresholds = createTransientView(graph, 'thresholds', 'float32', 2);
-  expect(() => create({bandThresholds: thresholds})).toThrow(/bandThresholds/);
+  expect(() =>
+    create({output: {bands: createTransientView(graph, 'bands', 'uint32', CELLS)}})
+  ).toThrow(/costBreaks/);
+  const costBreaks = createTransientView(graph, 'thresholds', 'float32', 2);
+  expect(() => create({costBreaks})).toThrow(/costBreaks/);
   expect(() =>
     create({
-      bandThresholds: thresholds,
-      bandCounts: createTransientView(graph, 'band-counts', 'uint32', 3)
+      costBreaks,
+      output: {bandCounts: createTransientView(graph, 'band-counts', 'uint32', 3)}
     })
   ).toThrow(/bandCounts length/);
   expect(() =>
     create({
-      converged: createTransientView(graph, 'converged2', 'uint32', 2)
+      output: {status: {converged: createTransientView(graph, 'converged2', 'uint32', 2)}}
     })
-  ).toThrow(/converged must contain exactly one row/);
+  ).toThrow(/output.status.converged must contain exactly one row/);
   const shared = graph.createTransientBuffer({
     id: 'shared',
     byteLength: 1024,
@@ -216,9 +237,13 @@ it('GPUCostDistance validates props', () => {
   expect(() =>
     create({
       sources: graph.createDataView(shared, {format: 'uint32', length: 3}),
-      costs: graph.createDataView(shared, {format: 'float32', length: CELLS})
+      output: {costs: graph.createDataView(shared, {format: 'float32', length: CELLS})}
     })
   ).toThrow(/must not share buffers/);
+  // Latitude-dependent cell sizes need an axis-aligned grid.
+  expect(() =>
+    create({cellSizeMode: 'geographic', grid: {...GRID, affine: [1, 0.5, 0, 0, -1, 0]}})
+  ).toThrow(/axis-aligned/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() => new GPUCostDistance(createProps(otherGraph)).getCommandNodes(graph)).toThrow(
     /belong to the target graph/
@@ -231,15 +256,18 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
   const graph = new GPUCommandGraph(device);
   const props = {
     id: 'path',
-    width: WIDTH,
-    height: HEIGHT,
+    grid: GRID,
     backLinks: createTransientView(graph, 'back-links', 'uint32', CELLS),
     target: createTransientView(graph, 'target', 'uint32', 1),
     output: {
-      ids: createTransientView(graph, 'ids', 'uint32', 8),
-      count: createTransientView(graph, 'count', 'uint32', 1),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1),
-      requiredCount: createTransientView(graph, 'total-count', 'uint32', 1)
+      path: {
+        ids: createTransientView(graph, 'ids', 'uint32', 8),
+        status: {
+          count: createTransientView(graph, 'count', 'uint32', 1),
+          overflow: createTransientView(graph, 'overflow', 'uint32', 1),
+          requiredCount: createTransientView(graph, 'total-count', 'uint32', 1)
+        }
+      }
     }
   };
   const contributor = new GPUCostDistancePath(props);
@@ -248,7 +276,10 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
   const flagged = new GPUCostDistancePath({
     ...props,
     id: 'flagged-path',
-    iterationLimitReached: createTransientView(graph, 'limit', 'uint32', 1)
+    output: {
+      ...props.output,
+      status: {iterationLimitReached: createTransientView(graph, 'limit', 'uint32', 1)}
+    }
   });
   expect(flagged.getCommandNodes(graph).map(node => node.id)).toEqual([
     'flagged-path-walk',
@@ -258,9 +289,12 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
     () =>
       new GPUCostDistancePath({
         ...props,
-        iterationLimitReached: createTransientView(graph, 'limit2', 'uint32', 2)
+        output: {
+          ...props.output,
+          status: {iterationLimitReached: createTransientView(graph, 'limit2', 'uint32', 2)}
+        }
       })
-  ).toThrow(/iterationLimitReached must contain exactly one row/);
+  ).toThrow(/output.status.iterationLimitReached must contain exactly one row/);
   expect(new GPUCostDistancePath({...props, id: undefined}).id).toBe('cost-distance-path');
   expect(
     () =>
@@ -281,8 +315,10 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
       new GPUCostDistancePath({
         ...props,
         output: {
-          ...props.output,
-          ids: createTransientView(graph, 'ids0', 'uint32', 0)
+          path: {
+            ...props.output.path,
+            ids: createTransientView(graph, 'ids0', 'uint32', 0)
+          }
         }
       })
   ).toThrow(/capacity/);
@@ -296,9 +332,14 @@ it('GPUCostDistancePath schedules a walk and publish node and validates props', 
       new GPUCostDistancePath({
         ...props,
         output: {
-          ...props.output,
-          ids: graph.createDataView(shared, {format: 'uint32', length: 4}),
-          count: graph.createDataView(shared, {format: 'uint32', length: 1})
+          path: {
+            ...props.output.path,
+            ids: graph.createDataView(shared, {format: 'uint32', length: 4}),
+            status: {
+              ...props.output.path.status,
+              count: graph.createDataView(shared, {format: 'uint32', length: 1})
+            }
+          }
         }
       })
   ).toThrow(/must not share buffers/);
@@ -319,14 +360,17 @@ it('attributes internal transient ID collisions to the contributor that generate
   graph.createTransientBuffer({id: 'path-total', byteLength: 64, usage: 128});
   const path = new GPUCostDistancePath({
     id: 'path',
-    width: WIDTH,
-    height: HEIGHT,
+    grid: GRID,
     backLinks: createTransientView(graph, 'back-links', 'uint32', CELLS),
     target: createTransientView(graph, 'target', 'uint32', 1),
     output: {
-      ids: createTransientView(graph, 'ids', 'uint32', 16),
-      count: createTransientView(graph, 'count', 'uint32', 1),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+      path: {
+        ids: createTransientView(graph, 'ids', 'uint32', 16),
+        status: {
+          count: createTransientView(graph, 'count', 'uint32', 1),
+          overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+        }
+      }
     }
   });
   expect(() => path.getCommandNodes(graph)).toThrow(/GPUCostDistancePath "path".*"path-total"/);
@@ -371,12 +415,12 @@ function getTieScenario(width: number, height: number, plateau: (cell: number) =
     width,
     height,
     friction,
-    settings: {cellSize: [1, 1]},
+    georeference: getRasterGridGeoreference(makeGPURasterMetadata({width, height})),
     sources: [{cell: 0, cost: 0}]
   };
   const costs = computeCostDistance(options);
   const passable = (cell: number) => isPassable(friction[cell]);
-  // Twin of tie-prepare: strict tight predecessor (smallest candidate, 1e-5 relative), tie masks.
+  // Twin of tie-prepare: strict tight predecessor (smallest candidate, 4 f32 ulp = 2^-21 relative), tie masks.
   const strictDirection = (cell: number) => {
     let best = Infinity;
     let bestDirection = -1;
@@ -389,7 +433,7 @@ function getTieScenario(width: number, height: number, plateau: (cell: number) =
         bestDirection = direction;
       }
     }
-    return bestDirection >= 0 && best <= costs[cell] * 1.00001 ? bestDirection : -1;
+    return bestDirection >= 0 && best <= costs[cell] * (1 + 2 ** -21) ? bestDirection : -1;
   };
   const masks = new Int32Array(width * height);
   const levels = new Float64Array(width * height).fill(Infinity);
@@ -404,7 +448,7 @@ function getTieScenario(width: number, height: number, plateau: (cell: number) =
       }
     }
   }
-  const relax = (maxIterations: number, sweepAfterIteration?: number) => {
+  const relax = (maximumIterations: number, sweepAfterIteration?: number) => {
     const values = Float64Array.from(levels);
     const status = emulateTiledRelaxation({
       width,
@@ -412,7 +456,7 @@ function getTieScenario(width: number, height: number, plateau: (cell: number) =
       values,
       participates: cell => passable(cell) && Number.isFinite(costs[cell]),
       getEdgeCost: (cell, direction) => (((masks[cell] >> direction) & 1) === 0 ? Infinity : 1),
-      maxIterations,
+      maxIterations: maximumIterations,
       sweepAfterIteration,
       activateAllTiles: true
     });
@@ -464,7 +508,7 @@ it('review C-02: a zero-cost plateau deeper than the old 8-iteration tie budget 
   });
   expect(walkBackLinksTwin(width, height, truncatedLinks, 100).path).toHaveLength(101);
 
-  // Current default: the tie budget is maxIterations (512) with sweeps after 96.
+  // Current default: the tie budget is maximumIterations (512) with sweeps after 96.
   const fixed = scenario.relax(512, 96);
   expect(fixed.converged).toBe(true);
   const links = scenario.backLinks(fixed.levels);
@@ -504,7 +548,7 @@ it('review C-02: the tie sweeps resolve a winding plateau that plain tiled passe
   expect(walkBackLinksTwin(size, size, plainLinks, target).iterationLimitReached).toBe(true);
 }, 120000);
 
-it('back-links of a cost relaxation that hit maxIterations are all unresolved', () => {
+it('back-links of a cost relaxation that hit maximumIterations are all unresolved', () => {
   const scenario = getTieScenario(20, 10, () => false);
   const links = computeBackLinksTwin({
     width: 20,

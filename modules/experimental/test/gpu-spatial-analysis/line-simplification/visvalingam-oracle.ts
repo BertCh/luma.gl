@@ -12,8 +12,8 @@ export type VisvalingamImportanceResult = {
   /** f32 bits of the effective area of each row; `0x7f800000` (+Infinity) for endpoints. */
   importanceBits: Uint32Array;
   /** Rounds that ran, including the final round that removes the last rows. */
-  roundCount: number;
-  /** Whether every interior row was decided within `maximumRounds`. */
+  iterationCount: number;
+  /** Whether every interior row was decided within `maximumIterations`. */
   converged: boolean;
 };
 
@@ -42,9 +42,9 @@ export function getTriangleAreaBits(
  */
 export function computeVisvalingamImportance(
   positions: Float32Array,
-  trackOffsets: Uint32Array,
+  lineOffsets: Uint32Array,
   radius: number,
-  maximumRounds: number
+  maximumIterations: number
 ): VisvalingamImportanceResult {
   const rowCount = positions.length / 2;
   const previous = new Uint32Array(rowCount);
@@ -52,14 +52,14 @@ export function computeVisvalingamImportance(
   const floor = new Uint32Array(rowCount);
   const key = new Uint32Array(rowCount);
   const importanceBits = new Uint32Array(rowCount);
-  const lineCount = trackOffsets.length - 1;
+  const lineCount = lineOffsets.length - 1;
   for (let row = 0; row < rowCount; row++) {
     previous[row] = row;
     next[row] = row;
   }
   for (let line = 0; line < lineCount; line++) {
-    const first = trackOffsets[line];
-    const last = trackOffsets[line + 1] - 1;
+    const first = lineOffsets[line];
+    const last = lineOffsets[line + 1] - 1;
     for (let row = first; row <= last; row++) {
       if (row === first || row === last) {
         importanceBits[row] = ENDPOINT_BITS;
@@ -83,10 +83,10 @@ export function computeVisvalingamImportance(
     }
     return false;
   };
-  let roundCount = 0;
+  let iterationCount = 0;
   let converged = false;
-  for (let round = 0; round < maximumRounds; round++) {
-    roundCount++;
+  for (let round = 0; round < maximumIterations; round++) {
+    iterationCount++;
     for (let row = 0; row < rowCount; row++) {
       if (isUndecided(row)) {
         key[row] = getTriangleAreaBits(positions, previous[row], row, next[row]);
@@ -125,7 +125,7 @@ export function computeVisvalingamImportance(
       importanceBits[row] = ENDPOINT_BITS;
     }
   }
-  return {importanceBits, roundCount, converged};
+  return {importanceBits, iterationCount, converged};
 }
 
 /** Rows whose importance is strictly greater than `tolerance`, ascending. */

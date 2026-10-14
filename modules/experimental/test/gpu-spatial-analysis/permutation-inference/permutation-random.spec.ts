@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
@@ -18,9 +19,10 @@ import {
 import {
   getSwapOrNotPermutationIndex,
   getSwapOrNotRounds,
-  PERMUTATION_SHUFFLE_WGSL
+  getPermutationShuffleWGSL
 } from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-shuffle';
 import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [1, 2, 3, 6, 7, 1000, 65537, 0x80000001, 0xfffffffe, 0xffffffff];
 const DRAWS = 16;
@@ -28,9 +30,7 @@ const FEISTEL_COUNTS = [1, 2, 5, 1000, 4097];
 
 it('the WGSL Philox, bounded draws and Feistel bijection are bit-identical to TypeScript', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const invocations = 64;
   const blockWords = invocations * 4;
   const drawWords = invocations * BOUNDS.length * DRAWS;
@@ -126,9 +126,7 @@ const SHUFFLE_WORKGROUP = 64;
 
 it('the WGSL swap-or-not shuffle is bit-identical to TypeScript', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases = SHUFFLE_COUNTS.length * SHUFFLE_PERMUTATIONS.length;
   const words = cases * SHUFFLE_STRIDE;
   const output = createOutputBuffer(device, words);
@@ -144,7 +142,7 @@ it('the WGSL swap-or-not shuffle is bit-identical to TypeScript', async () => {
         invocationCount: cases * SHUFFLE_WORKGROUP,
         guardIndex: false,
         declarations: `${PERMUTATION_RANDOM_WGSL}
-${PERMUTATION_SHUFFLE_WGSL}
+${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}
 const SHUFFLE_COUNTS = array<u32, ${SHUFFLE_COUNTS.length}>(${SHUFFLE_COUNTS.map(count => `${count}u`).join(', ')});`,
         // One workgroup per (count, permutation) case; the barrier is in uniform control flow.
         body: `let testCase = index / ${SHUFFLE_WORKGROUP}u;
@@ -163,7 +161,12 @@ const SHUFFLE_COUNTS = array<u32, ${SHUFFLE_COUNTS.length}>(${SHUFFLE_COUNTS.map
   const gpu = await readUint32(output, words);
   for (const [countIndex, count] of SHUFFLE_COUNTS.entries()) {
     for (const [permutationIndex, permutation] of SHUFFLE_PERMUTATIONS.entries()) {
-      const rounds = getSwapOrNotRounds([123, 4], permutation, count);
+      const rounds = getSwapOrNotRounds(
+        [123, 4],
+        permutation,
+        count,
+        PHILOX_PURPOSES.permutationShuffle.id
+      );
       const expected = Array.from({length: count}, (_, index) =>
         getSwapOrNotPermutationIndex(index, count, rounds)
       );

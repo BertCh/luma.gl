@@ -13,7 +13,10 @@ import {
   GPUNetworkSubgraphFilter,
   type GPUNetworkSubgraphFilterProps
 } from '../../../src/gpu-network/network-subgraph-filter';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {computeSubgraphOracle} from './network-subgraph-filter-oracle';
 
 const NODE_COUNT = 5;
@@ -39,10 +42,12 @@ function createContext(device: Device) {
   const props = (
     overrides: Partial<GPUNetworkSubgraphFilterProps> = {}
   ): GPUNetworkSubgraphFilterProps => ({
-    offsets: importView('offsets', NODE_COUNT + 1),
-    neighbors: importView('neighbors', SLOT_COUNT),
+    topology: {
+      offsets: importView('offsets', NODE_COUNT + 1),
+      neighbors: importView('neighbors', SLOT_COUNT)
+    },
     output: {
-      vertexMask: importView('vertex-mask-out', NODE_COUNT),
+      nodeMask: importView('vertex-mask-out', NODE_COUNT),
       edgeMask: importView('edge-mask-out', SLOT_COUNT)
     },
     ...overrides
@@ -56,32 +61,38 @@ it('GPUNetworkSubgraphFilter schedules a fixed node order', () => {
   const contributor = new GPUNetworkSubgraphFilter({
     id: 'sub',
     ...props({
-      vertexColumns: [importView('vc', NODE_COUNT, 'float32')],
+      nodeColumns: [importView('vc', NODE_COUNT, 'float32')],
       edgeColumns: Array.from({length: 7}, (_, i) => importView(`ec${i}`, SLOT_COUNT, 'float32')),
       edgeTimes: importView('times', SLOT_COUNT, 'float32'),
       edgeTimeWords: importView('words', SLOT_COUNT, 'uint32x2'),
       parameters: importView('params', 9 * 4, 'float32'),
-      timeWordParameters: importView('twp', 8),
+      uint32Parameters: importView('twp', 8),
       dropIsolated: true,
       output: {
-        vertexMask: importView('vmo', NODE_COUNT),
+        nodeMask: importView('vmo', NODE_COUNT),
         edgeMask: importView('emo', SLOT_COUNT),
         counts: importView('counts', 4),
-        liveVertices: {
+        liveNodes: {
           ids: importView('lv', NODE_COUNT),
-          count: importView('lvc', 1),
-          overflow: importView('lvo', 1)
+          status: {
+            count: importView('lvc', 1),
+            overflow: importView('lvo', 1)
+          }
         },
         liveEdgeSlots: {
           ids: importView('ls', SLOT_COUNT),
-          count: importView('lsc', 1),
-          overflow: importView('lso', 1)
+          status: {
+            count: importView('lsc', 1),
+            overflow: importView('lso', 1)
+          }
         },
-        inducedCSR: {
+        inducedTopology: {
           offsets: importView('io', NODE_COUNT + 1),
           neighbors: importView('in', SLOT_COUNT),
           sourceSlots: importView('is', SLOT_COUNT),
-          overflow: importView('iov', 1)
+          status: {
+            overflow: importView('iov', 1)
+          }
         }
       }
     })
@@ -122,38 +133,54 @@ it('GPUNetworkSubgraphFilter validates props', () => {
   const {graph, importView, props} = createContext(device);
   const create = (overrides: Partial<GPUNetworkSubgraphFilterProps>) =>
     new GPUNetworkSubgraphFilter(props(overrides));
-  expect(() => create({offsets: importView('o1', 1)})).toThrow(/at least two rows/);
-  expect(() => create({neighbors: importView('n0', 0)})).toThrow(/at least one row/);
-  expect(() => create({vertexMask: importView('vm', 2)})).toThrow(/vertexMask must contain/);
+  const topology = (offsets: number, neighbors: number) => ({
+    offsets: importView('o', offsets),
+    neighbors: importView('n', neighbors)
+  });
+  expect(() => create({topology: topology(1, SLOT_COUNT)})).toThrow(
+    /topology\.offsets must contain at least two rows/
+  );
+  expect(() => create({topology: topology(NODE_COUNT + 1, 0)})).toThrow(
+    /topology\.neighbors must contain at least one row/
+  );
+  expect(() =>
+    create({
+      topology: {
+        ...topology(NODE_COUNT + 1, SLOT_COUNT),
+        weights: importView('w', SLOT_COUNT - 1, 'float32')
+      }
+    })
+  ).toThrow(/topology\.weights length/);
+  expect(() => create({nodeMask: importView('vm', 2)})).toThrow(/nodeMask must contain/);
   expect(() => create({edgeMask: importView('em', 2)})).toThrow(/edgeMask must contain/);
-  expect(() => create({vertexColumns: [importView('vc', NODE_COUNT, 'float32')]})).toThrow(
+  expect(() => create({nodeColumns: [importView('vc', NODE_COUNT, 'float32')]})).toThrow(
     /parameters are required/
   );
   expect(() =>
     create({
-      vertexColumns: [importView('vc2', 2, 'float32')],
+      nodeColumns: [importView('vc2', 2, 'float32')],
       parameters: importView('p', 4, 'float32')
     })
-  ).toThrow(/vertexColumns\[0\] must contain/);
+  ).toThrow(/nodeColumns\[0\] must contain/);
   expect(() =>
     create({
-      vertexColumns: [importView('vc3', NODE_COUNT, 'float32')],
+      nodeColumns: [importView('vc3', NODE_COUNT, 'float32')],
       parameters: importView('p2', 3, 'float32')
     })
   ).toThrow(/at least 4 float32/);
   expect(() => create({edgeTimeWords: importView('w', SLOT_COUNT, 'uint32x2')})).toThrow(
-    /timeWordParameters are required/
+    /uint32Parameters are required/
   );
   expect(() =>
     create({
       edgeTimeWords: importView('w2', SLOT_COUNT, 'uint32x2'),
-      timeWordParameters: importView('twp', 4)
+      uint32Parameters: importView('twp', 4)
     })
   ).toThrow(/at least 8/);
   expect(() =>
     create({
       output: {
-        vertexMask: importView('a', NODE_COUNT),
+        nodeMask: importView('a', NODE_COUNT),
         edgeMask: importView('b', SLOT_COUNT),
         counts: importView('c', 3)
       }
@@ -162,12 +189,14 @@ it('GPUNetworkSubgraphFilter validates props', () => {
   expect(() =>
     create({
       output: {
-        vertexMask: importView('a2', NODE_COUNT),
+        nodeMask: importView('a2', NODE_COUNT),
         edgeMask: importView('b2', SLOT_COUNT),
-        inducedCSR: {
+        inducedTopology: {
           offsets: importView('io', NODE_COUNT),
           neighbors: importView('in', SLOT_COUNT),
-          overflow: importView('iv', 1)
+          status: {
+            overflow: importView('iv', 1)
+          }
         }
       }
     })
@@ -175,13 +204,15 @@ it('GPUNetworkSubgraphFilter validates props', () => {
   expect(() =>
     create({
       output: {
-        vertexMask: importView('a3', NODE_COUNT),
+        nodeMask: importView('a3', NODE_COUNT),
         edgeMask: importView('b3', SLOT_COUNT),
-        inducedCSR: {
+        inducedTopology: {
           offsets: importView('io3', NODE_COUNT + 1),
           neighbors: importView('in3', SLOT_COUNT),
           sourceSlots: importView('is3', 2),
-          overflow: importView('iv3', 1)
+          status: {
+            overflow: importView('iv3', 1)
+          }
         }
       }
     })
@@ -189,8 +220,8 @@ it('GPUNetworkSubgraphFilter validates props', () => {
   const aliased = importView('aliased', SLOT_COUNT);
   expect(() =>
     create({
-      neighbors: aliased,
-      output: {vertexMask: importView('a4', NODE_COUNT), edgeMask: aliased}
+      topology: {offsets: importView('oa', NODE_COUNT + 1), neighbors: aliased},
+      output: {nodeMask: importView('a4', NODE_COUNT), edgeMask: aliased}
     })
   ).toThrow(/outputs must not share buffers with inputs/);
 
@@ -204,13 +235,13 @@ it('GPUNetworkSubgraphFilter validates props', () => {
 
 it('parameter helpers pack records and decode counts', () => {
   const layout = {
-    vertexColumnCount: 2,
+    nodeColumnCount: 2,
     edgeColumnCount: 1,
     hasEdgeTimes: true
   };
   expect(getGPUNetworkSubgraphFilterParameterLength(layout)).toBe(16);
   const values = getGPUNetworkSubgraphFilterParameterValues(layout, {
-    vertexRanges: [[1, 2], null],
+    nodeRanges: [[1, 2], null],
     edgeRanges: [[3, Infinity]],
     edgeTimeWindow: [10, 20]
   });
@@ -219,7 +250,7 @@ it('parameter helpers pack records and decode counts', () => {
     /too short/
   );
   expect(decodeGPUNetworkSubgraphFilterCounts([4, 3, 1, 2])).toEqual({
-    liveVertexCount: 4,
+    liveNodeCount: 4,
     liveSlotCount: 3,
     selfLoopSlotCount: 1,
     liveEdgeCount: 2
@@ -292,4 +323,44 @@ it('oracle pairs undirected slots, parallel edges and self-loops', () => {
     edgeColumns: [Float32Array.from([1, 1, 1, 1, 1, 1])]
   });
   expect(Array.from(lenient.edgeMask)).toEqual([1, 1, 1, 1, 1, 1]);
+});
+
+it('GPUNetworkSubgraphFilter writes every edge-mask row and clears the induced CSR tail', () => {
+  const device = createNullWebGPUDevice();
+  const {graph, importView, props} = createContext(device);
+  const nodes = new GPUNetworkSubgraphFilter({
+    id: 'tail',
+    ...props({
+      directed: true,
+      output: {
+        nodeMask: importView('vmo', NODE_COUNT),
+        edgeMask: importView('emo', SLOT_COUNT),
+        counts: importView('counts', 4),
+        inducedTopology: {
+          offsets: importView('io', NODE_COUNT + 1),
+          neighbors: importView('in', SLOT_COUNT),
+          sourceSlots: importView('is', SLOT_COUNT),
+          status: {
+            overflow: importView('iov', 1)
+          }
+        }
+      }
+    })
+  }).getCommandNodes(graph);
+  const sources = getParsedKernelSources(nodes);
+  // Review B-09: a slot past offsets[NODE_COUNT] belongs to no row; the endpoint pass must write
+  // 0 there instead of returning, or edge-init's 1 survives as a live edge.
+  const endpoints = sources.get('tail-edge-endpoints') ?? '';
+  expect(endpoints).toMatch(
+    /slot >= rowEnd\) \{\s*\/\/[^\n]*\n[^\n]*\n\s*edgeMask\[edgeMaskOffset \+ slot\] = 0u;\s*return;/
+  );
+  // Rule 11: the induced CSR rows past the live total are cleared before the scatter.
+  const ids = nodes.map(node => node.id);
+  expect(ids.indexOf('tail-clear-induced-neighbors')).toBeGreaterThanOrEqual(0);
+  expect(ids.indexOf('tail-clear-induced-slots')).toBeGreaterThanOrEqual(0);
+  expect(ids.indexOf('tail-clear-induced-neighbors')).toBeLessThan(
+    ids.indexOf('tail-induced-scatter')
+  );
+  // Rule 14: the counts fold per workgroup.
+  expect(sources.get('tail-counts')).toContain('workgroupCounters');
 });

@@ -8,6 +8,7 @@ import {
   getGPUTerrainCastShadowParameterValues,
   GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
   GPUTerrainCastShadow,
+  type GPUTerrainCastShadowOutput,
   type GPUTerrainCastShadowProps
 } from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-cast-shadow';
 import {
@@ -15,33 +16,51 @@ import {
   getTerrainSweepLineGeometry,
   getTerrainSweepMirroredLineGeometry
 } from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import {getTerrainGroundCellSize} from '../../../src/gpu-terrain/terrain-grid-utils';
+import {
+  getRasterGridGeoreference,
+  getRasterGroundCellSize
+} from '../../../src/analysis-core/raster-grid';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 it('getGPUTerrainCastShadowParameterValues packs the sun line geometry', () => {
   expect(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH).toBe(16);
-  const pack = (azimuthDegrees: number, rowDirection?: 'south' | 'north') => {
-    const settings = {
-      cellSize: [10, 12] as [number, number],
-      azimuthDegrees,
-      altitudeDegrees: 20,
-      zFactor: 2
-    };
-    return Array.from(
-      rowDirection
-        ? getGPUTerrainCastShadowParameterValues(settings, rowDirection)
-        : getGPUTerrainCastShadowParameterValues(settings)
+  // Cell size 10 x 12 on a 48 x 40 grid: the row edges are y = 0 and y = -480.
+  const grid = makeGPURasterMetadata({width: 48, height: 40, cellSize: [10, 12]});
+  const pack = (azimuthDegrees: number) =>
+    Array.from(
+      getGPUTerrainCastShadowParameterValues(
+        {azimuthDegrees, altitudeDegrees: 20, zFactor: 2},
+        grid
+      )
     );
-  };
   // East: x-major, travel +1, no slope; the last two slots hold the ground direction (1, 0).
-  expect(pack(90)).toEqual([10, 12, 2, 0, 0, 0, 0, 90, 20, expect.any(Number), 1, 0, 1, 1, 1, 0]);
+  expect(pack(90)).toEqual([
+    10,
+    12,
+    2,
+    0,
+    0,
+    -480,
+    0,
+    90,
+    20,
+    expect.any(Number),
+    1,
+    0,
+    1,
+    1,
+    1,
+    0
+  ]);
+  // The packer writes the grid georeference into the cell size and row edge slots.
+  const georeference = getRasterGridGeoreference(grid);
+  expect(pack(90).slice(0, 2)).toEqual([...georeference.cellSize]);
+  expect(pack(90).slice(4, 6)).toEqual([georeference.northEdge, georeference.southEdge]);
   // North on a south-increasing grid goes toward row 0: y-major, travel -1.
   expect(pack(0).slice(10, 14)).toEqual([0, 0, -1, 1]);
-  // The packer always uses south-advancing rows; the deprecated row direction argument is
-  // validated and ignored (the contributor mirrors the line for north-advancing rows).
-  expect(pack(0, 'north')).toEqual(pack(0));
-  expect(pack(37, 'north')).toEqual(pack(37, 'south'));
-  expect(() => pack(0, 'east' as never)).toThrow(/rowDirection/);
+  // The packer always uses south-advancing rows (the contributor mirrors the line for
+  // north-advancing rows).
   // North-east: the packer stores the square-cell line (slope 1, step sqrt(2)) and the ground
   // direction (sin 45, -cos 45). On 10 x 12 m cells the kernel converts that direction (CPU twin
   // getTerrainSweepGroundLineGeometry) to the ground diagonal, not the pixel diagonal: the pixel
@@ -61,11 +80,10 @@ it('getGPUTerrainCastShadowParameterValues packs the sun line geometry', () => {
   expect(converted.stepPixelLength).toBe(Math.fround(1.3017050231774017));
   // On square cells north-east is the exact pixel diagonal: slope 1, step sqrt(2).
   const square = Array.from(
-    getGPUTerrainCastShadowParameterValues({
-      cellSize: [10, 10],
-      azimuthDegrees: 45,
-      altitudeDegrees: 20
-    })
+    getGPUTerrainCastShadowParameterValues(
+      {azimuthDegrees: 45, altitudeDegrees: 20},
+      makeGPURasterMetadata({width: 48, height: 40, cellSize: 10})
+    )
   );
   expect(Math.abs(square[11])).toBe(65536);
   expect(square[13]).toBe(Math.fround(Math.SQRT2));
@@ -76,11 +94,10 @@ it('getGPUTerrainCastShadowParameterValues packs the sun line geometry', () => {
   expect(Math.abs(steep[11])).toBeGreaterThan(0);
   expect(
     Array.from(
-      getGPUTerrainCastShadowParameterValues({
-        cellSize: [1, 1],
-        azimuthDegrees: 5,
-        altitudeDegrees: 5
-      })
+      getGPUTerrainCastShadowParameterValues(
+        {azimuthDegrees: 5, altitudeDegrees: 5},
+        makeGPURasterMetadata({width: 48, height: 40})
+      )
     )[9]
   ).toBeCloseTo(0.2666, 6);
 });
@@ -92,15 +109,17 @@ it('cast shadow takes the cell size mode from the contributor only', () => {
   // WGS84: [55.80000157243614, 111.41228745777943] m) a 45 degree sun converts to slopeFixed
   // round(-32823.209957312734) = -32823, the true 45 degree ground line; the packed square-cell
   // line (slopeFixed -65536) is a 26.60365263545291 degree ground ray.
-  const values = getGPUTerrainCastShadowParameterValues({
-    cellSize: [0.001, 0.001],
-    northEdge: 60,
-    southEdge: 60,
-    azimuthDegrees: 45,
-    altitudeDegrees: 20
-  });
+  const values = getGPUTerrainCastShadowParameterValues(
+    {azimuthDegrees: 45, altitudeDegrees: 20},
+    makeGPURasterMetadata({width: 48, height: 24, cellSize: 0.001, origin: [0, 60]})
+  );
   expect(values[11]).toBe(-65536);
-  const groundCell = getTerrainGroundCellSize('geographic', [0.001, 0.001], 60, 60, 0, 1);
+  const groundCell = getRasterGroundCellSize(
+    'geographic',
+    {cellSize: [0.001, 0.001], northEdge: 60, southEdge: 60},
+    0.5,
+    1
+  );
   const converted = getTerrainSweepGroundLineGeometry([values[14], values[15]], groundCell, 48, 24);
   expect(converted).toMatchObject({xMajor: true, slopeFixed: -32823, travelSign: 1});
   const device = createNullWebGPUDevice();
@@ -108,8 +127,7 @@ it('cast shadow takes the cell size mode from the contributor only', () => {
   for (const cellSizeMode of ['uniform', 'web-mercator', 'geographic'] as const) {
     const contributor = new GPUTerrainCastShadow({
       id: `cast-${cellSizeMode}`,
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       cellSizeMode,
       elevation: {
         id: `elevation-${cellSizeMode}`,
@@ -119,8 +137,10 @@ it('cast shadow takes the cell size mode from the contributor only', () => {
           values: createTransientView(graph, `values-${cellSizeMode}`, 'float32', 30)
         }
       },
-      settings: createTransientView(graph, `settings-${cellSizeMode}`, 'float32', 16),
-      horizonAngle: createTransientView(graph, `horizon-${cellSizeMode}`, 'float32', 30)
+      parameters: createTransientView(graph, `parameters-${cellSizeMode}`, 'float32', 16),
+      output: {
+        horizonAngle: createTransientView(graph, `horizon-${cellSizeMode}`, 'float32', 30)
+      }
     });
     expect(contributor.getCommandNodes(graph).some(node => node.id.endsWith('-sweep'))).toBe(true);
   }
@@ -134,11 +154,10 @@ it('cast shadow mirrors the packed line for north rows exactly like the old nort
   const snap = (value: number) => (Math.abs(value) < 1e-9 ? 0 : value);
   for (let tenth = 0; tenth < 3600; tenth++) {
     const azimuthDegrees = tenth / 10;
-    const values = getGPUTerrainCastShadowParameterValues({
-      cellSize: [10, 10],
-      azimuthDegrees,
-      altitudeDegrees: 10
-    });
+    const values = getGPUTerrainCastShadowParameterValues(
+      {azimuthDegrees, altitudeDegrees: 10},
+      makeGPURasterMetadata({width: 48, height: 40, cellSize: 10})
+    );
     const packed = {
       xMajor: values[10] !== 0,
       slopeFixed: values[11],
@@ -162,31 +181,37 @@ it('cast shadow mirrors the packed line for north rows exactly like the old nort
 });
 
 it('getGPUTerrainCastShadowParameterValues validates its input', () => {
-  const valid = {cellSize: [1, 1] as [number, number], azimuthDegrees: 1, altitudeDegrees: 1};
-  expect(() => getGPUTerrainCastShadowParameterValues({...valid, cellSize: [0, 1]})).toThrow(
-    /cell size/
-  );
+  const valid = {azimuthDegrees: 1, altitudeDegrees: 1};
+  const grid = makeGPURasterMetadata({width: 48, height: 40});
   expect(() =>
-    getGPUTerrainCastShadowParameterValues({...valid, angularRadiusDegrees: -1})
+    getGPUTerrainCastShadowParameterValues(
+      valid,
+      makeGPURasterMetadata({width: 48, height: 40, cellSize: [0, 1]})
+    )
+  ).toThrow(/cell size/);
+  expect(() =>
+    getGPUTerrainCastShadowParameterValues({...valid, angularRadiusDegrees: -1}, grid)
   ).toThrow(/angular radius/);
   expect(() =>
-    getGPUTerrainCastShadowParameterValues({...valid, azimuthDegrees: Number.NaN})
+    getGPUTerrainCastShadowParameterValues({...valid, azimuthDegrees: Number.NaN}, grid)
   ).toThrow(/finite/);
-  expect(() =>
-    getGPUTerrainCastShadowParameterValues(valid, 'south', new Float32Array(15))
-  ).toThrow(/16 values/);
+  expect(() => getGPUTerrainCastShadowParameterValues(valid, grid, new Float32Array(15))).toThrow(
+    /16 values/
+  );
 });
 
 it('GPUTerrainCastShadow validates props and schedules one sweep node', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainCastShadowProps> = {}) => {
+  const create = (
+    overrides: Partial<Omit<GPUTerrainCastShadowProps, 'output'>> = {},
+    outputOverrides?: GPUTerrainCastShadowOutput
+  ) => {
     instance++;
     const length = 30;
     return new GPUTerrainCastShadow({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: {
         id: `elevation-${instance}`,
         format: 'float32',
@@ -195,8 +220,10 @@ it('GPUTerrainCastShadow validates props and schedules one sweep node', () => {
           values: createTransientView(graph, `elevation-${instance}`, 'float32', length)
         }
       },
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 16),
-      sunVisibility: createTransientView(graph, `visibility-${instance}`, 'float32', length),
+      parameters: createTransientView(graph, `parameters-${instance}`, 'float32', 16),
+      output: outputOverrides ?? {
+        sunVisibility: createTransientView(graph, `visibility-${instance}`, 'float32', length)
+      },
       ...overrides
     });
   };
@@ -210,15 +237,15 @@ it('GPUTerrainCastShadow validates props and schedules one sweep node', () => {
   expect(nodes.some(node => node.id === 'terrain-cast-shadow-sweep')).toBe(true);
   expect(nodes.filter(node => node.id.includes('sweep'))).toHaveLength(1);
 
-  expect(() => create({sunVisibility: undefined})).toThrow(/at least one output/);
+  expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({maximumRadius: 0})).toThrow(/maximumRadius/);
   expect(() => create({maximumRadius: 2.5})).toThrow(/maximumRadius/);
-  expect(() => create({width: 40000})).toThrow(/32767/);
+  expect(() => create({grid: makeGPURasterMetadata({width: 40000, height: 5})})).toThrow(/32767/);
   expect(() =>
-    create({settings: createTransientView(graph, 'short-settings', 'float32', 8)})
+    create({parameters: createTransientView(graph, 'short-parameters', 'float32', 8)})
   ).toThrow(/at least 16/);
   expect(() =>
-    create({sunVisibility: createTransientView(graph, 'short-visibility', 'float32', 3)})
+    create({}, {sunVisibility: createTransientView(graph, 'short-visibility', 'float32', 3)})
   ).toThrow(/30 float32/);
   expect(() => create({cellSizeMode: 'bogus' as 'uniform'})).toThrow(/cellSizeMode/);
   expect(() => create({rowDirection: 'up' as 'south'})).toThrow(/rowDirection/);

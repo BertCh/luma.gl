@@ -25,6 +25,7 @@ import {
 import {createNearestNeighborScene} from './spatial-regression-diagnostics-oracle';
 import {createLagScene} from './spatial-two-stage-least-squares-oracle';
 import {SPATIAL_WEIGHTS_TRACES_REFERENCE} from './spatial-weights-traces-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const MAXIMUM_POWER = 40;
 
@@ -119,7 +120,7 @@ async function runLagImpacts(device: Device, scene: Scene): Promise<Result> {
           'float32',
           GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status
+        status: {code: status}
       }
     })
   );
@@ -188,9 +189,7 @@ const referenceScenes = [
 
 it('GPUSpatialLagImpacts turns a 2SLS fit into impacts that match spreg full multipliers', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [name, scene, reference] of referenceScenes) {
     const actual = await runLagImpacts(device, scene);
     expect(actual.status).toBe(0);
@@ -269,9 +268,7 @@ it('GPUSpatialLagImpacts turns a 2SLS fit into impacts that match spreg full mul
 
 it('GPUSpatialLagImpacts writes NaN for a failed fit, non-finite rho or rho outside the series range', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const traces = SPATIAL_WEIGHTS_TRACES_REFERENCE.knn60;
   const run = async (rho: number, fitStatus: number, rhoBound?: number) => {
     const buffers: Buffer[] = [];

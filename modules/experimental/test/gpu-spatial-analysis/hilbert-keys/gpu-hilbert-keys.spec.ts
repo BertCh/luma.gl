@@ -14,6 +14,7 @@ import {
   getHilbertCellReference,
   getHilbertIndexReference
 } from './hilbert-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -32,7 +33,7 @@ function createPointsFixture(device: Device, points: Float32Array, order: number
     create: ({inputs, outputs}) =>
       new GPUHilbertKeys({
         order,
-        points: inputs['points'] as never,
+        positions: inputs['points'] as never,
         bounds: bounds ? (inputs['bounds'] as never) : undefined,
         output: {
           keys: outputs['keys'] as never,
@@ -46,7 +47,7 @@ function createPointsFixture(device: Device, points: Float32Array, order: number
 for (const order of [4, 10, 16]) {
   it(`GPUHilbertKeys order ${order} is bit-exact against the CPU xy2d and sorts rows`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const random = createRandom(7 + order);
     const count = 3000;
     // Eighths inside a 1024 square: every f32 operation of the quantization is exact.
@@ -90,7 +91,7 @@ for (const order of [4, 10, 16]) {
 
 it('GPUHilbertKeys visits a full grid as an edge-connected curve and follows per-frame bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const order = 4;
   const size = 2 ** order;
   const points = new Float32Array(size * size * 2);
@@ -127,7 +128,7 @@ it('GPUHilbertKeys visits a full grid as an edge-connected curve and follows per
 
 it('GPUHilbertKeys keys feature-box centers and reduces bounds itself when none are given', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createRandom(31);
   const count = 700;
   const minima = new Float32Array(count * 2);
@@ -184,7 +185,7 @@ it('GPUHilbertKeys keys feature-box centers and reduces bounds itself when none 
 
 it('GPUHilbertKeys reduces bounds across workgroups for large inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createRandom(53);
   // More than 4096 items per reduction workgroup, so the two-level reduction runs. The extremes
   // (a power-of-two extent keeps the quantization exact) sit in the last blocks, and invalid
@@ -203,7 +204,7 @@ it('GPUHilbertKeys reduces bounds across workgroups for large inputs', async () 
     create: ({inputs, outputs}) =>
       new GPUHilbertKeys({
         order,
-        points: inputs['points'] as never,
+        positions: inputs['points'] as never,
         output: {keys: outputs['keys'] as never}
       })
   });

@@ -4,14 +4,20 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
 import {
+  getGPURasterZonalStatisticsParameterValues,
   GPU_RASTER_ZONAL_STATISTICS_NO_ZONE,
+  GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH,
   GPURasterZonalStatistics,
   type GPURasterZonalStatisticsProps
 } from '../../../src/gpu-raster/raster-zonal-statistics';
 import {getRasterZonalCellArea} from '../../../src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics';
 import {computeZonalStatistics} from './raster-zonal-statistics-oracle';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 const WIDTH = 4;
 const HEIGHT = 3;
@@ -23,8 +29,7 @@ function createProps(
 ): GPURasterZonalStatisticsProps {
   return {
     id: 'zonal',
-    width: WIDTH,
-    height: HEIGHT,
+    grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
     zones: createTransientView(graph, 'zones', 'uint32', WIDTH * HEIGHT),
     values: {
       id: 'values',
@@ -77,9 +82,9 @@ it('GPURasterZonalStatistics prefixes IDs and schedules only requested columns',
         sums: createTransientView(fullGraph, 'o2', 'float32', CAPACITY),
         means: createTransientView(fullGraph, 'o3', 'float32', CAPACITY),
         minimums: createTransientView(fullGraph, 'o4', 'float32', CAPACITY),
-        maximums: createTransientView(fullGraph, 'o5', 'float32', CAPACITY)
-      },
-      overflow: createTransientView(fullGraph, 'overflow', 'uint32', 1)
+        maximums: createTransientView(fullGraph, 'o5', 'float32', CAPACITY),
+        status: {overflow: createTransientView(fullGraph, 'overflow', 'uint32', 1)}
+      }
     }),
     fullGraph
   );
@@ -106,7 +111,10 @@ function expectConstructorToThrow(
 }
 
 it('GPURasterZonalStatistics validates its props', () => {
-  expectConstructorToThrow(() => ({width: 0}), /dimensions/);
+  expectConstructorToThrow(
+    () => ({grid: makeGPURasterMetadata({width: 0, height: HEIGHT})}),
+    /dimensions/
+  );
   expectConstructorToThrow(
     graph => ({
       zones: createTransientView(graph, 'short-zones', 'uint32', 3)
@@ -133,8 +141,10 @@ it('GPURasterZonalStatistics validates its props', () => {
   }));
   expectConstructorToThrow(
     graph => ({
-      output: {sums: createTransientView(graph, 'sums', 'float32', CAPACITY)},
-      overflow: createTransientView(graph, 'overflow-two', 'uint32', 2)
+      output: {
+        sums: createTransientView(graph, 'sums', 'float32', CAPACITY),
+        status: {overflow: createTransientView(graph, 'overflow-two', 'uint32', 2)}
+      }
     }),
     /overflow/
   );
@@ -261,11 +271,11 @@ it('the zonal oracle reproduces python area-weighted means and reliability varia
 
 it('GPURasterZonalStatistics schedules weighted moments only when requested', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  const settings = createTransientView(graph, 'settings', 'float32', 4);
+  const parameters = createTransientView(graph, 'parameters', 'float32', 4);
   const ids = getNodeIds(
     createProps(graph, {
       cellSizeMode: 'geographic',
-      settings,
+      parameters,
       output: {
         means: createTransientView(graph, 'o-means', 'float32', CAPACITY),
         weightSums: createTransientView(graph, 'o-weights', 'float32', CAPACITY),
@@ -302,26 +312,87 @@ it('GPURasterZonalStatistics schedules weighted moments only when requested', ()
 });
 
 it('GPURasterZonalStatistics validates geographic cell weighting', () => {
-  expectConstructorToThrow(() => ({cellSizeMode: 'geographic'}), /need settings/);
+  expectConstructorToThrow(() => ({cellSizeMode: 'geographic'}), /need parameters/);
   expectConstructorToThrow(
     () => ({cellSizeMode: 'web-mercator' as never}),
     /cellSizeMode must be uniform or geographic/
   );
   expectConstructorToThrow(
-    graph => ({settings: createTransientView(graph, 'settings', 'float32', 4)}),
-    /settings need cellSizeMode geographic/
+    graph => ({parameters: createTransientView(graph, 'parameters', 'float32', 4)}),
+    /parameters need cellSizeMode geographic/
   );
   expectConstructorToThrow(
     graph => ({
       cellSizeMode: 'geographic',
-      settings: createTransientView(graph, 'short-settings', 'float32', 3)
+      parameters: createTransientView(graph, 'short-parameters', 'float32', 3)
     }),
-    /settings must contain 4/
+    /parameters must contain at least 4/
   );
   expectConstructorToThrow(
     graph => ({
       output: {variances: createTransientView(graph, 'short-variances', 'float32', CAPACITY - 1)}
     }),
     /variances must contain zoneCapacity rows/
+  );
+});
+
+it('GPURasterZonalStatistics skips the identity copy for canonical float32 buffer bands', () => {
+  const countElevationNodes = (
+    overrides: (graph: GPUCommandGraph) => Partial<GPURasterZonalStatisticsProps>
+  ) => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    return getNodeIds(createProps(graph, overrides(graph)), graph).filter(id =>
+      id.includes('values-elevation')
+    ).length;
+  };
+  const band = (
+    graph: GPUCommandGraph,
+    extra: {validity?: boolean; scale?: number; offset?: number; noDataValue?: number}
+  ) => ({
+    id: 'canonical',
+    format: 'float32' as const,
+    storage: {
+      kind: 'buffer' as const,
+      values: createTransientView(graph, 'canonical-values', 'float32', WIDTH * HEIGHT)
+    },
+    ...(extra.validity
+      ? {validity: createTransientView(graph, 'canonical-validity', 'uint32', WIDTH * HEIGHT)}
+      : {}),
+    ...(extra.scale === undefined ? {} : {scale: extra.scale}),
+    ...(extra.offset === undefined ? {} : {offset: extra.offset}),
+    ...(extra.noDataValue === undefined ? {} : {noDataValue: extra.noDataValue})
+  });
+  // Already canonical: float32 buffer, validity, no calibration or nodata.
+  expect(countElevationNodes(graph => ({values: band(graph, {validity: true})}))).toBe(0);
+  // Each of these still needs the canonicalizing copy.
+  expect(countElevationNodes(graph => ({values: band(graph, {})}))).toBe(1);
+  expect(countElevationNodes(graph => ({values: band(graph, {validity: true, scale: 2})}))).toBe(1);
+  expect(countElevationNodes(graph => ({values: band(graph, {validity: true, offset: 1})}))).toBe(
+    1
+  );
+  expect(
+    countElevationNodes(graph => ({values: band(graph, {validity: true, noDataValue: -9999})}))
+  ).toBe(1);
+});
+
+it('GPURasterZonalStatistics zone-reduce kernel passes its workgroup size', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph, {
+    output: {minimums: createTransientView(graph, 'minimums', 'float32', CAPACITY)}
+  });
+  const sources = getGPUCommandNodeKernelSources(
+    new GPURasterZonalStatistics(props).getCommandNodes(graph)
+  ).filter(({source}) => source.includes('var<workgroup> local_'));
+  expect(sources.length).toBe(1);
+  expect(sources[0].source).toContain('@workgroup_size(256)');
+  expect(sources[0].source).toContain('slot += 256u');
+});
+
+it('getGPURasterZonalStatisticsParameterValues writes the grid words', () => {
+  expect(GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH).toBe(4);
+  const grid = makeGPURasterMetadata({width: 2, height: 3, cellSize: [10, 20], origin: [0, 60]});
+  expect(Array.from(getGPURasterZonalStatisticsParameterValues(grid))).toEqual([10, 20, 60, 0]);
+  expect(() => getGPURasterZonalStatisticsParameterValues(grid, new Float32Array(3))).toThrow(
+    /4 values/
   );
 });

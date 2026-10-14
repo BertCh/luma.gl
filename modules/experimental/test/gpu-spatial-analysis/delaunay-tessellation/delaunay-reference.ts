@@ -390,3 +390,209 @@ export function replaySymbolicDelaunay(coordinates: Float32Array): number[][] {
   }
   return triangles.filter(triangle => triangle.every(vertex => vertex < pointCount));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Additions for the parallel insertion-and-flipping study (DEL-REF): input generators and
+// checks that stay affordable at 1e4 and 1e5 sites.
+// ---------------------------------------------------------------------------------------------
+
+/** Gaussian clusters (Box-Muller on `mulberry32`): `clusterCount` centers, sigma 1% of the span. */
+export function createClusteredFixture(
+  seed: number,
+  count: number,
+  clusterCount = 8
+): Float32Array {
+  const random = mulberry32(seed);
+  const centers = Array.from({length: clusterCount}, () => [random() * 100, random() * 100]);
+  const coordinates = new Float32Array(2 * count);
+  for (let row = 0; row < count; row++) {
+    const center = centers[Math.floor(random() * clusterCount)];
+    const radius = Math.sqrt(-2 * Math.log(1 - random()));
+    const angle = 2 * Math.PI * random();
+    coordinates[2 * row] = center[0] + radius * Math.cos(angle);
+    coordinates[2 * row + 1] = center[1] + radius * Math.sin(angle);
+  }
+  return coordinates;
+}
+
+/** Integer lattice, row-major, `columns` per row, `count` points: maximal cocircular degeneracy. */
+export function createLatticeFixture(count: number, columns: number): Float32Array {
+  const coordinates = new Float32Array(2 * count);
+  for (let row = 0; row < count; row++) {
+    coordinates[2 * row] = row % columns;
+    coordinates[2 * row + 1] = Math.floor(row / columns);
+  }
+  return coordinates;
+}
+
+/** Points on a circle of radius 100, rounded to f32 (nearly, not exactly, cocircular). */
+export function createCircleFixture(seed: number, count: number): Float32Array {
+  const random = mulberry32(seed);
+  const coordinates = new Float32Array(2 * count);
+  for (let row = 0; row < count; row++) {
+    const angle = 2 * Math.PI * random();
+    coordinates[2 * row] = 100 * Math.cos(angle);
+    coordinates[2 * row + 1] = 100 * Math.sin(angle);
+  }
+  return coordinates;
+}
+
+/** `count - 1` collinear sites (0, 0) .. (count - 2, 0) in row order plus one site off the line. */
+export function createLineFixture(count: number): Float32Array {
+  const coordinates = new Float32Array(2 * count);
+  for (let row = 0; row < count - 1; row++) {
+    coordinates[2 * row] = row;
+    coordinates[2 * row + 1] = 0;
+  }
+  coordinates[2 * (count - 1)] = (count - 1) / 2 + 0.25;
+  coordinates[2 * (count - 1) + 1] = 1;
+  return coordinates;
+}
+
+/** Uniform sites with rows sorted by x (the worst case for any rule that inserts in row order). */
+export function createSortedFixture(seed: number, count: number): Float32Array {
+  const source = createUniformFixture(seed, count, 100, 100);
+  const order = Array.from({length: count}, (_, row) => row).sort(
+    (first, second) => source[2 * first] - source[2 * second]
+  );
+  const coordinates = new Float32Array(2 * count);
+  order.forEach((row, index) => {
+    coordinates[2 * index] = source[2 * row];
+    coordinates[2 * index + 1] = source[2 * row + 1];
+  });
+  return coordinates;
+}
+
+/**
+ * Number of sites on the boundary of the convex hull, collinear boundary sites included (exact).
+ * For distinct sites that are not all collinear, a triangulation has `2n - 2 - b` triangles.
+ */
+export function countHullBoundarySites(coordinates: Float32Array): number {
+  const count = coordinates.length / 2;
+  const exact = toExactIntegers(coordinates);
+  const row = (index: number) => [exact[2 * index], exact[2 * index + 1]];
+  const unique = new Map<string, number>();
+  for (let site = 0; site < count; site++) {
+    const key = `${coordinates[2 * site] + 0},${coordinates[2 * site + 1] + 0}`;
+    if (!unique.has(key)) {
+      unique.set(key, site);
+    }
+  }
+  const order = [...unique.values()].sort((first, second) => {
+    const [fx, fy] = row(first);
+    const [sx, sy] = row(second);
+    return fx === sx ? (fy < sy ? -1 : fy > sy ? 1 : 0) : fx < sx ? -1 : 1;
+  });
+  if (order.length < 3) {
+    return order.length;
+  }
+  const chain = (rows: number[]) => {
+    const stack: number[] = [];
+    for (const index of rows) {
+      while (
+        stack.length >= 2 &&
+        orientExact(row(stack[stack.length - 2]), row(stack[stack.length - 1]), row(index)) < 0
+      ) {
+        stack.pop();
+      }
+      stack.push(index);
+    }
+    return stack;
+  };
+  const lower = chain(order);
+  const upper = chain([...order].reverse());
+  return new Set([...lower, ...upper]).size;
+}
+
+/**
+ * Linear-time validity report: strictly counter-clockwise triangles, each directed edge used
+ * once, doubled area equal to the hull's, and every interior edge locally Delaunay (the opposite
+ * vertex of the twin triangle is not strictly inside, exact). Local Delaunay everywhere is
+ * equivalent to the empty-circle property, so this replaces {@link checkTriangulation}, which
+ * is O(triangles * sites), at 1e4 sites and beyond.
+ */
+export function checkLocallyDelaunay(
+  coordinates: Float32Array,
+  triangles: readonly (readonly number[])[]
+): TriangulationCheck {
+  const exact = toExactIntegers(coordinates);
+  const row = (index: number) => [exact[2 * index], exact[2 * index + 1]];
+  const inCircle = createInCircleTester(coordinates);
+  const opposite = new Map<string, number>();
+  let degenerate = 0;
+  let duplicateEdges = 0;
+  let circleViolations = 0;
+  let doubledArea = 0n;
+  for (const [a, b, c] of triangles) {
+    if (orientExact(row(a), row(b), row(c)) <= 0) {
+      degenerate++;
+      continue;
+    }
+    const [ax, ay] = row(a);
+    const [bx, by] = row(b);
+    const [cx, cy] = row(c);
+    doubledArea += (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    for (const [from, to, other] of [
+      [a, b, c],
+      [b, c, a],
+      [c, a, b]
+    ]) {
+      const key = `${from}>${to}`;
+      if (opposite.has(key)) {
+        duplicateEdges++;
+      }
+      opposite.set(key, other);
+    }
+  }
+  for (const [a, b, c] of triangles) {
+    for (const [from, to, other] of [
+      [a, b, c],
+      [b, c, a],
+      [c, a, b]
+    ]) {
+      const twin = opposite.get(`${to}>${from}`);
+      if (twin !== undefined && from < to && inCircle(from, to, other, twin) > 0) {
+        circleViolations++;
+      }
+    }
+  }
+  const hullDoubledArea = getHullDoubledArea(coordinates);
+  return {
+    degenerate,
+    circleViolations,
+    duplicateEdges,
+    areaDifference: doubledArea - hullDoubledArea
+  };
+}
+
+function getHullDoubledArea(coordinates: Float32Array): bigint {
+  const count = coordinates.length / 2;
+  const exact = toExactIntegers(coordinates);
+  const row = (index: number) => [exact[2 * index], exact[2 * index + 1]];
+  const order = Array.from({length: count}, (_, index) => index).sort((first, second) => {
+    const [fx, fy] = row(first);
+    const [sx, sy] = row(second);
+    return fx === sx ? (fy < sy ? -1 : fy > sy ? 1 : 0) : fx < sx ? -1 : 1;
+  });
+  const chain = (rows: number[]) => {
+    const stack: number[] = [];
+    for (const index of rows) {
+      while (
+        stack.length >= 2 &&
+        orientExact(row(stack[stack.length - 2]), row(stack[stack.length - 1]), row(index)) <= 0
+      ) {
+        stack.pop();
+      }
+      stack.push(index);
+    }
+    return stack;
+  };
+  const hull = [...chain(order).slice(0, -1), ...chain([...order].reverse()).slice(0, -1)];
+  let area = 0n;
+  for (let index = 0; index < hull.length; index++) {
+    const [x0, y0] = row(hull[index]);
+    const [x1, y1] = row(hull[(index + 1) % hull.length]);
+    area += x0 * y1 - x1 * y0;
+  }
+  return area;
+}

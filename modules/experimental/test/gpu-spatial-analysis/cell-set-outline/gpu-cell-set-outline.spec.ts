@@ -5,7 +5,14 @@
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
-import {getPentagons, gridDisk, latLngToCell} from 'h3-js';
+import {
+  cellToBoundary,
+  cellToChildren,
+  getPentagons,
+  getRes0Cells,
+  gridDisk,
+  latLngToCell
+} from 'h3-js';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUCellSetOutline} from '../../../src/gpu-spatial-analysis/cell-set-outline';
@@ -30,6 +37,7 @@ import {
   outlineQuadbinOnCPU,
   type OutlineSegment
 } from './cell-set-outline-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type OutlineRun = {
   count: number;
@@ -114,9 +122,11 @@ async function runOutline(
         groups: groupValues
           ? importGraphBuffer(graph, 'out-groups', out.groups, 'uint32', capacity)
           : undefined,
-        count: importGraphBuffer(graph, 'out-count', out.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'out-overflow', out.overflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'out-total', out.total, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'out-count', out.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'out-overflow', out.overflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'out-total', out.total, 'uint32', 1)
+        }
       }
     })
   );
@@ -166,9 +176,7 @@ function expectSameSegments(actual: OutlineSegment[], expected: OutlineSegment[]
 
 it('GPUCellSetOutline h3 matches the h3-js directed-edge oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const resolution of [4, 6]) {
     const cells = createH3Scene(resolution);
     const expected = outlineH3OnCPU(cells);
@@ -193,9 +201,7 @@ it('GPUCellSetOutline h3 matches the h3-js directed-edge oracle', async () => {
 
 it('GPUCellSetOutline h3 outline equals the cellsToMultiPolygon ring edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = createH3Scene(5);
   const expected = getMultiPolygonSegments(cells);
   const run = await runOutline(device, 'h3', cells, {capacity: 4096});
@@ -209,9 +215,7 @@ it('GPUCellSetOutline h3 outline equals the cellsToMultiPolygon ring edges', asy
 
 it('GPUCellSetOutline h3 handles pentagons and icosahedron-edge cells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pentagon = getPentagons(3)[0];
   const cells = sortKeys(gridDisk(pentagon, 2).map(h3ToBigInt));
   const expected = outlineH3OnCPU(cells);
@@ -244,11 +248,78 @@ it('GPUCellSetOutline h3 handles pentagons and icosahedron-edge cells', async ()
   expect(cellsWithEdges).toEqual(expectedCells);
 });
 
+/**
+ * Outline of an H3 cell set from h3-js `cellToBoundary` alone: every boundary edge of every cell,
+ * minus the edges that appear reversed in a neighbor (distortion vertices included, since both
+ * cells of an edge list the same ones). Returns the remaining edge count and their start vertices.
+ */
+function getCancelledEdgeOutline(cells: string[]): {edgeCount: number; vertices: string[]} {
+  const getKey = (point: number[]) => `${point[0].toFixed(5)},${point[1].toFixed(5)}`;
+  const edges = new Map<string, number>();
+  for (const cell of cells) {
+    const boundary = cellToBoundary(cell, true);
+    for (let index = 0; index + 1 < boundary.length; index++) {
+      const edge = `${getKey(boundary[index])}|${getKey(boundary[index + 1])}`;
+      const reverse = `${getKey(boundary[index + 1])}|${getKey(boundary[index])}`;
+      const reverseCount = edges.get(reverse) ?? 0;
+      if (reverseCount > 0) {
+        edges.set(reverse, reverseCount - 1);
+      } else {
+        edges.set(edge, (edges.get(edge) ?? 0) + 1);
+      }
+    }
+  }
+  const remaining = [...edges].filter(([, count]) => count > 0);
+  return {
+    edgeCount: remaining.reduce((total, [, count]) => total + count, 0),
+    vertices: remaining.map(([edge]) => edge.split('|')[0])
+  };
+}
+
+it('GPUCellSetOutline h3 finds the neighbor across every edge at resolutions 0 and 1', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Review D S-6: the neighbor across an edge is the cell nearest the edge midpoint, which was
+  // unverified on the large, distorted cells of resolutions 0-1 (pentagons and icosahedron-edge
+  // cells included). Sets crossing the antimeridian or reaching beyond 85 degrees are skipped:
+  // their outline has no planar longitude/latitude form.
+  let checked = 0;
+  for (const base of getRes0Cells().filter((_, index) => index % 2 === 0)) {
+    for (const resolution of [0, 1]) {
+      const center = resolution === 0 ? base : cellToChildren(base, resolution)[0];
+      const cells = gridDisk(center, 1);
+      const boundaries = cells.map(cell => cellToBoundary(cell, true));
+      const longitudes = boundaries.flat().map(point => point[0]);
+      if (
+        Math.max(...longitudes) - Math.min(...longitudes) > 180 ||
+        boundaries.flat().some(point => Math.abs(point[1]) > 85)
+      ) {
+        continue;
+      }
+      checked++;
+      const expected = getCancelledEdgeOutline(cells);
+      const run = await runOutline(device, 'h3', sortKeys(cells.map(h3ToBigInt)), {
+        capacity: expected.edgeCount + 64
+      });
+      const label = `${center} res ${resolution}`;
+      expect(run.overflow, label).toBe(0);
+      expect(run.count, label).toBe(expected.edgeCount);
+      const missing = expected.vertices.filter(
+        vertex =>
+          !run.segments.some(segment => {
+            const [x, y] = vertex.split(',').map(Number);
+            return Math.abs(segment.a[0] - x) < 1e-4 && Math.abs(segment.a[1] - y) < 1e-4;
+          })
+      );
+      expect(missing, label).toEqual([]);
+    }
+  }
+  expect(checked).toBeGreaterThan(80);
+});
+
 it('GPUCellSetOutline emits group borders when groups are given', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = createH3Scene(5);
   const groups = createGroups(cells, 3);
   const plain = outlineH3OnCPU(cells);
@@ -265,9 +336,7 @@ it('GPUCellSetOutline kernels fit the default eight storage buffers with groups'
   // Regression: group-aware outlines once bound nine buffers in one kernel and failed on devices
   // without raised limits. `core` requests default limits, so createWGSLKernelNode would throw.
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   expect(device.limits.maxStorageBuffersPerShaderStage).toBe(8);
   const cells = createH3Scene(3);
   const groups = createGroups(cells, 2);
@@ -279,9 +348,7 @@ it('GPUCellSetOutline kernels fit the default eight storage buffers with groups'
 
 it('GPUCellSetOutline quadbin matches the tile oracle including wrap and poles', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const z = 4;
   const n = 2 ** z;
   const tiles: [number, number][] = [];
@@ -312,9 +379,7 @@ it('GPUCellSetOutline quadbin matches the tile oracle including wrap and poles',
 
 it('GPUCellSetOutline reports overflow, clamps count and honors the row count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = createH3Scene(5);
   const expected = outlineH3OnCPU(cells);
   const capacity = 24;

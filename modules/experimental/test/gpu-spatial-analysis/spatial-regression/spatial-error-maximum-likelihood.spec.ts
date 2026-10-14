@@ -39,6 +39,7 @@ import {
   SPREG_ERROR_MAXIMUM_LIKELIHOOD_REFERENCE,
   type SpatialMaximumLikelihoodFixture
 } from './spatial-maximum-likelihood-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = ReturnType<(typeof SPATIAL_MAXIMUM_LIKELIHOOD_SCENES)['err_knn_400_31']>;
 type Result = {
@@ -132,8 +133,10 @@ async function runErrorMaximumLikelihood(
           'float32',
           GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1),
-        converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1),
+        status: {
+          code: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1),
+          converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+        },
         residuals: importGraphBuffer(graph, 'residuals', residualBuffer, 'float32', rows)
       }
     })
@@ -239,9 +242,7 @@ for (const name of Object.keys(SPREG_ERROR_MAXIMUM_LIKELIHOOD_REFERENCE) as Arra
 >) {
   it(`GPUSpatialErrorMaximumLikelihood matches spreg ML_Error on ${name}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES[name]();
     const fixture = SPREG_ERROR_MAXIMUM_LIKELIHOOD_REFERENCE[name];
     const actual = await runErrorMaximumLikelihood(device, scene);
@@ -272,9 +273,7 @@ for (const name of Object.keys(SPREG_ERROR_MAXIMUM_LIKELIHOOD_REFERENCE) as Arra
 
 it('GPUSpatialErrorMaximumLikelihood is deterministic', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.err_lattice_400_31();
   const first = await runErrorMaximumLikelihood(device, scene);
   const second = await runErrorMaximumLikelihood(device, scene);
@@ -284,9 +283,7 @@ it('GPUSpatialErrorMaximumLikelihood is deterministic', async () => {
 
 it('GPUSpatialErrorMaximumLikelihood agrees with the float64 mirror under Hutchinson traces', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.err_knn_400_31();
   const actual = await runErrorMaximumLikelihood(device, scene, {
     traceMode: 'stochastic',
@@ -313,9 +310,7 @@ it('GPUSpatialErrorMaximumLikelihood agrees with the float64 mirror under Hutchi
 
 it('GPUSpatialErrorMaximumLikelihood reports a boundary solution when the series limits the interval', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.err_lattice_400_31();
   // Q = 8 limits |lambda| to about 0.34, below the unrestricted maximum 0.60.
   const actual = await runErrorMaximumLikelihood(device, scene, {maximumPower: 8});
@@ -332,9 +327,7 @@ it('GPUSpatialErrorMaximumLikelihood reports a boundary solution when the series
 
 it('GPUSpatialErrorMaximumLikelihood reports singular, too-small and non-finite inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.err_lattice_400_31();
   const singular = {...scene, predictors: Float32Array.from(scene.predictors)};
   for (let row = 0; row < scene.response.length; row++) {

@@ -20,6 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BIN_COUNT = 8;
 const DISTANCE_SCALE = 2 ** 20;
@@ -38,9 +39,7 @@ function createRandom(seed: number): () => number {
 
 it('pair histogram counts and fixed-point distance sums match a CPU pair loop', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 1500;
   const random = createRandom(7);
   const positions = new Float32Array(rows * 2);
@@ -183,9 +182,7 @@ it('pair histogram counts and fixed-point distance sums match a CPU pair loop', 
  */
 async function runForcedAccumulation(pairAction: string, slotCount = 1) {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return null;
-  }
+  requireTestDevice(device);
   const positions = new Float32Array([1, 1, 2, 1, 1, 2, 2, 2]);
   const buffers: Buffer[] = [];
   const positionsBuffer = createInputBuffer(device, positions);

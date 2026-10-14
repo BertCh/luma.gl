@@ -26,6 +26,7 @@ import {
   createOutputBuffer,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const CAPACITY = 8192;
 const MAXIMUM_VERTICES = 10;
@@ -202,9 +203,7 @@ function expectAllCountsMatch(reports: Map<number, Report>, label: string): void
 
 it('H3_BOUNDARY_WGSL matches h3-js for every res 0-2 cell and all pentagons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const runner = createRunner(device);
   const resolutionOf = (cell: string) => Number.parseInt(cell[1], 16);
   const reports = createReports();
@@ -231,9 +230,7 @@ it('H3_BOUNDARY_WGSL matches h3-js for every res 0-2 cell and all pentagons', as
 
 it('H3_BOUNDARY_WGSL matches h3-js around every pentagon at res 3-8', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const runner = createRunner(device);
   const resolutionOf = (cell: string) => Number.parseInt(cell[1], 16);
   const reports = createReports();
@@ -250,9 +247,7 @@ it('H3_BOUNDARY_WGSL matches h3-js around every pentagon at res 3-8', async () =
 
 it('H3_BOUNDARY_WGSL matches h3-js for random cells at res 3-15', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const runner = createRunner(device);
   const resolutionOf = (cell: string) => Number.parseInt(cell[1], 16);
   const reports = createReports();

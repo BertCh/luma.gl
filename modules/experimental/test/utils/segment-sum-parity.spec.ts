@@ -9,6 +9,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../src/utils/gpu-contributor-utils';
 import {createSegmentSumNode} from '../../src/utils/sorted-segment-sums';
 import {createInputBuffer, createOutputBuffer, submitGraph} from './gpu-contributor-test-utils';
+import {requireTestDevice} from './require-test-device';
 
 const WORKGROUP_SIZE = 256;
 
@@ -122,7 +123,7 @@ function expectSameBits(actual: Uint32Array, expected: Float32Array): void {
 
 it('createSegmentSumNode: upstream path is bit-identical to the local kernel and the CPU order', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const testCase = createCase(3000, 7);
   const upstream = await runImplementation(device, testCase, 'auto', true);
   const kernel = await runImplementation(device, testCase, 'kernel', true);
@@ -144,7 +145,7 @@ it('createSegmentSumNode: upstream path is bit-identical to the local kernel and
 
 it('createSegmentSumNode: above 65535 segments falls back to the local kernel and stays correct', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const testCase = createCase(70000, 11);
   // 'auto' with offsetsWithinInput would exceed upstream's x-dimension limit, so it must fall back.
   const automatic = await runImplementation(device, testCase, 'auto', true);
@@ -158,7 +159,7 @@ it('createSegmentSumNode: above 65535 segments falls back to the local kernel an
 
 it('createSegmentSumNode: offsets beyond the input stay clamped when not declared within the input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const base = createCase(50, 3);
   // Last segment end runs past the input, as an excluded-key offset can.
   const offsets = Uint32Array.from(base.offsets);

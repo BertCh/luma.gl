@@ -10,6 +10,7 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../src/utils/wgsl
 import {importGraphBuffer} from '../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../utils/gpu-contributor-test-utils';
 import {createInputBuffer, createOutputBuffer, readUint32} from './gpu-contributor-test-utils';
+import {requireTestDevice} from './require-test-device';
 
 /** Runs `callback` inside a WebGPU validation error scope and returns the captured messages. */
 async function captureValidationErrors(
@@ -26,9 +27,7 @@ async function captureValidationErrors(
 
 it('createWGSLKernelNode keeps storage bindings the body never reads', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
 
   const graph = new GPUCommandGraph(device, {id: 'kernel-unused-bindings'});
   const unusedReadBuffer = createInputBuffer(device, Uint32Array.from([9, 9, 9, 9]));

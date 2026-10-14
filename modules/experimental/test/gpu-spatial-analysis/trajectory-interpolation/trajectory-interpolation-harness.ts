@@ -38,7 +38,7 @@ export type PlayheadGPUResult = PlayheadOracleResult & {
 
 /** One compiled playhead graph reused across playheads. */
 export type PlayheadFixture = {
-  run(playhead: number | bigint, maxGap?: number): Promise<PlayheadGPUResult>;
+  run(playhead: number | bigint, maximumGap?: number): Promise<PlayheadGPUResult>;
   /** Number of times the contributor built its command nodes (1 after compile). */
   getBuildCount(): number;
   destroy(): void;
@@ -135,34 +135,44 @@ export function createPlayheadFixture(
       trackCount + 1
     ),
     parameters: parameterBuffer.importToGraph(graph),
-    currentPositions: importGraphBuffer(
-      graph,
-      'o-positions',
-      out.positions,
-      'float32x2',
-      trackCount
-    ),
-    currentElevations: tracks.elevations
-      ? importGraphBuffer(graph, 'o-elevations', out.elevations, 'float32', trackCount)
-      : undefined,
-    headings: importGraphBuffer(graph, 'o-headings', out.headings, 'float32', trackCount),
-    speeds: importGraphBuffer(graph, 'o-speeds', out.speeds, 'float32', trackCount),
-    status: importGraphBuffer(graph, 'o-status', out.status, 'uint32', trackCount),
-    segmentRows: importGraphBuffer(graph, 'o-segment-rows', out.segmentRows, 'uint32', trackCount),
-    segmentFractions: importGraphBuffer(
-      graph,
-      'o-segment-fractions',
-      out.segmentFractions,
-      'float32',
-      trackCount
-    ),
-    activeTracks: {
-      ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', capacity),
-      count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
-    },
-    drawInstanceCount: importGraphBuffer(graph, 'o-draw', out.draw, 'uint32', 1)
+    output: {
+      currentPositions: importGraphBuffer(
+        graph,
+        'o-positions',
+        out.positions,
+        'float32x2',
+        trackCount
+      ),
+      currentElevations: tracks.elevations
+        ? importGraphBuffer(graph, 'o-elevations', out.elevations, 'float32', trackCount)
+        : undefined,
+      headings: importGraphBuffer(graph, 'o-headings', out.headings, 'float32', trackCount),
+      speeds: importGraphBuffer(graph, 'o-speeds', out.speeds, 'float32', trackCount),
+      trackStatus: importGraphBuffer(graph, 'o-status', out.status, 'uint32', trackCount),
+      segmentRows: importGraphBuffer(
+        graph,
+        'o-segment-rows',
+        out.segmentRows,
+        'uint32',
+        trackCount
+      ),
+      segmentFractions: importGraphBuffer(
+        graph,
+        'o-segment-fractions',
+        out.segmentFractions,
+        'float32',
+        trackCount
+      ),
+      activeTracks: {
+        ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', capacity),
+        status: {
+          count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+        }
+      },
+      drawInstanceCount: importGraphBuffer(graph, 'o-draw', out.draw, 'uint32', 1)
+    }
   });
   let buildCount = 0;
   const getCommandNodes = contributor.getCommandNodes.bind(contributor);
@@ -173,11 +183,11 @@ export function createPlayheadFixture(
   graph.add(contributor);
   const compiled = graph.compile();
   return {
-    async run(playhead, maxGap = 0) {
+    async run(playhead, maximumGap = 0) {
       if (isWordMode) {
-        parameterBuffer.write(getGPUTrajectoryPlayheadWordParameterValues({playhead, maxGap}));
+        parameterBuffer.write(getGPUTrajectoryPlayheadWordParameterValues({playhead, maximumGap}));
       } else {
-        parameterBuffer.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap}));
+        parameterBuffer.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap}));
       }
       submitGraph(device, compiled, undefined);
       const [activeCount] = await readUint32(out.count, 1);
@@ -262,11 +272,13 @@ export async function runResample(
       ),
       sampleCount,
       spacing,
-      samples: importGraphBuffer(graph, 'o-samples', out.samples, 'float32x2', outputLength),
-      sampleElevations: tracks.elevations
-        ? importGraphBuffer(graph, 'o-elevations', out.elevations, 'float32', outputLength)
-        : undefined,
-      sampleTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', outputLength)
+      output: {
+        samples: importGraphBuffer(graph, 'o-samples', out.samples, 'float32x2', outputLength),
+        sampleElevations: tracks.elevations
+          ? importGraphBuffer(graph, 'o-elevations', out.elevations, 'float32', outputLength)
+          : undefined,
+        sampleTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', outputLength)
+      }
     })
   );
   const compiled = graph.compile();

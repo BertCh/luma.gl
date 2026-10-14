@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUAssuncaoReisStandardization,
@@ -22,24 +22,28 @@ import {RATE_REFERENCE} from './gpu-rate-standardization-reference';
 
 let serial = 0;
 
+/** Test overrides mix props and the `output` fields `statistics` and `invalidCount`. */
+type Overrides = Partial<GPUAssuncaoReisStandardizationProps> & {
+  statistics?: GraphDataView<'float32'>;
+  invalidCount?: GraphDataView<'uint32'>;
+};
+
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUAssuncaoReisStandardizationProps> = {}
+  overrides: Overrides = {}
 ): GPUAssuncaoReisStandardizationProps {
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `view-${serial++}`, format, length);
+  const {statistics, invalidCount, ...props} = overrides;
   return {
     events: view('float32', 10),
     populations: view('float32', 10),
-    standardizedRates: view('float32', 10),
-    ...overrides
+    ...props,
+    output: {standardizedRates: view('float32', 10), statistics, status: {invalidCount}}
   };
 }
 
-function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPUAssuncaoReisStandardizationProps>,
-  message: RegExp
-): void {
+function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message: RegExp): void {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   expect(() => new GPUAssuncaoReisStandardization(createProps(graph, overrides(graph)))).toThrow(
@@ -48,7 +52,7 @@ function expectThrows(
   device.destroy();
 }
 
-// Oracle: fix/work/A/oracle-u8-rate-moran.py (esda 2.10.0 / libpysal 4.15.0)
+// Oracle: test/oracles/statistics-rate-standardization.py (esda 2.10.0 / libpysal 4.15.0)
 it('the CPU oracle reproduces esda assuncao_rate, including the negative-variance fallback', () => {
   for (const dataset of ['full', 'missing', 'under'] as const satisfies readonly RateDataset[]) {
     const {events, populations} = getRateInputs(dataset);
@@ -108,7 +112,7 @@ it('GPUAssuncaoReisStandardization validates its inputs', () => {
         GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH - 1
       )
     }),
-    /statistics must hold 5/
+    /statistics length must be an integer in \[5,/
   );
   expectThrows(
     graph => ({invalidCount: createTransientView(graph, 'invalid-float', 'float32', 1) as never}),
@@ -118,7 +122,11 @@ it('GPUAssuncaoReisStandardization validates its inputs', () => {
   const graph = new GPUCommandGraph(device);
   const base = createProps(graph);
   expect(
-    () => new GPUAssuncaoReisStandardization({...base, standardizedRates: base.events})
+    () =>
+      new GPUAssuncaoReisStandardization({
+        ...base,
+        output: {standardizedRates: base.events as GraphDataView<'float32'>}
+      })
   ).toThrow(/outputs must not share/);
   device.destroy();
 });
@@ -142,6 +150,23 @@ it('GPUAssuncaoReisStandardization creates deterministic node IDs', () => {
     'assuncao-reis-standardization-variance-blocks',
     'assuncao-reis-standardization-variance-reduce',
     'assuncao-reis-standardization-standardize'
+  ]);
+  device.destroy();
+});
+
+it('GPUAssuncaoReisStandardization accepts uint32 events and populations', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const node = new GPUAssuncaoReisStandardization(
+    createProps(graph, {
+      events: createTransientView(graph, 'event-counts', 'uint32', 10),
+      populations: createTransientView(graph, 'population-counts', 'uint32', 10)
+    })
+  );
+  const ids = node.getCommandNodes(graph).map(commandNode => commandNode.id);
+  expect(ids.slice(0, 2)).toEqual([
+    'assuncao-reis-standardization-events-to-float32',
+    'assuncao-reis-standardization-populations-to-float32'
   ]);
   device.destroy();
 });

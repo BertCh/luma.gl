@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUMinimumClearance} from '../../../src/gpu-spatial-analysis/minimum-clearance';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -38,7 +38,7 @@ it('GPUMinimumClearance is planar only', () => {
         positions: view(graph, 'float32x2', 4),
         lineOffsets: view(graph, 'uint32', 2)
       },
-      clearances: view(graph, 'float32', 1)
+      output: {clearances: view(graph, 'float32', 1)}
     });
   expect(() => create(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);
   expect(create().spatialContext.coordinateSpace).toBe('planar');

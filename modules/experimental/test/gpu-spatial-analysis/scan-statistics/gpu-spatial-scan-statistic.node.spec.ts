@@ -4,9 +4,9 @@
 
 import {describe, expect, test} from 'vitest';
 import {
-  getGPUSpatialScanLayout,
-  getGPUSpatialScanParameterValues,
-  GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS
+  getGPUSpatialScanStatisticLayout,
+  getGPUSpatialScanStatisticParameterValues,
+  GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS
 } from '../../../src/gpu-spatial-analysis/scan-statistics/scan-statistic-parameters';
 import {
   computeScanOracle,
@@ -34,7 +34,7 @@ const SPACE_TIME_PERMUTATION = {
 
 describe('GPUSpatialScanStatistic parameters', () => {
   test('packs defaults: time windows default to half the study period (word 0)', () => {
-    const values = getGPUSpatialScanParameterValues({seed: 5, permutations: 99});
+    const values = getGPUSpatialScanStatisticParameterValues({seed: 5, permutationCount: 99});
     expect(values.length).toBe(8);
     expect(values[2]).toBe(99);
     expect(new Float32Array(values.buffer)[3]).toBe(0.5);
@@ -45,9 +45,9 @@ describe('GPUSpatialScanStatistic parameters', () => {
   });
 
   test('packs explicit limits, shape and rate direction', () => {
-    const values = getGPUSpatialScanParameterValues({
+    const values = getGPUSpatialScanStatisticParameterValues({
       seed: 2 ** 33 + 7,
-      permutations: 10,
+      permutationCount: 10,
       maximumTimeBuckets: 3,
       maximumWindowZones: 40,
       windowShape: 'nearest',
@@ -61,35 +61,43 @@ describe('GPUSpatialScanStatistic parameters', () => {
     expect(values[7]).toBe(2);
   });
 
-  test('validates seed, permutations and the population fraction', () => {
-    expect(() => getGPUSpatialScanParameterValues({seed: -1, permutations: 9})).toThrow();
-    expect(() => getGPUSpatialScanParameterValues({seed: 1, permutations: 0})).toThrow();
+  test('validates seed, permutationCount and the population fraction', () => {
     expect(() =>
-      getGPUSpatialScanParameterValues({seed: 1, permutations: 9, maximumPopulationFraction: 0})
+      getGPUSpatialScanStatisticParameterValues({seed: -1, permutationCount: 9})
+    ).toThrow();
+    expect(() =>
+      getGPUSpatialScanStatisticParameterValues({seed: 1, permutationCount: 0})
+    ).toThrow();
+    expect(() =>
+      getGPUSpatialScanStatisticParameterValues({
+        seed: 1,
+        permutationCount: 9,
+        maximumPopulationFraction: 0
+      })
     ).toThrow();
   });
 });
 
 describe('GPUSpatialScanStatistic layout', () => {
   test('defaults to every zone while the tables fit', () => {
-    expect(getGPUSpatialScanLayout(100)).toEqual({usableZones: 100, listLength: 100});
-    expect(getGPUSpatialScanLayout(4096)).toEqual({usableZones: 4096, listLength: 4096});
+    expect(getGPUSpatialScanStatisticLayout(100)).toEqual({usableZones: 100, listLength: 100});
+    expect(getGPUSpatialScanStatisticLayout(4096)).toEqual({usableZones: 4096, listLength: 4096});
   });
 
   test('a smaller capacity adds one look-ahead row', () => {
-    expect(getGPUSpatialScanLayout(100, 32)).toEqual({usableZones: 32, listLength: 33});
-    expect(getGPUSpatialScanLayout(100, 500)).toEqual({usableZones: 100, listLength: 100});
+    expect(getGPUSpatialScanStatisticLayout(100, 32)).toEqual({usableZones: 32, listLength: 33});
+    expect(getGPUSpatialScanStatisticLayout(100, 500)).toEqual({usableZones: 100, listLength: 100});
   });
 
   test('bounds the table memory', () => {
-    const layout = getGPUSpatialScanLayout(20000);
+    const layout = getGPUSpatialScanStatisticLayout(20000);
     expect(layout.listLength * 20000).toBeLessThanOrEqual(
-      GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS
+      GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS
     );
     expect(layout.usableZones).toBeLessThan(20000);
-    expect(() => getGPUSpatialScanLayout(20000, 20000)).toThrow();
-    expect(() => getGPUSpatialScanLayout(0)).toThrow();
-    expect(() => getGPUSpatialScanLayout(10, 0)).toThrow();
+    expect(() => getGPUSpatialScanStatisticLayout(20000, 20000)).toThrow();
+    expect(() => getGPUSpatialScanStatisticLayout(0)).toThrow();
+    expect(() => getGPUSpatialScanStatisticLayout(10, 0)).toThrow();
   });
 });
 
@@ -145,7 +153,7 @@ describe('scan statistic oracle semantics', () => {
       model: 'bernoulli',
       baseline: undefined,
       controls,
-      permutations: 49
+      permutationCount: 49
     });
     expect(result.clusters[0].center).toBeLessThan(24);
     expect(result.clusters[0].pValue).toBeLessThanOrEqual(0.05);
@@ -172,7 +180,7 @@ describe('scan statistic oracle semantics', () => {
       windowShape: 'circle',
       maximumClusters: 2,
       seed: 3,
-      permutations: 19
+      permutationCount: 19
     });
     // Every cell equals its margin expectation exactly, so no window has a positive LLR.
     expect(result.clusters.length).toBe(0);

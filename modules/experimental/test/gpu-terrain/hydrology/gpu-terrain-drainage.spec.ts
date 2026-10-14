@@ -6,6 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterBand, makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUTerrainHeightAboveDrainage} from '../../../src/gpu-terrain/hydrology/gpu-terrain-height-above-drainage';
 import {GPUTerrainStreamOrder} from '../../../src/gpu-terrain/hydrology/gpu-terrain-stream-order';
@@ -27,6 +28,7 @@ import {
 } from './terrain-drainage-oracle';
 import {TERRAIN_FLOW_DEMS as DEMS, computeTerrainFlow} from './terrain-flow-oracle';
 import {toBits} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type DrainageInput = {
   width: number;
@@ -41,6 +43,7 @@ type DrainageInput = {
 
 async function runDrainage(device: Device, input: DrainageInput) {
   const {width, height} = input;
+  const grid = makeGPURasterMetadata({width, height});
   const cellCount = width * height;
   const inputBuffers = [
     createInputBuffer(device, input.elevation),
@@ -70,34 +73,35 @@ async function runDrainage(device: Device, input: DrainageInput) {
   ) => importGraphBuffer(graph, name, outputs[name], format, length);
   graph.add(
     new GPUTerrainHeightAboveDrainage({
-      width,
-      height,
-      elevation: {id: 'elevation', format: 'float32', storage: {kind: 'buffer', values: elevation}},
+      grid,
+      elevation: makeGPURasterBand(elevation, grid, {id: 'elevation'}),
       flowDirections: directions,
       streams,
-      heightAboveDrainage: view('hand', 'float32'),
-      drainageCells: view('drainage', 'uint32'),
-      converged: view('handConverged', 'uint32', 1),
-      maxIterations: input.maxIterations
+      output: {
+        heightAboveDrainage: view('hand', 'float32'),
+        drainageCells: view('drainage', 'uint32'),
+        status: {converged: view('handConverged', 'uint32', 1)}
+      },
+      maximumIterations: input.maxIterations
     })
   );
   graph.add(
     new GPUTerrainWatersheds({
       id: 'basins',
-      width,
-      height,
+      grid,
       flowDirections: directions,
-      labels: view('basins', 'uint32'),
-      converged: view('basinsConverged', 'uint32', 1),
-      maxIterations: input.maxIterations
+      output: {
+        labels: view('basins', 'uint32'),
+        status: {converged: view('basinsConverged', 'uint32', 1)}
+      },
+      maximumIterations: input.maxIterations
     })
   );
   if (input.pourPoints) {
     graph.add(
       new GPUTerrainWatersheds({
         id: 'pour',
-        width,
-        height,
+        grid,
         flowDirections: directions,
         pourPoints: importGraphBuffer(
           graph,
@@ -106,21 +110,24 @@ async function runDrainage(device: Device, input: DrainageInput) {
           'uint32',
           input.pourPoints.length
         ),
-        labels: view('pour', 'uint32'),
-        converged: view('pourConverged', 'uint32', 1),
-        maxIterations: input.maxIterations
+        output: {
+          labels: view('pour', 'uint32'),
+          status: {converged: view('pourConverged', 'uint32', 1)}
+        },
+        maximumIterations: input.maxIterations
       })
     );
   }
   graph.add(
     new GPUTerrainStreamOrder({
-      width,
-      height,
+      grid,
       flowDirections: directions,
       streams,
-      streamOrder: view('order', 'uint32'),
-      converged: view('orderConverged', 'uint32', 1),
-      maxIterations: input.maxOrderIterations
+      output: {
+        streamOrder: view('order', 'uint32'),
+        status: {converged: view('orderConverged', 'uint32', 1)}
+      },
+      maximumIterations: input.maxOrderIterations
     })
   );
   const compiled = graph.compile();
@@ -157,9 +164,7 @@ for (const [width, height] of [
 ]) {
   it(`drainage contributors match the oracles on synthetic DEMs ${width}x${height}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     let sawHeight = false;
     let sawOrderTwo = false;
     let sawManyLabels = false;
@@ -168,10 +173,9 @@ for (const [width, height] of [
       const raw = createDem(width, height);
       const flow = computeTerrainFlow({
         elevation: raw,
-        width,
-        height,
+        grid: makeGPURasterMetadata({width, height}),
         fillDepressions: fill,
-        settings: {cellSize: [1, 1], fillEpsilon: fill ? 0.25 : 0, streamThreshold: 5}
+        settings: {fillEpsilon: fill ? 0.25 : 0, streamThreshold: 5}
       });
       const elevation = fill ? flow.filled : raw;
       const cellCount = width * height;
@@ -240,9 +244,7 @@ for (const [width, height] of [
 
 it('nested pour points give nested watersheds and the lowest duplicate index wins', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 8x1 strip flowing east: cell i drains to i + 1, cell 7 is terminal.
   const directions = Uint32Array.from([1, 1, 1, 1, 1, 1, 1, 0]);
   const result = await runDrainage(device, {
@@ -263,9 +265,7 @@ it('nested pour points give nested watersheds and the lowest duplicate index win
 
 it('a 1x3000 strip needs about 12 doubling rounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const length = 3000;
   const directions = new Uint32Array(length).fill(4);
   directions[length - 1] = 0;
@@ -295,9 +295,7 @@ it('a 1x3000 strip needs about 12 doubling rounds', async () => {
 
 it('GPUTerrainStreamOrder follows Strahler on a hand-built network', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 7;
   const height = 5;
   const directions = new Uint32Array(width * height);
@@ -354,9 +352,7 @@ it('GPUTerrainStreamOrder follows Strahler on a hand-built network', async () =>
 
 it('invalid, multi-bit, and out-of-grid direction codes are terminal', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Cell 0 points west out of the grid, cell 2 has the invalid code 3, cell 4 is multi-bit.
   const directions = Uint32Array.from([16, 1, 3, 1, 5, 0xffffffff]);
   const streams = Uint32Array.from([0, 0, 1, 0, 0, 1]);

@@ -13,13 +13,14 @@ import {
   getGPUSpatialCorrelogramParameterValues,
   GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
   GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH,
-  type GPUSpatialCorrelogramParameters
+  type GPUSpatialCorrelogramSettings
 } from '../../../src/gpu-dataframe/pair-statistics/spatial-correlogram-parameters';
 import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {computeSpatialCorrelogramOnCPU} from './spatial-correlogram-oracle';
 import {CORRELOGRAM_OUTLIER_REFERENCES} from './correlogram-outlier-reference';
 import {createVariogramOutlierScene, VARIOGRAM_OUTLIER_FRAME} from './variogram-outlier-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -72,15 +73,17 @@ function createHarness(
         gridSize: [32, 32],
         bandCount,
         bandMode,
-        moransI: views.outputs.moransI as never,
-        zScores: views.outputs.zScores as never,
-        pValues: views.outputs.pValues as never,
-        expectedI: views.outputs.expectedI as never,
-        varianceI: views.outputs.varianceI as never,
-        pairCounts: views.outputs.pairCounts as never,
-        peakBands: views.outputs.peakBands as never,
-        statistics: views.outputs.statistics as never,
-        overflow: views.outputs.overflow as never
+        output: {
+          moransI: views.outputs.moransI as never,
+          zScores: views.outputs.zScores as never,
+          pValues: views.outputs.pValues as never,
+          expectedI: views.outputs.expectedI as never,
+          varianceI: views.outputs.varianceI as never,
+          pairCounts: views.outputs.pairCounts as never,
+          peakBands: views.outputs.peakBands as never,
+          statistics: views.outputs.statistics as never,
+          status: {overflow: views.outputs.overflow as never}
+        }
       })
   });
 }
@@ -98,14 +101,12 @@ function expectClose(label: string, actual: number, expected: number, tolerance:
 for (const bandMode of ['cumulative', 'annulus'] as const) {
   it(`GPUSpatialCorrelogram (${bandMode}) matches the f64 oracle across per-frame changes without rebuilding`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createSmoothScene(bandMode === 'cumulative' ? 3 : 4, 2000);
     const bandCount = 10;
     const harness = createHarness(device, scene, bandCount, bandMode);
     try {
-      const frames: GPUSpatialCorrelogramParameters[] = [
+      const frames: GPUSpatialCorrelogramSettings[] = [
         {bounds: BOUNDS, maximumDistance: 25},
         {bounds: BOUNDS, maximumDistance: 25, varianceAssumption: 'normality'},
         {bounds: BOUNDS, maximumDistance: 6},
@@ -186,9 +187,7 @@ for (const bandMode of ['cumulative', 'annulus'] as const) {
 
 it('GPUSpatialCorrelogram reports NaN for empty bands and too few rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = {
     positions: new Float32Array([0, 0, 1, 0, 2, 0, 3, 0]),
     values: new Float32Array([1, 2, 3, 4]),
@@ -221,9 +220,7 @@ it('GPUSpatialCorrelogram reports NaN for empty bands and too few rows', async (
 
 it("GPUSpatialCorrelogram keeps Moran's I when one outlier or sentinel inflates the products", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // N(0, 1) values on 4000 seeded points with an isolated outlier of 2e4 or 1e5 standard
   // deviations: it joins no pair but pulls the mean (to 5 and 25) and the sum of squares. The
   // former unit `2^24 / max|c|^2` rounded every pair product to 0 (I = 0). Reference: esda Moran,
@@ -252,9 +249,11 @@ it("GPUSpatialCorrelogram keeps Moran's I when one outlier or sentinel inflates 
           gridSize: [32, 32],
           bandCount,
           bandMode: 'cumulative',
-          moransI: views.outputs.moransI as never,
-          pairCounts: views.outputs.pairCounts as never,
-          overflow: views.outputs.overflow as never
+          output: {
+            moransI: views.outputs.moransI as never,
+            pairCounts: views.outputs.pairCounts as never,
+            status: {overflow: views.outputs.overflow as never}
+          }
         })
     });
     try {

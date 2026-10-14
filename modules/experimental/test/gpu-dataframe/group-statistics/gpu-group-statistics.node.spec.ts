@@ -37,8 +37,7 @@ function createProps(
     output: {
       keys: view('uint32', 4),
       counts: view('uint32', 4),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     },
     ...overrides
   };
@@ -104,8 +103,9 @@ it('oracle: non-finite values, -0, ties, empty and single-value groups', () => {
   expect(Number.isNaN(single.variance)).toBe(true);
   expect(single.median).toBe(7);
   expect(Number.isNaN(single.skewness)).toBe(true);
-  expect(interpolateQuantile([1, 2], 5)).toBe(2);
-  expect(interpolateQuantile([1, 2], -1)).toBe(1);
+  // B-14: a fraction outside [0, 1] is NaN (was clamped), as in GPUColumnQuantiles.
+  expect(Number.isNaN(interpolateQuantile([1, 2], 5))).toBe(true);
+  expect(Number.isNaN(interpolateQuantile([1, 2], -1))).toBe(true);
   expect(Number.isNaN(interpolateQuantile([1, 2], NaN))).toBe(true);
 });
 
@@ -155,8 +155,7 @@ it('GPUGroupStatistics validates props', () => {
       output: {
         keys: view(graph, 'uint32x2', 4),
         counts: view(graph, 'uint32', 4),
-        count: view(graph, 'uint32', 1),
-        overflow: view(graph, 'uint32', 1)
+        status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}
       }
     }),
     /output.keys/
@@ -166,8 +165,7 @@ it('GPUGroupStatistics validates props', () => {
       output: {
         keys: view(graph, 'uint32', 4),
         counts: view(graph, 'uint32', 3),
-        count: view(graph, 'uint32', 1),
-        overflow: view(graph, 'uint32', 1)
+        status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}
       }
     }),
     /same length as output.keys/
@@ -177,8 +175,7 @@ it('GPUGroupStatistics validates props', () => {
       output: {
         keys: view(graph, 'uint32', 4),
         counts: view(graph, 'uint32', 4),
-        count: view(graph, 'uint32', 0),
-        overflow: view(graph, 'uint32', 1)
+        status: {count: view(graph, 'uint32', 0), overflow: view(graph, 'uint32', 1)}
       }
     }),
     /one uint32 row/
@@ -275,8 +272,7 @@ it('GPUGroupStatistics validates props', () => {
       output: {
         keys: view(graph, 'uint32', 4),
         counts: view(graph, 'uint32', 4),
-        count: keys,
-        overflow: view(graph, 'uint32', 1)
+        status: {count: keys, overflow: view(graph, 'uint32', 1)}
       }
     };
   }, /must not share buffers/);
@@ -338,9 +334,11 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
     output: {
       keys: view('uint32x2', 5),
       counts: view('uint32', 5),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1),
-      requiredCount: view('uint32', 1)
+      status: {
+        count: view('uint32', 1),
+        overflow: view('uint32', 1),
+        requiredCount: view('uint32', 1)
+      }
     }
   };
   const contributor = new GPUGroupStatistics(props);

@@ -20,12 +20,11 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {reclassifyOnCPU, type ReclassifyScene} from './raster-algebra-oracle';
 import {createRandom, expectFloatArraysClose} from './raster-algebra-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPURasterReclassify matches the CPU oracle as breaks and closure change without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(7);
   const rowCount = 1531;
   const maximumBreakCount = 6;

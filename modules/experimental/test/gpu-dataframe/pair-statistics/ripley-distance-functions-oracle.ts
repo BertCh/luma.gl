@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPURipleyDistanceParameters} from '../../../src/gpu-dataframe/pair-statistics/ripley-distance-parameters';
+import type {GPURipleyDistanceFunctionsSettings} from '../../../src/gpu-dataframe/pair-statistics/ripley-distance-parameters';
 
 /** Result of {@link computeRipleyDistanceFunctionsOnCPU}. */
 export type RipleyDistanceOracleResult = {
@@ -22,7 +22,7 @@ export type RipleyDistanceOracleResult = {
  */
 export function computeRipleyDistanceFunctionsOnCPU(
   scene: {positions: Float32Array; mask?: Uint32Array},
-  parameters: GPURipleyDistanceParameters,
+  parameters: GPURipleyDistanceFunctionsSettings,
   radiusCount: number,
   referenceGrid: readonly [number, number]
 ): RipleyDistanceOracleResult {

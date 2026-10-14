@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   GPUOffsetCurve,
   GPUOutlineGeometry
@@ -37,7 +37,7 @@ it('GPUOffsetCurve is planar only', () => {
     new GPUOffsetCurve({
       spatialContext,
       positions: view(graph, 'float32x2', 4),
-      pathOffsets: view(graph, 'uint32', 2),
+      lineOffsets: view(graph, 'uint32', 2),
       parameters: view(graph, 'float32', 4),
       output: {positions: view(graph, 'float32x2', 68)}
     });
@@ -52,7 +52,7 @@ it('GPUOutlineGeometry accepts planar and great-circle longitude/latitude only',
     new GPUOutlineGeometry({
       spatialContext,
       positions: view(graph, 'float32x2', 2),
-      pathOffsets: view(graph, 'uint32', 2),
+      lineOffsets: view(graph, 'uint32', 2),
       geometryType: 'lines',
       joinSegments: 4,
       parameters: view(graph, 'float32', 4),

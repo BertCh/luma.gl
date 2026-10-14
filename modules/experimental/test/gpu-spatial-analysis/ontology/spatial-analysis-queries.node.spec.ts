@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import * as spatialAnalysis from '../../../src/gpu-spatial-analysis';
+import * as terrain from '../../../src/gpu-terrain';
 import {
   GPU_SPATIAL_ANALYSIS_AUDIT,
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
@@ -67,7 +69,16 @@ it('operator descriptors use declared data kinds and resolve their tags', () => 
         `${operator.exportName} tag ${tag}`
       ).toBeDefined();
     }
-    expect(operator.package).toBe('@luma.gl/experimental/gpu-spatial-analysis');
+    const exports =
+      operator.package === '@luma.gl/experimental/gpu-terrain' ? terrain : spatialAnalysis;
+    expect(exports, `${operator.exportName} package ${operator.package}`).toHaveProperty(
+      operator.exportName
+    );
+    expect(operator.package).toBe(
+      operator.exportName === 'GPUTerrainPeakProminence'
+        ? '@luma.gl/experimental/gpu-terrain'
+        : '@luma.gl/experimental/gpu-spatial-analysis'
+    );
   }
 });
 

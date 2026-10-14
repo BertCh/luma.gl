@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 import {describe, expect, it} from 'vitest';
 import {
   fillShufflePermutation,
@@ -14,7 +15,13 @@ import {
   getFeistelPermutationIndex,
   getFeistelRoundKeys
 } from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
+import {
+  PERMUTATION_ALTERNATIVE_REFERENCE,
+  PERMUTATION_ALTERNATIVE_TOLERANCES
+} from './permutation-alternative-reference';
 import {createWeights, type CPUSpatialWeights} from './permutation-oracle';
+
+const STREAM = PHILOX_PURPOSES.permutationShuffle.id;
 
 describe('swap-or-not shuffle', () => {
   it('uses 6 ceil(log2 n) + 6 rounds and fits the WGSL storage', () => {
@@ -32,33 +39,34 @@ describe('swap-or-not shuffle', () => {
   it('is a bijection of [0, n), deterministic, and differs per permutation and key', () => {
     for (const count of [1, 2, 3, 4, 5, 17, 64, 65, 1000, 4097]) {
       const output = new Uint32Array(count);
-      fillShufflePermutation(output, count, [11, 0], 3);
+      fillShufflePermutation(output, count, [11, 0], 3, STREAM);
       expect(new Set(output).size).toBe(count);
       expect(Math.max(...output)).toBe(count - 1);
       const again = new Uint32Array(count);
-      fillShufflePermutation(again, count, [11, 0], 3);
+      fillShufflePermutation(again, count, [11, 0], 3, STREAM);
       expect(again).toEqual(output);
     }
     const a = new Uint32Array(50);
     const b = new Uint32Array(50);
     const c = new Uint32Array(50);
-    fillShufflePermutation(a, 50, [1, 0], 1);
-    fillShufflePermutation(b, 50, [1, 0], 2);
-    fillShufflePermutation(c, 50, [2, 0], 1);
+    fillShufflePermutation(a, 50, [1, 0], 1, STREAM);
+    fillShufflePermutation(b, 50, [1, 0], 2, STREAM);
+    fillShufflePermutation(c, 50, [2, 0], 1, STREAM);
     expect(a).not.toEqual(b);
     expect(a).not.toEqual(c);
-    const rounds = getSwapOrNotRounds([1, 0], 1, 50);
+    const rounds = getSwapOrNotRounds([1, 0], 1, 50, STREAM);
     expect(getSwapOrNotPermutationIndex(7, 50, rounds)).toBe(a[7]);
   });
 });
 
-// Oracle: fix/work/A/oracle-u2-vi-rand-pin.py (esda 2.10.0 / libpysal 4.15.0): Moran(x, lat2W(10, 10),
-// transformation='O') for x_i = (((i * 37) % 100) + 1) ** 2 / 100.
-const ESDA_EXPECTED_I = -0.010101010101010102;
-const ESDA_VARIANCE_RANDOMIZATION = 0.0053893219325306324;
-// scipy.stats.chi2.isf(1e-3, df): the 0.1 percent critical values used below.
-const CHI_SQUARE_CRITICAL_DF9 = 27.87716487125657;
-const CHI_SQUARE_CRITICAL_DF99 = 148.23035916510173;
+// esda 2.10 / libpysal 4.15 references from test/oracles/statistics-permutation-alternative.py:
+// Moran(x, lat2W(10, 10), transformation='O') for x_i = (((i * 37) % 100) + 1) ** 2 / 100, and the
+// 0.1 percent chi-square critical values used below.
+const {
+  expectedI: ESDA_EXPECTED_I,
+  varianceRandomization: ESDA_VARIANCE_RANDOMIZATION,
+  chiSquareCritical: {df9: CHI_SQUARE_CRITICAL_DF9, df99: CHI_SQUARE_CRITICAL_DF99}
+} = PERMUTATION_ALTERNATIVE_REFERENCE.moran;
 
 function createRookLattice(side: number): CPUSpatialWeights {
   const lists: [number, number][][] = [];
@@ -131,8 +139,14 @@ describe('global shuffle uniformity (swap-or-not)', () => {
 
   it('reproduces the esda randomization moments of Moran I (oracle pin)', () => {
     const moments = getRandomizationMoments(weights, z);
-    expect(moments.expected).toBeCloseTo(ESDA_EXPECTED_I, 14);
-    expect(moments.variance).toBeCloseTo(ESDA_VARIANCE_RANDOMIZATION, 12);
+    expect(moments.expected).toBeCloseTo(
+      ESDA_EXPECTED_I,
+      PERMUTATION_ALTERNATIVE_TOLERANCES.expectedIDecimals
+    );
+    expect(moments.variance).toBeCloseTo(
+      ESDA_VARIANCE_RANDOMIZATION,
+      PERMUTATION_ALTERNATIVE_TOLERANCES.varianceDecimals
+    );
   });
 
   // The simulated mean and variance of Moran I under R keyed shuffles must match the exact
@@ -151,7 +165,7 @@ describe('global shuffle uniformity (swap-or-not)', () => {
     const joint = new Float64Array(bins * bins);
     const statistics: number[] = [];
     for (let p = 1; p <= permutations; p++) {
-      fillShufflePermutation(permutation, n, [20240601, 0], p);
+      fillShufflePermutation(permutation, n, [20240601, 0], p, STREAM);
       let sum = 0;
       for (let i = 0; i < n; i++) {
         let lag = 0;
@@ -205,7 +219,7 @@ describe('global shuffle uniformity (swap-or-not)', () => {
     for (let p = 1; p <= draws; p++) {
       const keys = getFeistelRoundKeys([1, 0], p);
       feistelCounts[getFeistelPermutationIndex(0, count, keys)]++;
-      fillShufflePermutation(permutation, count, [1, 0], p);
+      fillShufflePermutation(permutation, count, [1, 0], p, STREAM);
       swapCounts[permutation[0]]++;
     }
     const chiSquare = (counts: Float64Array) =>

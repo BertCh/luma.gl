@@ -28,6 +28,7 @@ import {
   type NetworkEdge
 } from '../network-reachability/network-reachability-oracle';
 import {serviceAreasOracle, type ServiceAreasFacility} from './network-service-areas-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type ServiceOptions = {
   /** Facility nodes; row = index. Also the facility capacity. */
@@ -39,6 +40,8 @@ type ServiceOptions = {
   /** Leave `maxIterations` and every other iteration prop at the class defaults. */
   defaultIterations?: boolean;
   activeIterations?: number;
+  /** Also write `predecessors` (review B-12). */
+  withPredecessors?: boolean;
 };
 
 type ServiceFixture = {
@@ -58,6 +61,7 @@ type ServiceFixture = {
   nodeCountsBuffer: Buffer;
   costSumsBuffer: Buffer;
   convergedBuffer: Buffer;
+  predecessorsBuffer?: Buffer;
 };
 
 function createServiceFixture(
@@ -77,6 +81,9 @@ function createServiceFixture(
   const nodeCountsBuffer = createOutputBuffer(device, capacity);
   const costSumsBuffer = createOutputBuffer(device, capacity);
   const convergedBuffer = createOutputBuffer(device, 1);
+  const predecessorsBuffer = options.withPredecessors
+    ? createOutputBuffer(device, nodeCount)
+    : undefined;
   const parameters: GPUParameterBuffer[] = [];
   const createParameter = <Format extends 'uint32' | 'float32'>(
     name: string,
@@ -110,38 +117,53 @@ function createServiceFixture(
       : undefined;
   const props: GPUNetworkServiceAreasProps = {
     id: 'service',
-    offsets: importGraphBuffer(graph, 'service-offsets', offsetsBuffer, 'uint32', nodeCount + 1),
-    neighbors: importGraphBuffer(graph, 'service-neighbors', neighborsBuffer, 'uint32', edgeCount),
-    weights: importGraphBuffer(graph, 'service-weights', weightsBuffer, 'float32', edgeCount),
+    topology: {
+      offsets: importGraphBuffer(graph, 'service-offsets', offsetsBuffer, 'uint32', nodeCount + 1),
+      neighbors: importGraphBuffer(
+        graph,
+        'service-neighbors',
+        neighborsBuffer,
+        'uint32',
+        edgeCount
+      ),
+      weights: importGraphBuffer(graph, 'service-weights', weightsBuffer, 'float32', edgeCount)
+    },
     facilities: facilities.importToGraph(graph),
     facilityCosts: facilityCosts?.importToGraph(graph),
     facilityCount: facilityCount?.importToGraph(graph),
     costLimit: costLimit?.importToGraph(graph),
-    maxIterations: options.defaultIterations ? undefined : (options.maxIterations ?? 32),
+    maximumIterations: options.defaultIterations ? undefined : (options.maxIterations ?? 32),
     activeIterations: activeIterations?.importToGraph(graph),
-    assignments: importGraphBuffer(
-      graph,
-      'service-assignments',
-      assignmentsBuffer,
-      'uint32',
-      nodeCount
-    ),
-    costs: importGraphBuffer(graph, 'service-costs', costsBuffer, 'float32', nodeCount),
-    facilityNodeCounts: importGraphBuffer(
-      graph,
-      'service-node-counts',
-      nodeCountsBuffer,
-      'uint32',
-      capacity
-    ),
-    facilityCostSums: importGraphBuffer(
-      graph,
-      'service-cost-sums',
-      costSumsBuffer,
-      'float32',
-      capacity
-    ),
-    converged: importGraphBuffer(graph, 'service-converged', convergedBuffer, 'uint32', 1)
+    output: {
+      assignments: importGraphBuffer(
+        graph,
+        'service-assignments',
+        assignmentsBuffer,
+        'uint32',
+        nodeCount
+      ),
+      costs: importGraphBuffer(graph, 'service-costs', costsBuffer, 'float32', nodeCount),
+      facilityNodeCounts: importGraphBuffer(
+        graph,
+        'service-node-counts',
+        nodeCountsBuffer,
+        'uint32',
+        capacity
+      ),
+      facilityCostSums: importGraphBuffer(
+        graph,
+        'service-cost-sums',
+        costSumsBuffer,
+        'float32',
+        capacity
+      ),
+      status: {
+        converged: importGraphBuffer(graph, 'service-converged', convergedBuffer, 'uint32', 1)
+      },
+      predecessors: predecessorsBuffer
+        ? importGraphBuffer(graph, 'service-predecessors', predecessorsBuffer, 'uint32', nodeCount)
+        : undefined
+    }
   };
   graph.add(new GPUNetworkServiceAreas(props));
   return {
@@ -157,7 +179,8 @@ function createServiceFixture(
       costsBuffer,
       nodeCountsBuffer,
       costSumsBuffer,
-      convergedBuffer
+      convergedBuffer,
+      ...(predecessorsBuffer ? [predecessorsBuffer] : [])
     ],
     weightsBuffer,
     facilities,
@@ -169,7 +192,8 @@ function createServiceFixture(
     costsBuffer,
     nodeCountsBuffer,
     costSumsBuffer,
-    convergedBuffer
+    convergedBuffer,
+    predecessorsBuffer
   };
 }
 
@@ -241,9 +265,7 @@ const HAND_FACILITIES: ServiceAreasFacility[] = [
 
 it('GPUNetworkServiceAreas breaks ties by facility row on a hand fixture', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createServiceFixture(device, HAND, 11, {
     facilities: HAND_FACILITIES.map(facility => facility.node),
     facilityCosts: HAND_FACILITIES.map(facility => facility.cost)
@@ -264,6 +286,99 @@ it('GPUNetworkServiceAreas breaks ties by facility row on a hand fixture', async
   expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1]);
   compiled.destroy();
   destroyFixture(fixture);
+});
+
+/**
+ * Checks that every assigned node's predecessor walk follows tight edges and ends at the node of
+ * its own assigned facility. Returns the first violation, or `undefined`.
+ */
+function checkPredecessorsReachAssignedFacility(
+  csr: NetworkCSR,
+  costs: Float32Array,
+  assignments: readonly number[],
+  predecessors: readonly number[],
+  facilities: readonly number[]
+): string | undefined {
+  for (let start = 0; start < costs.length; start++) {
+    const label = assignments[start];
+    if (label === NONE) continue;
+    let node = start;
+    for (let steps = 0; predecessors[node] !== NONE; steps++) {
+      const from = predecessors[node];
+      if (steps >= costs.length) return `walk from ${start} does not terminate`;
+      let tight = false;
+      for (let edge = csr.offsets[from]; edge < csr.offsets[from + 1]; edge++) {
+        tight ||=
+          csr.neighbors[edge] === node &&
+          csr.weights[edge] >= 0 &&
+          Math.fround(costs[from] + csr.weights[edge]) === costs[node];
+      }
+      if (!tight) return `link ${from} -> ${node} is not tight`;
+      if (assignments[from] !== label) return `link ${from} -> ${node} leaves label ${label}`;
+      node = from;
+    }
+    if (facilities[label] !== node)
+      return `walk from ${start} ends at ${node}, not facility ${label}`;
+  }
+  return undefined;
+}
+
+it('GPUNetworkServiceAreas predecessors lead to the assigned facility on cost ties', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Review B-12: node 4 is reached at cost 2 from facility rows 0 (node 5) and 1 (node 0). The
+  // assignment is row 0; the plain reachability rule (smallest node) would link it to node 0.
+  const fixture = createServiceFixture(device, HAND, 11, {
+    facilities: HAND_FACILITIES.map(facility => facility.node),
+    facilityCosts: HAND_FACILITIES.map(facility => facility.cost),
+    withPredecessors: true
+  });
+  const compiled = fixture.graph.compile();
+  submitGraph(device, compiled, undefined);
+  const costs = Float32Array.from(await readFloat32(fixture.costsBuffer, 11));
+  const assignments = await readUint32(fixture.assignmentsBuffer, 11);
+  const predecessors = await readUint32(fixture.predecessorsBuffer!, 11);
+  expect(predecessors).toEqual([NONE, NONE, 1, 4, 5, NONE, 4, 8, NONE, NONE, NONE]);
+  expect(
+    checkPredecessorsReachAssignedFacility(
+      HAND,
+      costs,
+      assignments,
+      predecessors,
+      HAND_FACILITIES.map(facility => facility.node)
+    )
+  ).toBeUndefined();
+  expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1]);
+  compiled.destroy();
+  destroyFixture(fixture);
+
+  // Random networks with many cost ties (integer weights, zero-weight edges included).
+  for (const seed of [11, 12]) {
+    const edges = createRandomNetwork(seed, 300, 1200).map(
+      ([from, to, weight], index): NetworkEdge => [from, to, index % 7 === 0 ? 0 : weight]
+    );
+    const csr = buildCSR(300, edges);
+    const facilities = [3, 50, 120, 200, 260, 7];
+    const random = createServiceFixture(device, csr, 300, {facilities, withPredecessors: true});
+    const randomCompiled = random.graph.compile();
+    submitGraph(device, randomCompiled, undefined);
+    const randomCosts = Float32Array.from(await readFloat32(random.costsBuffer, 300));
+    const randomAssignments = await readUint32(random.assignmentsBuffer, 300);
+    const randomPredecessors = await readUint32(random.predecessorsBuffer!, 300);
+    expect(await readUint32(random.convergedBuffer, 1), `seed ${seed}`).toEqual([1]);
+    expect(
+      checkPredecessorsReachAssignedFacility(
+        csr,
+        randomCosts,
+        randomAssignments,
+        randomPredecessors,
+        facilities
+      ),
+      `seed ${seed}`
+    ).toBeUndefined();
+    randomCompiled.destroy();
+    destroyFixture(random);
+  }
 });
 
 async function runRandomNetwork(
@@ -296,9 +411,7 @@ async function runRandomNetwork(
 
 it('GPUNetworkServiceAreas matches the oracle on random networks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const facilityNodes = [10, 250, 600, 777, 1000, 1300, 1600, 1900];
   const edges = createRandomNetwork(11, 2000, 8000);
   await runRandomNetwork(device, buildCSR(2000, edges), facilityNodes, true);
@@ -310,9 +423,7 @@ it('GPUNetworkServiceAreas matches the oracle on random networks', async () => {
 
 it('GPUNetworkServiceAreas re-encodes per-frame facility, count, and limit changes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 2000;
   const csr = buildCSR(nodeCount, createRandomNetwork(5, nodeCount, 8000));
   const nodes = [3, 400, 900, 1500];
@@ -370,9 +481,7 @@ it('GPUNetworkServiceAreas re-encodes per-frame facility, count, and limit chang
 
 it('GPUNetworkServiceAreas handles no facilities, duplicates, and invalid facilities', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createServiceFixture(device, HAND, 11, {
     facilities: [5, 0, 5, 99999],
     facilityCount: 0
@@ -409,9 +518,7 @@ it('GPUNetworkServiceAreas handles no facilities, duplicates, and invalid facili
 
 it('GPUNetworkServiceAreas reports convergence against the iteration limit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pathEdges: NetworkEdge[] = Array.from({length: 19}, (_, node) => [node, node + 1, 1]);
   const path = buildCSR(20, pathEdges);
   const fixture = createServiceFixture(device, path, 20, {
@@ -443,9 +550,7 @@ it('GPUNetworkServiceAreas reports convergence against the iteration limit', asy
 
 it('GPUNetworkServiceAreas converges at default props on a large-diameter grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const side = 224;
   const nodeCount = side * side;
   const csr = buildCSR(nodeCount, createGridNetwork(7, side, side));

@@ -15,12 +15,16 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {createFlatGeometry, type NestedFeatures} from './geometry-measures-oracle';
+import {
+  createFlatGeometry,
+  getMeasuresGeometryFields,
+  type NestedFeatures
+} from './geometry-measures-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Readback = {
   lengths: number[];
   areas: number[];
-  signedAreas: number[];
   centroids: number[];
   bounds: number[];
   vertexCounts: number[];
@@ -34,7 +38,6 @@ async function measure(
   options: {
     geometryType: 'lines' | 'polygons' | 'points';
     coordinateSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
-    holeRule?: 'winding' | 'first-ring-exterior';
   },
   cooperativeRingRows: number
 ): Promise<Readback> {
@@ -49,7 +52,6 @@ async function measure(
   const graph = new GPUCommandGraph(device, {id: 'measures-cooperative'});
   const lengths = track(createOutputBuffer(device, count));
   const areas = track(createOutputBuffer(device, count));
-  const signedAreas = track(createOutputBuffer(device, count));
   const centroids = track(createOutputBuffer(device, 2 * count));
   const bounds = track(createOutputBuffer(device, 4 * count));
   const vertexCounts = track(createOutputBuffer(device, count));
@@ -67,36 +69,31 @@ async function measure(
         units: options.coordinateSystem === 'planar' ? 'native' : 'meters'
       },
       ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        track(createInputBuffer(device, flat.positions)),
-        'float32x2',
-        flat.positions.length / 2
+      ...getMeasuresGeometryFields(
+        flat,
+        options.geometryType,
+        importGraphBuffer(
+          graph,
+          'positions',
+          track(createInputBuffer(device, flat.positions)),
+          'float32x2',
+          flat.positions.length / 2
+        ),
+        (name, values) =>
+          importGraphBuffer(
+            graph,
+            name,
+            track(createInputBuffer(device, values)),
+            'uint32',
+            values.length
+          )
       ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        track(createInputBuffer(device, flat.ringOffsets)),
-        'uint32',
-        flat.ringOffsets.length
-      ),
-      featureRingOffsets: importGraphBuffer(
-        graph,
-        'feature-ring-offsets',
-        track(createInputBuffer(device, flat.featureRingOffsets)),
-        'uint32',
-        flat.featureRingOffsets.length
-      ),
-      geometryType: options.geometryType,
-      holeRule: options.holeRule,
       cooperativeRingRows,
       output: {
         lengths: importGraphBuffer(graph, 'lengths', lengths, 'float32', count),
         ...(isPolygon
           ? {
-              areas: importGraphBuffer(graph, 'areas', areas, 'float32', count),
-              signedAreas: importGraphBuffer(graph, 'signed-areas', signedAreas, 'float32', count)
+              areas: importGraphBuffer(graph, 'areas', areas, 'float32', count)
             }
           : {}),
         centroids: importGraphBuffer(graph, 'centroids', centroids, 'float32x2', count),
@@ -111,7 +108,6 @@ async function measure(
   const result = {
     lengths: await readFloat32(lengths, count),
     areas: await readFloat32(areas, count),
-    signedAreas: await readFloat32(signedAreas, count),
     centroids: await readFloat32(centroids, 2 * count),
     bounds: await readFloat32(bounds, 4 * count),
     vertexCounts: await readUint32(vertexCounts, count),
@@ -177,7 +173,6 @@ function expectParity(
     close(actual.lengths[feature], length, 1e-3, `length ${feature}`);
     if (isPolygon) {
       close(actual.areas[feature], serial.areas[feature], 1e-3, `area ${feature}`);
-      close(actual.signedAreas[feature], serial.signedAreas[feature], 1e-3, `signed ${feature}`);
     }
     const extent = Math.max(
       Math.abs(serial.bounds[4 * feature + 2] - serial.bounds[4 * feature]),
@@ -224,38 +219,24 @@ function createPlanarFeatures(random: () => number): NestedFeatures {
 
 it('GPUGeometryMeasures cooperative rings match the serial walk (planar polygons, lines, points)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createPlanarFeatures(createRandom(5));
   for (const options of [
     {geometryType: 'polygons' as const, coordinateSystem: 'planar' as const},
-    {
-      geometryType: 'polygons' as const,
-      coordinateSystem: 'planar' as const,
-      holeRule: 'first-ring-exterior' as const
-    },
     {geometryType: 'lines' as const, coordinateSystem: 'planar' as const},
     {geometryType: 'points' as const, coordinateSystem: 'planar' as const}
   ]) {
     const serial = await measure(device, features, options, 0);
     // A threshold of 6 sends every feature with a ring above 6 vertices down the cooperative path.
     const cooperative = await measure(device, features, options, 6);
-    expectParity(
-      cooperative,
-      serial,
-      `${options.geometryType} ${options.holeRule ?? ''}`,
-      options.geometryType === 'polygons'
-    );
+    expectParity(cooperative, serial, options.geometryType, options.geometryType === 'polygons');
   }
   device.destroy?.();
 });
 
 it('GPUGeometryMeasures cooperative rings unwrap longitudes across chunk boundaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(11);
   // A 140-degree-wide ring centered on the antimeridian: longitudes unwrap from the first vertex
   // across the 180 degree seam, and chunks of the ring start on both sides of it.
@@ -286,9 +267,7 @@ it('GPUGeometryMeasures cooperative rings unwrap longitudes across chunk boundar
 
 it('GPUGeometryMeasures measures a 6000-vertex ring cooperatively against a closed form', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const count = 6000;
   const radius = 250;
   const ring = Array.from({length: count}, (_, index) => [

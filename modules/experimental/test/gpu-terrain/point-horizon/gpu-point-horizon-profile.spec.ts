@@ -6,15 +6,18 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   getGPUPointHorizonDistanceLattice,
-  getGPUPointHorizonParameterValues,
+  getGPUPointHorizonProfileParameterValues,
   getGPUPointHorizonSegments,
   GPUPointHorizonProfile,
   type GPUPointHorizonModelOptions,
-  type GPUPointHorizonSettings
+  type GPUPointHorizonProfileSettings
 } from '../../../src/gpu-terrain/point-horizon';
 import {
   createInputBuffer,
@@ -26,16 +29,17 @@ import {
 import {
   computePointHorizonProfile,
   createFractalTerrain,
+  makeMercatorTestGrid,
   type PointHorizonOracleModel
 } from './point-horizon-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type ProfileConfig = {
-  width: number;
-  height: number;
+  grid: GPURasterMetadata;
   values: Float32Array;
   validity?: Uint32Array;
   observers: readonly (readonly [number, number, number])[];
-  settings: GPUPointHorizonSettings;
+  settings: GPUPointHorizonProfileSettings;
   model: GPUPointHorizonModelOptions;
   /** Replace the skyline-angle output with the evaluated-sample debug counter. */
   countSamples?: boolean;
@@ -50,7 +54,8 @@ type ProfileResult = {
 };
 
 async function runProfile(device: Device, config: ProfileConfig): Promise<ProfileResult> {
-  const {width, height, values, validity, observers, model} = config;
+  const {grid, values, validity, observers, model} = config;
+  const {width, height} = grid;
   const azimuthSpan = model.azimuthSpan ?? model.azimuthCount ?? 720;
   const rayCount = observers.length * azimuthSpan;
   const terrain = createInputBuffer(device, values);
@@ -63,15 +68,14 @@ async function runProfile(device: Device, config: ProfileConfig): Promise<Profil
     id: 'horizon-settings',
     format: 'float32',
     length: 8,
-    values: getGPUPointHorizonParameterValues(config.settings)
+    values: getGPUPointHorizonProfileParameterValues(config.settings, grid)
   });
   const outputs = [0, 1, 2].map(() => createOutputBuffer(device, rayCount));
   const graph = new GPUCommandGraph(device, {id: 'point-horizon-test'});
   graph.add(
     new GPUPointHorizonProfile({
       ...model,
-      width,
-      height,
+      grid,
       elevation: {
         id: 'terrain',
         format: 'float32',
@@ -90,15 +94,17 @@ async function runProfile(device: Device, config: ProfileConfig): Promise<Profil
         'float32x4',
         observers.length
       ),
-      settings: settings.importToGraph(graph),
-      tangent: importGraphBuffer(graph, 'tangent', outputs[0], 'float32', rayCount),
-      skylineAngle: config.countSamples
-        ? undefined
-        : importGraphBuffer(graph, 'skyline-angle', outputs[1], 'float32', rayCount),
-      samples: config.countSamples
-        ? importGraphBuffer(graph, 'samples', outputs[1], 'uint32', rayCount)
-        : undefined,
-      distance: importGraphBuffer(graph, 'distance', outputs[2], 'float32', rayCount)
+      parameters: settings.importToGraph(graph),
+      output: {
+        tangent: importGraphBuffer(graph, 'tangent', outputs[0], 'float32', rayCount),
+        skylineAngle: config.countSamples
+          ? undefined
+          : importGraphBuffer(graph, 'skyline-angle', outputs[1], 'float32', rayCount),
+        samples: config.countSamples
+          ? importGraphBuffer(graph, 'samples', outputs[1], 'uint32', rayCount)
+          : undefined,
+        distance: importGraphBuffer(graph, 'distance', outputs[2], 'float32', rayCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -136,9 +142,14 @@ function getOracleModel(config: ProfileConfig): PointHorizonOracleModel {
   const lattice = getGPUPointHorizonDistanceLattice(model);
   const settings = config.settings;
   const azimuthCount = model.azimuthCount ?? 720;
+  const georeference = getRasterGridGeoreference(config.grid);
+  const isMercator = model.projection === 'web-mercator';
+  // Web Mercator: pixels per 360 degrees and the world pixel row of the top edge of row 0.
+  const worldPixelSize =
+    (2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS) / georeference.cellSize[0];
   return {
-    width: config.width,
-    height: config.height,
+    width: config.grid.width,
+    height: config.grid.height,
     values: config.values,
     validity: config.validity,
     projection: model.projection ?? 'planar',
@@ -152,9 +163,12 @@ function getOracleModel(config: ProfileConfig): PointHorizonOracleModel {
       model.projection === 'web-mercator' ? getGPUPointHorizonSegments(lattice, model) : undefined,
     curvature: settings.curvatureCoefficient ?? 0,
     maximumDistance: settings.maximumDistance,
-    cellSize: 'cellSize' in settings ? settings.cellSize : undefined,
-    worldPixelSize: 'worldPixelSize' in settings ? settings.worldPixelSize : undefined,
-    originY: 'originY' in settings ? settings.originY : undefined
+    cellSize: isMercator ? undefined : georeference.cellSize,
+    worldPixelSize: isMercator ? worldPixelSize : undefined,
+    originY: isMercator
+      ? (Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS - georeference.northEdge) /
+        georeference.cellSize[0]
+      : undefined
   };
 }
 
@@ -180,19 +194,16 @@ const PLANAR_MODEL: GPUPointHorizonModelOptions = {
 
 it('GPUPointHorizonProfile finds the curvature dip of a flat plane', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const size = 129;
   const curvature = 1e-4;
   const height = 10;
   for (const traversal of ['march', 'pyramid'] as const) {
     const result = await runProfile(device, {
-      width: size,
-      height: size,
+      grid: makeGPURasterMetadata({width: size, height: size, cellSize: 10}),
       values: new Float32Array(size * size),
       observers: [[64, 64, height]],
-      settings: {cellSize: [10, 10], curvatureCoefficient: curvature},
+      settings: {curvatureCoefficient: curvature},
       model: {...PLANAR_MODEL, traversal}
     });
     // max over d of (-h / d - c d) = -2 sqrt(h c) at d = sqrt(h / c) = 316 m
@@ -207,36 +218,34 @@ it('GPUPointHorizonProfile finds the curvature dip of a flat plane', async () =>
 
 it('GPUPointHorizonProfile reports NaN for settings packed for the other projection', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  // A planar contributor given Web Mercator settings (worldPixelSize, originY) used to read them
-  // as a cell size; the projection tag now invalidates every eye. The planar settings still march.
+  requireTestDevice(device);
+  // A planar contributor given Web Mercator settings (world size and top edge packed from a Web
+  // Mercator grid) would read them as a cell size; the projection tag invalidates every eye. The
+  // planar settings still march.
   const size = 129;
+  const planarGrid = makeGPURasterMetadata({width: size, height: size, cellSize: 10});
   const config = {
-    width: size,
-    height: size,
     values: new Float32Array(size * size),
     observers: [[64, 64, 10]] as const,
     model: {...PLANAR_MODEL, traversal: 'march' as const}
   };
   const mismatched = await runProfile(device, {
     ...config,
-    settings: {worldPixelSize: 512 * 2 ** 10, originY: 1000, curvatureCoefficient: 1e-4}
+    grid: makeMercatorTestGrid(size, size, 512 * 2 ** 10, 1000),
+    settings: {projection: 'web-mercator', curvatureCoefficient: 1e-4}
   });
   expect(Array.from(mismatched.skylineAngle).every(Number.isNaN)).toBe(true);
   const matched = await runProfile(device, {
     ...config,
-    settings: {cellSize: [10, 10], curvatureCoefficient: 1e-4}
+    grid: planarGrid,
+    settings: {curvatureCoefficient: 1e-4}
   });
   expect(Array.from(matched.skylineAngle).every(Number.isFinite)).toBe(true);
 });
 
 it('GPUPointHorizonProfile sees a wall at its angle and a higher eye lowers it', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const size = 129;
   const wallHeight = 40;
   const wallColumn = 84; // 200 m east of the observer
@@ -247,11 +256,10 @@ it('GPUPointHorizonProfile sees a wall at its angle and a higher eye lowers it',
   const curvature = 1e-6;
   const run = (eyeHeight: number, curvatureCoefficient: number) =>
     runProfile(device, {
-      width: size,
-      height: size,
+      grid: makeGPURasterMetadata({width: size, height: size, cellSize: 10}),
       values,
       observers: [[64, 64, eyeHeight]],
-      settings: {cellSize: [10, 10], curvatureCoefficient},
+      settings: {curvatureCoefficient},
       model: {...PLANAR_MODEL, azimuthCount: 4, maximumDistance: 600}
     });
   const low = await run(0, curvature);
@@ -270,9 +278,7 @@ it('GPUPointHorizonProfile sees a wall at its angle and a higher eye lowers it',
 
 it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (planar)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 200;
   const height = 176;
   const values = createFractalTerrain(width, height, 7, 500, 40);
@@ -284,8 +290,7 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
   }
   for (const heightReference of ['ground', 'absolute'] as const) {
     const config: ProfileConfig = {
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height, cellSize: [12, 15]}),
       values,
       validity,
       observers: [
@@ -294,7 +299,7 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
         [150.5, 140.25, heightReference === 'ground' ? 1.7 : 400],
         [-3, 10, 2]
       ],
-      settings: {cellSize: [12, 15], curvatureCoefficient: 3e-5},
+      settings: {curvatureCoefficient: 3e-5},
       model: {
         projection: 'planar',
         heightReference,
@@ -329,9 +334,7 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
 
 it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (web mercator)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 192;
   const height = 192;
   const values = createFractalTerrain(width, height, 11, 600, 36);
@@ -341,8 +344,7 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
   const originY =
     worldPixelSize * (0.5 - Math.asinh(Math.tan(latitude)) / (2 * Math.PI)) - centerRow - 0.5;
   const config: ProfileConfig = {
-    width,
-    height,
+    grid: makeMercatorTestGrid(width, height, worldPixelSize, originY),
     values,
     observers: [
       [96, 96, 2],
@@ -350,8 +352,7 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
       [140, 30.75, 1.7]
     ],
     settings: {
-      worldPixelSize,
-      originY,
+      projection: 'web-mercator',
       curvatureCoefficient: 2e-5
     },
     model: {
@@ -378,18 +379,15 @@ it('GPUPointHorizonProfile pyramid equals march bit for bit on fractal terrain (
 
 it('GPUPointHorizonProfile sector run equals the slice of the full run', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 160;
   const height = 160;
   const values = createFractalTerrain(width, height, 3, 300, 32);
   const config: ProfileConfig = {
-    width,
-    height,
+    grid: makeGPURasterMetadata({width, height, cellSize: 10}),
     values,
     observers: [[80, 80, 3]],
-    settings: {cellSize: [10, 10]},
+    settings: {},
     model: {azimuthCount: 120, maximumDistance: 700, cellSize: 10}
   };
   const full = await runProfile(device, config);
@@ -408,20 +406,17 @@ it('GPUPointHorizonProfile sector run equals the slice of the full run', async (
 
 it('GPUPointHorizonProfile pyramid omits samples without changing the result', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 256;
   const height = 256;
   const config: ProfileConfig = {
-    width,
-    height,
+    grid: makeGPURasterMetadata({width, height, cellSize: 20}),
     values: createFractalTerrain(width, height, 21, 800, 64),
     observers: [
       [128.4, 128.7, 5],
       [40.25, 200.5, 5]
     ],
-    settings: {cellSize: [20, 20], curvatureCoefficient: 6.8e-8},
+    settings: {curvatureCoefficient: 6.8e-8},
     model: {azimuthCount: 90, maximumDistance: 2500, cellSize: 2},
     countSamples: true
   };

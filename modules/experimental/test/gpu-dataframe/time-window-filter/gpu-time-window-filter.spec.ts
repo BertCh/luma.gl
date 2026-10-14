@@ -8,11 +8,11 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   GPUTimeWindowFilter,
   splitTimestamps,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
-  type GPUTimeWindow
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+  type GPUTimeWindowFilterSettings
 } from '../../../src/gpu-dataframe/time-window-filter';
 import {
   createInputBuffer,
@@ -24,6 +24,8 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {TIME_WINDOW_EDGE_POLICY} from '../dataframe-edge-policy';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type OracleResult = {
   mask: number[];
@@ -38,7 +40,7 @@ type OracleResult = {
 /** CPU reference for the time-window classify and bounded publish semantics. */
 function filterTimeWindowOracle(
   rows: {start: number[]; end?: number[]},
-  window: GPUTimeWindow,
+  window: GPUTimeWindowFilterSettings,
   capacity: number,
   sourceIds?: number[]
 ): OracleResult {
@@ -59,7 +61,8 @@ function filterTimeWindowOracle(
     const end = rows.end?.[row] ?? start;
     const endAfterStart = end - window.start;
     const startBeforeEnd = window.end - start;
-    const isAccepted = endAfterStart >= 0 && startBeforeEnd >= 0;
+    // A reversed window accepts nothing (B-13), whatever the rows' extent.
+    const isAccepted = window.end >= window.start && endAfterStart >= 0 && startBeforeEnd >= 0;
     result.mask.push(isAccepted ? 1 : 0);
     const startRamp = startFade > 0 ? Math.min(Math.max(endAfterStart / startFade, 0), 1) : 1;
     const endRamp = endFade > 0 ? Math.min(Math.max(startBeforeEnd / endFade, 0), 1) : 1;
@@ -95,9 +98,7 @@ function destroyAll(buffers: Buffer[]): void {
 
 it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const timestamps = [0, 1, 2, 3, 4, 5, 6, 7];
   const sourceIds = timestamps.map(row => 100 + row);
   const timestampsBuffer = createInputBuffer(device, Float32Array.from(timestamps));
@@ -115,8 +116,8 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
   const window = new GPUParameterBuffer(device, {
     id: 'window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues({
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({
       start: 2,
       end: 5,
       startFadeDuration: 2
@@ -131,12 +132,14 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
       window: window.importToGraph(graph),
       output: {
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 3),
-        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', 8),
-      drawInstanceCount: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0))
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
+        },
+        fadeWeights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', 8),
+        drawInstanceCount: graph.importGPUData('draw-count', drawCommands.getInstanceCountData(0))
+      }
     })
   );
   const compiled = graph.compile();
@@ -155,7 +158,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
   expect(await readDrawCount()).toBe(3);
   expectClose(await readFloat32(weightsBuffer, 8), [0, 0, 0, 0.5, 1, 1, 0, 0]);
 
-  window.write(getGPUTimeWindowParameterValues({start: 6, end: 6}));
+  window.write(getGPUTimeWindowFilterParameterValues({start: 6, end: 6}));
   submitGraph(device, compiled, undefined);
   expect(await readCompactIds(idsBuffer, countBuffer)).toEqual([106]);
   expect(await readUint32(overflowBuffer, 1)).toEqual([0]);
@@ -163,7 +166,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
   expect(await readDrawCount()).toBe(1);
   expectClose(await readFloat32(weightsBuffer, 8), [0, 0, 0, 0, 0, 0, 1, 0]);
 
-  window.write(getGPUTimeWindowParameterValues({start: 5, end: 2}));
+  window.write(getGPUTimeWindowFilterParameterValues({start: 5, end: 2}));
   submitGraph(device, compiled, undefined);
   expect(await readUint32(countBuffer, 1)).toEqual([0]);
   expect(await readUint32(overflowBuffer, 1)).toEqual([0]);
@@ -184,9 +187,7 @@ it('GPUTimeWindowFilter clamps instant rows, fades, and updates without recompil
 
 it('GPUTimeWindowFilter clips trail segments and counts visible rows per track', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starts = [0, 10, 20, 5, 15, 25];
   const ends = [10, 20, 30, 15, 25, 35];
   const tracks = [0, 0, 0, 1, 1, 1];
@@ -204,8 +205,8 @@ it('GPUTimeWindowFilter clips trail segments and counts visible rows per track',
   const window = new GPUParameterBuffer(device, {
     id: 'trail-window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues(firstWindow)
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues(firstWindow)
   });
 
   const graph = new GPUCommandGraph(device, {id: 'time-window-trail'});
@@ -217,14 +218,16 @@ it('GPUTimeWindowFilter clips trail segments and counts visible rows per track',
       window: window.importToGraph(graph),
       output: {
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 6),
-        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        },
+        outputMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 6),
+        fadeWeights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', 6),
+        clipFractions: importGraphBuffer(graph, 'clip', clipBuffer, 'float32x2', 6),
+        trackVisibleCounts: importGraphBuffer(graph, 'track-counts', trackCountsBuffer, 'uint32', 2)
       },
-      outputMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 6),
-      fadeWeights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', 6),
-      clipFractions: importGraphBuffer(graph, 'clip', clipBuffer, 'float32x2', 6),
-      trackIds: importGraphBuffer(graph, 'tracks', tracksBuffer, 'uint32', 6),
-      trackVisibleCounts: importGraphBuffer(graph, 'track-counts', trackCountsBuffer, 'uint32', 2)
+      trackIds: importGraphBuffer(graph, 'tracks', tracksBuffer, 'uint32', 6)
     })
   );
   const compiled = graph.compile();
@@ -240,7 +243,7 @@ it('GPUTimeWindowFilter clips trail segments and counts visible rows per track',
   expectClose(await readFloat32(clipBuffer, 12), oracle.clip);
 
   const secondWindow = {start: 22, end: 32, startFadeDuration: 10};
-  window.write(getGPUTimeWindowParameterValues(secondWindow));
+  window.write(getGPUTimeWindowFilterParameterValues(secondWindow));
   submitGraph(device, compiled, undefined);
   oracle = filterTimeWindowOracle({start: starts, end: ends}, secondWindow, 6);
   expect(await readCompactIds(idsBuffer, countBuffer)).toEqual([2, 4, 5]);
@@ -266,6 +269,60 @@ it('GPUTimeWindowFilter clips trail segments and counts visible rows per track',
   ]);
 });
 
+it('GPUTimeWindowFilter reversed windows reject interval rows too (B-13)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Row 1 spans both window edges, so the bare overlap test accepted it before B-13.
+  const starts = [0, 5, 12, 30];
+  const ends = [10, 25, 18, 40];
+  const startsBuffer = createInputBuffer(device, Float32Array.from(starts));
+  const endsBuffer = createInputBuffer(device, Float32Array.from(ends));
+  const idsBuffer = createOutputBuffer(device, 4);
+  const countBuffer = createOutputBuffer(device, 1);
+  const overflowBuffer = createOutputBuffer(device, 1);
+  const maskBuffer = createOutputBuffer(device, 4);
+  const reversedWindow = {start: 20, end: 10};
+  const window = new GPUParameterBuffer(device, {
+    id: 'reversed-window',
+    format: 'float32',
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues(reversedWindow)
+  });
+  const graph = new GPUCommandGraph(device, {id: 'time-window-reversed'});
+  graph.add(
+    new GPUTimeWindowFilter({
+      id: 'reversed',
+      timestamps: importGraphBuffer(graph, 'starts', startsBuffer, 'float32', 4),
+      endTimestamps: importGraphBuffer(graph, 'ends', endsBuffer, 'float32', 4),
+      window: window.importToGraph(graph),
+      output: {
+        ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 4),
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        },
+        outputMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 4)
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const oracle = filterTimeWindowOracle({start: starts, end: ends}, reversedWindow, 4);
+  expect(oracle.mask).toEqual([0, 0, 0, 0]);
+  expect(await readUint32(maskBuffer, 4)).toEqual(oracle.mask);
+  expect(await readCompactIds(idsBuffer, countBuffer)).toEqual([]);
+  const orderedWindow = {start: 10, end: 20};
+  window.write(getGPUTimeWindowFilterParameterValues(orderedWindow));
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(maskBuffer, 4)).toEqual(
+    filterTimeWindowOracle({start: starts, end: ends}, orderedWindow, 4).mask
+  );
+  expect(await readUint32(maskBuffer, 4)).toEqual([1, 1, 1, 0]);
+  compiled.destroy();
+  window.destroy();
+  destroyAll([startsBuffer, endsBuffer, idsBuffer, countBuffer, overflowBuffer, maskBuffer]);
+});
+
 it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', async () => {
   const device = await getWebGPUTestDevice();
   if (!device || isSoftwareDevice(device)) {
@@ -282,8 +339,8 @@ it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', as
   const window = new GPUParameterBuffer(device, {
     id: 'epoch-window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues({
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({
       start: base + 15,
       end: base + 35
     })
@@ -296,8 +353,10 @@ it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', as
       window: window.importToGraph(graph),
       output: {
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 5),
-        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        }
       }
     })
   );
@@ -312,9 +371,7 @@ it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', as
 
 it('GPUTimeWindowFilter ANDs extra predicates across vector chunks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const firstBuffer = createInputBuffer(device, Float32Array.from([0, 1, 2]));
   const secondBuffer = createInputBuffer(device, Float32Array.from([3, 4]));
   const selectionBuffer = createInputBuffer(device, Uint32Array.from([1, 0, 1, 1, 1]));
@@ -326,8 +383,8 @@ it('GPUTimeWindowFilter ANDs extra predicates across vector chunks', async () =>
   const window = new GPUParameterBuffer(device, {
     id: 'vector-window',
     format: 'float32',
-    length: GPU_TIME_WINDOW_PARAMETER_LENGTH,
-    values: getGPUTimeWindowParameterValues({start: 1, end: 3})
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({start: 1, end: 3})
   });
   const graph = new GPUCommandGraph(device, {id: 'time-window-vector'});
   graph.add(
@@ -343,14 +400,16 @@ it('GPUTimeWindowFilter ANDs extra predicates across vector chunks', async () =>
           mask: importGraphBuffer(graph, 'selection', selectionBuffer, 'uint32', 5)
         }
       ],
-      outputMask: createVectorView('mask', 'uint32', [
-        importGraphBuffer(graph, 'm0', maskFirstBuffer, 'uint32', 3),
-        importGraphBuffer(graph, 'm1', maskSecondBuffer, 'uint32', 2)
-      ]),
       output: {
         ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', 5),
-        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        },
+        outputMask: createVectorView('mask', 'uint32', [
+          importGraphBuffer(graph, 'm0', maskFirstBuffer, 'uint32', 3),
+          importGraphBuffer(graph, 'm1', maskSecondBuffer, 'uint32', 2)
+        ])
       }
     })
   );
@@ -378,4 +437,53 @@ it('GPUTimeWindowFilter ANDs extra predicates across vector chunks', async () =>
     countBuffer,
     overflowBuffer
   ]);
+});
+
+it('GPUTimeWindowFilter follows the time window edge policy', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const row of TIME_WINDOW_EDGE_POLICY) {
+    const rows = row.starts.length;
+    const buffers = [
+      createInputBuffer(device, Float32Array.from(row.starts)),
+      createInputBuffer(device, Float32Array.from(row.ends)),
+      createOutputBuffer(device, rows),
+      createOutputBuffer(device, 1),
+      createOutputBuffer(device, 1),
+      createOutputBuffer(device, rows)
+    ];
+    const [startsBuffer, endsBuffer, idsBuffer, countBuffer, overflowBuffer, maskBuffer] = buffers;
+    const window = new GPUParameterBuffer(device, {
+      id: 'policy-window',
+      format: 'float32',
+      length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+      values: getGPUTimeWindowFilterParameterValues(row.window)
+    });
+    const graph = new GPUCommandGraph(device, {id: 'time-window-policy'});
+    graph.add(
+      new GPUTimeWindowFilter({
+        id: 'policy',
+        timestamps: importGraphBuffer(graph, 'starts', startsBuffer, 'float32', rows),
+        endTimestamps: importGraphBuffer(graph, 'ends', endsBuffer, 'float32', rows),
+        window: window.importToGraph(graph),
+        output: {
+          ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
+          status: {
+            count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+          },
+          outputMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows)
+        }
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(maskBuffer, rows), row.name).toEqual(row.expectedMask);
+    } finally {
+      compiled.destroy();
+      window.destroy();
+      destroyAll(buffers);
+    }
+  }
 });

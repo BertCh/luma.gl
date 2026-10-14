@@ -8,6 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
+  getGPUNetworkReachabilityInflation,
   GPUNetworkReachability,
   type GPUNetworkReachabilityProps
 } from '../../../src/gpu-network/network-reachability';
@@ -34,6 +35,12 @@ import {
   type NetworkCSR,
   type NetworkEdge
 } from './network-reachability-oracle';
+import {
+  compareShortestPathCosts,
+  getShortestPathReferenceCSR,
+  SHORTEST_PATH_REFERENCE
+} from './network-reachability-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type ReachabilityOptions = {
   sources: number[];
@@ -136,55 +143,67 @@ function createReachabilityFixture(
   const edgeCount = csr.neighbors.length;
   const props: GPUNetworkReachabilityProps = {
     id: prefix,
-    offsets: importGraphBuffer(graph, `${prefix}-offsets`, offsetsBuffer, 'uint32', nodeCount + 1),
-    neighbors: importGraphBuffer(
-      graph,
-      `${prefix}-neighbors`,
-      neighborsBuffer,
-      'uint32',
-      edgeCount
-    ),
-    weights: importGraphBuffer(graph, `${prefix}-weights`, weightsBuffer, 'float32', edgeCount),
-    sources: sources.importToGraph(graph),
-    sourceCosts: sourceCosts?.importToGraph(graph),
-    sourceCount: sourceCount?.importToGraph(graph),
-    maxIterations: options.maxIterations ?? 16,
+    topology: {
+      offsets: importGraphBuffer(
+        graph,
+        `${prefix}-offsets`,
+        offsetsBuffer,
+        'uint32',
+        nodeCount + 1
+      ),
+      neighbors: importGraphBuffer(
+        graph,
+        `${prefix}-neighbors`,
+        neighborsBuffer,
+        'uint32',
+        edgeCount
+      ),
+      weights: importGraphBuffer(graph, `${prefix}-weights`, weightsBuffer, 'float32', edgeCount)
+    },
+    startNodes: sources.importToGraph(graph),
+    startCosts: sourceCosts?.importToGraph(graph),
+    startCount: sourceCount?.importToGraph(graph),
+    maximumIterations: options.maxIterations ?? 16,
     localIterations: options.localIterations,
-    maxTieIterations: options.maxTieIterations,
+    maximumTieIterations: options.maxTieIterations,
     activeIterations: activeIterations?.importToGraph(graph),
     costLimit: costLimit?.importToGraph(graph),
-    costs: importGraphBuffer(graph, `${prefix}-costs`, costsBuffer, 'float32', nodeCount),
-    predecessors: importGraphBuffer(
-      graph,
-      `${prefix}-predecessors`,
-      predecessorsBuffer,
-      'uint32',
-      nodeCount
-    ),
-    bandThresholds: thresholds?.importToGraph(graph),
-    bands: bandsBuffer
-      ? importGraphBuffer(graph, `${prefix}-bands`, bandsBuffer, 'uint32', nodeCount)
-      : undefined,
-    bandCounts: bandCountsBuffer
-      ? importGraphBuffer(
+    costBreaks: thresholds?.importToGraph(graph),
+    output: {
+      costs: importGraphBuffer(graph, `${prefix}-costs`, costsBuffer, 'float32', nodeCount),
+      predecessors: importGraphBuffer(
+        graph,
+        `${prefix}-predecessors`,
+        predecessorsBuffer,
+        'uint32',
+        nodeCount
+      ),
+      bands: bandsBuffer
+        ? importGraphBuffer(graph, `${prefix}-bands`, bandsBuffer, 'uint32', nodeCount)
+        : undefined,
+      bandCounts: bandCountsBuffer
+        ? importGraphBuffer(
+            graph,
+            `${prefix}-band-counts`,
+            bandCountsBuffer,
+            'uint32',
+            options.thresholds!.length
+          )
+        : undefined,
+      unresolvedCount:
+        unresolvedCountBuffer &&
+        importGraphBuffer(graph, `${prefix}-unresolved`, unresolvedCountBuffer, 'uint32', 1),
+      status: {
+        converged: importGraphBuffer(graph, `${prefix}-converged`, convergedBuffer, 'uint32', 1),
+        iterationCount: importGraphBuffer(
           graph,
-          `${prefix}-band-counts`,
-          bandCountsBuffer,
+          `${prefix}-iterations`,
+          iterationCountBuffer,
           'uint32',
-          options.thresholds!.length
+          1
         )
-      : undefined,
-    converged: importGraphBuffer(graph, `${prefix}-converged`, convergedBuffer, 'uint32', 1),
-    unresolvedCount:
-      unresolvedCountBuffer &&
-      importGraphBuffer(graph, `${prefix}-unresolved`, unresolvedCountBuffer, 'uint32', 1),
-    iterationCount: importGraphBuffer(
-      graph,
-      `${prefix}-iterations`,
-      iterationCountBuffer,
-      'uint32',
-      1
-    )
+      }
+    }
   };
   return {
     graph,
@@ -233,9 +252,7 @@ const F1 = buildCSR(8, F1_EDGES);
 
 it('GPUNetworkReachability computes costs, predecessors, and bands on a cyclic network', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createReachabilityFixture(device, F1, 8, {
     sources: [0],
     thresholds: [2, 5]
@@ -266,9 +283,7 @@ it('GPUNetworkReachability computes costs, predecessors, and bands on a cyclic n
 
 it('GPUNetworkReachability updates sources, thresholds, and weights without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createReachabilityFixture(device, F1, 8, {
     sources: [0, 5],
     sourceCosts: [0, 2.5],
@@ -319,9 +334,7 @@ it('GPUNetworkReachability updates sources, thresholds, and weights without reco
 
 it('GPUNetworkReachability honors a per-frame cost limit on a random network', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 2000;
   const csr = buildCSR(nodeCount, createRandomNetwork(7, nodeCount, 8000));
   const fixture = createReachabilityFixture(device, csr, nodeCount, {
@@ -357,9 +370,7 @@ it('GPUNetworkReachability honors a per-frame cost limit on a random network', a
 
 it('GPUNetworkReachability reports convergence against the iteration bound', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pathEdges: NetworkEdge[] = Array.from({length: 19}, (_, node) => [node, node + 1, 1]);
   const path = buildCSR(20, pathEdges);
   const expected = Array.from(dijkstra(path, 20, [{node: 0, cost: 0}]));
@@ -415,9 +426,7 @@ it('GPUNetworkReachability reports convergence against the iteration bound', asy
 
 it('GPUNetworkReachability handles high degree, invalid data, and fractional weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const starEdges: NetworkEdge[] = [];
   for (let leaf = 1; leaf <= 300; leaf++) {
     starEdges.push([0, leaf, (leaf % 7) + 1]);
@@ -504,9 +513,7 @@ it('GPUNetworkReachability handles high degree, invalid data, and fractional wei
 
 it('GPUNetworkReachability composes with GPUCOOToCSR and a second instance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const sorted = [...F1_EDGES].sort((left, right) => left[0] - right[0]);
   const rowIndicesBuffer = createInputBuffer(device, Uint32Array.from(sorted.map(edge => edge[0])));
   const columnIndicesBuffer = createInputBuffer(
@@ -540,12 +547,10 @@ it('GPUNetworkReachability composes with GPUCOOToCSR and a second instance', asy
   );
   graph.add(
     new GPUNetworkReachability({
-      offsets: rowOffsets,
-      neighbors: outputColumnIndices,
-      weights: outputValues,
-      sources: importGraphBuffer(graph, 'sources', sourcesBuffer, 'uint32', 1),
-      costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', 8),
-      maxIterations: 16
+      topology: {offsets: rowOffsets, neighbors: outputColumnIndices, weights: outputValues},
+      startNodes: importGraphBuffer(graph, 'sources', sourcesBuffer, 'uint32', 1),
+      output: {costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', 8)},
+      maximumIterations: 16
     })
   );
   const second = createReachabilityFixture(device, F1, 8, {id: 'reach-b', sources: [5]}, graph);
@@ -642,9 +647,7 @@ function createParityCases(): ParityCase[] {
 
 it('GPUNetworkReachability matches Dijkstra for every localIterations on varied networks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const testCase of createParityCases()) {
     const csr = buildCSR(testCase.nodeCount, testCase.edges);
     const expected = dijkstra(
@@ -682,9 +685,7 @@ it('GPUNetworkReachability matches Dijkstra for every localIterations on varied 
 
 it('GPUNetworkReachability needs about ceil(hops / localIterations) rounds on a chain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 120;
   const path = buildCSR(nodeCount, createPathNetwork(nodeCount));
   const rounds: Record<number, number> = {};
@@ -713,9 +714,7 @@ it('GPUNetworkReachability needs about ceil(hops / localIterations) rounds on a 
 
 it('GPUNetworkReachability reports a truncated chain as not converged with exact partial costs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 400;
   const path = buildCSR(nodeCount, createPathNetwork(nodeCount));
   const expected = Array.from(dijkstra(path, nodeCount, [{node: 0, cost: 0}]));
@@ -751,9 +750,7 @@ it('GPUNetworkReachability reports a truncated chain as not converged with exact
 
 it('GPUNetworkReachability changes limit and cost limit per frame without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 300;
   const path = buildCSR(nodeCount, createPathNetwork(nodeCount));
   const expected = Array.from(dijkstra(path, nodeCount, [{node: 0, cost: 0}]));
@@ -812,9 +809,7 @@ it('GPUNetworkReachability changes limit and cost limit per frame without recomp
 
 it('GPUNetworkReachability honors sourceCount and sourceCosts with local hops', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 1500;
   const csr = buildCSR(nodeCount, createRandomNetwork(9, nodeCount, 6000));
   const fixture = createReachabilityFixture(device, csr, nodeCount, {
@@ -850,11 +845,35 @@ it('GPUNetworkReachability honors sourceCount and sourceCosts with local hops', 
   destroyFixture(fixture);
 });
 
+it('GPUNetworkReachability bakes a numeric startCount identical to a one-row view', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const nodeCount = 1500;
+  const csr = buildCSR(nodeCount, createRandomNetwork(9, nodeCount, 6000));
+  const fixture = createReachabilityFixture(device, csr, nodeCount, {
+    sources: [10, 20, 30],
+    sourceCosts: [0, 3, 1.5],
+    maxIterations: 128,
+    localIterations: 16
+  });
+  fixture.graph.add(new GPUNetworkReachability({...fixture.props, startCount: 2}));
+  const compiled = fixture.graph.compile();
+  submitGraph(device, compiled, undefined);
+  expect(await readCosts(fixture)).toEqual(
+    Array.from(
+      dijkstra(csr, nodeCount, [
+        {node: 10, cost: 0},
+        {node: 20, cost: 3}
+      ])
+    )
+  );
+  compiled.destroy();
+  destroyFixture(fixture);
+});
+
 it('GPUNetworkReachability keeps two instances with different local hops independent', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 800;
   const csr = buildCSR(nodeCount, createRandomNetwork(21, nodeCount, 3000));
   const graph = new GPUCommandGraph(device, {id: 'two-instances'});
@@ -1148,9 +1167,7 @@ function createTieCases(): TieCase[] {
 
 it('GPUNetworkReachability gives zero-weight plateaus acyclic predecessors that match the tie oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const testCase of createTieCases()) {
     for (const localIterations of [1, 16]) {
       const tieRounds = getTieRounds(testCase, localIterations);
@@ -1161,14 +1178,12 @@ it('GPUNetworkReachability gives zero-weight plateaus acyclic predecessors that 
 
 it('GPUNetworkReachability chains 128 hops of a 200-edge zero chain with the default tie rounds and reports truncation', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = Array.from({length: 200}, (_, node) => [node, node + 1, 0] as NetworkEdge);
   // Default localIterations is 32, so 4 tie rounds chain 128 hops and 200 hops are truncated.
   const csr = buildCSR(201, edges);
   const fixture = createReachabilityFixture(device, csr, 201, {sources: [0]});
-  expect(fixture.props.maxTieIterations).toBeUndefined();
+  expect(fixture.props.maximumTieIterations).toBeUndefined();
   fixture.graph.add(new GPUNetworkReachability(fixture.props));
   const compiled = fixture.graph.compile();
   submitGraph(device, compiled, undefined);
@@ -1187,9 +1202,7 @@ it('GPUNetworkReachability chains 128 hops of a 200-edge zero chain with the def
 
 it('GPUNetworkReachability reports a truncated tie phase with only deeper plateau nodes unreached', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = Array.from({length: 20}, (_, node) => [node, node + 1, 0] as NetworkEdge);
   const testCase: TieCase = {name: 'truncated plateau', nodeCount: 21, edges, sources: [0]};
   const {predecessors, converged} = await expectTieParity(device, testCase, 1, 5, 0, 5);
@@ -1205,9 +1218,7 @@ it('GPUNetworkReachability reports a truncated tie phase with only deeper platea
 
 it('GPUNetworkReachability counts reached nodes a truncated tie phase left without predecessors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = Array.from({length: 20}, (_, node) => [node, node + 1, 0] as NetworkEdge);
   const csr = buildCSR(21, edges);
   // A zero-weight chain of 21 nodes from source 0; nodes beyond the tie rounds stay unresolved.
@@ -1242,9 +1253,7 @@ it('GPUNetworkReachability counts reached nodes a truncated tie phase left witho
 
 it('GPUNetworkReachability recomputes ties when weights change without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 600;
   const sources = [0, 300];
   const accepted = sources.map(node => ({node, cost: 0}));
@@ -1288,3 +1297,210 @@ it('GPUNetworkReachability recomputes ties when weights change without recompili
   compiled.destroy();
   destroyFixture(fixture);
 }, 120000);
+
+it('GPUNetworkReachability matches the networkx references, including randomized scenes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Fixture from test/oracles/network-shortest-paths.py (networkx Dijkstra; tolerance derived
+  // there from float32 path sums). Costs within tolerance, reached set exact, and every
+  // predecessor link a tight edge that walks back to a seeded source.
+  for (const [name, scene] of Object.entries(SHORTEST_PATH_REFERENCE.scenes)) {
+    const csr = getShortestPathReferenceCSR(scene);
+    const fixture = createReachabilityFixture(device, csr, scene.nodeCount, {
+      id: `reference-${name}`,
+      sources: scene.sources,
+      sourceCosts: scene.sourceCosts,
+      costLimit: scene.costLimit ?? undefined
+    });
+    fixture.graph.add(new GPUNetworkReachability(fixture.props));
+    const compiled = fixture.graph.compile();
+    submitGraph(device, compiled, undefined);
+    const costs = Float32Array.from(await readCosts(fixture));
+    expect(compareShortestPathCosts(scene, costs), name).toBeUndefined();
+    expect(await readUint32(fixture.convergedBuffer, 1), name).toEqual([1]);
+    const predecessors = await readUint32(fixture.predecessorsBuffer, scene.nodeCount);
+    const isRoot = (node: number) =>
+      scene.sources.some(
+        (source, row) => source === node && Math.fround(scene.sourceCosts[row]) === costs[node]
+      );
+    expect(checkPredecessorWalks(csr, costs, predecessors, isRoot), name).toBeUndefined();
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
+});
+
+/** Edges with an in-range target of every node with a finite cost: what Dijkstra scans once. */
+function countReachedEdges(csr: NetworkCSR, nodeCount: number, costs: ArrayLike<number>): number {
+  const laneCount = costs.length / nodeCount;
+  let count = 0;
+  for (let lane = 0; lane < laneCount; lane++) {
+    for (let node = 0; node < nodeCount; node++) {
+      if (!Number.isFinite(costs[lane * nodeCount + node])) continue;
+      for (let edge = csr.offsets[node]; edge < csr.offsets[node + 1]; edge++) {
+        if (csr.neighbors[edge] < nodeCount) count++;
+      }
+    }
+  }
+  return count;
+}
+
+it('GPUNetworkReachability counts reached edges exactly and relaxations without changing costs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scenes = [
+    {name: 'hand', nodeCount: 8, edges: [...F1_EDGES, [1, 99, 1]] as NetworkEdge[], sources: [0]},
+    {
+      name: 'random',
+      nodeCount: 2000,
+      edges: createRandomNetwork(5, 2000, 8000),
+      sources: [0, 700]
+    },
+    {name: 'grid', nodeCount: 24 * 24, edges: createGridNetwork(7, 24, 24), sources: [0]}
+  ];
+  for (const scene of scenes) {
+    const csr = buildCSR(scene.nodeCount, scene.edges);
+    const expected = dijkstra(
+      csr,
+      scene.nodeCount,
+      scene.sources.map(node => ({node, cost: 0}))
+    );
+    for (const localIterations of [1, 16, 32]) {
+      const label = `${scene.name} localIterations ${localIterations}`;
+      const options = {
+        sources: scene.sources,
+        maxIterations: 64,
+        localIterations
+      };
+      const plain = createReachabilityFixture(device, csr, scene.nodeCount, options);
+      plain.graph.add(new GPUNetworkReachability(plain.props));
+      const plainCompiled = plain.graph.compile();
+      submitGraph(device, plainCompiled, undefined);
+      const plainCosts = await readFloat32(plain.costsBuffer, scene.nodeCount);
+      plainCompiled.destroy();
+      destroyFixture(plain);
+
+      const counted = createReachabilityFixture(device, csr, scene.nodeCount, options);
+      const relaxationBuffer = createOutputBuffer(device, 2);
+      const reachedBuffer = createOutputBuffer(device, 2);
+      const status = {
+        ...counted.props.output.status,
+        relaxationCount: importGraphBuffer(
+          counted.graph,
+          'relaxation-count',
+          relaxationBuffer,
+          'uint32',
+          2
+        ),
+        reachedEdgeCount: importGraphBuffer(
+          counted.graph,
+          'reached-edge-count',
+          reachedBuffer,
+          'uint32',
+          2
+        )
+      };
+      counted.graph.add(
+        new GPUNetworkReachability({
+          ...counted.props,
+          output: {...counted.props.output, status}
+        })
+      );
+      const countedCompiled = counted.graph.compile();
+      submitGraph(device, countedCompiled, undefined);
+      const costs = await readFloat32(counted.costsBuffer, scene.nodeCount);
+      // Counters leave the costs bit-identical to the run without them.
+      expect(costs, label).toEqual(plainCosts);
+      expect(costs, label).toEqual(Array.from(expected));
+      const relaxations = await readUint32(relaxationBuffer, 2);
+      const reached = await readUint32(reachedBuffer, 2);
+      expect(reached, label).toEqual([countReachedEdges(csr, scene.nodeCount, expected), 0]);
+      expect(relaxations[1], label).toBe(0);
+      expect(relaxations[0], label).toBeGreaterThanOrEqual(reached[0]);
+      expect(
+        getGPUNetworkReachabilityInflation(relaxations, reached),
+        label
+      ).toBeGreaterThanOrEqual(1);
+      countedCompiled.destroy();
+      relaxationBuffer.destroy();
+      reachedBuffer.destroy();
+      destroyFixture(counted);
+    }
+  }
+});
+
+it('GPUNetworkReachability sums the counters over lanes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const laneCount = 3;
+  const nodeCount = 12 * 12;
+  const csr = buildCSR(nodeCount, createGridNetwork(3, 12, 12));
+  const costsBuffer = createOutputBuffer(device, laneCount * nodeCount);
+  const offsetsBuffer = createInputBuffer(device, csr.offsets);
+  const neighborsBuffer = createInputBuffer(device, csr.neighbors);
+  const weightsBuffer = createInputBuffer(device, csr.weights);
+  const relaxationBuffer = createOutputBuffer(device, 2);
+  const reachedBuffer = createOutputBuffer(device, 2);
+  const graph = new GPUCommandGraph(device, {id: 'lane-counters'});
+  const sources = new GPUParameterBuffer(device, {
+    id: 'lane-counter-sources',
+    format: 'uint32',
+    length: laneCount,
+    values: Uint32Array.from([0, nodeCount + 5, 2 * nodeCount + 100])
+  });
+  graph.add(
+    new GPUNetworkReachability({
+      id: 'lane-counters',
+      laneCount,
+      maximumIterations: 64,
+      topology: {
+        offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', nodeCount + 1),
+        neighbors: importGraphBuffer(
+          graph,
+          'neighbors',
+          neighborsBuffer,
+          'uint32',
+          csr.neighbors.length
+        ),
+        weights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', csr.weights.length)
+      },
+      startNodes: sources.importToGraph(graph),
+      output: {
+        costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', laneCount * nodeCount),
+        status: {
+          relaxationCount: importGraphBuffer(
+            graph,
+            'relaxation-count',
+            relaxationBuffer,
+            'uint32',
+            2
+          ),
+          reachedEdgeCount: importGraphBuffer(
+            graph,
+            'reached-edge-count',
+            reachedBuffer,
+            'uint32',
+            2
+          )
+        }
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const costs = await readFloat32(costsBuffer, laneCount * nodeCount);
+  expect(await readUint32(reachedBuffer, 2)).toEqual([countReachedEdges(csr, nodeCount, costs), 0]);
+  const [relaxations] = await readUint32(relaxationBuffer, 2);
+  expect(relaxations).toBeGreaterThanOrEqual(countReachedEdges(csr, nodeCount, costs));
+  compiled.destroy();
+  sources.destroy();
+  for (const buffer of [
+    costsBuffer,
+    offsetsBuffer,
+    neighborsBuffer,
+    weightsBuffer,
+    relaxationBuffer,
+    reachedBuffer
+  ]) {
+    buffer.destroy();
+  }
+});

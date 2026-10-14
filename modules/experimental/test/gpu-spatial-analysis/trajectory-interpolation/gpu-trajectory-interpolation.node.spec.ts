@@ -11,7 +11,9 @@ import {
   GPUTrajectoryResample,
   GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH,
   GPU_TRAJECTORY_PLAYHEAD_STATUS as STATUS,
+  type GPUTrajectoryPlayheadOutput,
   type GPUTrajectoryPlayheadProps,
+  type GPUTrajectoryResampleOutput,
   type GPUTrajectoryResampleProps
 } from '../../../src/gpu-spatial-analysis/trajectory-interpolation';
 import {joinTimeWords} from '../../../src/gpu-dataframe/time-window-filter/time-words';
@@ -23,46 +25,59 @@ const NO_ROW = 0xffffffff;
 let uniqueIndex = 0;
 const unique = (id: string) => `${id}-${uniqueIndex++}`;
 
+type PlayheadOverrides = Partial<Omit<GPUTrajectoryPlayheadProps, 'output'>> & {
+  output?: Partial<GPUTrajectoryPlayheadOutput>;
+};
+
+type ResampleOverrides = Partial<Omit<GPUTrajectoryResampleProps, 'output'>> & {
+  output?: Partial<GPUTrajectoryResampleOutput>;
+};
+
 function createPlayheadProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUTrajectoryPlayheadProps> = {}
+  overrides: PlayheadOverrides = {}
 ): GPUTrajectoryPlayheadProps {
+  const {output, ...rest} = overrides;
   return {
     positions: createTransientView(graph, unique('positions'), 'float32x2', 8),
     timestamps: createTransientView(graph, unique('timestamps'), 'float32', 8),
     trackOffsets: createTransientView(graph, unique('offsets'), 'uint32', 3),
     parameters: createTransientView(graph, unique('parameters'), 'float32', 4),
-    currentPositions: createTransientView(graph, unique('current'), 'float32x2', 2),
-    ...overrides
+    output: {
+      currentPositions: createTransientView(graph, unique('current'), 'float32x2', 2),
+      ...output
+    },
+    ...rest
   };
 }
 
 function createResampleProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUTrajectoryResampleProps> = {}
+  overrides: ResampleOverrides = {}
 ): GPUTrajectoryResampleProps {
+  const {output, ...rest} = overrides;
   return {
     positions: createTransientView(graph, unique('positions'), 'float32x2', 8),
     timestamps: createTransientView(graph, unique('timestamps'), 'float32', 8),
     trackOffsets: createTransientView(graph, unique('offsets'), 'uint32', 3),
     sampleCount: 4,
-    samples: createTransientView(graph, unique('samples'), 'float32x2', 8),
-    ...overrides
+    output: {samples: createTransientView(graph, unique('samples'), 'float32x2', 8), ...output},
+    ...rest
   };
 }
 
 it('getGPUTrajectoryPlayheadParameterValues packs float32 and word playheads', () => {
   expect(GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH).toBe(4);
-  expect(Array.from(getGPUTrajectoryPlayheadParameterValues({playhead: 12.5, maxGap: 3}))).toEqual([
-    12.5, 3, 0, 0
-  ]);
+  expect(
+    Array.from(getGPUTrajectoryPlayheadParameterValues({playhead: 12.5, maximumGap: 3}))
+  ).toEqual([12.5, 3, 0, 0]);
   expect(Array.from(getGPUTrajectoryPlayheadParameterValues({playhead: -1}))).toEqual([
     -1, 0, 0, 0
   ]);
   const base = 1_700_000_000_000n;
   const words = getGPUTrajectoryPlayheadWordParameterValues({
     playhead: base,
-    maxGap: 60_000
+    maximumGap: 60_000
   });
   expect(joinTimeWords(words[0], words[1])).toBe(base);
   const floats = new Float32Array(words.buffer);
@@ -78,15 +93,15 @@ it('getGPUTrajectoryPlayheadParameterValues packs float32 and word playheads', (
 
   expect(() => getGPUTrajectoryPlayheadParameterValues({playhead: Number.NaN})).toThrow(/finite/);
   expect(() => getGPUTrajectoryPlayheadParameterValues({playhead: 1n})).toThrow(/numbers/);
-  expect(() => getGPUTrajectoryPlayheadParameterValues({playhead: 1, maxGap: -1})).toThrow(
-    /maxGap/
+  expect(() => getGPUTrajectoryPlayheadParameterValues({playhead: 1, maximumGap: -1})).toThrow(
+    /maximumGap/
   );
   expect(() =>
     getGPUTrajectoryPlayheadWordParameterValues({
       playhead: 1,
-      maxGap: Infinity
+      maximumGap: Infinity
     })
-  ).toThrow(/maxGap/);
+  ).toThrow(/maximumGap/);
   expect(() => getGPUTrajectoryPlayheadParameterValues({playhead: 1}, new Float32Array(3))).toThrow(
     /4 elements/
   );
@@ -131,7 +146,7 @@ it('GPUTrajectoryPlayhead validates inputs and outputs', () => {
     () =>
       new GPUTrajectoryPlayhead(
         createPlayheadProps(graph, {
-          speeds: createTransientView(graph, unique('s'), 'float32', 3)
+          output: {speeds: createTransientView(graph, unique('s'), 'float32', 3)}
         })
       )
   ).toThrow(/track count/);
@@ -139,7 +154,7 @@ it('GPUTrajectoryPlayhead validates inputs and outputs', () => {
     () =>
       new GPUTrajectoryPlayhead(
         createPlayheadProps(graph, {
-          currentElevations: createTransientView(graph, unique('z'), 'float32', 2)
+          output: {currentElevations: createTransientView(graph, unique('z'), 'float32', 2)}
         })
       )
   ).toThrow(/requires elevations/);
@@ -147,12 +162,17 @@ it('GPUTrajectoryPlayhead validates inputs and outputs', () => {
     () =>
       new GPUTrajectoryPlayhead(
         createPlayheadProps(graph, {
-          drawInstanceCount: createTransientView(graph, unique('d'), 'uint32', 1)
+          output: {drawInstanceCount: createTransientView(graph, unique('d'), 'uint32', 1)}
         })
       )
   ).toThrow(/requires activeTracks/);
   expect(
-    () => new GPUTrajectoryPlayhead(createPlayheadProps(graph, {currentPositions: undefined}))
+    () =>
+      new GPUTrajectoryPlayhead(
+        createPlayheadProps(graph, {
+          output: {currentPositions: undefined}
+        })
+      )
   ).toThrow(/at least one output/);
   const positions = createTransientView(graph, unique('positions'), 'float32x2', 2);
   expect(
@@ -161,7 +181,7 @@ it('GPUTrajectoryPlayhead validates inputs and outputs', () => {
         createPlayheadProps(graph, {
           positions,
           timestamps: createTransientView(graph, unique('t'), 'float32', 2),
-          currentPositions: positions
+          output: {currentPositions: positions}
         })
       )
   ).toThrow(/share buffers/);
@@ -179,14 +199,18 @@ it('GPUTrajectoryPlayhead emits deterministic nodes and skips unused kernels', (
       id: 'full',
       timestamps: createTransientView(graph, unique('t'), 'uint32x2', 8),
       parameters: createTransientView(graph, unique('p'), 'uint32', 4),
-      currentPositions: undefined,
-      status: createTransientView(graph, unique('status'), 'uint32', 2),
-      activeTracks: {
-        ids: createTransientView(graph, unique('ids'), 'uint32', 2),
-        count: createTransientView(graph, unique('count'), 'uint32', 1),
-        overflow: createTransientView(graph, unique('overflow'), 'uint32', 1)
-      },
-      drawInstanceCount: createTransientView(graph, unique('draw'), 'uint32', 1)
+      output: {
+        currentPositions: undefined,
+        trackStatus: createTransientView(graph, unique('status'), 'uint32', 2),
+        activeTracks: {
+          ids: createTransientView(graph, unique('ids'), 'uint32', 2),
+          status: {
+            count: createTransientView(graph, unique('count'), 'uint32', 1),
+            overflow: createTransientView(graph, unique('overflow'), 'uint32', 1)
+          }
+        },
+        drawInstanceCount: createTransientView(graph, unique('draw'), 'uint32', 1)
+      }
     })
   );
   const ids = full.getCommandNodes(graph).map(node => node.id);
@@ -219,7 +243,7 @@ it('GPUTrajectoryResample validates and builds arc-length nodes', () => {
     () => new GPUTrajectoryResample(createResampleProps(graph, {timestamps: undefined}))
   ).toThrow(/timestamps are required/);
   expect(() => new GPUTrajectoryResample(createResampleProps(graph, {sampleCount: 0}))).toThrow(
-    /positive integer/
+    /sampleCount/
   );
   expect(() => new GPUTrajectoryResample(createResampleProps(graph, {sampleCount: 3}))).toThrow(
     /trackCount \* sampleCount/
@@ -228,7 +252,7 @@ it('GPUTrajectoryResample validates and builds arc-length nodes', () => {
     () =>
       new GPUTrajectoryResample(
         createResampleProps(graph, {
-          sampleElevations: createTransientView(graph, unique('z'), 'float32', 8)
+          output: {sampleElevations: createTransientView(graph, unique('z'), 'float32', 8)}
         })
       )
   ).toThrow(/requires elevations/);
@@ -236,8 +260,8 @@ it('GPUTrajectoryResample validates and builds arc-length nodes', () => {
 
 it('playhead oracle: exact sample times, duplicates, single points, empty tracks, outside range', () => {
   const tracks = packTracks(EDGE_CASE_TRACKS);
-  const at = (playhead: number, maxGap = 0) =>
-    computePlayheadOracle(tracks, {kind: 'float32', value: playhead}, maxGap);
+  const at = (playhead: number, maximumGap = 0) =>
+    computePlayheadOracle(tracks, {kind: 'float32', value: playhead}, maximumGap);
 
   // Exact sample time: fraction 0 on the outgoing segment, exact position.
   const exact = at(10);
@@ -294,8 +318,8 @@ it('playhead oracle: exact sample times, duplicates, single points, empty tracks
 
 it('playhead oracle: gap rule holds at the last fix and never flags an exact fix', () => {
   const tracks = packTracks(EDGE_CASE_TRACKS);
-  const at = (playhead: number, maxGap: number) =>
-    computePlayheadOracle(tracks, {kind: 'float32', value: playhead}, maxGap);
+  const at = (playhead: number, maximumGap: number) =>
+    computePlayheadOracle(tracks, {kind: 'float32', value: playhead}, maximumGap);
   expect(at(50, 10).status[4]).toBe(STATUS.gap);
   expect(at(50, 10).positions.slice(8, 10)).toEqual([1, 0]);
   expect(at(50, 10).speeds[4]).toBe(0);

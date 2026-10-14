@@ -21,18 +21,20 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {
   createFlatGeometry,
+  getMeasuresGeometryFields,
   getSphericalBoxArea,
   getWgs84BoxArea,
   measureFeature,
   roundFeatures,
   type FeatureMeasures,
-  type NestedFeatures
+  type NestedFeatures,
+  type PolygonRingCounts
 } from './geometry-measures-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type MeasuresReadback = {
   lengths: number[];
   areas: number[];
-  signedAreas: number[];
   centroids: number[][];
   bounds: number[][];
   vertexCounts: number[];
@@ -45,7 +47,8 @@ type MeasuresResult = {
   groupBits?: number[];
 };
 
-type MeasuresOptions = Pick<GPUGeometryMeasuresProps, 'geometryType' | 'holeRule'> & {
+type MeasuresOptions = Pick<GPUGeometryMeasuresProps, 'geometryType'> & {
+  polygonRingCounts?: PolygonRingCounts;
   coordinateSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
   radius?: number;
   groupIds?: number[];
@@ -65,7 +68,7 @@ function createMeasuresFixture(
   features: NestedFeatures,
   options: MeasuresOptions
 ): MeasuresFixture {
-  const flat = createFlatGeometry(features);
+  const flat = createFlatGeometry(features, options.polygonRingCounts);
   const featureCount = features.length;
   const isPolygon = options.geometryType === 'polygons';
   const buffers: Buffer[] = [];
@@ -80,7 +83,6 @@ function createMeasuresFixture(
     const buffersByName = {
       lengths: track(createOutputBuffer(device, rowLength)),
       areas: track(createOutputBuffer(device, rowLength)),
-      signedAreas: track(createOutputBuffer(device, rowLength)),
       centroids: track(createOutputBuffer(device, 2 * rowLength)),
       bounds: track(createOutputBuffer(device, 4 * rowLength)),
       vertexCounts: track(createOutputBuffer(device, rowLength)),
@@ -100,13 +102,6 @@ function createMeasuresFixture(
               graph,
               `${prefix}-areas`,
               buffersByName.areas,
-              'float32',
-              rowLength
-            ),
-            signedAreas: importGraphBuffer(
-              graph,
-              `${prefix}-signed-areas`,
-              buffersByName.signedAreas,
               'float32',
               rowLength
             )
@@ -151,7 +146,6 @@ function createMeasuresFixture(
       return {
         lengths: await readFloat32(buffersByName.lengths, rowLength),
         areas: await readFloat32(buffersByName.areas, rowLength),
-        signedAreas: await readFloat32(buffersByName.signedAreas, rowLength),
         centroids: Array.from({length: rowLength}, (_, row) =>
           centroids.slice(2 * row, 2 * row + 2)
         ),
@@ -182,25 +176,19 @@ function createMeasuresFixture(
         sphereRadius: options.coordinateSystem === 'spherical' ? options.radius : undefined
       },
       ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
-      positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        track(createInputBuffer(device, flat.ringOffsets)),
-        'uint32',
-        flat.ringOffsets.length
+      ...getMeasuresGeometryFields(
+        flat,
+        options.geometryType,
+        importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
+        (name, values) =>
+          importGraphBuffer(
+            graph,
+            name,
+            track(createInputBuffer(device, values)),
+            'uint32',
+            values.length
+          )
       ),
-      featureRingOffsets: importGraphBuffer(
-        graph,
-        'feature-ring-offsets',
-        track(createInputBuffer(device, flat.featureRingOffsets)),
-        'uint32',
-        flat.featureRingOffsets.length
-      ),
-      geometryType: options.geometryType,
-
-      holeRule: options.holeRule,
-
       output: featureColumns.views,
       ...(options.groupIds && groupColumns
         ? {
@@ -277,12 +265,6 @@ function expectFeatureParity(
     );
     if (isPolygon) {
       expectClose(
-        actual.signedAreas[feature],
-        reference.signedArea,
-        tolerances.area * Math.max(1, Math.abs(reference.signedArea)),
-        `${label} signed area`
-      );
-      expectClose(
         actual.areas[feature],
         reference.area,
         tolerances.area * Math.max(1, reference.area),
@@ -323,9 +305,9 @@ const PLANAR_FEATURES: NestedFeatures = [
   [square(0, 0, 1)],
   // Square with a CW hole (RFC 7946 winding).
   [square(0, 0, 10), square(2, 2, 3, true)],
-  // Same with a CCW hole: only first-ring-exterior subtracts it.
+  // Same with a CCW hole: the second ring of a polygon is a hole whatever its winding.
   [square(0, 0, 10), square(2, 2, 3)],
-  // Multipolygon: two CCW squares.
+  // Multipolygon: two CCW squares, two polygons of one ring each.
   [square(0, 0, 2), square(5, 5, 1)],
   // L-shape with an explicit closing vertex, clockwise.
   [
@@ -353,46 +335,42 @@ const PLANAR_FEATURES: NestedFeatures = [
   [square(1e6 + 0.25, 2e6 + 0.5, 1)]
 ];
 
-it('GPUGeometryMeasures matches the planar oracle under both hole rules', async () => {
+// Feature 3 is a multipolygon of two single-ring polygons; every other feature is one polygon.
+const PLANAR_POLYGON_RING_COUNTS: PolygonRingCounts = [undefined, undefined, undefined, [1, 1]];
+
+it('GPUGeometryMeasures matches the planar oracle with positional ring roles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = roundFeatures(PLANAR_FEATURES);
-  for (const holeRule of ['winding', 'first-ring-exterior'] as const) {
-    const fixture = createMeasuresFixture(device, features, {
-      geometryType: 'polygons',
-      coordinateSystem: 'planar',
-      holeRule
-    });
-    const {features: actual} = await fixture.run();
-    const expected = features.map(feature =>
-      measureFeature(feature, {isPolygon: true, coordinateSystem: 'planar', holeRule})
-    );
-    expectFeatureParity(actual, expected, {length: 1e-6, area: 1e-6, position: 1e-5}, true);
-    fixture.destroy();
-  }
-  // Spot checks of the semantics, independent of the oracle.
   const fixture = createMeasuresFixture(device, features, {
     geometryType: 'polygons',
-    coordinateSystem: 'planar'
+    coordinateSystem: 'planar',
+    polygonRingCounts: PLANAR_POLYGON_RING_COUNTS
   });
-  const {features: winding} = await fixture.run();
-  expect(winding.areas.slice(0, 5)).toEqual([1, 91, 109, 5, 3]);
-  expect(winding.signedAreas[4]).toBe(-3);
-  expect(winding.areas[7]).toBe(1);
-  expect(winding.centroids[7][0]).toBe(Math.fround(1e6 + 0.75));
-  expect(winding.lengths[0]).toBe(4);
-  expect(winding.vertexCounts[5]).toBe(0);
-  expect(winding.centroids[5][0]).toBeNaN();
+  const {features: actual} = await fixture.run();
+  const expected = features.map((feature, index) =>
+    measureFeature(feature, {
+      isPolygon: true,
+      coordinateSystem: 'planar',
+      polygonRingCounts: PLANAR_POLYGON_RING_COUNTS[index]
+    })
+  );
+  expectFeatureParity(actual, expected, {length: 1e-6, area: 1e-6, position: 1e-5}, true);
+  // Spot checks of the semantics, independent of the oracle. A hole subtracts whatever its
+  // winding (91 twice), the multipolygon adds its parts (5) and the clockwise L-shape is a shell
+  // with a positive area (3).
+  expect(actual.areas.slice(0, 5)).toEqual([1, 91, 91, 5, 3]);
+  expect(actual.areas[7]).toBe(1);
+  expect(actual.centroids[7][0]).toBe(Math.fround(1e6 + 0.75));
+  expect(actual.lengths[0]).toBe(4);
+  expect(actual.vertexCounts[5]).toBe(0);
+  expect(actual.centroids[5][0]).toBeNaN();
   fixture.destroy();
 });
 
 it('GPUGeometryMeasures measures lines with length-weighted centroids', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = roundFeatures([
     [
       [
@@ -437,9 +415,7 @@ it('GPUGeometryMeasures measures lines with length-weighted centroids', async ()
 
 it('GPUGeometryMeasures spherical areas match closed forms and the f64 oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const radius = GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS;
   const features = roundFeatures([
     [square(10, 0, 1)],
@@ -503,9 +479,7 @@ it('GPUGeometryMeasures spherical areas match closed forms and the f64 oracle', 
 
 it('GPUGeometryMeasures WGS84 lengths match f64 Vincenty', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const segments: number[][][] = [
     [
       [2.35, 48.85],
@@ -556,9 +530,7 @@ it('GPUGeometryMeasures WGS84 lengths match f64 Vincenty', async () => {
 
 it('GPUGeometryMeasures WGS84 areas match exact authalic box areas and the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const boxes = [
     [0, 0, 1],
     [-45, 60, 1],
@@ -593,9 +565,7 @@ it('GPUGeometryMeasures WGS84 areas match exact authalic box areas and the oracl
 
 it('GPUGeometryMeasures reduces groups deterministically and re-encodes new positions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let seed = 7;
   const random = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;

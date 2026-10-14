@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUCompositeScore,
   type GPUCompositeScoreProps
@@ -12,7 +13,11 @@ import {
   getGPUCompositeScoreParameterValues,
   GPU_COMPOSITE_SCORE_PARAMETER_LENGTH
 } from '../../../src/gpu-dataframe/composite-indicators/composite-score-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {computeCompositeScoreOnCPU, getLargestEigenpairByJacobi} from './composite-score-oracle';
 
 let serial = 0;
@@ -58,6 +63,17 @@ it('getGPUCompositeScoreParameterValues packs modes, weights and directions', ()
     /at most 16/
   );
   expect(() => getGPUCompositeScoreParameterValues({weights: [NaN]})).toThrow(/finite/);
+  // B-26: a weighted geometric mean needs w >= 0 (the kernel used to drop negative weights silently,
+  // while the weighted sum penalizes them); directions flip an indicator instead.
+  expect(() =>
+    getGPUCompositeScoreParameterValues({
+      aggregation: 'weighted-geometric-mean',
+      weights: [1, -0.5]
+    })
+  ).toThrow(/non-negative/);
+  expect(
+    getGPUCompositeScoreParameterValues({aggregation: 'weighted-sum', weights: [1, -0.5]})[5]
+  ).toBe(-0.5);
   expect(() => getGPUCompositeScoreParameterValues({weights: [1], epsilon: 0})).toThrow(/epsilon/);
   expect(() => getGPUCompositeScoreParameterValues({weights: [1]}, new Float32Array(4))).toThrow(
     /hold/
@@ -123,6 +139,71 @@ it('GPUCompositeScore emits deterministic node IDs and compiles optional passes 
   expect(fullIds[fullIds.length - 1]).toBe('full-score');
   expect(new Set(fullIds).size).toBe(fullIds.length);
   device.destroy();
+});
+
+it('GPUCompositeScore rank pipelines do not grow with the indicator count', () => {
+  const build = (indicatorCount: number) => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const score = new GPUCompositeScore(
+      createProps(graph, {
+        id: `rank${indicatorCount}`,
+        enableRank: true,
+        indicatorCount,
+        indicators: createTransientView(
+          graph,
+          `rank-indicators-${serial++}`,
+          'float32',
+          10 * indicatorCount
+        )
+      })
+    );
+    const nodes = score.getCommandNodes(graph);
+    device.destroy();
+    return nodes;
+  };
+  const two = build(2);
+  const three = build(3);
+  expect(getGPUCommandNodePipelineKeys(two).size).toBe(getGPUCommandNodePipelineKeys(three).size);
+  const ids = three.map(node => node.id);
+  expect(ids).toContain('rank3-rank-reset');
+  for (const column of [0, 1, 2]) {
+    expect(ids).toContain(`rank3-rank-advance-${column}`);
+  }
+  for (const {id, source} of getGPUCommandNodeKernelSources(three)) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(source, id).not.toContain('RANK_COLUMN');
+  }
+});
+
+it('GPUCompositeScore second-stage reductions run in 256-lane workgroups', () => {
+  // 300 * 256 + 7 rows give 301 tiles (the strided loop runs twice); 100 rows give one tile.
+  for (const rowCount of [300 * 256 + 7, 100]) {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const id = `two-stage-${rowCount}`;
+    const score = new GPUCompositeScore(
+      createProps(graph, {
+        id,
+        enablePrincipalComponent: true,
+        indicators: createTransientView(graph, `ind-${serial++}`, 'float32', rowCount * 3),
+        output: {score: createTransientView(graph, `out-${serial++}`, 'float32', rowCount)}
+      })
+    );
+    const sources = getGPUCommandNodeKernelSources(score.getCommandNodes(graph));
+    for (const variant of ['means', 'moments']) {
+      const kernel = sources.find(({id: kernelId}) => kernelId.includes(`${id}-${variant}`));
+      expect(kernel, variant).toBeDefined();
+      const source = kernel!.source;
+      expect(() => new WgslReflect(source), variant).not.toThrow();
+      expect(source, variant).toContain('@workgroup_size(256)');
+      expect(source, variant).toContain('var<workgroup>');
+      expect(source, variant).toContain('workgroupBarrier()');
+      // No invocation walks every tile: the loop starts at the lane and strides by 256.
+      expect(source, variant).not.toContain('tile = 0u; tile < TILE_COUNT');
+    }
+    device.destroy();
+  }
 });
 
 it('computeCompositeScoreOnCPU power iteration matches a Jacobi eigen-solve', () => {

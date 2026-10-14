@@ -17,6 +17,7 @@ import {
 import {createSegmentGeometry} from '../segment-intersection/segment-geometry-harness';
 import type {OracleSegmentFeature} from '../segment-intersection/segment-intersection-oracle';
 import {SHAPELY_CLEARANCE_LINES, SHAPELY_CLEARANCE_POLYGONS} from './shapely-clearance-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 type ClearanceResult = {clearances: number[]; lines: number[]; vertexIds: number[]};
@@ -31,7 +32,11 @@ async function runClearance(
   const graph = new GPUCommandGraph(device, {id: 'minimum-clearance'});
   const buffers: Buffer[] = [];
   const geometry = createSegmentGeometry(device, graph, 'geometry', features, buffers);
-  const output = (name: string, format: 'float32' | 'float32x4' | 'uint32', words: number) => {
+  const output = <Format extends 'float32' | 'float32x4' | 'uint32'>(
+    name: string,
+    format: Format,
+    words: number
+  ) => {
     const buffer = createOutputBuffer(device, features.length * words);
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, format, features.length)};
@@ -42,9 +47,7 @@ async function runClearance(
   graph.add(
     new GPUMinimumClearance({
       geometry,
-      clearances: clearances.view,
-      lines: lines.view,
-      vertexIds: vertexIds.view,
+      output: {clearances: clearances.view, lines: lines.view, vertexIds: vertexIds.view},
       spatialSort: options.spatialSort
     })
   );
@@ -115,9 +118,7 @@ function expectLines(
 
 it('GPUMinimumClearance matches Shapely minimum_clearance on polygons', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: OracleSegmentFeature[] = SHAPELY_CLEARANCE_POLYGONS.map(entry => ({
     kind: 'polygons',
     polygons: entry.shape
@@ -134,9 +135,7 @@ it('GPUMinimumClearance matches Shapely minimum_clearance on polygons', async ()
 
 it('GPUMinimumClearance matches Shapely minimum_clearance on linestrings', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: OracleSegmentFeature[] = SHAPELY_CLEARANCE_LINES.map(entry => ({
     kind: 'lines',
     vertices: entry.shape
@@ -154,9 +153,7 @@ it('GPUMinimumClearance matches Shapely minimum_clearance on linestrings', async
 
 it('GPUMinimumClearance is identical with and without the Morton sort on a large scene', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Tile the polygon fixture along x (f32 rounding of the shifted coordinates sets the 4e-4 tolerance) so the scene exceeds 1024 vertices and features interleave.
   const features: OracleSegmentFeature[] = [];
   const expected: (number | null)[] = [];
@@ -185,11 +182,28 @@ it('GPUMinimumClearance is identical with and without the Morton sort on a large
   });
 });
 
+it('GPUMinimumClearance reduces long features with the lowest-row tie rule', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Collinear integer lines (exact f32 distances) longer than the 64-lane per-feature workgroup.
+  // A line with spacing s has every vertex at distance s from its neighbor, so all vertices tie
+  // and the lowest row wins; one shorter gap of 1 makes its lower vertex the fragile one.
+  const makeLine = (count: number, spacing: number, y: number, gapAfter?: number): Point[] =>
+    Array.from({length: count}, (_, index): Point => {
+      const shift = gapAfter !== undefined && index > gapAfter ? 1 - spacing : 0;
+      return [index * spacing + shift, y];
+    });
+  const lines = [makeLine(300, 2, 0, 199), makeLine(300, 2, 100), makeLine(500, 3, 200, 497)];
+  const features: OracleSegmentFeature[] = lines.map(vertices => ({kind: 'lines', vertices}));
+  const result = await runClearance(device, features);
+  expect(result.clearances).toEqual([1, 2, 1]);
+  // Global vertex rows: feature starts at 0, 300 and 600.
+  expect(result.vertexIds).toEqual([199, 300, 600 + 497]);
+});
+
 it('GPUMinimumClearance validates properties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'minimum-clearance-validation'});
   const buffers: Buffer[] = [];
   const geometry = createSegmentGeometry(
@@ -207,18 +221,17 @@ it('GPUMinimumClearance validates properties', async () => {
     ],
     buffers
   );
-  expect(() => new GPUMinimumClearance({geometry})).toThrow(/at least one of/);
+  expect(() => new GPUMinimumClearance({geometry, output: {}})).toThrow(/at least one of/);
   const wrong = createOutputBuffer(device, 4);
   buffers.push(wrong);
   const clearances = importGraphBuffer(graph, 'wrong', wrong, 'float32', 3);
-  expect(() => new GPUMinimumClearance({geometry, clearances})).toThrow(/feature count/);
+  expect(() => new GPUMinimumClearance({geometry, output: {clearances}})).toThrow(/feature count/);
   expect(
     () =>
       new GPUMinimumClearance({
         geometry,
-        clearances: undefined,
-        leafCapacity: 3,
-        vertexIds: undefined
+        output: {},
+        leafCapacity: 3
       })
   ).toThrow();
   for (const buffer of buffers) {
@@ -228,9 +241,7 @@ it('GPUMinimumClearance validates properties', async () => {
 
 it('GPUMinimumClearance builds on a core-limits device', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: OracleSegmentFeature[] = SHAPELY_CLEARANCE_POLYGONS.slice(0, 3).map(entry => ({
     kind: 'polygons',
     polygons: entry.shape

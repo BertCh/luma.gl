@@ -9,11 +9,12 @@ import {GPURipley} from '../../../src/gpu-dataframe/pair-statistics/gpu-ripley';
 import {
   getGPURipleyParameterValues,
   GPU_RIPLEY_PARAMETER_LENGTH,
-  type GPURipleyParameters
+  type GPURipleySettings
 } from '../../../src/gpu-dataframe/pair-statistics/ripley-parameters';
 import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {computeRipleyOnCPU, type RipleyOracleResult} from './ripley-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 const RADIUS_COUNT = 12;
@@ -90,12 +91,14 @@ function createHarness(device: Device, scene: Scene, radiusCount = RADIUS_COUNT)
         parameters: views.parameters,
         gridSize: [32, 32],
         radiusCount,
-        k: views.outputs.k as never,
-        l: views.outputs.l as never,
-        lMinusR: views.outputs.lMinusR as never,
-        pairCorrelation: views.outputs.pairCorrelation as never,
-        pairCounts: views.outputs.pairCounts as never,
-        radii: views.outputs.radii as never
+        output: {
+          k: views.outputs.k as never,
+          l: views.outputs.l as never,
+          lMinusR: views.outputs.lMinusR as never,
+          pairCorrelation: views.outputs.pairCorrelation as never,
+          pairCounts: views.outputs.pairCounts as never,
+          radii: views.outputs.radii as never
+        }
       })
   });
   return {
@@ -158,13 +161,11 @@ for (const [name, createScene] of [
 ] as const) {
   it(`GPURipley matches the f64 oracle on a ${name} pattern for every edge correction without rebuilding`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createScene();
     const harness = createHarness(device, scene);
     try {
-      const frames: GPURipleyParameters[] = [];
+      const frames: GPURipleySettings[] = [];
       for (const edgeCorrection of MODES) {
         // Small, large and all-pairs (distance beyond the extent) radii, and a sub-window.
         frames.push({bounds: BOUNDS, maximumDistance: 20, edgeCorrection});
@@ -191,9 +192,7 @@ for (const [name, createScene] of [
 
 it('GPURipley shows clustering, randomness and regularity in L(r) - r', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const frame = {bounds: BOUNDS, maximumDistance: 12, edgeCorrection: 'isotropic'} as const;
   const lMinusR = async (scene: Scene) => {
     const harness = createHarness(
@@ -217,9 +216,7 @@ it('GPURipley shows clustering, randomness and regularity in L(r) - r', async ()
 
 it('GPURipley reproduces a hand-checked corner pair and the three corrections', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Two points at (1, 1) and (3, 1) in [0, 10]^2, d = 2. Weight for the first point: 12 / 5 (corner
   // inside the circle), for the second 3 / 2 (only the bottom side cuts the circle).
   const scene = {positions: new Float32Array([1, 1, 3, 1]), mask: new Uint32Array([1, 1])};
@@ -252,9 +249,7 @@ it('GPURipley reproduces a hand-checked corner pair and the three corrections', 
 
 it('GPURipley reports NaN with fewer than two included points and for an invalid window', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = {positions: new Float32Array([1, 1, 3, 1, 5, 5]), mask: new Uint32Array([1, 0, 1])};
   const harness = createHarness(device, scene, 4);
   try {

@@ -4,13 +4,16 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {
-  createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
-  getRasterExtremaPyramidWGSL,
   GPURasterExtremaPyramid,
   type GPURasterExtremaPyramidProps
 } from '../../../src/gpu-raster/raster-pyramid';
+import {
+  createRasterExtremaPyramidNodes,
+  getRasterExtremaPyramidWGSL
+} from '../../../src/gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   computeRasterExtremaPyramid,
@@ -18,7 +21,7 @@ import {
 } from './raster-pyramid-oracle';
 
 it('getGPURasterExtremaPyramidLayout computes levels, widths, offsets and length', () => {
-  const layout = getGPURasterExtremaPyramidLayout(37, 23);
+  const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 37, height: 23}));
   expect(
     layout.levels.map(level => [level.blockSize, level.width, level.height, level.offset])
   ).toEqual([
@@ -31,40 +34,59 @@ it('getGPURasterExtremaPyramidLayout computes levels, widths, offsets and length
   expect(layout.length).toBe(84);
   expect(layout.footprint).toBe('bilinear');
 
-  const small = getGPURasterExtremaPyramidLayout(1, 1, {firstBlockSize: 1});
+  const small = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 1, height: 1}), {
+    firstBlockSize: 1
+  });
   expect(small.levels).toEqual([{level: 0, blockSize: 1, width: 1, height: 1, offset: 0}]);
   expect(small.length).toBe(1);
 
-  const capped = getGPURasterExtremaPyramidLayout(64, 64, {firstBlockSize: 1, levelCount: 3});
+  const capped = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 64, height: 64}), {
+    firstBlockSize: 1,
+    levelCount: 3
+  });
   expect(capped.levels.map(level => level.width)).toEqual([64, 32, 16]);
   expect(capped.length).toBe(64 * 64 + 32 * 32 + 16 * 16);
-  expect(getGPURasterExtremaPyramidLayout(8, 8, {levelCount: 99}).levels.length).toBe(2);
-  expect(getGPURasterExtremaPyramidLayout(64, 64, {firstBlockSize: 1}).levels.length).toBe(7);
+  expect(
+    getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 8, height: 8}), {levelCount: 99})
+      .levels.length
+  ).toBe(2);
+  expect(
+    getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 64, height: 64}), {
+      firstBlockSize: 1
+    }).levels.length
+  ).toBe(7);
 
-  expect(() => getGPURasterExtremaPyramidLayout(0, 4)).toThrow(/dimensions/);
+  expect(() =>
+    getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 0, height: 4}))
+  ).toThrow(/dimensions/);
   for (const firstBlockSize of [0, 3, 512, 1.5]) {
-    expect(() => getGPURasterExtremaPyramidLayout(8, 8, {firstBlockSize})).toThrow(
-      /firstBlockSize/
-    );
+    expect(() =>
+      getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 8, height: 8}), {
+        firstBlockSize
+      })
+    ).toThrow(/firstBlockSize/);
   }
   for (const levelCount of [0, 1.5, -1, Number.NaN]) {
-    expect(() => getGPURasterExtremaPyramidLayout(8, 8, {levelCount})).toThrow(/levelCount/);
+    expect(() =>
+      getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 8, height: 8}), {levelCount})
+    ).toThrow(/levelCount/);
   }
-  expect(() => getGPURasterExtremaPyramidLayout(8, 8, {footprint: 'x' as never})).toThrow(
-    /footprint/
-  );
+  expect(() =>
+    getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 8, height: 8}), {
+      footprint: 'x' as never
+    })
+  ).toThrow(/footprint/);
 });
 
 it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four levels with at most 8 bindings', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const layout = getGPURasterExtremaPyramidLayout(37, 23);
+  const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 37, height: 23}));
   let instance = 0;
   const create = (overrides: Partial<GPURasterExtremaPyramidProps> = {}) => {
     instance++;
     return new GPURasterExtremaPyramid({
-      width: 37,
-      height: 23,
+      grid: makeGPURasterMetadata({width: 37, height: 23}),
       input: {
         id: `input-${instance}`,
         format: 'float32',
@@ -73,8 +95,10 @@ it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four level
           values: createTransientView(graph, `in-${instance}`, 'float32', 851)
         }
       },
-      maximum: createTransientView(graph, `max-${instance}`, 'float32', layout.length),
-      minimum: createTransientView(graph, `min-${instance}`, 'float32', layout.length),
+      output: {
+        maximum: createTransientView(graph, `max-${instance}`, 'float32', layout.length),
+        minimum: createTransientView(graph, `min-${instance}`, 'float32', layout.length)
+      },
       ...overrides
     });
   };
@@ -90,27 +114,30 @@ it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four level
   expect(
     create({
       id: 'p',
-      minimum: undefined,
       firstBlockSize: 8,
-      maximum: createTransientView(
-        graph,
-        'p-max',
-        'float32',
-        getGPURasterExtremaPyramidLayout(37, 23, {firstBlockSize: 8}).length
-      )
+      output: {
+        maximum: createTransientView(
+          graph,
+          'p-max',
+          'float32',
+          getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 37, height: 23}), {
+            firstBlockSize: 8
+          }).length
+        )
+      }
     })
       .getCommandNodes(graph)
       .filter(node => node.id.startsWith('p-level')).length
   ).toBe(2);
 
-  expect(() => create({maximum: undefined, minimum: undefined})).toThrow(/at least one output/);
+  expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() =>
-    create({maximum: createTransientView(graph, 'short', 'float32', layout.length - 1)})
+    create({output: {maximum: createTransientView(graph, 'short', 'float32', layout.length - 1)}})
   ).toThrow(/must contain 84 values/);
   expect(() => create({firstBlockSize: 3})).toThrow(/firstBlockSize/);
   expect(() => create({levelCount: 0})).toThrow(/levelCount/);
   const shared = createTransientView(graph, 'shared', 'float32', layout.length);
-  expect(() => create({maximum: shared, minimum: shared})).toThrow(/share buffers/);
+  expect(() => create({output: {maximum: shared, minimum: shared}})).toThrow(/share buffers/);
 
   // combined: one binding for both extrema; every variant is within the 8 binding limit.
   const values = createTransientView(graph, 'values', 'float32', 851);
@@ -157,7 +184,7 @@ it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four level
 });
 
 it('getRasterExtremaPyramidWGSL bakes per-level constants and prefixed names', () => {
-  const layout = getGPURasterExtremaPyramidLayout(37, 23);
+  const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 37, height: 23}));
   const wgsl = getRasterExtremaPyramidWGSL(layout, 'pointHorizon');
   expect(wgsl).toContain('const POINT_HORIZON_LEVEL_COUNT: u32 = 5u;');
   expect(wgsl).toContain('const POINT_HORIZON_MINIMUM_OFFSET: u32 = 84u;');
@@ -186,7 +213,10 @@ it('the hierarchical oracle equals the direct definition', () => {
     const validity = Uint32Array.from({length: width * height}, () => (random() < 0.3 ? 0 : 1));
     for (const firstBlockSize of [1, 2, 4]) {
       for (const footprint of ['cell', 'bilinear'] as const) {
-        const layout = getGPURasterExtremaPyramidLayout(width, height, {firstBlockSize, footprint});
+        const layout = getGPURasterExtremaPyramidLayout(
+          makeGPURasterMetadata({width: width, height: height}),
+          {firstBlockSize, footprint}
+        );
         const hierarchical = computeRasterExtremaPyramid(values, validity, layout);
         const direct = computeRasterExtremaPyramidDirect(values, validity, layout);
         for (let i = 0; i < layout.length; i++) {
@@ -201,7 +231,9 @@ it('the hierarchical oracle equals the direct definition', () => {
 it('GPURasterExtremaPyramid fuses levels in groups of four', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   // 64x64 at block 1: levels 0..6 -> level 0, levels 1-4, levels 5-6.
-  const layout = getGPURasterExtremaPyramidLayout(64, 64, {firstBlockSize: 1});
+  const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 64, height: 64}), {
+    firstBlockSize: 1
+  });
   expect(layout.levels.length).toBe(7);
   const nodes = createRasterExtremaPyramidNodes(graph, {
     id: 'f',
@@ -211,4 +243,37 @@ it('GPURasterExtremaPyramid fuses levels in groups of four', () => {
     combined: createTransientView(graph, 'f-combined', 'float32', 2 * layout.length)
   });
   expect(nodes.map(node => node.id)).toEqual(['f-level-0', 'f-levels-1-4', 'f-levels-5-6']);
+});
+
+it('GPURasterExtremaPyramid skips the identity copy for canonical float32 buffer bands', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 37, height: 23}));
+  const create = (id: string, withValidity: boolean, scale?: number) =>
+    new GPURasterExtremaPyramid({
+      id,
+      grid: makeGPURasterMetadata({width: 37, height: 23}),
+      input: {
+        id: `${id}-input`,
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: createTransientView(graph, `${id}-in`, 'float32', 851)
+        },
+        ...(withValidity
+          ? {validity: createTransientView(graph, `${id}-valid`, 'uint32', 851)}
+          : {}),
+        ...(scale === undefined ? {} : {scale})
+      },
+      output: {maximum: createTransientView(graph, `${id}-max`, 'float32', layout.length)}
+    })
+      .getCommandNodes(graph)
+      .map(node => node.id);
+  const countCopies = (ids: string[]) => ids.filter(id => id.includes('-elevation')).length;
+  const canonical = create('a', true);
+  expect(countCopies(canonical)).toBe(0);
+  expect(canonical).toEqual(['a-level-0', 'a-levels-1-4']);
+  expect(countCopies(create('b', false))).toBe(1);
+  expect(countCopies(create('c', true, 2))).toBe(1);
+  device.destroy();
 });

@@ -8,6 +8,7 @@
 
 import {describe, expect, it} from 'vitest';
 import {getGPUDistanceFieldParameterValues} from '../../src/gpu-raster/distance-field/distance-field-parameters';
+import {makeGPURasterMetadata} from '../../src/gpu-raster/raster-grid/index';
 import {getGPUIsobandsParameterValues} from '../../src/gpu-raster/isolines/isobands-parameters';
 import {getGPUIsolinesParameterValues} from '../../src/gpu-raster/isolines/isolines-parameters';
 import {
@@ -28,6 +29,14 @@ const MIN_X = 500123.37;
 const MIN_Y = 4600456.91;
 const EXTENT = [MIN_X, MIN_Y, MIN_X + WIDTH * CELL, MIN_Y + HEIGHT * CELL] as const;
 const LOCAL_ORIGIN = [MIN_X, MIN_Y] as const;
+/** The extent as a grid whose row 0 is at `MIN_Y` (rows advance north). */
+const EXTENT_GRID = makeGPURasterMetadata({
+  width: WIDTH,
+  height: HEIGHT,
+  cellSize: CELL,
+  origin: [MIN_X, MIN_Y],
+  rowDirection: 'north'
+});
 /** The required vertex placement: sub-decimetre against float64. */
 const SUB_DECIMETRE = 0.1;
 
@@ -112,24 +121,25 @@ function getMaximumError(crossings: readonly Crossing[], origin: readonly [numbe
 
 describe('localOrigin packing', () => {
   it('subtracts the local origin in float64 before rounding and keeps the default', () => {
-    const settings = {width: WIDTH, height: HEIGHT, levelCount: 1, extent: EXTENT};
-    const absolute = getGPUIsolinesParameterValues(settings);
-    const local = getGPUIsolinesParameterValues({...settings, localOrigin: LOCAL_ORIGIN});
+    const grid = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
+    const settings = {levelCount: 1, extent: EXTENT};
+    const absolute = getGPUIsolinesParameterValues(settings, grid);
+    const local = getGPUIsolinesParameterValues({...settings, localOrigin: LOCAL_ORIGIN}, grid);
     expect(absolute[1]).toBe(f(MIN_X));
     expect(absolute[2]).toBe(f(MIN_Y));
     expect([local[1], local[2]]).toEqual([0, 0]);
     // Cell sizes come from the float64 extent either way.
     expect([local[3], local[4]]).toEqual([absolute[3], absolute[4]]);
-    const shifted = getGPUIsolinesParameterValues({...settings, localOrigin: [500000, 4600000]});
+    const shifted = getGPUIsolinesParameterValues(
+      {...settings, localOrigin: [500000, 4600000]},
+      grid
+    );
     expect([shifted[1], shifted[2]]).toEqual([f(MIN_X - 500000), f(MIN_Y - 4600000)]);
 
-    const bands = getGPUIsobandsParameterValues({
-      breakCount: 2,
-      width: WIDTH,
-      height: HEIGHT,
-      extent: EXTENT,
-      localOrigin: [500000, 4600000]
-    });
+    const bands = getGPUIsobandsParameterValues(
+      {breakCount: 2, extent: EXTENT, localOrigin: [500000, 4600000]},
+      grid
+    );
     expect(Array.from(bands.subarray(4, 10))).toEqual([
       f(MIN_X - 500000),
       f(MIN_Y - 4600000),
@@ -139,61 +149,41 @@ describe('localOrigin packing', () => {
       f(CELL)
     ]);
 
-    const sampling = getGPURasterSamplingParameterValues({
-      width: WIDTH,
-      height: HEIGHT,
-      extent: EXTENT,
-      localOrigin: LOCAL_ORIGIN
-    });
+    const sampling = getGPURasterSamplingParameterValues({localOrigin: LOCAL_ORIGIN}, EXTENT_GRID);
     expect(Array.from(sampling.subarray(0, 4))).toEqual([0, 0, f(WIDTH * CELL), f(HEIGHT * CELL)]);
-    const profile = getGPURasterProfileParameterValues({
-      width: WIDTH,
-      height: HEIGHT,
-      extent: EXTENT,
-      spacing: 1,
-      localOrigin: LOCAL_ORIGIN
-    });
+    const profile = getGPURasterProfileParameterValues(
+      {spacing: 1, localOrigin: LOCAL_ORIGIN},
+      EXTENT_GRID
+    );
     expect(Array.from(profile.subarray(0, 4))).toEqual(Array.from(sampling.subarray(0, 4)));
 
-    const field = getGPUDistanceFieldParameterValues({
-      bounds: EXTENT,
-      gridSize: [WIDTH, HEIGHT],
-      localOrigin: [500000, 4600000]
-    });
+    const field = getGPUDistanceFieldParameterValues({localOrigin: [500000, 4600000]}, EXTENT_GRID);
     expect([field[0], field[1]]).toEqual([f(MIN_X - 500000), f(MIN_Y - 4600000)]);
-    const fieldByOrigin = getGPUDistanceFieldParameterValues({
-      origin: [MIN_X, MIN_Y],
-      cellSize: [CELL, CELL],
-      localOrigin: LOCAL_ORIGIN
-    });
+    const fieldByOrigin = getGPUDistanceFieldParameterValues(
+      {localOrigin: LOCAL_ORIGIN},
+      EXTENT_GRID
+    );
     expect([fieldByOrigin[0], fieldByOrigin[1]]).toEqual([0, 0]);
   });
 
   it('rejects a non-finite local origin', () => {
-    const settings = {width: 4, height: 4, levelCount: 1, extent: [0, 0, 1, 1] as const};
-    expect(() => getGPUIsolinesParameterValues({...settings, localOrigin: [NaN, 0]})).toThrow(
+    const grid = makeGPURasterMetadata({width: 4, height: 4});
+    const settings = {levelCount: 1, extent: [0, 0, 1, 1] as const};
+    expect(() => getGPUIsolinesParameterValues({...settings, localOrigin: [NaN, 0]}, grid)).toThrow(
       /localOrigin/
     );
     expect(() =>
-      getGPUIsobandsParameterValues({
-        breakCount: 1,
-        width: 4,
-        height: 4,
-        extent: [0, 0, 1, 1],
-        localOrigin: [0, Infinity]
-      })
+      getGPUIsobandsParameterValues(
+        {breakCount: 1, extent: [0, 0, 1, 1], localOrigin: [0, Infinity]},
+        grid
+      )
     ).toThrow(/localOrigin/);
-    expect(() =>
-      getGPURasterSamplingParameterValues({
-        width: 4,
-        height: 4,
-        extent: [0, 0, 1, 1],
-        localOrigin: [Infinity, 0]
-      })
-    ).toThrow(/localOrigin/);
-    expect(() =>
-      getGPUDistanceFieldParameterValues({cellSize: [1, 1], localOrigin: [0, NaN]})
-    ).toThrow(/localOrigin/);
+    expect(() => getGPURasterSamplingParameterValues({localOrigin: [Infinity, 0]}, grid)).toThrow(
+      /localOrigin/
+    );
+    expect(() => getGPUDistanceFieldParameterValues({localOrigin: [0, NaN]}, grid)).toThrow(
+      /localOrigin/
+    );
   });
 });
 
@@ -202,9 +192,10 @@ describe('UTM-scale vertex placement against a float64 reference', () => {
   const levels = [-3.25, 0.5, 4, 11.75, 19];
 
   it('places isoline vertices to sub-decimetre with localOrigin at the raster corner', () => {
-    const settings = {width: WIDTH, height: HEIGHT, levelCount: levels.length, extent: EXTENT};
-    const local = getGPUIsolinesParameterValues({...settings, localOrigin: LOCAL_ORIGIN});
-    const absolute = getGPUIsolinesParameterValues(settings);
+    const grid = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
+    const settings = {levelCount: levels.length, extent: EXTENT};
+    const local = getGPUIsolinesParameterValues({...settings, localOrigin: LOCAL_ORIGIN}, grid);
+    const absolute = getGPUIsolinesParameterValues(settings, grid);
     let localError = 0;
     let absoluteError = 0;
     let crossingCount = 0;
@@ -229,13 +220,10 @@ describe('UTM-scale vertex placement against a float64 reference', () => {
     const cell = 1587.3;
     const extent = [MIN_X, MIN_Y, MIN_X + width * cell, MIN_Y + height * cell] as const;
     const tileValues = createSmoothValues(width, height);
-    const parameters = getGPUIsolinesParameterValues({
-      width,
-      height,
-      levelCount: 1,
-      extent,
-      localOrigin: LOCAL_ORIGIN
-    });
+    const parameters = getGPUIsolinesParameterValues(
+      {levelCount: 1, extent, localOrigin: LOCAL_ORIGIN},
+      makeGPURasterMetadata({width, height})
+    );
     let worstRatio = 0;
     for (const level of levels) {
       for (const {gpu, reference} of getIsolineCrossings(
@@ -260,19 +248,12 @@ describe('UTM-scale vertex placement against a float64 reference', () => {
   it('places isoband vertices to sub-decimetre with localOrigin at the raster corner', () => {
     const lo = 0.5;
     const hi = 11.75;
-    const parameters = getGPUIsobandsParameterValues({
-      breakCount: 2,
-      width: WIDTH,
-      height: HEIGHT,
-      extent: EXTENT,
-      localOrigin: LOCAL_ORIGIN
-    });
-    const absoluteParameters = getGPUIsobandsParameterValues({
-      breakCount: 2,
-      width: WIDTH,
-      height: HEIGHT,
-      extent: EXTENT
-    });
+    const grid = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
+    const parameters = getGPUIsobandsParameterValues(
+      {breakCount: 2, extent: EXTENT, localOrigin: LOCAL_ORIGIN},
+      grid
+    );
+    const absoluteParameters = getGPUIsobandsParameterValues({breakCount: 2, extent: EXTENT}, grid);
     const edgeStart = [0, 1, 3, 0];
     const edgeEnd = [1, 2, 2, 3];
     const cornerOffsets = [
@@ -386,13 +367,12 @@ describe('UTM-scale seed and sample snapping', () => {
       }
       return {correct, wrong: insetPoints.length - correct};
     };
-    const base = {bounds: EXTENT, gridSize: [WIDTH, HEIGHT] as const};
     const local = snap(
-      getGPUDistanceFieldParameterValues({...base, localOrigin: LOCAL_ORIGIN}),
+      getGPUDistanceFieldParameterValues({localOrigin: LOCAL_ORIGIN}, EXTENT_GRID),
       LOCAL_ORIGIN
     );
     expect(local.wrong).toBe(0);
-    const absolute = snap(getGPUDistanceFieldParameterValues(base), [0, 0]);
+    const absolute = snap(getGPUDistanceFieldParameterValues({}, EXTENT_GRID), [0, 0]);
     expect(absolute.wrong).toBeGreaterThan(0);
   });
 
@@ -410,13 +390,15 @@ describe('UTM-scale seed and sample snapping', () => {
       }
       return wrong;
     };
-    const settings = {width: WIDTH, height: HEIGHT, extent: EXTENT, method: 'nearest'} as const;
+    const settings = {method: 'nearest'} as const;
     expect(
       count(
-        getGPURasterSamplingParameterValues({...settings, localOrigin: LOCAL_ORIGIN}),
+        getGPURasterSamplingParameterValues({...settings, localOrigin: LOCAL_ORIGIN}, EXTENT_GRID),
         LOCAL_ORIGIN
       )
     ).toBe(0);
-    expect(count(getGPURasterSamplingParameterValues(settings), [0, 0])).toBeGreaterThan(0);
+    expect(
+      count(getGPURasterSamplingParameterValues(settings, EXTENT_GRID), [0, 0])
+    ).toBeGreaterThan(0);
   });
 });

@@ -16,12 +16,11 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom, orientExact, type OraclePoint} from './segment-intersection-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('orientSign matches exact arithmetic on nearly degenerate triples', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(3);
   const triples: [OraclePoint, OraclePoint, OraclePoint][] = [];
   const round = (x: number, y: number): OraclePoint => [Math.fround(x), Math.fround(y)];

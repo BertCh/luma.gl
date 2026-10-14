@@ -5,6 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUIsobands} from '../../../src/gpu-raster/isolines/gpu-isobands';
 import {
@@ -24,6 +25,7 @@ import {
   computeBandClassesOnCPU,
   type IsobandsScene
 } from './isobands-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 17;
 const HEIGHT = 13;
@@ -57,6 +59,9 @@ function createScene(): IsobandsScene {
   placeSaddle(8, 2, 5.5, 0.1);
   placeSaddle(2, 6, 0.4, 4.4);
   placeSaddle(10, 8, 2.2, 2.1);
+  // Infinities are nodata like NaN (cannot be interpolated): bandClasses 0xffffffff, no geometry.
+  values[WIDTH * 10 + 3] = Infinity;
+  values[WIDTH * 11 + 12] = -Infinity;
   // Neighbouring samples shared with other saddles are overwritten; clear NaN/sentinel near them.
   return {
     width: WIDTH,
@@ -70,9 +75,7 @@ function createScene(): IsobandsScene {
 
 it('GPUIsobands matches the CPU oracle as breaks, counts and windows change without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene();
   const sampleCount = WIDTH * HEIGHT;
   const valuesBuffer = createInputBuffer(device, scene.values);
@@ -91,10 +94,10 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
   const totalBuffer = createOutputBuffer(device, 1);
   const vertexCountBuffer = createOutputBuffer(device, 1);
   const graph = new GPUCommandGraph(device, {id: 'isobands-graph'});
+  const grid = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
   const contributor = new GPUIsobands({
     id: 'isobands',
-    width: WIDTH,
-    height: HEIGHT,
+    grid,
     values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', sampleCount),
     validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', sampleCount),
     noDataValue: -9999,
@@ -104,20 +107,22 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
       bandClasses: importGraphBuffer(graph, 'classes', classesBuffer, 'uint32', sampleCount),
       triangles: importGraphBuffer(graph, 'triangles', trianglesBuffer, 'float32x2', CAPACITY * 3),
       triangleBands: importGraphBuffer(graph, 'bands', bandsBuffer, 'uint32', CAPACITY),
-      count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1),
-      vertexCount: importGraphBuffer(graph, 'vertex-count', vertexCountBuffer, 'uint32', 1)
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1),
+        vertexCount: importGraphBuffer(graph, 'vertex-count', vertexCountBuffer, 'uint32', 1)
+      }
     }
   });
   graph.add(contributor);
   let compileCount = 0;
   const compiled = graph.compile();
   compileCount++;
-  const baseSettings = {width: WIDTH, height: HEIGHT, extent: [10, -5, 44, 21]} as const;
+  const baseSettings = {extent: [10, -5, 44, 21]} as const;
   const frames: {
     breaks: number[];
-    settings: Omit<GPUIsobandsSettings, 'width' | 'height' | 'extent'>;
+    settings: Omit<GPUIsobandsSettings, 'extent'>;
     extent?: GPUIsobandsSettings['extent'];
     capacity?: number;
   }[] = [
@@ -140,7 +145,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
       extent: frame.extent ?? baseSettings.extent,
       ...frame.settings
     };
-    const parameters = getGPUIsobandsParameterValues(settings);
+    const parameters = getGPUIsobandsParameterValues(settings, grid);
     parameterBuffer.write(parameters);
     submitGraph(device, compiled, undefined);
     const label = `frame ${outputIndex++}`;
@@ -174,8 +179,7 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
   smallGraph.add(
     new GPUIsobands({
       id: 'small',
-      width: WIDTH,
-      height: HEIGHT,
+      grid,
       values: importGraphBuffer(smallGraph, 'values', valuesBuffer, 'float32', sampleCount),
       noDataValue: -9999,
       breaks: importGraphBuffer(smallGraph, 'breaks', breaksBuffer, 'float32', MAXIMUM_BREAK_COUNT),
@@ -189,16 +193,18 @@ it('GPUIsobands matches the CPU oracle as breaks, counts and windows change with
           smallCapacity * 3
         ),
         triangleBands: importGraphBuffer(smallGraph, 'bands', bandsBuffer, 'uint32', smallCapacity),
-        count: importGraphBuffer(smallGraph, 'count', countBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(smallGraph, 'overflow', overflowBuffer, 'uint32', 1),
-        requiredCount: importGraphBuffer(smallGraph, 'total', totalBuffer, 'uint32', 1)
+        status: {
+          overflow: importGraphBuffer(smallGraph, 'overflow', overflowBuffer, 'uint32', 1),
+          count: importGraphBuffer(smallGraph, 'count', countBuffer, 'uint32', 1),
+          requiredCount: importGraphBuffer(smallGraph, 'total', totalBuffer, 'uint32', 1)
+        }
       }
     })
   );
   const smallCompiled = smallGraph.compile();
   scene.breaks.set([1, 2, 3, 4, 5, 0]);
   breaksBuffer.write(scene.breaks);
-  const overflowParameters = getGPUIsobandsParameterValues({...baseSettings, breakCount: 5});
+  const overflowParameters = getGPUIsobandsParameterValues({...baseSettings, breakCount: 5}, grid);
   parameterBuffer.write(overflowParameters);
   submitGraph(device, smallCompiled, undefined);
   // The small graph's scene has no validity buffer, so compare against a validity-free oracle.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../../src/utils/philox-random';
 import type {GPUGeographicallyWeightedRegressionSettings} from '../../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
 import {
@@ -68,7 +69,12 @@ export function getNonstationarityAssignment(
   seed: number,
   permutation: number
 ): number[] {
-  const rounds = getSwapOrNotRounds(getPermutationSeedKey(seed), permutation, count);
+  const rounds = getSwapOrNotRounds(
+    getPermutationSeedKey(seed),
+    permutation,
+    count,
+    PHILOX_PURPOSES.geographicallyWeightedRegressionNonstationarityShuffle.id
+  );
   return Array.from({length: count}, (_, location) =>
     getSwapOrNotPermutationIndex(location, count, rounds)
   );

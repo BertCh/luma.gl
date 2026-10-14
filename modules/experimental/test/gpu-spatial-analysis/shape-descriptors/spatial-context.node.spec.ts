@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUShapeDescriptors} from '../../../src/gpu-spatial-analysis/shape-descriptors';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -35,6 +35,8 @@ it('GPUShapeDescriptors is planar only and keeps the frame identity', () => {
       spatialContext,
       positions: view(graph, 'float32x2', 8),
       ringOffsets: view(graph, 'uint32', 3),
+      polygonOffsets: view(graph, 'uint32', 3),
+      featureOffsets: view(graph, 'uint32', 3),
       parameters: view(graph, 'float32', 4),
       output: {polsbyPopper: view(graph, 'float32', 2)}
     });

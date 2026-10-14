@@ -75,21 +75,33 @@ export async function measureReachability(
     buffers;
   const props: GPUNetworkReachabilityProps = {
     id: 'bench',
-    offsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', nodeCount + 1),
-    neighbors: importGraphBuffer(graph, 'neighbors', neighbors, 'uint32', csr.neighbors.length),
-    weights: importGraphBuffer(graph, 'weights', weights, 'float32', csr.weights.length),
-    sources: importGraphBuffer(graph, 'sources', sources, 'uint32', options.sources.length),
-    costs: importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount),
-    converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1),
-    iterationCount: importGraphBuffer(graph, 'iteration-count', iterationCount, 'uint32', 1),
-    maxIterations: options.maxIterations,
-    ...(options.predecessors
-      ? {
-          predecessors: importGraphBuffer(graph, 'predecessors', predecessors, 'uint32', nodeCount),
-          ...(options.maxTieIterations === undefined
-            ? {}
-            : {maxTieIterations: options.maxTieIterations})
-        }
+    topology: {
+      offsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', nodeCount + 1),
+      neighbors: importGraphBuffer(graph, 'neighbors', neighbors, 'uint32', csr.neighbors.length),
+      weights: importGraphBuffer(graph, 'weights', weights, 'float32', csr.weights.length)
+    },
+    startNodes: importGraphBuffer(graph, 'sources', sources, 'uint32', options.sources.length),
+    maximumIterations: options.maxIterations,
+    output: {
+      costs: importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount),
+      status: {
+        converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1),
+        iterationCount: importGraphBuffer(graph, 'iteration-count', iterationCount, 'uint32', 1)
+      },
+      ...(options.predecessors
+        ? {
+            predecessors: importGraphBuffer(
+              graph,
+              'predecessors',
+              predecessors,
+              'uint32',
+              nodeCount
+            )
+          }
+        : {})
+    },
+    ...(options.predecessors && options.maxTieIterations !== undefined
+      ? {maximumTieIterations: options.maxTieIterations}
       : {}),
     ...(options.localIterations === undefined ? {} : {localIterations: options.localIterations})
   };

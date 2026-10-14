@@ -16,6 +16,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createSeededPoints} from '../../gpu-spatial-analysis/point-density/point-density-oracle';
 import {computeFlowAggregation} from './flow-aggregation-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS: [number, number, number, number] = [0, 0, 12, 9];
 const CAPACITY: [number, number] = [12, 9];
@@ -30,9 +31,7 @@ function getNonzeroExtent(counts: readonly number[]): [number, number] {
 
 it('GPUFlowAggregation applies a per-frame active grid size and reports the zone count extent', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const origins = createSeededPoints(31, ROW_COUNT, BOUNDS);
   const destinations = createSeededPoints(47, ROW_COUNT, BOUNDS);
   const inputs = [
@@ -79,17 +78,19 @@ it('GPUFlowAggregation applies a per-frame active grid size and reports the zone
       pairCapacity: 4096,
       output: {
         ids: view('ids', 'uint32', TOP_COUNT),
-        count: view('count', 'uint32', 1),
-        overflow: view('overflow', 'uint32', 1),
-        requiredCount: view('total', 'uint32', 1)
-      },
-      flowOriginZoneIds: view('origins', 'uint32', TOP_COUNT),
-      flowDestinationZoneIds: view('destinations', 'uint32', TOP_COUNT),
-      flowCounts: view('flowCounts', 'uint32', TOP_COUNT),
-      zoneOutCounts: view('zoneOut', 'uint32', zoneCapacity),
-      zoneInCounts: view('zoneIn', 'uint32', zoneCapacity),
-      zoneOutCountExtent: view('outExtent', 'float32', 2),
-      zoneInCountExtent: view('inExtent', 'float32', 2)
+        status: {
+          count: view('count', 'uint32', 1),
+          overflow: view('overflow', 'uint32', 1),
+          requiredCount: view('total', 'uint32', 1)
+        },
+        flowOriginZoneIds: view('origins', 'uint32', TOP_COUNT),
+        flowDestinationZoneIds: view('destinations', 'uint32', TOP_COUNT),
+        flowCounts: view('flowCounts', 'uint32', TOP_COUNT),
+        zoneOutCounts: view('zoneOut', 'uint32', zoneCapacity),
+        zoneInCounts: view('zoneIn', 'uint32', zoneCapacity),
+        zoneOutCountExtent: view('outExtent', 'float32', 2),
+        zoneInCountExtent: view('inExtent', 'float32', 2)
+      }
     })
   );
   const compiled = graph.compile();
@@ -147,9 +148,7 @@ it('GPUFlowAggregation applies a per-frame active grid size and reports the zone
 
 it('GPUFlowAggregation rejects an activeGridSize view that is too short', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph<void>(device, {id: 'flow-active-invalid'});
   const buffer = createOutputBuffer(device, 4);
   const one = importGraphBuffer(graph, 'one', buffer, 'uint32', 1);
@@ -161,7 +160,7 @@ it('GPUFlowAggregation rejects an activeGridSize view that is too short', async 
         origins: importGraphBuffer(graph, 'o', buffer, 'float32x2', 1),
         destinations: importGraphBuffer(graph, 'd', buffer, 'float32x2', 1),
         pairCapacity: 8,
-        output: {ids, count: one, overflow: one}
+        output: {ids, status: {count: one, overflow: one}}
       })
   ).toThrow(/activeGridSize/);
   buffer.destroy();

@@ -11,10 +11,11 @@ import {
 import {
   createGeometryFixture,
   createRandom,
-  expectClose,
-  flattenFeatures
+  expectClose
 } from '../outline-geometry/geometry-fixture';
+import {flattenPolygonFeatures} from '../geometry-measures/polygon-layout';
 import {describeFeature, type Ring} from './shape-descriptors-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function createStar(
   random: () => number,
@@ -87,20 +88,13 @@ function createFeatures(): Ring[][] {
   return features;
 }
 
-const CASES = [
-  ['winding', 'gift-wrapping'],
-  ['first-ring-exterior', 'monotone-chain'],
-  ['winding', 'monotone-chain']
-] as const;
-for (const [holeRule, convexityMethod] of CASES) {
-  it(`GPUShapeDescriptors matches the f64 oracle with holeRule ${holeRule} and ${convexityMethod} convexity`, async () => {
+for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
+  it(`GPUShapeDescriptors matches the f64 oracle with ${convexityMethod} convexity`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const features = createFeatures();
-    // Under winding, a hole must wind opposite to its exterior; the oracle and kernel agree on it.
-    const flat = flattenFeatures(features);
+    // Ring roles are positional; the holes here wind opposite to their exteriors on purpose.
+    const flat = flattenPolygonFeatures(features);
     // Compare against what the GPU sees: f32-rounded positions.
     const rounded: Ring[][] = features.map(rings =>
       rings.map(ring => ring.map(([x, y]) => [Math.fround(x), Math.fround(y)]))
@@ -119,7 +113,8 @@ for (const [holeRule, convexityMethod] of CASES) {
       inputs: {
         positions: {values: flat.positions, format: 'float32x2'},
         ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
-        featureRingOffsets: {values: flat.featureRingOffsets, format: 'uint32'}
+        polygonOffsets: {values: flat.polygonOffsets, format: 'uint32'},
+        featureOffsets: {values: flat.featureOffsets, format: 'uint32'}
       },
       outputs: {
         ...Object.fromEntries(
@@ -132,8 +127,8 @@ for (const [holeRule, convexityMethod] of CASES) {
         new GPUShapeDescriptors({
           positions: inputs['positions'] as never,
           ringOffsets: inputs['ringOffsets'] as never,
-          featureRingOffsets: inputs['featureRingOffsets'] as never,
-          holeRule,
+          polygonOffsets: inputs['polygonOffsets'] as never,
+          featureOffsets: inputs['featureOffsets'] as never,
           convexityMethod,
           parameters,
           output: {
@@ -155,9 +150,9 @@ for (const [holeRule, convexityMethod] of CASES) {
       expect(Math.max(...result['areas'])).toBeGreaterThan(1);
       let slivers = 0;
       for (let feature = 0; feature < featureCount; feature++) {
-        const expected = describeFeature(rounded[feature], holeRule, sliverThreshold);
+        const expected = describeFeature(rounded[feature], sliverThreshold);
         const label = `feature ${feature}`;
-        // First-ring-exterior hole rule means a CW exterior still counts positive.
+        // The first ring is the shell, so a CW exterior still counts positive.
         for (const [name, key, tolerance] of [
           ['areas', 'area', 3e-4],
           ['perimeters', 'perimeter', 1e-4],
@@ -258,22 +253,22 @@ const COLLINEAR_CONVEXITY_CASES: {name: string; ring: Ring; expected: number}[] 
 for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
   it(`GPUShapeDescriptors ${convexityMethod} convexity handles collinear hull vertices`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
-    const flat = flattenFeatures(COLLINEAR_CONVEXITY_CASES.map(({ring}) => [ring]));
+    requireTestDevice(device);
+    const flat = flattenPolygonFeatures(COLLINEAR_CONVEXITY_CASES.map(({ring}) => [ring]));
     const fixture = createGeometryFixture(device, {
       inputs: {
         positions: {values: flat.positions, format: 'float32x2'},
         ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
-        featureRingOffsets: {values: flat.featureRingOffsets, format: 'uint32'}
+        polygonOffsets: {values: flat.polygonOffsets, format: 'uint32'},
+        featureOffsets: {values: flat.featureOffsets, format: 'uint32'}
       },
       outputs: {convexity: {format: 'float32', length: COLLINEAR_CONVEXITY_CASES.length}},
       create: ({inputs, outputs, parameters}) =>
         new GPUShapeDescriptors({
           positions: inputs['positions'] as never,
           ringOffsets: inputs['ringOffsets'] as never,
-          featureRingOffsets: inputs['featureRingOffsets'] as never,
+          polygonOffsets: inputs['polygonOffsets'] as never,
+          featureOffsets: inputs['featureOffsets'] as never,
           convexityMethod,
           parameters,
           output: {convexity: outputs['convexity'] as never}
@@ -286,3 +281,50 @@ for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
     fixture.destroy();
   });
 }
+
+it('GPUShapeDescriptors orientation is 0 when the second moments are isotropic (review D-19)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // atan2(0, 0) is indeterminate in WGSL. An axis-aligned square and a diamond (a square rotated
+  // by 45 degrees) both reach it exactly: xy = 0 and xx = yy.
+  const features: Ring[][] = [
+    [
+      [
+        [0, 0],
+        [4, 0],
+        [4, 4],
+        [0, 4]
+      ]
+    ],
+    [
+      [
+        [2, 0],
+        [4, 2],
+        [2, 4],
+        [0, 2]
+      ]
+    ]
+  ];
+  const flat = flattenPolygonFeatures(features);
+  const fixture = createGeometryFixture(device, {
+    inputs: {
+      positions: {values: flat.positions, format: 'float32x2'},
+      ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
+      polygonOffsets: {values: flat.polygonOffsets, format: 'uint32'},
+      featureOffsets: {values: flat.featureOffsets, format: 'uint32'}
+    },
+    outputs: {orientation: {format: 'float32', length: features.length}},
+    create: ({inputs, outputs, parameters}) =>
+      new GPUShapeDescriptors({
+        positions: inputs['positions'] as never,
+        ringOffsets: inputs['ringOffsets'] as never,
+        polygonOffsets: inputs['polygonOffsets'] as never,
+        featureOffsets: inputs['featureOffsets'] as never,
+        parameters,
+        output: {orientation: outputs['orientation'] as never}
+      })
+  });
+  const result = await fixture.run(getGPUShapeDescriptorsParameterValues({}));
+  expect(Array.from(result['orientation'])).toEqual([0, 0]);
+  fixture.destroy();
+});

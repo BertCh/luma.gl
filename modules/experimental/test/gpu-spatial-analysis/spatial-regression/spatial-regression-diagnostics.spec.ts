@@ -34,6 +34,7 @@ import {
   createNearestNeighborScene,
   type DiagnosticsOracleResult
 } from './spatial-regression-diagnostics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = ReturnType<typeof createDiagnosticsScene>;
 
@@ -123,13 +124,15 @@ async function runDiagnostics(
             'float32',
             GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
           ),
-          status: importGraphBuffer(
-            graph,
-            'olsStatus',
-            track(createOutputBuffer(device, 1)),
-            'uint32',
-            1
-          ),
+          status: {
+            code: importGraphBuffer(
+              graph,
+              'olsStatus',
+              track(createOutputBuffer(device, 1)),
+              'uint32',
+              1
+            )
+          },
           residuals
         }
       })
@@ -191,7 +194,7 @@ async function runDiagnostics(
           'float32',
           GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1)
+        status: {code: importGraphBuffer(graph, 'status', statusBuffer, 'uint32', 1)}
       }
     })
   );
@@ -261,9 +264,7 @@ function expectParity(actual: Result, expected: DiagnosticsOracleResult): void {
 
 it('GPUSpatialRegressionDiagnostics matches the dense float64 oracle (row-standardized lattice)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(8, 11, 0.6, true);
   const expected = computeSpatialRegressionDiagnosticsOnCPU(
     scene.weights,
@@ -282,9 +283,7 @@ it('GPUSpatialRegressionDiagnostics matches the dense float64 oracle (row-standa
 
 it('GPUSpatialRegressionDiagnostics matches the oracle on binary weights and several tile sizes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(12, 5, 0.45, false);
   const expected = computeSpatialRegressionDiagnosticsOnCPU(
     scene.weights,
@@ -308,9 +307,7 @@ it('GPUSpatialRegressionDiagnostics matches the oracle on binary weights and sev
 
 it('GPUSpatialRegressionDiagnostics reports weak evidence for independent errors', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(10, 99, 0, true);
   const expected = computeSpatialRegressionDiagnosticsOnCPU(
     scene.weights,
@@ -326,9 +323,7 @@ it('GPUSpatialRegressionDiagnostics reports weak evidence for independent errors
 
 it('GPUSpatialRegressionDiagnostics reports an exactly zero residual vector as status 4 with NaN', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(6, 3, 0.3, true);
   const result = await runDiagnostics(device, scene, undefined, new Float32Array(36));
   expect(result.status).toBe(4);
@@ -339,9 +334,7 @@ it('GPUSpatialRegressionDiagnostics reports an exactly zero residual vector as s
 
 it('GPUSpatialRegressionDiagnostics excludes a row with a non-finite residual instead of failing', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(6, 3, 0.3, true);
   const residuals = new Float32Array(36).fill(0.5);
   residuals[4] = NaN;
@@ -354,9 +347,7 @@ it('GPUSpatialRegressionDiagnostics excludes a row with a non-finite residual in
 
 it('GPUSpatialRegressionDiagnostics reports too few fitted rows as status 2 with the excluded count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(6, 3, 0.3, true);
   // Keep 3 rows: n <= predictorCount + 1 + 1.
   const mask = Uint32Array.from({length: 36}, (_, row) => (row < 3 ? 1 : 0));
@@ -391,18 +382,14 @@ function expectMatchesSpreg(
 
 it('GPUSpatialRegressionDiagnostics matches spreg (OLS spat_diag, moran) on the lattice scene', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(8, 11, 0.6, true);
   expectMatchesSpreg(await runDiagnostics(device, scene), SPREG_DIAGNOSTICS_REFERENCE.lattice);
 });
 
 it('GPUSpatialRegressionDiagnostics matches spreg on symmetrized kNN weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createNearestNeighborScene(80, 4, 7, 0.6);
   const actual = await runDiagnostics(device, scene);
   expectMatchesSpreg(actual, SPREG_DIAGNOSTICS_REFERENCE.nearestNeighbor);
@@ -412,9 +399,7 @@ it('GPUSpatialRegressionDiagnostics matches spreg on symmetrized kNN weights', a
 
 it('GPUSpatialRegressionDiagnostics matches the dense oracle on asymmetric kNN weights (k = 3)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [count, seed] of [
     [60, 13],
     [90, 29]
@@ -450,9 +435,7 @@ it('GPUSpatialRegressionDiagnostics matches the dense oracle on asymmetric kNN w
 
 it('GPUSpatialRegressionDiagnostics matches spreg on asymmetric directed kNN weights (k = 3)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [count, seed, reference] of [
     [60, 13, SPREG_ASYMMETRIC_KNN_REFERENCE.scene_60_13.diagnostics],
     [90, 29, SPREG_ASYMMETRIC_KNN_REFERENCE.scene_90_29.diagnostics]
@@ -481,9 +464,7 @@ for (const [label, createScene, mask, reference] of MASKED_CASES) {
   for (const restandardizeRows of [false, true]) {
     it(`GPUSpatialRegressionDiagnostics after a masked OLS fit matches spreg on the subset (${label}, restandardizeRows ${restandardizeRows})`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const scene = createScene();
       const actual = await runDiagnostics(device, scene, undefined, undefined, {
         mask,
@@ -515,9 +496,7 @@ for (const [label, createScene, mask, reference] of MASKED_CASES) {
 
 it('GPUSpatialRegressionDiagnostics treats NaN responses like masked rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createDiagnosticsScene(8, 11, 0.6, true);
   const mask = createDiagnosticsExclusionMask(64, 7, 3);
   const missing = {...scene, response: Float32Array.from(scene.response)};

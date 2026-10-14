@@ -10,6 +10,7 @@ import {
   GPUOffsetExpansion
 } from '../../../src/gpu-spatial-analysis/offset-expansion/index';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Pinned from shapely 2.1.2 / geopandas 1.2.0 (scratchpad build/D/gen_offsets.py) on
 // [Polygon with hole, Polygon(), MultiPolygon(triangle, square with hole), LineString, triangle].
@@ -55,9 +56,11 @@ function createExpansionFixture(
         output: {
           owners: outputs['owners'] as never,
           localIndex: outputs['localIndex'] as never,
-          count: outputs['count'] as never,
-          overflow: outputs['overflow'] as never,
-          requiredCount: outputs['requiredCount'] as never
+          status: {
+            count: outputs['count'] as never,
+            overflow: outputs['overflow'] as never,
+            requiredCount: outputs['requiredCount'] as never
+          }
         }
       })
   });
@@ -65,9 +68,7 @@ function createExpansionFixture(
 
 it('GPUOffsetExpansion matches shapely get_coordinates(return_index=True) with local indices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createExpansionFixture(device, COORD_OFFSETS, 40, true);
   const result = await fixture.run();
   expect(result['count'][0]).toBe(29);
@@ -82,9 +83,7 @@ it('GPUOffsetExpansion matches shapely get_coordinates(return_index=True) with l
 
 it('GPUOffsetExpansion matches shapely get_parts and geopandas explode index maps', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createExpansionFixture(device, PART_OFFSETS, 6, true);
   const result = await fixture.run();
   expect(result['count'][0]).toBe(6);
@@ -95,9 +94,7 @@ it('GPUOffsetExpansion matches shapely get_parts and geopandas explode index map
 
 it('GPUOffsetExpansion skips empty owners and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Empty owners at the start, middle and end; rows 0..4 belong to owners 1, 1, 3, 3, 3.
   const fixture = createExpansionFixture(device, [0, 0, 2, 2, 5, 5, 5], 3, false);
   const result = await fixture.run();
@@ -110,9 +107,7 @@ it('GPUOffsetExpansion skips empty owners and reports overflow', async () => {
 
 it('GPUOffsetExpansion chains vertex, ring, polygon and feature levels with ownerMap', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const outputs = {
     polygonOwners: {format: 'uint32' as const, length: 4},
     ringOwners: {format: 'uint32' as const, length: 6},
@@ -140,8 +135,10 @@ it('GPUOffsetExpansion chains vertex, ring, polygon and feature levels with owne
           ownerMap: inputs['featureIds'] as never,
           output: {
             owners: views['polygonOwners'] as never,
-            count: views['aCount'] as never,
-            overflow: views['aOverflow'] as never
+            status: {
+              count: views['aCount'] as never,
+              overflow: views['aOverflow'] as never
+            }
           }
         }),
         new GPUOffsetExpansion({
@@ -150,8 +147,10 @@ it('GPUOffsetExpansion chains vertex, ring, polygon and feature levels with owne
           ownerMap: views['polygonOwners'] as never,
           output: {
             owners: views['ringOwners'] as never,
-            count: views['bCount'] as never,
-            overflow: views['bOverflow'] as never
+            status: {
+              count: views['bCount'] as never,
+              overflow: views['bOverflow'] as never
+            }
           }
         }),
         new GPUOffsetExpansion({
@@ -160,8 +159,10 @@ it('GPUOffsetExpansion chains vertex, ring, polygon and feature levels with owne
           ownerMap: views['ringOwners'] as never,
           output: {
             owners: views['vertexOwners'] as never,
-            count: views['cCount'] as never,
-            overflow: views['cOverflow'] as never
+            status: {
+              count: views['cCount'] as never,
+              overflow: views['cOverflow'] as never
+            }
           }
         })
       ];

@@ -5,18 +5,22 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  generateStreamlinesOnCPU,
+  GPU_STREAMLINES_OVERFLOW_UNCONVERGED,
   getGPUStreamlinesParameterValues,
-  getGPUStreamlinesWordParameterValues,
+  getGPUStreamlinesUint32ParameterValues,
   GPUStreamlines,
-  type GPUStreamlinesProps,
-  type StreamlinesCPUConfig
+  type GPUStreamlinesProps
 } from '../../../src/gpu-raster/flow-texture';
+import {
+  generateStreamlinesOnCPU,
+  type StreamlinesCPUConfig
+} from '../../../src/gpu-raster/flow-texture/streamlines-cpu';
 import {
   getStreamlineGridCell,
   getStreamlineKey
 } from '../../../src/gpu-raster/flow-texture/streamlines-cpu';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {getRasterPipelines} from '../raster-pipeline-count';
 import {createUniformField, createVortexField} from './flow-texture-scenes';
 
 let serial = 0;
@@ -38,19 +42,18 @@ function createProps(
     seedColumns: 3,
     seedRows: 2,
     stepsPerDirection: 5,
-    roundCount: 4,
+    maximumIterations: 4,
     parameters: view('float32', 12),
-    wordParameters: view('uint32', 4),
+    uint32Parameters: view('uint32', 4),
     output: {
       lines: {
         ids: view('uint32', 6),
-        count: view('uint32', 1),
-        overflow: view('uint32', 1)
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
       },
-      pathOffsets: view('uint32', 7),
-      points: view('float32x2', 66),
-      pointCount: view('uint32', 1),
-      unconverged: view('uint32', 1)
+      lineOffsets: view('uint32', 7),
+      positions: view('float32x2', 66),
+      positionCount: view('uint32', 1),
+      status: {iterationLimitReached: view('uint32', 1)}
     },
     ...overrides
   };
@@ -80,10 +83,10 @@ it('GPUStreamlines validates props and builds deterministic nodes', () => {
         ...props,
         output: {
           ...props.output,
-          pathOffsets: createTransientView(graph, 'offsets', 'uint32', 6)
+          lineOffsets: createTransientView(graph, 'offsets', 'uint32', 6)
         }
       })
-  ).toThrow(/pathOffsets/);
+  ).toThrow(/lineOffsets/);
   expect(
     () =>
       new GPUStreamlines({
@@ -91,7 +94,7 @@ it('GPUStreamlines validates props and builds deterministic nodes', () => {
         output: {
           ...props.output,
           candidates: {
-            points: createTransientView(graph, 'candidates', 'float32x2', 10),
+            positions: createTransientView(graph, 'candidates', 'float32x2', 10),
             spans: createTransientView(graph, 'spans', 'uint32', 24)
           }
         }
@@ -110,7 +113,7 @@ it('streamline parameter helpers pack the documented layout', () => {
       })
     )
   ).toEqual([1, 2, 3, 4, 5, 6, 0.5, 0.25, 2, 4, Math.fround(0.1), Math.fround(0.2)]);
-  expect(Array.from(getGPUStreamlinesWordParameterValues({seed: 3}))).toEqual([3, 2, 0, 0]);
+  expect(Array.from(getGPUStreamlinesUint32ParameterValues({seed: 3}))).toEqual([3, 2, 0, 0]);
   expect(() =>
     getGPUStreamlinesParameterValues({
       fieldExtent: [0, 0, 1, 1],
@@ -138,7 +141,7 @@ it('generateStreamlinesOnCPU spaces lines by the grid and orders priorities uniq
     minimumPoints: 3
   };
   const parameters = getGPUStreamlinesParameterValues(settings);
-  const words = getGPUStreamlinesWordParameterValues(settings);
+  const words = getGPUStreamlinesUint32ParameterValues(settings);
   for (const field of [createUniformField(12, 12, 0.6, 0.8), createVortexField(12, 0.2)]) {
     const result = generateStreamlinesOnCPU(field, config, parameters, words);
     expect(result.ids.length).toBeGreaterThan(5);
@@ -165,4 +168,18 @@ it('generateStreamlinesOnCPU spaces lines by the grid and orders priorities uniq
   // Keys break ties toward the lower seed index.
   expect(getStreamlineKey(0, 1) & 0xffff).toBe(0xffff);
   expect(getStreamlineKey(5, 1) & 0xffff).toBe(0xffff - 5);
+});
+
+it('review C-09 and rule 12: undecided lines set the unconverged overflow bit; one gate source', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'streamline-sentinels'});
+  const nodes = new GPUStreamlines(createProps(graph, {id: 'flags'})).getCommandNodes(graph);
+  const pipelines = getRasterPipelines(nodes);
+  expect(
+    pipelines.some(pipeline => pipeline.source.includes(`${GPU_STREAMLINES_OVERFLOW_UNCONVERGED}u`))
+  ).toBe(true);
+  const gates = pipelines.filter(pipeline => /-round-gate-\d+$/.test(pipeline.id));
+  expect(gates).toHaveLength(4);
+  expect(new Set(gates.map(pipeline => pipeline.key)).size).toBe(1);
+  const decides = pipelines.filter(pipeline => /-round-\d+-decide$/.test(pipeline.id));
+  expect(new Set(decides.map(pipeline => pipeline.key)).size).toBe(1);
 });

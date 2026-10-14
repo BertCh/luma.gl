@@ -13,7 +13,10 @@ import {
   getGPUGeographicallyWeightedRegressionParameterValues,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS
 } from '../../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeGeographicallyWeightedRegressionOnCPU,
   getGeographicallyWeightedRegressionWeight
@@ -159,6 +162,7 @@ it('GPUGeographicallyWeightedRegression emits deterministic node IDs within the 
   const minimalIds = minimal.getCommandNodes(graph).map(node => node.id);
   expect(minimalIds).toEqual([
     'min-validate',
+    'min-ladder-init',
     'min-candidates',
     'min-tile-candidates',
     'min-select',
@@ -172,6 +176,7 @@ it('GPUGeographicallyWeightedRegression emits deterministic node IDs within the 
   expect(refined.refinementPassCount).toBe(2);
   expect(refined.getCommandNodes(graph).map(node => node.id)).toEqual([
     'ref-validate',
+    'ref-ladder-init',
     'ref-candidates',
     'ref-tile-candidates',
     'ref-select',
@@ -264,4 +269,26 @@ it('computeGeographicallyWeightedRegressionOnCPU recovers an exact plane and fla
   expect(getGeographicallyWeightedRegressionWeight('gaussian', 0, 2)).toBe(1);
   expect(getGeographicallyWeightedRegressionWeight('bisquare', 2, 2)).toBe(0);
   expect(getGeographicallyWeightedRegressionWeight('bisquare', 1, 2)).toBeCloseTo(0.5625, 12);
+});
+
+it('GPUGeographicallyWeightedRegression refinement passes share pipelines (rule 12)', () => {
+  // The pass index lives in the GPU cursor word of the ladder buffer, never in WGSL text, so a
+  // graph with N + 1 passes compiles exactly as many distinct pipelines as one with N passes.
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const getKeys = (refinement: number, idPattern?: RegExp) =>
+    getGPUCommandNodePipelineKeys(
+      new GPUGeographicallyWeightedRegression(
+        createProps(graph, {id: `rule-12-${refinement}-${serial++}`, refinement})
+      ).getCommandNodes(graph),
+      {idPattern}
+    );
+  const counts = [1, 2, 3, 4].map(refinement => getKeys(refinement).size);
+  expect(new Set(counts).size).toBe(1);
+  for (const refinement of [2, 4]) {
+    expect(getKeys(refinement, /(?<!tile)-candidates$/).size).toBe(1);
+    expect(getKeys(refinement, /-select$/).size).toBe(1);
+    expect(getKeys(refinement, /-ladder$/).size).toBe(1);
+  }
+  device.destroy();
 });

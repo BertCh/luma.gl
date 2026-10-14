@@ -5,13 +5,14 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  convolveLineIntegralOnCPU,
   getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionWordParameterValues,
+  getGPULineIntegralConvolutionUint32ParameterValues,
   GPULineIntegralConvolution,
   type GPULineIntegralConvolutionProps
 } from '../../../src/gpu-raster/flow-texture';
+import {convolveLineIntegralOnCPU} from '../../../src/gpu-raster/flow-texture/line-integral-convolution-cpu';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/index';
 import {createUniformField} from './flow-texture-scenes';
 
 let serial = 0;
@@ -28,11 +29,10 @@ function createProps(
     velocities: view('float32x2', 16),
     fieldWidth: 4,
     fieldHeight: 4,
-    width: 8,
-    height: 6,
+    grid: makeGPURasterMetadata({width: 8, height: 6}),
     stepCount: 5,
     parameters: view('float32', 12),
-    wordParameters: view('uint32', 4),
+    uint32Parameters: view('uint32', 4),
     output: {values: view('float32', 48), speeds: view('float32', 48)},
     ...overrides
   };
@@ -50,9 +50,12 @@ it('GPULineIntegralConvolution validates props and builds deterministic nodes', 
   expect(() => new GPULineIntegralConvolution(createProps(graph, {stepCount: 300}))).toThrow(
     /stepCount/
   );
-  expect(() => new GPULineIntegralConvolution(createProps(graph, {width: 7}))).toThrow(
-    /output.values/
-  );
+  expect(
+    () =>
+      new GPULineIntegralConvolution(
+        createProps(graph, {grid: makeGPURasterMetadata({width: 7, height: 6})})
+      )
+  ).toThrow(/output.values/);
   expect(() => new GPULineIntegralConvolution(createProps(graph, {fieldWidth: 3}))).toThrow(
     /velocities/
   );
@@ -78,10 +81,10 @@ it('LIC parameter helpers pack the documented layout', () => {
       })
     )
   ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 0.25, 0, 0.5, 8]);
-  expect(Array.from(getGPULineIntegralConvolutionWordParameterValues({seed: 9}))).toEqual([
+  expect(Array.from(getGPULineIntegralConvolutionUint32ParameterValues({seed: 9}))).toEqual([
     9, 0, 0, 0
   ]);
-  expect(() => getGPULineIntegralConvolutionWordParameterValues({seed: -2})).toThrow(/seed/);
+  expect(() => getGPULineIntegralConvolutionUint32ParameterValues({seed: -2})).toThrow(/seed/);
 });
 
 it('convolveLineIntegralOnCPU smooths along the flow and not across it', () => {

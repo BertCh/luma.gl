@@ -174,7 +174,7 @@ describe('GPURasterGlobalStatisticsMerge and GPURasterGlobalHistogramMerge tile 
       expect(() => new Contributor({width, height, input, accumulator})).toThrow(/dimensions/);
     }
     expect(() => new Contributor({width: 65536, height: 65536, input, accumulator})).toThrow(
-      /fit in uint32/
+      /tile pixel count must fit in uint32/
     );
   });
 

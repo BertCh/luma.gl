@@ -18,6 +18,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom, orientExact} from '../segment-intersection/segment-intersection-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -76,7 +77,7 @@ function makeRows(seed: number, offset: number, scale: number, count: number) {
 
 async function runProbe(offset: number, scale: number, seed: number) {
   const device = await getWebGPUTestDevice();
-  if (!device) return null;
+  requireTestDevice(device);
   const rows = makeRows(seed, offset, scale, 6000);
   const positions = rows.flatMap(row => row.ring.flat());
   const graph = new GPUCommandGraph(device, {id: 'pip-exact-probe'});
@@ -91,14 +92,16 @@ async function runProbe(offset: number, scale: number, seed: number) {
     createInputBuffer(device, ringOffsets),
     createOutputBuffer(device, count)
   ];
-  new GPUPairwisePointInPolygon({
-    points: importGraphBuffer(graph, 'points', buffers[0], 'float32x2', count),
-    polygonPositions: importGraphBuffer(graph, 'pos', buffers[1], 'float32x2', count * 3),
-    geometryOffsets: importGraphBuffer(graph, 'go', buffers[2], 'uint32', count + 1),
-    polygonOffsets: importGraphBuffer(graph, 'po', buffers[3], 'uint32', count + 1),
-    ringOffsets: importGraphBuffer(graph, 'ro', buffers[4], 'uint32', count + 1),
-    output: importGraphBuffer(graph, 'out', buffers[5], 'uint32', count)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointInPolygon({
+      queryPositions: importGraphBuffer(graph, 'points', buffers[0], 'float32x2', count),
+      positions: importGraphBuffer(graph, 'pos', buffers[1], 'float32x2', count * 3),
+      featureOffsets: importGraphBuffer(graph, 'go', buffers[2], 'uint32', count + 1),
+      polygonOffsets: importGraphBuffer(graph, 'po', buffers[3], 'uint32', count + 1),
+      ringOffsets: importGraphBuffer(graph, 'ro', buffers[4], 'uint32', count + 1),
+      output: importGraphBuffer(graph, 'out', buffers[5], 'uint32', count)
+    })
+  );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = await readUint32(buffers[5], count);
@@ -138,7 +141,7 @@ for (const [label, offset, scale] of [
 
 it('GPUPointInPolygonJoin resolves near-degenerate points exactly with no uncertainty', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const totals = {points: 0, inside: 0, mismatches: 0, uncertain: 0};
   for (const [offset, scale, seed] of [
     [0, 100, 3],
@@ -178,17 +181,33 @@ it('GPUPointInPolygonJoin resolves near-degenerate points exactly with no uncert
       };
       graph.add(
         new GPUPointInPolygonJoin({
-          points: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', count),
-          polygonPositions: importGraphBuffer(graph, 'pos', buffers.positions, 'float32x2', 3),
-          featureOffsets: importGraphBuffer(graph, 'fo', buffers.featureOffsets, 'uint32', 2),
-          polygonOffsets: importGraphBuffer(graph, 'po', buffers.polygonOffsets, 'uint32', 2),
-          ringOffsets: importGraphBuffer(graph, 'ro', buffers.ringOffsets, 'uint32', 2),
+          points: {
+            kind: 'points',
+            positions: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', count)
+          },
+          polygons: {
+            kind: 'polygons',
+            positions: importGraphBuffer(graph, 'pos', buffers.positions, 'float32x2', 3),
+            featureOffsets: importGraphBuffer(graph, 'fo', buffers.featureOffsets, 'uint32', 2),
+            polygonOffsets: importGraphBuffer(graph, 'po', buffers.polygonOffsets, 'uint32', 2),
+            ringOffsets: importGraphBuffer(graph, 'ro', buffers.ringOffsets, 'uint32', 2)
+          },
           candidateCapacity: count,
-          pointFeatureIds: importGraphBuffer(graph, 'pf', buffers.pointFeatureIds, 'uint32', count),
-          featureCounts: importGraphBuffer(graph, 'fc', buffers.featureCounts, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'of', buffers.overflow, 'uint32', 1),
-          uncertainCount: importGraphBuffer(graph, 'uc', buffers.uncertainCount, 'uint32', 1),
-          includeBoundary: true
+          boundaryRule: 'closed',
+          output: {
+            pointFeatureIds: importGraphBuffer(
+              graph,
+              'pf',
+              buffers.pointFeatureIds,
+              'uint32',
+              count
+            ),
+            featureCounts: importGraphBuffer(graph, 'fc', buffers.featureCounts, 'uint32', 1),
+            status: {
+              overflow: importGraphBuffer(graph, 'of', buffers.overflow, 'uint32', 1),
+              uncertainCount: importGraphBuffer(graph, 'uc', buffers.uncertainCount, 'uint32', 1)
+            }
+          }
         })
       );
       const compiled = graph.compile();

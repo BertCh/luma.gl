@@ -18,6 +18,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from './spatial-join-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 type Segment = [Point, Point];
@@ -150,9 +151,7 @@ function getIds(selected: boolean[], offset: number = 0): number[] {
 
 it('GPUBufferSelection selects points near polylines and follows a per-frame distance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const radii = [3, 8, 0, 25];
   const {points, segments} = createRandomScene(11, 5000, radii);
   const fixture = createFixture(device, 3);
@@ -167,31 +166,38 @@ it('GPUBufferSelection selects points near polylines and follows a per-frame dis
   const joinOverflow = fixture.importOutput('join-overflow', 1);
   fixture.graph.add(
     new GPUBufferSelection({
-      points: fixture.importInput(
-        'points',
-        Float32Array.from(points.flat()),
-        'float32x2',
-        pointCount
-      ),
-      sourceIds: fixture.importInput(
-        'source-ids',
-        Uint32Array.from(points.map((_, index) => 1000 + index)),
-        'uint32',
-        pointCount
-      ),
+      points: {
+        kind: 'points',
+        positions: fixture.importInput(
+          'points',
+          Float32Array.from(points.flat()),
+          'float32x2',
+          pointCount
+        ),
+        sourceIds: fixture.importInput(
+          'source-ids',
+          Uint32Array.from(points.map((_, index) => 1000 + index)),
+          'uint32',
+          pointCount
+        )
+      },
       features: getSegmentFeatures(fixture, segments),
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 200000,
-      outputMask: outputMask.view,
       output: {
-        ids: outputIds.view,
-        count: outputCount.view,
-        overflow: outputOverflow.view,
-        requiredCount: outputTotal.view
-      },
-      distances: distances.view,
-      nearestFeatureIds: nearest.view,
-      overflow: joinOverflow.view
+        outputMask: outputMask.view,
+        matches: {
+          ids: outputIds.view,
+          status: {
+            count: outputCount.view,
+            overflow: outputOverflow.view,
+            requiredCount: outputTotal.view
+          }
+        },
+        distances: distances.view,
+        nearestFeatureIds: nearest.view,
+        status: {overflow: joinOverflow.view}
+      }
     })
   );
   const compiled = fixture.graph.compile();
@@ -240,9 +246,7 @@ it('GPUBufferSelection selects points near polylines and follows a per-frame dis
 
 it('GPUBufferSelection selects points near point features without source IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points, segments} = createRandomScene(23, 3000, [4]);
   const featurePositions: Point[] = segments.map(([start]) => start);
   const pointSegments: Segment[] = featurePositions.map(position => [position, position]);
@@ -253,12 +257,15 @@ it('GPUBufferSelection selects points near point features without source IDs', a
   const outputOverflow = fixture.importOutput('overflow', 1);
   fixture.graph.add(
     new GPUBufferSelection({
-      points: fixture.importInput(
-        'points',
-        Float32Array.from(points.flat()),
-        'float32x2',
-        pointCount
-      ),
+      points: {
+        kind: 'points',
+        positions: fixture.importInput(
+          'points',
+          Float32Array.from(points.flat()),
+          'float32x2',
+          pointCount
+        )
+      },
       features: {
         kind: 'points',
         positions: fixture.importInput(
@@ -270,7 +277,12 @@ it('GPUBufferSelection selects points near point features without source IDs', a
       },
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
-      output: {ids: outputIds.view, count: outputCount.view, overflow: outputOverflow.view}
+      output: {
+        matches: {
+          ids: outputIds.view,
+          status: {count: outputCount.view, overflow: outputOverflow.view}
+        }
+      }
     })
   );
   const compiled = fixture.graph.compile();
@@ -286,9 +298,7 @@ it('GPUBufferSelection selects points near point features without source IDs', a
 
 it('GPUBufferSelection treats distance <= radius as inclusive on exact boundaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const segments: Segment[] = [
     [
       [0, 0],
@@ -308,16 +318,19 @@ it('GPUBufferSelection treats distance <= radius as inclusive on exact boundarie
   const outputMask = fixture.importOutput('mask', points.length);
   fixture.graph.add(
     new GPUBufferSelection({
-      points: fixture.importInput(
-        'points',
-        Float32Array.from(points.flat()),
-        'float32x2',
-        points.length
-      ),
+      points: {
+        kind: 'points',
+        positions: fixture.importInput(
+          'points',
+          Float32Array.from(points.flat()),
+          'float32x2',
+          points.length
+        )
+      },
       features: getSegmentFeatures(fixture, segments),
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 64,
-      outputMask: outputMask.view
+      output: {outputMask: outputMask.view}
     })
   );
   const compiled = fixture.graph.compile();
@@ -329,9 +342,7 @@ it('GPUBufferSelection treats distance <= radius as inclusive on exact boundarie
 
 it('GPUBufferSelection preserves chunked points for the mask and source IDs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points, segments} = createRandomScene(37, 3000, [6]);
   const fixture = createFixture(device, 6);
   const chunkLengths = [1200, 0, 1800];
@@ -361,21 +372,29 @@ it('GPUBufferSelection preserves chunked points for the mask and source IDs', as
   const outputOverflow = fixture.importOutput('overflow', 1);
   fixture.graph.add(
     new GPUBufferSelection({
-      points: importChunks('points', 'float32x2', (start, length) =>
-        Float32Array.from(points.slice(start, start + length).flat())
-      ),
-      sourceIds: importChunks('source-ids', 'uint32', (start, length) =>
-        Uint32Array.from({length}, (_, index) => 7000 + start + index)
-      ),
+      points: {
+        kind: 'points',
+        positions: importChunks('points', 'float32x2', (start, length) =>
+          Float32Array.from(points.slice(start, start + length).flat())
+        ),
+        sourceIds: importChunks('source-ids', 'uint32', (start, length) =>
+          Uint32Array.from({length}, (_, index) => 7000 + start + index)
+        )
+      },
       features: getSegmentFeatures(fixture, segments),
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
-      outputMask: createVectorView(
-        'mask',
-        'uint32',
-        maskChunks.map(chunk => chunk.view)
-      ),
-      output: {ids: outputIds.view, count: outputCount.view, overflow: outputOverflow.view}
+      output: {
+        outputMask: createVectorView(
+          'mask',
+          'uint32',
+          maskChunks.map(chunk => chunk.view)
+        ),
+        matches: {
+          ids: outputIds.view,
+          status: {count: outputCount.view, overflow: outputOverflow.view}
+        }
+      }
     })
   );
   const compiled = fixture.graph.compile();
@@ -394,9 +413,7 @@ it('GPUBufferSelection preserves chunked points for the mask and source IDs', as
 
 it('GPUBufferSelection clamps output and reports overflow when capacity is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points, segments} = createRandomScene(41, 2000, [10]);
   const fixture = createFixture(device, 10);
   const capacity = 5;
@@ -407,21 +424,28 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
   const drawInstanceCount = fixture.importOutput('draw-instance-count', 1);
   fixture.graph.add(
     new GPUBufferSelection({
-      points: fixture.importInput(
-        'points',
-        Float32Array.from(points.flat()),
-        'float32x2',
-        points.length
-      ),
+      points: {
+        kind: 'points',
+        positions: fixture.importInput(
+          'points',
+          Float32Array.from(points.flat()),
+          'float32x2',
+          points.length
+        )
+      },
       features: getSegmentFeatures(fixture, segments),
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
-      drawInstanceCount: drawInstanceCount.view,
       output: {
-        ids: outputIds.view,
-        count: outputCount.view,
-        overflow: outputOverflow.view,
-        requiredCount: outputTotal.view
+        drawInstanceCount: drawInstanceCount.view,
+        matches: {
+          ids: outputIds.view,
+          status: {
+            count: outputCount.view,
+            overflow: outputOverflow.view,
+            requiredCount: outputTotal.view
+          }
+        }
       }
     })
   );
@@ -441,21 +465,22 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
 
 it('GPUBufferSelection drawInstanceCount follows the per-frame distance and needs output', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points, segments} = createRandomScene(43, 800, [4, 12]);
   const fixture = createFixture(device, 4);
   const outputIds = fixture.importOutput('ids', points.length);
   const outputCount = fixture.importOutput('count', 1);
   const outputOverflow = fixture.importOutput('overflow', 1);
   const drawInstanceCount = fixture.importOutput('draw-instance-count', 1);
-  const pointsView = fixture.importInput(
-    'points',
-    Float32Array.from(points.flat()),
-    'float32x2',
-    points.length
-  );
+  const pointsView = {
+    kind: 'points' as const,
+    positions: fixture.importInput(
+      'points',
+      Float32Array.from(points.flat()),
+      'float32x2',
+      points.length
+    )
+  };
   const features = getSegmentFeatures(fixture, segments);
   const distance = fixture.distance.importToGraph(fixture.graph);
   expect(
@@ -465,18 +490,25 @@ it('GPUBufferSelection drawInstanceCount follows the per-frame distance and need
         features,
         distance,
         candidateCapacity: 100000,
-        outputMask: fixture.importOutput('mask', points.length).view,
-        drawInstanceCount: drawInstanceCount.view
+        output: {
+          outputMask: fixture.importOutput('mask', points.length).view,
+          drawInstanceCount: drawInstanceCount.view
+        }
       })
-  ).toThrow(/requires output/);
+  ).toThrow(/drawInstanceCount needs matches/);
   fixture.graph.add(
     new GPUBufferSelection({
       points: pointsView,
       features,
       distance,
       candidateCapacity: 100000,
-      drawInstanceCount: drawInstanceCount.view,
-      output: {ids: outputIds.view, count: outputCount.view, overflow: outputOverflow.view}
+      output: {
+        drawInstanceCount: drawInstanceCount.view,
+        matches: {
+          ids: outputIds.view,
+          status: {count: outputCount.view, overflow: outputOverflow.view}
+        }
+      }
     })
   );
   const compiled = fixture.graph.compile();
@@ -495,9 +527,7 @@ it('GPUBufferSelection drawInstanceCount follows the per-frame distance and need
 
 it('GPUBufferSelection reports join overflow when candidateCapacity is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points, segments} = createRandomScene(53, 2000, [10]);
   const fixture = createFixture(device, 10);
   const outputIds = fixture.importOutput('ids', points.length);
@@ -506,17 +536,25 @@ it('GPUBufferSelection reports join overflow when candidateCapacity is too small
   const joinOverflow = fixture.importOutput('join-overflow', 1);
   fixture.graph.add(
     new GPUBufferSelection({
-      points: fixture.importInput(
-        'points',
-        Float32Array.from(points.flat()),
-        'float32x2',
-        points.length
-      ),
+      points: {
+        kind: 'points',
+        positions: fixture.importInput(
+          'points',
+          Float32Array.from(points.flat()),
+          'float32x2',
+          points.length
+        )
+      },
       features: getSegmentFeatures(fixture, segments),
       distance: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 2,
-      output: {ids: outputIds.view, count: outputCount.view, overflow: outputOverflow.view},
-      overflow: joinOverflow.view
+      output: {
+        matches: {
+          ids: outputIds.view,
+          status: {count: outputCount.view, overflow: outputOverflow.view}
+        },
+        status: {overflow: joinOverflow.view}
+      }
     })
   );
   const compiled = fixture.graph.compile();

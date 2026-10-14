@@ -27,6 +27,7 @@ import {
   SCREEN_TRANSFORM,
   selectRows
 } from './region-statistics-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const ROW_COUNT = POSITIONS.length / 2;
 
@@ -36,9 +37,7 @@ function toMask(rows: number[]): number[] {
 
 it('GPURegionMask selects a world lasso with a per-frame vertex count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positionsBuffer = createInputBuffer(device, POSITIONS);
   const maskBuffer = createOutputBuffer(device, ROW_COUNT);
   const overflowBuffer = createOutputBuffer(device, 1);
@@ -63,8 +62,10 @@ it('GPURegionMask selects a world lasso with a per-frame vertex count', async ()
         vertices: importGraphBuffer(graph, 'lasso', vertices.buffer, 'float32x2', 5),
         vertexCount: vertexCount.importToGraph(graph)
       },
-      outputMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', ROW_COUNT),
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+      output: {
+        mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', ROW_COUNT),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -123,14 +124,12 @@ it('GPURegionMask matches world results in screen space and rejects points behin
         bounds: importGraphBuffer(graph, 'bounds', bounds, 'float32', 4),
         screenTransform
       },
-      outputMask: importGraphBuffer(
-        graph,
-        'rectangle-mask',
-        rectangleMaskBuffer,
-        'uint32',
-        ROW_COUNT
-      ),
-      overflow: importGraphBuffer(graph, 'rectangle-overflow', overflowBuffers[0], 'uint32', 1)
+      output: {
+        mask: importGraphBuffer(graph, 'rectangle-mask', rectangleMaskBuffer, 'uint32', ROW_COUNT),
+        status: {
+          overflow: importGraphBuffer(graph, 'rectangle-overflow', overflowBuffers[0], 'uint32', 1)
+        }
+      }
     })
   );
   graph.add(
@@ -143,8 +142,12 @@ it('GPURegionMask matches world results in screen space and rejects points behin
         vertexCount: importGraphBuffer(graph, 'lasso-count', lassoCount, 'uint32', 1),
         screenTransform
       },
-      outputMask: importGraphBuffer(graph, 'polygon-mask', polygonMaskBuffer, 'uint32', ROW_COUNT),
-      overflow: importGraphBuffer(graph, 'polygon-overflow', overflowBuffers[1], 'uint32', 1)
+      output: {
+        mask: importGraphBuffer(graph, 'polygon-mask', polygonMaskBuffer, 'uint32', ROW_COUNT),
+        status: {
+          overflow: importGraphBuffer(graph, 'polygon-overflow', overflowBuffers[1], 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -179,9 +182,7 @@ it('GPURegionMask matches world results in screen space and rejects points behin
 
 it('GPURegionMask preserves vector position chunks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const firstBuffer = createInputBuffer(device, POSITIONS.slice(0, 10));
   const secondBuffer = createInputBuffer(device, POSITIONS.slice(10));
   const bounds = createInputBuffer(device, RECTANGLE);
@@ -195,8 +196,10 @@ it('GPURegionMask preserves vector position chunks', async () => {
         importGraphBuffer(graph, 'p1', secondBuffer, 'float32x2', 7)
       ]),
       region: {kind: 'rectangle', bounds: importGraphBuffer(graph, 'bounds', bounds, 'float32', 4)},
-      outputMask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', ROW_COUNT),
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+      output: {
+        mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', ROW_COUNT),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -212,9 +215,7 @@ it('GPURegionMask preserves vector position chunks', async () => {
 
 it('GPUPickRegionMask deduplicates picked rows, filters batches, and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const resultBuffer = createInputBuffer(
     device,
     Uint32Array.from([5, 0, 0, 0, 2, 0, 2, 0, 7, 1, 99, 0])
@@ -227,18 +228,26 @@ it('GPUPickRegionMask deduplicates picked rows, filters batches, and reports ove
   graph.add(
     new GPUPickRegionMask({
       id: 'batch-zero',
-      result,
+      picks: result,
       batchIndex: 0,
-      outputMask: importGraphBuffer(graph, 'batch-mask', batchMaskBuffer, 'uint32', ROW_COUNT),
-      overflow: importGraphBuffer(graph, 'batch-overflow', overflowBuffers[0], 'uint32', 1)
+      output: {
+        mask: importGraphBuffer(graph, 'batch-mask', batchMaskBuffer, 'uint32', ROW_COUNT),
+        status: {
+          overflow: importGraphBuffer(graph, 'batch-overflow', overflowBuffers[0], 'uint32', 1)
+        }
+      }
     })
   );
   graph.add(
     new GPUPickRegionMask({
       id: 'all-batches',
-      result,
-      outputMask: importGraphBuffer(graph, 'all-mask', allMaskBuffer, 'uint32', ROW_COUNT),
-      overflow: importGraphBuffer(graph, 'all-overflow', overflowBuffers[1], 'uint32', 1)
+      picks: result,
+      output: {
+        mask: importGraphBuffer(graph, 'all-mask', allMaskBuffer, 'uint32', ROW_COUNT),
+        status: {
+          overflow: importGraphBuffer(graph, 'all-overflow', overflowBuffers[1], 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();

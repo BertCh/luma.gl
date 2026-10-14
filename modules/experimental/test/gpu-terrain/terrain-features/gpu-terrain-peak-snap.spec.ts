@@ -24,7 +24,18 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainPeakSnap} from './terrain-summits-oracle';
+import {makeGPURasterMetadata, type GPURasterMetadata} from '../../../src/gpu-raster';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
+
+/** Packs peak snap settings for a unit-cell grid; the uniform cell size mode ignores its row edges. */
+function packPeakSnap(settings: GPUTerrainPeakSnapSettings) {
+  return getGPUTerrainPeakSnapParameterValues(
+    settings,
+    makeGPURasterMetadata({width: 1, height: 1})
+  );
+}
 import {createHills, createNoise} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type FixtureOptions = {
   values: Float32Array;
@@ -34,6 +45,7 @@ type FixtureOptions = {
   candidates: number[];
   candidateHeights?: number[];
   candidateRadii?: number[];
+  grid?: GPURasterMetadata;
   settings: GPUTerrainPeakSnapSettings;
   overflow?: boolean;
   contributor?: Partial<GPUTerrainPeakSnapProps>;
@@ -41,6 +53,7 @@ type FixtureOptions = {
 
 function createPeakSnapFixture(device: Device, options: FixtureOptions) {
   const {width, height} = options;
+  const grid = options.grid ?? makeGPURasterMetadata({width, height});
   const pixelCount = width * height;
   const candidateCount = options.candidates.length / 2;
   const buffers: Buffer[] = [];
@@ -68,13 +81,12 @@ function createPeakSnapFixture(device: Device, options: FixtureOptions) {
     id: 'snap-settings',
     format: 'float32',
     length: GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH,
-    values: getGPUTerrainPeakSnapParameterValues(options.settings)
+    values: getGPUTerrainPeakSnapParameterValues(options.settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-peak-snap-test'});
   graph.add(
     new GPUTerrainPeakSnap({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -86,7 +98,7 @@ function createPeakSnapFixture(device: Device, options: FixtureOptions) {
           ? importGraphBuffer(graph, 'validity', validity, 'uint32', pixelCount)
           : undefined
       },
-      settings: settingsBuffer.importToGraph(graph),
+      parameters: settingsBuffer.importToGraph(graph),
       candidates: importGraphBuffer(graph, 'candidates', candidates, 'float32x2', candidateCount),
       candidateHeights: candidateHeights
         ? importGraphBuffer(graph, 'candidate-heights', candidateHeights, 'float32', candidateCount)
@@ -94,20 +106,22 @@ function createPeakSnapFixture(device: Device, options: FixtureOptions) {
       candidateRadii: candidateRadii
         ? importGraphBuffer(graph, 'candidate-radii', candidateRadii, 'float32', candidateCount)
         : undefined,
-      positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', candidateCount),
-      heights: importGraphBuffer(graph, 'heights', heights, 'float32', candidateCount),
-      status: importGraphBuffer(graph, 'status', status, 'uint32', candidateCount),
-      snapDistance: importGraphBuffer(graph, 'distance', snapDistance, 'float32', candidateCount),
-      overflow: options.overflow
-        ? importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
-        : undefined,
+      output: {
+        positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', candidateCount),
+        heights: importGraphBuffer(graph, 'heights', heights, 'float32', candidateCount),
+        snapStatus: importGraphBuffer(graph, 'status', status, 'uint32', candidateCount),
+        snapDistance: importGraphBuffer(graph, 'distance', snapDistance, 'float32', candidateCount),
+        status: options.overflow
+          ? {radiusClamped: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+          : undefined
+      },
       ...options.contributor
     })
   );
   const compiled = graph.compile();
   return {
     async run(settings: GPUTerrainPeakSnapSettings = options.settings) {
-      settingsBuffer.write(getGPUTerrainPeakSnapParameterValues(settings));
+      settingsBuffer.write(getGPUTerrainPeakSnapParameterValues(settings, grid));
       submitGraph(device, compiled, undefined);
       return {
         positions: await readFloat32(positions, candidateCount * 2),
@@ -155,15 +169,12 @@ const HEIGHT = 24;
 const SETTINGS: GPUTerrainPeakSnapSettings = {
   radius: 4,
   maximumMove: 100,
-  maximumHeightChange: 1000,
-  cellSize: [1, 1]
+  maximumHeightChange: 1000
 };
 
 it('GPUTerrainPeakSnap snaps to hill summits, keeps flanks, and reports status', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createHills(WIDTH, HEIGHT, HILLS);
   const candidates = [
     10.25,
@@ -179,7 +190,7 @@ it('GPUTerrainPeakSnap snaps to hill summits, keeps flanks, and reports status',
     Number.NaN,
     4 // non-finite
   ];
-  const parameters = getGPUTerrainPeakSnapParameterValues(SETTINGS);
+  const parameters = packPeakSnap(SETTINGS);
   const fixture = createPeakSnapFixture(device, {
     values,
     width: WIDTH,
@@ -228,7 +239,7 @@ it('GPUTerrainPeakSnap snaps to hill summits, keeps flanks, and reports status',
       candidates,
       undefined,
       undefined,
-      getGPUTerrainPeakSnapParameterValues(noInterior)
+      packPeakSnap(noInterior)
     )
   );
   fixture.destroy();
@@ -236,9 +247,7 @@ it('GPUTerrainPeakSnap snaps to hill summits, keeps flanks, and reports status',
 
 it('GPUTerrainPeakSnap breaks plateau ties by lowest index', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = new Float32Array(WIDTH * HEIGHT);
   for (let row = 5; row < 12; row++) {
     for (let column = 8; column < 15; column++) {
@@ -265,7 +274,7 @@ it('GPUTerrainPeakSnap breaks plateau ties by lowest index', async () => {
       candidates,
       undefined,
       undefined,
-      getGPUTerrainPeakSnapParameterValues(settings)
+      packPeakSnap(settings)
     )
   );
   // The disc around (11, 8.25) reaches rows 7..10 (row 6 is 2.25 away); the top row's
@@ -280,9 +289,7 @@ it('GPUTerrainPeakSnap breaks plateau ties by lowest index', async () => {
 
 it('GPUTerrainPeakSnap never lets nodata bleed and reports noData', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = Float32Array.from({length: WIDTH * HEIGHT}, (_, index) => {
     const column = index % WIDTH;
     const row = Math.floor(index / WIDTH);
@@ -323,7 +330,7 @@ it('GPUTerrainPeakSnap never lets nodata bleed and reports noData', async () => 
     candidates,
     undefined,
     undefined,
-    getGPUTerrainPeakSnapParameterValues(settings)
+    packPeakSnap(settings)
   );
   expectMatchesOracle(result, expected);
   expect(result.status[2]).toBe(S.noData);
@@ -343,9 +350,7 @@ it('GPUTerrainPeakSnap never lets nodata bleed and reports noData', async () => 
 
 it('GPUTerrainPeakSnap rejects long moves and implausible height changes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = new Float32Array(WIDTH * HEIGHT);
   values[10 * WIDTH + 12] = 100;
   values[9 * WIDTH + 12] = 40;
@@ -380,7 +385,7 @@ it('GPUTerrainPeakSnap rejects long moves and implausible height changes', async
       candidates,
       candidateHeights,
       undefined,
-      getGPUTerrainPeakSnapParameterValues(base)
+      packPeakSnap(base)
     )
   );
   // Candidate 0: DEM at (10, 10) is 0, summit 100 differs by 100 > 20.
@@ -409,7 +414,7 @@ it('GPUTerrainPeakSnap rejects long moves and implausible height changes', async
       candidates,
       candidateHeights,
       undefined,
-      getGPUTerrainPeakSnapParameterValues(tight)
+      packPeakSnap(tight)
     )
   );
   fixture.destroy();
@@ -417,9 +422,7 @@ it('GPUTerrainPeakSnap rejects long moves and implausible height changes', async
 
 it('GPUTerrainPeakSnap matches the oracle on random candidates and per-candidate radii', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createNoise(WIDTH, HEIGHT, 100, 9);
   let state = 12345;
   const random = (count: number) => {
@@ -441,8 +444,7 @@ it('GPUTerrainPeakSnap matches the oracle on random candidates and per-candidate
   const settings = {
     radius: 3,
     maximumMove: 2.5,
-    maximumHeightChange: 40,
-    cellSize: [1, 1]
+    maximumHeightChange: 40
   } as const;
   for (const interior of [true, false]) {
     const fixture = createPeakSnapFixture(device, {
@@ -463,7 +465,7 @@ it('GPUTerrainPeakSnap matches the oracle on random candidates and per-candidate
       candidates,
       candidateHeights,
       candidateRadii,
-      getGPUTerrainPeakSnapParameterValues({...settings, interior})
+      packPeakSnap({...settings, interior})
     );
     expectMatchesOracle(result, expected);
     // Every outcome occurs, so the comparison is not vacuous.
@@ -479,9 +481,7 @@ it('GPUTerrainPeakSnap matches the oracle on random candidates and per-candidate
 
 it('GPUTerrainPeakSnap matches the oracle with discs far wider than one workgroup (radius 40, 300 candidates)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A radius-40 disc holds about 5000 pixels, so each candidate's workgroup strides 20 times and
   // the reduction must reproduce the sequential (height, lowest index) winner, including on a
   // plateau, at grid edges and beside nodata.
@@ -533,7 +533,7 @@ it('GPUTerrainPeakSnap matches the oracle with discs far wider than one workgrou
     candidates,
     undefined,
     undefined,
-    getGPUTerrainPeakSnapParameterValues(settings),
+    packPeakSnap(settings),
     {maximumRadiusPixels: 48}
   );
   expectMatchesOracle(result, expected);
@@ -543,9 +543,7 @@ it('GPUTerrainPeakSnap matches the oracle with discs far wider than one workgrou
 
 it('GPUTerrainPeakSnap clamps the radius to maximumRadiusPixels and raises overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createNoise(WIDTH, HEIGHT, 1000, 4);
   const candidates = [10, 10, 20.5, 12.25];
   const options = {maximumRadiusPixels: 4};
@@ -571,7 +569,7 @@ it('GPUTerrainPeakSnap clamps the radius to maximumRadiusPixels and raises overf
     candidates,
     undefined,
     undefined,
-    getGPUTerrainPeakSnapParameterValues({...settings, radius: 4}),
+    packPeakSnap({...settings, radius: 4}),
     options
   );
   expectMatchesOracle(result, clamped);
@@ -592,30 +590,22 @@ it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic
   const cases = [
     {
       cellSizeMode: 'web-mercator' as const,
-      settings: {
-        radius: 70,
-        maximumMove: 1000,
-        maximumHeightChange: 1e9,
-        cellSize: [20, 20],
-        northEdge: 0.3,
-        southEdge: 0.45,
-        interior: false
-      } as const
+      settings: {radius: 70, maximumMove: 1000, maximumHeightChange: 1e9, interior: false},
+      grid: makeGPURasterMetadata({
+        width: WIDTH,
+        height: HEIGHT,
+        cellSize: 20,
+        origin: [0, getOracleWebMercatorY(0.3)]
+      })
     },
     {
       cellSizeMode: 'geographic' as const,
-      settings: {
-        radius: 90,
-        maximumMove: 1000,
-        maximumHeightChange: 1e9,
-        cellSize: [0.0003, 0.0003],
-        northEdge: 70,
-        southEdge: 50,
-        interior: false
-      } as const
+      settings: {radius: 90, maximumMove: 1000, maximumHeightChange: 1e9, interior: false},
+      grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 0.0003, origin: [0, 70]})
     }
   ];
-  for (const {cellSizeMode, settings} of cases) {
+  // Grids whose rows sit near normalized Web Mercator y 0.3 (54.7 degrees) and latitude 70.
+  for (const {cellSizeMode, settings, grid} of cases) {
     const compute = (radiusScale: number, mode: 'uniform' | typeof cellSizeMode) =>
       computeTerrainPeakSnap(
         values,
@@ -625,7 +615,10 @@ it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic
         candidates,
         undefined,
         undefined,
-        getGPUTerrainPeakSnapParameterValues({...settings, radius: settings.radius * radiusScale}),
+        getGPUTerrainPeakSnapParameterValues(
+          {...settings, radius: settings.radius * radiusScale},
+          grid
+        ),
         {cellSizeMode: mode}
       );
     const expected = compute(1, cellSizeMode);
@@ -638,6 +631,7 @@ it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic
       width: WIDTH,
       height: HEIGHT,
       candidates,
+      grid,
       settings,
       contributor: {cellSizeMode}
     });
@@ -650,29 +644,24 @@ it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic
 });
 
 it('getGPUTerrainPeakSnapParameterValues packs defaults and validates', () => {
-  expect(Array.from(getGPUTerrainPeakSnapParameterValues({cellSize: [2, 3]}))).toEqual([
-    150, 300, 80, 2, 3, 0, 0, 1
+  const grid = makeGPURasterMetadata({width: 2, height: 2, cellSize: [2, 3]});
+  expect(Array.from(getGPUTerrainPeakSnapParameterValues({}, grid))).toEqual([
+    150, 300, 80, 2, 3, 0, -6, 1
   ]);
+  const unit = makeGPURasterMetadata({width: 1, height: 1, origin: [0, 1]});
   expect(
     Array.from(
-      getGPUTerrainPeakSnapParameterValues({
-        radius: 10,
-        maximumMove: 20,
-        maximumHeightChange: 0,
-        cellSize: [1, 1],
-        interior: false,
-        northEdge: 1,
-        southEdge: 2
-      })
+      getGPUTerrainPeakSnapParameterValues(
+        {radius: 10, maximumMove: 20, maximumHeightChange: 0, interior: false},
+        unit
+      )
     )
-  ).toEqual([10, 20, 0, 1, 1, 1, 2, 0]);
-  expect(() => getGPUTerrainPeakSnapParameterValues({radius: 0, cellSize: [1, 1]})).toThrow(
-    /radius/
-  );
-  expect(() => getGPUTerrainPeakSnapParameterValues({maximumMove: -1, cellSize: [1, 1]})).toThrow(
+  ).toEqual([10, 20, 0, 1, 1, 1, 0, 0]);
+  expect(() => getGPUTerrainPeakSnapParameterValues({radius: 0}, unit)).toThrow(/radius/);
+  expect(() => getGPUTerrainPeakSnapParameterValues({maximumMove: -1}, unit)).toThrow(
     /maximumMove/
   );
-  expect(() => getGPUTerrainPeakSnapParameterValues({cellSize: [Number.NaN, 1]})).toThrow(
-    /cell size/
-  );
+  expect(() =>
+    getGPUTerrainPeakSnapParameterValues({}, {...unit, affine: [Number.NaN, 0, 0, 0, -1, 0]})
+  ).toThrow(/cell size/);
 });

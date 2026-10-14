@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts/inference';
-import {GPU_EMERGING_HOT_SPOT_CATEGORIES} from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts/inference';
+import {GPU_EMERGING_HOT_SPOTS_CATEGORIES} from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
 import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing';
 import {getTwoSidedPValue} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 
@@ -340,7 +340,7 @@ export function classifyEmergingHotSpotSeries(
       finalState = 0;
     }
   }
-  const categories = GPU_EMERGING_HOT_SPOT_CATEGORIES;
+  const categories = GPU_EMERGING_HOT_SPOTS_CATEGORIES;
   if (valid === 0) {
     return categories.NO_PATTERN;
   }
@@ -456,7 +456,10 @@ export function computeEmergingHotSpotCells(
     );
     results.hotSliceCount.push(cellStates.filter(state => state === 1).length);
     results.coldSliceCount.push(cellStates.filter(state => state === 2).length);
-    const lastFinite = series.findLastIndex(z => Number.isFinite(z));
+    let lastFinite = series.length - 1;
+    while (lastFinite >= 0 && !Number.isFinite(series[lastFinite])) {
+      lastFinite--;
+    }
     results.lastValidSlice.push(lastFinite < 0 ? 0xffffffff : lastFinite);
   }
   return results;
@@ -489,7 +492,7 @@ export type DesignedSeries = {
  * background cells, reach every one of the 17 categories plus no-pattern cases.
  */
 export function createDesignedSeries(): DesignedSeries[] {
-  const categories = GPU_EMERGING_HOT_SPOT_CATEGORIES;
+  const categories = GPU_EMERGING_HOT_SPOTS_CATEGORIES;
   const length = 20;
   const zeros = (count: number) => new Array<number>(count).fill(0);
   const repeat = (count: number, value: number) => new Array<number>(count).fill(value);
@@ -620,7 +623,7 @@ export function createDesignedCube(): {
       values[cell * shape.sliceCount + slice] =
         series && cell < designed.length ? series.values[slice] : random() * 2 - 1;
     }
-    expectedCategories.push(series?.expected ?? GPU_EMERGING_HOT_SPOT_CATEGORIES.NO_PATTERN);
+    expectedCategories.push(series?.expected ?? GPU_EMERGING_HOT_SPOTS_CATEGORIES.NO_PATTERN);
   }
   // A hot series that the mask removes.
   mask[designed.length] = 0;
@@ -636,128 +639,13 @@ export function createDesignedCube(): {
   return {cube: {...shape, values, mask}, designed, expectedCategories};
 }
 
-// Multiple-testing reference. 100 bins at radius 0 and window 0, so the Gi* z of a bin is its
-// population standard score; bins 92..97 are the strong (92-94) and weak (95-97) outliers.
-// p = 2 * scipy.stats.norm.sf(|z|); adjusted values from statsmodels 0.15.0 multipletests
-// (bonferroni, holm, fdr_bh, fdr_by). Script: scratchpad/fix/work/B/b5_emerging_ref.py
-// (numpy 2.5.4, scipy 1.18.1, statsmodels 0.15.0).
-export const MULTIPLE_TESTING_VALUES = [
-  0.0, 0.3, -0.3, -0.9, -0.5, -1.0, 0.1, 1.3, -0.5, -0.6, 0.5, 0.4, 0.1, -0.9, -0.0, 0.7, -1.3,
-  -0.5, -1.9, -1.3, -1.8, -0.2, -1.3, 0.3, 0.2, -0.2, -2.5, -0.5, -0.0, 0.1, -1.5, -0.5, -1.0, -0.8,
-  1.1, -0.8, -0.0, 0.9, -0.6, -0.1, 0.1, 0.1, -1.2, 0.1, 1.4, -1.5, 0.9, 0.1, -0.6, 2.0, 0.8, -1.2,
-  0.1, 0.6, -0.2, 0.7, -0.1, 0.7, 1.4, -0.7, 0.2, -0.5, 0.1, -1.2, -0.6, -0.2, 0.9, 1.1, -1.3, -0.8,
-  0.6, -2.0, -0.5, -0.1, 1.3, 0.7, -0.3, -0.4, -0.3, 1.5, -0.4, -0.3, 0.4, -0.1, -0.2, -1.1, -0.0,
-  -0.4, 1.2, 0.7, -0.0, 0.7, 7.0, 6.0, -6.5, 3.4, -3.3, 3.1, 0.0, 0.0
-];
-export const MULTIPLE_TESTING_TOP_BINS = [92, 93, 94, 95, 96, 97];
-export const MULTIPLE_TESTING_P = [
-  3.2348898651709686e-6, 6.50581295177076e-5, 1.895532573171461e-5, 0.023001976038730457,
-  0.03080369422046859, 0.03799494754735993
-];
-export const MULTIPLE_TESTING_ADJUSTED: Record<string, number[]> = {
-  bonferroni: [0.0003234889865170969, 0.006505812951770759, 0.001895532573171461, 1.0, 1.0, 1.0],
-  holm: [0.0003234889865170969, 0.006375696692735344, 0.0018765772474397461, 1.0, 1.0, 1.0],
-  'benjamini-hochberg': [
-    0.0003234889865170969, 0.0021686043172569197, 0.0009477662865857304, 0.5750494009682614,
-    0.6160738844093718, 0.6332491257893322
-  ],
-  'benjamini-yekutieli': [
-    0.0016780594958628148, 0.011249369279994764, 0.004916421527011608, 1.0, 1.0, 1.0
-  ]
-};
-// Bins significant at an adjusted p of 0.05 (statsmodels).
-export const MULTIPLE_TESTING_SIGNIFICANT: Record<string, number[]> = {
-  none: [92, 93, 94, 95, 96, 97],
-  bonferroni: [92, 93, 94],
-  holm: [92, 93, 94],
-  'benjamini-hochberg': [92, 93, 94],
-  'benjamini-yekutieli': [92, 93, 94]
-};
-
-// Time-step slicing reference: python datetime / calendar arithmetic, independent of the
-// days_from_civil formula. Script: scratchpad/fix/work/B/b5_emerging_ref.py.
-export const SLICE_EVENTS = [
-  [2022, 10, 31, 23],
-  [2022, 11, 1, 0],
-  [2022, 12, 25, 23],
-  [2022, 12, 26, 0],
-  [2022, 12, 31, 23],
-  [2023, 1, 1, 0],
-  [2023, 1, 1, 23],
-  [2023, 1, 2, 0],
-  [2023, 2, 19, 12],
-  [2023, 2, 20, 0],
-  [2023, 4, 30, 12],
-  [2023, 5, 1, 0],
-  [2023, 12, 29, 12],
-  [2023, 12, 30, 0],
-  [2023, 12, 31, 23],
-  [2024, 1, 1, 0],
-  [2024, 2, 28, 23],
-  [2024, 2, 29, 5],
-  [2024, 3, 1, 5]
-];
-export const SLICE_CASES = [
-  {
-    step: 'month',
-    interval: 1,
-    origin: [2022, 11],
-    count: 6,
-    expected: [-1, 0, 1, 1, 1, 2, 2, 2, 3, 3, 5, -1, -1, -1, -1, -1, -1, -1, -1]
-  },
-  {
-    step: 'month',
-    interval: 2,
-    origin: [2022, 11],
-    count: 3,
-    expected: [-1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1]
-  },
-  {
-    step: 'week',
-    interval: 1,
-    origin: [2022, 12, 26],
-    count: 8,
-    expected: [-1, -1, -1, 0, 0, 0, 0, 1, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
-  },
-  {
-    step: 'week',
-    interval: 2,
-    origin: [2022, 12, 26],
-    count: 4,
-    expected: [-1, -1, -1, 0, 0, 0, 0, 0, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
-  },
-  {
-    step: 'day',
-    interval: 1,
-    origin: [2023, 12, 30],
-    count: 100,
-    expected: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 60, 61, 62]
-  },
-  {
-    step: 'quarter',
-    interval: 1,
-    origin: [2022, 10],
-    count: 4,
-    expected: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, -1, -1, -1, -1, -1, -1, -1]
-  },
-  {
-    step: 'year',
-    interval: 1,
-    origin: [2022],
-    count: 3,
-    expected: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2]
-  },
-  {
-    step: 'hour',
-    interval: 6,
-    origin: [2024, 2, 29, 0],
-    count: 20,
-    expected: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 4]
-  }
-] as {
-  step: 'year' | 'quarter' | 'month' | 'week' | 'day' | 'hour';
-  interval: number;
-  origin: number[];
-  count: number;
-  expected: number[];
-}[];
+// Package-pinned references (statsmodels, scipy, python datetime) live in the generated fixture.
+export {
+  MULTIPLE_TESTING_ADJUSTED,
+  MULTIPLE_TESTING_P,
+  MULTIPLE_TESTING_SIGNIFICANT,
+  MULTIPLE_TESTING_TOP_BINS,
+  MULTIPLE_TESTING_VALUES,
+  SLICE_CASES,
+  SLICE_EVENTS
+} from './emerging-hot-spots-reference';

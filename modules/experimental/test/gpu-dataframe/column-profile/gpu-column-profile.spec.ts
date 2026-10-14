@@ -27,6 +27,7 @@ import {
   type ColumnProfileOracleColumn,
   type ColumnProfileOracleResult
 } from './column-profile-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Domains = (readonly [number, number] | undefined)[];
 
@@ -401,9 +402,7 @@ function createMixedScene(rows: number, seed: number): Scene {
 
 it('GPUColumnProfile matches the CPU oracle on mixed columns with NaN, Infinity and masks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const rows of [1, 7, 2048, 2049, 20000]) {
     const scene = createMixedScene(rows, 100 + rows);
     const fixture = createFixture(device, scene);
@@ -414,9 +413,7 @@ it('GPUColumnProfile matches the CPU oracle on mixed columns with NaN, Infinity 
 
 it('GPUColumnProfile is stable on a large offset with a small spread', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 100000;
   const scene: Scene = {
     columns: [{kind: 'numeric', values: createNumeric('offset', 5, rows)}],
@@ -436,9 +433,7 @@ it('GPUColumnProfile is stable on a large offset with a small spread', async () 
 
 it('GPUColumnProfile handles all-masked columns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createMixedScene(3000, 31);
   scene.mask = new Uint32Array(3000);
   const fixture = createFixture(device, scene);
@@ -462,9 +457,7 @@ it('GPUColumnProfile handles all-masked columns', async () => {
 
 it('GPUColumnProfile excludes Infinity from moments and keeps it in extremes and counts', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = Float32Array.from([1, 2, Infinity, 3, -Infinity, NaN, -0, 0]);
   const scene: Scene = {
     columns: [
@@ -494,9 +487,7 @@ it('GPUColumnProfile excludes Infinity from moments and keeps it in extremes and
 
 it('GPUColumnProfile supports automatic and fixed histogram domains', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createMixedScene(15000, 211);
   const fixture = createFixture(device, scene);
   const domainSets: Domains[] = [
@@ -514,9 +505,7 @@ it('GPUColumnProfile supports automatic and fixed histogram domains', async () =
 
 it('GPUColumnProfile runs several frames on one compiled graph without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 12000;
   const scene = createMixedScene(rows, 311);
   const fixture = createFixture(device, scene);
@@ -540,9 +529,7 @@ it('GPUColumnProfile runs several frames on one compiled graph without rebuildin
 
 it('GPUColumnProfile is bitwise identical across repeated runs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createMixedScene(60000, 511);
   const fixture = createFixture(device, scene);
   const first = await fixture.run();
@@ -566,9 +553,7 @@ it('GPUColumnProfile is bitwise identical across repeated runs', async () => {
 
 it('GPUColumnProfile HyperLogLog registers match bitwise and the estimate is accurate', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 200000;
   for (const precision of [4, 12, 14]) {
     const scene: Scene = {
@@ -603,9 +588,7 @@ it('GPUColumnProfile HyperLogLog registers match bitwise and the estimate is acc
 
 it('GPUColumnProfile ranks top categories with ties and large dictionaries', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 30000;
   const categoryCount = 100000;
   const random = createRandom(77);
@@ -635,9 +618,7 @@ it('GPUColumnProfile ranks top categories with ties and large dictionaries', asy
 
 it('GPUColumnProfile times one million rows by four columns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 1_000_000;
   const scene: Scene = {
     columns: [

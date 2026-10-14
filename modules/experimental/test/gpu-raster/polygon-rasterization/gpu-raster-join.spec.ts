@@ -7,10 +7,8 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
-import {
-  getGPUPolygonRasterizationExtentValues,
-  GPURasterJoin
-} from '../../../src/gpu-raster/polygon-rasterization';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
+import {GPURasterJoin} from '../../../src/gpu-raster/polygon-rasterization';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -28,10 +26,13 @@ import {
 import {
   createRasterizationFixture,
   destroyRasterizationFixture,
+  getExtentParameterValues,
+  makeExtentGrid,
   readRasterization,
   type RasterizationFixture
 } from './polygon-rasterization-fixture';
 import {createRandom, createRandomScene} from './polygon-rasterization-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Extent = readonly [number, number, number, number];
 
@@ -52,9 +53,8 @@ function addJoin(
   device: Device,
   graph: GPUCommandGraph,
   props: {
-    width: number;
-    height: number;
-    extent: GraphDataView<'float32'>;
+    grid: GPURasterMetadata;
+    parameters: GraphDataView<'float32'>;
     zones: GraphDataView<'uint32'>;
     boundary: GraphDataView<'uint32'>;
     zoneCount: number;
@@ -78,9 +78,8 @@ function addJoin(
     importGraphBuffer(graph, `join-${name}`, buffers[name], format, props.zoneCount);
   graph.add(
     new GPURasterJoin({
-      width: props.width,
-      height: props.height,
-      extent: props.extent,
+      grid: props.grid,
+      parameters: props.parameters,
       points: importGraphBuffer(graph, 'join-points', buffers.points, 'float32x2', pointCount),
       values: importGraphBuffer(graph, 'join-values', buffers.values, 'float32', pointCount),
       zones: props.zones,
@@ -171,9 +170,7 @@ function createPoints(
 
 it('GPURasterJoin matches the CPU raster join on a given zone raster, deterministically', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 23;
   const height = 17;
   const zoneCount = 9;
@@ -194,12 +191,11 @@ it('GPURasterJoin matches the CPU raster join on a given zone raster, determinis
     id: 'extent',
     format: 'float32',
     length: 4,
-    values: getGPUPolygonRasterizationExtentValues(...extent)
+    values: getExtentParameterValues(width, height, extent)
   });
   const buffers = addJoin(device, graph, {
-    width,
-    height,
-    extent: extentBuffer.importToGraph(graph),
+    grid: makeExtentGrid(width, height, extent),
+    parameters: extentBuffer.importToGraph(graph),
     zones: importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', width * height),
     boundary: importGraphBuffer(graph, 'boundary', boundaryBuffer, 'uint32', width * height),
     zoneCount,
@@ -293,9 +289,7 @@ async function expectEndToEnd(
 
 it('GPURasterJoin over GPUPolygonRasterization agrees with exact point-in-polygon on interior points across per-frame extents', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const polygons = createRandomScene(23, 30, 24, 24, 5);
   const zoneCount = polygons.featureOffsets.length - 1;
   const width = 48;
@@ -313,9 +307,8 @@ it('GPURasterJoin over GPUPolygonRasterization agrees with exact point-in-polygo
   });
   const {points, values} = createPoints(31, 6000, width, height, extents[0]);
   const buffers = addJoin(device, fixture.graph, {
-    width,
-    height,
-    extent: fixture.extentView,
+    grid: makeExtentGrid(width, height, extents[0]),
+    parameters: fixture.extentView,
     zones: fixture.zonesView,
     boundary: fixture.boundaryView,
     zoneCount,
@@ -324,7 +317,7 @@ it('GPURasterJoin over GPUPolygonRasterization agrees with exact point-in-polygo
   });
   const compiled = fixture.graph.compile();
   for (const extent of extents) {
-    fixture.extent.write(getGPUPolygonRasterizationExtentValues(...extent));
+    fixture.extent.write(getExtentParameterValues(width, height, extent));
     const frame = createPoints(31 + extent[1], 6000, width, height, extent);
     buffers.points.write(frame.points);
     submitGraph(device, compiled, undefined);

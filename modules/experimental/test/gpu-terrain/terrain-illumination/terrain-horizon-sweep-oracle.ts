@@ -10,8 +10,10 @@ import {
   TERRAIN_SWEEP_SLOPE_SCALE,
   type TerrainSweepLineGeometry
 } from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
-import {getTerrainIlluminationGroundCellSize} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
+import {
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 
 /** Inputs of the float64 sweep oracles. */
 export type SweepOracleOptions = {
@@ -28,13 +30,13 @@ export type SweepOracleOptions = {
   directions?: readonly (readonly [number, number])[];
   /** Radius window in pixels. Defaults to the full diagonal. */
   maximumRadius?: number;
-  cellSize: [number, number];
+  cellSize: readonly [number, number];
   zFactor?: number;
   curvatureCoefficient?: number;
   maximumDistance?: number;
   northEdge?: number;
   southEdge?: number;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   rowDirection?: 'south' | 'north';
   /** Also compute the nadir pass (zFactor negated) into `nadirHorizon` and `negativeOpenness`. */
   nadir?: boolean;
@@ -78,12 +80,10 @@ function getGeometries(options: SweepOracleOptions): TerrainSweepLineGeometry[] 
   }
   // Same reference row as the kernel: row 0 in uniform mode, else row floor(height / 2).
   const mode = options.cellSizeMode ?? 'uniform';
-  const referenceCell = getTerrainIlluminationGroundCellSize(
+  const referenceCell = getRasterGroundCellSize(
     mode,
-    options.cellSize,
-    options.northEdge ?? 0,
-    options.southEdge ?? 0,
-    mode === 'uniform' ? 0 : Math.floor(height / 2),
+    {cellSize: options.cellSize, northEdge: options.northEdge, southEdge: options.southEdge},
+    (mode === 'uniform' ? 0 : Math.floor(height / 2)) + 0.5,
     height
   );
   return Array.from({length: options.directionCount}, (_, sector) =>
@@ -106,12 +106,10 @@ function getStepLength(
   geometry: TerrainSweepLineGeometry,
   row: number
 ): number {
-  const ground = getTerrainIlluminationGroundCellSize(
+  const ground = getRasterGroundCellSize(
     options.cellSizeMode ?? 'uniform',
-    options.cellSize,
-    options.northEdge ?? 0,
-    options.southEdge ?? 0,
-    row,
+    {cellSize: options.cellSize, northEdge: options.northEdge, southEdge: options.southEdge},
+    row + 0.5,
     options.height
   );
   const slope = geometry.slopeFixed / TERRAIN_SWEEP_SLOPE_SCALE;

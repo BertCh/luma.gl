@@ -5,6 +5,8 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {addSpaceTimeHotSpotsRecipe} from '../../../src/gpu-spatial-analysis/recipes/space-time-hot-spots-recipe';
+import {GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/emerging-hot-spots/index';
+import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 it('addSpaceTimeHotSpotsRecipe rejects cyclic fields and invalid slices, and forwards the options', () => {
@@ -30,7 +32,12 @@ it('addSpaceTimeHotSpotsRecipe rejects cyclic fields and invalid slices, and for
         height: 2,
         bounds: [0, 0, 2, 2]
       },
-      parameters: view('float32', 8, `par-${key}`),
+      settings: {temporalWindow: 1},
+      parameters: new GPUParameterBuffer(device, {
+        id: `par-${key}`,
+        format: 'float32',
+        length: GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+      }),
       ...overrides
     } as never;
   };

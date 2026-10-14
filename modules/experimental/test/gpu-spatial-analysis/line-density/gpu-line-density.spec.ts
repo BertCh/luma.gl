@@ -14,11 +14,12 @@ import {
   expectClose
 } from '../outline-geometry/geometry-fixture';
 import {computeLineLengthsPerCell, type Point} from './line-density-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-function createPaths(seed: number, pathCount: number, extent: number): Point[][] {
+function createLines(seed: number, lineCount: number, extent: number): Point[][] {
   const random = createRandom(seed);
-  return Array.from({length: pathCount}, (_, pathIndex) => {
-    const length = pathIndex % 11 === 4 ? 1 : 2 + Math.floor(random() * 6);
+  return Array.from({length: lineCount}, (_, lineIndex) => {
+    const length = lineIndex % 11 === 4 ? 1 : 2 + Math.floor(random() * 6);
     let x = (random() * 1.4 - 0.2) * extent;
     let y = (random() * 1.4 - 0.2) * extent;
     return Array.from({length}, () => {
@@ -37,11 +38,11 @@ function createPaths(seed: number, pathCount: number, extent: number): Point[][]
   });
 }
 
-function flatten(paths: Point[][]) {
+function flatten(lines: Point[][]) {
   const positions: number[] = [];
   const offsets = [0];
-  for (const path of paths) {
-    for (const point of path) {
+  for (const line of lines) {
+    for (const point of line) {
       positions.push(point[0], point[1]);
     }
     offsets.push(positions.length / 2);
@@ -51,15 +52,15 @@ function flatten(paths: Point[][]) {
 
 function createFixture(
   device: Awaited<ReturnType<typeof getWebGPUTestDevice>>,
-  paths: Point[][],
-  options: {columns: number; rows: number; spherical?: boolean; maximumRecords?: number}
+  lines: Point[][],
+  options: {columns: number; rows: number; spherical?: boolean; recordCapacity?: number}
 ) {
-  const flat = flatten(paths);
+  const flat = flatten(lines);
   const cellCount = options.columns * options.rows;
   return createGeometryFixture(device as NonNullable<typeof device>, {
     inputs: {
       positions: {values: flat.positions, format: 'float32x2'},
-      pathOffsets: {values: flat.offsets, format: 'uint32'}
+      lineOffsets: {values: flat.offsets, format: 'uint32'}
     },
     outputs: {
       lengths: {format: 'float32', length: cellCount},
@@ -70,19 +71,21 @@ function createFixture(
     create: ({inputs, outputs, parameters}) =>
       new GPULineDensity({
         positions: inputs['positions'] as never,
-        pathOffsets: inputs['pathOffsets'] as never,
+        lineOffsets: inputs['lineOffsets'] as never,
         columns: options.columns,
         rows: options.rows,
         spatialContext: options.spherical
           ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
           : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
-        maximumRecords: options.maximumRecords,
+        recordCapacity: options.recordCapacity,
         parameters,
         output: {
           lengths: outputs['lengths'] as never,
           densities: outputs['densities'] as never,
-          overflow: outputs['overflow'] as never,
-          totalRecords: outputs['totalRecords'] as never
+          status: {
+            overflow: outputs['overflow'] as never,
+            requiredCount: outputs['totalRecords'] as never
+          }
         }
       })
   });
@@ -90,16 +93,14 @@ function createFixture(
 
 it('GPULineDensity sums exact segment-cell lengths like the f64 oracle and pans per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const columns = 12;
   const rows = 9;
-  const paths = createPaths(3, 300, 100);
-  const rounded = paths.map(path =>
-    path.map(([x, y]) => [Math.fround(x), Math.fround(y)] as Point)
+  const lines = createLines(3, 300, 100);
+  const rounded = lines.map(line =>
+    line.map(([x, y]) => [Math.fround(x), Math.fround(y)] as Point)
   );
-  const fixture = createFixture(device, paths, {columns, rows});
+  const fixture = createFixture(device, lines, {columns, rows});
   let maximumError = 0;
   for (const grid of [
     {minX: 0, minY: 0, width: 100 / columns, height: 100 / rows},
@@ -143,11 +144,9 @@ it('GPULineDensity sums exact segment-cell lengths like the f64 oracle and pans 
 
 it('GPULineDensity conserves the clipped length of a diagonal and flags record overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // One diagonal across a 10 x 10 grid passes through 19 cells (through lattice corners it counts 10).
-  const paths: Point[][] = [
+  const lines: Point[][] = [
     [
       [-5, -5],
       [15, 15]
@@ -158,7 +157,7 @@ it('GPULineDensity conserves the clipped length of a diagonal and flags record o
       [9.5, 9.5]
     ]
   ];
-  const fixture = createFixture(device, paths, {columns: 10, rows: 10});
+  const fixture = createFixture(device, lines, {columns: 10, rows: 10});
   const parameters = getGPULineDensityParameterValues({
     minX: 0,
     minY: 0,
@@ -170,7 +169,7 @@ it('GPULineDensity conserves the clipped length of a diagonal and flags record o
   expect(total).toBeCloseTo(10 * Math.SQRT2 + 9 + 9, 3);
   expect(result['overflow'][0]).toBe(0);
   fixture.destroy();
-  const small = createFixture(device, paths, {columns: 10, rows: 10, maximumRecords: 8});
+  const small = createFixture(device, lines, {columns: 10, rows: 10, recordCapacity: 8});
   const clipped = await small.run(parameters);
   expect(clipped['overflow'][0]).toBe(1);
   expect(clipped['totalRecords'][0]).toBeGreaterThan(8);
@@ -180,12 +179,10 @@ it('GPULineDensity conserves the clipped length of a diagonal and flags record o
 
 it('GPULineDensity measures spherical pieces as great-circle meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const columns = 6;
   const rows = 4;
-  const paths: Point[][] = [
+  const lines: Point[][] = [
     [
       [10.1, 50.1],
       [11.9, 50.9],
@@ -196,7 +193,7 @@ it('GPULineDensity measures spherical pieces as great-circle meters', async () =
       [12, 51.5]
     ]
   ];
-  const fixture = createFixture(device, paths, {columns, rows, spherical: true});
+  const fixture = createFixture(device, lines, {columns, rows, spherical: true});
   const grid = {minX: 10, minY: 50, width: 0.5, height: 0.5};
   const result = await fixture.run(
     getGPULineDensityParameterValues({
@@ -206,8 +203,8 @@ it('GPULineDensity measures spherical pieces as great-circle meters', async () =
       cellHeight: grid.height
     })
   );
-  const rounded = paths.map(path =>
-    path.map(([x, y]) => [Math.fround(x), Math.fround(y)] as Point)
+  const rounded = lines.map(line =>
+    line.map(([x, y]) => [Math.fround(x), Math.fround(y)] as Point)
   );
   const expected = computeLineLengthsPerCell(rounded, {...grid, columns, rows}, true);
   for (let cell = 0; cell < columns * rows; cell++) {

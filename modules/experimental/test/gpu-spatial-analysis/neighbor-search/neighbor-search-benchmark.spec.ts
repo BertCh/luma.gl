@@ -24,6 +24,7 @@ import {
   createOutputBuffer,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const DOMAIN_SIZE = 1000;
 const WARMUP_COUNT = 3;
@@ -67,7 +68,7 @@ function sortMorton(points: Float32Array): Float32Array {
 // Logs random-order cost relative to Morton order; timings only, no assertion, since the GPU may be shared.
 it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const NeighborSearchClass = GPUNeighborSearch;
 
   async function measure(
@@ -105,13 +106,15 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
           gridSize,
           positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', count),
           parameters: parameters.importToGraph(graph),
-          weights: {
+          output: {
             offsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', count + 1),
             neighbors: importGraphBuffer(graph, 'neighbors', neighbors, 'uint32', capacity),
-            weights: importGraphBuffer(graph, 'weights', weights, 'float32', capacity)
-          },
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-          totalNeighbors: importGraphBuffer(graph, 'total', total, 'uint32', 1)
+            weights: importGraphBuffer(graph, 'weights', weights, 'float32', capacity),
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'total', total, 'uint32', 1)
+            }
+          }
         })
       );
       compiled = graph.compile();

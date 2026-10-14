@@ -6,6 +6,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DrawCommandBuffer, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUTerrainContours} from '../../../src/gpu-terrain/terrain-analysis';
 import {
@@ -16,9 +17,11 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {countContourSegments, sampleBilinear} from './terrain-analysis-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SIZE = 5;
 const PIXEL_COUNT = SIZE * SIZE;
+const GRID = makeGPURasterMetadata({width: SIZE, height: SIZE});
 const RAMP = Float32Array.from(
   {length: PIXEL_COUNT},
   (_, index) => (index % SIZE) + Math.floor(index / SIZE)
@@ -39,9 +42,7 @@ async function expectVerticesOnLevel(
 
 it('GPUTerrainContours extracts numeric and per-frame GPU levels with one overflow flag', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevationBuffer = createInputBuffer(device, RAMP);
   const levelsParameter = new GPUParameterBuffer(device, {
     id: 'levels',
@@ -62,8 +63,7 @@ it('GPUTerrainContours extracts numeric and per-frame GPU levels with one overfl
   const levelsView = levelsParameter.importToGraph(graph);
   graph.add(
     new GPUTerrainContours({
-      width: SIZE,
-      height: SIZE,
+      grid: GRID,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -76,14 +76,10 @@ it('GPUTerrainContours extracts numeric and per-frame GPU levels with one overfl
         {
           level: 3.5,
           vertices: importGraphBuffer(graph, 'vertices-a', buffers.verticesA, 'float32x2', 64),
-          segmentCount: importGraphBuffer(graph, 'count-a', buffers.countA, 'uint32', 1),
-          requiredSegmentCount: importGraphBuffer(
-            graph,
-            'required-a',
-            buffers.requiredA,
-            'uint32',
-            1
-          )
+          status: {
+            count: importGraphBuffer(graph, 'count-a', buffers.countA, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'required-a', buffers.requiredA, 'uint32', 1)
+          }
         },
         {
           level: graph.createDataView(levelsView.buffer, {
@@ -92,17 +88,15 @@ it('GPUTerrainContours extracts numeric and per-frame GPU levels with one overfl
             byteOffset: 4
           }),
           vertices: importGraphBuffer(graph, 'vertices-b', buffers.verticesB, 'float32x2', 64),
-          segmentCount: importGraphBuffer(graph, 'count-b', buffers.countB, 'uint32', 1),
-          requiredSegmentCount: importGraphBuffer(
-            graph,
-            'required-b',
-            buffers.requiredB,
-            'uint32',
-            1
-          )
+          status: {
+            count: importGraphBuffer(graph, 'count-b', buffers.countB, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'required-b', buffers.requiredB, 'uint32', 1)
+          }
         }
       ],
-      overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+      output: {
+        status: {overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -129,9 +123,7 @@ it('GPUTerrainContours extracts numeric and per-frame GPU levels with one overfl
 
 it('GPUTerrainContours reports and resets capacity overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const elevationBuffer = createInputBuffer(device, RAMP);
   const level = new GPUParameterBuffer(device, {
     id: 'level',
@@ -146,8 +138,7 @@ it('GPUTerrainContours reports and resets capacity overflow', async () => {
   const graph = new GPUCommandGraph(device, {id: 'terrain-contours-overflow'});
   graph.add(
     new GPUTerrainContours({
-      width: SIZE,
-      height: SIZE,
+      grid: GRID,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -160,11 +151,15 @@ it('GPUTerrainContours reports and resets capacity overflow', async () => {
         {
           level: level.importToGraph(graph),
           vertices: importGraphBuffer(graph, 'vertices', verticesBuffer, 'float32x2', 2),
-          segmentCount: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-          requiredSegmentCount: importGraphBuffer(graph, 'required', requiredBuffer, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'required', requiredBuffer, 'uint32', 1)
+          }
         }
       ],
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+      output: {
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -206,9 +201,7 @@ async function runContourDraw(options: {
   verticesPerInstance?: number;
 }): Promise<DrawRun | undefined> {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return undefined;
-  }
+  requireTestDevice(device);
   const COMMAND_INDEX = 1;
   const elevationBuffer = createInputBuffer(device, RAMP);
   const verticesBuffer = createOutputBuffer(device, options.segmentCapacity * 4);
@@ -223,8 +216,7 @@ async function runContourDraw(options: {
   const graph = new GPUCommandGraph(device, {id: options.id});
   graph.add(
     new GPUTerrainContours({
-      width: SIZE,
-      height: SIZE,
+      grid: GRID,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -243,15 +235,21 @@ async function runContourDraw(options: {
             'float32x2',
             options.segmentCapacity * 2
           ),
-          segmentCount: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'level-overflow', overflowBuffer, 'uint32', 1),
+          status: {
+            count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'level-overflow', overflowBuffer, 'uint32', 1)
+          },
           draw: commands.importToGraph(graph),
           drawCommandIndex: COMMAND_INDEX,
           drawLayout: options.drawLayout,
           verticesPerInstance: options.verticesPerInstance
         }
       ],
-      overflow: importGraphBuffer(graph, 'overflow', contributorOverflowBuffer, 'uint32', 1)
+      output: {
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', contributorOverflowBuffer, 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();

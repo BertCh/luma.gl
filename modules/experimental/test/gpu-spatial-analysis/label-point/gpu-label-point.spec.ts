@@ -5,12 +5,10 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPULabelPoint} from '../../../src/gpu-spatial-analysis/label-point';
-import {
-  createGeometryFixture,
-  createRandom,
-  flattenFeatures
-} from '../outline-geometry/geometry-fixture';
+import {createGeometryFixture, createRandom} from '../outline-geometry/geometry-fixture';
+import {flattenPolygonFeatures} from '../geometry-measures/polygon-layout';
 import {findPoleOfInaccessibility, getSignedDistance, type Ring} from './label-point-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function createStar(
   random: () => number,
@@ -100,11 +98,9 @@ function createFeatures(): Ring[][] {
 
 it('GPULabelPoint lands inside and near the polylabel pole of every polygon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createFeatures();
-  const flat = flattenFeatures(features);
+  const flat = flattenPolygonFeatures(features);
   const rounded: Ring[][] = features.map(rings =>
     rings.map(ring => ring.map(([x, y]) => [Math.fround(x), Math.fround(y)]))
   );
@@ -113,7 +109,8 @@ it('GPULabelPoint lands inside and near the polylabel pole of every polygon', as
     inputs: {
       positions: {values: flat.positions, format: 'float32x2'},
       ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
-      featureRingOffsets: {values: flat.featureRingOffsets, format: 'uint32'}
+      polygonOffsets: {values: flat.polygonOffsets, format: 'uint32'},
+      featureOffsets: {values: flat.featureOffsets, format: 'uint32'}
     },
     outputs: {
       points: {format: 'float32x2', length: featureCount},
@@ -124,7 +121,8 @@ it('GPULabelPoint lands inside and near the polylabel pole of every polygon', as
       new GPULabelPoint({
         positions: inputs['positions'] as never,
         ringOffsets: inputs['ringOffsets'] as never,
-        featureRingOffsets: inputs['featureRingOffsets'] as never,
+        polygonOffsets: inputs['polygonOffsets'] as never,
+        featureOffsets: inputs['featureOffsets'] as never,
         output: {
           points: outputs['points'] as never,
           distances: outputs['distances'] as never,
@@ -166,9 +164,7 @@ it('GPULabelPoint lands inside and near the polylabel pole of every polygon', as
 
 it('GPULabelPoint flags degenerate polygons and reports empty features as NaN', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features: Ring[][] = [
     [
       [
@@ -187,11 +183,13 @@ it('GPULabelPoint flags degenerate polygons and reports empty features as NaN', 
       ]
     ]
   ];
-  const flat = flattenFeatures(features);
+  const flat = flattenPolygonFeatures(features);
   const fixture = createGeometryFixture(device, {
     inputs: {
       positions: {values: flat.positions, format: 'float32x2'},
-      ringOffsets: {values: flat.ringOffsets, format: 'uint32'}
+      ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
+      polygonOffsets: {values: flat.polygonOffsets, format: 'uint32'},
+      featureOffsets: {values: flat.featureOffsets, format: 'uint32'}
     },
     outputs: {
       points: {format: 'float32x2', length: 3},
@@ -202,6 +200,8 @@ it('GPULabelPoint flags degenerate polygons and reports empty features as NaN', 
       new GPULabelPoint({
         positions: inputs['positions'] as never,
         ringOffsets: inputs['ringOffsets'] as never,
+        polygonOffsets: inputs['polygonOffsets'] as never,
+        featureOffsets: inputs['featureOffsets'] as never,
         output: {
           points: outputs['points'] as never,
           distances: outputs['distances'] as never,
@@ -233,13 +233,14 @@ async function runLabelPoint(
   features: Ring[][],
   smallFeatureVertexLimit?: number
 ): Promise<Record<string, number[]>> {
-  const flat = flattenFeatures(features);
+  const flat = flattenPolygonFeatures(features);
   const featureCount = features.length;
   const fixture = createGeometryFixture(device, {
     inputs: {
       positions: {values: flat.positions, format: 'float32x2'},
       ringOffsets: {values: flat.ringOffsets, format: 'uint32'},
-      featureRingOffsets: {values: flat.featureRingOffsets, format: 'uint32'}
+      polygonOffsets: {values: flat.polygonOffsets, format: 'uint32'},
+      featureOffsets: {values: flat.featureOffsets, format: 'uint32'}
     },
     outputs: {
       points: {format: 'float32x2', length: featureCount},
@@ -250,7 +251,8 @@ async function runLabelPoint(
       new GPULabelPoint({
         positions: inputs['positions'] as never,
         ringOffsets: inputs['ringOffsets'] as never,
-        featureRingOffsets: inputs['featureRingOffsets'] as never,
+        polygonOffsets: inputs['polygonOffsets'] as never,
+        featureOffsets: inputs['featureOffsets'] as never,
         smallFeatureVertexLimit,
         output: {
           points: outputs['points'] as never,
@@ -266,9 +268,7 @@ async function runLabelPoint(
 
 it('GPULabelPoint matches the polylabel oracle for a 20k-vertex polygon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const star = createWavyStar(20000).map(([x, y]) => [Math.fround(x), Math.fround(y)]);
   // The 20k-vertex star takes the workgroup path by default; a small neighbor takes the thread path.
   const result = await runLabelPoint(device, [
@@ -289,13 +289,50 @@ it('GPULabelPoint matches the polylabel oracle for a 20k-vertex polygon', async 
 
 it('GPULabelPoint thread and workgroup paths give identical results', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = createFeatures();
   const threadResult = await runLabelPoint(device, features, 1 << 30);
   const workgroupResult = await runLabelPoint(device, features, 0);
   expect(Array.from(workgroupResult['points'])).toEqual(Array.from(threadResult['points']));
   expect(Array.from(workgroupResult['distances'])).toEqual(Array.from(threadResult['distances']));
   expect(Array.from(workgroupResult['degenerate'])).toEqual(Array.from(threadResult['degenerate']));
+});
+
+it('GPULabelPoint labels an archipelago whose parts miss the scanlines and the first grid', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Two 0.2-unit squares in opposite corners of a 100-unit extent: the three feature scanlines
+  // (y = 50, 50 +- 20) and the 16 x 16 grid (6.25-unit cells) never touch a part. The label must
+  // fall back to the largest part's own scanlines, not to a boundary vertex.
+  const archipelago: Ring[][] = [
+    [
+      [
+        [0, 0],
+        [0.2, 0],
+        [0.2, 0.2],
+        [0, 0.2]
+      ],
+      [
+        [99.8, 99.8],
+        [100, 99.8],
+        [100, 100],
+        [99.8, 100]
+      ]
+    ]
+  ];
+  for (const smallFeatureVertexLimit of [1 << 30, 0]) {
+    const result = await runLabelPoint(device, archipelago, smallFeatureVertexLimit);
+    const rounded = archipelago[0].map(ring =>
+      ring.map(([x, y]) => [Math.fround(x), Math.fround(y)])
+    );
+    const x = result['points'][0];
+    const y = result['points'][1];
+    const insideEither = rounded.some(ring => getSignedDistance(x, y, [ring]) > 0);
+    expect(
+      insideEither,
+      `label (${x}, ${y}) inside a part (limit ${smallFeatureVertexLimit})`
+    ).toBe(true);
+    expect(result['degenerate'][0]).toBe(0);
+    expect(result['distances'][0]).toBeGreaterThan(0.09);
+  }
 });

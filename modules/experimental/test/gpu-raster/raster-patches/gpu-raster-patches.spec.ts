@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_RASTER_PATCH_UNRESOLVED} from '../../../src/gpu-raster/raster-patches/index';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer} from '../../../src/utils/gpu-contributor-utils';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {
   getGPURasterSieveParameterValues,
   GPURasterPatchMetrics,
@@ -20,10 +22,16 @@ import {
   createSegmentation,
   getAcceptedLabels
 } from './raster-patches-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
 const AFFINE = [2, 0.5, 10, -0.25, -3, 20] as const;
+
+/** Sheared grid of `width x height` pixels so that area and perimeter depend on every affine term. */
+function makeGrid(width: number, height: number): GPURasterMetadata {
+  return {width, height, affine: AFFINE, pixelInterpretation: 'area'};
+}
 
 type Guards = {
   validity?: Uint32Array;
@@ -54,23 +62,23 @@ async function runMetrics(
   };
   rig.run(
     new GPURasterPatchMetrics({
-      width,
-      height,
+      grid: makeGrid(width, height),
       labels: rig.input(labels, 'uint32', labels.length),
-      labelValidity: guards.validity && rig.input(guards.validity, 'uint32', labels.length),
-      componentCount:
-        guards.componentCount !== undefined
-          ? rig.input(new Uint32Array([guards.componentCount]), 'uint32', 1)
-          : undefined,
-      converged:
-        guards.converged !== undefined
-          ? rig.input(new Uint32Array([guards.converged]), 'uint32', 1)
-          : undefined,
-      overflow:
-        guards.overflow !== undefined
-          ? rig.input(new Uint32Array([guards.overflow]), 'uint32', 1)
-          : undefined,
-      affine: AFFINE,
+      validity: guards.validity && rig.input(guards.validity, 'uint32', labels.length),
+      status: {
+        componentCount:
+          guards.componentCount !== undefined
+            ? rig.input(new Uint32Array([guards.componentCount]), 'uint32', 1)
+            : undefined,
+        converged:
+          guards.converged !== undefined
+            ? rig.input(new Uint32Array([guards.converged]), 'uint32', 1)
+            : undefined,
+        overflow:
+          guards.overflow !== undefined
+            ? rig.input(new Uint32Array([guards.overflow]), 'uint32', 1)
+            : undefined
+      },
       countRasterBorder: countBorder,
       output: {
         pixelCounts: outputs.pixelCounts.view,
@@ -133,7 +141,7 @@ function expectMetrics(
 
 it('GPURasterPatchMetrics matches the oracle on clumps, with and without raster border', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 23;
   const height = 17;
   const labels = createClumps(width, height, 0.5, 11);
@@ -160,7 +168,7 @@ it('GPURasterPatchMetrics matches the oracle on clumps, with and without raster 
 
 it('GPURasterPatchMetrics run aggregation matches the oracle on one dominant patch, stripes and thin rasters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const cases: {width: number; height: number; build: (column: number, row: number) => number}[] = [
     // One patch covers almost everything: long runs crossing several 16-column segments.
     {width: 70, height: 9, build: (column, row) => (column === 33 && row === 4 ? 2 : 1)},
@@ -199,7 +207,7 @@ it('GPURasterPatchMetrics run aggregation matches the oracle on one dominant pat
 
 it('GPURasterPatchMetrics honors validity, capacity and upstream guards', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 20;
   const height = 14;
   const labels = createClumps(width, height, 0.55, 5);
@@ -226,8 +234,10 @@ it('GPURasterPatchMetrics honors validity, capacity and upstream guards', async 
       componentCount,
       ...guards
     });
-    expect(blocked.pixelCounts.every(count => count === 0)).toBe(true);
-    expect(blocked.perimeters.every(value => value === 0)).toBe(true);
+    // Review C-09: blocked labels no longer read as zero-size patches; every column carries the
+    // unresolved marker (uint32 words) or NaN (float32 columns).
+    expect(blocked.pixelCounts.every(count => count === GPU_RASTER_PATCH_UNRESOLVED)).toBe(true);
+    expect(blocked.perimeters.every(value => Number.isNaN(value))).toBe(true);
   }
 });
 
@@ -256,10 +266,9 @@ async function runSieve(
   });
   rig.run(
     new GPURasterSieve({
-      width,
-      height,
+      grid: makeGrid(width, height),
       labels: rig.input(labels, 'uint32', labels.length),
-      labelValidity: options.validity && rig.input(options.validity, 'uint32', labels.length),
+      validity: options.validity && rig.input(options.validity, 'uint32', labels.length),
       patchCapacity: capacity,
       parameters: parameters.importToGraph(rig.graph),
       mode: options.mode,
@@ -279,7 +288,7 @@ async function runSieve(
 
 it('GPURasterSieve removes small clumps like the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 26;
   const height = 18;
   const labels = createClumps(width, height, 0.45, 21);
@@ -313,7 +322,7 @@ it('GPURasterSieve removes small clumps like the oracle', async () => {
 
 it('GPURasterSieve merges small segments into their largest large neighbor', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 30;
   const height = 20;
   const labels = createSegmentation(width, height, 24, 3);

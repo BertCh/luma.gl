@@ -21,6 +21,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {weightedOverlayOnCPU, type WeightedOverlayScene} from './raster-algebra-oracle';
 import {createRandom, expectFloatArraysClose} from './raster-algebra-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * Scores accumulate `sum + weight * remapped` in fixed layer order, so one device always returns
@@ -51,9 +52,7 @@ function expectScoresClose(
 
 it('GPUWeightedOverlay matches the CPU oracle as weights, remaps, and policies change without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(11);
   const layerCount = 16;
   const cellCount = 997;
@@ -106,7 +105,7 @@ it('GPUWeightedOverlay matches the CPU oracle as weights, remaps, and policies c
       maximumBreakCount,
       output: {
         score: importGraphBuffer(graph, 'score', scoreBuffer, 'float32', cellCount),
-        validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount),
+        outputValidity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount),
         scoreRange: importGraphBuffer(graph, 'range', rangeBuffer, 'float32', 2)
       }
     })
@@ -118,18 +117,24 @@ it('GPUWeightedOverlay matches the CPU oracle as weights, remaps, and policies c
     Array.from({length: layerCount}, (_, layer) => pick(layer));
   const frames: GPUWeightedOverlaySettings[] = [
     // Linear only, no restricted layer used in table mode, propagate nodata.
-    {layers: createLayers(layer => ({weight: (layer % 5) - 1.5, inputMin: 10, inputMax: 90}))},
+    {
+      layers: createLayers(layer => ({
+        weight: (layer % 5) - 1.5,
+        inputMinimum: 10,
+        inputMaximum: 90
+      }))
+    },
     // Mixed linear/inverted/table layers, layer 3 has a restricted lowest class.
     {
       layers: createLayers(layer =>
         layer % 3 === 0
           ? {weight: 0.25 * layer, mode: 'table', breakCount: layer === 6 ? 2 : 4}
-          : {weight: 1 + layer, inputMin: 100, inputMax: 0, invert: layer % 2 === 0}
+          : {weight: 1 + layer, inputMinimum: 100, inputMaximum: 0, invert: layer % 2 === 0}
       ),
       noDataPolicy: 'ignore'
     },
     {
-      layers: createLayers(layer => ({weight: layer + 1, inputMin: 30, inputMax: 30})),
+      layers: createLayers(layer => ({weight: layer + 1, inputMinimum: 30, inputMaximum: 30})),
       normalizeWeights: true,
       noDataPolicy: 'ignore'
     },
@@ -137,7 +142,7 @@ it('GPUWeightedOverlay matches the CPU oracle as weights, remaps, and policies c
       layers: createLayers(layer =>
         layer < 8
           ? {weight: 2, mode: 'table', breakCount: 4, closed: 'right'}
-          : {weight: -0.5, inputMin: 0, inputMax: 100}
+          : {weight: -0.5, inputMinimum: 0, inputMaximum: 100}
       ),
       normalizeWeights: true
     }
@@ -182,9 +187,7 @@ it('GPUWeightedOverlay matches the CPU oracle as weights, remaps, and policies c
 
 it('GPUWeightedOverlay reports an empty range as NaN', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cellCount = 5;
   const stack = Float32Array.from([NaN, NaN, NaN, NaN, NaN]);
   const parameterBuffer = new GPUParameterBuffer(device, {

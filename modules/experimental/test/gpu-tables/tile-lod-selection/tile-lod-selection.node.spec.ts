@@ -39,8 +39,7 @@ function createProps(
     view: view('view', 'float32', 56),
     output: {
       ids: view('ids', 'uint32', 7),
-      count: view('count', 'uint32', 1),
-      overflow: view('overflow', 'uint32', 1)
+      status: {count: view('count', 'uint32', 1), overflow: view('overflow', 'uint32', 1)}
     },
     ...overrides
   };
@@ -68,8 +67,10 @@ it('GPUTileLODSelection schedules level passes and optional outputs', () => {
   });
   props.requests = {
     ids: createTransientView(budgetGraph, 'request-ids', 'uint32', 3),
-    count: createTransientView(budgetGraph, 'request-count', 'uint32', 1),
-    overflow: createTransientView(budgetGraph, 'request-overflow', 'uint32', 1),
+    status: {
+      count: createTransientView(budgetGraph, 'request-count', 'uint32', 1),
+      overflow: createTransientView(budgetGraph, 'request-overflow', 'uint32', 1)
+    },
     priorities: createTransientView(budgetGraph, 'request-priorities', 'float32', 3)
   };
   const budgetIds = new GPUTileLODSelection(props)
@@ -124,8 +125,10 @@ it('GPUTileLODSelection validates props', () => {
     create({
       requests: {
         ids: createTransientView(graph, 'r-ids', 'uint32', 3),
-        count: createTransientView(graph, 'r-count', 'uint32', 1),
-        overflow: createTransientView(graph, 'r-overflow', 'uint32', 1),
+        status: {
+          count: createTransientView(graph, 'r-count', 'uint32', 1),
+          overflow: createTransientView(graph, 'r-overflow', 'uint32', 1)
+        },
         priorities: createTransientView(graph, 'r-priorities', 'float32', 2)
       }
     })

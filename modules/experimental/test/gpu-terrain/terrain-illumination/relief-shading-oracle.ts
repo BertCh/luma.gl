@@ -32,13 +32,15 @@ export function computeReliefShading(options: {
   height: number;
   elevation: Float32Array;
   settings: GPUReliefShadingSettings;
+  /** Uniform ground cell size, `[x, y]` meters. */
+  cellSize: readonly [number, number];
   skyViewFactor?: ArrayLike<number>;
   textureShade?: ArrayLike<number>;
   /** Curvature raster, positive on ridges. */
   curvature?: ArrayLike<number>;
   rowDirection?: 'south' | 'north';
 }): ReliefShadingOracleResult {
-  const {width, height, elevation, settings} = options;
+  const {width, height, elevation, settings, cellSize} = options;
   const gradientX = computeSobel(elevation, undefined, width, height, 'x', 'clamp');
   const gradientY = computeSobel(elevation, undefined, width, height, 'y', 'clamp');
   const lightSet = settings.lights ?? 'mdow';
@@ -63,8 +65,8 @@ export function computeReliefShading(options: {
     validity: []
   };
   for (let pixel = 0; pixel < width * height; pixel++) {
-    const east = (zFactor * gradientX.values[pixel]) / (8 * settings.cellSize[0]);
-    const north = (rowSign * zFactor * gradientY.values[pixel]) / (8 * settings.cellSize[1]);
+    const east = (zFactor * gradientX.values[pixel]) / (8 * cellSize[0]);
+    const north = (rowSign * zFactor * gradientY.values[pixel]) / (8 * cellSize[1]);
     const length = Math.hypot(east, north, 1);
     const normal = [-east / length, -north / length, 1 / length];
     const aspect = Math.atan2(-east, -north);

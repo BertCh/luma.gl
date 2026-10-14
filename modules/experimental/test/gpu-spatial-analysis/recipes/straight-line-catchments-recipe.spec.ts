@@ -5,20 +5,27 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {getGPUDistanceFieldParameterValues} from '../../../src/gpu-raster/distance-field/index';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {addStraightLineCatchmentsRecipe} from '../../../src/gpu-spatial-analysis/recipes/straight-line-catchments-recipe';
 import {createSeededRandom} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {RecipeTestFixture} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NONE = 0xffffffff;
 const WIDTH = 40;
 const HEIGHT = 30;
 const CELL = 2;
+// Row 0 is the minimum-y edge, as the oracle indexes cells.
+const GRID = makeGPURasterMetadata({
+  width: WIDTH,
+  height: HEIGHT,
+  cellSize: CELL,
+  rowDirection: 'north'
+});
 
 it('addStraightLineCatchmentsRecipe allocates cells to the nearest facility and summarises values', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createSeededRandom(4);
   const seeds = Float32Array.from([
     10.5, 12.5, 61.5, 15.5, 33.5, 50.5, 70.5, 8.5, 20.5, 25.5, 500, 500 /* off the grid */
@@ -84,14 +91,16 @@ it('addStraightLineCatchmentsRecipe allocates cells to the nearest facility and 
       maximums: fixture.output('maximums', 'float32', seedCount)
     };
     const recipe = addStraightLineCatchmentsRecipe(fixture.graph, {
-      width: WIDTH,
-      height: HEIGHT,
-      settings: fixture.parameters(
-        'distance-settings',
+      grid: GRID,
+      parameters: fixture.parameters(
+        'distance-parameters',
         'float32',
-        getGPUDistanceFieldParameterValues({origin: [0, 0], cellSize: [CELL, CELL]})
+        getGPUDistanceFieldParameterValues({}, GRID)
       ),
-      seedPositions: fixture.input('seeds', seeds, 'float32x2', seedCount),
+      facilities: {
+        kind: 'points',
+        positions: fixture.input('seeds', seeds, 'float32x2', seedCount)
+      },
       values: fixture.input('values', values, 'float32', values.length),
       sumOrder: 'sorted',
       outputs: {

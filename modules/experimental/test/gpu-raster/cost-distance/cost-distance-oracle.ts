@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+import type {
+  GPURasterCellSizeMode,
+  RasterGridGeoreference
+} from '../../../src/analysis-core/raster-grid';
 import {
   GPU_RASTER_D8_DIRECTIONS,
-  getRasterD8Distance,
-  type RasterGridSettings
+  getRasterD8Distance
 } from '../../../src/gpu-raster/cost-distance/raster-grid-utils';
 
 export const NONE = 0xffffffff;
@@ -20,8 +22,9 @@ export type CostDistanceOracleOptions = {
   height: number;
   /** Friction after calibration; NaN, infinite, or negative cells are impassable. */
   friction: ArrayLike<number>;
-  cellSizeMode?: GPUTerrainCellSizeMode;
-  settings: RasterGridSettings;
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Georeference of the grid, see `getRasterGridGeoreference`. */
+  georeference: RasterGridGeoreference;
   sources: readonly CostDistanceOracleSource[];
   costLimit?: number;
 };
@@ -46,7 +49,7 @@ export function getEdgeCost(
       direction,
       row,
       height,
-      options.settings
+      options.georeference
     ) *
     (0.5 * (options.friction[cell] + options.friction[neighbor]))
   );

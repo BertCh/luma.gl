@@ -20,6 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Vertex = number[];
 
@@ -132,9 +133,11 @@ async function runRandomPoints(
         positions: positions.view as never,
         points: {
           ids: ids.view as never,
-          count: count.view as never,
-          overflow: overflow.view as never,
-          requiredCount: total.view as never
+          status: {
+            count: count.view as never,
+            overflow: overflow.view as never,
+            requiredCount: total.view as never
+          }
         },
         fractions: fractions.view as never
       }
@@ -160,9 +163,7 @@ async function runRandomPoints(
 
 it('GPURandomPointsOnLine matches shapely interpolate at the Philox fractions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runRandomPoints(device, LINES, COUNTS, 40);
   // The degenerate one-vertex line (line 2) draws no points.
   expect(result.count).toBe(15);
@@ -189,9 +190,7 @@ it('GPURandomPointsOnLine matches shapely interpolate at the Philox fractions', 
 
 it('GPURandomPointsOnLine keeps a stable prefix, flags overflow and samples uniformly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const few = await runRandomPoints(device, LINES, [2, 2, 0, 2], 40);
   const many = await runRandomPoints(device, LINES, [6, 4, 0, 5], 40);
   // Raising a count only appends: ranks 0 and 1 of lines 0 and 1 keep their positions.

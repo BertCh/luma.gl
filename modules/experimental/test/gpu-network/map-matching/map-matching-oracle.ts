@@ -5,7 +5,7 @@
 import {NONE, type AccessibilityCSR} from '../network-accessibility/network-accessibility-oracle';
 import {PLANAR_NETWORK_METRIC, type NetworkMetricOracle} from '../network-metric-oracle';
 
-/** Parameters mirrored from `GPUMapMatchingParameters`, with the defaults resolved. */
+/** Parameters mirrored from `GPUMapMatchingSettings`, with the defaults resolved. */
 export type MapMatchingOracleParameters = {
   sigma: number;
   beta: number;
@@ -126,7 +126,8 @@ export function matchOracle(
             } else if (reach?.has(csr.sources[to.edge])) {
               route = tail + reach.get(csr.sources[to.edge])! + to.fraction * lengths[to.edge];
             }
-            if (route < 0) {
+            // The bound covers the whole route, partial end edges included (review B-24).
+            if (route < 0 || route > bound) {
               return;
             }
             const total =

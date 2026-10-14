@@ -15,6 +15,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const EARTH_RADIUS = 6371008.8;
 const D2R = Math.PI / 180;
@@ -97,9 +98,7 @@ it('rhumb f64 closed form reproduces the pinned turf values', () => {
 
 it('GPUGeodesicPairs rhumb matches the f64 closed form (pinned to turf)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const count = TURF_PAIRS.length;
   const origins = new Float32Array(TURF_PAIRS.flatMap(([, a]) => a));
   const targets = new Float32Array(TURF_PAIRS.flatMap(([, , b]) => b));
@@ -176,9 +175,7 @@ it('GPUGeodesicPairs rhumb matches the f64 closed form (pinned to turf)', async 
 
 it('GPUGeodesicDestination rhumb matches the f64 closed form (pinned to turf)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = [
     ...TURF_DESTINATIONS.map(([, origin, bearing, distance]) => ({origin, bearing, distance})),
     // Overshoots the north pole: reflected back across it.

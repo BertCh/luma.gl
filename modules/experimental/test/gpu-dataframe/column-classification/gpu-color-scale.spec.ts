@@ -12,7 +12,7 @@ import {GPUColorScale} from '../../../src/gpu-dataframe/column-classification/gp
 import {
   getGPUColorScaleParameterValues,
   packGPUColor,
-  type GPUColorScaleParameterOptions
+  type GPUColorScaleSettings
 } from '../../../src/gpu-dataframe/column-classification/color-scale-parameters';
 import {computeColorScaleOnCPU, type ColorScaleOracleResult} from './color-scale-oracle';
 import {
@@ -21,6 +21,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const NONE = 0xffffffff;
 
@@ -40,7 +41,7 @@ function createRandom(seed: number): () => number {
 type Frame = {
   domain: number[];
   palette: number[];
-  options: Omit<GPUColorScaleParameterOptions, 'domainCount' | 'paletteCount'> & {
+  options: Omit<GPUColorScaleSettings, 'domainCount' | 'paletteCount'> & {
     domainCount?: number;
     paletteCount?: number;
   };
@@ -327,9 +328,7 @@ const NO_DATA = 0x11223344;
 
 it('GPUColorScale linear step is exact on dyadic values, with clamp on and off', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const config: FixtureConfig = {
     values: Float32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, NaN, 2, Infinity, -Infinity, -0]),
     mask: Uint32Array.from([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1]),
@@ -391,9 +390,7 @@ it('GPUColorScale linear step is exact on dyadic values, with clamp on and off',
 
 it('GPUColorScale matches the oracle for every scale across frames on one compiled graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(11);
   const rows = 4000;
   const values = new Float32Array(rows);
@@ -457,9 +454,7 @@ it('GPUColorScale matches the oracle for every scale across frames on one compil
 
 it('GPUColorScale quantize is exact on dyadic values and clamps or drops out-of-domain rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const config: FixtureConfig = {
     values: Float32Array.from([0, 1.5, 2, 3.5, 4, 6, 7.5, 8, 9, -2]),
     maximumDomainCount: 2,
@@ -483,9 +478,7 @@ it('GPUColorScale quantize is exact on dyadic values and clamps or drops out-of-
 
 it('GPUColorScale threshold and quantile use bisectRight on exact edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = Float32Array.from([
     -Infinity,
     -1e30,
@@ -560,9 +553,7 @@ it('GPUColorScale threshold and quantile use bisectRight on exact edges', async 
 
 it('GPUColorScale ordinal maps category codes and sends out-of-range codes to no-data', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const config: FixtureConfig = {
     values: Uint32Array.from([0, 1, 2, 3, 4, 2, 1, 0xffffffff, 0, 2]),
     mask: Uint32Array.from([1, 1, 1, 1, 1, 1, 1, 1, 0, 1]),
@@ -590,9 +581,7 @@ it('GPUColorScale ordinal maps category codes and sends out-of-range codes to no
 
 it('GPUColorScale reads the active domain length from a GPU-written class count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(5);
   const values = Float32Array.from({length: 1500}, () => random() * 14 - 2);
   const config: FixtureConfig = {
@@ -638,9 +627,7 @@ it('GPUColorScale reads the active domain length from a GPU-written class count'
 
 it('GPUColorScale linear interpolation blends adjacent palette entries within 1 per channel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const config: FixtureConfig = {
     values: Float32Array.from([0, 2, 4, 6, 8, 1, 3, 5, 7]),
     maximumDomainCount: 2,
@@ -679,9 +666,7 @@ it('GPUColorScale linear interpolation blends adjacent palette entries within 1 
 
 it('GPUColorScale writes subsets of outputs and is bitwise reproducible', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(31);
   const values = Float32Array.from({length: 2000}, () => random() * 100 - 10);
   const frame: Frame = {
@@ -729,9 +714,7 @@ it('GPUColorScale writes subsets of outputs and is bitwise reproducible', async 
 
 it('GPUColorScale classifies 1M rows like the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(2024);
   const rows = 1_000_000;
   const values = new Float32Array(rows);
@@ -796,9 +779,7 @@ function expectParityQuick(actual: FrameResult, expected: ColorScaleOracleResult
 
 it('GPUColorScale colors uint32 and sint32 columns numerically with integerValues', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(31);
   const rows = 500;
   const counts = Uint32Array.from({length: rows}, () => Math.floor(random() * 40));

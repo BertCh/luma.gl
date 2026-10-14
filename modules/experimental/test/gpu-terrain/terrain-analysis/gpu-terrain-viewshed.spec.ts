@@ -6,17 +6,21 @@ import {Texture, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
+import {
+  GPURasterTextureToBuffer,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
+} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   GPU_TERRAIN_VISIBILITY as V,
   GPUTerrainViewshed,
   getGPUTerrainViewshedParameterValues,
-  getGPUTerrainVisibilityToleranceParameterValues,
+  getGPUTerrainViewshedToleranceParameterValues,
   type GPUTerrainSightLineTraversal,
   type GPUTerrainViewshedSettings,
-  type GPUTerrainVisibilityToleranceSettings
+  type GPUTerrainViewshedToleranceSettings
 } from '../../../src/gpu-terrain/terrain-analysis';
 import {
   createInputBuffer,
@@ -29,27 +33,27 @@ import {
   computeTerrainViewshedWithTolerance,
   createFractalTerrain
 } from './terrain-analysis-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 9;
 const HEIGHT = 7;
 const PIXEL_COUNT = WIDTH * HEIGHT;
 const WALL = Float32Array.from({length: PIXEL_COUNT}, (_, index) => (index % WIDTH === 5 ? 10 : 0));
+const BASE_GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
 const BASE_SETTINGS: GPUTerrainViewshedSettings = {
   observer: [2, 3],
   observerHeight: 2,
-  targetHeight: 0,
-  cellSize: [1, 1]
+  targetHeight: 0
 };
 
 function createViewshedFixture(
   device: Device,
   elevation: Float32Array,
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   settings: GPUTerrainViewshedSettings,
   mask?: Uint32Array
 ) {
-  const pixelCount = width * height;
+  const pixelCount = grid.width * grid.height;
   const elevationBuffer = createInputBuffer(device, elevation);
   const maskBuffer = mask ? createInputBuffer(device, mask) : undefined;
   const visibilityBuffer = createOutputBuffer(device, pixelCount);
@@ -57,13 +61,12 @@ function createViewshedFixture(
     id: 'viewshed-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainViewshedParameterValues(settings)
+    values: getGPUTerrainViewshedParameterValues(settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-viewshed-test'});
   graph.add(
     new GPUTerrainViewshed({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -75,8 +78,10 @@ function createViewshedFixture(
           ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pixelCount)
           : undefined
       },
-      settings: settingsBuffer.importToGraph(graph),
-      visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+      parameters: settingsBuffer.importToGraph(graph),
+      output: {
+        visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -100,12 +105,10 @@ function createViewshedFixture(
 
 it('GPUTerrainViewshed hides cells behind a wall and follows a per-frame observer', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const fixture = createViewshedFixture(device, WALL, WIDTH, HEIGHT, BASE_SETTINGS);
+  requireTestDevice(device);
+  const fixture = createViewshedFixture(device, WALL, BASE_GRID, BASE_SETTINGS);
   const run = async (settings: GPUTerrainViewshedSettings) => {
-    fixture.settingsBuffer.write(getGPUTerrainViewshedParameterValues(settings));
+    fixture.settingsBuffer.write(getGPUTerrainViewshedParameterValues(settings, BASE_GRID));
     submitGraph(device, fixture.compiled, undefined);
     return readUint32(fixture.visibilityBuffer, PIXEL_COUNT);
   };
@@ -118,7 +121,7 @@ it('GPUTerrainViewshed hides cells behind a wall and follows a per-frame observe
         undefined,
         WIDTH,
         HEIGHT,
-        getGPUTerrainViewshedParameterValues(BASE_SETTINGS)
+        getGPUTerrainViewshedParameterValues(BASE_SETTINGS, BASE_GRID)
       )
     );
   }
@@ -126,7 +129,7 @@ it('GPUTerrainViewshed hides cells behind a wall and follows a per-frame observe
   expect(row3.slice(0, 6)).toEqual(new Array(6).fill(V.visible));
   expect(row3.slice(6)).toEqual(new Array(3).fill(V.hidden));
 
-  visibility = await run({...BASE_SETTINGS, maxDistance: 3.5});
+  visibility = await run({...BASE_SETTINGS, maximumDistance: 3.5});
   expect(visibility[3 * WIDTH + 6]).toBe(V.outOfRange);
   expect(visibility[3 * WIDTH + 5]).toBe(V.visible);
 
@@ -149,7 +152,7 @@ it('GPUTerrainViewshed skips invalid cells and applies curvature', async () => {
   }
   const mask = new Uint32Array(PIXEL_COUNT).fill(1);
   mask[3 * WIDTH + 5] = 0;
-  const masked = createViewshedFixture(device, WALL, WIDTH, HEIGHT, BASE_SETTINGS, mask);
+  const masked = createViewshedFixture(device, WALL, BASE_GRID, BASE_SETTINGS, mask);
   submitGraph(device, masked.compiled, undefined);
   const visibility = await readUint32(masked.visibilityBuffer, PIXEL_COUNT);
   expect(visibility[3 * WIDTH + 5]).toBe(V.noData);
@@ -159,7 +162,7 @@ it('GPUTerrainViewshed skips invalid cells and applies curvature', async () => {
       mask,
       WIDTH,
       HEIGHT,
-      getGPUTerrainViewshedParameterValues(BASE_SETTINGS)
+      getGPUTerrainViewshedParameterValues(BASE_SETTINGS, BASE_GRID)
     )
   );
   masked.destroy();
@@ -167,11 +170,11 @@ it('GPUTerrainViewshed skips invalid cells and applies curvature', async () => {
   const curvatureSettings: GPUTerrainViewshedSettings = {
     observer: [0, 0],
     observerHeight: 1,
-    cellSize: [1, 1],
     curvatureCoefficient: 0.25
   };
   const flat = new Float32Array(8);
-  const curved = createViewshedFixture(device, flat, 8, 1, curvatureSettings);
+  const curvedGrid = makeGPURasterMetadata({width: 8, height: 1});
+  const curved = createViewshedFixture(device, flat, curvedGrid, curvatureSettings);
   submitGraph(device, curved.compiled, undefined);
   const curvedVisibility = await readUint32(curved.visibilityBuffer, 8);
   expect(curvedVisibility).toEqual(
@@ -180,7 +183,7 @@ it('GPUTerrainViewshed skips invalid cells and applies curvature', async () => {
       undefined,
       8,
       1,
-      getGPUTerrainViewshedParameterValues(curvatureSettings)
+      getGPUTerrainViewshedParameterValues(curvatureSettings, curvedGrid)
     )
   );
   expect(curvedVisibility.slice(1, 3)).toEqual([V.visible, V.visible]);
@@ -209,7 +212,7 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
     id: 'texture-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainViewshedParameterValues(BASE_SETTINGS)
+    values: getGPUTerrainViewshedParameterValues(BASE_SETTINGS, BASE_GRID)
   });
   const graph = new GPUCommandGraph(device, {id: 'terrain-viewshed-texture'});
   const textureView = graph.createTextureView(
@@ -227,8 +230,7 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
   ) as never;
   graph.add(
     new GPUTerrainViewshed({
-      width: WIDTH,
-      height: HEIGHT,
+      grid: BASE_GRID,
       elevation: {
         id: 'elevation',
         format: 'uint32',
@@ -239,8 +241,8 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'uint32', PIXEL_COUNT)
         }
       },
-      settings: settings.importToGraph(graph),
-      visibilityTexture: textureView
+      parameters: settings.importToGraph(graph),
+      output: {visibilityTexture: textureView}
     })
   );
   new GPURasterTextureToBuffer({
@@ -270,40 +272,38 @@ it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility textu
 
 type ViewshedOptions = {
   traversal?: GPUTerrainSightLineTraversal;
-  tolerance?: GPUTerrainVisibilityToleranceSettings;
+  tolerance?: GPUTerrainViewshedToleranceSettings;
 };
 
 /** Runs one viewshed and returns its codes; the graph is rebuilt per call (topology varies). */
 async function runViewshed(
   device: Device,
   elevation: Float32Array,
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   settings: GPUTerrainViewshedSettings,
   options: ViewshedOptions = {}
 ): Promise<number[]> {
-  const pixelCount = width * height;
+  const pixelCount = grid.width * grid.height;
   const elevationBuffer = createInputBuffer(device, elevation);
   const visibilityBuffer = createOutputBuffer(device, pixelCount);
   const settingsBuffer = new GPUParameterBuffer(device, {
     id: 'viewshed-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainViewshedParameterValues(settings)
+    values: getGPUTerrainViewshedParameterValues(settings, grid)
   });
   const toleranceBuffer = options.tolerance
     ? new GPUParameterBuffer(device, {
         id: 'viewshed-tolerance',
         format: 'float32',
         length: 4,
-        values: getGPUTerrainVisibilityToleranceParameterValues(options.tolerance)
+        values: getGPUTerrainViewshedToleranceParameterValues(options.tolerance)
       })
     : undefined;
   const graph = new GPUCommandGraph(device, {id: 'terrain-viewshed-variant'});
   graph.add(
     new GPUTerrainViewshed({
-      width,
-      height,
+      grid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -312,10 +312,12 @@ async function runViewshed(
           values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', pixelCount)
         }
       },
-      settings: settingsBuffer.importToGraph(graph),
+      parameters: settingsBuffer.importToGraph(graph),
       traversal: options.traversal,
-      tolerance: toleranceBuffer?.importToGraph(graph),
-      visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+      toleranceParameters: toleranceBuffer?.importToGraph(graph),
+      output: {
+        visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -331,12 +333,16 @@ async function runViewshed(
 
 const FRACTAL_WIDTH = 96;
 const FRACTAL_HEIGHT = 80;
+const FRACTAL_GRID = makeGPURasterMetadata({
+  width: FRACTAL_WIDTH,
+  height: FRACTAL_HEIGHT,
+  cellSize: 30
+});
+const STRIP_GRID = makeGPURasterMetadata({width: 12, height: 1});
 
 it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createFractalTerrain(FRACTAL_WIDTH, FRACTAL_HEIGHT, 7, 55);
   const observers: [number, number][] = [
     [48, 40],
@@ -344,7 +350,7 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
     [90.75, 5.5],
     [0, 0]
   ];
-  const toleranceCases: (GPUTerrainVisibilityToleranceSettings | undefined)[] = [
+  const toleranceCases: (GPUTerrainViewshedToleranceSettings | undefined)[] = [
     undefined,
     {
       toleranceMeters: 2,
@@ -361,24 +367,16 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
         const settings: GPUTerrainViewshedSettings = {
           observer,
           observerHeight: 1.7,
-          cellSize: [30, 30],
           curvatureCoefficient
         };
-        const march = await runViewshed(device, terrain, FRACTAL_WIDTH, FRACTAL_HEIGHT, settings, {
+        const march = await runViewshed(device, terrain, FRACTAL_GRID, settings, {
           traversal: 'march',
           tolerance
         });
-        const pyramid = await runViewshed(
-          device,
-          terrain,
-          FRACTAL_WIDTH,
-          FRACTAL_HEIGHT,
-          settings,
-          {
-            traversal: 'pyramid',
-            tolerance
-          }
-        );
+        const pyramid = await runViewshed(device, terrain, FRACTAL_GRID, settings, {
+          traversal: 'pyramid',
+          tolerance
+        });
         expect(pyramid).toEqual(march);
         hiddenShare += march.filter(code => code === V.hidden).length / march.length;
         marginalCount += march.filter(code => code === V.marginal).length;
@@ -389,13 +387,11 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
               undefined,
               FRACTAL_WIDTH,
               FRACTAL_HEIGHT,
-              getGPUTerrainViewshedParameterValues(settings)
+              getGPUTerrainViewshedParameterValues(settings, FRACTAL_GRID)
             )
           );
           // The legacy kernel (no new props) agrees with the new march kernel.
-          expect(
-            await runViewshed(device, terrain, FRACTAL_WIDTH, FRACTAL_HEIGHT, settings)
-          ).toEqual(march);
+          expect(await runViewshed(device, terrain, FRACTAL_GRID, settings)).toEqual(march);
         }
       }
     }
@@ -409,27 +405,24 @@ it('GPUTerrainViewshed pyramid traversal is bit-identical to march', async () =>
 
 it('GPUTerrainViewshed tolerance bands classify marginal cells and ignore the last stretch', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 12 x 1 flat strip; observer at column 0 (eye 1). A wall of 0.5 at column 6 sticks 0.0167 slope
   // units (0.167 m at the target) above the sight line to column 10.
   const strip = new Float32Array(12);
   strip[6] = 0.5;
   const settings: GPUTerrainViewshedSettings = {
     observer: [0, 0],
-    observerHeight: 1,
-    cellSize: [1, 1]
+    observerHeight: 1
   };
   for (const traversal of ['march', 'pyramid'] as const) {
-    const exact = await runViewshed(device, strip, 12, 1, settings, {traversal});
+    const exact = await runViewshed(device, strip, STRIP_GRID, settings, {traversal});
     expect(exact[10]).toBe(V.hidden);
-    const wide = await runViewshed(device, strip, 12, 1, settings, {
+    const wide = await runViewshed(device, strip, STRIP_GRID, settings, {
       traversal,
       tolerance: {toleranceMeters: 0.5}
     });
     expect(wide[10]).toBe(V.marginal);
-    const narrow = await runViewshed(device, strip, 12, 1, settings, {
+    const narrow = await runViewshed(device, strip, STRIP_GRID, settings, {
       traversal,
       tolerance: {toleranceMeters: 0.05}
     });
@@ -441,13 +434,13 @@ it('GPUTerrainViewshed tolerance bands classify marginal cells and ignore the la
     // A target just behind its own lip: the lip at column 9 is ignored by the last stretch.
     const lip = new Float32Array(12);
     lip[9] = 5;
-    expect((await runViewshed(device, lip, 12, 1, settings, {traversal}))[10]).toBe(V.hidden);
-    const ignored = await runViewshed(device, lip, 12, 1, settings, {
+    expect((await runViewshed(device, lip, STRIP_GRID, settings, {traversal}))[10]).toBe(V.hidden);
+    const ignored = await runViewshed(device, lip, STRIP_GRID, settings, {
       traversal,
       tolerance: {targetIgnoreDistance: 1.5}
     });
     expect(ignored[10]).toBe(V.visible);
-    const fractionIgnored = await runViewshed(device, lip, 12, 1, settings, {
+    const fractionIgnored = await runViewshed(device, lip, STRIP_GRID, settings, {
       traversal,
       tolerance: {targetIgnoreFraction: 0.15}
     });
@@ -464,7 +457,6 @@ it('GPUTerrainViewshed with tolerance matches the float64 oracle away from knife
   const settings: GPUTerrainViewshedSettings = {
     observer: [30.5, 44.25],
     observerHeight: 1.7,
-    cellSize: [30, 30],
     curvatureCoefficient: 3e-5
   };
   const tolerance = {toleranceMeters: 2, tolerancePerKilometer: 1, targetIgnoreDistance: 90};
@@ -473,11 +465,11 @@ it('GPUTerrainViewshed with tolerance matches the float64 oracle away from knife
     undefined,
     FRACTAL_WIDTH,
     FRACTAL_HEIGHT,
-    getGPUTerrainViewshedParameterValues(settings),
-    getGPUTerrainVisibilityToleranceParameterValues(tolerance)
+    getGPUTerrainViewshedParameterValues(settings, FRACTAL_GRID),
+    getGPUTerrainViewshedToleranceParameterValues(tolerance)
   );
   for (const traversal of ['march', 'pyramid'] as const) {
-    const actual = await runViewshed(device, terrain, FRACTAL_WIDTH, FRACTAL_HEIGHT, settings, {
+    const actual = await runViewshed(device, terrain, FRACTAL_GRID, settings, {
       traversal,
       tolerance
     });

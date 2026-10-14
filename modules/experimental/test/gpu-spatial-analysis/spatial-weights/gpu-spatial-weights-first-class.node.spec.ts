@@ -5,7 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  getGPUSpatialWeightsCapacity,
+  getGPUSpatialWeightsCapacityPlan,
   getGPUSpatialWeightsKernelValue,
   GPU_SPATIAL_WEIGHTS_VIOLATION,
   GPUContiguityWeights,
@@ -49,16 +49,22 @@ const KERNELS: GPUSpatialWeightsKernel[] = [
 it('validateGPUSpatialWeights checks status formats and declared metadata', () => {
   const {view, weights} = setup();
   const base = weights(4, 10);
-  const info = {rowCount: 4, transform: 'raw' as const, symmetric: true as const};
-  expect(validateGPUSpatialWeights('test', {...base, info})).toBe(4);
-  expect(() => validateGPUSpatialWeights('test', {...base, info: {...info, rowCount: 3}})).toThrow(
-    /rowCount/
-  );
+  const information = {rowCount: 4, transform: 'raw' as const, symmetric: true as const};
+  expect(validateGPUSpatialWeights('test', {...base, information})).toBe(4);
   expect(() =>
-    validateGPUSpatialWeights('test', {...base, info: {...info, transform: 'nope' as 'raw'}})
+    validateGPUSpatialWeights('test', {...base, information: {...information, rowCount: 3}})
+  ).toThrow(/rowCount/);
+  expect(() =>
+    validateGPUSpatialWeights('test', {
+      ...base,
+      information: {...information, transform: 'nope' as 'raw'}
+    })
   ).toThrow(/transform/);
   expect(() =>
-    validateGPUSpatialWeights('test', {...base, info: {...info, symmetric: 'maybe' as 'unknown'}})
+    validateGPUSpatialWeights('test', {
+      ...base,
+      information: {...information, symmetric: 'maybe' as 'unknown'}
+    })
   ).toThrow(/symmetric/);
   expect(() =>
     validateGPUSpatialWeights('test', {
@@ -71,16 +77,31 @@ it('validateGPUSpatialWeights checks status formats and declared metadata', () =
   );
 });
 
-it('getGPUSpatialWeightsCapacity grows with headroom only when needed', () => {
-  expect(getGPUSpatialWeightsCapacity(100, 128)).toBe(128);
-  expect(getGPUSpatialWeightsCapacity(128, 128)).toBe(128);
-  expect(getGPUSpatialWeightsCapacity(200, 128)).toBe(250);
-  expect(getGPUSpatialWeightsCapacity(200, 128, 0)).toBe(200);
-  expect(() => getGPUSpatialWeightsCapacity(Number.NaN, 8)).toThrow(/requiredCount/);
+it('getGPUSpatialWeightsCapacityPlan grows with headroom only when needed', () => {
+  const plan = (requiredCount: number, capacity: number, headroom?: number) =>
+    getGPUSpatialWeightsCapacityPlan({rowCount: 10, capacity, requiredCount, headroom}).capacity;
+  expect(plan(100, 128)).toBe(128);
+  expect(plan(128, 128)).toBe(128);
+  expect(plan(200, 128)).toBe(250);
+  expect(plan(200, 128, 0)).toBe(200);
+  expect(() => plan(Number.NaN, 8)).toThrow(/requiredCount/);
+  // Output bytes: neighbor + weight per slot (+ distance), and rowCount + 1 offsets.
+  const grown = getGPUSpatialWeightsCapacityPlan({
+    rowCount: 10,
+    capacity: 128,
+    requiredCount: 200,
+    distances: true
+  });
+  expect(grown).toMatchObject({capacity: 250, estimatedRequiredCount: 200, limited: false});
+  expect(grown.offsetsByteLength).toBe(44);
+  expect(grown.estimatedOutputBytes).toBe(250 * 12 + 44);
+  expect(getGPUSpatialWeightsCapacityPlan({rowCount: 10, capacity: 8}).estimatedOutputBytes).toBe(
+    8 * 8 + 44
+  );
 });
 
 it('getGPUSpatialWeightsKernelValue reproduces libpysal Kernel(fixed=False) weights and K(0)', () => {
-  // Oracle: fix/work/A/oracle-u4-weights.py (libpysal 4.15), adaptive bandwidth h_i = d_k * 1.0000001.
+  // Oracle: test/oracles/statistics-spatial-weights.py (libpysal 4.15), adaptive bandwidth h_i = d_k * 1.0000001.
   for (const kernel of KERNELS) {
     const oracle = WEIGHTS_ORACLE.kernels[kernel];
     expect(getGPUSpatialWeightsKernelValue(kernel, 0), `${kernel} K(0)`).toBeCloseTo(
@@ -104,7 +125,7 @@ it("GPUSpatialWeightsTransform 'kernel' requires a bandwidth and kNN weights for
   const input = weights(4, 10);
   const knn: GPUSpatialWeights = {
     ...input,
-    info: {
+    information: {
       rowCount: 4,
       transform: 'raw',
       symmetric: false,
@@ -112,7 +133,7 @@ it("GPUSpatialWeightsTransform 'kernel' requires a bandwidth and kNN weights for
     }
   };
   expect(() => new GPUSpatialWeightsTransform({operation: 'kernel', weights: input})).toThrow(
-    /requires a bandwidth/
+    /needs a bandwidth/
   );
   expect(
     () =>
@@ -125,13 +146,13 @@ it("GPUSpatialWeightsTransform 'kernel' requires a bandwidth and kNN weights for
         bandwidth: 'adaptive',
         weights: {
           ...input,
-          info: {...knn.info!, provenance: {source: 'x', criterion: 'distance-band'}}
+          information: {...knn.information!, provenance: {source: 'x', criterion: 'distance-band'}}
         }
       })
-  ).toThrow(/numeric bandwidth/);
+  ).toThrow(/kNN weights/);
   expect(
     new GPUSpatialWeightsTransform({operation: 'kernel', bandwidth: 'adaptive', weights: knn})
-      .outputWeights.info
+      .outputWeights.information
   ).toMatchObject({transform: 'kernel', symmetric: 'unknown'});
   expect(
     () =>
@@ -148,7 +169,7 @@ it('GPUSpatialWeightsTransform.outputWeights describes the transform honestly', 
   const {weights, view} = setup();
   const symmetricInput: GPUSpatialWeights = {
     ...weights(4, 10),
-    info: {
+    information: {
       rowCount: 4,
       transform: 'raw',
       symmetric: true,
@@ -170,58 +191,68 @@ it('GPUSpatialWeightsTransform.outputWeights describes the transform honestly', 
     ['variance', 'variance', 'unknown']
   ] as const) {
     const output = describe({operation});
-    expect(output.info, operation).toMatchObject({rowCount: 4, transform, symmetric});
+    expect(output.information, operation).toMatchObject({rowCount: 4, transform, symmetric});
     expect(output.status?.overflow).toBe(symmetricInput.status?.overflow);
-    expect(output.info?.provenance).toMatchObject({
+    expect(output.information?.provenance).toMatchObject({
       source: 'GPUSpatialWeightsTransform',
       criterion: 'distance-band',
       radius: 3
     });
   }
   const fixed = describe({operation: 'kernel', bandwidth: 2.5});
-  expect(fixed.info).toMatchObject({transform: 'kernel', symmetric: true});
-  expect(fixed.info?.provenance?.radius).toBe(2.5);
+  expect(fixed.information).toMatchObject({transform: 'kernel', symmetric: true});
+  expect(fixed.information?.provenance?.radius).toBe(2.5);
   const symmetrize = describe({operation: 'symmetrize', output: view('float32', 10)});
-  expect(symmetrize.info).toMatchObject({transform: 'symmetric', symmetric: true});
+  expect(symmetrize.information).toMatchObject({transform: 'symmetric', symmetric: true});
   expect(symmetrize.weights).not.toBe(symmetricInput.weights);
   // Unknown symmetry on the input is never promoted.
   const unknown = new GPUSpatialWeightsTransform({
     operation: 'binary',
     weights: weights(4, 10)
   }).outputWeights;
-  expect(unknown.info?.symmetric).toBe('unknown');
+  expect(unknown.information?.symmetric).toBe('unknown');
 });
 
-it('producers expose outputWeights with info and status', () => {
+it('producers expose outputWeights with information and status', () => {
   const {graph, view, weights} = setup();
+  const output = (rows: number, capacity: number, distances = true, requiredCount = true) => ({
+    ...weights(rows, capacity, distances),
+    status: {
+      overflow: view('uint32', 1),
+      requiredCount: requiredCount ? view('uint32', 1) : undefined
+    }
+  });
   const contiguity = new GPUContiguityWeights({
     criterion: 'rook',
-    positions: view('float32x2', 8),
-    ringOffsets: view('uint32', 3),
-    polygonOffsets: view('uint32', 3),
-    weights: weights(2, 8, false),
-    overflow: view('uint32', 1),
-    totalNeighbors: view('uint32', 1)
+    polygons: {
+      kind: 'polygons',
+      positions: view('float32x2', 8),
+      ringOffsets: view('uint32', 3),
+      polygonOffsets: view('uint32', 3),
+      featureOffsets: view('uint32', 3)
+    },
+    output: output(2, 8, false)
   });
-  expect(contiguity.outputWeights.info).toMatchObject({
+  expect(contiguity.outputWeights.information).toMatchObject({
     rowCount: 2,
     transform: 'binary',
     symmetric: true,
     hasSelfWeights: false,
     provenance: {source: 'GPUContiguityWeights', criterion: 'rook'}
   });
-  expect(contiguity.outputWeights.status?.overflow).toBe(contiguity.props.overflow);
-  expect(contiguity.outputWeights.status?.requiredCount).toBe(contiguity.props.totalNeighbors);
-  expect(contiguity.outputWeights.offsets).toBe(contiguity.props.weights.offsets);
+  expect(contiguity.outputWeights.status?.overflow).toBe(contiguity.props.output.status.overflow);
+  expect(contiguity.outputWeights.status?.requiredCount).toBe(
+    contiguity.props.output.status.requiredCount
+  );
+  expect(contiguity.outputWeights.offsets).toBe(contiguity.props.output.offsets);
 
   const lattice = new GPULatticeWeights({
     width: 3,
     height: 2,
     criterion: 'queen',
-    weights: weights(6, 20),
-    overflow: view('uint32', 1)
+    output: output(6, 20, true, false)
   });
-  expect(lattice.outputWeights.info).toMatchObject({
+  expect(lattice.outputWeights.information).toMatchObject({
     rowCount: 6,
     symmetric: true,
     provenance: {criterion: 'queen', order: 1}
@@ -230,28 +261,27 @@ it('producers expose outputWeights with info and status', () => {
 
   const left: GPUSpatialWeights = {
     ...weights(4, 10),
-    info: {rowCount: 4, transform: 'raw', symmetric: true}
+    information: {rowCount: 4, transform: 'raw', symmetric: true}
   };
-  const right: GPUSpatialWeights = {...weights(4, 10), info: {...left.info!, symmetric: 'unknown'}};
+  const right: GPUSpatialWeights = {
+    ...weights(4, 10),
+    information: {...left.information!, symmetric: 'unknown'}
+  };
   const union = new GPUSpatialWeightsAlgebra({
     operation: 'union',
     left,
     right,
-    output: weights(4, 16),
-    overflow: view('uint32', 1),
-    totalNeighbors: view('uint32', 1)
+    output: output(4, 16)
   });
-  expect(union.outputWeights.info).toMatchObject({transform: 'raw', symmetric: 'unknown'});
-  expect(union.outputWeights.status?.requiredCount).toBe(union.props.totalNeighbors);
+  expect(union.outputWeights.information).toMatchObject({transform: 'raw', symmetric: 'unknown'});
+  expect(union.outputWeights.status?.requiredCount).toBe(union.props.output.status.requiredCount);
   const second = new GPUSpatialWeightsAlgebra({
     operation: 'higherOrder',
     order: 2,
     weights: left,
-    output: weights(4, 16, false),
-    overflow: view('uint32', 1),
-    totalNeighbors: view('uint32', 1)
+    output: output(4, 16, false)
   });
-  expect(second.outputWeights.info).toMatchObject({
+  expect(second.outputWeights.information).toMatchObject({
     transform: 'binary',
     symmetric: true,
     provenance: {order: 2}
@@ -262,25 +292,25 @@ it('producers expose outputWeights with info and status', () => {
     operation: 'higherOrder',
     order: 1,
     weights: left,
-    output: weights(4, 16, false),
-    overflow: view('uint32', 1),
-    totalNeighbors: view('uint32', 1)
+    output: output(4, 16, false)
   });
-  expect(first.outputWeights.status?.requiredCount).toBe(first.props.totalNeighbors);
+  expect(first.outputWeights.status?.requiredCount).toBe(first.props.output.status.requiredCount);
   const self = new GPUSpatialWeightsAlgebra({
     operation: 'selfWeight',
     selfWeight: 1,
-    weights: {...left, info: {...left.info!, transform: 'row'}},
-    output: weights(4, 16),
-    overflow: view('uint32', 1)
+    weights: {...left, information: {...left.information!, transform: 'row'}},
+    output: output(4, 16, true, false)
   });
-  expect(self.outputWeights.info).toMatchObject({transform: 'unknown', hasSelfWeights: true});
+  expect(self.outputWeights.information).toMatchObject({
+    transform: 'unknown',
+    hasSelfWeights: true
+  });
 
   const transpose = new GPUSpatialWeightsTranspose({
-    weights: {...left, info: {...left.info!, transform: 'row', symmetric: false}},
+    weights: {...left, information: {...left.information!, transform: 'row', symmetric: false}},
     output: weights(4, 10)
   });
-  expect(transpose.outputWeights.info).toMatchObject({
+  expect(transpose.outputWeights.information).toMatchObject({
     rowCount: 4,
     transform: 'unknown',
     symmetric: false
@@ -292,23 +322,25 @@ it('GPUSpatialWeightsValidation validates props and declares nodes', () => {
   const {graph, view, weights} = setup();
   const input = weights(4, 10);
   expect(
-    () => new GPUSpatialWeightsValidation({weights: input, invalidCount: view('uint32', 0)})
+    () =>
+      new GPUSpatialWeightsValidation({
+        weights: input,
+        output: {status: {invalidCount: view('uint32', 0)}}
+      })
   ).toThrow(/invalidCount/);
   expect(
     () =>
       new GPUSpatialWeightsValidation({
         weights: input,
-        invalidCount: view('uint32', 1),
-        flags: view('uint32', 3)
+        output: {flags: view('uint32', 3), status: {invalidCount: view('uint32', 1)}}
       })
   ).toThrow(/flags length/);
   const node = new GPUSpatialWeightsValidation({
     weights: input,
-    invalidCount: view('uint32', 1),
-    flags: view('uint32', 4)
+    output: {flags: view('uint32', 4), status: {invalidCount: view('uint32', 1)}}
   });
   expect(node.getCommandNodes(graph)[0].id).toBe('spatial-weights-validation-rows');
-  expect(node.outputWeights.status?.invalidCount).toBe(node.props.invalidCount);
+  expect(node.outputWeights.status?.invalidCount).toBe(node.props.output.status.invalidCount);
   const bits = Object.values(GPU_SPATIAL_WEIGHTS_VIOLATION);
   expect(new Set(bits).size).toBe(bits.length);
   expect(bits.every(bit => (bit & (bit - 1)) === 0)).toBe(true);

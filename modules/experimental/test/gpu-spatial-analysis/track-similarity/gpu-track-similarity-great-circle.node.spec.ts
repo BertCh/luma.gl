@@ -5,7 +5,7 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUTrackSimilarity} from '../../../src/gpu-spatial-analysis/track-similarity/index';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const GREAT_CIRCLE = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
@@ -20,13 +20,18 @@ function createProps() {
   return {
     graph,
     props: {
-      positionsA: view('float32x2', 6, 'positions'),
-      offsetsA: view('uint32', 3, 'offsets'),
+      linesA: {
+        kind: 'lines' as const,
+        positions: view('float32x2', 6, 'positions'),
+        lineOffsets: view('uint32', 3, 'offsets')
+      },
       pairA: view('uint32', 2, 'pair-a'),
       pairB: view('uint32', 2, 'pair-b'),
-      hausdorff: view('float32', 2, 'hausdorff'),
-      frechet: view('float32', 2, 'frechet'),
-      maxDistance: view('float32', 2, 'max-distance')
+      output: {
+        hausdorff: view('float32', 2, 'hausdorff'),
+        frechet: view('float32', 2, 'frechet'),
+        maximumDistance: view('float32', 2, 'max-distance')
+      }
     }
   };
 }

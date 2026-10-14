@@ -94,7 +94,7 @@ it('getGPUSpatialTwoStageLeastSquaresModelResult builds the shared result from G
   expect(result.residualSumOfSquares).toBeCloseTo(reference.sigma2 * 144, 3);
   expect(result.pseudoRSquared).toBeCloseTo(reference.pseudoRSquared, 6);
   expect(result.logLikelihood).toBeNull();
-  expect(result.tests.anselinKelejian).toEqual({
+  expect(result.tests['anselinKelejian']).toEqual({
     statistic: expect.closeTo(reference.anselinKelejian[0], 5),
     degreesOfFreedom: 1,
     pValue: expect.closeTo(reference.anselinKelejian[1], 5)

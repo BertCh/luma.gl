@@ -10,9 +10,11 @@ import {
   GPURasterProfile,
   GPURasterSampling
 } from '../../../src/gpu-raster/raster-sampling';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
   getCubicWeightsOnCPU,
+  makeExtentGrid,
   profileRasterOnCPU,
   sampleRasterOnCPU,
   type OracleRaster
@@ -51,48 +53,44 @@ function pack(
   method: 'nearest' | 'bilinear' | 'bicubic',
   noDataPolicy: 'strict' | 'renormalize' = 'strict'
 ) {
-  return getGPURasterSamplingParameterValues({
-    width: 8,
-    height: 8,
-    extent: EXTENT,
-    method,
-    noDataPolicy
-  });
+  return getGPURasterSamplingParameterValues({method, noDataPolicy}, makeExtentGrid(8, 8, EXTENT));
 }
 
 it('raster-sampling parameter helpers pack layouts and validate', () => {
-  const values = getGPURasterSamplingParameterValues({
-    width: 4,
-    height: 2,
-    extent: [10, 20, 18, 24],
-    method: 'bicubic',
-    noDataPolicy: 'renormalize'
-  });
-  expect(Array.from(values)).toEqual([10, 20, 18, 24, 2, 2, 0.5, 0.5, 2, 1, 0, 0]);
-  const profile = getGPURasterProfileParameterValues({
-    width: 4,
-    height: 2,
-    extent: [10, 20, 18, 24],
-    spacing: 1.5
-  });
+  const values = getGPURasterSamplingParameterValues(
+    {method: 'bicubic', noDataPolicy: 'renormalize'},
+    makeExtentGrid(4, 2, [10, 20, 18, 24])
+  );
+  expect(Array.from(values)).toEqual([10, 20, 18, 24, 2, 2, 0.5, 0.5, 2, 1, 0, 20]);
+  const profile = getGPURasterProfileParameterValues(
+    {spacing: 1.5},
+    makeExtentGrid(4, 2, [10, 20, 18, 24])
+  );
   expect(profile[10]).toBe(1.5);
   expect(profile[8]).toBe(1);
   expect(profile[9]).toBe(0);
+  // A north-up grid has the same extent, a negative row reciprocal and the row origin at maxY.
+  const northUp = getGPURasterSamplingParameterValues(
+    {localOrigin: [10, 20]},
+    makeGPURasterMetadata({width: 4, height: 2, cellSize: 2, origin: [10, 24]})
+  );
+  expect(Array.from(northUp)).toEqual([0, 0, 8, 4, 2, 2, 0.5, -0.5, 1, 0, 0, 4]);
+  const unit = makeExtentGrid(2, 2, [0, 0, 1, 1]);
   expect(() =>
-    getGPURasterProfileParameterValues({width: 4, height: 2, extent: [0, 0, 1, 1], spacing: 0})
+    getGPURasterProfileParameterValues({spacing: 0}, makeExtentGrid(4, 2, [0, 0, 1, 1]))
   ).toThrow(/spacing/);
   expect(() =>
-    getGPURasterSamplingParameterValues({width: 0, height: 2, extent: [0, 0, 1, 1]})
-  ).toThrow(/width/);
+    getGPURasterSamplingParameterValues({}, makeGPURasterMetadata({width: 0, height: 2}))
+  ).toThrow(/grid dimensions/);
   expect(() =>
-    getGPURasterSamplingParameterValues({width: 2, height: 2, extent: [1, 0, 1, 1]})
-  ).toThrow(/extent/);
+    getGPURasterSamplingParameterValues({}, {...unit, affine: [0, 0, 0, 0, 1, 0]})
+  ).toThrow(/cell size/);
   expect(() =>
-    getGPURasterSamplingParameterValues(
-      {width: 2, height: 2, extent: [0, 0, 1, 1]},
-      new Float32Array(3)
-    )
-  ).toThrow(/12 elements/);
+    getGPURasterSamplingParameterValues({}, {...unit, affine: [1, 0.5, 0, 0, 1, 0]})
+  ).toThrow(/axis-aligned/);
+  expect(() => getGPURasterSamplingParameterValues({}, unit, new Float32Array(3))).toThrow(
+    /12 values/
+  );
 });
 
 it('raster-sampling oracle: nearest, outside, edges and clamping', () => {
@@ -163,36 +161,26 @@ it('raster-sampling oracle: nodata policies', () => {
   expect(sampleRasterOnCPU(flagged, pack('nearest'), 6.5, 0.5)).toBe(6);
 });
 
-it('raster-profile oracle: ramp, counts and zero-length paths', () => {
+it('raster-profile oracle: ramp, counts and zero-length lines', () => {
   const ramp = createPlane(10, 0);
-  const parameters = getGPURasterProfileParameterValues({
-    width: 8,
-    height: 8,
-    extent: EXTENT,
-    spacing: 2
-  });
-  // Path 0 rises along the ramp, path 1 is zero length, path 2 has no vertices, path 3 descends.
-  const pathPositions = new Float32Array([0.5, 4, 6.5, 4, 3, 3, 6.5, 4, 0.5, 4]);
-  const pathOffsets = Uint32Array.from([0, 2, 3, 3, 5]);
-  const profile = profileRasterOnCPU(ramp, parameters, pathPositions, pathOffsets);
+  const parameters = getGPURasterProfileParameterValues({spacing: 2}, makeExtentGrid(8, 8, EXTENT));
+  // Line 0 rises along the ramp, line 1 is zero length, line 2 has no vertices, line 3 descends.
+  const linePositions = new Float32Array([0.5, 4, 6.5, 4, 3, 3, 6.5, 4, 0.5, 4]);
+  const lineOffsets = Uint32Array.from([0, 2, 3, 3, 5]);
+  const profile = profileRasterOnCPU(ramp, parameters, linePositions, lineOffsets);
   expect(Array.from(profile.sampleOffsets)).toEqual([0, 4, 5, 5, 9]);
-  expect(Array.from(profile.pathLength)).toEqual([6, 0, 0, 6]);
+  expect(Array.from(profile.lineLengths)).toEqual([6, 0, 0, 6]);
   expect(Array.from(profile.sampleDistances.slice(0, 4))).toEqual([0, 2, 4, 6]);
   expect(Array.from(profile.sampleValues.slice(0, 4))).toEqual([0, 20, 40, 60]);
-  expect(Array.from(profile.pathGain)).toEqual([60, 0, 0, 0]);
-  expect(Array.from(profile.pathLoss)).toEqual([0, 0, 0, 60]);
+  expect(Array.from(profile.lineGains)).toEqual([60, 0, 0, 0]);
+  expect(Array.from(profile.lineLosses)).toEqual([0, 0, 0, 60]);
   expect(Array.from(profile.sampleCumulativeGain.slice(0, 4))).toEqual([0, 20, 40, 60]);
-  expect(Array.from(profile.pathMinimum)).toEqual([0, 25, NaN, 0]);
-  expect(Array.from(profile.pathMaximum)).toEqual([60, 25, NaN, 60]);
-  expect(Array.from(profile.samplePathIds)).toEqual([0, 0, 0, 0, 1, 3, 3, 3, 3]);
+  expect(Array.from(profile.lineMinimums)).toEqual([0, 25, NaN, 0]);
+  expect(Array.from(profile.lineMaximums)).toEqual([60, 25, NaN, 60]);
+  expect(Array.from(profile.sampleLineIds)).toEqual([0, 0, 0, 0, 1, 3, 3, 3, 3]);
   // Spacing that does not divide the length: samples at 0, 4 and the final vertex at 6.
-  const wide = getGPURasterProfileParameterValues({
-    width: 8,
-    height: 8,
-    extent: EXTENT,
-    spacing: 4
-  });
-  const wideProfile = profileRasterOnCPU(ramp, wide, pathPositions, pathOffsets);
+  const wide = getGPURasterProfileParameterValues({spacing: 4}, makeExtentGrid(8, 8, EXTENT));
+  const wideProfile = profileRasterOnCPU(ramp, wide, linePositions, lineOffsets);
   expect(Array.from(wideProfile.sampleOffsets)).toEqual([0, 3, 4, 4, 7]);
   expect(Array.from(wideProfile.sampleDistances.slice(0, 3))).toEqual([0, 4, 6]);
 });
@@ -200,13 +188,10 @@ it('raster-profile oracle: ramp, counts and zero-length paths', () => {
 it('raster-profile oracle: NaN-aware gain and loss', () => {
   const raster = createPlane(10, 0);
   raster.values[4] = NaN;
-  const parameters = getGPURasterProfileParameterValues({
-    width: 8,
-    height: 8,
-    extent: EXTENT,
-    method: 'nearest',
-    spacing: 1
-  });
+  const parameters = getGPURasterProfileParameterValues(
+    {method: 'nearest', spacing: 1},
+    makeExtentGrid(8, 8, EXTENT)
+  );
   const profile = profileRasterOnCPU(
     raster,
     parameters,
@@ -215,11 +200,11 @@ it('raster-profile oracle: NaN-aware gain and loss', () => {
   );
   // Samples at x = 0.5 ... 7.5: cell 4 is NaN and skipped; consecutive valid samples are 10 apart.
   expect(profile.sampleValues[4]).toBeNaN();
-  expect(profile.pathGain[0]).toBe(70);
-  expect(profile.pathLoss[0]).toBe(0);
+  expect(profile.lineGains[0]).toBe(70);
+  expect(profile.lineLosses[0]).toBe(0);
   expect(profile.sampleCumulativeGain[4]).toBe(30);
-  expect(profile.pathMinimum[0]).toBe(0);
-  expect(profile.pathMaximum[0]).toBe(70);
+  expect(profile.lineMinimums[0]).toBe(0);
+  expect(profile.lineMaximums[0]).toBe(70);
 });
 
 it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
@@ -227,8 +212,7 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
     const parameters = view(graph, 'float32', 12);
     const sampling = (overrides: Record<string, unknown> = {}) =>
       new GPURasterSampling({
-        width: 4,
-        height: 4,
+        grid: makeGPURasterMetadata({width: 4, height: 4}),
         values: view(graph, 'float32', 16),
         positions: view(graph, 'float32x2', 5),
         parameters,
@@ -236,7 +220,9 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
         ...overrides
       } as ConstructorParameters<typeof GPURasterSampling>[0]);
     expect(sampling({id: 'custom'}).id).toBe('custom');
-    expect(() => sampling({width: 0})).toThrow(/width/);
+    expect(() => sampling({grid: makeGPURasterMetadata({width: 0, height: 4})})).toThrow(
+      /grid dimensions/
+    );
     expect(() => sampling({noDataValue: NaN})).toThrow(/noDataValue/);
     expect(() => sampling({values: view(graph, 'float32', 15)})).toThrow(/values/);
     expect(() => sampling({values: view(graph, 'uint32', 16)})).toThrow(/float32/);
@@ -249,54 +235,53 @@ it('GPURasterSampling and GPURasterProfile validate their inputs', () => {
 
     const profile = (overrides: Record<string, unknown> = {}) =>
       new GPURasterProfile({
-        width: 4,
-        height: 4,
+        grid: makeGPURasterMetadata({width: 4, height: 4}),
         values: view(graph, 'float32', 16),
-        pathPositions: view(graph, 'float32x2', 6),
-        pathOffsets: view(graph, 'uint32', 3),
+        positions: view(graph, 'float32x2', 6),
+        lineOffsets: view(graph, 'uint32', 3),
         parameters,
         output: {
-          count: view(graph, 'uint32', 1),
-          overflow: view(graph, 'uint32', 1),
+          status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)},
           sampleValues: view(graph, 'float32', 10)
         },
         ...overrides
       } as ConstructorParameters<typeof GPURasterProfile>[0]);
     const created = profile();
-    expect(created.pathCount).toBe(2);
+    expect(created.lineCount).toBe(2);
     expect(created.sampleCapacity).toBe(10);
-    expect(() => profile({pathOffsets: view(graph, 'uint32', 1)})).toThrow(/pathOffsets/);
-    expect(() => profile({output: {count: view(graph, 'uint32', 1)}})).toThrow(/overflow/);
+    expect(() => profile({lineOffsets: view(graph, 'uint32', 1)})).toThrow(/lineOffsets/);
+    expect(() => profile({output: {status: {count: view(graph, 'uint32', 1)}}})).toThrow(
+      /overflow/
+    );
     expect(() =>
-      profile({output: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}})
+      profile({
+        output: {status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}}
+      })
     ).toThrow(/sampleCapacity/);
     expect(() =>
       profile({
         output: {
-          count: view(graph, 'uint32', 1),
-          overflow: view(graph, 'uint32', 1),
+          status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)},
           sampleValues: view(graph, 'float32', 10),
-          pathGain: view(graph, 'float32', 1)
+          lineGains: view(graph, 'float32', 1)
         }
       })
-    ).toThrow(/pathGain/);
+    ).toThrow(/lineGains/);
     expect(() =>
       profile({
         output: {
-          count: view(graph, 'uint32', 1),
-          overflow: view(graph, 'uint32', 1),
+          status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)},
           sampleValues: view(graph, 'float32', 10),
-          pathSampleOffsets: view(graph, 'uint32', 2)
+          lineSampleOffsets: view(graph, 'uint32', 2)
         }
       })
-    ).toThrow(/pathSampleOffsets/);
+    ).toThrow(/lineSampleOffsets/);
     expect(() => profile({sampleCapacity: 12})).toThrow(/sampleValues/);
     const shared = view(graph, 'float32', 10);
     expect(() =>
       profile({
         output: {
-          count: view(graph, 'uint32', 1),
-          overflow: view(graph, 'uint32', 1),
+          status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)},
           sampleValues: shared,
           sampleDistances: shared
         }
@@ -310,32 +295,31 @@ it('GPURasterSampling and GPURasterProfile create deterministic nodes', () => {
     const parameters = view(graph, 'float32', 12);
     const sampling = new GPURasterSampling({
       id: 's',
-      width: 4,
-      height: 4,
+      grid: makeGPURasterMetadata({width: 4, height: 4}),
       values: view(graph, 'float32', 16),
       positions: view(graph, 'float32x2', 5),
       parameters,
-      output: {values: view(graph, 'float32', 5), validity: view(graph, 'uint32', 5)}
+      output: {values: view(graph, 'float32', 5), outputValidity: view(graph, 'uint32', 5)}
     });
     expect(sampling.getCommandNodes(graph).map(node => node.id)).toEqual(['s-sample']);
     const profile = new GPURasterProfile({
       id: 'p',
-      width: 4,
-      height: 4,
+      grid: makeGPURasterMetadata({width: 4, height: 4}),
       values: view(graph, 'float32', 16),
-      pathPositions: view(graph, 'float32x2', 6),
-      pathOffsets: view(graph, 'uint32', 3),
+      positions: view(graph, 'float32x2', 6),
+      lineOffsets: view(graph, 'uint32', 3),
       sampleCapacity: 8,
       parameters,
-      output: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}
+      output: {status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}}
     });
     const ids = profile.getCommandNodes(graph).map(node => node.id);
     expect(ids[0]).toBe('p-truncated-fill');
     expect(ids[1]).toBe('p-measure');
     expect(ids).toContain('p-locate');
     expect(ids).toContain('p-sample');
-    expect(ids).toContain('p-cumulative');
+    // No cumulative column or line summary is requested, so the cumulative scan is skipped.
+    expect(ids.filter(id => id.startsWith('p-cumulative'))).toEqual([]);
     expect(ids.at(-1)).toBe('p-finish-counts');
-    expect(ids).not.toContain('p-finish-paths');
+    expect(ids).not.toContain('p-finish-lines');
   });
 });

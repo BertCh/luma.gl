@@ -12,6 +12,11 @@ import {
   type GPUGeographicallyWeightedRegressionSettings
 } from '../../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
 import {getStudentTCriticalValue} from '../../../src/gpu-spatial-analysis/spatial-regression/gwr-student-t';
+import {
+  getGPUGoldenSectionTolerance,
+  getMgwrGoldenSectionTolerance,
+  simulateGoldenSectionSearch
+} from './gwr-golden-section-reference';
 
 /** Inputs of {@link computeGeographicallyWeightedRegressionOnCPU}. */
 export type GeographicallyWeightedRegressionOracleInput = {
@@ -31,6 +36,14 @@ export type GeographicallyWeightedRegressionOracleInput = {
   refinementPassCount?: number;
   /** Great-circle distances on a sphere of this radius (positions in degrees); planar when omitted. */
   sphereRadius?: number;
+  /** Bandwidth search; defaults to the ladder. Golden section follows `bandwidthSearch` of the GPU. */
+  bandwidthSearch?: 'ladder' | 'golden-section';
+  /** Golden-section iterations, the GPU default is 30. */
+  maximumSearchIterations?: number;
+  /** Golden-section convergence tolerance: the kernel's float32 floor (default) or mgwr's 1e-6. */
+  searchTolerance?: 'gpu' | 'mgwr';
+  /** Gaussian weights of rows farther than this many bandwidths are 0; exact Gaussian when omitted. */
+  gaussianCutoff?: number;
 };
 
 /** One evaluated bandwidth candidate. */
@@ -60,8 +73,16 @@ export type GeographicallyWeightedRegressionOracleResult = {
   bandwidthScores: number[];
   /** Every candidate of every pass in table order (caller ladder first). */
   candidates: GeographicallyWeightedRegressionOracleCandidate[];
-  /** Selected index in table order (pass * ladderCapacity + candidate). */
+  /**
+   * Selected index in table order (pass * ladderCapacity + candidate); with golden section the
+   * candidate table row (evaluation order).
+   */
   selectedIndex: number;
+  /** Golden section only: mgwr iterations (comparisons) and whether the tolerance stopped it. */
+  searchIterationCount?: number;
+  searchConverged?: boolean;
+  /** Golden section only: the bounds the search started from. */
+  searchBounds?: [number, number];
   selectedValue: number;
   residualSumOfSquares: number;
   traceOfHat: number;
@@ -89,11 +110,15 @@ type LocalFit = {
   variance: number[];
 };
 
-/** Gaussian or bisquare weight of distance `d` at bandwidth `h`. */
+/**
+ * Gaussian or bisquare weight of distance `d` at bandwidth `h`. A Gaussian `cutoff` zeroes the
+ * weight of rows farther than `cutoff * h`.
+ */
 export function getGeographicallyWeightedRegressionWeight(
   kernel: 'gaussian' | 'bisquare',
   distance: number,
-  bandwidth: number
+  bandwidth: number,
+  cutoff?: number
 ): number {
   const ratio = distance / bandwidth;
   if (kernel === 'bisquare') {
@@ -101,6 +126,9 @@ export function getGeographicallyWeightedRegressionWeight(
       return 0;
     }
     return (1 - ratio * ratio) ** 2;
+  }
+  if (cutoff !== undefined && distance > cutoff * bandwidth) {
+    return 0;
   }
   return Math.exp(-0.5 * ratio * ratio);
 }
@@ -262,7 +290,8 @@ export function computeGeographicallyWeightedRegressionOnCPU(
       const weight = getGeographicallyWeightedRegressionWeight(
         kernel,
         distance(row, other),
-        bandwidth
+        bandwidth,
+        input.gaussianCutoff
       );
       if (!(weight > 0)) {
         continue;
@@ -475,12 +504,84 @@ export function computeGeographicallyWeightedRegressionOnCPU(
     }
     candidates.push(...block);
   };
-  padBlock(ladder.map(evaluate));
-  for (let pass = 1; pass <= refinementPassCount; pass++) {
-    padBlock(getRefinedLadder(candidates).map(evaluate));
+  const isGoldenSection = input.bandwidthSearch === 'golden-section';
+  let searchIterationCount: number | undefined;
+  let searchConverged: boolean | undefined;
+  let searchBounds: [number, number] | undefined;
+  let optimumRow = -1;
+  let bandwidthScores: number[];
+  if (isGoldenSection && ladder.length >= 2) {
+    // Bounds: the first two ladder values when positive, else mgwr's defaults (adaptive
+    // [40 + 2 p, n capped at the neighbour list], fixed [min_dist / 2, 2 max_dist]).
+    let lower = 0;
+    let upper = 0;
+    if (isAdaptive) {
+      lower = 40 + 2 * p;
+      upper = Math.min(includedCount, maximumK);
+    } else {
+      let nearest = Number.POSITIVE_INFINITY;
+      let farthest = 0;
+      for (let row = 0; row < rowCount; row++) {
+        for (let other = 0; other < rowCount && valid[row]; other++) {
+          if (!valid[other]) {
+            continue;
+          }
+          const separation = distance(row, other);
+          if (separation > 0) {
+            nearest = Math.min(nearest, separation);
+          }
+          farthest = Math.max(farthest, separation);
+        }
+      }
+      if (includedCount > 0 && Number.isFinite(nearest)) {
+        lower = nearest / 2;
+        upper = 2 * farthest;
+      }
+    }
+    if (ladder[0] > 0) lower = ladder[0];
+    if (ladder[1] > 0) upper = ladder[1];
+    searchBounds = [Math.min(lower, upper), Math.max(lower, upper)];
+    const evaluated: GeographicallyWeightedRegressionOracleCandidate[] = [];
+    const trace = simulateGoldenSectionSearch({
+      lower,
+      upper,
+      isAdaptive,
+      maximumIterations: input.maximumSearchIterations ?? 30,
+      getTolerance:
+        input.searchTolerance === 'mgwr'
+          ? getMgwrGoldenSectionTolerance
+          : getGPUGoldenSectionTolerance,
+      evaluate: value => {
+        const candidate = evaluate(value);
+        evaluated.push(candidate);
+        return {score: candidate.aicc, singularRowCount: candidate.singularRowCount};
+      }
+    });
+    const rowCountOfTable = (input.maximumSearchIterations ?? 30) + 1;
+    for (let row = 0; row < rowCountOfTable; row++) {
+      candidates.push(unused());
+    }
+    trace.evaluations.forEach((evaluation, index) => {
+      candidates[evaluation.row] = evaluated[index];
+    });
+    optimumRow = trace.optimumRow;
+    searchIterationCount = trace.iterationCount;
+    searchConverged = trace.converged;
+    bandwidthScores = Array.from({length: ladderCapacity}, (_, row) =>
+      row < candidates.length ? candidates[row].aicc : nan
+    );
+  } else {
+    padBlock(ladder.map(evaluate));
+    for (let pass = 1; pass <= refinementPassCount && !isGoldenSection; pass++) {
+      padBlock(getRefinedLadder(candidates).map(evaluate));
+    }
+    bandwidthScores = candidates.slice(0, ladder.length).map(candidate => candidate.aicc);
   }
-  const bandwidthScores = candidates.slice(0, ladder.length).map(candidate => candidate.aicc);
-  const bestIndex = getBestIndex(candidates);
+  let bestIndex = getBestIndex(candidates);
+  if (optimumRow >= 0 && Number.isFinite(candidates[optimumRow].aicc)) {
+    // Golden section returns the winner of its last comparison, as mgwr does.
+    bestIndex = optimumRow;
+  }
   const hasValidCandidate = bestIndex >= 0;
   const selectedIndex = hasValidCandidate ? bestIndex : 0;
   const selectedValue = candidates[selectedIndex].value;
@@ -562,7 +663,8 @@ export function computeGeographicallyWeightedRegressionOnCPU(
           const weight = getGeographicallyWeightedRegressionWeight(
             kernel,
             distance(row, other),
-            bandwidth
+            bandwidth,
+            input.gaussianCutoff
           );
           if (!(weight > 0)) {
             continue;
@@ -607,6 +709,9 @@ export function computeGeographicallyWeightedRegressionOnCPU(
     bandwidthScores,
     candidates,
     selectedIndex,
+    searchIterationCount,
+    searchConverged,
+    searchBounds,
     selectedValue,
     residualSumOfSquares,
     traceOfHat,

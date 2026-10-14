@@ -21,11 +21,15 @@ import {
   computeLatticeOracle,
   computeTransformOracle,
   createSeededRandom,
+  flattenFeatures,
   flattenPolygons,
   isSymmetricPattern,
   type OracleCSR,
-  type OraclePolygons
+  type OraclePolygons,
+  type PolygonLayout
 } from './spatial-weights-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {LIBPYSAL_CONSTRUCTION_REFERENCE, type LibpysalRows} from './spatial-weights-u4-oracle';
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 2e-5): void {
   expect(actual.length, `${label} length`).toBe(expected.length);
@@ -82,30 +86,42 @@ async function runContiguity(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   polygons: OraclePolygons,
   criterion: 'queen' | 'rook',
-  options: {snapTolerance?: number; capacity: number; pairCapacity?: number}
-): Promise<{csr: OracleCSR; overflow: number; total: number}> {
-  const layout = flattenPolygons(polygons);
+  options: {
+    snapTolerance?: number;
+    capacity: number;
+    pairCapacity?: number;
+    layout?: PolygonLayout;
+    rowCount?: number;
+  }
+): Promise<{csr: OracleCSR; overflow: number; total: number; candidateOverflow: number}> {
+  const layout = options.layout ?? flattenPolygons(polygons);
+  const rows = options.rowCount ?? polygons.length;
   const rig = new WeightsRig(device);
-  const output = rig.weightsOutput(polygons.length, options.capacity);
+  const output = rig.weightsOutput(rows, options.capacity);
   const overflow = rig.output('uint32', 1);
   const total = rig.output('uint32', 1);
+  const candidateOverflow = rig.output('uint32', 1);
   rig.run(
     new GPUContiguityWeights({
       criterion,
-      positions: rig.input(layout.positions, 'float32x2', layout.positions.length / 2),
-      ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
-      polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
+      polygons: rig.polygons(layout),
       snapTolerance: options.snapTolerance,
       pairCapacity: options.pairCapacity,
-      weights: output.spatialWeights,
-      overflow: overflow.view,
-      totalNeighbors: total.view
+      output: {
+        ...output.spatialWeights,
+        status: {
+          overflow: overflow.view,
+          requiredCount: total.view,
+          candidateOverflow: candidateOverflow.view
+        }
+      }
     })
   );
   const result = {
     csr: await output.read(),
     overflow: (await readUint32(overflow.buffer, 1))[0],
-    total: (await readUint32(total.buffer, 1))[0]
+    total: (await readUint32(total.buffer, 1))[0],
+    candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0]
   };
   rig.destroy();
   return result;
@@ -113,7 +129,7 @@ async function runContiguity(
 
 it('GPUContiguityWeights matches the oracle on a square grid for queen and rook', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createSquareGrid(7, 5, 3);
   for (const criterion of ['queen', 'rook'] as const) {
     const expected = computeContiguityOracle(polygons, criterion);
@@ -137,7 +153,7 @@ it('GPUContiguityWeights matches the oracle on a square grid for queen and rook'
 
 it('GPUContiguityWeights sorts narrow ID keys correctly at polygon counts around powers of two', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // The pair and edge sorts compare only getSortKeyBits(count) bits; the invalid key then wraps to
   // the largest key value, so the largest valid ID must stay below it.
   for (const [columns, rows] of [
@@ -164,7 +180,7 @@ it('GPUContiguityWeights sorts narrow ID keys correctly at polygon counts around
 
 it('GPUContiguityWeights matches the oracle on random rectangles (T-junctions, overlaps)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const seed of [1, 2, 3]) {
     const polygons = createRandomRectangles(80, seed);
     for (const criterion of ['queen', 'rook'] as const) {
@@ -183,7 +199,7 @@ it('GPUContiguityWeights matches the oracle on random rectangles (T-junctions, o
 
 it('GPUContiguityWeights handles holes, corner contact and non-finite vertices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons: OraclePolygons = [
     // 0: square with a hole whose edge is shared with polygon 1
     [
@@ -243,7 +259,7 @@ it('GPUContiguityWeights handles holes, corner contact and non-finite vertices',
 
 it('GPUContiguityWeights collapses repeated polygon occurrences before emitting pairs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const cases: {criterion: 'queen' | 'rook'; polygons: OraclePolygons}[] = [
     {
       criterion: 'queen',
@@ -304,7 +320,7 @@ it('GPUContiguityWeights collapses repeated polygon occurrences before emitting 
 
 it('GPUContiguityWeights snapTolerance joins near-coincident vertices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons: OraclePolygons = [
     [
       [
@@ -332,12 +348,13 @@ it('GPUContiguityWeights snapTolerance joins near-coincident vertices', async ()
 
 it('GPUContiguityWeights reports capacity and pair overflow with consistent rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createSquareGrid(6, 6, 9);
   const expected = computeContiguityOracle(polygons, 'queen');
   const capacity = Math.floor(expected.neighbors.length / 2);
   const small = await runContiguity(device, polygons, 'queen', {capacity});
   expect(small.overflow).toBe(1);
+  expect(small.candidateOverflow).toBe(0);
   expect(small.total).toBe(expected.neighbors.length);
   expect(small.csr.offsets).toEqual(expected.offsets.map(offset => Math.min(offset, capacity)));
   expect(small.csr.neighbors).toEqual(expected.neighbors.slice(0, capacity));
@@ -346,14 +363,48 @@ it('GPUContiguityWeights reports capacity and pair overflow with consistent rows
     pairCapacity: 10
   });
   expect(pairs.overflow).toBe(1);
+  expect(pairs.candidateOverflow).toBe(1);
   for (let row = 0; row < polygons.length; row++) {
     expect(pairs.csr.offsets[row + 1]).toBeGreaterThanOrEqual(pairs.csr.offsets[row]);
   }
 });
 
+it('GPUContiguityWeights emits one row per multipart feature', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Feature 0 has two parts: [0,1]x[0,1] and [2,3]x[0,1]. Feature 1 is [1,2]x[0,1] and touches
+  // both parts by an edge; feature 2 is [0,1]x[1,2] and touches part 0 of feature 0 only.
+  const square = (x: number, y: number): [number, number][][] => [
+    [
+      [x, y],
+      [x + 1, y],
+      [x + 1, y + 1],
+      [x, y + 1]
+    ]
+  ];
+  const features: OraclePolygons[] = [[square(0, 0), square(2, 0)], [square(1, 0)], [square(0, 1)]];
+  const layout = flattenFeatures(features);
+  for (const criterion of ['queen', 'rook'] as const) {
+    const expected = computeContiguityOracle(features.flat(), criterion, 0, [0, 0, 1, 2]);
+    const result = await runContiguity(device, features.flat(), criterion, {
+      capacity: 16,
+      layout,
+      rowCount: features.length
+    });
+    expect(result.overflow, criterion).toBe(0);
+    expect(result.csr.offsets, criterion).toEqual(expected.offsets);
+    expect(result.csr.neighbors, criterion).toEqual(expected.neighbors);
+    expect(result.total, criterion).toBe(expected.neighbors.length);
+  }
+  // Rook: 0-1 and 0-2 share edges; 1-2 share only the corner (1, 1).
+  expect(computeContiguityOracle(features.flat(), 'rook', 0, [0, 0, 1, 2]).neighbors).toEqual([
+    1, 2, 0, 0
+  ]);
+});
+
 it('GPULatticeWeights matches the oracle for rook/queen, radius, mask and distances', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const width = 9;
   const height = 6;
   const random = createSeededRandom(11);
@@ -379,8 +430,7 @@ it('GPULatticeWeights matches the oracle for rook/queen, radius, mask and distan
         radius: options.radius,
         mask: 'mask' in options ? rig.input(options.mask, 'uint32', width * height) : undefined,
         cellSize: 'cellSize' in options ? options.cellSize : undefined,
-        weights: output.spatialWeights,
-        overflow: overflow.view
+        output: {...output.spatialWeights, status: {overflow: overflow.view}}
       })
     );
     const csr = await output.read();
@@ -400,7 +450,7 @@ it('GPULatticeWeights matches the oracle for rook/queen, radius, mask and distan
 
 it('GPULatticeWeights flags capacity overflow and clamps offsets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const expected = computeLatticeOracle({width: 5, height: 5, criterion: 'queen'});
   const capacity = 30;
   const rig = new WeightsRig(device);
@@ -412,9 +462,10 @@ it('GPULatticeWeights flags capacity overflow and clamps offsets', async () => {
       width: 5,
       height: 5,
       criterion: 'queen',
-      weights: output.spatialWeights,
-      overflow: overflow.view,
-      totalNeighbors: total.view
+      output: {
+        ...output.spatialWeights,
+        status: {overflow: overflow.view, requiredCount: total.view}
+      }
     })
   );
   const csr = await output.read();
@@ -434,7 +485,7 @@ const KERNELS: GPUSpatialWeightsKernel[] = [
 
 it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(5);
   const base = computeLatticeOracle({width: 8, height: 6, criterion: 'queen', radius: 2});
   const weighted: OracleCSR = {
@@ -469,7 +520,7 @@ it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the orac
       // The rows here stand in for kNN rows: 'adaptive' needs the kNN criterion label.
       const upload: GPUSpatialWeights = {
         ...rig.uploadWeights(base, 3),
-        info: {
+        information: {
           rowCount: base.offsets.length - 1,
           transform: 'raw',
           symmetric: 'unknown',
@@ -497,7 +548,7 @@ it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the orac
 
 it('GPUSpatialLag matches the oracle, with mask and normalization', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const random = createSeededRandom(21);
   const csr = computeLatticeOracle({width: 10, height: 8, criterion: 'queen'});
   const rows = 80;
@@ -536,7 +587,7 @@ it('GPUSpatialLag matches the oracle, with mask and normalization', async () => 
 
 it('contiguity -> transform -> lag chains in one graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createSquareGrid(6, 4, 17);
   const layout = flattenPolygons(polygons);
   const expected = computeContiguityOracle(polygons, 'rook');
@@ -548,11 +599,8 @@ it('contiguity -> transform -> lag chains in one graph', async () => {
   rig.run(
     new GPUContiguityWeights({
       criterion: 'rook',
-      positions: rig.input(layout.positions, 'float32x2', layout.positions.length / 2),
-      ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
-      polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
-      weights: output.spatialWeights,
-      overflow: rig.output('uint32', 1).view
+      polygons: rig.polygons(layout),
+      output: {...output.spatialWeights, status: {overflow: rig.output('uint32', 1).view}}
     }),
     new GPUSpatialWeightsTransform({operation: 'row', weights: output.spatialWeights}),
     new GPUSpatialLag({
@@ -571,4 +619,67 @@ it('contiguity -> transform -> lag chains in one graph', async () => {
     1e-4
   );
   rig.destroy();
+});
+
+/** Flattens libpysal rows (neighbors ascending by id) to the CSR offsets and neighbors. */
+function flattenLibpysalRows(rows: LibpysalRows): {offsets: number[]; neighbors: number[]} {
+  const offsets = [0];
+  const neighbors: number[] = [];
+  for (const row of rows.neighbors) {
+    neighbors.push(...row);
+    offsets.push(neighbors.length);
+  }
+  return {offsets, neighbors};
+}
+
+it('GPUContiguityWeights equals libpysal Queen and Rook on the square grid, rectangles and holes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [name, scene] of Object.entries(LIBPYSAL_CONSTRUCTION_REFERENCE.contiguity)) {
+    for (const criterion of ['queen', 'rook'] as const) {
+      const expected = flattenLibpysalRows(scene[criterion]);
+      const label = `libpysal ${name} ${criterion}`;
+      const {csr, overflow, total} = await runContiguity(device, scene.polygons, criterion, {
+        capacity: expected.neighbors.length + 8,
+        pairCapacity: 20000
+      });
+      assertValidCSR(csr, scene.polygons.length, label);
+      expect(csr.offsets, `${label} offsets`).toEqual(expected.offsets);
+      expect(csr.neighbors, `${label} neighbors`).toEqual(expected.neighbors);
+      // libpysal contiguity weights are binary.
+      expect(csr.weights, `${label} weights`).toEqual(scene[criterion].weights.flat());
+      expect(overflow).toBe(0);
+      expect(total).toBe(expected.neighbors.length);
+    }
+  }
+});
+
+it('GPULatticeWeights equals libpysal lat2W for rook and queen', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {width, height} = LIBPYSAL_CONSTRUCTION_REFERENCE.lattice;
+  for (const criterion of ['rook', 'queen'] as const) {
+    const expected = flattenLibpysalRows(LIBPYSAL_CONSTRUCTION_REFERENCE.lattice[criterion]);
+    const rig = new WeightsRig(device);
+    const output = rig.weightsOutput(width * height, expected.neighbors.length + 5);
+    const overflow = rig.output('uint32', 1);
+    rig.run(
+      new GPULatticeWeights({
+        width,
+        height,
+        criterion,
+        output: {...output.spatialWeights, status: {overflow: overflow.view}}
+      })
+    );
+    const csr = await output.read();
+    const label = `libpysal lat2W ${criterion}`;
+    assertValidCSR(csr, width * height, label);
+    expect(csr.offsets, `${label} offsets`).toEqual(expected.offsets);
+    expect(csr.neighbors, `${label} neighbors`).toEqual(expected.neighbors);
+    expect(csr.weights, `${label} weights`).toEqual(
+      LIBPYSAL_CONSTRUCTION_REFERENCE.lattice[criterion].weights.flat()
+    );
+    expect((await readUint32(overflow.buffer, 1))[0]).toBe(0);
+    rig.destroy();
+  }
 });

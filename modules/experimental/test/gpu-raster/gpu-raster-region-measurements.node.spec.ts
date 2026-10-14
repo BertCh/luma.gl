@@ -320,7 +320,7 @@ describe('GPURasterRegionMeasurements graph composition', () => {
     });
     expect(() =>
       new GPURasterRegionMeasurements(makeProps(limitedGroups, 3, 2, 257)).addToGraph(limitedGroups)
-    ).toThrow(/region output count.*dispatch limits/);
+    ).toThrow(/output capacity must be at most 256/);
 
     const limitedRaster = makeRecordingGraph('region-raster-dispatch', {
       maxComputeWorkgroupsPerDimension: 1

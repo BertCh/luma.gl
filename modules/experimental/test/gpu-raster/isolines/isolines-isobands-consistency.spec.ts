@@ -5,6 +5,7 @@
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid/index';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   getGPUIsobandsParameterValues,
@@ -22,6 +23,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from '../raster-algebra/raster-algebra-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 23;
 const HEIGHT = 19;
@@ -37,9 +39,7 @@ function getPointKey(x: number, y: number): string {
 
 it('GPUIsobands boundaries coincide bit for bit with GPUIsolines segment endpoints', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(77);
   const sampleCount = WIDTH * HEIGHT;
   const values = Float32Array.from({length: sampleCount}, (_, sample) => {
@@ -53,29 +53,20 @@ it('GPUIsobands boundaries coincide bit for bit with GPUIsolines segment endpoin
     return random() < 0.1 ? LEVELS[Math.floor(random() * LEVELS.length)] : Math.fround(wave);
   });
   const extent = [100.5, -20.25, 146.5, 17.75] as const;
+  const grid = makeGPURasterMetadata({width: WIDTH, height: HEIGHT});
   const valuesBuffer = createInputBuffer(device, values);
   const levelsBuffer = createInputBuffer(device, Float32Array.from(LEVELS));
   const isolineParameters = new GPUParameterBuffer(device, {
     id: 'consistency-isolines',
     format: 'float32',
     length: GPU_ISOLINES_PARAMETER_LENGTH,
-    values: getGPUIsolinesParameterValues({
-      width: WIDTH,
-      height: HEIGHT,
-      levelCount: LEVELS.length,
-      extent
-    })
+    values: getGPUIsolinesParameterValues({levelCount: LEVELS.length, extent}, grid)
   });
   const isobandParameters = new GPUParameterBuffer(device, {
     id: 'consistency-isobands',
     format: 'float32',
     length: GPU_ISOBANDS_PARAMETER_LENGTH,
-    values: getGPUIsobandsParameterValues({
-      width: WIDTH,
-      height: HEIGHT,
-      breakCount: LEVELS.length,
-      extent
-    })
+    values: getGPUIsobandsParameterValues({breakCount: LEVELS.length, extent}, grid)
   });
   const segmentsBuffer = createOutputBuffer(device, SEGMENT_CAPACITY * 4);
   const segmentLevelsBuffer = createOutputBuffer(device, SEGMENT_CAPACITY);
@@ -89,8 +80,7 @@ it('GPUIsobands boundaries coincide bit for bit with GPUIsolines segment endpoin
   graph.add(
     new GPUIsolines({
       id: 'lines',
-      width: WIDTH,
-      height: HEIGHT,
+      grid,
       values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', sampleCount),
       levels: importGraphBuffer(graph, 'levels', levelsBuffer, 'float32', LEVELS.length),
       parameters: isolineParameters.importToGraph(graph),
@@ -109,16 +99,23 @@ it('GPUIsobands boundaries coincide bit for bit with GPUIsolines segment endpoin
           'uint32',
           SEGMENT_CAPACITY
         ),
-        count: importGraphBuffer(graph, 'segment-count', segmentCountBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'segment-overflow', segmentOverflowBuffer, 'uint32', 1)
+        status: {
+          overflow: importGraphBuffer(
+            graph,
+            'segment-overflow',
+            segmentOverflowBuffer,
+            'uint32',
+            1
+          ),
+          count: importGraphBuffer(graph, 'segment-count', segmentCountBuffer, 'uint32', 1)
+        }
       }
     })
   );
   graph.add(
     new GPUIsobands({
       id: 'bands',
-      width: WIDTH,
-      height: HEIGHT,
+      grid,
       values: importGraphBuffer(graph, 'values-again', valuesBuffer, 'float32', sampleCount),
       breaks: importGraphBuffer(graph, 'breaks', levelsBuffer, 'float32', LEVELS.length),
       parameters: isobandParameters.importToGraph(graph),
@@ -137,8 +134,16 @@ it('GPUIsobands boundaries coincide bit for bit with GPUIsolines segment endpoin
           'uint32',
           TRIANGLE_CAPACITY
         ),
-        count: importGraphBuffer(graph, 'triangle-count', triangleCountBuffer, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'triangle-overflow', triangleOverflowBuffer, 'uint32', 1)
+        status: {
+          overflow: importGraphBuffer(
+            graph,
+            'triangle-overflow',
+            triangleOverflowBuffer,
+            'uint32',
+            1
+          ),
+          count: importGraphBuffer(graph, 'triangle-count', triangleCountBuffer, 'uint32', 1)
+        }
       }
     })
   );

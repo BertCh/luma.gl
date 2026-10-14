@@ -33,6 +33,7 @@ import {
   getCellDescendants,
   uncompactCellsOnCPU
 } from './cell-compaction-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type RunResult = {
   cells: bigint[];
@@ -115,10 +116,12 @@ async function runCompaction(device: Device, options: RunOptions): Promise<RunRe
             ),
       output: {
         cells: importView('cells-out', cellsOut, 'uint32x2', capacity),
-        count: importView('count-out', countOut, 'uint32', 1),
-        overflow: importView('overflow-out', overflowOut, 'uint32', 1),
-        requiredCount: importView('total-out', totalOut, 'uint32', 1),
-        droppedCount: importView('dropped-out', droppedOut, 'uint32', 1)
+        status: {
+          count: importView('count-out', countOut, 'uint32', 1),
+          requiredCount: importView('total-out', totalOut, 'uint32', 1),
+          overflow: importView('overflow-out', overflowOut, 'uint32', 1),
+          droppedCount: importView('dropped-out', droppedOut, 'uint32', 1)
+        }
       }
     })
   );
@@ -192,9 +195,7 @@ const COMPACT_STUB = {type: 'compact', resolution: 0} as const;
 
 it('GPUCellCompaction compacts H3 polygon fills like h3-js compactCells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const resolution of [5, 6, 7, 8]) {
     const strings = polygonToCells(POLYGON, resolution);
     const cells = strings.map(h3ToBigInt);
@@ -242,9 +243,7 @@ it('GPUCellCompaction compacts H3 polygon fills like h3-js compactCells', async 
 
 it('GPUCellCompaction handles H3 pentagon subtrees', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pentagons = getPentagons(2);
   // Full child sets of every pentagon at depth 1 and 2 (6 and 41 descendants), then partial sets.
   for (const [depth, label] of [
@@ -283,9 +282,7 @@ it('GPUCellCompaction handles H3 pentagon subtrees', async () => {
 
 it('GPUCellCompaction compacts Quadbin blocks, partial blocks and random sets', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A full 8 x 8 block (4^3 cells at resolution 8) compacts to a res 5 parent.
   const block = getQuadbinBlock(16, 32, 8, 8);
   const full = await expectCompaction(
@@ -357,9 +354,7 @@ it('GPUCellCompaction compacts Quadbin blocks, partial blocks and random sets', 
 
 it('GPUCellCompaction supports high-low words, masks, row counts and capacity overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = [...getQuadbinBlock(0, 0, 9, 8), ...getQuadbinBlock(100, 4, 9, 3)];
   const expected = compactCellsOnCPU('quadbin', cells, 9);
   const highLow = await runCompaction(device, {
@@ -395,9 +390,7 @@ it('GPUCellCompaction supports high-low words, masks, row counts and capacity ov
 
 it('GPUCellCompaction uncompact round trips', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [family, resolution, cells] of [
     ['h3', 7, polygonToCells(POLYGON, 7).map(h3ToBigInt)],
     ['quadbin', 10, [...getQuadbinBlock(0, 0, 10, 8), ...getQuadbinBlock(32, 8, 10, 3)]]
@@ -427,9 +420,7 @@ it('GPUCellCompaction uncompact round trips', async () => {
 
 it('GPUCellCompaction uncompacts pentagons, mixed resolutions, caps and overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pentagons = getPentagons(1).map(h3ToBigInt);
   for (const resolution of [2, 3, 4]) {
     const result = await runCompaction(device, {

@@ -3,3 +3,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-temporal-reduction.spec';
+import './gpu-temporal-reduction-sorted.spec';

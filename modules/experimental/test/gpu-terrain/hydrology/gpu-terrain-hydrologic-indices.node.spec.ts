@@ -8,31 +8,39 @@ import {
   GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH,
   GPUTerrainHydrologicIndices,
   getGPUTerrainHydrologicIndicesParameterValues,
+  type GPUTerrainHydrologicIndicesOutput,
   type GPUTerrainHydrologicIndicesProps
 } from '../../../src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices';
+import {makeGPURasterBand, makeGPURasterMetadata} from '../../../src/gpu-raster';
+import {getRasterGridGeoreference} from '../../../src/analysis-core/raster-grid';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+
+const GRID = makeGPURasterMetadata({width: 6, height: 5});
+
+/** Props overrides whose `output` members replace the default `wetnessIndex` output. */
+type Overrides = Partial<Omit<GPUTerrainHydrologicIndicesProps, 'output'>> & {
+  output?: GPUTerrainHydrologicIndicesOutput;
+};
 
 function createFixture() {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainHydrologicIndicesProps> = {}) => {
+  const create = ({output, ...overrides}: Overrides = {}) => {
     instance++;
     return new GPUTerrainHydrologicIndices({
-      width: 6,
-      height: 5,
-      elevation: {
-        id: `elevation-${instance}`,
-        format: 'float32',
-        storage: {
-          kind: 'buffer',
-          values: createTransientView(graph, `elevation-${instance}`, 'float32', 30)
-        }
-      },
+      grid: GRID,
+      elevation: makeGPURasterBand(
+        createTransientView(graph, `elevation-${instance}`, 'float32', 30),
+        GRID,
+        {id: `elevation-${instance}`}
+      ),
       accumulation: createTransientView(graph, `accumulation-${instance}`, 'float32', 30),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
-      wetnessIndex: createTransientView(graph, `wetness-${instance}`, 'float32', 30),
-      ...overrides
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 8),
+      ...overrides,
+      output: output ?? {
+        wetnessIndex: createTransientView(graph, `wetness-${instance}`, 'float32', 30)
+      }
     });
   };
   return {device, graph, create};
@@ -40,22 +48,16 @@ function createFixture() {
 
 it('getGPUTerrainHydrologicIndicesParameterValues packs settings', () => {
   expect(GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH).toBe(8);
+  // Cell size and row edges come from the grid.
+  const grid = makeGPURasterMetadata({width: 6, height: 5, cellSize: [2, 3], origin: [0, 20]});
+  const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
+  expect([cellSize, northEdge, southEdge]).toEqual([[2, 3], 20, 5]);
   expect(
-    Array.from(
-      getGPUTerrainHydrologicIndicesParameterValues({
-        cellSize: [2, 3],
-        northEdge: 0.25,
-        southEdge: 0.5,
-        minimumSlope: 0.125
-      })
-    )
-  ).toEqual([2, 3, 0.25, 0.5, 0.125, 0, 0, 0]);
-  expect(getGPUTerrainHydrologicIndicesParameterValues({cellSize: [1, 1]})[4]).toBeCloseTo(
-    0.001,
-    9
-  );
+    Array.from(getGPUTerrainHydrologicIndicesParameterValues({minimumSlope: 0.125}, grid))
+  ).toEqual([2, 3, 20, 5, 0.125, 0, 0, 0]);
+  expect(getGPUTerrainHydrologicIndicesParameterValues({}, GRID)[4]).toBeCloseTo(0.001, 9);
   expect(() =>
-    getGPUTerrainHydrologicIndicesParameterValues({cellSize: [1, 1]}, new Float32Array(7))
+    getGPUTerrainHydrologicIndicesParameterValues({}, GRID, new Float32Array(7))
   ).toThrow(/8 values/);
 });
 
@@ -76,20 +78,22 @@ it('GPUTerrainHydrologicIndices validates its props', () => {
     format: Format,
     length: number
   ) => createTransientView(graph, name, format, length);
-  expect(() => create({width: 0})).toThrow(/dimensions/);
-  expect(() => create({wetnessIndex: undefined})).toThrow(/at least one output/);
-  expect(() => create({settings: view('s7', 'float32', 7)})).toThrow(/settings/);
+  expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
+  expect(() => create({output: {}})).toThrow(/at least one output/);
+  expect(() => create({parameters: view('s7', 'float32', 7)})).toThrow(/parameters/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({accumulation: view('short', 'float32', 29)})).toThrow(/one value per cell/);
-  expect(() => create({slope: view('uint', 'uint32', 30) as never})).toThrow(/float32/);
+  expect(() => create({output: {slope: view('uint', 'uint32', 30) as never}})).toThrow(/float32/);
   const shared = view('shared', 'float32', 30);
-  expect(() => create({wetnessIndex: shared, slope: shared})).toThrow(/share buffers/);
+  expect(() => create({output: {wetnessIndex: shared, slope: shared}})).toThrow(/share buffers/);
   const accumulation = view('input', 'float32', 30);
-  expect(() => create({accumulation, wetnessIndex: accumulation})).toThrow(/share buffers/);
+  expect(() => create({accumulation, output: {wetnessIndex: accumulation}})).toThrow(
+    /share buffers/
+  );
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     create({
-      wetnessIndex: createTransientView(otherGraph, 'foreign', 'float32', 30)
+      output: {wetnessIndex: createTransientView(otherGraph, 'foreign', 'float32', 30)}
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
   device.destroy();

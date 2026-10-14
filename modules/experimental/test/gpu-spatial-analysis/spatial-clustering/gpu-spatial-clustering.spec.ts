@@ -12,7 +12,7 @@ import {
   GPUSpatialClustering,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUSpatialClusteringParameters
+  type GPUSpatialClusteringSettings
 } from '../../../src/gpu-spatial-analysis/spatial-clustering';
 import {
   createInputBuffer,
@@ -21,7 +21,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   clusterGeographicPointsOracle,
   createGeographicBlobScene,
@@ -31,12 +31,13 @@ import {
   separateNearEpsilonPairs,
   type SpatialClusteringOracleResult
 } from './spatial-clustering-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GARBAGE = 0x7f7f7f7f;
 
 type HarnessOptions = {
   positions: Float32Array;
-  parameters: GPUSpatialClusteringParameters;
+  parameters: GPUSpatialClusteringSettings;
   gridSize?: readonly [number, number];
   capacity?: number;
   sourceIds?: Uint32Array;
@@ -105,31 +106,35 @@ function createHarness(device: Device, options: HarnessOptions) {
     spatialContext: options.spatialContext,
     sourceIds:
       sourceIdsBuffer && importGraphBuffer(graph, 'source-ids', sourceIdsBuffer, 'uint32', rows),
-    labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rows),
-    rootRows: importGraphBuffer(graph, 'root-rows', outputs.rootRows, 'uint32', rows),
-    coreFlags: importGraphBuffer(graph, 'core-flags', outputs.coreFlags, 'uint32', rows),
-    clusterCount: importGraphBuffer(graph, 'cluster-count', outputs.clusterCount, 'uint32', 1),
-    clusters: {
-      ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', capacity),
-      count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'total-count', outputs.requiredCount, 'uint32', 1)
-    },
-    drawInstanceCount: importGraphBuffer(
-      graph,
-      'draw-instance-count',
-      outputs.drawInstanceCount,
-      'uint32',
-      1
-    ),
-    clusterSizes: importGraphBuffer(graph, 'sizes', outputs.sizes, 'uint32', capacity),
-    clusterCentroids: importGraphBuffer(
-      graph,
-      'centroids',
-      outputs.centroids,
-      'float32x2',
-      capacity
-    )
+    output: {
+      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rows),
+      rootRows: importGraphBuffer(graph, 'root-rows', outputs.rootRows, 'uint32', rows),
+      coreFlags: importGraphBuffer(graph, 'core-flags', outputs.coreFlags, 'uint32', rows),
+      clusterCount: importGraphBuffer(graph, 'cluster-count', outputs.clusterCount, 'uint32', 1),
+      clusters: {
+        ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', capacity),
+        status: {
+          count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'total-count', outputs.requiredCount, 'uint32', 1)
+        }
+      },
+      drawInstanceCount: importGraphBuffer(
+        graph,
+        'draw-instance-count',
+        outputs.drawInstanceCount,
+        'uint32',
+        1
+      ),
+      clusterSizes: importGraphBuffer(graph, 'sizes', outputs.sizes, 'uint32', capacity),
+      clusterCentroids: importGraphBuffer(
+        graph,
+        'centroids',
+        outputs.centroids,
+        'float32x2',
+        capacity
+      )
+    }
   });
   graph.add(contributor);
   const compiled: CompiledGPUCommandGraph<void> = graph.compile();
@@ -137,7 +142,7 @@ function createHarness(device: Device, options: HarnessOptions) {
   return {
     capacity,
     /** Writes `parameters` (a raw array when given as one), poisons every output, and runs. */
-    async run(parameters: GPUSpatialClusteringParameters | Float32Array): Promise<HarnessResult> {
+    async run(parameters: GPUSpatialClusteringSettings | Float32Array): Promise<HarnessResult> {
       parameterBuffer.write(
         parameters instanceof Float32Array
           ? parameters
@@ -217,11 +222,9 @@ function getBlobProps(pointCount: number) {
 
 it('GPUSpatialClustering matches the oracle on random clustered points and frame changes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const bounds = [-10, -10, 110, 110] as const;
-  const frames: GPUSpatialClusteringParameters[] = [
+  const frames: GPUSpatialClusteringSettings[] = [
     {bounds, epsilon: 1.5, minimumPoints: 5},
     // Much smaller than bounds / gridSize (3.75): many more points per cell than the lattice implies.
     {bounds, epsilon: 0.4, minimumPoints: 3},
@@ -280,9 +283,7 @@ it('GPUSpatialClustering matches the oracle on random clustered points and frame
 
 it('GPUSpatialClustering assigns a border point to the adjacent cluster with the smaller root', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const clusterA = [0, 0, 1, 0, 2, 0, 0, 1, 1, 1, 2, 1];
   const clusterB = [6, 0, 7, 0, 8, 0, 6, 1, 7, 1, 8, 1];
   const border = [4, 0];
@@ -319,9 +320,7 @@ it('GPUSpatialClustering assigns a border point to the adjacent cluster with the
 
 it('GPUSpatialClustering finds one cluster for a long shuffled chain', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const count = 1000;
   const random = createSeededRandom(77);
   const order = Array.from({length: count}, (_, index) => index);
@@ -359,9 +358,7 @@ it('GPUSpatialClustering finds one cluster for a long shuffled chain', async () 
 
 it('GPUSpatialClustering excludes NaN, infinite, and out-of-bounds points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const positions = Float32Array.from([
     // A cluster that is truly dense.
     2,
@@ -416,9 +413,7 @@ it('GPUSpatialClustering excludes NaN, infinite, and out-of-bounds points', asyn
 
 it('GPUSpatialClustering reports cluster capacity overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const parameters = {
     bounds: [-10, -10, 110, 110],
     epsilon: 1.5,
@@ -446,9 +441,7 @@ it('GPUSpatialClustering reports cluster capacity overflow', async () => {
 
 it('GPUSpatialClustering handles empty, single-point, and all-noise inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const parameters = {
     bounds: [0, 0, 10, 10],
     epsilon: 1,
@@ -514,9 +507,7 @@ it('GPUSpatialClustering handles empty, single-point, and all-noise inputs', asy
 
 it('GPUSpatialClustering maps clusters.ids through sourceIds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Two tight groups, the second listed first so root rows differ from label order.
   const positions = Float32Array.from([8, 8, 8.2, 8, 8, 8.2, 1, 1, 1.2, 1, 1, 1.2, 5, 5]);
   const sourceIds = Uint32Array.from([900, 901, 902, 700, 701, 702, 703]);
@@ -553,9 +544,7 @@ function getCentroidBits(centroids: number[]): number[] {
 
 it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids that match the oracle", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Large offset coordinates make f32 sums order-sensitive; few clusters make segments long.
   const offset = 4096;
   const pointCount = 30000;
@@ -595,9 +584,9 @@ it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids tha
     }
   }
   console.log(
-    `spatial-clustering centroid sums, ${pointCount} points: atomic ${timings.atomic.toFixed(1)} ms, sorted ${timings.sorted.toFixed(1)} ms per submit+readback`
+    `spatial-clustering centroid sums, ${pointCount} points: atomic ${timings['atomic'].toFixed(1)} ms, sorted ${timings['sorted'].toFixed(1)} ms per submit+readback`
   );
-  const sorted = results.sorted;
+  const sorted = results['sorted'];
   expect(sorted[0].clusterCount).toBeGreaterThanOrEqual(2);
   // Long segments, so atomic accumulation order matters; stragglers beyond capacity are excluded.
   expect(Math.max(...sorted[0].sizes)).toBeGreaterThan(2000);
@@ -608,12 +597,12 @@ it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids tha
     expect(result.labels).toEqual(sorted[0].labels);
   }
   // Atomic and sorted agree on labels and sizes, and on centroids within tolerance.
-  expect(results.atomic[0].labels).toEqual(sorted[0].labels);
-  expect(results.atomic[0].sizes).toEqual(sorted[0].sizes);
+  expect(results['atomic'][0].labels).toEqual(sorted[0].labels);
+  expect(results['atomic'][0].sizes).toEqual(sorted[0].sizes);
   for (let index = 0; index < sorted[0].centroids.length; index++) {
-    expect(Math.abs(sorted[0].centroids[index] - results.atomic[0].centroids[index])).toBeLessThan(
-      1e-2
-    );
+    expect(
+      Math.abs(sorted[0].centroids[index] - results['atomic'][0].centroids[index])
+    ).toBeLessThan(1e-2);
   }
   // Float64 mean of the GPU labels (the O(n^2) oracle is too slow at this size).
   const sums = new Float64Array(capacity * 2);
@@ -638,9 +627,7 @@ it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids tha
 
 it("GPUSpatialClustering sumOrder 'sorted' matches the oracle with capacity overflow and noise", async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const bounds = [-10, -10, 110, 110] as const;
   const parameters = {bounds, epsilon: 1.5, minimumPoints: 5} as const;
   const positions = separateNearEpsilonPairs(
@@ -667,9 +654,7 @@ it("GPUSpatialClustering sumOrder 'sorted' matches the oracle with capacity over
 
 it('GPUSpatialClustering clusters longitude/latitude points with a great-circle epsilon in meters', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Blobs at latitudes 0, 45 and 70: the same metric epsilon spans very different longitude steps.
   const positions = createGeographicBlobScene();
   const spatialContext: GPUSpatialContext = {
@@ -700,3 +685,49 @@ it('GPUSpatialClustering clusters longitude/latitude points with a great-circle 
   expect(result.clusterCount).toBe(0);
   harness.destroy();
 });
+
+it('GPUSpatialClustering matches the oracle whatever the input order (cell-ordered scans)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The neighbor scans read cell-ordered copies of positions and core flags; results are written
+  // by row and must stay canonical for a spatially coherent and a shuffled order of one point set.
+  const frame: GPUSpatialClusteringSettings = {
+    bounds: [-10, -10, 110, 110],
+    epsilon: 1.5,
+    minimumPoints: 5
+  };
+  const points = separateNearEpsilonPairs(
+    createClusteredPoints(41, getBlobProps(2000)),
+    [frame.epsilon],
+    7
+  );
+  const rows = points.length / 2;
+  const coherent = Array.from({length: rows}, (_, row) => row).sort(
+    (left, right) =>
+      Math.floor(points[left * 2 + 1] / 4) - Math.floor(points[right * 2 + 1] / 4) ||
+      points[left * 2] - points[right * 2]
+  );
+  const random = createSeededRandom(43);
+  const shuffled = Array.from({length: rows}, (_, row) => row);
+  for (let row = rows - 1; row > 0; row--) {
+    const other = Math.floor(random() * (row + 1));
+    [shuffled[row], shuffled[other]] = [shuffled[other], shuffled[row]];
+  }
+  for (const order of [coherent, shuffled]) {
+    const positions = new Float32Array(rows * 2);
+    order.forEach((source, row) => {
+      positions[row * 2] = points[source * 2];
+      positions[row * 2 + 1] = points[source * 2 + 1];
+    });
+    const harness = createHarness(device, {positions, parameters: frame});
+    try {
+      expectMatchesOracle(
+        await harness.run(frame),
+        clusterPointsOracle(positions, frame),
+        harness.capacity
+      );
+    } finally {
+      harness.destroy();
+    }
+  }
+}, 120000);

@@ -12,14 +12,25 @@ import {
 } from '../../../src/gpu-spatial-analysis/location-allocation';
 import {
   createPartlyReachableCostMatrix,
+  createSeededRandom as createOracleRandom,
+  createWeightedInstance,
+  getDenseEntryColumns,
   getBruteForceOptimum,
+  runColumnGreedyOnCPU,
+  runDecomposedSwapPhaseOnCPU,
+  toSparseCosts,
   getObjective,
   getPMedianObjectiveParts,
   runGreedyOnCPU as runReachabilityAwareGreedyOnCPU,
   runSwapPhaseOnCPU,
   UNREACHABLE_SENTINEL_CASE,
-  type LocationAllocationOracleOperation
+  type LocationAllocationOracleOperation,
+  compareWeightedPMedianParts,
+  decodePMedianFixture,
+  getWeightedPMedianParts,
+  isWeightedPMedianSwapLocalOptimum
 } from './location-allocation-oracle';
+import pMedianFixture from './p-median-fixture.json';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -28,6 +39,8 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {createLegacyPairSwapNodes} from './legacy-pair-swap';
 
 async function runAllocation(
   operation: GPULocationAllocationOperation,
@@ -36,16 +49,25 @@ async function runAllocation(
   maximumFacilityCount: number,
   coverageDistance?: number,
   // The greedy specs below pin the pure greedy rule, so the swap phase is off unless asked for.
-  maximumSwapIterations = 0
+  maximumSwapIterations = 0,
+  demandWeights?: Float32Array,
+  // Pass the same matrix as CSR sparse costs (unreachable entries unlisted).
+  sparse = false
 ) {
   const device = await getWebGPUTestDevice();
-  if (!device) return null;
+  requireTestDevice(device);
   const demandCount = costs.length / facilityCount;
-  const costsBuffer = createInputBuffer(device, costs);
+  const sparseArrays = sparse ? toSparseCosts(costs, facilityCount) : undefined;
+  const costsBuffer = createInputBuffer(device, sparseArrays ? sparseArrays.costs : costs);
+  const offsetsBuffer = sparseArrays ? createInputBuffer(device, sparseArrays.offsets) : undefined;
+  const facilitiesBuffer = sparseArrays
+    ? createInputBuffer(device, sparseArrays.facilities)
+    : undefined;
   const coverageBuffer =
     coverageDistance === undefined
       ? undefined
       : createInputBuffer(device, Float32Array.from([coverageDistance]));
+  const weightsBuffer = demandWeights ? createInputBuffer(device, demandWeights) : undefined;
   const selectedBuffer = createOutputBuffer(device, facilityCount);
   const assignmentsBuffer = createOutputBuffer(device, demandCount);
   const assignedCostsBuffer = createOutputBuffer(device, demandCount);
@@ -54,8 +76,37 @@ async function runAllocation(
   const graph = new GPUCommandGraph(device, {id: `location-allocation-${operation}`});
   graph.add(
     new GPULocationAllocation({
-      costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', costs.length),
+      ...(sparseArrays
+        ? {
+            sparseCosts: {
+              offsets: importGraphBuffer(
+                graph,
+                'sparse-offsets',
+                offsetsBuffer!,
+                'uint32',
+                sparseArrays.offsets.length
+              ),
+              facilities: importGraphBuffer(
+                graph,
+                'sparse-facilities',
+                facilitiesBuffer!,
+                'uint32',
+                sparseArrays.facilities.length
+              ),
+              costs: importGraphBuffer(
+                graph,
+                'sparse-costs',
+                costsBuffer,
+                'float32',
+                sparseArrays.costs.length
+              )
+            }
+          }
+        : {costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', costs.length)}),
       facilityCount,
+      demandWeights: weightsBuffer
+        ? importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', demandCount)
+        : undefined,
       operation,
       maximumFacilityCount,
       maximumSwapIterations: operation === 'set-covering' ? undefined : maximumSwapIterations,
@@ -106,7 +157,10 @@ async function runAllocation(
   };
   compiled.destroy();
   costsBuffer.destroy();
+  offsetsBuffer?.destroy();
+  facilitiesBuffer?.destroy();
   coverageBuffer?.destroy();
+  weightsBuffer?.destroy();
   selectedBuffer.destroy();
   assignmentsBuffer.destroy();
   assignedCostsBuffer.destroy();
@@ -421,7 +475,7 @@ it('GPULocationAllocation swap phase equals the CPU swap mirror and never worsen
         } else {
           expect(objective, label).toBeLessThanOrEqual(optimum);
         }
-        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterations], label).toBe(
+        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount], label).toBe(
           mirror.swapIterations
         );
         expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(
@@ -448,7 +502,7 @@ it('GPULocationAllocation swap phase closes the classic p-median greedy gap and 
   expect(greedyOnly.status.slice(4)).toEqual([0, 0, 0]);
   const limited = await runAllocation('p-median', costs, 3, 2, undefined, 1);
   if (!limited) return;
-  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterations]).toBe(1);
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount]).toBe(1);
   expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.iterationLimitReached]).toBe(1);
   expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.converged]).toBe(0);
 });
@@ -505,4 +559,428 @@ it('GPULocationAllocation p-median never sums unreachable rows into the objectiv
       );
     }
   }
+});
+
+// Property fixture (rule 22): random weighted instances with +Infinity entries, solved exactly by
+// scipy.optimize.milp in p-median-oracle.py (versions and tolerance 0 recorded in the fixture).
+// Teitz-Bart has no optimality guarantee, so the properties are: never better than the exact
+// optimum, a swap-local optimum, converged, and an objective that equals the weighted reachable
+// cost of the returned set exactly (integer data, so float32 sums are exact).
+it('GPULocationAllocation p-median meets the scipy MILP optimum bound on the property fixture', async () => {
+  expect(pMedianFixture.tolerance).toBe(0);
+  let optimalCount = 0;
+  const instances = decodePMedianFixture(pMedianFixture);
+  for (const [index, instance] of instances.entries()) {
+    const label = `instance ${index}`;
+    const result = await runAllocation(
+      'p-median',
+      instance.costs,
+      instance.facilityCount,
+      instance.maximumFacilityCount,
+      undefined,
+      100,
+      instance.demandWeights
+    );
+    if (!result) return;
+    const selected = getSelectedFacilities(result.selected);
+    expect(selected.length, label).toBe(instance.maximumFacilityCount);
+    const parts = getWeightedPMedianParts(
+      instance.costs,
+      instance.facilityCount,
+      instance.demandWeights,
+      selected
+    );
+    const optimum = {
+      unreachableWeight: instance.optimalUnreachableWeight,
+      cost: instance.optimalCost
+    };
+    expect(compareWeightedPMedianParts(parts, optimum), label).toBeGreaterThanOrEqual(0);
+    expect(result.objective, label).toBe(parts.cost);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount], label).toBe(0);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.complete], label).toBe(1);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(1);
+    expect(
+      isWeightedPMedianSwapLocalOptimum(
+        instance.costs,
+        instance.facilityCount,
+        instance.demandWeights,
+        selected
+      ),
+      label
+    ).toBe(true);
+    for (let row = 0; row < instance.demandCount; row++) {
+      const reachable = selected.some(facility =>
+        Number.isFinite(instance.costs[row * instance.facilityCount + facility])
+      );
+      expect(result.assignments[row] === 0xffffffff, `${label} row ${row}`).toBe(!reachable);
+    }
+    if (compareWeightedPMedianParts(parts, optimum) === 0) optimalCount++;
+  }
+  // Not a guarantee, a regression tripwire: a CPU best-improvement Teitz-Bart run reaches the exact
+  // optimum on 23 of the 24 instances (instance 21 stops at a swap-local optimum, 548 vs 500).
+  expect(optimalCount).toBeGreaterThanOrEqual(instances.length - 3);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Swap gain decomposition and sparse costs. Integer costs and weights keep every float32 sum
+// exact, so the GPU must pick exactly the swaps of the CPU mirrors (no near-tie wiggle room).
+// ---------------------------------------------------------------------------------------------
+
+const WEIGHTED_DEMAND_COUNT = 16;
+const WEIGHTED_FACILITY_COUNT = 8;
+const WEIGHTED_DISTANCE = 3;
+
+it('GPULocationAllocation swap phase equals the decomposed CPU mirror on weighted, partly reachable instances', async () => {
+  for (const operation of ['p-median', 'maximum-coverage'] as LocationAllocationOracleOperation[]) {
+    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      const {costs, weights} = createWeightedInstance(
+        seed * 31 + 7,
+        WEIGHTED_DEMAND_COUNT,
+        WEIGHTED_FACILITY_COUNT
+      );
+      const columns = getDenseEntryColumns(costs, WEIGHTED_FACILITY_COUNT);
+      for (const count of [2, 3, 4]) {
+        const label = `${operation} seed ${seed} p ${count}`;
+        const greedy = runColumnGreedyOnCPU(
+          operation,
+          columns,
+          WEIGHTED_FACILITY_COUNT,
+          weights,
+          count,
+          WEIGHTED_DISTANCE
+        );
+        const mirror = runDecomposedSwapPhaseOnCPU(
+          operation,
+          columns,
+          WEIGHTED_FACILITY_COUNT,
+          weights,
+          greedy,
+          WEIGHTED_DISTANCE,
+          100
+        );
+        for (const sparse of [false, true]) {
+          const result = await runAllocation(
+            operation,
+            costs,
+            WEIGHTED_FACILITY_COUNT,
+            count,
+            operation === 'maximum-coverage' ? WEIGHTED_DISTANCE : undefined,
+            100,
+            weights,
+            sparse
+          );
+          if (!result) return;
+          expect(getSelectedFacilities(result.selected), `${label} sparse ${sparse}`).toEqual(
+            mirror.selected
+          );
+          expect(
+            result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount],
+            `${label} sparse ${sparse}`
+          ).toBe(mirror.swapIterations);
+          expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(
+            mirror.converged ? 1 : 0
+          );
+          expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount], label).toBe(0);
+        }
+      }
+    }
+  }
+});
+
+it('GPULocationAllocation sparseCosts equal the dense matrix for every operation (greedy and swap)', async () => {
+  for (const operation of [
+    'p-median',
+    'maximum-coverage',
+    'set-covering'
+  ] as GPULocationAllocationOperation[]) {
+    for (const seed of [1, 2, 3, 4, 5, 6]) {
+      const {costs, weights} = createWeightedInstance(
+        seed * 17 + 3,
+        WEIGHTED_DEMAND_COUNT,
+        WEIGHTED_FACILITY_COUNT
+      );
+      for (const swaps of [0, 100]) {
+        for (const count of [2, 4]) {
+          const label = `${operation} seed ${seed} p ${count} swaps ${swaps}`;
+          const run = (sparse: boolean) =>
+            runAllocation(
+              operation,
+              costs,
+              WEIGHTED_FACILITY_COUNT,
+              count,
+              operation === 'p-median' ? undefined : WEIGHTED_DISTANCE,
+              swaps,
+              weights,
+              sparse
+            );
+          const dense = await run(false);
+          if (!dense) return;
+          expect(await run(true), label).toEqual(dense);
+        }
+      }
+    }
+  }
+});
+
+it('GPULocationAllocation sparseCosts reproduce the property fixture results', async () => {
+  for (const [index, instance] of decodePMedianFixture(pMedianFixture).entries()) {
+    const run = (sparse: boolean) =>
+      runAllocation(
+        'p-median',
+        instance.costs,
+        instance.facilityCount,
+        instance.maximumFacilityCount,
+        undefined,
+        100,
+        instance.demandWeights,
+        sparse
+      );
+    const dense = await run(false);
+    if (!dense) return;
+    const sparse = await run(true);
+    expect(sparse, `instance ${index}`).toEqual(dense);
+    // And the dense result is the fixture's swap-local optimum within the MILP bound.
+    const selected = getSelectedFacilities(dense.selected);
+    const parts = getWeightedPMedianParts(
+      instance.costs,
+      instance.facilityCount,
+      instance.demandWeights,
+      selected
+    );
+    expect(dense.objective, `instance ${index}`).toBe(parts.cost);
+    expect(
+      compareWeightedPMedianParts(parts, {
+        unreachableWeight: instance.optimalUnreachableWeight,
+        cost: instance.optimalCost
+      }),
+      `instance ${index}`
+    ).toBeGreaterThanOrEqual(0);
+  }
+});
+
+it('GPULocationAllocation rejects unsorted, duplicated or out-of-range sparse rows and bad offsets', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const facilityCount = 3;
+  const cases: {name: string; offsets: number[]; facilities: number[]}[] = [
+    {name: 'descending row', offsets: [0, 2, 3], facilities: [2, 1, 0]},
+    {name: 'duplicate in a row', offsets: [0, 2, 3], facilities: [1, 1, 0]},
+    {name: 'facility out of range', offsets: [0, 2, 3], facilities: [0, 3, 1]},
+    {name: 'offsets decrease', offsets: [0, 3, 2], facilities: [0, 1, 2]},
+    {name: 'offsets end short', offsets: [0, 1, 2], facilities: [0, 1, 2]},
+    {name: 'offsets do not start at zero', offsets: [1, 2, 3], facilities: [0, 1, 2]}
+  ];
+  for (const {name, offsets, facilities} of cases) {
+    const graph = new GPUCommandGraph(device, {id: `sparse-invalid-${name}`});
+    const buffers = [
+      createInputBuffer(device, Uint32Array.from(offsets)),
+      createInputBuffer(device, Uint32Array.from(facilities)),
+      createInputBuffer(device, Float32Array.from([1, 2, 3])),
+      createOutputBuffer(device, facilityCount),
+      createOutputBuffer(device, 2),
+      createOutputBuffer(device, 1),
+      createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS.length)
+    ];
+    graph.add(
+      new GPULocationAllocation({
+        sparseCosts: {
+          offsets: importGraphBuffer(graph, 'offsets', buffers[0], 'uint32', 3),
+          facilities: importGraphBuffer(graph, 'facilities', buffers[1], 'uint32', 3),
+          costs: importGraphBuffer(graph, 'costs', buffers[2], 'float32', 3)
+        },
+        facilityCount,
+        operation: 'p-median',
+        maximumFacilityCount: 1,
+        output: {
+          selectedFacilities: importGraphBuffer(
+            graph,
+            'selected',
+            buffers[3],
+            'uint32',
+            facilityCount
+          ),
+          assignments: importGraphBuffer(graph, 'assignments', buffers[4], 'uint32', 2),
+          objective: importGraphBuffer(graph, 'objective', buffers[5], 'float32', 1),
+          status: importGraphBuffer(
+            graph,
+            'status',
+            buffers[6],
+            'uint32',
+            GPU_LOCATION_ALLOCATION_STATUS.length
+          )
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const status = await readUint32(buffers[6], GPU_LOCATION_ALLOCATION_STATUS.length);
+    expect(status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount], name).toBeGreaterThan(0);
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+// A/B (algorithms roadmap P2): the swap phase before (one thread per selected-slot x candidate pair
+// scanning every demand row, `legacy-pair-swap.ts`) against the candidate-parallel Whitaker /
+// Resende-Werneck decomposition, plus the sparse input on the same truncated cost matrix. Same
+// greedy start, same graph shape, so the difference is the swap phase. Prints the timings; the
+// results must agree (float32 sums are ordered differently, so a near-tie may pick another swap).
+it('A/B swap phase: pair-per-thread (old) vs decomposition (new) vs sparse, 2000 candidates x 20000 demands, p = 20', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const facilityCount = 2000;
+  const maximumFacilityCount = 20;
+  // A dense 2000 x 20000 matrix is 160 MB; shrink the demand count on devices with smaller bindings.
+  const demandCount = Math.min(
+    20000,
+    Math.floor(device.limits.maxStorageBufferBindingSize / 4 / facilityCount)
+  );
+  const random = createOracleRandom(2026);
+  const facilityPoints = Float32Array.from({length: 2 * facilityCount}, () => random());
+  const demandPoints = Float32Array.from({length: 2 * demandCount}, () => random());
+  const cutoff = 0.08;
+  const costs = new Float32Array(demandCount * facilityCount);
+  for (let demand = 0; demand < demandCount; demand++) {
+    for (let facility = 0; facility < facilityCount; facility++) {
+      const distance = Math.hypot(
+        demandPoints[2 * demand] - facilityPoints[2 * facility],
+        demandPoints[2 * demand + 1] - facilityPoints[2 * facility + 1]
+      );
+      costs[demand * facilityCount + facility] = distance < cutoff ? distance : Infinity;
+    }
+  }
+  const sparseArrays = toSparseCosts(costs, facilityCount);
+
+  type Variant = 'old' | 'new' | 'sparse';
+  const build = (variant: Variant) => {
+    const graph = new GPUCommandGraph(device, {id: `swap-ab-${variant}`});
+    const buffers = {
+      costs: createInputBuffer(device, variant === 'sparse' ? sparseArrays.costs : costs),
+      offsets: createInputBuffer(device, sparseArrays.offsets),
+      facilities: createInputBuffer(device, sparseArrays.facilities),
+      selected: createOutputBuffer(device, facilityCount),
+      assignments: createOutputBuffer(device, demandCount),
+      objective: createOutputBuffer(device, 1),
+      status: createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS.length)
+    };
+    const costsView =
+      variant === 'sparse'
+        ? undefined
+        : importGraphBuffer(graph, 'costs', buffers.costs, 'float32', costs.length);
+    const selected = importGraphBuffer(
+      graph,
+      'selected',
+      buffers.selected,
+      'uint32',
+      facilityCount
+    );
+    const status = importGraphBuffer(
+      graph,
+      'status',
+      buffers.status,
+      'uint32',
+      GPU_LOCATION_ALLOCATION_STATUS.length
+    );
+    const allocation = new GPULocationAllocation({
+      id: 'ab',
+      ...(costsView
+        ? {costs: costsView}
+        : {
+            sparseCosts: {
+              offsets: importGraphBuffer(
+                graph,
+                'offsets',
+                buffers.offsets,
+                'uint32',
+                sparseArrays.offsets.length
+              ),
+              facilities: importGraphBuffer(
+                graph,
+                'facilities',
+                buffers.facilities,
+                'uint32',
+                sparseArrays.facilities.length
+              ),
+              costs: importGraphBuffer(
+                graph,
+                'sparse-costs',
+                buffers.costs,
+                'float32',
+                sparseArrays.costs.length
+              )
+            }
+          }),
+      facilityCount,
+      operation: 'p-median',
+      maximumFacilityCount,
+      maximumSwapIterations: variant === 'old' ? 0 : 100,
+      output: {
+        selectedFacilities: selected,
+        assignments: importGraphBuffer(
+          graph,
+          'assignments',
+          buffers.assignments,
+          'uint32',
+          demandCount
+        ),
+        objective: importGraphBuffer(graph, 'objective', buffers.objective, 'float32', 1),
+        status
+      }
+    });
+    const nodes = [...allocation.getCommandNodes(graph)];
+    if (variant === 'old') {
+      // Run the old swap phase between the greedy construction and the final assignment.
+      const {nodes: legacy} = createLegacyPairSwapNodes(graph, {
+        id: 'ab-legacy',
+        costs: costsView!,
+        facilityCount,
+        demandCount,
+        maximumFacilityCount,
+        maximumSwapIterations: 100,
+        selectedFacilities: selected,
+        status
+      });
+      nodes.splice(
+        nodes.findIndex(node => node.id === 'ab-assign'),
+        0,
+        ...legacy
+      );
+    }
+    graph.add(nodes);
+    return {compiled: graph.compile(), buffers};
+  };
+
+  const results = new Map<Variant, {objective: number; selected: number[]; median: number}>();
+  for (const variant of ['old', 'new', 'sparse'] as const) {
+    const {compiled, buffers} = build(variant);
+    const timings: number[] = [];
+    let objective = 0;
+    let selected: number[] = [];
+    for (let run = 0; run < 4; run++) {
+      const start = performance.now();
+      submitGraph(device, compiled, undefined);
+      objective = (await readFloat32(buffers.objective, 1))[0];
+      timings.push(performance.now() - start);
+      if (run === 3)
+        selected = getSelectedFacilities(await readUint32(buffers.selected, facilityCount));
+    }
+    // The first run compiles pipelines; report the median of the other three.
+    const rest = timings.slice(1).sort((a, b) => a - b);
+    results.set(variant, {objective, selected, median: rest[1]});
+    compiled.destroy();
+    for (const buffer of Object.values(buffers)) buffer.destroy();
+  }
+  const old = results.get('old')!;
+  const next = results.get('new')!;
+  const sparse = results.get('sparse')!;
+  // eslint-disable-next-line no-console
+  console.log(
+    `[A/B location-allocation swap] candidates=${facilityCount} demand=${demandCount} p=${maximumFacilityCount} ` +
+      `old ${old.median.toFixed(1)} ms, new ${next.median.toFixed(1)} ms, sparse ${sparse.median.toFixed(1)} ms ` +
+      `(objective old ${old.objective}, new ${next.objective}, sparse ${sparse.objective}; ` +
+      `same selection old/new ${String(old.selected.join() === next.selected.join())}, ` +
+      `new/sparse ${String(next.selected.join() === sparse.selected.join())})`
+  );
+  expect(Math.abs(next.objective - old.objective)).toBeLessThanOrEqual(0.02 * old.objective);
+  expect(Math.abs(sparse.objective - next.objective)).toBeLessThanOrEqual(0.02 * next.objective);
 });

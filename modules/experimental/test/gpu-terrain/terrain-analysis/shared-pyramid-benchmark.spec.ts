@@ -10,6 +10,7 @@ import {
   type SharedPyramidConsumer,
   type SharedPyramidMode
 } from './shared-pyramid-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Opt in with `VITE_SHARED_PYRAMID_BENCHMARK=true npx vitest run --project headless <this file>`.
 const RUN_BENCHMARK =
@@ -79,9 +80,7 @@ it.skipIf(!RUN_BENCHMARK)(
   'shared pyramid benchmark: march vs self-built vs shared vs prebuilt',
   async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const consumers: (readonly SharedPyramidConsumer[] | undefined)[] = [
       undefined,
       ['viewshed'],

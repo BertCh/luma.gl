@@ -46,7 +46,7 @@ describe('GPURasterStatistics caller-owned aggregate contracts', () => {
       expect(() => new GPURasterStatistics({...props, ...dimensions})).toThrow(/positive integers/);
     }
     expect(() => new GPURasterStatistics({...props, width: 65536, height: 65536})).toThrow(
-      /fit in uint32/
+      /pixel count must fit in uint32/
     );
     expect(
       () =>
@@ -105,7 +105,7 @@ describe('GPURasterStatistics caller-owned aggregate contracts', () => {
     const props = makeStatisticsProps(graph, 17, 17);
 
     expect(() => new GPURasterStatistics(props).addToGraph(graph)).toThrow(
-      /bounded scalar-analysis dispatch/
+      /gpu-raster-statistics width x height must be at most 256/
     );
   });
 

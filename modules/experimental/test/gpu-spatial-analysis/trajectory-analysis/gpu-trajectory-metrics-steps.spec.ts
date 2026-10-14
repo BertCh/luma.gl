@@ -19,14 +19,13 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {generateTrajectoryTracks} from './trajectory-metrics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const CAPACITY = 64;
 
 it('GPUTrajectoryMetrics writes per-step speed, heading, acceleration and the draw count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Leading rows are outside every track and must stay zero.
   const tracks = generateTrajectoryTracks(21, 30, 3, 40, 1);
   const rowCount = tracks.timestamps.length;
@@ -61,29 +60,31 @@ it('GPUTrajectoryMetrics writes per-step speed, heading, acceleration and the dr
       timestamps: importGraphBuffer(graph, 'timestamps', timestampsBuffer, 'float32', rowCount),
       trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
       parameters: parameters.importToGraph(graph),
-      stepSpeeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', rowCount),
-      stepHeadings: importGraphBuffer(graph, 'headings', outputs.headings, 'float32', rowCount),
-      stepAccelerations: importGraphBuffer(
-        graph,
-        'accelerations',
-        outputs.accelerations,
-        'float32',
-        rowCount
-      ),
-      trackStopCounts: importGraphBuffer(
-        graph,
-        'stop-counts',
-        outputs.stopCounts,
-        'uint32',
-        trackCount
-      ),
-      stops: {
-        output: {
+      output: {
+        stepSpeeds: importGraphBuffer(graph, 'speeds', outputs.speeds, 'float32', rowCount),
+        stepHeadings: importGraphBuffer(graph, 'headings', outputs.headings, 'float32', rowCount),
+        stepAccelerations: importGraphBuffer(
+          graph,
+          'accelerations',
+          outputs.accelerations,
+          'float32',
+          rowCount
+        ),
+        trackStopCounts: importGraphBuffer(
+          graph,
+          'stop-counts',
+          outputs.stopCounts,
+          'uint32',
+          trackCount
+        ),
+        stops: {
           ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', CAPACITY),
-          count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
-        },
-        drawInstanceCount: importGraphBuffer(graph, 'draw', outputs.draw, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+          },
+          drawInstanceCount: importGraphBuffer(graph, 'draw', outputs.draw, 'uint32', 1)
+        }
       }
     })
   );

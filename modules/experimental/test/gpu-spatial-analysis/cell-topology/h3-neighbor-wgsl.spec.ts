@@ -20,12 +20,11 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {getH3Neighbor, isH3Pentagon} from './h3-neighbor-oracle';
 import {getH3TestCells} from './h3-neighbor-test-cells';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('H3_NEIGHBOR_WGSL matches the CPU port bit for bit in every direction', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = [
     ...getRes0Cells().flatMap(baseCell => [baseCell, ...cellToChildren(baseCell, 2)]),
     ...getH3TestCells(createRandom(3), 600)

@@ -5,11 +5,13 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
+  getGPUHuffTradeAreasParameterValues,
   GPUCatchmentAccessibility,
   GPUHuffTradeAreas
 } from '../../../src/gpu-spatial-analysis/catchment-accessibility/index';
 import {computeCatchmentOracle, computeHuffOracle} from './catchment-oracle';
 import {AnalysisRig, buildKernelWeights, createSeededRandom, transposeWeights} from './rig';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 5e-5): void {
   expect(actual.length, `${label} length`).toBe(expected.length);
@@ -33,7 +35,7 @@ function randomValues(count: number, seed: number, scale: number): number[] {
 for (const method of ['2sfca', '3sfca'] as const) {
   it(`GPUCatchmentAccessibility ${method} matches the oracle on symmetric self-join weights`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const count = 60;
     const points = randomPoints(count, 11);
     const csr = buildKernelWeights(points, points, 2.5, {selfJoin: false});
@@ -50,9 +52,7 @@ for (const method of ['2sfca', '3sfca'] as const) {
         supply: rig.input(Float32Array.from(supply), 'float32'),
         demand: rig.input(Float32Array.from(demand), 'float32'),
         facilityWeights: rig.weights(csr),
-        accessibility,
-        ratios,
-        reachableFacilities: reachable
+        output: {accessibility, ratios, reachableFacilities: reachable}
       })
     );
     const actual = await rig.readFloat(accessibility);
@@ -66,7 +66,7 @@ for (const method of ['2sfca', '3sfca'] as const) {
 
 it('GPUCatchmentAccessibility 3sfca conserves supply and handles cross weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const facilityCount = 12;
   const demandCount = 50;
   const facilityPoints = randomPoints(facilityCount, 21);
@@ -85,7 +85,7 @@ it('GPUCatchmentAccessibility 3sfca conserves supply and handles cross weights',
       demand: rig.input(Float32Array.from(demand), 'float32'),
       facilityWeights: rig.weights(facilityWeights),
       demandWeights: rig.weights(demandWeights),
-      accessibility
+      output: {accessibility}
     })
   );
   const actual = await rig.readFloat(accessibility);
@@ -101,9 +101,40 @@ it('GPUCatchmentAccessibility 3sfca conserves supply and handles cross weights',
   rig.destroy();
 });
 
+it('GPUCatchmentAccessibility treats non-finite demand and supply as missing', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const count = 40;
+  const points = randomPoints(count, 41);
+  const csr = buildKernelWeights(points, points, 3, {selfJoin: false});
+  const supply = randomValues(count, 42, 20);
+  const demand = randomValues(count, 43, 200);
+  supply[3] = Number.POSITIVE_INFINITY;
+  demand[5] = Number.NaN;
+  demand[9] = Number.NEGATIVE_INFINITY;
+  for (const method of ['2sfca', '3sfca'] as const) {
+    const expected = computeCatchmentOracle(method, supply, demand, csr, csr);
+    const rig = new AnalysisRig(device);
+    const accessibility = rig.output('float32', count);
+    rig.run(
+      new GPUCatchmentAccessibility({
+        method,
+        supply: rig.input(Float32Array.from(supply), 'float32'),
+        demand: rig.input(Float32Array.from(demand), 'float32'),
+        facilityWeights: rig.weights(csr),
+        output: {accessibility}
+      })
+    );
+    const actual = await rig.readFloat(accessibility);
+    expect(actual.every(Number.isFinite), `${method} finite`).toBe(true);
+    expectClose(actual, expected.accessibility, `${method} missing values`);
+    rig.destroy();
+  }
+});
+
 it('GPUHuffTradeAreas matches the oracle with an exponent and keeps rows normalized', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const facilityCount = 10;
   const demandCount = 45;
   const demandPoints = randomPoints(demandCount, 31);
@@ -126,11 +157,8 @@ it('GPUHuffTradeAreas matches the oracle with an exponent and keeps rows normali
       demand: rig.input(Float32Array.from(demand), 'float32'),
       demandWeights: rig.weights(demandWeights),
       facilityWeights: rig.weights(facilityWeights),
-      parameters: rig.input(Float32Array.of(alpha), 'float32'),
-      probabilities,
-      tradeArea,
-      tradeAreaProbability,
-      expectedDemand
+      parameters: rig.input(getGPUHuffTradeAreasParameterValues({exponent: alpha}), 'float32'),
+      output: {probabilities, tradeArea, tradeAreaProbability, expectedDemand}
     })
   );
   const probabilityValues = (await rig.readFloat(probabilities)).slice(

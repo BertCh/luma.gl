@@ -10,7 +10,7 @@ import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-cont
 import {
   getGPUChangeDetectionParameterValues,
   GPUChangeDetection,
-  type GPUChangeDetectionParameters
+  type GPUChangeDetectionSettings
 } from '../../../src/gpu-raster/change-detection';
 import {
   createInputBuffer,
@@ -18,6 +18,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {detectChangeOnCPU, type ChangeDetectionCPUResult} from './change-detection-cpu';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = {
   slices: Float32Array;
@@ -84,7 +85,7 @@ type OutputName = keyof typeof OUTPUT_FORMATS;
 type Columns = Record<OutputName, number[]>;
 
 type Fixture = {
-  run(parameters: GPUChangeDetectionParameters): Promise<Columns>;
+  run(parameters: GPUChangeDetectionSettings): Promise<Columns>;
   rebuildCount: number;
   destroy(): void;
 };
@@ -215,9 +216,7 @@ const MODES: Record<Mode, OutputName[]> = {
 
 it('GPUChangeDetection two-slice outputs match the CPU oracle without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(1, 300, 8);
   scene.slices[3] = 0; // exact zero before-value for percentChange
   const fixture = createFixture(device, scene, MODES['two-slice']);
@@ -236,9 +235,7 @@ it('GPUChangeDetection two-slice outputs match the CPU oracle without rebuilding
 
 it('GPUChangeDetection Welch t-test and significance match the CPU oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(2, 400, 12);
   scene.mask = Uint32Array.from({length: 400}, (_, cell) => (cell % 7 === 3 ? 0 : 1));
   const fixture = createFixture(device, scene, MODES.welch);
@@ -282,9 +279,7 @@ it('GPUChangeDetection Welch t-test and significance match the CPU oracle', asyn
 
 it('GPUChangeDetection Sen slope and Mann-Kendall match the CPU oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [seed, sliceCount] of [
     [3, 9],
     [4, 16],
@@ -307,9 +302,7 @@ it('GPUChangeDetection Sen slope and Mann-Kendall match the CPU oracle', async (
 
 it('GPUChangeDetection reproduces hand-checked fixtures', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Cell 0: [0, 1, 2, 3, 100] -> Sen 1. Cell 1: [1, 2, 2, 3, 3] -> S 8.
   const scene: Scene = {
     slices: Float32Array.from([0, 1, 2, 3, 100, 1, 2, 2, 3, 3]),
@@ -349,9 +342,7 @@ it('GPUChangeDetection reproduces hand-checked fixtures', async () => {
 
 it('GPUChangeDetection derives significance from Mann-Kendall when requested', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(6, 300, 14);
   scene.significanceSource = 'mann-kendall';
   const names: OutputName[] = ['mannKendallP', 'significance'];
@@ -375,9 +366,7 @@ it('GPUChangeDetection derives significance from Mann-Kendall when requested', a
 
 it('GPUChangeDetection multiband magnitude and direction match the CPU oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const bandCount of [2, 3, 5]) {
     const scene = createRandomScene(7 + bandCount, 250, 4, bandCount);
     scene.mask = Uint32Array.from({length: 250}, (_, cell) => (cell % 11 === 0 ? 0 : 1));

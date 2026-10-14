@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUPointPatternIndices,
+  type GPUPointPatternIndicesOutput,
   type GPUPointPatternIndicesProps
 } from '../../../src/gpu-dataframe/pair-statistics/gpu-point-pattern-indices';
 import {
@@ -25,9 +26,13 @@ import {
 
 let serial = 0;
 
+type Overrides = Omit<Partial<GPUPointPatternIndicesProps>, 'output'> & {
+  output?: Partial<GPUPointPatternIndicesOutput>;
+};
+
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUPointPatternIndicesProps> = {}
+  overrides: Overrides = {}
 ): GPUPointPatternIndicesProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
@@ -37,15 +42,12 @@ function createProps(
     positions: view('float32x2', 10),
     parameters: view('float32', GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH),
     gridSize: [4, 4],
-    clarkEvans: view('float32', GPU_CLARK_EVANS_LENGTH),
-    ...overrides
+    ...overrides,
+    output: {clarkEvans: view('float32', GPU_CLARK_EVANS_LENGTH), ...overrides.output}
   };
 }
 
-function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPUPointPatternIndicesProps>,
-  message: RegExp
-): void {
+function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message: RegExp): void {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   expect(() => new GPUPointPatternIndices(createProps(graph, overrides(graph)))).toThrow(message);
@@ -70,7 +72,7 @@ it('getGPUPointPatternIndicesParameterValues packs and validates the layout', ()
     bounds,
     maximumDistance: 1,
     clarkEvansCorrection: 'none',
-    alternative: 'less'
+    alternative: 'lesser'
   });
   expect(packed[5]).toBe(GPU_CLARK_EVANS_CORRECTION.none);
   expect(packed[6]).toBe(GPU_POINT_PATTERN_ALTERNATIVE.lesser);
@@ -116,45 +118,48 @@ it('GPUPointPatternIndices validates its inputs and outputs', () => {
     length: number
   ) => createTransientView(graph, `bad-${serial++}`, format, length);
   expectThrows(
-    graph => ({clarkEvans: undefined, positions: view(graph, 'float32', 3) as never}),
+    graph => ({output: {clarkEvans: undefined}, positions: view(graph, 'float32', 3) as never}),
     /positions/
   );
-  expectThrows(() => ({clarkEvans: undefined}), /at least one output/);
-  expectThrows(graph => ({clarkEvans: view(graph, 'float32', 6)}), /clarkEvans/);
+  expectThrows(() => ({output: {clarkEvans: undefined}}), /output needs at least one view/);
+  expectThrows(graph => ({output: {clarkEvans: view(graph, 'float32', 6)}}), /output\.clarkEvans/);
   expectThrows(
-    graph => ({nearestNeighborDistances: view(graph, 'float32', 9)}),
-    /nearestNeighborDistances/
+    graph => ({output: {nearestNeighborDistances: view(graph, 'float32', 9)}}),
+    /output\.nearestNeighborDistances/
   );
-  expectThrows(graph => ({nearestNeighborIds: view(graph, 'uint32', 11)}), /nearestNeighborIds/);
-  expectThrows(graph => ({quadratCounts: view(graph, 'uint32', 6)}), /quadratGrid/);
   expectThrows(
-    graph => ({quadratCounts: view(graph, 'uint32', 6), quadratGrid: [0, 3]}),
+    graph => ({output: {nearestNeighborIds: view(graph, 'uint32', 11)}}),
+    /output\.nearestNeighborIds/
+  );
+  expectThrows(graph => ({output: {quadratCounts: view(graph, 'uint32', 6)}}), /quadratGrid/);
+  expectThrows(
+    graph => ({output: {quadratCounts: view(graph, 'uint32', 6)}, quadratGrid: [0, 3]}),
     /quadratGrid/
   );
   expectThrows(
-    graph => ({quadratCounts: view(graph, 'uint32', 65537), quadratGrid: [257, 256]}),
+    graph => ({output: {quadratCounts: view(graph, 'uint32', 65537)}, quadratGrid: [257, 256]}),
     /65536/
   );
   expectThrows(
-    graph => ({quadratCounts: view(graph, 'uint32', 5), quadratGrid: [3, 2]}),
-    /quadratCounts/
+    graph => ({output: {quadratCounts: view(graph, 'uint32', 5)}, quadratGrid: [3, 2]}),
+    /output\.quadratCounts/
   );
   expectThrows(
-    graph => ({quadratStatistics: view(graph, 'float32', 6), quadratGrid: [3, 2]}),
-    /quadratStatistics/
+    graph => ({output: {quadratStatistics: view(graph, 'float32', 6)}, quadratGrid: [3, 2]}),
+    /output\.quadratStatistics/
   );
   expectThrows(() => ({quadratGrid: [2, 2]}), /quadratGrid needs/);
   expectThrows(graph => ({parameters: view(graph, 'float32', 4)}), /parameters/);
   expectThrows(graph => ({mask: view(graph, 'uint32', 9)}), /mask length/);
   expectThrows(graph => {
     const shared = view(graph, 'float32', 10);
-    return {nearestNeighborDistances: shared, positions: shared as never};
+    return {output: {nearestNeighborDistances: shared}, positions: shared as never};
   }, /alias|overlap|disjoint|input|share|positions/i);
 });
 
 it('GPUPointPatternIndices builds only the nodes of the requested parts', () => {
   const device = createNullWebGPUDevice();
-  const ids = (overrides: (graph: GPUCommandGraph) => Partial<GPUPointPatternIndicesProps>) => {
+  const ids = (overrides: (graph: GPUCommandGraph) => Overrides) => {
     const graph = new GPUCommandGraph(device);
     const props = createProps(graph, {id: 'p', ...overrides(graph)});
     return new GPUPointPatternIndices(props).getCommandNodes(graph).map(node => node.id);
@@ -165,26 +170,27 @@ it('GPUPointPatternIndices builds only the nodes of the requested parts', () => 
     length: number
   ) => createTransientView(graph, `n-${serial++}`, format, length);
   const nearestOnly = ids(graph => ({
-    clarkEvans: undefined,
-    nearestNeighborIds: view(graph, 'uint32', 10)
+    output: {clarkEvans: undefined, nearestNeighborIds: view(graph, 'uint32', 10)}
   }));
   expect(nearestOnly).toContain('p-nearest');
   expect(nearestOnly.some(id => id.includes('quadrat') || id.includes('clark'))).toBe(false);
   const quadratOnly = ids(graph => ({
-    clarkEvans: undefined,
-    quadratGrid: [3, 2],
-    quadratStatistics: view(graph, 'float32', 7)
+    output: {clarkEvans: undefined, quadratStatistics: view(graph, 'float32', 7)},
+    quadratGrid: [3, 2]
   }));
   expect(quadratOnly).toContain('p-quadrat-counts');
   expect(quadratOnly).toContain('p-quadrat-statistics');
   expect(quadratOnly).not.toContain('p-nearest');
-  const both = ids(graph => ({quadratGrid: [3, 2], quadratCounts: view(graph, 'uint32', 6)}));
+  const both = ids(graph => ({
+    quadratGrid: [3, 2],
+    output: {quadratCounts: view(graph, 'uint32', 6)}
+  }));
   expect(both).toContain('p-clark-evans');
   expect(both).toContain('p-quadrat-counts');
   expect(both).not.toContain('p-quadrat-statistics');
-  expect(ids(graph => ({quadratGrid: [3, 2], quadratCounts: view(graph, 'uint32', 6)}))).toEqual(
-    both
-  );
+  expect(
+    ids(graph => ({quadratGrid: [3, 2], output: {quadratCounts: view(graph, 'uint32', 6)}}))
+  ).toEqual(both);
   device.destroy();
 });
 

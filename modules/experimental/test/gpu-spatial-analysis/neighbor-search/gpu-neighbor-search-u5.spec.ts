@@ -4,11 +4,12 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts';
 import {createNeighborSearchHarness, type NeighborSearchReadback} from './neighbor-search-harness';
 import {NEIGHBOR_SEARCH_U5_ORACLE, type GreatCircleFixture} from './neighbor-search-u5-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-// Oracle: fix/work/A/oracle-u5-neighbor-search.py (numpy float64 haversine with R = 6371008.8 m on
+// Oracle: test/oracles/statistics-neighbor-search.py (numpy float64 haversine with R = 6371008.8 m on
 // float32-exact [lon, lat] fixtures; libpysal 4.15 Kernel(fixed=False) for the planar kernels).
 // The fixtures guarantee a 50 m gap at every kNN cut and radius edge, far above f32 haversine error,
 // so neighbor IDs are compared exactly. Distances: f32 trigonometry budget of 2e-5 relative + 1 m.
@@ -79,9 +80,7 @@ async function runFixture(
 
 it('GPUNeighborSearch great-circle kNN and radius match numpy haversine globally, over the antimeridian and at the poles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const fixture of NEIGHBOR_SEARCH_U5_ORACLE.fixtures) {
     // Results must not depend on the lattice: single cell, coarse and fine.
     for (const gridSize of [
@@ -97,9 +96,7 @@ it('GPUNeighborSearch great-circle kNN and radius match numpy haversine globally
 
 it('GPUNeighborSearch great-circle search with bounds narrower than 360 degrees does not wrap beyond them', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = NEIGHBOR_SEARCH_U5_ORACLE.fixtures.find(f => f.name === 'antimeridian')!;
   const positions = Float32Array.from(fixture.positions);
   // Bounds hugging the antimeridian: [170, 190] is expressed as the full circle because positions
@@ -119,9 +116,7 @@ it('GPUNeighborSearch great-circle search with bounds narrower than 360 degrees 
 
 it('GPUNeighborSearch kNN adaptive kernels match libpysal Kernel(fixed=False) on planar points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {planar} = NEIGHBOR_SEARCH_U5_ORACLE;
   const positions = Float32Array.from(planar.positions);
   for (const [kernel, oracle] of Object.entries(planar.kernels)) {
@@ -155,9 +150,7 @@ it('GPUNeighborSearch kNN adaptive kernels match libpysal Kernel(fixed=False) on
 
 it('GPUNeighborSearch invalidCount counts masked rows dropped for non-finite coordinates or bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Rows: 0 ok, 1 NaN, 2 outside bounds, 3 outside but masked out, 4 ok, 5 infinite.
   const positions = new Float32Array([1, 1, NaN, 2, 50, 1, 60, 60, 2, 2, Infinity, 3]);
   const mask = new Uint32Array([1, 1, 1, 0, 1, 1]);

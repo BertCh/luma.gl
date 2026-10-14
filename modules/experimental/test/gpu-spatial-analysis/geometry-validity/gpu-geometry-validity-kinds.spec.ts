@@ -18,6 +18,7 @@ import {
   type PredicateGeometrySpec
 } from '../geometry-predicates/gpu-geometry-predicates-harness';
 import {SHAPELY_PREDICATES_FIXTURE as FIXTURE} from '../geometry-predicates/shapely-predicates-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 async function runKindValidity(
   device: Device,
@@ -32,7 +33,9 @@ async function runKindValidity(
   const mask = importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', featureCount);
   graph.add(
     new GPUGeometryValidity(
-      geometry.kind === 'lines' ? {lines: geometry, mask} : {points: geometry as never, mask}
+      geometry.kind === 'lines'
+        ? {lines: geometry, output: {mask}}
+        : {points: geometry as never, output: {mask}}
     )
   );
   const compiled = graph.compile();
@@ -47,9 +50,7 @@ async function runKindValidity(
 
 it('GPUGeometryValidity lines match Shapely is_valid and is_valid_reason', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {lines} = FIXTURE;
   // Two hand-pinned rows Shapely cannot build from coordinates: an empty line (valid) and a
   // one-vertex line (too few points).
@@ -72,9 +73,7 @@ it('GPUGeometryValidity lines match Shapely is_valid and is_valid_reason', async
 
 it('GPUGeometryValidity points match Shapely is_valid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points} = FIXTURE;
   const mask = await runKindValidity(
     device,

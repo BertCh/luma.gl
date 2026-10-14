@@ -15,6 +15,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/recipes/points-in-polygons-choropleth-recipe';
 import {createSeededRandom} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Ring = [number, number][];
 
@@ -103,9 +104,7 @@ for (const backend of ['zonal', 'group'] as const) {
     }
     it(`addPointsInPolygonsChoroplethRecipe ${backend} ${statistic} matches the CPU join`, async () => {
       const device = await getWebGPUTestDevice();
-      if (!device) {
-        return;
-      }
+      requireTestDevice(device);
       const polygons = createPolygons();
       const {points, values} = createScene();
       const featureCount = polygons.features.length;
@@ -148,10 +147,11 @@ for (const backend of ['zonal', 'group'] as const) {
         const recipe = addPointsInPolygonsChoroplethRecipe(fixture.graph, {
           backend,
           statistic,
-          points: fixture.input('points', points, 'float32x2', 600),
+          points: {kind: 'points', positions: fixture.input('points', points, 'float32x2', 600)},
           values: fixture.input('values', values, 'float32', 600),
           polygons: {
-            polygonPositions: fixture.input(
+            kind: 'polygons',
+            positions: fixture.input(
               'polygon-positions',
               polygons.positions,
               'float32x2',
@@ -180,13 +180,13 @@ for (const backend of ['zonal', 'group'] as const) {
           outputs: {
             counts: counts.view,
             ...(statistic === 'count' ? {} : {featureValues: featureValues.view}),
-            overflow: overflow.view,
             color: {
               breaks: breaks.view,
               classCount: classCount.view,
               colors: colors.view,
               classIndices: classIndices.view
-            }
+            },
+            status: {overflow: overflow.view}
           },
           color: {
             classBreaksParameters: fixture.parameters(
@@ -206,8 +206,8 @@ for (const backend of ['zonal', 'group'] as const) {
           }
         });
         expect(recipe.contributors.length).toBe(backend === 'zonal' ? 3 : 4);
-        expect(recipe.outputs.counts).toBe(recipe.counts);
-        expect(recipe.status.stages[0].status.overflow).toBe(recipe.overflow);
+        expect(recipe.outputs['counts']).toBe(recipe.counts);
+        expect(recipe.status.stages[0].status.overflow).toBe(recipe.status.overflow);
         fixture.run();
 
         expect((await fixture.readUint32(overflow, 1))[0]).toBe(0);

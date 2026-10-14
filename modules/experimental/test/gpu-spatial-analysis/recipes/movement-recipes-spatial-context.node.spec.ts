@@ -4,7 +4,7 @@
 
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import {addDriveTimeCatchmentRecipe} from '../../../src/gpu-spatial-analysis/recipes/drive-time-catchment-recipe';
+import {addDriveTimeCatchmentRecipe} from '../../../src/gpu-network/recipes/drive-time-catchment-recipe';
 import {
   addFleetDwellRecipe,
   addFleetDwellZoneEventsRecipe

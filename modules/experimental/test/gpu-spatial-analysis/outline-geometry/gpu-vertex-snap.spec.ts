@@ -11,12 +11,11 @@ import {
 } from '../../../src/gpu-spatial-analysis/vertex-snap/index';
 import {createGeometryFixture} from './geometry-fixture';
 import {VERTEX_SNAP_REFERENCE_CASES, VERTEX_SNAP_TOLERANCE} from './offset-curve-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPUVertexSnap matches shapely.snap on vertex-only cases', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let snappedTotal = 0;
   for (const referenceCase of VERTEX_SNAP_REFERENCE_CASES) {
     const fixture = createGeometryFixture(device, {
@@ -54,9 +53,7 @@ it('GPUVertexSnap matches shapely.snap on vertex-only cases', async () => {
 
 it('GPUVertexSnap picks the nearest reference, lowest row on ties, and supports pairwise features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Feature 0 (rows 0-1) owns references 0-1, feature 1 (row 2) owns reference 2. Row 1 sits
   // exactly between references 0 and 1 mirrored about x = 5, so the lower row 0 wins; the farther
   // reference of row 0 (0.4 away) loses to the nearer one (0.1).
@@ -106,11 +103,9 @@ it('GPUVertexSnap validates the tolerance', () => {
   expect(Array.from(getGPUVertexSnapParameterValues({tolerance: 2}))).toEqual([2, 0, 0, 0]);
 });
 
-it('GPUVertexSnap BVH path (many references) equals a linear scan, including duplicate and tied references', async () => {
+it('GPUVertexSnap BVH line (many references) equals a linear scan, including duplicate and tied references', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let seed = 12345;
   const random = () => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -180,11 +175,9 @@ it('GPUVertexSnap BVH path (many references) equals a linear scan, including dup
   fixture.destroy();
 });
 
-it('GPUVertexSnap BVH path skips non-finite references exactly like the linear scan', async () => {
+it('GPUVertexSnap BVH line skips non-finite references exactly like the linear scan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let seed = 777;
   const random = () => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;

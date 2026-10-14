@@ -6,13 +6,13 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import type {GPUCompactOutput} from '../../../src/utils/gpu-contributor-types';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   decodeGPURegionStatistics,
   getGPURegionStatisticsSummaryLength,
   GPURegionStatistics,
   GPURegionStatisticsReadback,
-  type GPURegionStatisticsProps,
   type GPURegionStatisticsResult
 } from '../../../src/gpu-spatial-analysis/region-statistics';
 import {
@@ -35,6 +35,7 @@ import {
   selectRows,
   VALUES
 } from './region-statistics-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const ROW_COUNT = POSITIONS.length / 2;
 
@@ -64,7 +65,7 @@ type Fixture = {
   positions: ReturnType<typeof importGraphBuffer<'float32x2', void>>;
   values: ReturnType<typeof importGraphBuffer<'float32', void>>;
   sourceIds: ReturnType<typeof importGraphBuffer<'uint32', void>>;
-  output: GPURegionStatisticsProps['output'] & {};
+  output: GPUCompactOutput;
   idsBuffer: Buffer;
   countBuffer: Buffer;
   overflowBuffer: Buffer;
@@ -101,9 +102,11 @@ function createFixture(device: Device, id: string, capacity: number, binCount: n
     sourceIds: importGraphBuffer(graph, 'source-ids', sourceIdsBuffer, 'uint32', ROW_COUNT),
     output: {
       ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', capacity),
-      count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
+      status: {
+        count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+        requiredCount: importGraphBuffer(graph, 'total', totalBuffer, 'uint32', 1)
+      }
     },
     idsBuffer,
     countBuffer,
@@ -124,9 +127,7 @@ const RECTANGLE_ROWS = selectRows((x, y) => isInsideRectangle(x, y, RECTANGLE));
 
 it('GPURegionStatistics summarizes a world rectangle and updates per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'region-rectangle', 12, 4);
   const bounds = new GPUParameterBuffer(device, {
     id: 'bounds',
@@ -136,13 +137,12 @@ it('GPURegionStatistics summarizes a world rectangle and updates per frame', asy
   });
   fixture.graph.add(
     new GPURegionStatistics({
-      selection: {kind: 'rectangle', bounds: bounds.importToGraph(fixture.graph)},
+      region: {kind: 'rectangle', bounds: bounds.importToGraph(fixture.graph)},
       positions: fixture.positions,
       values: fixture.values,
       sourceIds: fixture.sourceIds,
       histogram: {binCount: 4},
-      output: fixture.output,
-      summary: fixture.summary
+      output: {selectedRows: fixture.output, summary: fixture.summary}
     })
   );
   const compiled = fixture.graph.compile();
@@ -180,22 +180,19 @@ it('GPURegionStatistics summarizes a world rectangle and updates per frame', asy
 
 it('GPURegionStatistics clamps selected IDs without truncating statistics', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'region-capacity', 2, 0);
   const boundsBuffer = createInputBuffer(device, RECTANGLE);
   fixture.graph.add(
     new GPURegionStatistics({
-      selection: {
+      region: {
         kind: 'rectangle',
         bounds: importGraphBuffer(fixture.graph, 'bounds', boundsBuffer, 'float32', 4)
       },
       positions: fixture.positions,
       values: fixture.values,
       sourceIds: fixture.sourceIds,
-      output: fixture.output,
-      summary: fixture.summary
+      output: {selectedRows: fixture.output, summary: fixture.summary}
     })
   );
   const compiled = fixture.graph.compile();
@@ -212,9 +209,7 @@ it('GPURegionStatistics clamps selected IDs without truncating statistics', asyn
 
 it('GPURegionStatistics writes the clamped selected count to a draw record instanceCount', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const capacity of [12, 2]) {
     const fixture = createFixture(device, `region-draw-${capacity}`, capacity, 0);
     const bounds = new GPUParameterBuffer(device, {
@@ -237,13 +232,11 @@ it('GPURegionStatistics writes the clamped selected count to a draw record insta
     });
     fixture.graph.add(
       new GPURegionStatistics({
-        selection: {kind: 'rectangle', bounds: bounds.importToGraph(fixture.graph)},
+        region: {kind: 'rectangle', bounds: bounds.importToGraph(fixture.graph)},
         positions: fixture.positions,
         values: fixture.values,
         sourceIds: fixture.sourceIds,
-        output: fixture.output,
-        drawInstanceCount,
-        summary: fixture.summary
+        output: {selectedRows: fixture.output, drawInstanceCount, summary: fixture.summary}
       })
     );
     const compiled = fixture.graph.compile();
@@ -269,9 +262,7 @@ it('GPURegionStatistics writes the clamped selected count to a draw record insta
 
 it('GPURegionStatistics uses literal and per-frame histogram domains', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'region-domain', 12, 4);
   const boundsBuffer = createInputBuffer(device, RECTANGLE);
   const literalSummaryBuffer = createOutputBuffer(device, 12);
@@ -285,27 +276,29 @@ it('GPURegionStatistics uses literal and per-frame histogram domains', async () 
   fixture.graph.add(
     new GPURegionStatistics({
       id: 'literal',
-      selection: {kind: 'rectangle', bounds},
+      region: {kind: 'rectangle', bounds},
       positions: fixture.positions,
       values: fixture.values,
       histogram: {binCount: 4, domain: [0, 40]},
-      summary: importGraphBuffer(
-        fixture.graph,
-        'literal-summary',
-        literalSummaryBuffer,
-        'uint32',
-        12
-      )
+      output: {
+        summary: importGraphBuffer(
+          fixture.graph,
+          'literal-summary',
+          literalSummaryBuffer,
+          'uint32',
+          12
+        )
+      }
     })
   );
   fixture.graph.add(
     new GPURegionStatistics({
       id: 'view',
-      selection: {kind: 'rectangle', bounds},
+      region: {kind: 'rectangle', bounds},
       positions: fixture.positions,
       values: fixture.values,
       histogram: {binCount: 4, domain: domain.importToGraph(fixture.graph)},
-      summary: fixture.summary
+      output: {summary: fixture.summary}
     })
   );
   const compiled = fixture.graph.compile();
@@ -330,9 +323,7 @@ it('GPURegionStatistics uses literal and per-frame histogram domains', async () 
 
 it('GPURegionStatistics summarizes a lasso and flags vertex overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'region-lasso', 12, 4);
   const lasso = createInputBuffer(device, LASSO);
   const vertexCount = new GPUParameterBuffer(device, {
@@ -343,7 +334,7 @@ it('GPURegionStatistics summarizes a lasso and flags vertex overflow', async () 
   });
   fixture.graph.add(
     new GPURegionStatistics({
-      selection: {
+      region: {
         kind: 'polygon',
         vertices: importGraphBuffer(fixture.graph, 'lasso', lasso, 'float32x2', 5),
         vertexCount: vertexCount.importToGraph(fixture.graph)
@@ -351,8 +342,7 @@ it('GPURegionStatistics summarizes a lasso and flags vertex overflow', async () 
       positions: fixture.positions,
       values: fixture.values,
       histogram: {binCount: 4},
-      output: fixture.output,
-      summary: fixture.summary
+      output: {selectedRows: fixture.output, summary: fixture.summary}
     })
   );
   const compiled = fixture.graph.compile();
@@ -379,9 +369,7 @@ it('GPURegionStatistics summarizes a lasso and flags vertex overflow', async () 
 
 it('GPURegionStatistics handles radius, pick-region, mask, and count-only selections', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'region-kinds', 12, 4);
   const circleBuffer = createInputBuffer(device, CIRCLE);
   const pickBuffer = createInputBuffer(
@@ -401,46 +389,48 @@ it('GPURegionStatistics handles radius, pick-region, mask, and count-only select
   graph.add(
     new GPURegionStatistics({
       id: 'radius',
-      selection: {
+      region: {
         kind: 'radius',
         circle: importGraphBuffer(graph, 'circle', circleBuffer, 'float32', 3)
       },
       positions: fixture.positions,
       values: fixture.values,
       histogram: {binCount: 4},
-      summary: fixture.summary
+      output: {summary: fixture.summary}
     })
   );
   graph.add(
     new GPURegionStatistics({
       id: 'pick',
-      selection: {
+      region: {
         kind: 'pick-region',
-        result: importGraphBuffer(graph, 'pick-result', pickBuffer, 'uint32', 12),
+        picks: importGraphBuffer(graph, 'pick-result', pickBuffer, 'uint32', 12),
         batchIndex: 0
       },
       values: fixture.values,
-      summary: importGraphBuffer(graph, 'pick-summary', pickSummaryBuffer, 'uint32', 8)
+      output: {summary: importGraphBuffer(graph, 'pick-summary', pickSummaryBuffer, 'uint32', 8)}
     })
   );
   graph.add(
     new GPURegionStatistics({
       id: 'mask',
-      selection: {kind: 'mask', mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 12)},
+      region: {kind: 'mask', mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 12)},
       values: fixture.values,
-      summary: importGraphBuffer(graph, 'mask-summary', maskSummaryBuffer, 'uint32', 8)
+      output: {summary: importGraphBuffer(graph, 'mask-summary', maskSummaryBuffer, 'uint32', 8)}
     })
   );
   graph.add(
     new GPURegionStatistics({
       id: 'count-only',
-      selection: {
+      region: {
         kind: 'rectangle',
         bounds: importGraphBuffer(graph, 'bounds', boundsBuffer, 'float32', 4)
       },
       positions: fixture.positions,
-      outputMask: importGraphBuffer(graph, 'output-mask', outputMaskBuffer, 'uint32', ROW_COUNT),
-      summary: importGraphBuffer(graph, 'count-summary', countSummaryBuffer, 'uint32', 8)
+      output: {
+        mask: importGraphBuffer(graph, 'output-mask', outputMaskBuffer, 'uint32', ROW_COUNT),
+        summary: importGraphBuffer(graph, 'count-summary', countSummaryBuffer, 'uint32', 8)
+      }
     })
   );
   const compiled = graph.compile();
@@ -482,21 +472,19 @@ it('GPURegionStatistics handles radius, pick-region, mask, and count-only select
 
 it('GPURegionStatisticsReadback reads summaries and drops frames under backpressure', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'region-readback', 12, 4);
   const boundsBuffer = createInputBuffer(device, RECTANGLE);
   fixture.graph.add(
     new GPURegionStatistics({
-      selection: {
+      region: {
         kind: 'rectangle',
         bounds: importGraphBuffer(fixture.graph, 'bounds', boundsBuffer, 'float32', 4)
       },
       positions: fixture.positions,
       values: fixture.values,
       histogram: {binCount: 4},
-      summary: fixture.summary
+      output: {summary: fixture.summary}
     })
   );
   const compiled = fixture.graph.compile();

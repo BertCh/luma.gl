@@ -19,6 +19,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {h3ToBigInt, joinCellKey, splitCellKey} from '../cell-aggregation/cell-aggregation-oracle';
 import {H3_GRID_PATH_FIXTURES} from './h3-grid-path-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Pairs H3 rejects or the kernel must reject: resolution mismatch, zero cell, masked row. */
 const EXTRA_PAIRS: [string, string, 'undefined' | 'masked'][] = [
@@ -112,9 +113,7 @@ function getPathRow(run: Run, row: number, stride: number, wordOrder = 'little-e
 
 it('GPUCellGridPath distances and paths match python h3 4.5.0 gridDistance and gridPathCells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const stride = 64;
   const pairs = [
     ...H3_GRID_PATH_FIXTURES.map(([origin, destination]) => ({
@@ -186,9 +185,7 @@ it('GPUCellGridPath distances and paths match python h3 4.5.0 gridDistance and g
 
 it('GPUCellGridPath distance-only mode, overflow counts and high-low word order', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pairs = H3_GRID_PATH_FIXTURES.map(([origin, destination]) => ({
     origin: h3ToBigInt(origin),
     destination: h3ToBigInt(destination)
@@ -224,9 +221,7 @@ it('GPUCellGridPath distance-only mode, overflow counts and high-low word order'
 
 it('GPUCellGridPath validates its properties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'cell-grid-path-validation'});
   const buffer = createInputBuffer(device, new Uint32Array(4));
   const outBuffer = createOutputBuffer(device, 2);

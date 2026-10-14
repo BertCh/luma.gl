@@ -108,7 +108,7 @@ export function computeCoverageSimplificationOracle(
     positions[2 * row + 1] = layout.positions[2 * vertex + 1];
   });
   const kept = simplifyDouglasPeucker(
-    {positions, trackOffsets: new Uint32Array(trackOffsets)},
+    {positions, lineOffsets: new Uint32Array(trackOffsets)},
     tolerance
   );
   const keepPoints = new Set<string>();

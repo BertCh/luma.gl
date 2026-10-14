@@ -11,6 +11,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {NullDevice} from '@luma.gl/test-utils';
+import {WgslReflect} from 'wgsl_reflect';
 
 /**
  * Returns a CPU-only device that GPUCommandGraph accepts, for `.node.spec.ts` wiring tests.
@@ -44,6 +45,10 @@ export type RecordedGPUKernelSource = {
   operation: string;
   /** The complete WGSL module passed to the pipeline. */
   source: string;
+  /** Pipeline-overridable constants passed with the module (a copy; empty when none). */
+  constants: Readonly<Record<string, number>>;
+  /** Shader layout passed with the module, if any. */
+  shaderLayout?: unknown;
 };
 
 /**
@@ -64,8 +69,19 @@ export function getGPUCommandNodeKernelSources(
   const sources: RecordedGPUKernelSource[] = [];
   let operation = '';
   Object.defineProperty(device, 'createComputePipeline', {
-    value: (props: {id?: string; shader: {source: string}}) => {
-      sources.push({id: props.id ?? '', operation, source: props.shader.source});
+    value: (props: {
+      id?: string;
+      shader: {source: string};
+      constants?: Record<string, number>;
+      shaderLayout?: unknown;
+    }) => {
+      sources.push({
+        id: props.id ?? '',
+        operation,
+        source: props.shader.source,
+        constants: {...props.constants},
+        shaderLayout: props.shaderLayout
+      });
       return {id: props.id ?? '', hash: '', destroy: () => {}};
     }
   });
@@ -78,6 +94,103 @@ export function getGPUCommandNodeKernelSources(
   }
   device.destroy();
   return sources;
+}
+
+/** Options of {@link getGPUCommandNodePipelineKeys}. */
+export type PipelineKeyOptions = {
+  /** Only count kernels whose ID matches, for checks on one family (for example every round). */
+  idPattern?: RegExp;
+  /** Also key on the shader layout, as `PipelineFactory` hashes it (network specs do; default false). */
+  includeShaderLayout?: boolean;
+};
+
+/**
+ * Compiles command nodes (see {@link getGPUCommandNodeKernelSources}) and returns one key per
+ * distinct compute pipeline: the WGSL source plus its sorted override constants, the pair
+ * `PipelineFactory` hashes. Library rule 12: building a graph at N and N + 1 rounds (batches,
+ * periods, powers, classes) must give the same `size`. Use `getGPUCommandNodeKernelSources(nodes).length`
+ * for the total number of pipeline requests.
+ */
+export function getGPUCommandNodePipelineKeys(
+  nodes: readonly unknown[],
+  options: PipelineKeyOptions = {}
+): Set<string> {
+  const keys = new Set<string>();
+  for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+    if (options.idPattern && !options.idPattern.test(kernel.id)) {
+      continue;
+    }
+    const constants = Object.entries(kernel.constants).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0
+    );
+    const layout = options.includeShaderLayout ? JSON.stringify(kernel.shaderLayout ?? null) : '';
+    keys.add(`${kernel.source}\n${JSON.stringify(constants)}\n${layout}`);
+  }
+  return keys;
+}
+
+/**
+ * Returns the WGSL of every compute kernel the nodes compile, by kernel ID, after checking that
+ * each module parses with `wgsl_reflect` (a parse failure names the kernel).
+ */
+export function getParsedKernelSources(nodes: readonly unknown[]): Map<string, string> {
+  const sources = new Map<string, string>();
+  for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+    try {
+      new WgslReflect(kernel.source);
+    } catch (error) {
+      throw new Error(`kernel ${kernel.id} does not parse: ${String(error)}`);
+    }
+    sources.set(kernel.id, kernel.source);
+  }
+  return sources;
+}
+
+/** Core WebGPU limit on private (function-scope) memory per invocation, in bytes. */
+export const CORE_PRIVATE_MEMORY_LIMIT_BYTES = 8192;
+/** Core WebGPU `maxComputeWorkgroupStorageSize`, in bytes. */
+export const CORE_WORKGROUP_STORAGE_LIMIT_BYTES = 16384;
+
+function getTypeBytes(type: string): number {
+  const array = /^array<\s*([^,>]+(?:<[^>]*>)?)\s*,\s*(\d+)u?\s*>$/.exec(type.trim());
+  if (array) {
+    return getTypeBytes(array[1]) * Number(array[2]);
+  }
+  const vector = /^vec([234])</.exec(type.trim());
+  if (vector) {
+    return vector[1] === '2' ? 8 : 16;
+  }
+  return 4;
+}
+
+function sumDeclarations(source: string, pattern: RegExp): number {
+  let total = 0;
+  for (const match of source.matchAll(pattern)) {
+    total += getTypeBytes(match[1]);
+  }
+  return total;
+}
+
+/**
+ * Upper bound of the private memory one invocation of a kernel uses: every `var<private>` plus
+ * every function-scope `var` of array type (scalar locals are registers). Arrays are counted at
+ * their declared length.
+ */
+export function getPrivateMemoryBytes(source: string): number {
+  return (
+    sumDeclarations(source, /var<private>\s+\w+\s*:\s*([^;]+);/g) +
+    sumDeclarations(source, /^\s+var\s+\w+\s*:\s*(array<[^;]+>);/gm)
+  );
+}
+
+/** Bytes of `var<workgroup>` declarations of a kernel. */
+export function getWorkgroupMemoryBytes(source: string): number {
+  return sumDeclarations(source, /var<workgroup>\s+\w+\s*:\s*([^;]+);/g);
+}
+
+/** Number of `var<storage, ...>` bindings of a kernel. */
+export function getStorageBindingCount(source: string): number {
+  return (source.match(/var<storage,/g) ?? []).length;
 }
 
 /** Creates a storage input buffer initialized with `values`. */
@@ -162,4 +275,46 @@ export function submitGraph<Parameters>(
   const encoding = compiled.encode(commandEncoder, {parameters});
   device.submit(commandEncoder.finish());
   return encoding;
+}
+
+/** One compute pipeline a command-node list would create. */
+export type RecordedPipeline = {
+  /** Pipeline ID. */
+  id: string;
+  /** Complete WGSL module. */
+  source: string;
+  /** Override constants passed to the pipeline (empty when none). */
+  constants: Record<string, number>;
+  /** `source` plus the serialized override constants: the key the pipeline factory hashes. */
+  key: string;
+};
+
+/** Compiles `nodes` on a recording device and returns each pipeline's source and constants. */
+export function recordComputePipelines(nodes: readonly unknown[]): RecordedPipeline[] {
+  const device: Device = createNullWebGPUDevice();
+  Object.defineProperty(device, 'props', {
+    value: {...device.props, _cacheShaders: false, _cachePipelines: false}
+  });
+  const pipelines: RecordedPipeline[] = [];
+  Object.defineProperty(device, 'createComputePipeline', {
+    value: (props: {id?: string; shader: {source: string}; constants?: object}) => {
+      pipelines.push({
+        id: props.id ?? '',
+        source: props.shader.source,
+        constants: {...((props.constants ?? {}) as Record<string, number>)},
+        key: `${props.shader.source}\n${JSON.stringify(props.constants ?? null)}`
+      });
+      return {id: props.id ?? '', hash: '', destroy: () => {}};
+    }
+  });
+  for (const node of nodes as {compile?: (context: {device: Device}) => unknown}[]) {
+    node.compile?.({device});
+  }
+  device.destroy();
+  return pipelines;
+}
+
+/** Number of distinct `(source, constants)` pairs, i.e. the pipelines a real device would build. */
+export function countDistinctPipelines(nodes: readonly unknown[]): number {
+  return new Set(recordComputePipelines(nodes).map(pipeline => pipeline.key)).size;
 }

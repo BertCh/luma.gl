@@ -50,8 +50,10 @@ function createProps(
 ): GPUNetworkAnalyticsColumnsProps {
   const {importView} = imports;
   return {
-    offsets: importView('offsets', 'uint32', NODE_COUNT + 1),
-    neighbors: importView('neighbors', 'uint32', EDGE_COUNT),
+    topology: {
+      offsets: importView('offsets', 'uint32', NODE_COUNT + 1),
+      neighbors: importView('neighbors', 'uint32', EDGE_COUNT)
+    },
     degree: {output: importView('degree', 'uint32', NODE_COUNT)},
     ...overrides
   };
@@ -64,8 +66,10 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
   const contributor = new GPUNetworkAnalyticsColumns({
     id: 'columns',
     ...createProps(imports),
-    reverseOffsets: importView('reverse-offsets', 'uint32', NODE_COUNT + 1),
-    reverseNeighbors: importView('reverse-neighbors', 'uint32', EDGE_COUNT),
+    reverseTopology: {
+      offsets: importView('reverse-offsets', 'uint32', NODE_COUNT + 1),
+      neighbors: importView('reverse-neighbors', 'uint32', EDGE_COUNT)
+    },
     degree: {
       output: importView('degree', 'uint32', NODE_COUNT),
       normalized: importView('degree-normalized', 'float32', NODE_COUNT),
@@ -75,17 +79,19 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
     pageRank: {
       output: importView('page-rank', 'float32', NODE_COUNT),
       normalized: importView('page-rank-normalized', 'float32', NODE_COUNT),
-      iterations: 2,
+      iterationCount: 2,
       residual: importView('residual', 'float32', 1)
     },
     coreNumber: {
       output: importView('core', 'uint32', NODE_COUNT),
-      iterations: 1,
-      converged: importView('core-converged', 'uint32', 1),
+      maximumIterations: 1,
+      status: {
+        converged: importView('core-converged', 'uint32', 1)
+      },
       degeneracy: importView('core-degeneracy', 'uint32', 1)
     },
-    components: {output: importView('components', 'uint32', NODE_COUNT), iterations: 1},
-    communities: {output: importView('communities', 'uint32', NODE_COUNT), iterations: 1}
+    components: {output: importView('components', 'uint32', NODE_COUNT), maximumIterations: 1},
+    communities: {output: importView('communities', 'uint32', NODE_COUNT), maximumIterations: 1}
   });
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   const indexOf = (prefix: string) => ids.findIndex(id => id.startsWith(prefix));
@@ -101,7 +107,6 @@ it('GPUNetworkAnalyticsColumns schedules algorithms then normalization in a fixe
   expect(ids.some(id => id.startsWith('columns-page-rank-extent'))).toBe(true);
   expect(ids).not.toContain('columns-in-degree-normalize');
   expect(ids.indexOf('columns-degree-normalize')).toBeGreaterThan(indexOf('columns-degree-extent'));
-  contributor.destroy();
   device.destroy();
 });
 
@@ -113,7 +118,6 @@ it('GPUNetworkAnalyticsColumns schedules only the requested metrics', () => {
   expect(contributor.getCommandNodes(imports.graph).map(node => node.id)).toEqual([
     'network-analytics-columns-degree'
   ]);
-  contributor.destroy();
   device.destroy();
 });
 
@@ -127,20 +131,27 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
 
   expect(() => create({degree: undefined})).toThrow(/at least one metric/);
   expect(() => create({inDegree: {output: importView('in', 'uint32', NODE_COUNT)}})).toThrow(
-    /inDegree requires reverseOffsets/
+    /inDegree requires reverseTopology/
   );
-  expect(() =>
-    create({reverseOffsets: importView('reverse-offsets', 'uint32', NODE_COUNT + 1)})
-  ).toThrow(/given together/);
   expect(() =>
     create({
-      reverseOffsets: importView('reverse-offsets-short', 'uint32', NODE_COUNT),
-      reverseNeighbors: importView('reverse-neighbors', 'uint32', EDGE_COUNT)
+      reverseTopology: {
+        offsets: importView('reverse-offsets-short', 'uint32', NODE_COUNT),
+        neighbors: importView('reverse-neighbors', 'uint32', EDGE_COUNT)
+      }
     })
-  ).toThrow(/reverseOffsets must contain the same number of rows/);
-  expect(() => create({offsets: importView('offsets-one', 'uint32', 1)})).toThrow(
-    /at least two rows/
-  );
+  ).toThrow(/reverseTopology.offsets must contain the same number of rows/);
+  expect(() =>
+    create({topology: {...base.topology, offsets: importView('offsets-one', 'uint32', 1)}})
+  ).toThrow(/at least two rows/);
+  expect(() =>
+    create({
+      topology: {
+        ...base.topology,
+        weights: importView('weights-short', 'float32', EDGE_COUNT - 1)
+      }
+    })
+  ).toThrow(/topology.weights length must equal topology.neighbors length/);
   expect(() => create({degree: {output: importView('degree-short', 'uint32', 3)}})).toThrow(
     /degree\.output length must equal the node count/
   );
@@ -176,29 +187,35 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
     create({
       coreNumber: {
         output: importView('core', 'uint32', NODE_COUNT),
-        converged: importView('core-converged', 'uint32', 2)
+        status: {
+          converged: importView('core-converged', 'uint32', 2)
+        }
       }
     })
-  ).toThrow(/coreNumber\.converged must contain exactly one row/);
+  ).toThrow(/coreNumber\.status\.converged must contain exactly one row/);
 
   // Transient views are accepted: the algorithms bind graph views directly.
   const transient = (name: string, length: number) =>
     createTransientView(graph, name, 'uint32', length);
   expect(() =>
     create({
-      offsets: transient('t-offsets', NODE_COUNT + 1),
-      neighbors: transient('t-neighbors', EDGE_COUNT),
+      topology: {
+        offsets: transient('t-offsets', NODE_COUNT + 1),
+        neighbors: transient('t-neighbors', EDGE_COUNT)
+      },
       degree: {output: transient('t-degree', NODE_COUNT)},
       components: {
         output: transient('t-components', NODE_COUNT),
-        converged: transient('t-converged', 1)
+        status: {
+          converged: transient('t-converged', 1)
+        }
       }
     }).getCommandNodes(graph)
   ).not.toThrow();
 
   // Output aliasing.
   expect(() => create({components: {output: base.degree!.output}})).toThrow(/separate buffers/);
-  expect(() => create({components: {output: base.offsets as never}})).toThrow(
+  expect(() => create({components: {output: base.topology.offsets as never}})).toThrow(
     /length must equal|separate buffers/
   );
 
@@ -208,7 +225,7 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
   ).toThrow(/damping/);
   expect(() =>
     create({
-      components: {output: importView('cc', 'uint32', NODE_COUNT), iterations: 0}
+      components: {output: importView('cc', 'uint32', NODE_COUNT), maximumIterations: 0}
     })
   ).toThrow(/iterations/);
 
@@ -219,7 +236,7 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
   device.destroy();
 });
 
-it('GPUNetworkAnalyticsColumns owns no GPU resources and validates algorithms eagerly', () => {
+it('GPUNetworkAnalyticsColumns has no destroy method and validates algorithms eagerly', () => {
   const device = createNullWebGPUDevice();
   const imports = createImports(device);
   const contributor = new GPUNetworkAnalyticsColumns(
@@ -228,14 +245,14 @@ it('GPUNetworkAnalyticsColumns owns no GPU resources and validates algorithms ea
   const ids = contributor.getCommandNodes(imports.graph).map(node => node.id);
   // PageRank reads an overflow word; the exact CSR gets a graph-owned zero word cleared first.
   expect(ids.indexOf('network-analytics-columns-page-rank-forward-overflow-exact-clear')).toBe(1);
-  expect(() => contributor.destroy()).not.toThrow();
+  expect('destroy' in contributor).toBe(false);
 
   const failing = createImports(device);
   expect(
     () =>
       new GPUNetworkAnalyticsColumns(
         createProps(failing, {
-          pageRank: {output: failing.importView('pr', 'float32', NODE_COUNT), iterations: 0}
+          pageRank: {output: failing.importView('pr', 'float32', NODE_COUNT), iterationCount: 0}
         })
       )
   ).toThrow(/iterations/);

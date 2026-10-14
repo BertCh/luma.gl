@@ -2,35 +2,35 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getFlatVertex, type FlatPathResult, type FlatPaths} from './line-segmentize-oracle';
+import {getFlatVertex, type FlatLineResult, type FlatLines} from './line-segmentize-oracle';
 
-function smoothOnce(path: number[][], ratio: number, closed: boolean): number[][] {
-  const result: number[][] = closed ? [] : [path[0]];
-  const edgeCount = closed ? path.length : path.length - 1;
+function smoothOnce(line: number[][], ratio: number, closed: boolean): number[][] {
+  const result: number[][] = closed ? [] : [line[0]];
+  const edgeCount = closed ? line.length : line.length - 1;
   for (let edge = 0; edge < edgeCount; edge++) {
-    const start = path[edge];
-    const end = path[(edge + 1) % path.length];
+    const start = line[edge];
+    const end = line[(edge + 1) % line.length];
     result.push(
       [start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio],
       [start[0] + (end[0] - start[0]) * (1 - ratio), start[1] + (end[1] - start[1]) * (1 - ratio)]
     );
   }
   if (!closed) {
-    result.push(path[path.length - 1]);
+    result.push(line[line.length - 1]);
   }
   return result;
 }
 
 /** f64 reference of `GPULineSmooth` (Chaikin corner cutting, `iterations` times). */
-export function smoothPaths(
-  paths: FlatPaths,
-  options: {iterations: number; ratio: number; closed: boolean}
-): FlatPathResult {
-  const result: FlatPathResult = {positions: [], pathOffsets: [0], sourceRows: [], measures: []};
-  for (let path = 0; path + 1 < paths.pathOffsets.length; path++) {
+export function smoothLines(
+  lines: FlatLines,
+  options: {iterationCount: number; ratio: number; closed: boolean}
+): FlatLineResult {
+  const result: FlatLineResult = {positions: [], lineOffsets: [0], sourceRows: [], measures: []};
+  for (let line = 0; line + 1 < lines.lineOffsets.length; line++) {
     let vertices: number[][] = [];
-    for (let row = paths.pathOffsets[path]; row < paths.pathOffsets[path + 1]; row++) {
-      vertices.push(getFlatVertex(paths, row));
+    for (let row = lines.lineOffsets[line]; row < lines.lineOffsets[line + 1]; row++) {
+      vertices.push(getFlatVertex(lines, row));
     }
     if (options.closed && vertices.length >= 2) {
       const first = vertices[0];
@@ -42,11 +42,11 @@ export function smoothPaths(
     const smoothable = options.closed ? vertices.length >= 3 : vertices.length >= 2;
     if (!smoothable) {
       vertices = [];
-      for (let row = paths.pathOffsets[path]; row < paths.pathOffsets[path + 1]; row++) {
-        vertices.push(getFlatVertex(paths, row));
+      for (let row = lines.lineOffsets[line]; row < lines.lineOffsets[line + 1]; row++) {
+        vertices.push(getFlatVertex(lines, row));
       }
     } else {
-      for (let iteration = 0; iteration < options.iterations; iteration++) {
+      for (let iteration = 0; iteration < options.iterationCount; iteration++) {
         vertices = smoothOnce(vertices, options.ratio, options.closed);
       }
       if (options.closed) {
@@ -54,7 +54,7 @@ export function smoothPaths(
       }
     }
     result.positions.push(...vertices);
-    result.pathOffsets.push(result.positions.length);
+    result.lineOffsets.push(result.positions.length);
   }
   return result;
 }

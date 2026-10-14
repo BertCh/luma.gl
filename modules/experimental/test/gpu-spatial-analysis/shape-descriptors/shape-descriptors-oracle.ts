@@ -77,16 +77,11 @@ function getConvexHullArea(points: number[][]): number {
 }
 
 /** f64 reference of every `GPUShapeDescriptors` column for one feature (`rings[0]` exterior). */
-export function describeFeature(
-  rings: Ring[],
-  holeRule: 'winding' | 'first-ring-exterior',
-  sliverThreshold: number
-): Descriptors {
+export function describeFeature(rings: Ring[], sliverThreshold: number): Descriptors {
   const origin = rings[0][0];
   const sums = rings.map(ring => getRingSums(ring, origin));
-  const signs = sums.map((sum, ring) =>
-    holeRule === 'winding' ? 1 : (ring === 0 ? 1 : -1) * Math.sign(sum.twiceArea)
-  );
+  // The first ring is the shell and later rings are holes, whatever their winding.
+  const signs = sums.map((sum, ring) => (ring === 0 ? 1 : -1) * Math.sign(sum.twiceArea));
   const twiceArea = sums.reduce((total, sum, ring) => total + signs[ring] * sum.twiceArea, 0);
   const area = Math.abs(twiceArea / 2);
   const perimeter = sums.reduce((total, sum) => total + sum.perimeter, 0);

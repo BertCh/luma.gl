@@ -128,7 +128,7 @@ export type LineSimplificationScene = {
   /** Interleaved f32 positions, two per row. */
   positions: Float32Array;
   /** `lineCount + 1` row offsets. */
-  trackOffsets: Uint32Array;
+  lineOffsets: Uint32Array;
   /** Optional f32 times, one per row. */
   timestamps?: Float32Array;
   /** Distance metric. Default `'segment'`. */
@@ -169,7 +169,7 @@ export type ParallelImportanceResult = {
   /** f32 bit patterns of the importance column. */
   importanceBits: Uint32Array;
   /** Rounds that ran. */
-  roundCount: number;
+  iterationCount: number;
   /** Whether every row was decided within the cap. */
   converged: boolean;
 };
@@ -180,11 +180,11 @@ export type ParallelImportanceResult = {
  */
 export function computeParallelImportance(
   scene: LineSimplificationScene,
-  maximumRounds: number
+  maximumIterations: number
 ): ParallelImportanceResult {
   const rowCount = scene.positions.length / 2;
-  const {trackOffsets} = scene;
-  const lineCount = trackOffsets.length - 1;
+  const {lineOffsets} = scene;
+  const lineCount = lineOffsets.length - 1;
   const left = new Uint32Array(rowCount);
   const right = new Uint32Array(rowCount);
   const importanceBits = new Uint32Array(rowCount);
@@ -193,8 +193,8 @@ export function computeParallelImportance(
     right[row] = row;
   }
   for (let line = 0; line < lineCount; line++) {
-    const start = trackOffsets[line];
-    const end = trackOffsets[line + 1];
+    const start = lineOffsets[line];
+    const end = lineOffsets[line + 1];
     if (end <= start) {
       continue;
     }
@@ -209,9 +209,9 @@ export function computeParallelImportance(
   }
   const isUndecided = (row: number) => left[row] < row && row < right[row];
 
-  let roundCount = 0;
+  let iterationCount = 0;
   let converged = false;
-  while (roundCount < maximumRounds) {
+  while (iterationCount < maximumIterations) {
     const keys = new Uint32Array(rowCount);
     const bestKeys = new Map<number, number>();
     const bestRows = new Map<number, number>();
@@ -254,7 +254,7 @@ export function computeParallelImportance(
       }
       remaining = true;
     }
-    roundCount++;
+    iterationCount++;
     if (!remaining) {
       converged = true;
       break;
@@ -265,7 +265,7 @@ export function computeParallelImportance(
       importanceBits[row] = Math.min(importanceBits[left[row]], importanceBits[right[row]]);
     }
   }
-  return {importanceBits, roundCount, converged};
+  return {importanceBits, iterationCount, converged};
 }
 
 /** Rows kept at `tolerance` by an importance column: rows inside a line with importance > tolerance. */
@@ -274,9 +274,9 @@ export function getKeptRowsFromImportance(
   importanceBits: Uint32Array,
   tolerance: number
 ): number[] {
-  const {trackOffsets} = scene;
-  const first = trackOffsets[0];
-  const end = trackOffsets[trackOffsets.length - 1];
+  const {lineOffsets} = scene;
+  const first = lineOffsets[0];
+  const end = lineOffsets[lineOffsets.length - 1];
   const tolerance32 = fround(tolerance);
   const kept: number[] = [];
   for (let row = first; row < end; row++) {
@@ -295,7 +295,7 @@ export function simplifyDouglasPeucker(
   scene: LineSimplificationScene,
   tolerance: number
 ): number[] {
-  const {trackOffsets} = scene;
+  const {lineOffsets} = scene;
   const tolerance32 = fround(tolerance);
   const kept: number[] = [];
   const recurse = (start: number, last: number): void => {
@@ -314,9 +314,9 @@ export function simplifyDouglasPeucker(
       recurse(bestRow, last);
     }
   };
-  for (let line = 0; line + 1 < trackOffsets.length; line++) {
-    const start = trackOffsets[line];
-    const end = trackOffsets[line + 1];
+  for (let line = 0; line + 1 < lineOffsets.length; line++) {
+    const start = lineOffsets[line];
+    const end = lineOffsets[line + 1];
     if (end <= start) {
       continue;
     }
@@ -334,7 +334,7 @@ export function getKeptLineRanges(
   scene: LineSimplificationScene,
   keptRows: readonly number[]
 ): {lineCounts: number[]; lineStarts: number[]} {
-  const {trackOffsets} = scene;
+  const {lineOffsets} = scene;
   const lineCounts: number[] = [];
   const lineStarts: number[] = [];
   const lowerBound = (row: number) => {
@@ -344,9 +344,9 @@ export function getKeptLineRanges(
     }
     return index;
   };
-  for (let line = 0; line + 1 < trackOffsets.length; line++) {
-    const start = trackOffsets[line];
-    const end = Math.max(trackOffsets[line + 1], start);
+  for (let line = 0; line + 1 < lineOffsets.length; line++) {
+    const start = lineOffsets[line];
+    const end = Math.max(lineOffsets[line + 1], start);
     const first = lowerBound(start);
     lineStarts.push(first);
     lineCounts.push(lowerBound(end) - first);

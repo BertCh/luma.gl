@@ -172,8 +172,16 @@ export function computeTerrainViewshed(
     }
     return sampleBilinear(values, width, height, x, y);
   };
-  const [observerX, observerY, observerHeight, targetHeight, maxDistance, cellX, cellY, curvature] =
-    Array.from(settings);
+  const [
+    observerX,
+    observerY,
+    observerHeight,
+    targetHeight,
+    maximumDistance,
+    cellX,
+    cellY,
+    curvature
+  ] = Array.from(settings);
   const observerInside =
     Number.isFinite(observerX) &&
     Number.isFinite(observerY) &&
@@ -193,7 +201,7 @@ export function computeTerrainViewshed(
       const deltaX = column - observerX;
       const deltaY = row - observerY;
       const targetDistance = Math.hypot(deltaX * cellX, deltaY * cellY);
-      if (maxDistance > 0 && targetDistance > maxDistance) {
+      if (maximumDistance > 0 && targetDistance > maximumDistance) {
         result.push(2);
         continue;
       }
@@ -307,7 +315,8 @@ export function computeTerrainSightLine(
     }
     return sampleBilinear(values, width, height, x, y);
   };
-  const [observerHeight, targetHeight, maxDistance, cellX, cellY, curvature] = Array.from(settings);
+  const [observerHeight, targetHeight, maximumDistance, cellX, cellY, curvature] =
+    Array.from(settings);
   const [toleranceMeters, tolerancePerKilometer, ignoreDistance, ignoreFraction] = Array.from(
     settings
   ).slice(6, 10);
@@ -337,7 +346,7 @@ export function computeTerrainSightLine(
   const deltaX = target[0] - observer[0];
   const deltaY = target[1] - observer[1];
   const distance = Math.hypot(deltaX * cellX, deltaY * cellY);
-  if (maxDistance > 0 && distance > maxDistance) {
+  if (maximumDistance > 0 && distance > maximumDistance) {
     return {...noData, code: 2};
   }
   if (distance === 0) {
@@ -389,12 +398,20 @@ export function computeTerrainViewshedWithTolerance(
   viewshedSettings: ArrayLike<number>,
   tolerance: ArrayLike<number>
 ): TerrainSightLineResult[] {
-  const [observerX, observerY, observerHeight, targetHeight, maxDistance, cellX, cellY, curvature] =
-    Array.from(viewshedSettings);
+  const [
+    observerX,
+    observerY,
+    observerHeight,
+    targetHeight,
+    maximumDistance,
+    cellX,
+    cellY,
+    curvature
+  ] = Array.from(viewshedSettings);
   const sightSettings = [
     observerHeight,
     targetHeight,
-    maxDistance,
+    maximumDistance,
     cellX,
     cellY,
     curvature,

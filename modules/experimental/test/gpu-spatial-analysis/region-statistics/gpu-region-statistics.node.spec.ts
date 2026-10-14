@@ -4,13 +4,18 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUPickRegionMask,
   GPURegionMask,
   GPURegionStatistics,
+  type GPURegionStatisticsOutput,
   type GPURegionStatisticsProps
 } from '../../../src/gpu-spatial-analysis/region-statistics';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 function createProps(
   graph: GPUCommandGraph,
@@ -18,7 +23,7 @@ function createProps(
   overrides: Partial<GPURegionStatisticsProps> = {}
 ): GPURegionStatisticsProps {
   return {
-    selection: {
+    region: {
       kind: 'rectangle',
       bounds: createTransientView(graph, `${prefix}bounds`, 'float32', 4)
     },
@@ -26,11 +31,15 @@ function createProps(
     values: createTransientView(graph, `${prefix}values`, 'float32', 12),
     histogram: {binCount: 4},
     output: {
-      ids: createTransientView(graph, `${prefix}ids`, 'uint32', 12),
-      count: createTransientView(graph, `${prefix}count`, 'uint32', 1),
-      overflow: createTransientView(graph, `${prefix}overflow`, 'uint32', 1)
+      summary: createTransientView(graph, `${prefix}summary`, 'uint32', 12),
+      selectedRows: {
+        ids: createTransientView(graph, `${prefix}ids`, 'uint32', 12),
+        status: {
+          count: createTransientView(graph, `${prefix}count`, 'uint32', 1),
+          overflow: createTransientView(graph, `${prefix}overflow`, 'uint32', 1)
+        }
+      }
     },
-    summary: createTransientView(graph, `${prefix}summary`, 'uint32', 12),
     ...overrides
   };
 }
@@ -73,7 +82,7 @@ it('GPURegionStatistics selects the region kernel per selection kind', () => {
   const polygonIds = new GPURegionStatistics({
     ...createProps(graph),
     id: 'stats',
-    selection: {
+    region: {
       kind: 'polygon',
       vertices: createTransientView(graph, 'vertices', 'float32x2', 5),
       vertexCount: createTransientView(graph, 'vertex-count', 'uint32', 1)
@@ -88,7 +97,7 @@ it('GPURegionStatistics selects the region kernel per selection kind', () => {
   const screenIds = new GPURegionStatistics({
     ...createProps(screenGraph),
     id: 'stats',
-    selection: {
+    region: {
       kind: 'rectangle',
       bounds: createTransientView(screenGraph, 'screen-bounds', 'float32', 4),
       screenTransform: createTransientView(screenGraph, 'transform', 'float32', 20)
@@ -102,8 +111,8 @@ it('GPURegionStatistics selects the region kernel per selection kind', () => {
   const maskGraph = new GPUCommandGraph(device);
   const maskIds = new GPURegionStatistics({
     id: 'stats',
-    selection: {kind: 'mask', mask: createTransientView(maskGraph, 'mask', 'uint32', 12)},
-    summary: createTransientView(maskGraph, 'summary', 'uint32', 8)
+    region: {kind: 'mask', mask: createTransientView(maskGraph, 'mask', 'uint32', 12)},
+    output: {summary: createTransientView(maskGraph, 'summary', 'uint32', 8)}
   })
     .getCommandNodes(maskGraph)
     .map(node => node.id);
@@ -118,17 +127,21 @@ it('GPURegionStatistics selects the region kernel per selection kind', () => {
       id: 'lasso',
       positions: createTransientView(regionGraph, 'p', 'float32x2', 4),
       region: {kind: 'rectangle', bounds: createTransientView(regionGraph, 'b', 'float32', 4)},
-      outputMask: createTransientView(regionGraph, 'm', 'uint32', 4),
-      overflow: createTransientView(regionGraph, 'o', 'uint32', 1)
+      output: {
+        mask: createTransientView(regionGraph, 'm', 'uint32', 4),
+        status: {overflow: createTransientView(regionGraph, 'o', 'uint32', 1)}
+      }
     })
       .getCommandNodes(regionGraph)
       .map(node => node.id)
   ).toEqual(['lasso-overflow', 'lasso']);
   const pickProps = {
     id: 'pick',
-    result: createTransientView(regionGraph, 'r', 'uint32', 12),
-    outputMask: createTransientView(regionGraph, 'pm', 'uint32', 4),
-    overflow: createTransientView(regionGraph, 'po', 'uint32', 1)
+    picks: createTransientView(regionGraph, 'r', 'uint32', 12),
+    output: {
+      mask: createTransientView(regionGraph, 'pm', 'uint32', 4),
+      status: {overflow: createTransientView(regionGraph, 'po', 'uint32', 1)}
+    }
   };
   expect(
     new GPUPickRegionMask(pickProps).getCommandNodes(regionGraph).map(node => node.id)
@@ -141,54 +154,68 @@ it('GPURegionStatistics validates props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const base = createProps(graph);
-  const create = (overrides: Partial<GPURegionStatisticsProps>) =>
-    new GPURegionStatistics({...base, ...overrides});
+  const create = (
+    overrides: Partial<GPURegionStatisticsProps>,
+    output: Partial<GPURegionStatisticsOutput> = {}
+  ) => new GPURegionStatistics({...base, ...overrides, output: {...base.output, ...output}});
 
   expect(() =>
-    create({
-      positions: undefined,
-      values: undefined,
-      output: undefined,
-      histogram: undefined,
-      summary: createTransientView(graph, 's8', 'uint32', 8),
-      outputMask: createTransientView(graph, 'om', 'uint32', 12)
-    })
+    create(
+      {positions: undefined, values: undefined, histogram: undefined},
+      {
+        selectedRows: undefined,
+        summary: createTransientView(graph, 's8', 'uint32', 8),
+        mask: createTransientView(graph, 'om', 'uint32', 12)
+      }
+    )
   ).toThrow(/positions are required/);
   expect(() => create({values: createTransientView(graph, 'v11', 'float32', 11)})).toThrow(
     /values length/
   );
   expect(() => create({values: undefined})).toThrow(/histogram requires values/);
   expect(() => create({histogram: {binCount: 0}})).toThrow(/binCount/);
-  expect(() => create({summary: createTransientView(graph, 's9', 'uint32', 9)})).toThrow(/summary/);
+  expect(() => create({}, {summary: createTransientView(graph, 's9', 'uint32', 9)})).toThrow(
+    /summary/
+  );
   expect(() =>
-    create({
-      selection: {kind: 'mask', mask: createTransientView(graph, 'sel', 'uint32', 12)},
-      outputMask: createTransientView(graph, 'out-mask', 'uint32', 12)
-    })
-  ).toThrow(/outputMask cannot/);
+    create(
+      {region: {kind: 'mask', mask: createTransientView(graph, 'sel', 'uint32', 12)}},
+      {mask: createTransientView(graph, 'out-mask', 'uint32', 12)}
+    )
+  ).toThrow(/output.mask cannot/);
   expect(() =>
-    create({
-      output: {...base.output!, ids: createTransientView(graph, 'ids0', 'uint32', 0)}
-    })
-  ).toThrow(/output.ids/);
+    create(
+      {},
+      {
+        selectedRows: {
+          ...base.output.selectedRows!,
+          ids: createTransientView(graph, 'ids0', 'uint32', 0)
+        }
+      }
+    )
+  ).toThrow(/selectedRows.ids/);
   expect(() =>
-    create({
-      selection: {
-        kind: 'pick-region',
-        result: createTransientView(graph, 'pick-result', 'uint32', 12)
+    create(
+      {
+        region: {
+          kind: 'pick-region',
+          picks: createTransientView(graph, 'pick-result', 'uint32', 12)
+        },
+        positions: undefined,
+        values: undefined,
+        histogram: undefined,
+        sourceIds: undefined
       },
-      positions: undefined,
-      values: undefined,
-      histogram: undefined,
-      sourceIds: undefined,
-      outputMask: undefined
-    })
+      {mask: undefined}
+    )
   ).toThrow(/row count/);
 
   const regionBase = {
     positions: createTransientView(graph, 'rp', 'float32x2', 4),
-    outputMask: createTransientView(graph, 'rm', 'uint32', 4),
-    overflow: createTransientView(graph, 'ro', 'uint32', 1)
+    output: {
+      mask: createTransientView(graph, 'rm', 'uint32', 4),
+      status: {overflow: createTransientView(graph, 'ro', 'uint32', 1)}
+    }
   };
   expect(
     () =>
@@ -214,36 +241,43 @@ it('GPURegionStatistics validates props', () => {
   ).toThrow(/vertices/);
 
   const drawInstanceCount = createTransientView(graph, 'draw-count', 'uint32', 1);
-  expect(() => create({drawInstanceCount})).not.toThrow();
-  expect(() => create({drawInstanceCount, output: undefined})).toThrow(
-    /drawInstanceCount requires output/
+  expect(() => create({}, {drawInstanceCount})).not.toThrow();
+  expect(() => create({}, {drawInstanceCount, selectedRows: undefined})).toThrow(
+    /drawInstanceCount requires output.selectedRows/
   );
   expect(() =>
-    create({drawInstanceCount: createTransientView(graph, 'draw-count0', 'uint32', 0)})
+    create({}, {drawInstanceCount: createTransientView(graph, 'draw-count0', 'uint32', 0)})
   ).toThrow(/drawInstanceCount must contain one uint32 row/);
   expect(() =>
-    create({drawInstanceCount: createTransientView(graph, 'draw-count-f', 'float32', 1) as never})
+    create(
+      {},
+      {drawInstanceCount: createTransientView(graph, 'draw-count-f', 'float32', 1) as never}
+    )
   ).toThrow(/drawInstanceCount/);
   const strided = graph.createTransientBuffer({id: 'strided', byteLength: 64, usage: 128});
   expect(() =>
-    create({
-      drawInstanceCount: graph.createDataView(strided, {
-        format: 'uint32',
-        length: 1,
-        byteStride: 16,
-        byteOffset: 4,
-        rowByteLength: 4
-      })
-    })
+    create(
+      {},
+      {
+        drawInstanceCount: graph.createDataView(strided, {
+          format: 'uint32',
+          length: 1,
+          byteStride: 16,
+          byteOffset: 4,
+          rowByteLength: 4
+        })
+      }
+    )
   ).toThrow(/drawInstanceCount/);
   const inputAlias = graph.createDataView(strided, {format: 'uint32', length: 1});
   expect(() =>
-    create({
-      values: graph.createDataView(strided, {format: 'float32', length: 12}),
-      histogram: undefined,
-      summary: createTransientView(graph, 'summary-8', 'uint32', 8),
-      drawInstanceCount: inputAlias
-    })
+    create(
+      {
+        values: graph.createDataView(strided, {format: 'float32', length: 12}),
+        histogram: undefined
+      },
+      {summary: createTransientView(graph, 'summary-8', 'uint32', 8), drawInstanceCount: inputAlias}
+    )
   ).toThrow(/share buffers/);
   const foreignCount = createTransientView(
     new GPUCommandGraph(device),
@@ -251,7 +285,7 @@ it('GPURegionStatistics validates props', () => {
     'uint32',
     1
   );
-  expect(() => create({drawInstanceCount: foreignCount}).getCommandNodes(graph)).toThrow(
+  expect(() => create({}, {drawInstanceCount: foreignCount}).getCommandNodes(graph)).toThrow(
     /belong to the target graph/
   );
 
@@ -278,13 +312,11 @@ it('region selections accept longitude/latitude except radius', () => {
     kind: 'radius',
     circle: createTransientView(graph, 'c-circle', 'float32', 3)
   } as const;
-  expect(
-    () => new GPURegionStatistics(createProps(graph, 'c-', {selection: radius}))
-  ).not.toThrow();
+  expect(() => new GPURegionStatistics(createProps(graph, 'c-', {region: radius}))).not.toThrow();
   expect(
     () =>
-      new GPURegionStatistics(createProps(graph, 'd-', {selection: radius, spatialContext: lonLat}))
-  ).toThrow(/radius selections need planar coordinates/);
+      new GPURegionStatistics(createProps(graph, 'd-', {region: radius, spatialContext: lonLat}))
+  ).toThrow(/radius regions need planar coordinates/);
   // Geographic metrics are not supported: nothing here measures on the sphere.
   expect(
     () =>
@@ -299,9 +331,40 @@ it('region selections accept longitude/latitude except radius', () => {
       new GPURegionMask({
         positions: createTransientView(graph, 'f-p', 'float32x2', 4),
         region: {kind: 'rectangle', bounds: createTransientView(graph, 'f-b', 'float32', 4)},
-        outputMask: createTransientView(graph, 'f-m', 'uint32', 4),
-        overflow: createTransientView(graph, 'f-o', 'uint32', 1),
+        output: {
+          mask: createTransientView(graph, 'f-m', 'uint32', 4),
+          status: {overflow: createTransientView(graph, 'f-o', 'uint32', 1)}
+        },
         spatialContext: lonLat
       })
   ).not.toThrow();
+});
+
+it('GPURegionMask decides lasso crossings by exact orientation (rule 1)', () => {
+  const device = createNullWebGPUDevice();
+  for (const screen of [false, true]) {
+    const graph = new GPUCommandGraph(device);
+    const kernels = getGPUCommandNodeKernelSources(
+      new GPURegionMask({
+        id: 'lasso',
+        positions: createTransientView(graph, 'p', 'float32x2', 4),
+        region: {
+          kind: 'polygon',
+          vertices: createTransientView(graph, 'v', 'float32x2', 16),
+          vertexCount: createTransientView(graph, 'n', 'uint32', 1),
+          ...(screen ? {screenTransform: createTransientView(graph, 't', 'float32', 20)} : {})
+        },
+        output: {
+          mask: createTransientView(graph, 'm', 'uint32', 4),
+          status: {overflow: createTransientView(graph, 'o', 'uint32', 1)}
+        }
+      }).getCommandNodes(graph)
+    );
+    const lasso = kernels.find(kernel => kernel.id === 'lasso')!;
+    expect(() => new WgslReflect(lasso.source)).not.toThrow();
+    // One call site of the exact predicate, and no f32 crossing abscissa.
+    expect(lasso.source.match(/orientSign\(previous, current, point\)/g)).toHaveLength(1);
+    expect(lasso.source).not.toMatch(/crossingX/);
+  }
+  device.destroy();
 });

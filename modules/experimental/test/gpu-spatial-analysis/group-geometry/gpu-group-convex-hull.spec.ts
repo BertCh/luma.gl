@@ -24,6 +24,9 @@ import {
   createRandom,
   getOracleGroupKeys
 } from './group-geometry-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+import {decodeOracleFixture} from '../../oracles/oracle-fixture';
+import hullFixture from '../../oracles/fixtures/geometry-convex-hull.json';
 
 type Hulls = {
   hulls: number[][];
@@ -41,13 +44,14 @@ async function runHull(
   groupCount: number,
   options: {
     maximumVerticesPerGroup?: number;
-    totalCapacity?: number;
+    vertexCapacity?: number;
     noiseLabel?: number;
     prefilterLevels?: number;
+    extremePointFilter?: boolean;
   } = {}
 ): Promise<Hulls> {
   const rows = labels.length;
-  const capacity = options.totalCapacity ?? rows + groupCount;
+  const capacity = options.vertexCapacity ?? rows + groupCount;
   const graph = new GPUCommandGraph(device, {id: 'hull-graph'});
   const buffers: Buffer[] = [];
   const input = (values: Float32Array | Uint32Array) => {
@@ -76,8 +80,9 @@ async function runHull(
       groupCount,
       noiseLabel: options.noiseLabel,
       prefilterLevels: options.prefilterLevels,
+      extremePointFilter: options.extremePointFilter,
       maximumVerticesPerGroup: options.maximumVerticesPerGroup ?? 1024,
-      totalCapacity: capacity,
+      vertexCapacity: capacity,
       output: {
         vertexIndices: importGraphBuffer(graph, 'o-indices', out.vertexIndices, 'uint32', capacity),
         vertexPositions: importGraphBuffer(
@@ -90,7 +95,7 @@ async function runHull(
         offsets: importGraphBuffer(graph, 'o-offsets', out.offsets, 'uint32', groupCount + 1),
         counts: importGraphBuffer(graph, 'o-counts', out.counts, 'uint32', groupCount),
         sizes: importGraphBuffer(graph, 'o-sizes', out.sizes, 'uint32', groupCount),
-        overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)
+        status: {overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)}
       }
     })
   );
@@ -162,9 +167,7 @@ function createScene(seed: number) {
 
 it('GPUGroupConvexHull matches the exact CPU monotone chain, including collinear and duplicate points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [1, 7]) {
     const {positions, labels, groupCount} = createScene(seed);
     const actual = await runHull(device, positions, labels, groupCount);
@@ -211,9 +214,7 @@ it('GPUGroupConvexHull matches the exact CPU monotone chain, including collinear
 
 it('GPUGroupConvexHull drops hulls over the per-group cap or total capacity and flags overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, labels, groupCount} = createScene(3);
   const keys = getOracleGroupKeys(positions, labels, groupCount);
   const expected = computeGroupConvexHullOracle(positions, keys, groupCount);
@@ -231,7 +232,7 @@ it('GPUGroupConvexHull drops hulls over the per-group cap or total capacity and 
 
   // Groups are admitted in group order; group 1 no longer fits, so it and every later group drop.
   const small = await runHull(device, positions, labels, groupCount, {
-    totalCapacity: expected.hulls[0].length + expected.hulls[1].length - 1
+    vertexCapacity: expected.hulls[0].length + expected.hulls[1].length - 1
   });
   expect(small.overflow & GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW).toBe(
     GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW
@@ -245,9 +246,7 @@ it('GPUGroupConvexHull drops hulls over the per-group cap or total capacity and 
 
 it('GPUGroupConvexHull honors noiseLabel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Group 0 is a triangle plus a far noise point labeled 1 (noise), which must not enter any hull.
   const positions = Float32Array.from([0, 0, 4, 0, 0, 4, 100, 100, 1, 1]);
   const labels = Uint32Array.from([0, 0, 0, 1, 0]);
@@ -258,9 +257,7 @@ it('GPUGroupConvexHull honors noiseLabel', async () => {
 
 it('GPUGroupConvexHull matches the oracle above the chunk prefilter threshold', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 30k rows in 3 groups with a large offset, a duplicated block and a collinear group, so
   // chunks straddle group boundaries and duplicate points cross chunk boundaries.
   const random = createRandom(11);
@@ -293,9 +290,7 @@ it('GPUGroupConvexHull matches the oracle above the chunk prefilter threshold', 
 
 it('GPUGroupConvexHull gives the same hulls for every prefilter level count', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Group 0: a large disk, group 1: points on a circle (almost all are hull vertices, so the
   // prefilter barely shrinks them), group 2: collinear, group 3: empty, group 4: a small blob
   // that straddles chunk boundaries. Lattice-rounded coordinates produce duplicates.
@@ -338,9 +333,7 @@ it('GPUGroupConvexHull gives the same hulls for every prefilter level count', as
 
 it('GPUGroupConvexHull handles sparse groups: empty first, middle and last groups, excluded labels', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 1000 groups of which only 0, 17, 18 and 998 own rows; labels 1000 and 5000 (out of range) are
   // excluded, so the last group 999 stays empty. Group boundaries come from binary search in the sorted keys.
   const random = createRandom(5);
@@ -360,10 +353,253 @@ it('GPUGroupConvexHull handles sparse groups: empty first, middle and last group
     getOracleGroupKeys(positions, labels, groupCount),
     groupCount
   );
-  const actual = await runHull(device, positions, labels, groupCount, {totalCapacity: rows});
+  const actual = await runHull(device, positions, labels, groupCount, {vertexCapacity: rows});
   expect(actual.overflow).toBe(0);
   expect(actual.hulls).toEqual(expected.hulls);
   expect(actual.hulls[998].length).toBeGreaterThan(2);
   expect(actual.hulls[999]).toEqual([]);
   expect(actual.hulls[500]).toEqual([]);
 });
+
+/** Asserts that two runs agree on every output word (the filter must not change any bit). */
+function expectIdenticalRuns(actual: Hulls, expected: Hulls, label: string) {
+  expect(actual.overflow, label).toBe(expected.overflow);
+  expect(actual.offsets, label).toEqual(expected.offsets);
+  expect(actual.sizes, label).toEqual(expected.sizes);
+  expect(actual.vertexIndices, label).toEqual(expected.vertexIndices);
+  expect(
+    actual.vertexPositions.map(value => Object.is(value, NaN) || value),
+    label
+  ).toEqual(expected.vertexPositions.map(value => Object.is(value, NaN) || value));
+}
+
+it('GPUGroupConvexHull gives bitwise the same hulls with and without the extreme-point filter', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The mixed scene (blob, grid, collinear, repeated, pair, sliver, empty, NaN, noise).
+  for (const seed of [1, 7]) {
+    const {positions, labels, groupCount} = createScene(seed);
+    const filtered = await runHull(device, positions, labels, groupCount, {
+      extremePointFilter: true
+    });
+    const unfiltered = await runHull(device, positions, labels, groupCount, {
+      extremePointFilter: false
+    });
+    expectIdenticalRuns(filtered, unfiltered, `scene ${seed}`);
+    const expected = computeGroupConvexHullOracle(
+      positions,
+      getOracleGroupKeys(positions, labels, groupCount),
+      groupCount
+    );
+    expect(filtered.hulls).toEqual(expected.hulls);
+  }
+  // Above the prefilter threshold, with a circle (everything on the hull), a blob, a collinear
+  // group, lattice-rounded duplicates and groups that straddle chunk boundaries.
+  const random = createRandom(31);
+  const rows = 40000;
+  const groupCount = 6;
+  const positions = new Float32Array(rows * 2);
+  const labels = new Uint32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    const group = row % 6;
+    labels[row] = group === 5 ? 0xffffffff : group;
+    const angle = random() * Math.PI * 2;
+    if (group === 2) {
+      positions[row * 2] = 1e6 + (row % 11);
+      positions[row * 2 + 1] = 2e6 + (row % 11) * 3;
+    } else if (group === 1) {
+      positions[row * 2] = 1e6 + 500 + Math.round(Math.cos(angle) * 4000) / 8;
+      positions[row * 2 + 1] = 2e6 + Math.round(Math.sin(angle) * 4000) / 8;
+    } else {
+      const radius = Math.sqrt(-2 * Math.log(1 - random())) * (group === 4 ? 5 : 50);
+      positions[row * 2] = 1e6 + 1000 + Math.round(radius * Math.cos(angle) * 4) / 4;
+      positions[row * 2 + 1] = 2e6 + Math.round(radius * Math.sin(angle) * 4) / 4;
+    }
+  }
+  const expected = computeGroupConvexHullOracle(
+    positions,
+    getOracleGroupKeys(positions, labels, groupCount),
+    groupCount
+  );
+  for (const prefilterLevels of [0, 2]) {
+    const options = {prefilterLevels, maximumVerticesPerGroup: 4096, vertexCapacity: 20000};
+    const filtered = await runHull(device, positions, labels, groupCount, {
+      ...options,
+      extremePointFilter: true
+    });
+    const unfiltered = await runHull(device, positions, labels, groupCount, {
+      ...options,
+      extremePointFilter: false
+    });
+    expectIdenticalRuns(filtered, unfiltered, `levels ${prefilterLevels}`);
+    expect(filtered.hulls, `levels ${prefilterLevels}`).toEqual(expected.hulls);
+  }
+});
+
+it('GPUGroupConvexHull filter handles more than 256 groups (global tables) like the private path', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 300 groups of 40 points each: the extreme tables leave workgroup memory above 256 groups.
+  const random = createRandom(41);
+  const groupCount = 300;
+  const rows = groupCount * 40;
+  const positions = new Float32Array(rows * 2);
+  const labels = new Uint32Array(rows);
+  for (let row = 0; row < rows; row++) {
+    labels[row] = row % groupCount;
+    positions[row * 2] = 100 * (row % 17) + random() * 50;
+    positions[row * 2 + 1] = 100 * Math.floor((row % groupCount) / 17) + random() * 50;
+  }
+  const expected = computeGroupConvexHullOracle(
+    positions,
+    getOracleGroupKeys(positions, labels, groupCount),
+    groupCount
+  );
+  for (const extremePointFilter of [true, false]) {
+    const actual = await runHull(device, positions, labels, groupCount, {extremePointFilter});
+    expect(actual.hulls, `filter ${extremePointFilter}`).toEqual(expected.hulls);
+  }
+});
+
+type HullFixtureGroup = {name: string; points: number[]; hull: number[][]; area: number};
+
+it('GPUGroupConvexHull matches shapely convex_hull and scipy ConvexHull vertex sets and areas', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {groups} = decodeOracleFixture<{groups: HullFixtureGroup[]}>(hullFixture);
+  const positions: number[] = [];
+  const labels: number[] = [];
+  groups.forEach((group, label) => {
+    for (let index = 0; index < group.points.length; index += 2) {
+      positions.push(group.points[index], group.points[index + 1]);
+      labels.push(label);
+    }
+  });
+  const positionArray = Float32Array.from(positions);
+  const labelArray = Uint32Array.from(labels);
+  for (const extremePointFilter of [true, false]) {
+    const actual = await runHull(device, positionArray, labelArray, groups.length, {
+      extremePointFilter,
+      maximumVerticesPerGroup: 1024
+    });
+    expect(actual.overflow).toBe(0);
+    groups.forEach((group, label) => {
+      const ring = actual.hulls[label].map(row => [positions[row * 2], positions[row * 2 + 1]]);
+      const sorted = [...ring].sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+      expect(sorted, `${group.name} (filter ${extremePointFilter})`).toEqual(group.hull);
+      let area = 0;
+      for (let index = 0; index < ring.length; index++) {
+        const next = ring[(index + 1) % ring.length];
+        area += ring[index][0] * next[1] - next[0] * ring[index][1];
+      }
+      // Counter-clockwise rings have a positive signed area; degenerate hulls have none.
+      expect(Math.abs(area / 2), group.name).toBeCloseTo(group.area, 6);
+      expect(area >= 0, group.name).toBe(true);
+    });
+  }
+});
+
+// A/B harness, not part of the default run:
+// `VITE_HULL_BENCHMARK=true npx vitest run --project headless <this file>`.
+const RUN_BENCHMARK =
+  (import.meta as unknown as {env?: Record<string, string | undefined>}).env?.[
+    'VITE_HULL_BENCHMARK'
+  ] === 'true';
+
+it.skipIf(!RUN_BENCHMARK)(
+  'GPUGroupConvexHull filter on vs off on 1e6 gaussian blob points in 100 groups',
+  {timeout: 600000},
+  async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const random = createRandom(2026);
+    const rows = 1_000_000;
+    const groupCount = 100;
+    const positions = new Float32Array(rows * 2);
+    const labels = new Uint32Array(rows);
+    for (let row = 0; row < rows; row++) {
+      const group = row % groupCount;
+      labels[row] = group;
+      const radius = Math.sqrt(-2 * Math.log(1 - random())) * 30;
+      const angle = random() * Math.PI * 2;
+      positions[row * 2] = (group % 10) * 400 + radius * Math.cos(angle);
+      positions[row * 2 + 1] = Math.floor(group / 10) * 400 + radius * Math.sin(angle);
+    }
+    const waitForQueue = () =>
+      (device as unknown as {handle: GPUDevice}).handle.queue.onSubmittedWorkDone();
+    const measure = async (extremePointFilter: boolean, prefilterLevels: number) => {
+      const capacity = 20000;
+      const graph = new GPUCommandGraph(device, {
+        id: `hull-ab-${extremePointFilter}-${prefilterLevels}`
+      });
+      const buffers: Buffer[] = [];
+      const input = (values: Float32Array | Uint32Array) => {
+        const buffer = createInputBuffer(device, values);
+        buffers.push(buffer);
+        return buffer;
+      };
+      const output = (length: number) => {
+        const buffer = createOutputBuffer(device, length);
+        buffers.push(buffer);
+        return buffer;
+      };
+      graph.add(
+        new GPUGroupConvexHull({
+          id: 'hull',
+          positions: importGraphBuffer(graph, 'positions', input(positions), 'float32x2', rows),
+          labels: importGraphBuffer(graph, 'labels', input(labels), 'uint32', rows),
+          groupCount,
+          extremePointFilter,
+          prefilterLevels,
+          maximumVerticesPerGroup: 1024,
+          vertexCapacity: capacity,
+          output: {
+            vertexIndices: importGraphBuffer(graph, 'o-i', output(capacity), 'uint32', capacity),
+            offsets: importGraphBuffer(
+              graph,
+              'o-o',
+              output(groupCount + 1),
+              'uint32',
+              groupCount + 1
+            ),
+            counts: importGraphBuffer(graph, 'o-c', output(groupCount), 'uint32', groupCount),
+            status: {overflow: importGraphBuffer(graph, 'o-f', output(1), 'uint32', 1)}
+          }
+        })
+      );
+      const compiled = graph.compile();
+      submitGraph(device, compiled, undefined);
+      await waitForQueue();
+      const samples: number[] = [];
+      for (let sample = 0; sample < 5; sample++) {
+        const start = performance.now();
+        submitGraph(device, compiled, undefined);
+        await waitForQueue();
+        samples.push(performance.now() - start);
+      }
+      samples.sort((left, right) => left - right);
+      compiled.destroy();
+      for (const buffer of buffers) {
+        buffer.destroy();
+      }
+      return samples[2];
+    };
+    for (const prefilterLevels of [0, 2]) {
+      const off = await measure(false, prefilterLevels);
+      const on = await measure(true, prefilterLevels);
+      console.info(
+        `hull 1e6 rows, 100 groups, prefilterLevels ${prefilterLevels}: filter off ${off.toFixed(1)} ms, on ${on.toFixed(1)} ms`
+      );
+    }
+    // Same-run exactness at the benchmark size.
+    const filtered = await runHull(device, positions, labels, groupCount, {
+      extremePointFilter: true,
+      vertexCapacity: 20000
+    });
+    const unfiltered = await runHull(device, positions, labels, groupCount, {
+      extremePointFilter: false,
+      vertexCapacity: 20000
+    });
+    expectIdenticalRuns(filtered, unfiltered, 'benchmark scene');
+  }
+);

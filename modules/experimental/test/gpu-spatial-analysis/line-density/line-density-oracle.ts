@@ -20,17 +20,17 @@ export function getHaversine(a: Point, b: Point, radius: number): number {
  * piece to the cell holding its midpoint. Independent of the GPU's incremental traversal.
  */
 export function computeLineLengthsPerCell(
-  paths: Point[][],
+  lines: Point[][],
   grid: {minX: number; minY: number; width: number; height: number; columns: number; rows: number},
   spherical = false,
   radius = 6371008.8
 ): {lengths: Float64Array; pieces: number} {
   const lengths = new Float64Array(grid.columns * grid.rows);
   let pieces = 0;
-  for (const path of paths) {
-    for (let index = 0; index + 1 < path.length; index++) {
-      const a = path[index];
-      const b = path[index + 1];
+  for (const line of lines) {
+    for (let index = 0; index + 1 < line.length; index++) {
+      const a = line[index];
+      const b = line[index + 1];
       const ts = new Set<number>([0, 1]);
       for (let column = 0; column <= grid.columns; column++) {
         const t = (grid.minX + column * grid.width - a[0]) / (b[0] - a[0]);

@@ -14,10 +14,11 @@ import {
   readUint32,
   submitGraph
 } from '../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from './require-test-device';
 
 it('stable lexicographic index sort preserves lower-order tuple components', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
   const primaryValues = new Uint32Array([1, 0, 1, 0, 1, 0, 2, 2]);
   const secondaryValues = new Uint32Array([0, 1, 0, 1, 1, 0, 0, 0]);
@@ -77,7 +78,7 @@ it('stable lexicographic index sort preserves lower-order tuple components', asy
 
 it('stable lexicographic index sort packs narrow adjacent keys into one pass', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
   const primaryValues = new Uint32Array([1, 0, 1, 0, 1, 0, 2, 2]);
   const secondaryValues = new Uint32Array([0, 1, 0, 1, 1, 0, 0, 0]);

@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUSpatialCorrelogram,
+  type GPUSpatialCorrelogramOutput,
   type GPUSpatialCorrelogramProps
 } from '../../../src/gpu-dataframe/pair-statistics/gpu-spatial-correlogram';
 import {
@@ -20,9 +21,13 @@ import {
 
 let serial = 0;
 
+type Overrides = Omit<Partial<GPUSpatialCorrelogramProps>, 'output'> & {
+  output?: Partial<GPUSpatialCorrelogramOutput>;
+};
+
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUSpatialCorrelogramProps> = {}
+  overrides: Overrides = {}
 ): GPUSpatialCorrelogramProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
@@ -34,15 +39,12 @@ function createProps(
     parameters: view('float32', GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH),
     gridSize: [4, 4],
     bandCount: 6,
-    moransI: view('float32', 6),
-    ...overrides
+    ...overrides,
+    output: {moransI: view('float32', 6), ...overrides.output}
   };
 }
 
-function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPUSpatialCorrelogramProps>,
-  message: RegExp
-): void {
+function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message: RegExp): void {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   expect(() => new GPUSpatialCorrelogram(createProps(graph, overrides(graph)))).toThrow(message);
@@ -85,13 +87,16 @@ it('GPUSpatialCorrelogram validates its inputs and outputs', () => {
     length: number
   ) => createTransientView(graph, `bad-${serial++}`, format, length);
   expectThrows(() => ({bandCount: 0}), /bandCount/);
-  expectThrows(graph => ({bandCount: 65, moransI: view(graph, 'float32', 65)}), /bandCount/);
+  expectThrows(
+    graph => ({bandCount: 65, output: {moransI: view(graph, 'float32', 65)}}),
+    /bandCount/
+  );
   expectThrows(() => ({bandMode: 'ring' as never}), /bandMode/);
-  expectThrows(graph => ({moransI: view(graph, 'float32', 5)}), /moransI/);
-  expectThrows(graph => ({zScores: view(graph, 'float32', 5)}), /zScores/);
-  expectThrows(graph => ({pairCounts: view(graph, 'uint32', 5)}), /pairCounts/);
-  expectThrows(graph => ({peakBands: view(graph, 'uint32', 1)}), /peakBands/);
-  expectThrows(graph => ({statistics: view(graph, 'float32', 4)}), /statistics/);
+  expectThrows(graph => ({output: {moransI: view(graph, 'float32', 5)}}), /output\.moransI/);
+  expectThrows(graph => ({output: {zScores: view(graph, 'float32', 5)}}), /output\.zScores/);
+  expectThrows(graph => ({output: {pairCounts: view(graph, 'uint32', 5)}}), /output\.pairCounts/);
+  expectThrows(graph => ({output: {peakBands: view(graph, 'uint32', 1)}}), /output\.peakBands/);
+  expectThrows(graph => ({output: {statistics: view(graph, 'float32', 4)}}), /output\.statistics/);
   expectThrows(graph => ({mask: view(graph, 'uint32', 4)}), /mask length/);
 });
 
@@ -104,13 +109,16 @@ it('GPUSpatialCorrelogram emits deterministic node IDs with every output', () =>
     const contributor = new GPUSpatialCorrelogram({
       ...createProps(graph),
       id: 'c',
-      zScores: view('float32', 6),
-      pValues: view('float32', 6),
-      expectedI: view('float32', 6),
-      varianceI: view('float32', 6),
-      pairCounts: view('uint32', 6),
-      peakBands: view('uint32', 2),
-      statistics: view('float32', 5)
+      output: {
+        ...createProps(graph).output,
+        zScores: view('float32', 6),
+        pValues: view('float32', 6),
+        expectedI: view('float32', 6),
+        varianceI: view('float32', 6),
+        pairCounts: view('uint32', 6),
+        peakBands: view('uint32', 2),
+        statistics: view('float32', 5)
+      }
     });
     return contributor.getCommandNodes(graph).map(node => node.id);
   };

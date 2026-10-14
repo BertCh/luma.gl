@@ -9,8 +9,17 @@ import {
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
   type GPUGlobalSpatialStatisticsProps
 } from '../../../src/gpu-spatial-analysis/global-spatial-statistics';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {GLOBAL_STATISTICS_REFERENCE as REFERENCE} from './global-spatial-statistics-reference';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  CORE_WORKGROUP_STORAGE_LIMIT_BYTES,
+  getStorageBindingCount,
+  getWorkgroupMemoryBytes
+} from '../../utils/gpu-contributor-test-utils';
+import {
+  GLOBAL_STATISTICS_REFERENCE as REFERENCE,
+  JOIN_COUNT_REFERENCE
+} from './global-spatial-statistics-reference';
 import {
   computeGlobalSpatialStatisticsOracle,
   getPValue,
@@ -40,7 +49,7 @@ function createProps(
     },
     values: view('float32', 10),
     statistics: ['moran'],
-    results: view('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length),
+    output: {summary: view('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length)},
     ...overrides
   };
 }
@@ -248,7 +257,7 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
   expect(() => new GPUGlobalSpatialStatistics(createProps(graph))).not.toThrow();
   expect(
     () => new GPUGlobalSpatialStatistics(createProps(graph, {values: view('float32', 9)}))
-  ).toThrow(/values length/);
+  ).toThrow(/values needs one row/);
   expect(() => new GPUGlobalSpatialStatistics(createProps(graph, {statistics: []}))).toThrow(
     /at least one/
   );
@@ -259,8 +268,9 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
     () => new GPUGlobalSpatialStatistics(createProps(graph, {statistics: ['nope' as 'moran']}))
   ).toThrow(/unknown/);
   expect(
-    () => new GPUGlobalSpatialStatistics(createProps(graph, {results: view('float32', 8)}))
-  ).toThrow(/results/);
+    () =>
+      new GPUGlobalSpatialStatistics(createProps(graph, {output: {summary: view('float32', 8)}}))
+  ).toThrow(/output.summary/);
   expect(
     () => new GPUGlobalSpatialStatistics(createProps(graph, {mask: view('uint32', 3)}))
   ).toThrow(/mask/);
@@ -275,7 +285,7 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
             weights: view('float32', 4)
           },
           values,
-          results: values
+          output: {summary: values}
         })
       )
   ).toThrow(/must not share/);
@@ -291,7 +301,7 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
     id: 'h',
     weights: {
       ...createProps(graph).weights,
-      info: {rowCount: 10, transform: 'row', symmetric: 'unknown'}
+      information: {rowCount: 10, transform: 'row', symmetric: 'unknown'}
     }
   });
   expect(standardized.getCommandNodes(graph).map(node => node.id)).toContain('h-row-scale');
@@ -302,14 +312,14 @@ it('GPUGlobalSpatialStatistics resolves islands and alternative and rejects perm
   expect(new GPUGlobalSpatialStatistics(createProps(graph)).islands).toBe('exclude');
   expect(new GPUGlobalSpatialStatistics(createProps(graph)).alternative).toBe('two-sided');
   expect(
-    new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'keep', alternative: 'less'}))
+    new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'keep', alternative: 'lesser'}))
   ).toMatchObject({islands: 'keep', alternative: 'lesser'});
   expect(
     () => new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'drop' as 'keep'}))
   ).toThrow(/islands/);
   for (const alternative of ['directed', 'folded'] as const) {
     expect(() => new GPUGlobalSpatialStatistics(createProps(graph, {alternative}))).toThrow(
-      /analytic inference supports/
+      /alternative must be/
     );
   }
   expect(
@@ -363,7 +373,7 @@ it('the oracle reproduces esda on the island, subset and re-standardized fixture
       expectClose(oracle[key], reference[key], `${name} ${key}`);
     }
     for (const statistic of ['moran', 'geary', 'getisOrdG'] as const) {
-      const expected = (reference as Record<string, Record<string, number>>)[statistic];
+      const expected = (reference as unknown as Record<string, Record<string, number>>)[statistic];
       if (!expected) {
         continue;
       }
@@ -390,7 +400,7 @@ it('the oracle reproduces esda on the island, subset and re-standardized fixture
         ['Lesser', 'lesser']
       ] as const) {
         const expectedP = expected[`pRandomization${suffix}`];
-        const actualP = getPValue(expected.zRandomization, alternative);
+        const actualP = getPValue(expected['zRandomization'], alternative);
         expect(Math.abs(actualP - expectedP), `${name} ${statistic} p ${alternative}`).toBeLessThan(
           1e-6 + 1e-6 * expectedP
         );
@@ -420,4 +430,102 @@ it('the oracle makes General G NaN for negative data and everything NaN for trun
   expect(truncated.s0).toBeNaN();
   expect(truncated.moran.statistic).toBeNaN();
   expect(truncated.joinCount.blackBlack).toBeNaN();
+});
+
+it('islands and join-count kernels add to the global counters once per workgroup, from lane 0', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const nodes = new GPUGlobalSpatialStatistics(
+    createProps(graph, {statistics: ['moran', 'joinCount']})
+  ).getCommandNodes(graph);
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  device.destroy();
+  for (const {id, source} of sources) {
+    expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
+    expect(getWorkgroupMemoryBytes(source), id).toBeLessThanOrEqual(
+      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+    );
+  }
+  const islands = sources.find(({id}) => id.endsWith('-islands'))!;
+  const joinCounts = sources.find(({source}) => source.includes('groupBlackBlack'))!;
+  expect(joinCounts).toBeDefined();
+  for (const [kernel, expected] of [
+    [islands, 2],
+    [joinCounts, 3]
+  ] as const) {
+    const body = kernel.source.slice(kernel.source.indexOf('fn main('));
+    const adds = body.match(/atomicAdd\(&counters/g) ?? [];
+    expect(adds, kernel.id).toHaveLength(expected);
+    // Every global add sits after the barrier, inside the lane 0 block.
+    const barrier = body.indexOf('workgroupBarrier()');
+    const laneZero = body.indexOf('if (localInvocationIndex == 0u)');
+    expect(barrier, kernel.id).toBeGreaterThan(0);
+    expect(laneZero, kernel.id).toBeGreaterThan(barrier);
+    expect(body.indexOf('atomicAdd(&counters'), kernel.id).toBeGreaterThan(laneZero);
+    // Barrier at function scope, not under the row guard.
+    expect(body, kernel.id).toMatch(/\n {2}workgroupBarrier\(\);/);
+    expect(body, kernel.id).toContain('if (index < ROWS) {');
+    expect(getWorkgroupMemoryBytes(kernel.source), kernel.id).toBe(expected * 4);
+  }
+});
+
+it('GPUGlobalSpatialStatistics takes uint32 counts through one conversion node (A-5)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'global-statistics-counts'});
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `counts-${serial++}`, format, length);
+  const floatIds = new GPUGlobalSpatialStatistics({...createProps(graph), id: 'f'})
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(floatIds.some(id => id.endsWith('-to-float32'))).toBe(false);
+  const countIds = new GPUGlobalSpatialStatistics({
+    ...createProps(graph),
+    id: 'c',
+    statistics: ['moran', 'bivariateMoran'],
+    values: view('uint32', 10),
+    secondValues: view('uint32', 10)
+  })
+    .getCommandNodes(graph)
+    .map(node => node.id);
+  expect(countIds.slice(0, 2)).toEqual(['c-values-to-float32', 'c-second-values-to-float32']);
+  expect(
+    () => new GPUGlobalSpatialStatistics(createProps(graph, {values: view('uint32', 9)}))
+  ).toThrow(/values/);
+});
+
+it('the join-count oracle reproduces esda counts and the exhaustive randomization moments', () => {
+  // Oracle: test/oracles/statistics-global-autocorrelation.py (esda Join_Counts; moments by
+  // enumerating every placement of the black rows).
+  for (const scene of JOIN_COUNT_REFERENCE) {
+    const weights = createWeights(
+      scene.rows.map(row =>
+        row.neighbors.map((neighbor, slot): [number, number] => [neighbor, row.weights[slot]])
+      )
+    );
+    const oracle = computeGlobalSpatialStatisticsOracle({
+      weights,
+      values: Float32Array.from(scene.values),
+      islands: 'keep'
+    });
+    expect(oracle.blackCount, scene.name).toBe(scene.blackCount);
+    const joinCount = oracle.joinCount as unknown as Record<string, number>;
+    for (const key of ['blackBlack', 'blackWhite', 'whiteWhite', 'joins'] as const) {
+      expect(joinCount[key], `${scene.name} ${key}`).toBe(scene[key]);
+    }
+    for (const key of [
+      'expectedBlackBlack',
+      'varianceBlackBlack',
+      'zBlackBlack',
+      'expectedBlackWhite',
+      'varianceBlackWhite',
+      'zBlackWhite'
+    ] as const) {
+      expectClose(joinCount[key], scene[key], `${scene.name} ${key}`);
+    }
+    // The oracle p-values use the Numerical Recipes erfc (fractional error 1.2e-7).
+    for (const key of ['pBlackBlack', 'pBlackWhite'] as const) {
+      expect(Math.abs(joinCount[key] - scene[key]), `${scene.name} ${key}`).toBeLessThanOrEqual(
+        1.2e-7 * scene[key]
+      );
+    }
+  }
 });

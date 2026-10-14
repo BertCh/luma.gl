@@ -15,12 +15,17 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {createFlatGeometry, roundFeatures, type NestedFeatures} from './geometry-measures-oracle';
+import {
+  createFlatGeometry,
+  getMeasuresGeometryFields,
+  roundFeatures,
+  type NestedFeatures
+} from './geometry-measures-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Readback = {
   lengths: number[];
   areas: number[];
-  signedAreas: number[];
   centroids: number[];
   bounds: number[];
   vertexCounts: number[];
@@ -48,7 +53,6 @@ async function measure(
   const graph = new GPUCommandGraph(device, {id: 'measures-extensions'});
   const lengths = track(createOutputBuffer(device, count));
   const areas = track(createOutputBuffer(device, count));
-  const signedAreas = track(createOutputBuffer(device, count));
   const centroids = track(createOutputBuffer(device, 2 * count));
   const bounds = track(createOutputBuffer(device, 4 * count));
   const vertexCounts = track(createOutputBuffer(device, count));
@@ -70,34 +74,30 @@ async function measure(
         units: options.coordinateSystem === 'planar' ? 'native' : 'meters'
       },
       ellipsoidalEdgeModel: options.coordinateSystem === 'wgs84' ? 'coordinate-linear' : undefined,
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        track(createInputBuffer(device, flat.positions)),
-        'float32x2',
-        flat.positions.length / 2
+      ...getMeasuresGeometryFields(
+        flat,
+        options.geometryType,
+        importGraphBuffer(
+          graph,
+          'positions',
+          track(createInputBuffer(device, flat.positions)),
+          'float32x2',
+          flat.positions.length / 2
+        ),
+        (name, values) =>
+          importGraphBuffer(
+            graph,
+            name,
+            track(createInputBuffer(device, values)),
+            'uint32',
+            values.length
+          )
       ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        track(createInputBuffer(device, flat.ringOffsets)),
-        'uint32',
-        flat.ringOffsets.length
-      ),
-      featureRingOffsets: importGraphBuffer(
-        graph,
-        'feature-ring-offsets',
-        track(createInputBuffer(device, flat.featureRingOffsets)),
-        'uint32',
-        flat.featureRingOffsets.length
-      ),
-      geometryType: options.geometryType,
       output: {
         lengths: view('lengths', lengths, 'float32', count),
         ...(isPolygon
           ? {
-              areas: view('areas', areas, 'float32', count),
-              signedAreas: view('signed-areas', signedAreas, 'float32', count)
+              areas: view('areas', areas, 'float32', count)
             }
           : {}),
         centroids: importGraphBuffer(graph, 'centroids', centroids, 'float32x2', count),
@@ -141,7 +141,6 @@ async function measure(
     features: {
       lengths: await readFloat32(lengths, count),
       areas: await readFloat32(areas, count),
-      signedAreas: await readFloat32(signedAreas, count),
       centroids: await readFloat32(centroids, 2 * count),
       bounds: await readFloat32(bounds, 4 * count),
       vertexCounts: await readUint32(vertexCounts, count),
@@ -240,9 +239,7 @@ const GEODESIC_CASES: {
 
 it('GPUGeometryMeasures geodesic area and perimeter match pyproj Geod (Karney)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = roundFeatures(GEODESIC_CASES.map(({ring}) => [ring]));
   const geodesic = await measure(device, features, {
     geometryType: 'polygons',
@@ -263,7 +260,7 @@ it('GPUGeometryMeasures geodesic area and perimeter match pyproj Geod (Karney)',
     expect(areaError, testCase.name).toBeLessThanOrEqual(testCase.areaTolerance);
     expect(perimeterError, `${testCase.name} perimeter`).toBeLessThanOrEqual(2e-5);
     // CCW rings in longitude/latitude order are positive, as pyproj reports.
-    expect(geodesic.features.signedAreas[feature]).toBeGreaterThan(0);
+    expect(geodesic.features.areas[feature]).toBeGreaterThan(0);
     // Geodesic mode only changes areas: lengths and bounds equal the wgs84 mode's.
     expect(geodesic.features.lengths[feature]).toBe(wgs84.features.lengths[feature]);
     expect(geodesic.features.bounds.slice(4 * feature, 4 * feature + 4)).toEqual(
@@ -277,20 +274,19 @@ it('GPUGeometryMeasures geodesic area and perimeter match pyproj Geod (Karney)',
   expect(Math.abs(wgs84.features.areas[last] / GEODESIC_CASES[last].area - 1)).toBeGreaterThan(
     10 * GEODESIC_CASES[last].areaTolerance
   );
-  // Reversed winding flips the sign (pyproj: -269154549884.01074 for the reversed box).
+  // The first ring of a polygon is its shell whatever its winding, so reversing it keeps the
+  // (non-negative) area; pyproj reports -269154549884.01074 for the reversed box.
   const reversed = await measure(device, roundFeatures([[[...GEODESIC_CASES[0].ring].reverse()]]), {
     geometryType: 'polygons',
     coordinateSystem: 'geodesic'
   });
-  expect(reversed.features.signedAreas[0]).toBeLessThan(0);
+  expect(reversed.features.areas[0]).toBeGreaterThan(0);
   expect(reversed.features.areas[0] / geodesic.features.areas[0] - 1).toBeCloseTo(0, 5);
 });
 
 it('GPUGeometryMeasures reports extreme vertices with lowest-row ties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // numpy argmin/argmax of x and y (first occurrence, i.e. the lowest row) per feature, pinned from
   // the MultiPoint in build/L/oracle.py and by hand for the polygon (rows are global).
   const features = roundFeatures([
@@ -341,9 +337,7 @@ it('GPUGeometryMeasures reports extreme vertices with lowest-row ties', async ()
 
 it('GPUGeometryMeasures point features match shapely MultiPoint centroids', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // shapely.centroid(MultiPoint(pts)) = (1.6666666666666667, 3.0) for the first feature.
   const features = roundFeatures([
     [

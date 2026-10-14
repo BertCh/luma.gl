@@ -23,37 +23,54 @@ it('GPUNeighborhoodSummary validates its props and declares one node per kernel'
   const base = {weights, values: view('float32', 10, 'values')};
   expect(
     () =>
-      new GPUNeighborhoodSummary({...base, statistics: ['mean'], output: view('float32', 9, 'o1')})
-  ).toThrow(/output length/);
+      new GPUNeighborhoodSummary({
+        ...base,
+        statistics: ['mean'],
+        output: {table: view('float32', 9, 'o1')}
+      })
+  ).toThrow(/output.table needs/);
   expect(
     () =>
       new GPUNeighborhoodSummary({
         ...base,
         statistics: ['median'],
-        output: view('float32', 10, 'o2')
+        output: {table: view('float32', 10, 'o2')}
       })
-  ).toThrow(/median requires overflow/);
+  ).toThrow(/median requires output.status.overflow/);
   expect(
     () =>
       new GPUNeighborhoodSummary({
         ...base,
         statistics: ['mean', 'mean'],
-        output: view('float32', 20, 'o3')
+        output: {table: view('float32', 20, 'o3')}
       })
   ).toThrow(/must not repeat/);
-  expect(() => new GPUNeighborhoodSummary({weights, modes: view('uint32', 10, 'm1')})).toThrow(
-    /require categories/
-  );
-  expect(() => new GPUNeighborhoodSummary({weights})).toThrow(/no statistic/);
+  expect(
+    () => new GPUNeighborhoodSummary({weights, output: {modes: view('uint32', 10, 'm1')}})
+  ).toThrow(/require categories/);
+  expect(() => new GPUNeighborhoodSummary({weights, output: {}})).toThrow(/no statistic/);
   const contributor = new GPUNeighborhoodSummary({
     ...base,
     categories: view('uint32', 10, 'categories'),
     statistics: ['mean', 'median'],
-    output: view('float32', 20, 'output'),
-    overflow: view('uint32', 1, 'overflow'),
-    modes: view('uint32', 10, 'modes'),
-    entropy: view('float32', 10, 'entropy')
+    output: {
+      table: view('float32', 20, 'output'),
+      modes: view('uint32', 10, 'modes'),
+      entropy: view('float32', 10, 'entropy'),
+      status: {overflow: view('uint32', 1, 'overflow')}
+    }
   });
+  expect(
+    new GPUNeighborhoodSummary({
+      ...base,
+      id: 'counts',
+      values: view('uint32', 10, 'counts'),
+      statistics: ['sum'],
+      output: {table: view('float32', 10, 'count-table')}
+    })
+      .getCommandNodes(graph)
+      .map(node => node.id)
+  ).toEqual(['counts-values-to-float32', 'counts-numeric']);
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.map(node => node.id)).toEqual([
     'neighborhood-summary-overflow-clear',

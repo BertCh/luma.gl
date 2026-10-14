@@ -32,6 +32,7 @@ import {
   type CellStatisticsResult
 } from './raster-algebra-oracle';
 import {createRandom, expectFloatArraysClose} from './raster-algebra-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const FLOAT_STATISTICS = [
   'minimum',
@@ -46,9 +47,7 @@ const FLOAT_STATISTICS = [
 
 it('GPURasterCellStatistics matches the CPU oracle for 64 layers under both nodata policies', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(3);
   const layerCount = 64;
   const cellCount = 517;
@@ -107,7 +106,7 @@ it('GPURasterCellStatistics matches the CPU oracle for 64 layers under both noda
           'uint32',
           cellCount
         ),
-        count: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', cellCount)
+        counts: importGraphBuffer(graph, 'out-count', outputBuffers.count, 'uint32', cellCount)
       }
     })
   );
@@ -157,9 +156,7 @@ it('GPURasterCellStatistics matches the CPU oracle for 64 layers under both noda
 
 it('GPURasterConditional evaluates comparisons, masks, views, and constants per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(5);
   const cellCount = 301;
   const conditionValues = Float32Array.from({length: cellCount}, (_, cell) =>
@@ -189,7 +186,7 @@ it('GPURasterConditional evaluates comparisons, masks, views, and constants per 
       parameters: parameterBuffer.importToGraph(graph),
       output: {
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
-        mask: importGraphBuffer(graph, 'mask-out', maskOutBuffer, 'uint32', cellCount)
+        outputMask: importGraphBuffer(graph, 'mask-out', maskOutBuffer, 'uint32', cellCount)
       }
     })
   );
@@ -270,9 +267,7 @@ const RELATIVE_TOLERANCE_OPERATIONS = new Set(['power', 'exponential']);
 
 it('GPURasterArithmetic switches operations per frame without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(9);
   const cellCount = 409;
   const a = Float32Array.from({length: cellCount}, (_, cell) =>
@@ -340,7 +335,7 @@ it('GPURasterArithmetic switches operations per frame without rebuilding', async
   for (const operation of operations) {
     for (const settings of [
       {operation, constantB: 1.5},
-      {operation, constantB: 2, clampMin: -1, clampMax: 3}
+      {operation, constantB: 2, clampMinimum: -1, clampMaximum: 3}
     ] as GPURasterArithmeticSettings[]) {
       const parameters = getGPURasterArithmeticParameterValues(settings);
       parameterBuffer.write(parameters);

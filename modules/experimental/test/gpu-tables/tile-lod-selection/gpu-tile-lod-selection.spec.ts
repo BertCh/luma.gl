@@ -165,21 +165,31 @@ function createTileFixture(device: Device, options: TileOptions = {}) {
       budget: options.budget ? parameters.budget.importToGraph(graph) : undefined,
       output: {
         ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', capacity),
-        count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'total', buffers.requiredCount, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'total', buffers.requiredCount, 'uint32', 1)
+        }
       },
       requests: {
         ids: importGraphBuffer(graph, 'request-ids', buffers.requestIds, 'uint32', requestCapacity),
-        count: importGraphBuffer(graph, 'request-count', buffers.requestCount, 'uint32', 1),
-        overflow: importGraphBuffer(
-          graph,
-          'request-overflow',
-          buffers.requestOverflow,
-          'uint32',
-          1
-        ),
-        requiredCount: importGraphBuffer(graph, 'request-total', buffers.requestTotal, 'uint32', 1),
+        status: {
+          count: importGraphBuffer(graph, 'request-count', buffers.requestCount, 'uint32', 1),
+          overflow: importGraphBuffer(
+            graph,
+            'request-overflow',
+            buffers.requestOverflow,
+            'uint32',
+            1
+          ),
+          requiredCount: importGraphBuffer(
+            graph,
+            'request-total',
+            buffers.requestTotal,
+            'uint32',
+            1
+          )
+        },
         priorities: importGraphBuffer(
           graph,
           'request-priorities',

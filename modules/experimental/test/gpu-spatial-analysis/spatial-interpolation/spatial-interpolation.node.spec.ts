@@ -4,9 +4,11 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   getGPUFocalStatisticsParameterValues,
   getGPUInverseDistanceWeightingParameterValues,
+  getGPUKrigingParameterValues,
   GPUFocalStatistics,
   GPUInverseDistanceWeighting,
   GPUKriging,
@@ -14,7 +16,11 @@ import {
   type GPUInverseDistanceWeightingProps,
   type GPUKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {makeExtentGrid} from './extent-grid';
 import {KRIGING_ROBUSTNESS_REFERENCE} from './kriging-robustness-reference';
 import {
   computeFocalStatisticsOnCPU,
@@ -22,6 +28,9 @@ import {
 } from './spatial-interpolation-oracle';
 
 let serial = 0;
+
+const GRID_4_BY_3 = makeExtentGrid(4, 3, [0, 0, 1, 1]);
+const SHEARED_GRID = {...GRID_4_BY_3, affine: [0.25, 0.1, 0, 0, 1 / 3, 0] as const};
 
 function view<Format extends 'uint32' | 'float32' | 'float32x2'>(
   graph: GPUCommandGraph,
@@ -39,8 +48,7 @@ function createInterpolationProps(
     positions: view(graph, 'float32x2', 10),
     values: view(graph, 'float32', 10),
     parameters: view(graph, 'float32', 9),
-    width: 4,
-    height: 3,
+    grid: GRID_4_BY_3,
     indexGridSize: [2, 2],
     indexBounds: [0, 0, 1, 1],
     output: {
@@ -59,8 +67,7 @@ function createKrigingProps(
     positions: view(graph, 'float32x2', 10),
     values: view(graph, 'float32', 10),
     parameters: view(graph, 'float32', 12),
-    width: 4,
-    height: 3,
+    grid: GRID_4_BY_3,
     indexGridSize: [2, 2],
     indexBounds: [0, 0, 1, 1],
     output: {values: view(graph, 'float32', 12)},
@@ -75,8 +82,7 @@ function createFocalProps(
   return {
     values: view(graph, 'float32', 12),
     parameters: view(graph, 'float32', 4),
-    width: 4,
-    height: 3,
+    grid: GRID_4_BY_3,
     maximumRadius: 2,
     output: {mean: view(graph, 'float32', 12)},
     ...overrides
@@ -92,33 +98,30 @@ function withGraph(callback: (graph: GPUCommandGraph) => void): void {
 it('spatial interpolation parameter helpers pack layouts', () => {
   expect(
     Array.from(
-      getGPUInverseDistanceWeightingParameterValues({
-        extent: [0, 1, 2, 3],
-        searchRadius: 5,
-        power: 3,
-        neighborCount: 4,
-        minimumNeighborCount: 2
-      })
+      getGPUInverseDistanceWeightingParameterValues(
+        {
+          searchRadius: 5,
+          power: 3,
+          neighborCount: 4,
+          minimumNeighborCount: 2
+        },
+        makeExtentGrid(4, 3, [0, 1, 2, 3])
+      )
     )
   ).toEqual([0, 1, 2, 3, 5, 3, 4, 2, 0]);
   expect(
-    Array.from(
-      getGPUInverseDistanceWeightingParameterValues({
-        extent: [0, 0, 1, 1],
-        searchRadius: 1
-      })
-    )
+    Array.from(getGPUInverseDistanceWeightingParameterValues({searchRadius: 1}, GRID_4_BY_3))
   ).toEqual([0, 0, 1, 1, 1, 2, 0, 1, 0]);
   expect(() =>
-    getGPUInverseDistanceWeightingParameterValues({
-      extent: [0, 0, 1, 1],
-      searchRadius: 1,
-      neighborCount: 1.5
-    })
+    getGPUInverseDistanceWeightingParameterValues(
+      {searchRadius: 1, neighborCount: 1.5},
+      GRID_4_BY_3
+    )
   ).toThrow(/neighborCount/);
   expect(() =>
     getGPUInverseDistanceWeightingParameterValues(
-      {extent: [0, 0, 1, 1], searchRadius: 1},
+      {searchRadius: 1},
+      GRID_4_BY_3,
       new Float32Array(4)
     )
   ).toThrow(/hold/);
@@ -140,7 +143,8 @@ it('spatial interpolation parameter helpers pack layouts', () => {
 
 it('GPUInverseDistanceWeighting validates its props', () => {
   const cases: [(graph: GPUCommandGraph) => Partial<GPUInverseDistanceWeightingProps>, RegExp][] = [
-    [() => ({width: 0}), /width/],
+    [() => ({grid: {...GRID_4_BY_3, width: 0}}), /grid dimensions/],
+    [() => ({grid: SHEARED_GRID}), /axis-aligned/],
     [() => ({indexGridSize: [2, 1.5]}), /indexGridSize/],
     [() => ({indexBounds: [0, 0, -1, 1]}), /indexBounds/],
     [() => ({indexBounds: [0, 0, Infinity, 1]}), /indexBounds/],
@@ -206,9 +210,43 @@ it('GPUInverseDistanceWeighting returns deterministic node IDs', () => {
   }
 });
 
+it('interpolation packers read the corners from the grid in grid order', () => {
+  const extent = [10, 20, 18, 26] as const;
+  const [minX, minY, maxX, maxY] = extent;
+  // A grid whose rows advance north packs the old extent, so results do not change.
+  const north = makeExtentGrid(4, 3, extent);
+  // The north-up grid of the same rectangle starts at the top-left corner and ends at the bottom.
+  const northUp = makeExtentGrid(4, 3, extent, 'south');
+  // Point pixels are centered on their coordinates: the outer corner moves by half a cell.
+  const pointPixels = {...north, pixelInterpretation: 'point' as const};
+  const krigingSettings = {
+    searchRadius: 5,
+    variogram: {model: 'spherical' as const, nugget: 0, sill: 1, range: 4}
+  };
+  const packers = [
+    (grid: typeof north) =>
+      getGPUInverseDistanceWeightingParameterValues({searchRadius: 5}, grid).slice(0, 4),
+    (grid: typeof north) => getGPUKrigingParameterValues(krigingSettings, grid).slice(0, 4)
+  ];
+  for (const pack of packers) {
+    expect(Array.from(pack(north))).toEqual([minX, minY, maxX, maxY].map(Math.fround));
+    expect(Array.from(pack(northUp))).toEqual([minX, maxY, maxX, minY].map(Math.fround));
+    // Cell size 2 by 2: half a cell is 1 on each axis.
+    expect(Array.from(pack(pointPixels))).toEqual(
+      [minX - 1, minY - 1, maxX - 1, maxY - 1].map(Math.fround)
+    );
+  }
+  for (const grid of [SHEARED_GRID, {...SHEARED_GRID, affine: [0.25, 0, 0, 0.1, 1, 0] as const}]) {
+    expect(() => getGPUInverseDistanceWeightingParameterValues({searchRadius: 1}, grid)).toThrow(
+      /axis-aligned/
+    );
+    expect(() => getGPUKrigingParameterValues(krigingSettings, grid)).toThrow(/axis-aligned/);
+  }
+});
+
 it('inverse distance weighting packs and validates the taper', () => {
   const values = (taper: 'none' | 'modified-shepard' | undefined, searchRadius = 5) =>
-    getGPUInverseDistanceWeightingParameterValues({extent: [0, 0, 1, 1], searchRadius, taper});
+    getGPUInverseDistanceWeightingParameterValues({searchRadius, taper}, GRID_4_BY_3);
   expect(values('modified-shepard')[8]).toBe(1);
   expect(values('none')[8]).toBe(0);
   expect(values(undefined)[8]).toBe(0);
@@ -310,7 +348,8 @@ it('interpolation operators accept planar and great-circle contexts only', () =>
 
 it('GPUKriging validates its props', () => {
   const cases: [(graph: GPUCommandGraph) => Partial<GPUKrigingProps>, RegExp][] = [
-    [() => ({width: 0}), /width/],
+    [() => ({grid: {...GRID_4_BY_3, width: 0}}), /grid dimensions/],
+    [() => ({grid: SHEARED_GRID}), /axis-aligned/],
     [() => ({maximumNeighborCount: 17}), /maximumNeighborCount/],
     [() => ({indexBounds: [0, 0, -1, 1]}), /indexBounds/],
     [graph => ({mask: view(graph, 'uint32', 9)}), /mask length/],
@@ -336,7 +375,10 @@ it('GPUKriging validates its props', () => {
     ],
     [
       graph => ({
-        output: {values: view(graph, 'float32', 12), uncertainCount: view(graph, 'uint32', 0)}
+        output: {
+          values: view(graph, 'float32', 12),
+          status: {uncertainCount: view(graph, 'uint32', 0)}
+        }
       }),
       /uncertainCount must contain one uint32 row/
     ],
@@ -344,7 +386,7 @@ it('GPUKriging validates its props', () => {
       graph => ({
         output: {
           values: view(graph, 'float32', 12),
-          invalidCount: view(graph, 'float32', 1) as never
+          status: {invalidCount: view(graph, 'float32', 1) as never}
         }
       }),
       /invalidCount/
@@ -379,8 +421,10 @@ it('GPUKriging schedules only requested nodes within eight storage bindings', ()
           variance: view(graph, 'float32', 12),
           crossValidationPrediction: view(graph, 'float32', 10),
           crossValidationVariance: view(graph, 'float32', 10),
-          invalidCount: view(graph, 'uint32', 1),
-          uncertainCount: view(graph, 'uint32', 1)
+          status: {
+            invalidCount: view(graph, 'uint32', 1),
+            uncertainCount: view(graph, 'uint32', 1)
+          }
         }
       })
     );
@@ -402,7 +446,7 @@ it('GPUKriging schedules only requested nodes within eight storage bindings', ()
 
 it('GPUFocalStatistics validates its props and schedules only requested kernels', () => {
   const cases: [(graph: GPUCommandGraph) => Partial<GPUFocalStatisticsProps>, RegExp][] = [
-    [() => ({height: -1}), /height/],
+    [() => ({grid: {...GRID_4_BY_3, height: -1}}), /grid dimensions/],
     [() => ({maximumRadius: 65}), /maximumRadius/],
     [() => ({maximumRadius: 1.5}), /maximumRadius/],
     [() => ({noDataValue: NaN}), /noDataValue/],
@@ -410,7 +454,7 @@ it('GPUFocalStatistics validates its props and schedules only requested kernels'
     [graph => ({values: view(graph, 'float32', 11)}), /values must hold/],
     [graph => ({validity: view(graph, 'uint32', 11)}), /validity must hold/],
     [graph => ({parameters: view(graph, 'float32', 3)}), /parameters/],
-    [graph => ({output: {count: view(graph, 'float32', 12) as never}}), /output.count/],
+    [graph => ({output: {counts: view(graph, 'float32', 12) as never}}), /output.counts/],
     [graph => ({output: {min: view(graph, 'float32', 3)}}), /output.min/]
   ];
   for (const [overrides, message] of cases) {
@@ -446,7 +490,7 @@ it('GPUFocalStatistics validates its props and schedules only requested kernels'
           max: view(graph, 'float32', 12),
           range: view(graph, 'float32', 12),
           standardDeviation: view(graph, 'float32', 12),
-          count: view(graph, 'uint32', 12)
+          counts: view(graph, 'uint32', 12)
         }
       })
     );
@@ -529,4 +573,35 @@ it('computeFocalStatisticsOnCPU clips edges and honors nodata', () => {
   expect(Number.isNaN(propagated.mean[4])).toBe(true);
   // Circle radius 1 excludes diagonals: corner sees 1, 2, 4.
   expect(propagated.count[0]).toBe(3);
+});
+
+it('IDW and kriging kernels parse and declare each shared NaN helper once', () => {
+  withGraph(graph => {
+    const nodes = [
+      ...new GPUInverseDistanceWeighting(
+        createInterpolationProps(graph, {id: 'idw-parse'})
+      ).getCommandNodes(graph),
+      ...new GPUKriging(createKrigingProps(graph, {id: 'kriging-parse'})).getCommandNodes(graph)
+    ];
+    const sources = getGPUCommandNodeKernelSources(nodes);
+    expect(sources.length).toBeGreaterThan(0);
+    for (const {id, source} of sources) {
+      // wgsl_reflect rejects `const ORIGIN: vec2f = DOMAIN_MIN;` (valid WGSL) in the kriging solve
+      // kernel; every other parse error is a real failure.
+      try {
+        new WgslReflect(source);
+      } catch (error) {
+        const message = String((error as {message?: string}).message ?? error);
+        expect(id.endsWith('-solve') && /Invalid cast from f32 to vec2f/.test(message), id).toBe(
+          true
+        );
+      }
+      // wgsl_reflect accepts duplicate declarations, Dawn does not.
+      for (const name of ['isNanBits', 'isFiniteValue', 'getNaN']) {
+        expect(source.split(`fn ${name}(`).length - 1, `${id} ${name}`).toBeLessThanOrEqual(1);
+      }
+      expect(source).not.toContain('isNanValue');
+    }
+    expect(sources.some(({source}) => source.includes('fn isNanBits('))).toBe(true);
+  });
 });

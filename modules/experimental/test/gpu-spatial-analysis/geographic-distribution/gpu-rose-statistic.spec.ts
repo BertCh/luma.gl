@@ -16,10 +16,11 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('GPURoseStatistic matches directional and axial circular oracles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const starts = Float32Array.from([0, 0, 0, 0, 0, 0, 0, 0]);
   const ends = Float32Array.from([1, 0, 0, 1, -1, 0, 0, -1]);
   for (const mode of ['directional', 'axial'] as const) {
@@ -33,14 +34,16 @@ it('GPURoseStatistic matches directional and axial circular oracles', async () =
         starts: importGraphBuffer(graph, 'starts', startsBuffer, 'float32x2', 4),
         ends: importGraphBuffer(graph, 'ends', endsBuffer, 'float32x2', 4),
         circular: {mode, angleUnit: 'radians', origin: 'positive-x-counter-clockwise', binCount: 4},
-        summary: importGraphBuffer(
-          graph,
-          'summary',
-          summaryBuffer,
-          'float32',
-          GPU_ROSE_STATISTIC_SUMMARY.stride
-        ),
-        bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', 4)
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'summary',
+            summaryBuffer,
+            'float32',
+            GPU_ROSE_STATISTIC_SUMMARY.stride
+          ),
+          bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', 4)
+        }
       })
     );
     const compiled = graph.compile();
@@ -65,7 +68,7 @@ it('GPURoseStatistic matches directional and axial circular oracles', async () =
 
 it('GPURoseStatistic sorts rows into group segments for multiple groups', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Interleaved groups, one masked row and one out-of-range group ID (both excluded).
   const starts = new Float32Array(16);
   const ends = Float32Array.from([1, 0, 0, 1, 0, 1, -1, 0, 1, 0, 0, -1, 1, 0, 0, 1]);
@@ -96,8 +99,10 @@ it('GPURoseStatistic sorts rows into group segments for multiple groups', async 
         origin: 'positive-x-counter-clockwise',
         binCount
       },
-      summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'float32', summaryLength),
-      bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', groupCount * binCount)
+      output: {
+        summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'float32', summaryLength),
+        bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', groupCount * binCount)
+      }
     })
   );
   const compiled = graph.compile();

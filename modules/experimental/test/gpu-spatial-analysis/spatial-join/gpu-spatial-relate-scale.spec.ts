@@ -16,6 +16,7 @@ import {
 } from './spatial-relate-realistic-scenes';
 import {comparePairs, runScaleJoin} from './spatial-relate-scale-harness';
 import {SHAPELY_SCALE_RELATE, SHAPELY_SCALE_SCENE_HASHES} from './shapely-scale-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SCENE = createRealisticRelateScene(createRandom);
 
@@ -29,9 +30,7 @@ it('realistic relate scene is the one pinned by the Shapely fixtures', () => {
 
 it('GPUSpatialPredicateJoin relate matrices match Shapely on realistic polygons and lines', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scenes: [string, OracleFeature[], OracleFeature[]][] = [
     ['zips-queries', SCENE.zips, SCENE.queries],
     ['zips-lines', SCENE.zips, SCENE.lines],
@@ -53,9 +52,7 @@ it('GPUSpatialPredicateJoin relate matrices match Shapely on realistic polygons 
 
 it('GPUSpatialPredicateJoin engines match Shapely predicates and auto picks relate for large features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scenes: [string, OracleFeature[], OracleFeature[]][] = [
     ['zips-queries', SCENE.zips, SCENE.queries],
     ['zips-lines', SCENE.zips, SCENE.lines],
@@ -91,9 +88,7 @@ it('GPUSpatialPredicateJoin engines match Shapely predicates and auto picks rela
 
 it('GPUSpatialPredicateJoin dwithin workgroup kernel matches the single-invocation kernel', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scenes: [string, OracleFeature[], OracleFeature[]][] = [
     ['zips-queries', SCENE.zips, SCENE.queries],
     ['zips-lines', SCENE.zips, SCENE.lines],
@@ -122,9 +117,7 @@ it('GPUSpatialPredicateJoin dwithin workgroup kernel matches the single-invocati
 
 it('GPUSpatialPredicateJoin engine auto keeps the fast kernel for small features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const squares: OracleFeature[] = [0, 1, 2].map(
     (index): OracleFeature => ({
       kind: 'polygons',

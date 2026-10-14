@@ -8,8 +8,8 @@
  * bandwidth refinement against mgwr's golden-section search, great-circle distances against mgwr
  * `spherical=True`, the model result, and the 11-predictor limit.
  *
- * Expected values come from mgwr 2.2.1 through `gwr-mgwr-inference-reference.ts` (oracle scripts
- * in fix/work/C/U4) and from the float64 oracle for definitions mgwr does not have (singular-row
+ * Expected values come from mgwr 2.2.1 through `gwr-mgwr-inference-reference.ts` (generator
+ * `test/oracles/statistics-gwr.py`) and from the float64 oracle for definitions mgwr does not have (singular-row
  * handling, refinement ladders).
  */
 
@@ -18,7 +18,7 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUGeographicallyWeightedRegression} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression';
 import {getGPUGeographicallyWeightedRegressionModelResult} from '../../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-model-result';
 import {
@@ -49,6 +49,7 @@ import {
   MGWR_INFERENCE_REFERENCE,
   MGWR_SPHERICAL_REFERENCE
 } from './gwr-mgwr-inference-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
 const SUMMARY = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY;
@@ -315,9 +316,7 @@ const planar = createNonstationarityScene(12, 77);
 
 it('GPUGeographicallyWeightedRegression reports mgwr local standard errors, t values and significance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // float32 against float64 on a near-saturated local model (ENP 59 of 144): 2e-3 on scalars.
   const fixed = await runFit(
     device,
@@ -365,9 +364,7 @@ it('GPUGeographicallyWeightedRegression reports mgwr local standard errors, t va
 
 it('GPUGeographicallyWeightedRegression matches the float64 oracle for inference on every row', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const settings: GPUGeographicallyWeightedRegressionSettings = {
     kernel: 'gaussian',
     bandwidthMode: 'fixed',
@@ -401,9 +398,7 @@ it('GPUGeographicallyWeightedRegression matches the float64 oracle for inference
 
 it('GPUGeographicallyWeightedRegression turns singular locations into NaN rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createSingularRowScene(12, 5, 4, 3.5, 30);
   const settings: GPUGeographicallyWeightedRegressionSettings = {
     kernel: 'bisquare',
@@ -483,9 +478,7 @@ it('GPUGeographicallyWeightedRegression turns singular locations into NaN rows',
 
 it('GPUGeographicallyWeightedRegression refinement reaches the mgwr optimum', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const adaptive = MGWR_BANDWIDTH_SEARCH_REFERENCE.adaptive;
   const curve = (k: number) => adaptive.aicc[adaptive.ks.indexOf(k)];
   const settings: GPUGeographicallyWeightedRegressionSettings = {
@@ -578,9 +571,7 @@ it('GPUGeographicallyWeightedRegression refinement reaches the mgwr optimum', as
 
 it('GPUGeographicallyWeightedRegression great-circle distances match mgwr spherical', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const geographic = createGeographicScene(planar);
   // mgwr's haversine radius is 6371.0 km, so metres and a 6,371,000 m sphere give the same fit.
   const spatialContext: GPUSpatialContext = {
@@ -642,9 +633,7 @@ it('GPUGeographicallyWeightedRegression great-circle distances match mgwr spheri
 
 it('GPUGeographicallyWeightedRegression model result follows mgwr aicc, aic, llf, R2, sigma2 and ENP', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runFit(
     device,
     planar,
@@ -692,9 +681,7 @@ it('GPUGeographicallyWeightedRegression model result follows mgwr aicc, aic, llf
 
 it('GPUGeographicallyWeightedRegression fits eleven predictors (twelve design columns)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let state = 424242;
   const random = () => {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
@@ -740,9 +727,7 @@ it('GPUGeographicallyWeightedRegression fits eleven predictors (twelve design co
 
 it('GPUGeographicallyWeightedRegression refinement is bitwise reproducible', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const settings: GPUGeographicallyWeightedRegressionSettings = {
     kernel: 'bisquare',
     bandwidthMode: 'adaptive',

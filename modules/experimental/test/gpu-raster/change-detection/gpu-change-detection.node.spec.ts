@@ -56,7 +56,7 @@ it('getGPUChangeDetectionParameterValues packs the layout and defaults', () => {
   ).toEqual([1, 4, Math.fround(1e-6), Math.fround(0.05), 3]);
   expect(() =>
     getGPUChangeDetectionParameterValues({beforeSlice: 0, afterSlice: 1}, new Float32Array(2))
-  ).toThrow(/hold/);
+  ).toThrow(/target must hold/);
 });
 
 it('GPUChangeDetection rejects invalid properties', () => {
@@ -70,7 +70,7 @@ it('GPUChangeDetection rejects invalid properties', () => {
     graph => ({
       parameters: createTransientView(graph, 'short-p', 'float32', 4)
     }),
-    /parameters must hold/
+    /parameters must contain at least 5 values/
   );
   expectThrows(
     graph => ({mask: createTransientView(graph, 'short-m', 'uint32', 2)}),

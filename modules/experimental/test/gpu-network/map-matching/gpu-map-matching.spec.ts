@@ -7,11 +7,12 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {GPUNetworkCostTable} from '../../../src/gpu-network/network-cost-table/index';
 import {
   GPUMapMatching,
   GPU_MAP_MATCHING_NONE,
-  encodeGPUMapMatchingParameters,
-  type GPUMapMatchingParameters,
+  getGPUMapMatchingParameterValues,
+  type GPUMapMatchingSettings,
   type GPUMapMatchingProps
 } from '../../../src/gpu-network/map-matching/index';
 import {
@@ -31,8 +32,9 @@ import {
   getHaversineDistance,
   wrapLongitudeDelta
 } from '../network-metric-oracle';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {matchOracle} from './map-matching-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 10;
 const SPACING = 100;
@@ -122,6 +124,16 @@ type MatchResult = {
   matchedCount: number;
   breakCount: number;
   overflow: number;
+  /** Overflow flag of the route table, when one was built. */
+  tableOverflow: number;
+};
+
+/** A `GPUNetworkCostTable` built in the same graph and passed as `routeTable`. */
+type RouteTableOptions = {
+  /** Cost bound of the table, in meters. */
+  costLimit: number;
+  /** Entry capacity. Defaults to the full node-pair count, which cannot overflow. */
+  capacity?: number;
 };
 
 /** Coordinates of a matching run; defaults to the planar grid in meters. */
@@ -142,13 +154,14 @@ const PLANAR_FIXTURE: MatchFixture = {
 
 async function runMatching(
   device: Device,
-  parameters: GPUMapMatchingParameters,
-  fixture: MatchFixture = PLANAR_FIXTURE
+  parameters: GPUMapMatchingSettings,
+  fixture: MatchFixture = PLANAR_FIXTURE,
+  routeTableOptions?: RouteTableOptions
 ): Promise<MatchResult> {
   const graph = new GPUCommandGraph(device, {id: 'map-matching'});
   const buffers: Buffer[] = [];
   const outputs: Record<string, Buffer> = {};
-  const input = <Format extends 'uint32' | 'float32x2'>(
+  const input = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     id: string,
     values: Float32Array | Uint32Array,
     format: Format
@@ -177,17 +190,59 @@ async function runMatching(
     id: 'map-matching-parameters',
     format: 'float32',
     length: 8,
-    values: encodeGPUMapMatchingParameters(parameters)
+    values: getGPUMapMatchingParameterValues(parameters)
   });
+  const topology = {
+    nodePositions: input('nodes', fixture.nodePositions, 'float32x2'),
+    offsets: input('offsets', CSR.offsets, 'uint32'),
+    neighbors: input('targets', CSR.neighbors, 'uint32')
+  };
+  let routeTable: GPUMapMatchingProps['routeTable'];
+  if (routeTableOptions) {
+    // The table's weights are the edge lengths the matcher measures from the node positions.
+    const nodeCount = WIDTH * WIDTH;
+    const capacity = routeTableOptions.capacity ?? nodeCount * nodeCount;
+    const lengths = Float32Array.from(CSR.neighbors, (target, edge) => {
+      const source = CSR.sources[edge];
+      return Math.hypot(
+        fixture.nodePositions[target * 2] - fixture.nodePositions[source * 2],
+        fixture.nodePositions[target * 2 + 1] - fixture.nodePositions[source * 2 + 1]
+      );
+    });
+    routeTable = {
+      offsets: output('table-offsets', 'uint32', nodeCount + 1),
+      targets: output('table-targets', 'uint32', capacity),
+      costs: output('table-costs', 'float32', capacity),
+      costLimit: input('table-cost-limit', Float32Array.of(routeTableOptions.costLimit), 'float32'),
+      status: {overflow: output('table-overflow', 'uint32', 1)}
+    };
+    graph.add(
+      new GPUNetworkCostTable({
+        id: 'table',
+        topology: {
+          offsets: topology.offsets,
+          neighbors: topology.neighbors,
+          weights: input('table-weights', lengths, 'float32')
+        },
+        costLimit: routeTable.costLimit,
+        laneCount: 32,
+        output: {
+          offsets: routeTable.offsets,
+          targets: routeTable.targets,
+          costs: routeTable.costs,
+          status: {overflow: routeTable.status?.overflow}
+        }
+      })
+    );
+  }
   graph.add(
     new GPUMapMatching({
       id: 'match',
+      routeTable,
       spatialContext: fixture.spatialContext,
-      points: input('points', fixture.points, 'float32x2'),
+      positions: input('points', fixture.points, 'float32x2'),
       trackOffsets: input('track-offsets', Uint32Array.from(TRACKS.offsets), 'uint32'),
-      nodePositions: input('nodes', fixture.nodePositions, 'float32x2'),
-      offsets: input('offsets', CSR.offsets, 'uint32'),
-      edgeTargets: input('targets', CSR.neighbors, 'uint32'),
+      topology,
       parameters: parameterBuffer.importToGraph(graph),
       candidateCount: CANDIDATE_COUNT,
       cellSize: fixture.cellSize,
@@ -202,7 +257,7 @@ async function runMatching(
         trackLogLikelihoods: output('ll', 'float32', TRACK_COUNT),
         matchedCount: output('matched-count', 'uint32', 1),
         breakCount: output('break-count', 'uint32', 1),
-        overflow: output('overflow', 'uint32', 1)
+        status: {overflow: output('overflow', 'uint32', 1)}
       }
     })
   );
@@ -218,7 +273,8 @@ async function runMatching(
     logLikelihoods: await readFloat32(outputs['ll'], TRACK_COUNT),
     matchedCount: (await readUint32(outputs['matched-count'], 1))[0],
     breakCount: (await readUint32(outputs['break-count'], 1))[0],
-    overflow: (await readUint32(outputs['overflow'], 1))[0]
+    overflow: (await readUint32(outputs['overflow'], 1))[0],
+    tableOverflow: routeTable ? (await readUint32(outputs['table-overflow'], 1))[0] : 0
   };
   compiled.destroy();
   parameterBuffer.destroy();
@@ -238,7 +294,7 @@ function getRoadKey(edge: number): string {
   return `${Math.min(source, target)}-${Math.max(source, target)}`;
 }
 
-const BASE: GPUMapMatchingParameters = {
+const BASE: GPUMapMatchingSettings = {
   sigma: 12,
   beta: 20,
   searchRadius: 55,
@@ -246,7 +302,7 @@ const BASE: GPUMapMatchingParameters = {
   routeSlack: 50
 };
 
-function expectMatchesOracle(result: MatchResult, parameters: GPUMapMatchingParameters): void {
+function expectMatchesOracle(result: MatchResult, parameters: GPUMapMatchingSettings): void {
   const expected = matchOracle(
     TRACKS.points,
     TRACKS.offsets,
@@ -302,9 +358,7 @@ function expectMatchesOracle(result: MatchResult, parameters: GPUMapMatchingPara
 
 it('GPUMapMatching matches the Newson-Krumm oracle on noisy grid tracks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const result = await runMatching(device, BASE);
   expectMatchesOracle(result, BASE);
   // The fixture exercises matched points, the jump break and the unmatched outlier.
@@ -315,9 +369,7 @@ it('GPUMapMatching matches the Newson-Krumm oracle on noisy grid tracks', async 
 
 it('GPUMapMatching responds to per-frame sigma, beta and radius without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const parameters of [
     {...BASE, sigma: 25, beta: 60},
     {...BASE, sigma: 6, beta: 8, searchRadius: 40},
@@ -344,9 +396,7 @@ function toLongitudeLatitude(planar: Float32Array): Float32Array {
 
 it('GPUMapMatching great-circle path matches the f64 oracle across the antimeridian', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The planar fixture laid onto longitude/latitude: 100 m blocks, tracks and noise in meters.
   const cellSizeDegrees = CELL_SIZE / METERS_PER_DEGREE;
   const fixture: MatchFixture = {
@@ -407,4 +457,67 @@ it('GPUMapMatching great-circle path matches the f64 oracle across the antimerid
       );
     });
   }
+});
+
+// A route table must not change what the matcher decides. Route costs are the same shortest paths,
+// summed in f32 along the search's own order: the table is the fixpoint of the relaxations and A*
+// settles in key order, so a route of `h` hops differs by at most about `h * 2^-24` relative, that
+// is under 1e-3 m for the 100 m blocks and routes of a few hundred meters here. A route enters the
+// log-likelihood as `|straight - route| / beta` (beta 20 m) once per transition, at most 30
+// transitions per track, so the track log-likelihoods agree to 1e-3. Matched edges, breaks and
+// counts must be identical, because no candidate pair sits within that error of a decision.
+function expectSameAsAStar(table: MatchResult, aStar: MatchResult): void {
+  expect(aStar.overflow).toBe(0);
+  expect(table.overflow).toBe(0);
+  expect(table.edges).toEqual(aStar.edges);
+  expect(table.breaks).toEqual(aStar.breaks);
+  expect(table.matchedCount).toBe(aStar.matchedCount);
+  expect(table.breakCount).toBe(aStar.breakCount);
+  aStar.logLikelihoods.forEach((value, track) => {
+    expect(Math.abs(table.logLikelihoods[track] - value)).toBeLessThan(1e-3);
+  });
+  table.fractions.forEach((value, point) => {
+    expect(value).toBeCloseTo(aStar.fractions[point], 5);
+  });
+}
+
+it('GPUMapMatching with a route table equals the A* search on the noisy grid tracks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 400 m covers every bound of the scene (3 * 45 m + 50 m plus the partial edges): all rows come
+  // from the table.
+  for (const parameters of [BASE, {...BASE, sigma: 25, beta: 60}]) {
+    const aStar = await runMatching(device, parameters);
+    const table = await runMatching(device, parameters, PLANAR_FIXTURE, {costLimit: 400});
+    expect(table.tableOverflow).toBe(0);
+    expectSameAsAStar(table, aStar);
+    expectMatchesOracle(table, parameters);
+  }
+});
+
+it('GPUMapMatching falls back to A* for bounds above the table limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Bounds are 3 * straight + 50 m minus the tail of the source edge: about 100 to 190 m between
+  // neighboring samples and 2 km at the jump of track 2. A 120 m table answers the short
+  // transitions and A* the rest in the same encoding; 60 m answers almost none; 0 none.
+  const aStar = await runMatching(device, BASE);
+  for (const costLimit of [120, 60, 0]) {
+    const table = await runMatching(device, BASE, PLANAR_FIXTURE, {costLimit});
+    expect(table.tableOverflow).toBe(0);
+    expectSameAsAStar(table, aStar);
+  }
+});
+
+it('GPUMapMatching ignores a route table that overflowed', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const aStar = await runMatching(device, BASE);
+  // 50 entries cannot hold the 400 m neighborhoods: the table reports overflow and every route
+  // uses A*, so the result is the A*-only result bit for bit.
+  const table = await runMatching(device, BASE, PLANAR_FIXTURE, {costLimit: 400, capacity: 50});
+  expect(table.tableOverflow).toBe(1);
+  expect(table.edges).toEqual(aStar.edges);
+  expect(table.logLikelihoods).toEqual(aStar.logLikelihoods);
+  expect(table.breaks).toEqual(aStar.breaks);
 });

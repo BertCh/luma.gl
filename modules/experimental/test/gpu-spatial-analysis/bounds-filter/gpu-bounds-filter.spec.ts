@@ -10,6 +10,7 @@ import {
   type GPUBoundsFilterMode
 } from '../../../src/gpu-spatial-analysis/bounds-filter/index';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Pinned from geopandas 1.2.0 / shapely 2.1.2 (scratchpad build/D/gen_bounds.py): 42 features
 // (points, lines, rectangles on a 0.5 grid, an empty polygon at row 40 and box(0, 0, 16, 16) at
@@ -88,14 +89,16 @@ function createFixture(
     create: ({inputs, outputs, parameters}) =>
       new GPUBoundsFilter({
         bounds: inputs['bounds'] as never,
-        box: parameters,
+        parameters,
         mode,
-        mask: outputs['mask'] as never,
         output: {
+          outputMask: outputs['mask'] as never,
           ids: outputs['ids'] as never,
-          count: outputs['count'] as never,
-          overflow: outputs['overflow'] as never,
-          requiredCount: outputs['requiredCount'] as never
+          status: {
+            count: outputs['count'] as never,
+            overflow: outputs['overflow'] as never,
+            requiredCount: outputs['requiredCount'] as never
+          }
         }
       })
   });
@@ -104,9 +107,7 @@ function createFixture(
 for (const mode of ['intersects', 'within', 'contains'] as const) {
   it(`GPUBoundsFilter ${mode} matches geopandas envelope.${mode}(box) and moves per frame`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const fixture = createFixture(device, mode, 64);
     for (const testCase of CASES) {
       const [minX, minY, maxX, maxY] = testCase.box;
@@ -129,9 +130,7 @@ for (const mode of ['intersects', 'within', 'contains'] as const) {
 
 it('GPUBoundsFilter clamps to a smaller capacity and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const fixture = createFixture(device, 'intersects', 5);
   const result = await fixture.run(
     getGPUBoundsFilterParameterValues({minX: 0, minY: 0, maxX: 16, maxY: 16})

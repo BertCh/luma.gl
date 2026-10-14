@@ -6,11 +6,8 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
-import {
-  getGPURasterSamplingParameterValues,
-  GPURasterSampling,
-  type GPURasterSamplingSettings
-} from '../../../src/gpu-raster/raster-sampling';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster/raster-grid';
+import {GPURasterSampling} from '../../../src/gpu-raster/raster-sampling';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -19,7 +16,13 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom, expectFloatArraysClose} from '../raster-algebra/raster-algebra-test-utils';
-import {sampleRasterPointsOnCPU, type OracleRaster} from './raster-sampling-oracle';
+import {
+  packSamplingCase,
+  sampleRasterPointsOnCPU,
+  type OracleRaster,
+  type SamplingCase
+} from './raster-sampling-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = {
   raster: OracleRaster;
@@ -70,9 +73,7 @@ function createScene(
 
 async function createHarness(scene: Scene, withPointCount: boolean) {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return null;
-  }
+  requireTestDevice(device);
   const {raster, positions} = scene;
   const pointCapacity = positions.length / 2;
   const buffers = {
@@ -92,8 +93,7 @@ async function createHarness(scene: Scene, withPointCount: boolean) {
   graph.add(
     new GPURasterSampling({
       id: 'sampling',
-      width: raster.width,
-      height: raster.height,
+      grid: makeGPURasterMetadata({width: raster.width, height: raster.height}),
       values: importGraphBuffer(graph, 'raster', buffers.raster, 'float32', raster.values.length),
       validity: buffers.validity
         ? importGraphBuffer(graph, 'validity', buffers.validity, 'uint32', raster.values.length)
@@ -112,7 +112,7 @@ async function createHarness(scene: Scene, withPointCount: boolean) {
       parameters: parameterBuffer.importToGraph(graph),
       output: {
         values: importGraphBuffer(graph, 'values', buffers.values, 'float32', pointCapacity),
-        validity: importGraphBuffer(
+        outputValidity: importGraphBuffer(
           graph,
           'validity-out',
           buffers.validityOut,
@@ -126,8 +126,8 @@ async function createHarness(scene: Scene, withPointCount: boolean) {
   const compiled = graph.compile();
   compileCount++;
   return {
-    async run(settings: GPURasterSamplingSettings, activeCount?: number) {
-      parameterBuffer.write(getGPURasterSamplingParameterValues(settings));
+    async run(settings: SamplingCase, activeCount?: number) {
+      parameterBuffer.write(packSamplingCase(settings));
       if (activeCount !== undefined) {
         buffers.pointCount.write(new Uint32Array([activeCount]));
       }
@@ -172,7 +172,7 @@ it('GPURasterSampling matches the CPU oracle exactly on dyadic scenes as method,
     {method: 'bilinear', noDataPolicy: 'strict', activeCount: 1000}
   ];
   for (const frame of frames) {
-    const settings: GPURasterSamplingSettings = {
+    const settings: SamplingCase = {
       width: 32,
       height: 16,
       extent,
@@ -182,7 +182,7 @@ it('GPURasterSampling matches the CPU oracle exactly on dyadic scenes as method,
     const result = await harness.run(settings, frame.activeCount);
     const expected = sampleRasterPointsOnCPU(
       scene.raster,
-      getGPURasterSamplingParameterValues(settings),
+      packSamplingCase(settings),
       scene.positions,
       frame.activeCount
     );
@@ -228,13 +228,9 @@ it('GPURasterSampling agrees with the oracle on a non-dyadic georeference within
   }
   for (const method of ['nearest', 'bilinear', 'bicubic'] as const) {
     for (const noDataPolicy of ['strict', 'renormalize'] as const) {
-      const settings: GPURasterSamplingSettings = {width, height, extent, method, noDataPolicy};
+      const settings: SamplingCase = {width, height, extent, method, noDataPolicy};
       const result = await harness.run(settings);
-      const expected = sampleRasterPointsOnCPU(
-        scene.raster,
-        getGPURasterSamplingParameterValues(settings),
-        positions
-      );
+      const expected = sampleRasterPointsOnCPU(scene.raster, packSamplingCase(settings), positions);
       for (let point = 0; point < 600; point++) {
         const gpu = result.values[point];
         const cpu = expected[point];
@@ -329,11 +325,52 @@ it('GPURasterSampling handles centres, edges and outside points and clamps to th
   // exactly (dyadic weights) and differ from the bilinear plane value 25.
   const expected = sampleRasterPointsOnCPU(
     {width, height, values},
-    getGPURasterSamplingParameterValues({width, height, extent, method: 'bicubic'}),
+    packSamplingCase({width, height, extent, method: 'bicubic'}),
     positions
   );
   expectFloatArraysClose(bicubic.values, expected, 0, 'bicubic clamped');
   expect(bicubic.values[4]).not.toBe(25);
   expect(bicubic.validity).toEqual([1, 1, 1, 1, 1, 0, 0, 1]);
+  harness.destroy();
+});
+
+it('GPURasterSampling reads a north-up grid like the same raster stored south-up', async () => {
+  const width = 32;
+  const height = 16;
+  const baseScene = createScene(width, height, 400, 3, {withFlags: true});
+  // A point exactly on a row boundary belongs to the upper row, which is a different cell for
+  // north-up and south-up indexing; a dyadic offset keeps every point strictly inside a row.
+  const positions = baseScene.positions.map((value, index) =>
+    index % 2 === 1 ? value + 0.0625 : value
+  );
+  const scene = {...baseScene, positions};
+  const extent = [0, 0, 32, 16] as const;
+  // The south-up copy of the north-up raster: rows in reverse order.
+  const flip = <T extends Float32Array | Uint32Array>(array: T): T => {
+    const flipped = array.slice() as T;
+    for (let row = 0; row < height; row++) {
+      flipped.set(array.subarray((height - 1 - row) * width, (height - row) * width), row * width);
+    }
+    return flipped;
+  };
+  const southUp: OracleRaster = {
+    ...scene.raster,
+    values: flip(scene.raster.values),
+    validity: scene.raster.validity ? flip(scene.raster.validity) : undefined
+  };
+  const harness = await createHarness(scene, false);
+  if (!harness) {
+    return;
+  }
+  for (const method of ['nearest', 'bilinear', 'bicubic'] as const) {
+    const result = await harness.run({width, height, extent, method, northUp: true});
+    const expected = sampleRasterPointsOnCPU(
+      southUp,
+      packSamplingCase({width, height, extent, method}),
+      scene.positions
+    );
+    expectFloatArraysClose(result.values, expected, method === 'nearest' ? 0 : 4, method);
+    expect(expected.some(value => !Number.isNaN(value))).toBe(true);
+  }
   harness.destroy();
 });

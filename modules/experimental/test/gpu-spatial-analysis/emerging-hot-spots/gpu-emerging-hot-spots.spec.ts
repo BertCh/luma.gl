@@ -7,20 +7,20 @@ import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import type {GPUSpatialWeights} from '../../../src/gpu-spatial-analysis/spatial-weights';
-import type {GPUMultipleTestingMethod} from '../../../src/gpu-spatial-analysis/contracts/inference';
+import type {GPUMultipleTestingMethod} from '../../../src/analysis-core/contracts/inference';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
-  getGPUEmergingHotSpotParameterValues,
+  getGPUEmergingHotSpotsParameterValues,
   GPUEmergingHotSpots,
-  GPU_EMERGING_HOT_SPOT_CATEGORIES,
-  GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
-  type GPUEmergingHotSpotParameters
+  GPU_EMERGING_HOT_SPOTS_CATEGORIES,
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+  type GPUEmergingHotSpotsSettings
 } from '../../../src/gpu-spatial-analysis/emerging-hot-spots';
 import {
   getGPUNeighborSearchParameterValues,
   GPUNeighborSearch,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  type GPUNeighborSearchParameters
+  type GPUNeighborSearchSettings
 } from '../../../src/gpu-spatial-analysis/neighbor-search';
 import {createDistanceBandWeights} from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {
@@ -45,6 +45,7 @@ import {
   MULTIPLE_TESTING_VALUES,
   type EmergingHotSpotCube
 } from './emerging-hot-spots-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const GARBAGE = 0x7f7f7f7f;
 const Z_ABSOLUTE_TOLERANCE = 2e-3;
@@ -73,15 +74,15 @@ type WeightsSource =
   | {
       kind: 'neighbor-search';
       positions: Float32Array;
-      parameters: GPUNeighborSearchParameters;
+      parameters: GPUNeighborSearchSettings;
       capacity: number;
     };
 
 type Harness = {
   readonly buildCount: number;
   run(
-    parameters: Omit<GPUEmergingHotSpotParameters, 'multipleTesting'>,
-    neighborParameters?: GPUNeighborSearchParameters
+    parameters: Omit<GPUEmergingHotSpotsSettings, 'multipleTesting'>,
+    neighborParameters?: GPUNeighborSearchSettings
   ): Promise<Readback>;
   writeValues(values: Float32Array | Uint32Array): void;
   destroy(): void;
@@ -111,7 +112,7 @@ function createHarness(
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'emerging-hot-spot-parameters',
     format: 'float32',
-    length: GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH
+    length: GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
   });
   const outputs: Record<
     | 'giZScores'
@@ -183,8 +184,10 @@ function createHarness(
           gridSize: [16, 16],
           positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', cellCount),
           parameters: neighborParameterBuffer.importToGraph(graph),
-          weights,
-          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)
+          output: {
+            ...weights,
+            status: {overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1)}
+          }
         })
       );
     }
@@ -199,31 +202,33 @@ function createHarness(
     maximumRadius: options.maximumRadius,
     multipleTesting: options.multipleTesting,
     finalSlice: options.finalSlice,
-    pValues: importGraphBuffer(graph, 'p-values', outputs.pValues, 'float32', binCount),
-    adjustedPValues: importGraphBuffer(
-      graph,
-      'adjusted-p-values',
-      outputs.adjustedPValues,
-      'float32',
-      binCount
-    ),
-    lastValidSlice: importGraphBuffer(
-      graph,
-      'last-valid-slice',
-      outputs.lastValidSlice,
-      'uint32',
-      cellCount
-    ),
     mask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', cellCount),
     parameters: parameterBuffer.importToGraph(graph),
-    giZScores: importGraphBuffer(graph, 'gi-z', outputs.giZScores, 'float32', binCount),
-    trendZ: importGraphBuffer(graph, 'trend-z', outputs.trendZ, 'float32', cellCount),
-    trendP: importGraphBuffer(graph, 'trend-p', outputs.trendP, 'float32', cellCount),
-    trendS: importGraphBuffer(graph, 'trend-s', outputs.trendS, 'sint32', cellCount),
-    category: importGraphBuffer(graph, 'category', outputs.category, 'uint32', cellCount),
-    hotSliceCount: importGraphBuffer(graph, 'hot', outputs.hotSliceCount, 'uint32', cellCount),
-    coldSliceCount: importGraphBuffer(graph, 'cold', outputs.coldSliceCount, 'uint32', cellCount),
-    globalStatistics: importGraphBuffer(graph, 'stats', outputs.globalStatistics, 'float32', 4)
+    output: {
+      pValues: importGraphBuffer(graph, 'p-values', outputs.pValues, 'float32', binCount),
+      adjustedPValues: importGraphBuffer(
+        graph,
+        'adjusted-p-values',
+        outputs.adjustedPValues,
+        'float32',
+        binCount
+      ),
+      lastValidSlice: importGraphBuffer(
+        graph,
+        'last-valid-slice',
+        outputs.lastValidSlice,
+        'uint32',
+        cellCount
+      ),
+      giZScores: importGraphBuffer(graph, 'gi-z', outputs.giZScores, 'float32', binCount),
+      trendZ: importGraphBuffer(graph, 'trend-z', outputs.trendZ, 'float32', cellCount),
+      trendP: importGraphBuffer(graph, 'trend-p', outputs.trendP, 'float32', cellCount),
+      trendS: importGraphBuffer(graph, 'trend-s', outputs.trendS, 'sint32', cellCount),
+      category: importGraphBuffer(graph, 'category', outputs.category, 'uint32', cellCount),
+      hotSliceCount: importGraphBuffer(graph, 'hot', outputs.hotSliceCount, 'uint32', cellCount),
+      coldSliceCount: importGraphBuffer(graph, 'cold', outputs.coldSliceCount, 'uint32', cellCount),
+      globalStatistics: importGraphBuffer(graph, 'stats', outputs.globalStatistics, 'float32', 4)
+    }
   });
   let buildCount = 0;
   const getCommandNodes = contributor.getCommandNodes.bind(contributor);
@@ -238,7 +243,9 @@ function createHarness(
       return buildCount;
     },
     async run(parameters, neighborParameters) {
-      parameterBuffer.write(getGPUEmergingHotSpotParameterValues({...parameters, multipleTesting}));
+      parameterBuffer.write(
+        getGPUEmergingHotSpotsParameterValues({...parameters, multipleTesting})
+      );
       if (neighborParameters && neighborParameterBuffer) {
         neighborParameterBuffer.write(getGPUNeighborSearchParameterValues(neighborParameters));
       }
@@ -322,12 +329,12 @@ function isCloseOrBothNaN(actual: number, expected: number, absolute: number, re
 function expectCellsMatchOracle(
   result: Readback,
   cube: EmergingHotSpotCube,
-  parameters: Omit<GPUEmergingHotSpotParameters, 'multipleTesting'>,
+  parameters: Omit<GPUEmergingHotSpotsSettings, 'multipleTesting'>,
   label: string,
   options: {multipleTesting?: GPUMultipleTestingMethod; finalSlice?: 'require' | 'last-valid'} = {}
 ): void {
   const multipleTesting = options.multipleTesting ?? 'benjamini-hochberg';
-  const packed = getGPUEmergingHotSpotParameterValues({...parameters, multipleTesting});
+  const packed = getGPUEmergingHotSpotsParameterValues({...parameters, multipleTesting});
   // p-values come from the GPU's own z; the family is every finite z.
   const oraclePValues = computeBinPValues(result.giZScores);
   const oracleAdjusted = computeAdjustedBinPValues(result.giZScores, multipleTesting);
@@ -371,15 +378,13 @@ function expectCellsMatchOracle(
 
 it('GPUEmergingHotSpots classifies all 17 categories on the designed cube', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {cube, designed, expectedCategories} = createDesignedCube();
   const harness = createHarness(device, cube);
   try {
     const parameters = {radius: 0, temporalWindow: 0};
     const result = await harness.run(parameters);
-    const packed = getGPUEmergingHotSpotParameterValues(parameters);
+    const packed = getGPUEmergingHotSpotsParameterValues(parameters);
     expectZScoresClose(result.giZScores, computeSpaceTimeGiStar(cube, packed), 'designed');
     const moments = computeEmergingHotSpotMoments(cube);
     expect(result.globalStatistics[0]).toBe(moments.count);
@@ -430,13 +435,11 @@ function createSpaceTimeCube(seed: number): EmergingHotSpotCube & {values: Float
 
 it('GPUEmergingHotSpots matches the space-time oracle across per-frame parameters without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cube = createSpaceTimeCube(5);
   const harness = createHarness(device, cube, {maximumRadius: 4});
   try {
-    const frames: GPUEmergingHotSpotParameters[] = [
+    const frames: GPUEmergingHotSpotsSettings[] = [
       {radius: 0, temporalWindow: 0},
       {radius: 1, temporalWindow: 0},
       {radius: 1.5, temporalWindow: 2},
@@ -457,7 +460,7 @@ it('GPUEmergingHotSpots matches the space-time oracle across per-frame parameter
     ];
     const categoriesSeen = new Set<number>();
     for (const frame of frames) {
-      const packed = getGPUEmergingHotSpotParameterValues(frame);
+      const packed = getGPUEmergingHotSpotsParameterValues(frame);
       const result = await harness.run(frame);
       const oracleZ = computeSpaceTimeGiStar(cube, packed, 4);
       expectZScoresClose(result.giZScores, oracleZ, JSON.stringify(frame));
@@ -478,7 +481,7 @@ it('GPUEmergingHotSpots matches the space-time oracle across per-frame parameter
     const result = await harness.run(frame);
     expectZScoresClose(
       result.giZScores,
-      computeSpaceTimeGiStar(shiftedCube, getGPUEmergingHotSpotParameterValues(frame)),
+      computeSpaceTimeGiStar(shiftedCube, getGPUEmergingHotSpotsParameterValues(frame)),
       'shifted'
     );
     expectCellsMatchOracle(result, shiftedCube, frame, 'shifted');
@@ -491,9 +494,7 @@ it('GPUEmergingHotSpots matches the space-time oracle across per-frame parameter
 /** Series lengths around the Gi* workgroup tiling: whole cells per 256 threads, leftover threads, one cell per group. */
 it('GPUEmergingHotSpots matches the oracle for slice counts that tile the Gi* workgroup unevenly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const sliceCount of [1, 2, 100, 129, 256]) {
     const gridWidth = 6;
     const gridHeight = 5;
@@ -519,7 +520,7 @@ it('GPUEmergingHotSpots matches the oracle for slice counts that tile the Gi* wo
       ]) {
         const label = `slices ${sliceCount} ${JSON.stringify(frame)}`;
         const result = await harness.run(frame);
-        const packed = getGPUEmergingHotSpotParameterValues(frame);
+        const packed = getGPUEmergingHotSpotsParameterValues(frame);
         expectZScoresClose(result.giZScores, computeSpaceTimeGiStar(cube, packed, 2), label);
         expectCellsMatchOracle(result, cube, frame, label);
       }
@@ -531,9 +532,7 @@ it('GPUEmergingHotSpots matches the oracle for slice counts that tile the Gi* wo
 
 it('GPUEmergingHotSpots guards padded cooperative workgroups under bounded dispatch', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const descriptor = Object.getOwnPropertyDescriptor(device, 'limits');
   const limits = device.limits;
   Object.defineProperty(device, 'limits', {
@@ -570,9 +569,7 @@ it('GPUEmergingHotSpots guards padded cooperative workgroups under bounded dispa
 
 it('GPUEmergingHotSpots accepts uint32 counts like GPUTemporalReduction output', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createSeededRandom(3);
   const gridWidth = 6;
   const gridHeight = 5;
@@ -589,7 +586,7 @@ it('GPUEmergingHotSpots accepts uint32 counts like GPUTemporalReduction output',
     const result = await harness.run(frame);
     expectZScoresClose(
       result.giZScores,
-      computeSpaceTimeGiStar(cube, getGPUEmergingHotSpotParameterValues(frame)),
+      computeSpaceTimeGiStar(cube, getGPUEmergingHotSpotsParameterValues(frame)),
       'counts'
     );
     expectCellsMatchOracle(result, cube, frame, 'counts');
@@ -602,9 +599,7 @@ it('GPUEmergingHotSpots accepts uint32 counts like GPUTemporalReduction output',
 
 it('GPUEmergingHotSpots writes NaN z for degenerate cubes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = new Float32Array(2 * 2 * 4).fill(3);
   const harness = createHarness(device, {
     gridWidth: 2,
@@ -667,9 +662,7 @@ function createLatticeDiscWeights(
 
 it('GPUEmergingHotSpots weights mode reproduces lattice mode on lattice-disc weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cube = createSpaceTimeCube(5);
   for (const radius of [1, 1.5, 2.3]) {
     const weights = createLatticeDiscWeights(cube.gridWidth, cube.gridHeight, radius);
@@ -685,7 +678,7 @@ it('GPUEmergingHotSpots weights mode reproduces lattice mode on lattice-disc wei
         const label = `radius ${radius} ${JSON.stringify(frame)}`;
         expectZScoresClose(
           result.giZScores,
-          computeSpaceTimeGiStar(cube, getGPUEmergingHotSpotParameterValues(latticeFrame)),
+          computeSpaceTimeGiStar(cube, getGPUEmergingHotSpotsParameterValues(latticeFrame)),
           label
         );
         expectCellsMatchOracle(result, cube, latticeFrame, label);
@@ -722,9 +715,7 @@ function createScatteredCube(seed: number, cellCount: number, sliceCount: number
 
 it('GPUEmergingHotSpots weights mode matches the weighted oracle on irregular weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, cube} = createScatteredCube(9, 150, 10);
   for (const [selfWeight, rowStandardize] of [
     [1, false],
@@ -744,7 +735,7 @@ it('GPUEmergingHotSpots weights mode matches the weighted oracle on irregular we
       ]) {
         const result = await harness.run(frame);
         const label = `self ${selfWeight} standardized ${rowStandardize} ${JSON.stringify(frame)}`;
-        const packed = getGPUEmergingHotSpotParameterValues(frame);
+        const packed = getGPUEmergingHotSpotsParameterValues(frame);
         const expectedZ = computeSpaceTimeGiStarWeighted(cube, weights, selfWeight, packed);
         expectZScoresClose(result.giZScores, expectedZ, label);
         expect(expectedZ.some(z => z >= 1.96)).toBe(true);
@@ -758,9 +749,7 @@ it('GPUEmergingHotSpots weights mode matches the weighted oracle on irregular we
 
 it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSearch', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {positions, cube} = createScatteredCube(21, 150, 10);
   const harness = createHarness(device, cube, {
     weights: {
@@ -783,7 +772,7 @@ it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSear
         cube,
         expected,
         1,
-        getGPUEmergingHotSpotParameterValues(frame)
+        getGPUEmergingHotSpotsParameterValues(frame)
       );
       expectZScoresClose(result.giZScores, expectedZ, `radius ${radius}`);
       expectCellsMatchOracle(result, cube, frame, `radius ${radius}`);
@@ -807,9 +796,7 @@ function createMultipleTestingCube() {
 
 it('GPUEmergingHotSpots multiple testing drops weakly significant bins (statsmodels reference)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cube = createMultipleTestingCube();
   const frame = {radius: 0, temporalWindow: 0};
   for (const method of [
@@ -839,8 +826,8 @@ it('GPUEmergingHotSpots multiple testing drops weakly significant bins (statsmod
         });
       }
       // The legend does not change with the correction: signs map to the same category codes.
-      expect(result.category[92]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NEW_HOT);
-      expect(result.category[94]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NEW_COLD);
+      expect(result.category[92]).toBe(GPU_EMERGING_HOT_SPOTS_CATEGORIES.NEW_HOT);
+      expect(result.category[94]).toBe(GPU_EMERGING_HOT_SPOTS_CATEGORIES.NEW_COLD);
       expectCellsMatchOracle(result, cube, frame, method, {multipleTesting: method});
     } finally {
       harness.destroy();
@@ -850,9 +837,7 @@ it('GPUEmergingHotSpots multiple testing drops weakly significant bins (statsmod
 
 it('GPUEmergingHotSpots criticalZ override reproduces the uncorrected rule with multipleTesting none', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cube = createSpaceTimeCube(5);
   const harness = createHarness(device, cube, {maximumRadius: 4, multipleTesting: 'none'});
   try {
@@ -864,7 +849,7 @@ it('GPUEmergingHotSpots criticalZ override reproduces the uncorrected rule with 
       const label = JSON.stringify(frame);
       // |z| >= criticalZ exactly, on the GPU's own z.
       const criticalZ = Math.fround(
-        getGPUEmergingHotSpotParameterValues({...frame, multipleTesting: 'none'})[2]
+        getGPUEmergingHotSpotsParameterValues({...frame, multipleTesting: 'none'})[2]
       );
       const hot = Array.from({length: 70}, (_, cell) =>
         result.giZScores
@@ -881,9 +866,7 @@ it('GPUEmergingHotSpots criticalZ override reproduces the uncorrected rule with 
 
 it('GPUEmergingHotSpots handles a missing final slice under both finalSlice modes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cube = createSpaceTimeCube(5);
   const {sliceCount} = cube;
   // Stale cells: final slice missing. One cell is entirely missing.
@@ -909,7 +892,7 @@ it('GPUEmergingHotSpots handles a missing final slice under both finalSlice mode
       }
       // A cell with no data at all has no pattern under either mode.
       expect(result.lastValidSlice[50]).toBe(0xffffffff);
-      expect(result.category[50]).toBe(GPU_EMERGING_HOT_SPOT_CATEGORIES.NO_PATTERN);
+      expect(result.category[50]).toBe(GPU_EMERGING_HOT_SPOTS_CATEGORIES.NO_PATTERN);
     } finally {
       harness.destroy();
     }
@@ -918,10 +901,10 @@ it('GPUEmergingHotSpots handles a missing final slice under both finalSlice mode
   const lastValid = results.get('last-valid')!;
   for (const cell of staleCells) {
     expect(required.category[cell], `require ${cell}`).toBe(
-      GPU_EMERGING_HOT_SPOT_CATEGORIES.UNDETERMINED
+      GPU_EMERGING_HOT_SPOTS_CATEGORIES.UNDETERMINED
     );
     expect(lastValid.category[cell], `last-valid ${cell}`).not.toBe(
-      GPU_EMERGING_HOT_SPOT_CATEGORIES.UNDETERMINED
+      GPU_EMERGING_HOT_SPOTS_CATEGORIES.UNDETERMINED
     );
   }
   // Cells with a final slice are identical under both modes.
@@ -934,9 +917,7 @@ it('GPUEmergingHotSpots handles a missing final slice under both finalSlice mode
 
 it('GPUEmergingHotSpots reports undetermined categories for series below the Mann-Kendall minimum', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 5 x 4 cells, six slices: cell 0 constantly hot, cell 1 constantly cold, the rest noise.
   const sliceCount = 6;
   const cellCount = 20;
@@ -949,7 +930,7 @@ it('GPUEmergingHotSpots reports undetermined categories for series below the Man
   }
   const cube = {gridWidth: 5, gridHeight: 4, sliceCount, values};
   const frame = {radius: 0, temporalWindow: 0};
-  const categories = GPU_EMERGING_HOT_SPOT_CATEGORIES;
+  const categories = GPU_EMERGING_HOT_SPOTS_CATEGORIES;
   const guarded = createHarness(device, cube);
   try {
     // Default minimumTrendSliceCount 10 > 6: no trend z or p, and the persistent classes are

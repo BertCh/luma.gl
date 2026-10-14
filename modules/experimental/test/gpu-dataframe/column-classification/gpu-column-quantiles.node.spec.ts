@@ -30,7 +30,7 @@ function createProps(
     output: {
       quantiles: view('float32', 3),
       validCount: view('uint32', 1),
-      filterMask: view('uint32', 10),
+      outputMask: view('uint32', 10),
       filterBounds: view('float32', 2)
     },
     ...overrides
@@ -60,7 +60,7 @@ it('GPUColumnQuantiles validates its inputs', () => {
     graph => ({
       values: createVectorView('chunks', 'float32', [view(graph, 'float32', 5)]) as never
     }),
-    /single packed view/
+    /must be one packed view/
   );
   expectThrows(graph => ({values: view(graph, 'float32', 0)}), /at least one row/);
   expectThrows(graph => ({values: view(graph, 'float32', 2 ** 24 + 1)}), /at most 16777216 rows/);
@@ -101,10 +101,10 @@ it('GPUColumnQuantiles validates its inputs', () => {
       output: {
         quantiles: view(graph, 'float32', 3),
         validCount: view(graph, 'uint32', 1),
-        filterMask: view(graph, 'uint32', 9)
+        outputMask: view(graph, 'uint32', 9)
       }
     }),
-    /filterMask/
+    /outputMask/
   );
   expectThrows(
     graph => ({
@@ -197,7 +197,9 @@ it('column quantile parameter helper packs the documented layout', () => {
   const target = new Float32Array(10).fill(7);
   expect(getGPUColumnQuantilesParameterValues({quantiles: [1]}, target)).toBe(target);
   expect(target[4]).toBe(1);
-  expect(() => getGPUColumnQuantilesParameterValues({quantiles: []})).toThrow(/count/);
+  expect(() => getGPUColumnQuantilesParameterValues({quantiles: []})).toThrow(
+    /quantileCount must be an integer/
+  );
   expect(() =>
     getGPUColumnQuantilesParameterValues({
       quantiles: [0.1, 0.2],
@@ -267,19 +269,19 @@ it('column quantile oracle skips NaN and masked rows and filters by percentile',
     interpolation: 'lower',
     filterRange: [0.25, 0.75]
   });
-  // Valid sorted: -0, 0, 1, 3, 5, 7, 9 (n = 7); -0 sorts below +0.
+  // Valid sorted: 0, 0, 1, 3, 5, 7, 9 (n = 7); -0 is canonicalised to +0 (B-14 policy).
   expect(result.validCount).toBe(7);
-  expect(Object.is(result.sorted[0], -0) && Object.is(result.sorted[1], 0)).toBe(true);
+  expect(Object.is(result.sorted[0], 0) && Object.is(result.sorted[1], 0)).toBe(true);
   expect(result.quantiles[0]).toBe(3);
-  // lowerIndex = floor(7 * 0.25) = 1, upperIndex = ceil(7 * 0.75) - 1 = 5.
+  // lowerIndex = floor(7 * 0.25) = 1, upperIndex = ceil(7 * 0.75) - 1 = 5; -0 equals the lower bound.
   expect(Array.from(result.filterBounds)).toEqual([0, 7]);
-  expect(Array.from(result.filterMask)).toEqual([1, 0, 1, 0, 1, 1, 0, 0, 1]);
+  expect(Array.from(result.outputMask)).toEqual([1, 0, 1, 0, 1, 1, 0, 1, 1]);
   const empty = computeColumnQuantilesOracle({
     values: [1, 2],
     mask: [0, 0],
     quantiles: [0.5]
   });
   expect(empty.validCount).toBe(0);
-  expect(Array.from(empty.filterMask)).toEqual([0, 0]);
+  expect(Array.from(empty.outputMask)).toEqual([0, 0]);
   expect(empty.filterBounds.every(Number.isNaN)).toBe(true);
 });

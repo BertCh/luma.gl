@@ -10,21 +10,32 @@ import {
 } from '../../../src/gpu-network/network-k-function/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
-function createProps(graph: GPUCommandGraph, overrides: Record<string, unknown> = {}) {
+let serial = 0;
+
+function createProps(
+  graph: GPUCommandGraph,
+  overrides: Record<string, unknown> = {},
+  output: Record<string, unknown> = {},
+  topology: Record<string, unknown> = {}
+) {
+  serial++;
   return {
     id: 'k',
-    points: createTransientView(graph, 'points', 'float32x2', 10),
-    nodePositions: createTransientView(graph, 'positions', 'float32x2', 6),
-    offsets: createTransientView(graph, 'offsets', 'uint32', 7),
-    neighbors: createTransientView(graph, 'neighbors', 'uint32', 12),
-    weights: createTransientView(graph, 'weights', 'float32', 12),
-    maxDistance: createTransientView(graph, 'max-distance', 'float32', 1),
-    networkLength: createTransientView(graph, 'network-length', 'float32', 1),
-    parameters: createTransientView(graph, 'parameters', 'uint32', 4),
+    positions: createTransientView(graph, `points-${serial}`, 'float32x2', 10),
+    topology: {
+      offsets: createTransientView(graph, `offsets-${serial}`, 'uint32', 7),
+      neighbors: createTransientView(graph, `neighbors-${serial}`, 'uint32', 12),
+      weights: createTransientView(graph, `weights-${serial}`, 'float32', 12),
+      nodePositions: createTransientView(graph, `positions-${serial}`, 'float32x2', 6),
+      ...topology
+    },
+    maximumDistance: createTransientView(graph, `max-distance-${serial}`, 'float32', 1),
+    networkLength: createTransientView(graph, `network-length-${serial}`, 'float32', 1),
+    parameters: createTransientView(graph, `parameters-${serial}`, 'uint32', 4),
     bandCount: 8,
     simulationCount: 3,
     rowsPerBlock: 15,
-    kValues: createTransientView(graph, 'k-values', 'float32', 32),
+    output: {kValues: createTransientView(graph, `k-values-${serial}`, 'float32', 32), ...output},
     ...overrides
   };
 }
@@ -32,11 +43,17 @@ function createProps(graph: GPUCommandGraph, overrides: Record<string, unknown> 
 it('GPUNetworkKFunction schedules snapping, simulation, one search block per row block and outputs', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const nodes = new GPUNetworkKFunction({
-    ...createProps(graph),
-    pairCounts: createTransientView(graph, 'pair-counts', 'uint32', 32),
-    envelope: createTransientView(graph, 'envelope', 'float32', 24),
-    converged: createTransientView(graph, 'converged', 'uint32', 1),
-    maxIterations: 2
+    ...createProps(
+      graph,
+      {maximumIterations: 2},
+      {
+        pairCounts: createTransientView(graph, 'pair-counts', 'uint32', 32),
+        envelope: createTransientView(graph, 'envelope', 'float32', 24),
+        status: {
+          converged: createTransientView(graph, 'converged', 'uint32', 1)
+        }
+      }
+    )
   }).getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   // 40 rows in blocks of 15 rows: three blocks (15, 15, 10).
@@ -53,10 +70,11 @@ it('GPUNetworkKFunction schedules snapping, simulation, one search block per row
 it('GPUNetworkKFunction skips the simulation nodes without simulations', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const nodes = new GPUNetworkKFunction({
-    ...createProps(graph),
-    simulationCount: 0,
-    rowsPerBlock: 10,
-    kValues: createTransientView(graph, 'k-values-single', 'float32', 8)
+    ...createProps(
+      graph,
+      {simulationCount: 0, rowsPerBlock: 10},
+      {kValues: createTransientView(graph, 'k-values-single', 'float32', 8)}
+    )
   }).getCommandNodes(graph);
   expect(nodes.some(node => node.id === 'k-simulate')).toBe(false);
 });
@@ -71,9 +89,28 @@ it('GPUNetworkKFunction validates views and parameters', () => {
   expect(
     () =>
       new GPUNetworkKFunction(
-        createProps(graph, {kValues: createTransientView(graph, 'short', 'float32', 8)})
+        createProps(graph, {}, {kValues: createTransientView(graph, 'short', 'float32', 8)})
       )
-  ).toThrow(/kValues length must be 32/);
+  ).toThrow(/output.kValues length must be 32/);
+  expect(
+    () =>
+      new GPUNetworkKFunction(
+        createProps(
+          graph,
+          {},
+          {},
+          {weights: createTransientView(graph, 'short-weights', 'float32', 3)}
+        )
+      )
+  ).toThrow(/topology.weights length/);
+  const missingPositions = createProps(graph);
+  expect(
+    () =>
+      new GPUNetworkKFunction({
+        ...missingPositions,
+        topology: {...missingPositions.topology, nodePositions: undefined as never}
+      })
+  ).toThrow(/topology.nodePositions is required/);
   expect(create({bandCount: 1})).toThrow(/bandCount/);
   expect(() => getGPUNetworkKFunctionParameterValues({seed: -1, activeSimulations: 1})).toThrow(
     /seed/

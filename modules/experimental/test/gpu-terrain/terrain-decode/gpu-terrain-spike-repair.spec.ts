@@ -6,7 +6,9 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
+import {GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED} from '../../../src/gpu-terrain/terrain-decode';
 import {
   GPU_TERRAIN_SPIKE_REPAIR_STATISTICS as S,
   GPUTerrainSpikeRepair,
@@ -23,12 +25,13 @@ import {
   computeTerrainSpikeRepair,
   type TerrainSpikeRepairOracleOptions
 } from './terrain-spike-repair-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 64;
 const HEIGHT = 48;
 const SENTINEL = -32768;
 
-type Options = TerrainSpikeRepairOracleOptions & {componentIterations?: number};
+type Options = TerrainSpikeRepairOracleOptions & {maximumComponentIterations?: number};
 
 /** Smooth Terrarium-like terrain; every value is a multiple of 1/256 and gradients stay below 12 m. */
 function createTerrain(width: number, height: number): Float32Array {
@@ -76,8 +79,7 @@ async function runRepair(
   const graph = new GPUCommandGraph(device, {id: 'terrain-spike-repair-test'});
   const props: GPUTerrainSpikeRepairProps = {
     ...options,
-    width,
-    height,
+    grid: makeGPURasterMetadata({width, height}),
     elevation: {
       id: 'elevation',
       format: 'float32',
@@ -89,10 +91,12 @@ async function runRepair(
         ? importGraphBuffer(graph, 'elevation-validity', inputValidity, 'uint32', pixelCount)
         : undefined
     },
-    values: importGraphBuffer(graph, 'values', outputs.values, 'float32', pixelCount),
-    validity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount),
-    labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', pixelCount),
-    statistics: importGraphBuffer(graph, 'statistics', outputs.statistics, 'uint32', 5)
+    output: {
+      values: importGraphBuffer(graph, 'values', outputs.values, 'float32', pixelCount),
+      outputValidity: importGraphBuffer(graph, 'validity', outputs.validity, 'uint32', pixelCount),
+      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', pixelCount),
+      statistics: importGraphBuffer(graph, 'statistics', outputs.statistics, 'uint32', 5)
+    }
   };
   const contributor = new GPUTerrainSpikeRepair(props);
   graph.add(contributor);
@@ -132,9 +136,7 @@ async function expectMatchesOracle(
 
 it('GPUTerrainSpikeRepair removes single pixels and blocks of +/-256 and +512', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const clean = createTerrain(WIDTH, HEIGHT);
   const noisy = Float32Array.from(clean);
   addBlock(noisy, WIDTH, 20, 20, 1, 1, 256);
@@ -155,9 +157,7 @@ it('GPUTerrainSpikeRepair removes single pixels and blocks of +/-256 and +512', 
 
 it('GPUTerrainSpikeRepair leaves real cliffs, large regions and the main component alone', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A 350 m cliff is not a multiple of 256 within 40 m.
   const cliff = createTerrain(WIDTH, HEIGHT);
   addBlock(cliff, WIDTH, 20, 10, 8, 8, 350);
@@ -183,9 +183,7 @@ it('GPUTerrainSpikeRepair leaves real cliffs, large regions and the main compone
 
 it('GPUTerrainSpikeRepair matches the oracle on 216-296 m butte walls', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createTerrain(WIDTH, HEIGHT);
   // Real enclosed buttes with walls strictly inside step +/- tolerance (216 and 296 m are the
   // exclusive limits) look like +256 m errors, so the opt-in repair shifts them; 215 m is left.
@@ -200,9 +198,7 @@ it('GPUTerrainSpikeRepair matches the oracle on 216-296 m butte walls', async ()
 
 it('GPUTerrainSpikeRepair never lets nodata bleed or get repaired', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const noisy = createTerrain(WIDTH, HEIGHT);
   addBlock(noisy, WIDTH, 30, 10, 4, 4, 256);
   const validity = new Uint32Array(WIDTH * HEIGHT).fill(1);
@@ -247,9 +243,7 @@ it('GPUTerrainSpikeRepair never lets nodata bleed or get repaired', async () => 
 
 it('GPUTerrainSpikeRepair breaks equal-size ties toward the lowest label', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = new Float32Array(8 * 4).fill(100);
   addBlock(values, 8, 4, 0, 4, 4, 256);
   const options = {maximumComponentFraction: 0.5};
@@ -283,9 +277,7 @@ function createSerpentine(size: number) {
 
 it('GPUTerrainSpikeRepair converges on a serpentine component and fails closed otherwise', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // One 131 k pixel corridor in a 513 x 513 tile; measured: 14 iterations converge it (the
   // fixed-point check needs one confirming round), 13 do not. The default of 32 leaves margin.
   const size = 513;
@@ -295,22 +287,31 @@ it('GPUTerrainSpikeRepair converges on a serpentine component and fails closed o
   expect(gpu.statistics[S.converged]).toBe(1);
   expect(gpu.statistics[S.repairedPixelCount]).toBe(3);
 
-  const failed = await runRepair(device, values, validity, size, size, {componentIterations: 1});
+  const failed = await runRepair(device, values, validity, size, size, {
+    maximumComponentIterations: 1
+  });
   expect(failed.statistics[S.converged]).toBe(0);
   expect(failed.statistics[S.repairedPixelCount]).toBe(0);
   expect(failed.statistics[S.shiftedComponentCount]).toBe(0);
   expect(failed.statistics[S.remainingJumpCount]).toBe(failed.statistics[S.jumpCount]);
-  expect(failed.values.filter(Number.isFinite)).toEqual(
-    Array.from(values).filter((_, index) => validity[index] !== 0)
-  );
+  // Review C-09: an unconverged labelling marks every valid pixel instead of copying the input
+  // (a copy reads as "nothing to repair"): value +Infinity, validity and label UNRESOLVED.
+  for (let index = 0; index < size * size; index++) {
+    if (validity[index] !== 0) {
+      expect(failed.values[index]).toBe(Infinity);
+      expect(failed.validity[index]).toBe(GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED);
+      expect(failed.labels[index]).toBe(GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED);
+    } else {
+      expect(failed.values[index]).toBeNaN();
+      expect(failed.validity[index]).toBe(0);
+    }
+  }
   device.destroy?.();
 });
 
 it('GPUTerrainSpikeRepair supports a non-default step', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const terrain = createTerrain(WIDTH, HEIGHT);
   addBlock(terrain, WIDTH, 20, 20, 3, 3, 512);
   const {gpu} = await expectMatchesOracle(device, terrain, undefined, WIDTH, HEIGHT, {
@@ -324,9 +325,7 @@ it('GPUTerrainSpikeRepair supports a non-default step', async () => {
 
 it('GPUTerrainSpikeRepair counts label runs correctly across strips, rows and nodata', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 37 x 29 = 1073 pixels is not a multiple of the 16-pixel counting strips, and blocks start
   // mid-strip, wrap across row ends, interleave labels (one-pixel-wide column) and contain nodata.
   const width = 37;

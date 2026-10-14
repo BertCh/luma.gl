@@ -24,6 +24,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const DOMAIN_SIZE = 100;
 const LADDER_CAPACITY = 8;
@@ -143,7 +144,7 @@ for (const [rowCount, ladderLength, runBrute] of [
 ] as const) {
   it(`GWR ${rowCount} rows, ${ladderLength} bandwidths: grid vs scan`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const scene = createScene(rowCount);
     const baseBandwidth = Math.sqrt((60 * DOMAIN_SIZE * DOMAIN_SIZE) / (rowCount * Math.PI));
     const bandwidths = Array.from(

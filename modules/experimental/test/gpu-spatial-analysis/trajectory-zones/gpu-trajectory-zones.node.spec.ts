@@ -7,7 +7,11 @@ import {expect, it} from 'vitest';
 import {GPUTrajectoryEncounters} from '../../../src/gpu-spatial-analysis/trajectory-encounters/index';
 import {GPUTrackSimilarity} from '../../../src/gpu-spatial-analysis/track-similarity/index';
 import {GPUZoneEvents} from '../../../src/gpu-spatial-analysis/trajectory-zones/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources,
+  getStorageBindingCount
+} from '../../utils/gpu-contributor-test-utils';
 
 let uniqueIndex = 0;
 const unique = (id: string) => `${id}-${uniqueIndex++}`;
@@ -19,8 +23,10 @@ function createGraph() {
 function createCompactOutput(graph: GPUCommandGraph, capacity: number) {
   return {
     ids: createTransientView(graph, unique('ids'), 'uint32', capacity),
-    count: createTransientView(graph, unique('count'), 'uint32', 1),
-    overflow: createTransientView(graph, unique('overflow'), 'uint32', 1)
+    status: {
+      count: createTransientView(graph, unique('count'), 'uint32', 1),
+      overflow: createTransientView(graph, unique('overflow'), 'uint32', 1)
+    }
   };
 }
 
@@ -31,39 +37,67 @@ it('GPUZoneEvents validates props and declares nodes inside the storage binding 
     length: number
   ) => createTransientView(graph, unique('view'), format, length);
   const props = {
-    positions: view('float32x2', 8),
-    timestamps: view('float32', 8),
-    trackOffsets: view('uint32', 3),
-    edgeStarts: view('float32x2', 4),
-    edgeEnds: view('float32x2', 4),
-    edgeZones: view('uint32', 4),
-    zoneCount: 2,
-    candidateCapacity: 16,
-    maxEventsPerTrack: 4,
-    events: {
-      output: createCompactOutput(graph, 8),
-      eventTimes: view('float32', 8),
-      eventZones: view('uint32', 8),
-      eventTypes: view('uint32', 8),
-      eventRows: view('uint32', 8)
+    tracks: {
+      kind: 'trajectories' as const,
+      positions: view('float32x2', 8),
+      timestamps: view('float32', 8),
+      trackOffsets: view('uint32', 3)
     },
-    dwellTimes: view('float32', 4),
-    visitCounts: view('uint32', 4),
-    trackEventCounts: view('uint32', 2)
+    // Two zones of one four-vertex ring each.
+    zones: {
+      kind: 'polygons' as const,
+      positions: view('float32x2', 8),
+      featureOffsets: view('uint32', 3),
+      polygonOffsets: view('uint32', 3),
+      ringOffsets: view('uint32', 3)
+    },
+    candidateCapacity: 16,
+    trackEventCapacity: 4,
+    output: {
+      events: {
+        ...createCompactOutput(graph, 8),
+        eventTimes: view('float32', 8),
+        eventZones: view('uint32', 8),
+        eventTypes: view('uint32', 8),
+        eventRows: view('uint32', 8)
+      },
+      dwellTimes: view('float32', 4),
+      visitCounts: view('uint32', 4),
+      trackEventCounts: view('uint32', 2)
+    }
   };
   const zoneEvents = new GPUZoneEvents(props);
-  expect(zoneEvents.getCommandNodes(graph).length).toBeGreaterThan(20);
-  expect(() => new GPUZoneEvents({...props, zoneCount: 0})).toThrow(/zoneCount/);
-  expect(() => new GPUZoneEvents({...props, dwellTimes: view('float32', 3)})).toThrow(/dwellTimes/);
+  const nodes = zoneEvents.getCommandNodes(graph);
+  expect(nodes.length).toBeGreaterThan(20);
+  // The edges derive from the polygon layout in the first node, one edge per zone vertex.
+  expect(nodes[0].id).toBe('zone-events-edges');
+  expect(zoneEvents.zoneCount).toBe(2);
+  expect(zoneEvents.edgeCount).toBe(8);
+  const sources = getParsedKernelSources(nodes);
+  expect(getStorageBindingCount(sources.get('zone-events-edges') ?? '')).toBe(7);
+  for (const [kernelId, source] of sources) {
+    expect(getStorageBindingCount(source), kernelId).toBeLessThanOrEqual(8);
+  }
   expect(
-    () => new GPUZoneEvents({...props, events: {...props.events, eventTimes: view('float32', 7)}})
+    () => new GPUZoneEvents({...props, zones: {...props.zones, featureOffsets: view('uint32', 1)}})
+  ).toThrow(/at least one feature/);
+  expect(
+    () => new GPUZoneEvents({...props, output: {...props.output, dwellTimes: view('float32', 3)}})
+  ).toThrow(/dwellTimes/);
+  expect(
+    () =>
+      new GPUZoneEvents({
+        ...props,
+        output: {...props.output, events: {...props.output.events, eventTimes: view('float32', 7)}}
+      })
   ).toThrow(/eventTimes/);
-  expect(() => new GPUZoneEvents({...props, edgeZones: view('uint32', 3)})).toThrow(/same length/);
+  expect(() => new GPUZoneEvents({...props, trackEventCapacity: 0})).toThrow(/trackEventCapacity/);
+  expect(() => new GPUZoneEvents({...props, candidateCapacity: 0})).toThrow(/candidateCapacity/);
   // Words time mode builds too.
   const words = new GPUZoneEvents({
     ...props,
     id: 'zone-events-words',
-    timestamps: view('uint32x2', 8)
+    tracks: {...props.tracks, timestamps: view('uint32x2', 8)}
   });
   expect(words.getCommandNodes(graph).length).toBeGreaterThan(20);
 });
@@ -82,13 +116,15 @@ it('GPUTrajectoryEncounters validates props and declares nodes', () => {
     cellSize: 10,
     bounds: [0, 0, 100, 100] as const,
     hitCapacity: 32,
-    pairs: {
-      candidateOverflow: view('uint32', 1),
-      output: createCompactOutput(graph, 8),
-      partners: view('uint32', 8),
-      firstBuckets: view('uint32', 8),
-      minimumDistances: view('float32', 8),
-      bucketCounts: view('uint32', 8)
+    output: {
+      pairs: {
+        ...createCompactOutput(graph, 8),
+        partners: view('uint32', 8),
+        firstBuckets: view('uint32', 8),
+        minimumDistances: view('float32', 8),
+        bucketCounts: view('uint32', 8)
+      },
+      status: {candidateOverflow: view('uint32', 1)}
     }
   };
   expect(new GPUTrajectoryEncounters(props).getCommandNodes(graph).length).toBeGreaterThan(10);
@@ -101,10 +137,13 @@ it('GPUTrajectoryEncounters validates props and declares nodes', () => {
     () =>
       new GPUTrajectoryEncounters({
         ...props,
-        pairs: {...props.pairs, firstTimes: view('float32', 8)}
+        output: {...props.output, pairs: {...props.output.pairs, firstTimes: view('float32', 8)}}
       })
   ).toThrow(/bucketTimes/);
-  expect(() => new GPUTrajectoryEncounters({...props, cellSize: 1e-3})).toThrow(/lattice/);
+  // The lattice limit depends on the device, so it is checked when the nodes are declared.
+  expect(() =>
+    new GPUTrajectoryEncounters({...props, cellSize: 1e-3}).getCommandNodes(graph)
+  ).toThrow(/columns x rows x bucketCount/);
 });
 
 it('GPUTrackSimilarity validates props and the Frechet cap', () => {
@@ -114,27 +153,33 @@ it('GPUTrackSimilarity validates props and the Frechet cap', () => {
     length: number
   ) => createTransientView(graph, unique('view'), format, length);
   const props = {
-    positionsA: view('float32x2', 6),
-    offsetsA: view('uint32', 3),
+    linesA: {
+      kind: 'lines' as const,
+      positions: view('float32x2', 6),
+      lineOffsets: view('uint32', 3)
+    },
     pairA: view('uint32', 2),
     pairB: view('uint32', 2),
-    hausdorff: view('float32', 2),
-    frechet: view('float32', 2)
+    output: {hausdorff: view('float32', 2), frechet: view('float32', 2)}
   };
   const similarity = new GPUTrackSimilarity(props);
-  expect(similarity.maxFrechetVertices).toBe(256);
+  expect(similarity.maximumFrechetVertexCount).toBe(256);
   expect(similarity.densifySubdivisions).toBe(1);
   expect(similarity.getCommandNodes(graph).length).toBe(3);
   expect(new GPUTrackSimilarity({...props, densify: 0.25}).densifySubdivisions).toBe(4);
-  expect(() => new GPUTrackSimilarity({...props, maxFrechetVertices: 2049})).toThrow(
-    /maxFrechetVertices/
+  expect(() => new GPUTrackSimilarity({...props, maximumFrechetVertexCount: 2049})).toThrow(
+    /maximumFrechetVertexCount/
   );
   expect(() => new GPUTrackSimilarity({...props, densify: 1.5})).toThrow(/densify/);
-  expect(() => new GPUTrackSimilarity({...props, positionsB: view('float32x2', 2)})).toThrow(
-    /together/
-  );
   expect(
-    () => new GPUTrackSimilarity({...props, hausdorff: undefined, frechet: undefined})
-  ).toThrow(/output/);
+    () =>
+      new GPUTrackSimilarity({
+        ...props,
+        linesB: {kind: 'lines', positions: view('float32x2', 2), lineOffsets: view('uint32', 1)}
+      })
+  ).toThrow(/linesB.lineOffsets/);
+  expect(
+    () => new GPUTrackSimilarity({...props, output: {hausdorff: undefined, frechet: undefined}})
+  ).toThrow(/needs hausdorff/);
   expect(() => new GPUTrackSimilarity({...props, pairB: view('uint32', 3)})).toThrow(/pairA/);
 });

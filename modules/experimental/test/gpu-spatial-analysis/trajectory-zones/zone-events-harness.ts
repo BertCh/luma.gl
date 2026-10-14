@@ -46,6 +46,8 @@ export type ZoneGPUResult = {
   candidateOverflow: number;
   trackOverflow: number;
   eventOverflow: number;
+  /** Median wall time in milliseconds of `timedEncodings` submissions with a one-word readback. */
+  medianEncodingMilliseconds?: number;
 };
 
 /** Runs one zone-events graph and reads every output. */
@@ -56,11 +58,13 @@ export async function runZoneEvents(
   options: {
     zoneCount: number;
     candidateCapacity: number;
-    maxEventsPerTrack: number;
+    trackEventCapacity: number;
     eventCapacity: number;
     /** Sparse table row capacity. Defaults to every `(track, zone)` cell. */
     tableCapacity?: number;
     spatialSort?: boolean;
+    /** A/B timing: extra encodings after the first, whose median wall time is returned. */
+    timedEncodings?: number;
   }
 ): Promise<ZoneGPUResult> {
   const isWordMode = tracks.times.kind === 'words';
@@ -114,103 +118,145 @@ export async function runZoneEvents(
     eventOverflow: output(1)
   };
   const timestampBuffer = input(timestampData);
-  const edgeCount = edges.zones.length;
+  const {polygons} = edges;
+  if (polygons.featureOffsets.length - 1 !== options.zoneCount) {
+    throw new Error('zone layout feature count must equal zoneCount');
+  }
   graph.add(
     new GPUZoneEvents({
       id: 'zone-events',
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        input(tracks.positions),
-        'float32x2',
-        rowCount
-      ),
-      timestamps: isWordMode
-        ? importGraphBuffer(graph, 'timestamps', timestampBuffer, 'uint32x2', rowCount)
-        : importGraphBuffer(graph, 'timestamps', timestampBuffer, 'float32', rowCount),
-      trackOffsets: importGraphBuffer(
-        graph,
-        'offsets',
-        input(Uint32Array.from(tracks.trackOffsets)),
-        'uint32',
-        trackCount + 1
-      ),
-      edgeStarts: importGraphBuffer(
-        graph,
-        'edge-starts',
-        input(edges.starts),
-        'float32x2',
-        edgeCount
-      ),
-      edgeEnds: importGraphBuffer(graph, 'edge-ends', input(edges.ends), 'float32x2', edgeCount),
-      edgeZones: importGraphBuffer(graph, 'edge-zones', input(edges.zones), 'uint32', edgeCount),
-      zoneCount: options.zoneCount,
-      candidateCapacity: options.candidateCapacity,
-      maxEventsPerTrack: options.maxEventsPerTrack,
-      spatialSort: options.spatialSort,
-      events: {
-        output: {
-          ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', eventCapacity),
-          count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
-        },
-        eventZones: importGraphBuffer(graph, 'o-zones', out.zones, 'uint32', eventCapacity),
-        eventTypes: importGraphBuffer(graph, 'o-types', out.types, 'uint32', eventCapacity),
-        eventTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', eventCapacity),
-        eventRows: importGraphBuffer(graph, 'o-rows', out.rows, 'uint32', eventCapacity),
-        eventPositions: importGraphBuffer(
+      tracks: {
+        kind: 'trajectories',
+        positions: importGraphBuffer(
           graph,
-          'o-positions',
-          out.positions,
+          'positions',
+          input(tracks.positions),
           'float32x2',
-          eventCapacity
+          rowCount
+        ),
+        timestamps: isWordMode
+          ? importGraphBuffer(graph, 'timestamps', timestampBuffer, 'uint32x2', rowCount)
+          : importGraphBuffer(graph, 'timestamps', timestampBuffer, 'float32', rowCount),
+        trackOffsets: importGraphBuffer(
+          graph,
+          'offsets',
+          input(Uint32Array.from(tracks.trackOffsets)),
+          'uint32',
+          trackCount + 1
         )
       },
-      visitTable: {
-        output: {
-          ids: importGraphBuffer(graph, 't-ids', out.tableIds, 'uint32', tableCapacity),
-          count: importGraphBuffer(graph, 't-count', out.tableCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 't-overflow', out.tableOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 't-total', out.tableTotal, 'uint32', 1)
-        },
-        zones: importGraphBuffer(graph, 't-zones', out.tableZones, 'uint32', tableCapacity),
-        visits: importGraphBuffer(graph, 't-visits', out.tableVisits, 'uint32', tableCapacity),
-        dwellTimes: importGraphBuffer(graph, 't-dwell', out.tableDwell, 'float32', tableCapacity),
-        firstEnterTimes: importGraphBuffer(
+      zones: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
           graph,
-          't-first',
-          out.tableFirst,
-          'float32',
-          tableCapacity
+          'zone-positions',
+          input(polygons.positions),
+          'float32x2',
+          polygons.positions.length / 2
         ),
-        lastExitTimes: importGraphBuffer(graph, 't-last', out.tableLast, 'float32', tableCapacity)
-      },
-      dwellTimes: importGraphBuffer(graph, 'o-dwell', out.dwell, 'float32', cellCount),
-      visitCounts: importGraphBuffer(graph, 'o-visits', out.visits, 'uint32', cellCount),
-      trackEventCounts: importGraphBuffer(
-        graph,
-        'o-track-counts',
-        out.trackCounts,
-        'uint32',
-        trackCount
-      ),
-      diagnostics: {
-        candidateCount: importGraphBuffer(graph, 'o-cand-count', out.candidateCount, 'uint32', 1),
-        candidateOverflow: importGraphBuffer(
+        featureOffsets: importGraphBuffer(
           graph,
-          'o-cand-over',
-          out.candidateOverflow,
+          'zone-feature-offsets',
+          input(polygons.featureOffsets),
           'uint32',
-          1
+          polygons.featureOffsets.length
         ),
-        trackOverflow: importGraphBuffer(graph, 'o-track-over', out.trackOverflow, 'uint32', 1),
-        eventOverflow: importGraphBuffer(graph, 'o-event-over', out.eventOverflow, 'uint32', 1)
+        polygonOffsets: importGraphBuffer(
+          graph,
+          'zone-polygon-offsets',
+          input(polygons.polygonOffsets),
+          'uint32',
+          polygons.polygonOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
+          graph,
+          'zone-ring-offsets',
+          input(polygons.ringOffsets),
+          'uint32',
+          polygons.ringOffsets.length
+        )
+      },
+      candidateCapacity: options.candidateCapacity,
+      trackEventCapacity: options.trackEventCapacity,
+      spatialSort: options.spatialSort,
+      output: {
+        events: {
+          ids: importGraphBuffer(graph, 'o-ids', out.ids, 'uint32', eventCapacity),
+          status: {
+            count: importGraphBuffer(graph, 'o-count', out.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'o-total', out.total, 'uint32', 1)
+          },
+          eventZones: importGraphBuffer(graph, 'o-zones', out.zones, 'uint32', eventCapacity),
+          eventTypes: importGraphBuffer(graph, 'o-types', out.types, 'uint32', eventCapacity),
+          eventTimes: importGraphBuffer(graph, 'o-times', out.times, 'float32', eventCapacity),
+          eventRows: importGraphBuffer(graph, 'o-rows', out.rows, 'uint32', eventCapacity),
+          eventPositions: importGraphBuffer(
+            graph,
+            'o-positions',
+            out.positions,
+            'float32x2',
+            eventCapacity
+          )
+        },
+        visitTable: {
+          ids: importGraphBuffer(graph, 't-ids', out.tableIds, 'uint32', tableCapacity),
+          status: {
+            count: importGraphBuffer(graph, 't-count', out.tableCount, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 't-overflow', out.tableOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 't-total', out.tableTotal, 'uint32', 1)
+          },
+          zones: importGraphBuffer(graph, 't-zones', out.tableZones, 'uint32', tableCapacity),
+          visits: importGraphBuffer(graph, 't-visits', out.tableVisits, 'uint32', tableCapacity),
+          dwellTimes: importGraphBuffer(graph, 't-dwell', out.tableDwell, 'float32', tableCapacity),
+          firstEnterTimes: importGraphBuffer(
+            graph,
+            't-first',
+            out.tableFirst,
+            'float32',
+            tableCapacity
+          ),
+          lastExitTimes: importGraphBuffer(graph, 't-last', out.tableLast, 'float32', tableCapacity)
+        },
+        dwellTimes: importGraphBuffer(graph, 'o-dwell', out.dwell, 'float32', cellCount),
+        visitCounts: importGraphBuffer(graph, 'o-visits', out.visits, 'uint32', cellCount),
+        trackEventCounts: importGraphBuffer(
+          graph,
+          'o-track-counts',
+          out.trackCounts,
+          'uint32',
+          trackCount
+        ),
+        status: {
+          candidateCount: importGraphBuffer(graph, 'o-cand-count', out.candidateCount, 'uint32', 1),
+          candidateOverflow: importGraphBuffer(
+            graph,
+            'o-cand-over',
+            out.candidateOverflow,
+            'uint32',
+            1
+          ),
+          trackOverflow: importGraphBuffer(graph, 'o-track-over', out.trackOverflow, 'uint32', 1),
+          eventOverflow: importGraphBuffer(graph, 'o-event-over', out.eventOverflow, 'uint32', 1)
+        }
       }
     })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
+  let medianEncodingMilliseconds: number | undefined;
+  if (options.timedEncodings) {
+    await readUint32(out.count, 1);
+    const times: number[] = [];
+    for (let encoding = 0; encoding < options.timedEncodings; encoding++) {
+      const start = performance.now();
+      submitGraph(device, compiled, undefined);
+      await readUint32(out.count, 1);
+      times.push(performance.now() - start);
+    }
+    times.sort((left, right) => left - right);
+    medianEncodingMilliseconds = times[Math.floor(times.length / 2)];
+  }
   const [count] = await readUint32(out.count, 1);
   const [overflow] = await readUint32(out.overflow, 1);
   const [requiredCount] = await readUint32(out.total, 1);
@@ -242,7 +288,8 @@ export async function runZoneEvents(
     candidateCount: (await readUint32(out.candidateCount, 1))[0],
     candidateOverflow: (await readUint32(out.candidateOverflow, 1))[0],
     trackOverflow: (await readUint32(out.trackOverflow, 1))[0],
-    eventOverflow: (await readUint32(out.eventOverflow, 1))[0]
+    eventOverflow: (await readUint32(out.eventOverflow, 1))[0],
+    medianEncodingMilliseconds
   };
   compiled.destroy();
   for (const buffer of buffers) {

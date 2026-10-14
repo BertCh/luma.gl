@@ -27,6 +27,8 @@ import {
   getUlpDistance,
   type ColumnQuantilesOracleResult
 } from './column-quantiles-oracle';
+import {ORDER_STATISTIC_EDGE_POLICY} from '../dataframe-edge-policy';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const INTERPOLATIONS: GPUColumnQuantileInterpolation[] = [
   'lower',
@@ -95,7 +97,7 @@ type Frame = {
 type Result = {
   quantiles: Float32Array;
   validCount: number;
-  filterMask: Uint32Array;
+  outputMask: Uint32Array;
   filterBounds: Float32Array;
 };
 
@@ -134,7 +136,7 @@ function createFixture(
   const outputs = {
     quantiles: track(createOutputBuffer(device, quantileCount)),
     validCount: track(createOutputBuffer(device, 1)),
-    filterMask: track(createOutputBuffer(device, rows)),
+    outputMask: track(createOutputBuffer(device, rows)),
     filterBounds: track(createOutputBuffer(device, 2))
   };
   const parameterBuffer = new GPUParameterBuffer(device, {
@@ -159,7 +161,7 @@ function createFixture(
       validCount: importGraphBuffer(graph, 'o-valid', outputs.validCount, 'uint32', 1),
       ...(withFilter
         ? {
-            filterMask: importGraphBuffer(graph, 'o-mask', outputs.filterMask, 'uint32', rows),
+            outputMask: importGraphBuffer(graph, 'o-mask', outputs.outputMask, 'uint32', rows),
             filterBounds: importGraphBuffer(graph, 'o-bounds', outputs.filterBounds, 'float32', 2)
           }
         : {})
@@ -180,7 +182,7 @@ function createFixture(
   const read = async (): Promise<Result> => ({
     quantiles: Float32Array.from(await readFloat32(outputs.quantiles, quantileCount)),
     validCount: (await readUint32(outputs.validCount, 1))[0],
-    filterMask: Uint32Array.from(await readUint32(outputs.filterMask, rows)),
+    outputMask: Uint32Array.from(await readUint32(outputs.outputMask, rows)),
     filterBounds: Float32Array.from(await readFloat32(outputs.filterBounds, 2))
   });
   return {
@@ -230,7 +232,7 @@ function expectParity(
   });
   if (checkFilter) {
     expect(toBits(actual.filterBounds), `${label} bounds`).toEqual(toBits(expected.filterBounds));
-    expect(Array.from(actual.filterMask), `${label} mask`).toEqual(Array.from(expected.filterMask));
+    expect(Array.from(actual.outputMask), `${label} mask`).toEqual(Array.from(expected.outputMask));
   }
 }
 
@@ -238,9 +240,7 @@ const PROBABILITIES = [0, 0.001, 0.1, 0.25, 0.5, 0.75, 0.9, 0.999, 1];
 
 it('GPUColumnQuantiles matches the sort oracle on random columns and every interpolation', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const kinds: ColumnKind[] = ['wide', 'ties', 'special', 'heavy-duplicates', 'negative'];
   for (const [kindIndex, kind] of kinds.entries()) {
     for (const rows of [3001, 20000]) {
@@ -278,9 +278,7 @@ it('GPUColumnQuantiles matches the sort oracle on random columns and every inter
 
 it('GPUColumnQuantiles handles degenerate columns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cases: {name: string; values: Float32Array; mask?: Uint32Array}[] = [
     {name: 'all-equal', values: createColumn('all-equal', 1, 5000)},
     {name: 'n=1', values: Float32Array.from([-3.5])},
@@ -332,9 +330,7 @@ it('GPUColumnQuantiles handles degenerate columns', async () => {
 
 it('GPUColumnQuantiles percentile filter matches the oracle for edge fractions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createColumn('ties', 21, 4097);
   const fixture = createFixture(device, {values, quantileCount: 1});
   const ranges: [number, number][] = [
@@ -366,9 +362,7 @@ it('GPUColumnQuantiles percentile filter matches the oracle for edge fractions',
 
 it('GPUColumnQuantiles runs several frames on one compiled graph without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 8000;
   let values = createColumn('wide', 77, rows);
   const fixture = createFixture(device, {values, quantileCount: 5});
@@ -414,9 +408,7 @@ it('GPUColumnQuantiles runs several frames on one compiled graph without rebuild
 
 it('GPUColumnQuantiles is bitwise identical across repeated runs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createColumn('wide', 99, 60000);
   const fixture = createFixture(device, {values, quantileCount: 9});
   const frame: Frame = {
@@ -429,7 +421,7 @@ it('GPUColumnQuantiles is bitwise identical across repeated runs', async () => {
     const next = await fixture.run(frame);
     expect(toBits(next.quantiles)).toEqual(toBits(first.quantiles));
     expect(toBits(next.filterBounds)).toEqual(toBits(first.filterBounds));
-    expect(Array.from(next.filterMask)).toEqual(Array.from(first.filterMask));
+    expect(Array.from(next.outputMask)).toEqual(Array.from(first.outputMask));
     expect(next.validCount).toBe(first.validCount);
   }
   fixture.destroy();
@@ -437,9 +429,7 @@ it('GPUColumnQuantiles is bitwise identical across repeated runs', async () => {
 
 it('GPUColumnQuantiles supports outputs without a filter', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const values = createColumn('ties', 5, 2500);
   const fixture = createFixture(device, {
     values,
@@ -462,9 +452,7 @@ it('GPUColumnQuantiles supports outputs without a filter', async () => {
 
 it('GPUColumnQuantiles handles 1M rows and reports timings for K=9', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const timings: Record<string, number> = {};
   for (const rows of [1_000_000, 4_000_000]) {
     const values = createColumn('wide', 123, rows);
@@ -499,9 +487,7 @@ it('GPUColumnQuantiles handles 1M rows and reports timings for K=9', async () =>
 
 it('getColumnQuantileNodes leaves outputs untouched while its gate is off', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = 5000;
   const quantileCount = 3;
   const values = createColumn('wide', 31, rows);
@@ -521,19 +507,19 @@ it('getColumnQuantileNodes leaves outputs untouched while its gate is off', asyn
   const outputs = {
     quantiles: track(createOutputBuffer(device, quantileCount)),
     validCount: track(createOutputBuffer(device, 1)),
-    filterMask: track(createOutputBuffer(device, rows)),
+    outputMask: track(createOutputBuffer(device, rows)),
     filterBounds: track(createOutputBuffer(device, 2))
   };
   const sentinel = {
     quantiles: Float32Array.from([-111, -222, -333]),
     validCount: Uint32Array.from([4242]),
-    filterMask: new Uint32Array(rows).fill(7),
+    outputMask: new Uint32Array(rows).fill(7),
     filterBounds: Float32Array.from([-5, -6])
   };
   const resetOutputs = () => {
     outputs.quantiles.write(sentinel.quantiles);
     outputs.validCount.write(sentinel.validCount);
-    outputs.filterMask.write(sentinel.filterMask);
+    outputs.outputMask.write(sentinel.outputMask);
     outputs.filterBounds.write(sentinel.filterBounds);
   };
   const nodes = getColumnQuantileNodes(graph, {
@@ -545,7 +531,7 @@ it('getColumnQuantileNodes leaves outputs untouched while its gate is off', asyn
     output: {
       quantiles: importGraphBuffer(graph, 'o-q', outputs.quantiles, 'float32', quantileCount),
       validCount: importGraphBuffer(graph, 'o-v', outputs.validCount, 'uint32', 1),
-      filterMask: importGraphBuffer(graph, 'o-m', outputs.filterMask, 'uint32', rows),
+      outputMask: importGraphBuffer(graph, 'o-m', outputs.outputMask, 'uint32', rows),
       filterBounds: importGraphBuffer(graph, 'o-b', outputs.filterBounds, 'float32', 2)
     },
     gate: {
@@ -564,7 +550,7 @@ it('getColumnQuantileNodes leaves outputs untouched while its gate is off', asyn
   const readAll = async (): Promise<Result> => ({
     quantiles: Float32Array.from(await readFloat32(outputs.quantiles, quantileCount)),
     validCount: (await readUint32(outputs.validCount, 1))[0],
-    filterMask: Uint32Array.from(await readUint32(outputs.filterMask, rows)),
+    outputMask: Uint32Array.from(await readUint32(outputs.outputMask, rows)),
     filterBounds: Float32Array.from(await readFloat32(outputs.filterBounds, 2))
   });
 
@@ -574,7 +560,7 @@ it('getColumnQuantileNodes leaves outputs untouched while its gate is off', asyn
   const gatedOff = await readAll();
   expect(Array.from(gatedOff.quantiles)).toEqual(Array.from(sentinel.quantiles));
   expect(gatedOff.validCount).toBe(4242);
-  expect(Array.from(gatedOff.filterMask)).toEqual(Array.from(sentinel.filterMask));
+  expect(Array.from(gatedOff.outputMask)).toEqual(Array.from(sentinel.outputMask));
   expect(Array.from(gatedOff.filterBounds)).toEqual(Array.from(sentinel.filterBounds));
 
   const expected = computeColumnQuantilesOracle({values, ...frame});
@@ -592,4 +578,24 @@ it('getColumnQuantileNodes leaves outputs untouched while its gate is off', asyn
   compiled.destroy();
   parameterBuffer.destroy();
   buffers.forEach(buffer => buffer.destroy());
+});
+
+it('GPUColumnQuantiles follows the shared order-statistic edge policy (B-14)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const row of ORDER_STATISTIC_EDGE_POLICY) {
+    const fixture = createFixture(device, {
+      values: Float32Array.from(row.values),
+      quantileCount: 1
+    });
+    try {
+      const result = await fixture.run({quantiles: [row.probability]});
+      expect(
+        Object.is(result.quantiles[0], row.expected),
+        `${row.name}: ${result.quantiles[0]}`
+      ).toBe(true);
+    } finally {
+      fixture.destroy();
+    }
+  }
 });

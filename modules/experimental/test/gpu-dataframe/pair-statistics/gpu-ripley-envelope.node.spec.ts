@@ -7,6 +7,7 @@ import {expect, it} from 'vitest';
 import {
   GPURipleyEnvelope,
   GPU_RIPLEY_ENVELOPE_MAXIMUM_SIMULATION_COUNT,
+  type GPURipleyEnvelopeOutput,
   type GPURipleyEnvelopeProps
 } from '../../../src/gpu-dataframe/pair-statistics/gpu-ripley-envelope';
 import {
@@ -14,7 +15,12 @@ import {
   GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH,
   GPU_RIPLEY_PARAMETER_LENGTH
 } from '../../../src/gpu-dataframe/pair-statistics/ripley-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {WgslReflect} from 'wgsl_reflect';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {createRandom} from './pair-statistics-oracle';
 import {computeRipleyOnCPU} from './ripley-oracle';
 import {
@@ -31,10 +37,11 @@ import {
 
 let serial = 0;
 
-function createProps(
-  graph: GPUCommandGraph,
-  overrides: Partial<GPURipleyEnvelopeProps> = {}
-): GPURipleyEnvelopeProps {
+type Overrides = Omit<Partial<GPURipleyEnvelopeProps>, 'output'> & {
+  output?: Partial<GPURipleyEnvelopeOutput>;
+};
+
+function createProps(graph: GPUCommandGraph, overrides: Overrides = {}): GPURipleyEnvelopeProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
     length: number
@@ -45,16 +52,12 @@ function createProps(
     gridSize: [4, 4],
     radiusCount: 5,
     simulationCount: 4,
-    lower: view('float32', 5),
-    upper: view('float32', 5),
-    ...overrides
+    ...overrides,
+    output: {lower: view('float32', 5), upper: view('float32', 5), ...overrides.output}
   };
 }
 
-function expectThrows(
-  overrides: (graph: GPUCommandGraph) => Partial<GPURipleyEnvelopeProps>,
-  message: RegExp
-): void {
+function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message: RegExp): void {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   expect(() => new GPURipleyEnvelope(createProps(graph, overrides(graph)))).toThrow(message);
@@ -63,9 +66,13 @@ function expectThrows(
 
 it('getGPURipleyParameterValues packs and validates the Monte Carlo seed', () => {
   const bounds = [0, 0, 1, 1] as const;
-  expect(getGPURipleyParameterValues({bounds, maximumDistance: 1})[6]).toBe(0);
-  expect(getGPURipleyParameterValues({bounds, maximumDistance: 1, seed: 12345})[6]).toBe(12345);
-  for (const seed of [-1, 1.5, 2 ** 24, NaN]) {
+  const getSeedWord = (values: Float32Array): number => new Uint32Array(values.buffer)[6];
+  expect(getSeedWord(getGPURipleyParameterValues({bounds, maximumDistance: 1}))).toBe(0);
+  // The seed is a uint32 word (B-22): values past 2^24, including NaN bit patterns, survive.
+  for (const seed of [12345, 2 ** 24 + 1, 0x7fc00001, 0xffffffff]) {
+    expect(getSeedWord(getGPURipleyParameterValues({bounds, maximumDistance: 1, seed}))).toBe(seed);
+  }
+  for (const seed of [-1, 1.5, 2 ** 32, NaN]) {
     expect(() => getGPURipleyParameterValues({bounds, maximumDistance: 1, seed})).toThrow(/seed/);
   }
 });
@@ -82,19 +89,22 @@ it('GPURipleyEnvelope validates its props', () => {
   expectThrows(() => ({rank: 0}), /rank/);
   expectThrows(() => ({radiusCount: 0}), /radiusCount/);
   expectThrows(() => ({statistic: 'f' as never}), /statistic/);
-  expectThrows(graph => ({lower: view(graph, 4)}), /lower must hold/);
+  expectThrows(graph => ({output: {lower: view(graph, 4)}}), /output\.lower must hold/);
   expectThrows(
-    graph => ({statistics: view(graph, GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH - 1)}),
-    /statistics/
+    graph => ({output: {statistics: view(graph, GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH - 1)}}),
+    /output\.statistics/
   );
-  expectThrows(() => ({lower: undefined, upper: undefined}), /at least one output/);
+  expectThrows(
+    () => ({output: {lower: undefined, upper: undefined}}),
+    /output needs at least one view/
+  );
   expectThrows(
     () => ({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}}),
     /project positions to a planar frame/
   );
   expectThrows(graph => {
     const shared = view(graph, 8);
-    return {parameters: shared, lower: shared};
+    return {parameters: shared, output: {lower: shared}};
   }, /share buffers|alias|overlap|disjoint/i);
 });
 
@@ -107,10 +117,13 @@ it('GPURipleyEnvelope emits one Ripley pass per simulation with deterministic no
       ...createProps(graph),
       id: 'e',
       simulationCount: 3,
-      globalLower: view(5),
-      globalUpper: view(5),
-      theoretical: view(5),
-      statistics: view(GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH)
+      output: {
+        ...createProps(graph).output,
+        globalLower: view(5),
+        globalUpper: view(5),
+        theoretical: view(5),
+        statistics: view(GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH)
+      }
     })
       .getCommandNodes(graph)
       .map(node => node.id);
@@ -132,14 +145,14 @@ it('GPURipleyEnvelope emits one Ripley pass per simulation with deterministic no
   const summaryOnly = new GPURipleyEnvelope({
     ...createProps(graph),
     id: 'e',
-    lower: undefined,
-    upper: undefined,
-    statistics: createTransientView(
-      graph,
-      'stats',
-      'float32',
-      GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH
-    )
+    output: {
+      statistics: createTransientView(
+        graph,
+        'stats',
+        'float32',
+        GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH
+      )
+    }
   })
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -152,7 +165,7 @@ it('GPURipleyEnvelope rejects views from another graph', () => {
   const graph = new GPUCommandGraph(device);
   const other = new GPUCommandGraph(device);
   const envelope = new GPURipleyEnvelope(
-    createProps(graph, {lower: createTransientView(other, 'foreign', 'float32', 5)})
+    createProps(graph, {output: {lower: createTransientView(other, 'foreign', 'float32', 5)}})
   );
   expect(() => envelope.getCommandNodes(graph)).toThrow(/target graph/);
   device.destroy();
@@ -279,4 +292,26 @@ it('a regular pattern leaves the global envelope of CSR simulations, a CSR one s
     );
   expect(test(lattice).pValue).toBeLessThanOrEqual(1 / 40 + 1e-12);
   expect(test(csr).pValue).toBeGreaterThan(0.05);
+});
+
+it('GPURipleyEnvelope pipelines do not grow with simulationCount (rule 12, E-07)', () => {
+  // Before: a SIMULATION_INDEX override gave two pipelines per simulation (19 at 2, 21 at 3).
+  const build = (simulationCount: number) => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const nodes = new GPURipleyEnvelope(createProps(graph, {simulationCount})).getCommandNodes(
+      graph
+    );
+    device.destroy();
+    return nodes;
+  };
+  const counts = [2, 3, 10].map(
+    simulationCount => getGPUCommandNodePipelineKeys(build(simulationCount)).size
+  );
+  expect(counts[1]).toBe(counts[0]);
+  expect(counts[2]).toBe(counts[0]);
+  for (const {id, source} of getGPUCommandNodeKernelSources(build(3))) {
+    expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(source, id).not.toContain('SIMULATION_INDEX');
+  }
 });

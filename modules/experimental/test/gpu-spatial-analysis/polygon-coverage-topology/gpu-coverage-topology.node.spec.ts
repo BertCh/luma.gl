@@ -32,7 +32,8 @@ it('GPUCoverageValidity and GPUCoverageDissolve validate props and declare nodes
   const geometry = () => ({
     positions: view('float32x2', 12),
     ringOffsets: view('uint32', 4),
-    polygonOffsets: view('uint32', 4)
+    polygonOffsets: view('uint32', 4),
+    featureOffsets: view('uint32', 4)
   });
   const validity = {
     ...geometry(),
@@ -50,15 +51,15 @@ it('GPUCoverageValidity and GPUCoverageDissolve validate props and declare nodes
     () =>
       new GPUCoverageValidity({
         ...validity,
-        output: {...validity.output, polygonInvalidCounts: view('uint32', 5)}
+        output: {...validity.output, featureInvalidCounts: view('uint32', 5)}
       })
-  ).toThrow(/polygonInvalidCounts/);
+  ).toThrow(/featureInvalidCounts/);
   const ids = new GPUCoverageValidity({
     ...validity,
     output: {
       ...validity.output,
-      polygonInvalidCounts: view('uint32', 3),
-      invalidSegmentCount: view('uint32', 1),
+      featureInvalidCounts: view('uint32', 3),
+      status: {invalidCount: view('uint32', 1)},
       isValid: view('uint32', 1)
     }
   })
@@ -74,8 +75,7 @@ it('GPUCoverageValidity and GPUCoverageDissolve validate props and declare nodes
     output: {
       ringOffsets: view('uint32', 5),
       positions: view('float32x2', 16),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     }
   };
   expect(() => new GPUCoverageDissolve({...dissolve, labels: view('uint32', 4)})).toThrow(
@@ -89,11 +89,15 @@ it('GPUCoverageValidity and GPUCoverageDissolve validate props and declare nodes
     () =>
       new GPUCoverageDissolve({
         ...dissolve,
-        output: {...dissolve.output, boundarySegmentCount: view('uint32', 0)}
+        output: {
+          ...dissolve.output,
+          status: {...dissolve.output.status, boundarySegmentCount: view('uint32', 0)}
+        }
       })
   ).toThrow(/boundarySegmentCount/);
   const dissolveIds = new GPUCoverageDissolve(dissolve).getCommandNodes(graph).map(node => node.id);
-  expect(dissolveIds[0]).toBe('coverage-dissolve-ring-orientation');
+  expect(dissolveIds[0]).toBe('coverage-dissolve-polygon-labels');
+  expect(dissolveIds[1]).toBe('coverage-dissolve-ring-orientation');
   expect(dissolveIds).toContain('coverage-dissolve-edge-keep');
   expect(dissolveIds).toContain('coverage-dissolve-compact');
   expect(dissolveIds.some(id => id.startsWith('coverage-dissolve-assembly'))).toBe(true);
@@ -109,7 +113,8 @@ it('coverage topology operators are planar only', () => {
   const geometry = () => ({
     positions: view('float32x2', 12),
     ringOffsets: view('uint32', 4),
-    polygonOffsets: view('uint32', 4)
+    polygonOffsets: view('uint32', 4),
+    featureOffsets: view('uint32', 4)
   });
   const geographic = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
   const validity = {
@@ -127,8 +132,7 @@ it('coverage topology operators are planar only', () => {
     output: {
       ringOffsets: view('uint32', 5),
       positions: view('float32x2', 16),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     }
   };
   expect(new GPUCoverageDissolve(dissolve).spatialContext.coordinateSpace).toBe('planar');

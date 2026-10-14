@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUNetworkReachability,
+  type GPUNetworkReachabilityOutput,
   type GPUNetworkReachabilityProps
 } from '../../../src/gpu-network/network-reachability';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -15,28 +16,43 @@ function createProps(
   overrides: Partial<GPUNetworkReachabilityProps> = {}
 ): GPUNetworkReachabilityProps {
   return {
-    offsets: createTransientView(graph, 'offsets', 'uint32', 9),
-    neighbors: createTransientView(graph, 'neighbors', 'uint32', 10),
-    weights: createTransientView(graph, 'weights', 'float32', 10),
-    sources: createTransientView(graph, 'sources', 'uint32', 2),
-    costs: createTransientView(graph, 'costs', 'float32', 8),
+    topology: {
+      offsets: createTransientView(graph, 'offsets', 'uint32', 9),
+      neighbors: createTransientView(graph, 'neighbors', 'uint32', 10),
+      weights: createTransientView(graph, 'weights', 'float32', 10)
+    },
+    startNodes: createTransientView(graph, 'sources', 'uint32', 2),
+    output: {costs: createTransientView(graph, 'costs', 'float32', 8)},
     ...overrides
   };
+}
+
+/** Props with extra output views merged into the default output bag. */
+function createPropsWithOutput(
+  graph: GPUCommandGraph,
+  output: Partial<GPUNetworkReachabilityOutput>,
+  overrides: Partial<GPUNetworkReachabilityProps> = {}
+): GPUNetworkReachabilityProps {
+  const props = createProps(graph, overrides);
+  return {...props, output: {...props.output, ...output}};
 }
 
 it('GPUNetworkReachability schedules one gated relax node per round and optional outputs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const nodes = new GPUNetworkReachability({
-    ...createProps(graph),
+    ...createPropsWithOutput(graph, {
+      predecessors: createTransientView(graph, 'predecessors', 'uint32', 8),
+      bands: createTransientView(graph, 'bands', 'uint32', 8),
+      bandCounts: createTransientView(graph, 'band-counts', 'uint32', 2),
+      status: {
+        converged: createTransientView(graph, 'converged', 'uint32', 1),
+        iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
+      }
+    }),
     id: 'reach',
-    maxIterations: 2,
-    predecessors: createTransientView(graph, 'predecessors', 'uint32', 8),
-    bandThresholds: createTransientView(graph, 'thresholds', 'float32', 2),
-    bands: createTransientView(graph, 'bands', 'uint32', 8),
-    bandCounts: createTransientView(graph, 'band-counts', 'uint32', 2),
-    converged: createTransientView(graph, 'converged', 'uint32', 1),
-    iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
+    maximumIterations: 2,
+    costBreaks: createTransientView(graph, 'thresholds', 'float32', 2)
   }).getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   expect(ids.slice(0, 15)).toEqual([
@@ -76,11 +92,12 @@ it('GPUNetworkReachability schedules one gated relax node per round and optional
 
   const tieGraph = new GPUCommandGraph(device);
   const tieIds = new GPUNetworkReachability({
-    ...createProps(tieGraph),
+    ...createPropsWithOutput(tieGraph, {
+      predecessors: createTransientView(tieGraph, 'predecessors', 'uint32', 8)
+    }),
     id: 'tie',
-    maxIterations: 2,
-    maxTieIterations: 7,
-    predecessors: createTransientView(tieGraph, 'predecessors', 'uint32', 8)
+    maximumIterations: 2,
+    maximumTieIterations: 7
   })
     .getCommandNodes(tieGraph)
     .map(node => node.id);
@@ -90,7 +107,7 @@ it('GPUNetworkReachability schedules one gated relax node per round and optional
   const emptyGraph = new GPUCommandGraph(device);
   const emptyIds = new GPUNetworkReachability(
     createProps(emptyGraph, {
-      sources: createTransientView(emptyGraph, 'no-sources', 'uint32', 0)
+      startNodes: createTransientView(emptyGraph, 'no-sources', 'uint32', 0)
     })
   )
     .getCommandNodes(emptyGraph)
@@ -105,41 +122,47 @@ it('GPUNetworkReachability validates props', () => {
   const base = createProps(graph);
   const create = (overrides: Partial<GPUNetworkReachabilityProps>) =>
     new GPUNetworkReachability({...base, ...overrides});
-  expect(() => create({offsets: createTransientView(graph, 'offsets8', 'uint32', 8)})).toThrow(
-    /offsets must contain one more row/
-  );
-  expect(() => create({weights: createTransientView(graph, 'weights9', 'float32', 9)})).toThrow(
-    /weights length/
-  );
+  const withOutput = (output: Partial<GPUNetworkReachabilityOutput>) =>
+    create({output: {...base.output, ...output}});
+  const withTopology = (topology: Partial<GPUNetworkReachabilityProps['topology']>) =>
+    create({topology: {...base.topology, ...topology}});
+  expect(() =>
+    withTopology({offsets: createTransientView(graph, 'offsets8', 'uint32', 8)})
+  ).toThrow(/topology must contain one node per output.costs row/);
+  expect(() =>
+    withTopology({weights: createTransientView(graph, 'weights9', 'float32', 9)})
+  ).toThrow(/topology.weights length/);
+  expect(() => withTopology({weights: undefined as never})).toThrow(/topology.weights is required/);
   expect(() =>
     create({
-      sourceCosts: createTransientView(graph, 'source-costs', 'float32', 3)
+      startCosts: createTransientView(graph, 'source-costs', 'float32', 3)
     })
-  ).toThrow(/sourceCosts length/);
-  for (const maxIterations of [0, 1025, 1.5]) {
-    expect(() => create({maxIterations})).toThrow(/maxIterations/);
+  ).toThrow(/startCosts length/);
+  for (const maximumIterations of [0, 1025, 1.5]) {
+    expect(() => create({maximumIterations})).toThrow(/maximumIterations/);
   }
-  for (const maxTieIterations of [0, 1025, 1.5]) {
-    expect(() => create({maxTieIterations})).toThrow(/maxTieIterations/);
+  for (const maximumTieIterations of [0, 1025, 1.5]) {
+    expect(() => create({maximumTieIterations})).toThrow(/maximumTieIterations/);
   }
   for (const localIterations of [0, 65, 2.5]) {
     expect(() => create({localIterations})).toThrow(/localIterations/);
   }
-  expect(() => create({bands: createTransientView(graph, 'bands', 'uint32', 8)})).toThrow(
-    /bandThresholds/
+  expect(() => withOutput({bands: createTransientView(graph, 'bands', 'uint32', 8)})).toThrow(
+    /costBreaks/
   );
   const thresholds = createTransientView(graph, 'thresholds', 'float32', 2);
-  expect(() => create({bandThresholds: thresholds})).toThrow(/bandThresholds/);
+  expect(() => create({costBreaks: thresholds})).toThrow(/costBreaks/);
   expect(() =>
     create({
-      bandThresholds: thresholds,
-      bandCounts: createTransientView(graph, 'band-counts', 'uint32', 3)
+      costBreaks: thresholds,
+      output: {
+        ...base.output,
+        bandCounts: createTransientView(graph, 'band-counts', 'uint32', 3)
+      }
     })
   ).toThrow(/bandCounts length/);
   expect(() =>
-    create({
-      costs: createTransientView(graph, 'uint-costs', 'uint32', 8) as never
-    })
+    withOutput({costs: createTransientView(graph, 'uint-costs', 'uint32', 8) as never})
   ).toThrow(/costs/);
   const shared = graph.createTransientBuffer({
     id: 'shared',
@@ -148,8 +171,11 @@ it('GPUNetworkReachability validates props', () => {
   });
   expect(() =>
     create({
-      weights: graph.createDataView(shared, {format: 'float32', length: 10}),
-      costs: graph.createDataView(shared, {format: 'float32', length: 8})
+      topology: {
+        ...base.topology,
+        weights: graph.createDataView(shared, {format: 'float32', length: 10})
+      },
+      output: {costs: graph.createDataView(shared, {format: 'float32', length: 8})}
     })
   ).toThrow(/separate buffers/);
   const otherGraph = new GPUCommandGraph(device);
@@ -159,27 +185,100 @@ it('GPUNetworkReachability validates props', () => {
   device.destroy();
 });
 
+it('GPUNetworkReachability validates topology views', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const base = createProps(graph);
+  const create = (topology: unknown) =>
+    new GPUNetworkReachability({...base, topology: topology as never});
+  expect(() => create(undefined)).toThrow(/topology is required/);
+  expect(() =>
+    create({...base.topology, offsets: createTransientView(graph, 'float-offsets', 'float32', 9)})
+  ).toThrow(/topology.offsets/);
+  expect(() =>
+    create({
+      ...base.topology,
+      nodePositions: createTransientView(graph, 'positions', 'float32x2', 7)
+    })
+  ).toThrow(/topology.nodePositions must contain one row per node/);
+  device.destroy();
+});
+
+it('GPUNetworkReachability bakes a numeric startCount without a binding', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const constantNodes = new GPUNetworkReachability({
+    ...createProps(graph),
+    id: 'constant',
+    maximumIterations: 1,
+    startCount: 1
+  }).getCommandNodes(graph);
+  const viewGraph = new GPUCommandGraph(device);
+  const viewNodes = new GPUNetworkReachability({
+    ...createProps(viewGraph),
+    id: 'view',
+    maximumIterations: 1,
+    startCount: createTransientView(viewGraph, 'start-count', 'uint32', 1)
+  }).getCommandNodes(viewGraph);
+  const bindingNames = (nodes: typeof constantNodes) =>
+    (nodes.find(node => node.id.endsWith('-seed'))?.resources ?? []).length;
+  // The constant adds no resource for the count, the view adds one.
+  expect(bindingNames(viewNodes) - bindingNames(constantNodes)).toBe(1);
+  expect(constantNodes.map(node => node.id.replace('constant', 'x'))).toEqual(
+    viewNodes.map(node => node.id.replace('view', 'x'))
+  );
+  expect(
+    () => new GPUNetworkReachability({...createProps(new GPUCommandGraph(device)), startCount: 3})
+  ).toThrow(/startCount must be an integer in \[0, 2\]/);
+  expect(
+    () => new GPUNetworkReachability({...createProps(new GPUCommandGraph(device)), startCount: 1.5})
+  ).toThrow(/startCount/);
+  device.destroy();
+});
+
+it('GPUNetworkReachability keeps outputs in the output bag', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph);
+  expect(Object.keys(props.output)).toEqual(['costs']);
+  expect('costs' in props).toBe(false);
+  expect(
+    () =>
+      new GPUNetworkReachability({
+        ...props,
+        output: {
+          ...props.output,
+          unresolvedCount: createTransientView(graph, 'unresolved', 'uint32', 1)
+        }
+      })
+  ).toThrow(/output.unresolvedCount requires output.predecessors/);
+  device.destroy();
+});
+
 it('GPUNetworkReachability graph size is one node per round for the explorer prop set', () => {
   // Same props as the reachability explorer mode: no predecessors.
-  const countNodes = (maxIterations: number) => {
+  const countNodes = (maximumIterations: number) => {
     const device = createNullWebGPUDevice();
     const graph = new GPUCommandGraph(device);
     const ids = new GPUNetworkReachability({
-      ...createProps(graph),
+      ...createPropsWithOutput(graph, {
+        bands: createTransientView(graph, 'bands', 'uint32', 8),
+        bandCounts: createTransientView(graph, 'band-counts', 'uint32', 4),
+        status: {
+          converged: createTransientView(graph, 'converged', 'uint32', 1),
+          iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
+        }
+      }),
       id: 'explorer',
-      maxIterations,
+      maximumIterations,
       costLimit: createTransientView(graph, 'cost-limit', 'float32', 1),
-      bandThresholds: createTransientView(graph, 'thresholds', 'float32', 4),
-      bands: createTransientView(graph, 'bands', 'uint32', 8),
-      bandCounts: createTransientView(graph, 'band-counts', 'uint32', 4),
-      converged: createTransientView(graph, 'converged', 'uint32', 1),
-      iterationCount: createTransientView(graph, 'iteration-count', 'uint32', 1)
+      costBreaks: createTransientView(graph, 'thresholds', 'float32', 4)
     })
       .getCommandNodes(graph)
       .map(node => node.id);
     device.destroy();
     expect(ids.filter(id => id.includes('-gate-'))).toEqual([]);
-    expect(ids.filter(id => id.startsWith('explorer-relax-')).length).toBe(maxIterations);
+    expect(ids.filter(id => id.startsWith('explorer-relax-')).length).toBe(maximumIterations);
     return ids.length;
   };
   // Rounds are graph nodes: the frontier path is taken, and the budget sets the size.
@@ -193,7 +292,7 @@ it('GPUNetworkReachability lanes share one CSR and validate their layout', () =>
   // 8 nodes per lane, 3 lanes: offsets describe one lane, costs hold every lane.
   const lanes = createProps(graph, {
     laneCount: 3,
-    costs: createTransientView(graph, 'lane-costs', 'float32', 24)
+    output: {costs: createTransientView(graph, 'lane-costs', 'float32', 24)}
   });
   const nodes = new GPUNetworkReachability({...lanes, id: 'lanes'}).getCommandNodes(graph);
   expect(nodes.some(node => node.id === 'lanes-relax-0')).toBe(true);
@@ -202,7 +301,9 @@ it('GPUNetworkReachability lanes share one CSR and validate their layout', () =>
       new GPUNetworkReachability(
         createProps(new GPUCommandGraph(device), {
           laneCount: 3,
-          costs: createTransientView(new GPUCommandGraph(device), 'bad-costs', 'float32', 25)
+          output: {
+            costs: createTransientView(new GPUCommandGraph(device), 'bad-costs', 'float32', 25)
+          }
         })
       )
   ).toThrow(/multiple of laneCount/);
@@ -210,15 +311,21 @@ it('GPUNetworkReachability lanes share one CSR and validate their layout', () =>
     () =>
       new GPUNetworkReachability({
         ...lanes,
-        predecessors: createTransientView(graph, 'lane-predecessors', 'uint32', 24)
+        output: {
+          ...lanes.output,
+          predecessors: createTransientView(graph, 'lane-predecessors', 'uint32', 24)
+        }
       })
-  ).toThrow(/does not support predecessors/);
+  ).toThrow(/does not support output.predecessors/);
   // Expanded offsets (the old layout) no longer match once lanes share the CSR.
   expect(
     () =>
       new GPUNetworkReachability({
         ...lanes,
-        offsets: createTransientView(graph, 'expanded-offsets', 'uint32', 25)
+        topology: {
+          ...lanes.topology,
+          offsets: createTransientView(graph, 'expanded-offsets', 'uint32', 25)
+        }
       })
-  ).toThrow(/offsets must contain one more row/);
+  ).toThrow(/topology must contain one node per output.costs row per lane/);
 });

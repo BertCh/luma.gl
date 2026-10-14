@@ -11,14 +11,16 @@ import {
   GPU_CLARK_EVANS_LENGTH,
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
   GPU_QUADRAT_STATISTICS_LENGTH,
-  type GPUPointPatternIndicesParameters
+  type GPUPointPatternIndicesSettings
 } from '../../../src/gpu-dataframe/pair-statistics/point-pattern-indices-parameters';
 import {createPairStatisticsHarness, getFloatBits} from './pair-statistics-harness';
 import {createRandom} from './pair-statistics-oracle';
 import {
   computePointPatternIndicesOnCPU,
-  type PointPatternIndicesOracleResult
+  type PointPatternIndicesOracleResult,
+  type PointPatternOracleOptions
 } from './point-pattern-indices-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const BOUNDS = [0, 0, 100, 100] as const;
 
@@ -123,11 +125,13 @@ function createHarness(device: Device, scene: Scene, quadratGrid: readonly [numb
         parameters: views.parameters,
         gridSize: [32, 32],
         quadratGrid,
-        nearestNeighborDistances: views.outputs.nearestNeighborDistances as never,
-        nearestNeighborIds: views.outputs.nearestNeighborIds as never,
-        clarkEvans: views.outputs.clarkEvans as never,
-        quadratCounts: views.outputs.quadratCounts as never,
-        quadratStatistics: views.outputs.quadratStatistics as never
+        output: {
+          nearestNeighborDistances: views.outputs.nearestNeighborDistances as never,
+          nearestNeighborIds: views.outputs.nearestNeighborIds as never,
+          clarkEvans: views.outputs.clarkEvans as never,
+          quadratCounts: views.outputs.quadratCounts as never,
+          quadratStatistics: views.outputs.quadratStatistics as never
+        }
       })
   });
   return typeHarness(harness);
@@ -216,13 +220,11 @@ for (const [name, createScene, quadratGrid] of [
 ] as const) {
   it(`GPUPointPatternIndices matches the f64 oracle on a ${name} pattern across per-frame changes without rebuilding`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = createScene();
     const harness = createHarness(device, scene, quadratGrid);
     try {
-      const frames: GPUPointPatternIndicesParameters[] = [
+      const frames: (GPUPointPatternIndicesSettings & PointPatternOracleOptions)[] = [
         {bounds: BOUNDS, maximumDistance: 3},
         {bounds: BOUNDS, maximumDistance: 15},
         // Beyond the extent: the lattice collapses to one cell.
@@ -266,9 +268,7 @@ for (const [name, createScene, quadratGrid] of [
 
 it('GPUPointPatternIndices separates clustered, random and regular patterns', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const frame = {bounds: BOUNDS, maximumDistance: 6, clarkEvansCorrection: 'none'} as const;
   const run = async (scene: Scene) => {
     const harness = createHarness(
@@ -299,9 +299,7 @@ it('GPUPointPatternIndices separates clustered, random and regular patterns', as
 
 it('GPUPointPatternIndices reproduces a hand-checked four-point pattern and its ties', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Window area 100; two close pairs; quadrats [2, 2] hold counts [2, 0, 0, 2].
   const scene = {
     positions: new Float32Array([1, 1, 2, 1, 8, 8, 9, 8]),
@@ -353,9 +351,7 @@ it('GPUPointPatternIndices reproduces a hand-checked four-point pattern and its 
 
 it('GPUPointPatternIndices finds isolated points exactly beyond the search cells', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createIsolatedScene(8);
   const rows = scene.positions.length / 2;
   const harness = createHarness(device, scene, [2, 2]);
@@ -384,9 +380,7 @@ it('GPUPointPatternIndices finds isolated points exactly beyond the search cells
 
 it('GPUPointPatternIndices reports NaN and no neighbor with fewer than two included points', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = {
     positions: new Float32Array([1, 1, 3, 1, 50, 50]),
     mask: new Uint32Array([1, 0, 1])
@@ -416,9 +410,7 @@ it('GPUPointPatternIndices reports NaN and no neighbor with fewer than two inclu
 
 it('GPUPointPatternIndices builds each part on its own with the same results', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(21, 800);
   const rows = scene.positions.length / 2;
   const frame = {bounds: BOUNDS, maximumDistance: 8};
@@ -438,8 +430,10 @@ it('GPUPointPatternIndices builds each part on its own with the same results', a
           parameters: views.parameters,
           gridSize: [32, 32],
           quadratGrid: [4, 4],
-          clarkEvans: views.outputs.clarkEvans as never,
-          quadratStatistics: views.outputs.quadratStatistics as never
+          output: {
+            clarkEvans: views.outputs.clarkEvans as never,
+            quadratStatistics: views.outputs.quadratStatistics as never
+          }
         })
     })
   );
@@ -454,7 +448,9 @@ it('GPUPointPatternIndices builds each part on its own with the same results', a
           mask: views.mask,
           parameters: views.parameters,
           gridSize: [32, 32],
-          nearestNeighborIds: views.outputs.nearestNeighborIds as never
+          output: {
+            nearestNeighborIds: views.outputs.nearestNeighborIds as never
+          }
         })
     })
   );

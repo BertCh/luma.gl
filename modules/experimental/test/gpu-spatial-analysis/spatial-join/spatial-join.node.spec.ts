@@ -16,7 +16,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/spatial-join';
 import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
 import {HALF_OPEN_SCENES} from './half-open-fixtures';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/analysis-core/contracts/earth';
 import {
   classifyPointHalfOpen,
   createRandom,
@@ -43,23 +43,35 @@ function createPolygonProps(
     length: number
   ) => createTransientView(graph, `${prefix}${name}`, format, length);
   return {
-    points: view('points', 'float32x2', 10),
-    sourceIds: view('source-ids', 'uint32', 10),
-    polygonPositions: view('polygon-positions', 'float32x2', 20),
-    featureOffsets: view('feature-offsets', 'uint32', 5),
-    polygonOffsets: view('polygon-offsets', 'uint32', 5),
-    ringOffsets: view('ring-offsets', 'uint32', 6),
-    featureIds: view('feature-ids', 'uint32', 4),
+    points: {
+      kind: 'points',
+      positions: view('points', 'float32x2', 10),
+      sourceIds: view('source-ids', 'uint32', 10)
+    },
+    polygons: {
+      kind: 'polygons',
+      positions: view('polygon-positions', 'float32x2', 20),
+      featureOffsets: view('feature-offsets', 'uint32', 5),
+      polygonOffsets: view('polygon-offsets', 'uint32', 5),
+      ringOffsets: view('ring-offsets', 'uint32', 6),
+      sourceIds: view('feature-ids', 'uint32', 4)
+    },
     candidateCapacity: 16,
-    pointFeatureIds: view('point-feature-ids', 'uint32', 10),
-    featureCounts: view('feature-counts', 'uint32', 4),
-    overflow: view('overflow', 'uint32', 1),
-    candidateCount: view('candidate-count', 'uint32', 1),
-    uncertainCount: view('uncertain-count', 'uint32', 1),
-    matches: {
-      ids: view('match-ids', 'uint32', 10),
-      count: view('match-count', 'uint32', 1),
-      overflow: view('match-overflow', 'uint32', 1)
+    output: {
+      pointFeatureIds: view('point-feature-ids', 'uint32', 10),
+      featureCounts: view('feature-counts', 'uint32', 4),
+      matches: {
+        ids: view('match-ids', 'uint32', 10),
+        status: {
+          count: view('match-count', 'uint32', 1),
+          overflow: view('match-overflow', 'uint32', 1)
+        }
+      },
+      status: {
+        overflow: view('overflow', 'uint32', 1),
+        candidateCount: view('candidate-count', 'uint32', 1),
+        uncertainCount: view('uncertain-count', 'uint32', 1)
+      }
     },
     ...overrides
   };
@@ -71,7 +83,7 @@ function createNearestProps(
 ): GPUNearestFeatureJoinProps {
   return {
     id: 'n',
-    points: createTransientView(graph, 'points', 'float32x2', 6),
+    queries: {kind: 'points', positions: createTransientView(graph, 'points', 'float32x2', 6)},
     features: {
       kind: 'segments',
       starts: createTransientView(graph, 'starts', 'float32x2', 3),
@@ -79,13 +91,17 @@ function createNearestProps(
     },
     radius: createTransientView(graph, 'radius', 'float32', 1),
     candidateCapacity: 16,
-    nearestFeatureIds: createTransientView(graph, 'nearest', 'uint32', 6),
-    nearestDistances: createTransientView(graph, 'distances', 'float32', 6),
-    overflow: createTransientView(graph, 'overflow', 'uint32', 1),
-    matches: {
-      ids: createTransientView(graph, 'match-ids', 'uint32', 6),
-      count: createTransientView(graph, 'match-count', 'uint32', 1),
-      overflow: createTransientView(graph, 'match-overflow', 'uint32', 1)
+    output: {
+      nearestFeatureIds: createTransientView(graph, 'nearest', 'uint32', 6),
+      nearestDistances: createTransientView(graph, 'distances', 'float32', 6),
+      matches: {
+        ids: createTransientView(graph, 'match-ids', 'uint32', 6),
+        status: {
+          count: createTransientView(graph, 'match-count', 'uint32', 1),
+          overflow: createTransientView(graph, 'match-overflow', 'uint32', 1)
+        }
+      },
+      status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1)}
     },
     ...overrides
   };
@@ -103,6 +119,7 @@ it('GPUPointInPolygonJoin schedules nodes in dependency order', () => {
     'j-probe',
     'j-probe-scan-level-0-scan',
     'j-probe-total',
+    'j-probe-carry',
     'j-probe-write',
     'j-candidate-dispatch',
     'j-classify',
@@ -135,13 +152,12 @@ it('GPUPointInPolygonJoin suffixes per-chunk nodes', () => {
     createTransientView(graph, 'i0', 'uint32', 6),
     createTransientView(graph, 'i1', 'uint32', 4)
   ]);
+  const base = createPolygonProps(graph);
   const ids = new GPUPointInPolygonJoin({
-    ...createPolygonProps(graph),
+    ...base,
     id: 'j',
-    points,
-    pointFeatureIds,
-    sourceIds: undefined,
-    matches: undefined
+    points: {kind: 'points', positions: points},
+    output: {...base.output, pointFeatureIds, matches: undefined}
   })
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -162,6 +178,7 @@ it('GPUNearestFeatureJoin schedules nodes in dependency order', () => {
     'n-probe',
     'n-probe-scan-level-0-scan',
     'n-probe-total',
+    'n-probe-carry',
     'n-probe-write',
     'n-candidate-dispatch',
     'n-expand',
@@ -201,9 +218,15 @@ it('GPUSpatialPredicateJoin indirectly dispatches candidate and cooperative refi
     right: {kind: 'points', positions: view(`${id}-right`, 'float32x2', 3)},
     predicate: 'intersects',
     candidateCapacity: 4096,
-    pairs: {
-      leftIds: view(`${id}-left-ids`, 'uint32', 4096),
-      rightIds: view(`${id}-right-ids`, 'uint32', 4096)
+    output: {
+      pairs: {
+        leftIds: view(`${id}-left-ids`, 'uint32', 4096),
+        rightIds: view(`${id}-right-ids`, 'uint32', 4096),
+        status: {
+          count: view(`${id}-count`, 'uint32', 1),
+          overflow: view(`${id}-pair-overflow`, 'uint32', 1)
+        }
+      }
     },
     ...overrides
   });
@@ -239,7 +262,10 @@ it('GPUNearestFeatureJoin evaluates neighbor foot points with one invocation per
   const slotCount = queryCount * neighborCapacity;
   const nodes = new GPUNearestFeatureJoin({
     id: 'knn',
-    points: createTransientView(graph, 'knn-points', 'float32x2', queryCount),
+    queries: {
+      kind: 'points',
+      positions: createTransientView(graph, 'knn-points', 'float32x2', queryCount)
+    },
     features: {
       kind: 'segments',
       starts: createTransientView(graph, 'knn-starts', 'float32x2', 2),
@@ -248,11 +274,13 @@ it('GPUNearestFeatureJoin evaluates neighbor foot points with one invocation per
     k: 1,
     ties: 'all',
     neighborCapacity,
-    neighborIds: createTransientView(graph, 'knn-ids', 'uint32', slotCount),
-    neighborCounts: createTransientView(graph, 'knn-counts', 'uint32', queryCount),
-    neighborDistances: createTransientView(graph, 'knn-distances', 'float32', slotCount),
-    neighborFootPoints: createTransientView(graph, 'knn-foot', 'float32x2', slotCount),
-    overflow: createTransientView(graph, 'knn-overflow', 'uint32', 1)
+    output: {
+      neighborIds: createTransientView(graph, 'knn-ids', 'uint32', slotCount),
+      neighborCounts: createTransientView(graph, 'knn-counts', 'uint32', queryCount),
+      neighborDistances: createTransientView(graph, 'knn-distances', 'float32', slotCount),
+      neighborFootPoints: createTransientView(graph, 'knn-foot', 'float32x2', slotCount),
+      status: {overflow: createTransientView(graph, 'knn-overflow', 'uint32', 1)}
+    }
   }).getCommandNodes(graph);
   expect(nodes.find(node => node.id === 'knn-foot-points')?.workload?.maximumInvocationCount).toBe(
     queryCount
@@ -266,26 +294,45 @@ it('spatial joins validate props', () => {
   const base = createPolygonProps(graph);
   const create = (overrides: Partial<GPUPointInPolygonJoinProps>) =>
     new GPUPointInPolygonJoin({...base, ...overrides});
+  const createOutput = (output: Partial<GPUPointInPolygonJoinProps['output']>) =>
+    create({output: {...base.output, ...output}});
   expect(() => create({leafCapacity: 3})).toThrow(/leafCapacity/);
   expect(() => create({candidateCapacity: 0})).toThrow(/candidateCapacity/);
   expect(() => create({candidateCapacity: 1.5})).toThrow(/candidateCapacity/);
   expect(() =>
-    create({pointFeatureIds: createTransientView(graph, 'short-ids', 'uint32', 9)})
+    createOutput({pointFeatureIds: createTransientView(graph, 'short-ids', 'uint32', 9)})
   ).toThrow(/chunk topology/);
   expect(() =>
-    create({featureCounts: createTransientView(graph, 'short-counts', 'uint32', 3)})
-  ).toThrow(/feature count/);
+    createOutput({featureCounts: createTransientView(graph, 'short-counts', 'uint32', 3)})
+  ).toThrow(/feature/);
   expect(() =>
-    create({featureIds: createTransientView(graph, 'short-feature-ids', 'uint32', 5)})
-  ).toThrow(/feature count/);
+    create({
+      polygons: {
+        ...base.polygons,
+        sourceIds: createTransientView(graph, 'short-feature-ids', 'uint32', 5)
+      }
+    })
+  ).toThrow(/feature/);
   expect(() =>
-    create({points: createTransientView(graph, 'points3', 'float32x3', 10) as never})
+    create({
+      points: {
+        kind: 'points',
+        positions: createTransientView(graph, 'points3', 'float32x3', 10) as never
+      }
+    })
   ).toThrow(/points/);
   const shared = graph.createTransientBuffer({id: 'shared', byteLength: 64, usage: 128});
   expect(() =>
     create({
-      sourceIds: graph.createDataView(shared, {format: 'uint32', length: 10}),
-      pointFeatureIds: graph.createDataView(shared, {format: 'uint32', length: 10})
+      points: {
+        kind: 'points',
+        positions: base.points.positions,
+        sourceIds: graph.createDataView(shared, {format: 'uint32', length: 10})
+      },
+      output: {
+        ...base.output,
+        pointFeatureIds: graph.createDataView(shared, {format: 'uint32', length: 10})
+      }
     })
   ).toThrow(/overlap/);
 
@@ -308,7 +355,7 @@ it('spatial joins validate props', () => {
           ends: createTransientView(nearestGraph, 'e2', 'float32x2', 2)
         }
       })
-  ).toThrow(/equal lengths/);
+  ).toThrow(/starts and ends lengths differ/);
 
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
@@ -465,21 +512,14 @@ it('half-open rule partitions a coverage: at most one owner per point, exactly o
   expect([closed, [1, 0, 2, 3][reordered]]).toEqual([0, 1]);
 });
 
-it('GPUPointInPolygonJoin resolves boundaryRule and the legacy includeBoundary', () => {
+it('GPUPointInPolygonJoin resolves boundaryRule', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const create = (overrides: Partial<GPUPointInPolygonJoinProps>, prefix: string) =>
     new GPUPointInPolygonJoin({...createPolygonProps(graph, prefix), ...overrides});
   expect(create({}, 'a-').boundaryRule).toBe('half-open');
-  expect(create({}, 'b-').includeBoundary).toBe(true);
-  expect(create({includeBoundary: true}, 'c-').boundaryRule).toBe('closed');
-  expect(create({includeBoundary: false}, 'd-').boundaryRule).toBe('open');
-  expect(create({includeBoundary: false}, 'e-').includeBoundary).toBe(false);
-  expect(create({boundaryRule: 'closed', includeBoundary: true}, 'f-').boundaryRule).toBe('closed');
-  expect(() => create({boundaryRule: 'half-open', includeBoundary: true}, 'g-')).toThrow(
-    /conflicts/
-  );
-  expect(() => create({boundaryRule: 'closed', includeBoundary: false}, 'h-')).toThrow(/conflicts/);
+  expect(create({boundaryRule: 'closed'}, 'c-').boundaryRule).toBe('closed');
+  expect(create({boundaryRule: 'open'}, 'd-').boundaryRule).toBe('open');
   expect(() => create({boundaryRule: 'inclusive' as never}, 'i-')).toThrow(/boundaryRule/);
   device.destroy();
 });
@@ -496,7 +536,7 @@ it('planar spatial joins resolve a planar context and reject longitude-latitude'
   expect(
     () =>
       new GPUPointInPolygonJoin(createPolygonProps(graph, 'bad-', {spatialContext: GREAT_CIRCLE}))
-  ).toThrow(/project positions to a planar frame/);
+  ).toThrow(/needs metric 'none' on longitude-latitude/);
   // Containment is topological (edges straight in degrees, as GeoJSON): metric 'none' is planar.
   const degrees = new GPUPointInPolygonJoin(
     createPolygonProps(graph, 'deg-', {spatialContext: DEGREES})
@@ -519,7 +559,7 @@ it('planar spatial joins resolve a planar context and reject longitude-latitude'
           spatialContext: {...GREAT_CIRCLE, units: 'meters'}
         })
       )
-  ).toThrow(/great-circle metric.*project positions to a planar frame/);
+  ).toThrow(/needs metric 'none' on longitude-latitude/);
 
   expect(
     new GPUNearestFeatureJoin(createNearestProps(new GPUCommandGraph(device))).spatialContext
@@ -538,9 +578,13 @@ it('planar spatial joins resolve a planar context and reject longitude-latitude'
       kind: 'points' as const,
       positions: createTransientView(candidateGraph, `cr-${serial++}`, 'float32x2', 3)
     },
-    pairs: {
+    output: {
       leftIds: createTransientView(candidateGraph, `ci-${serial++}`, 'uint32', 8),
-      rightIds: createTransientView(candidateGraph, `cj-${serial++}`, 'uint32', 8)
+      rightIds: createTransientView(candidateGraph, `cj-${serial++}`, 'uint32', 8),
+      status: {
+        count: createTransientView(candidateGraph, `cc-${serial++}`, 'uint32', 1),
+        overflow: createTransientView(candidateGraph, `co-${serial++}`, 'uint32', 1)
+      }
     },
     spatialContext
   });
@@ -569,7 +613,16 @@ it('GPUSpatialPredicateJoin accepts great-circle dwithin and planar-in-degrees t
       right: {kind: 'points', positions: view('right', 'float32x2', 3)},
       predicate: 'intersects',
       candidateCapacity: 64,
-      pairs: {leftIds: view('left-ids', 'uint32', 64), rightIds: view('right-ids', 'uint32', 64)},
+      output: {
+        pairs: {
+          leftIds: view('left-ids', 'uint32', 64),
+          rightIds: view('right-ids', 'uint32', 64),
+          status: {
+            count: view('count', 'uint32', 1),
+            overflow: view('pair-overflow', 'uint32', 1)
+          }
+        }
+      },
       ...overrides
     });
   };
@@ -614,7 +667,7 @@ it('GPUSpatialPredicateJoin accepts great-circle dwithin and planar-in-degrees t
     'none'
   );
   expect(() => create({predicate: 'intersects', spatialContext: GREAT_CIRCLE})).toThrow(
-    /topological/
+    /needs metric 'none' on longitude-latitude/
   );
   expect(() => create({predicate: 'dwithin', distance: 5, spatialContext: DEGREES})).toThrow(
     /great-circle/
@@ -638,7 +691,7 @@ it('GPUSpatialPredicateJoin accepts great-circle dwithin and planar-in-degrees t
   ).toThrow(/not available for great-circle/);
   // About 8000 km is the largest great-circle distance.
   expect(() => create({predicate: 'dwithin', distance: 9e6, spatialContext: GREAT_CIRCLE})).toThrow(
-    /at most 8005809 meters/
+    /distance exceeds 8005809 m/
   );
   expect(
     create({predicate: 'dwithin', distance: 7.9e6, spatialContext: GREAT_CIRCLE}).sphereRadius
@@ -672,7 +725,7 @@ it('GPUNearestFeatureJoin resolves its spatial context matrix', () => {
   expect(() => create({spatialContext: DEGREES})).toThrow(/great-circle/);
   expect(() =>
     create({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb'}})
-  ).toThrow(/does not support the rhumb metric/);
+  ).toThrow(/great-circle metric/);
   expect(() =>
     create({spatialContext: {coordinateSpace: 'planar', metric: 'great-circle'}})
   ).toThrow(/incompatible with planar/);
@@ -802,17 +855,76 @@ it('GPUNearestFeatureJoin stays within 8 storage buffers with every filter enabl
     createNearestProps(graph, {
       exclusive: true,
       queryIds: createTransientView(graph, 'query-ids', 'uint32', 6),
-      featureIds: createTransientView(graph, 'feature-ids', 'uint32', 3),
+      features: {
+        kind: 'segments',
+        starts: createTransientView(graph, 'filter-starts', 'float32x2', 3),
+        ends: createTransientView(graph, 'filter-ends', 'float32x2', 3),
+        sourceIds: createTransientView(graph, 'feature-ids', 'uint32', 3)
+      },
       onAttribute: {
         left: createTransientView(graph, 'query-keys', 'uint32', 6),
         right: createTransientView(graph, 'feature-keys', 'uint32', 3)
       },
-      featureCounts: createTransientView(graph, 'feature-counts', 'uint32', 3),
-      candidateCount: createTransientView(graph, 'candidate-count', 'uint32', 1)
+      output: {
+        nearestFeatureIds: createTransientView(graph, 'filter-nearest', 'uint32', 6),
+        nearestDistances: createTransientView(graph, 'filter-distances', 'float32', 6),
+        featureCounts: createTransientView(graph, 'feature-counts', 'uint32', 3),
+        matches: {
+          ids: createTransientView(graph, 'filter-match-ids', 'uint32', 6),
+          status: {
+            count: createTransientView(graph, 'filter-match-count', 'uint32', 1),
+            overflow: createTransientView(graph, 'filter-match-overflow', 'uint32', 1)
+          }
+        },
+        status: {
+          overflow: createTransientView(graph, 'filter-overflow', 'uint32', 1),
+          candidateCount: createTransientView(graph, 'candidate-count', 'uint32', 1)
+        }
+      }
     })
   );
   const ids = join.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('n-filter');
   expect(ids.indexOf('n-filter')).toBeLessThan(ids.indexOf('n-reduce-distance'));
+  device.destroy();
+});
+
+it('GPUSpatialPredicateJoin rejects capacities whose cooperative lanes overflow u32', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const left = createTransientView(graph, 'c-left', 'float32x2', 4);
+  const right = createTransientView(graph, 'c-right', 'float32x2', 3);
+  const output = {
+    pairs: {
+      leftIds: createTransientView(graph, 'c-left-ids', 'uint32', 16),
+      rightIds: createTransientView(graph, 'c-right-ids', 'uint32', 16),
+      status: {
+        count: createTransientView(graph, 'c-count', 'uint32', 1),
+        overflow: createTransientView(graph, 'c-pair-overflow', 'uint32', 1)
+      }
+    }
+  };
+  const createJoin = (overrides: Partial<GPUSpatialPredicateJoinProps>) =>
+    new GPUSpatialPredicateJoin({
+      id: 'c',
+      left: {kind: 'points', positions: left},
+      right: {kind: 'points', positions: right},
+      predicate: 'intersects',
+      candidateCapacity: 4096,
+      output,
+      ...overrides
+    });
+  // The fast engine has one lane per candidate, so a very large capacity is still accepted.
+  expect(() => createJoin({candidateCapacity: 2 ** 30})).not.toThrow();
+  // Cooperative dwithin launches 64 lanes per candidate, the relate engine 256.
+  const distance = createTransientView(graph, 'c-distance', 'float32', 1);
+  const dwithin = {predicate: 'dwithin', distance, engine: 'relate'} as const;
+  expect(() => createJoin({...dwithin, candidateCapacity: 2 ** 26 - 1})).not.toThrow();
+  expect(() => createJoin({...dwithin, candidateCapacity: 2 ** 26})).toThrow(
+    /candidateCapacity exceeds 67108863/
+  );
+  expect(() =>
+    createJoin({predicate: 'relate', pattern: 'T********', candidateCapacity: 2 ** 24})
+  ).toThrow(/candidateCapacity exceeds 16777215/);
   device.destroy();
 });

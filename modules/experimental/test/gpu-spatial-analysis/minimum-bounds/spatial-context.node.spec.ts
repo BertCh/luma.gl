@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUMinimumBounds} from '../../../src/gpu-spatial-analysis/minimum-bounds';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -35,7 +35,12 @@ it('GPUMinimumBounds is planar only', () => {
       spatialContext,
       positions: view(graph, 'float32x2', 8),
       ringOffsets: view(graph, 'uint32', 3),
-      output: {bounds: view(graph, 'float32x4', 2)}
+      polygonOffsets: view(graph, 'uint32', 3),
+      featureOffsets: view(graph, 'uint32', 3),
+      output: {
+        bounds: view(graph, 'float32x4', 2),
+        status: {overflow: view(graph, 'uint32', 1)}
+      }
     });
   expect(() => create(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);
   expect(create().spatialContext.coordinateSpace).toBe('planar');

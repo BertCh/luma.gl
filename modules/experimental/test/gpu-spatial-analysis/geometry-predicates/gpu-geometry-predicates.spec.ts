@@ -22,6 +22,7 @@ import {
   type PredicateGeometrySpec
 } from './gpu-geometry-predicates-harness';
 import {SHAPELY_PREDICATES_FIXTURE as FIXTURE} from './shapely-predicates-fixture';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const COLUMNS = [
   'isSimple',
@@ -69,18 +70,20 @@ async function runColumns(
   graph.add(
     new GPUGeometryPredicates({
       geometry,
-      isSimple: columns.isSimple.view,
-      isRing: columns.isRing.view,
-      isClosed: columns.isClosed.view,
-      isCcw: columns.isCcw.view,
-      numPoints: columns.numPoints.view,
-      numCoordinates: columns.numCoordinates.view,
-      numInteriorRings: columns.numInteriorRings.view,
-      numGeometries: columns.numGeometries.view,
       intersectionCapacity: 4096,
-      overflow: overflow.view,
-      uniquePositions,
-      uniqueOffsets: uniqueOffsets.view
+      output: {
+        isSimple: columns['isSimple'].view,
+        isRing: columns['isRing'].view,
+        isClosed: columns['isClosed'].view,
+        isCcw: columns['isCcw'].view,
+        numPoints: columns['numPoints'].view,
+        numCoordinates: columns['numCoordinates'].view,
+        numInteriorRings: columns['numInteriorRings'].view,
+        numGeometries: columns['numGeometries'].view,
+        uniquePositions,
+        uniqueOffsets: uniqueOffsets.view,
+        status: {overflow: overflow.view}
+      }
     })
   );
   const compiled = graph.compile();
@@ -125,9 +128,7 @@ function expectColumns(
 
 it('GPUGeometryPredicates linestring columns and unique points match Shapely', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {lines} = FIXTURE;
   const vertexCount = lines.vertices.reduce((sum, vertices) => sum + vertices.length, 0);
   const result = await runColumns(
@@ -144,9 +145,7 @@ it('GPUGeometryPredicates linestring columns and unique points match Shapely', a
 
 it('GPUGeometryPredicates polygon columns and unique points match Shapely', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {polygons} = FIXTURE;
   const vertexCount = polygons.polygons.reduce(
     (sum, feature) =>
@@ -171,9 +170,7 @@ it('GPUGeometryPredicates polygon columns and unique points match Shapely', asyn
 
 it('GPUGeometryPredicates point columns are constants', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {points} = FIXTURE;
   const count = points.names.length;
   const result = await runColumns(
@@ -182,9 +179,9 @@ it('GPUGeometryPredicates point columns are constants', async () => {
     count,
     count
   );
-  expect(result.columns.isSimple).toEqual(new Array(count).fill(1));
-  expect(result.columns.numGeometries).toEqual(new Array(count).fill(1));
-  expect(result.columns.numCoordinates).toEqual(new Array(count).fill(1));
+  expect(result.columns['isSimple']).toEqual(new Array(count).fill(1));
+  expect(result.columns['numGeometries']).toEqual(new Array(count).fill(1));
+  expect(result.columns['numCoordinates']).toEqual(new Array(count).fill(1));
   for (const name of ['isRing', 'isClosed', 'isCcw', 'numPoints', 'numInteriorRings']) {
     expect(result.columns[name], name).toEqual(new Array(count).fill(0));
   }
@@ -218,8 +215,10 @@ async function runEquality(
       geometry,
       other,
       parameters: parameters.importToGraph(graph),
-      equalsExact: importGraphBuffer(graph, 'exact', exact, 'uint32', featureCount),
-      equalsIdentical: importGraphBuffer(graph, 'identical', identical, 'uint32', featureCount)
+      output: {
+        equalsExact: importGraphBuffer(graph, 'exact', exact, 'uint32', featureCount),
+        equalsIdentical: importGraphBuffer(graph, 'identical', identical, 'uint32', featureCount)
+      }
     })
   );
   const compiled = graph.compile();
@@ -240,9 +239,7 @@ async function runEquality(
 
 it('GPUGeometryPredicates equalsExact and equalsIdentical match Shapely on aligned pairs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const lines = FIXTURE.equalLines;
   const lineResult = await runEquality(
     device,
@@ -273,9 +270,7 @@ it('GPUGeometryPredicates equalsExact and equalsIdentical match Shapely on align
 
 it('GPUGeometryPredicates unique points scale past one workgroup and report timing', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Pseudo-random lines on a coarse grid so most vertices repeat; oracle is a first-occurrence Map.
   let seed = 12345;
   const next = () => {

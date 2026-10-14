@@ -40,6 +40,7 @@ import {
   SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE,
   type SpatialLagMaximumLikelihoodFixture
 } from './spatial-maximum-likelihood-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = ReturnType<(typeof SPATIAL_MAXIMUM_LIKELIHOOD_SCENES)['lag_12_21']>;
 type Result = {
@@ -166,8 +167,10 @@ async function runLagMaximumLikelihood(
           'float32',
           GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH
         ),
-        status,
-        converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1),
+        status: {
+          code: status,
+          converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+        },
         residuals: importGraphBuffer(graph, 'residuals', residualBuffer, 'float32', rows),
         powerTraces,
         powerSums,
@@ -290,9 +293,7 @@ for (const name of Object.keys(SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE) as Array<
 >) {
   it(`GPUSpatialLagMaximumLikelihood matches spreg ML_Lag on ${name}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES[name]();
     const fixture = SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE[name];
     const actual = await runLagMaximumLikelihood(device, scene);
@@ -317,9 +318,7 @@ for (const name of Object.keys(SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE) as Array<
 
 it('GPUSpatialLagMaximumLikelihood is deterministic and tile-size independent within tolerance', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.lag_12_21();
   const fixture = SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE.lag_12_21;
   const first = await runLagMaximumLikelihood(device, scene);
@@ -338,9 +337,7 @@ it('GPUSpatialLagMaximumLikelihood is deterministic and tile-size independent wi
 
 it('GPUSpatialLagMaximumLikelihood agrees with the float64 mirror under Hutchinson traces', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.lag_12_21();
   const options = {traceMode: 'stochastic', traceProbeCount: 256} as const;
   const actual = await runLagMaximumLikelihood(device, scene, options);
@@ -366,9 +363,7 @@ it('GPUSpatialLagMaximumLikelihood agrees with the float64 mirror under Hutchins
 
 it('GPUSpatialLagMaximumLikelihood reports a boundary solution when the series limits the interval', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.lag_12_21();
   // Q = 8 limits |rho| to about 0.34, below the unrestricted maximum 0.47.
   const actual = await runLagMaximumLikelihood(device, scene, {maximumPower: 8});
@@ -389,9 +384,7 @@ it('GPUSpatialLagMaximumLikelihood reports a boundary solution when the series l
 
 it('GPUSpatialLagMaximumLikelihood reports singular, too-small and non-finite inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.lag_12_21();
   const singular = {...scene, predictors: Float32Array.from(scene.predictors)};
   for (let row = 0; row < scene.response.length; row++) {
@@ -428,9 +421,7 @@ it('GPUSpatialLagMaximumLikelihood reports singular, too-small and non-finite in
 for (const name of ['lag_12_21', 'lag_6pred_10_7'] as const) {
   it(`ML lag chains into GPUSpatialLagImpacts and matches spreg ML_Lag spat_impacts='full' on ${name}`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES[name]();
     const fixture = SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE[name];
     const actual = await runLagMaximumLikelihood(device, scene, {withImpacts: true});
@@ -454,9 +445,7 @@ for (const name of ['lag_12_21', 'lag_6pred_10_7'] as const) {
 
 it('ML lag impacts on a raw binary W use the scaled series (direct impacts match spreg)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = SPATIAL_MAXIMUM_LIKELIHOOD_SCENES.lag_binary_10_5();
   const fixture = SPREG_LAG_MAXIMUM_LIKELIHOOD_REFERENCE.lag_binary_10_5;
   const actual = await runLagMaximumLikelihood(device, scene, {withImpacts: true});

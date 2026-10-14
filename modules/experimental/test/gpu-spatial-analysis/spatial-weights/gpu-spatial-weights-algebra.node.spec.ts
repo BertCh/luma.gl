@@ -10,7 +10,10 @@ import {
   GPUSpatialWeightsTransform,
   type GPUSpatialWeights
 } from '../../../src/gpu-spatial-analysis/spatial-weights';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 import {
   computeBinaryOracle,
   computeBlockOracle,
@@ -43,7 +46,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
   const {graph, view, weights} = setup();
   const left = weights(4, 12);
   const right = weights(4, 12);
-  const output = () => ({output: weights(4, 20), overflow: view('uint32', 1)});
+  const output = () => ({output: {...weights(4, 20), status: {overflow: view('uint32', 1)}}});
   expect(
     () => new GPUSpatialWeightsAlgebra({operation: 'nope' as 'union', ...output()} as never)
   ).toThrow(/operation/);
@@ -57,8 +60,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
         operation: 'union',
         left,
         right,
-        ...output(),
-        overflow: view('uint32', 0)
+        output: {...weights(4, 20), status: {overflow: view('uint32', 0)}}
       })
   ).toThrow(/overflow/);
   expect(
@@ -77,8 +79,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
         operation: 'union',
         left,
         right,
-        output: left,
-        overflow: view('uint32', 1)
+        output: {...left, status: {overflow: view('uint32', 1)}}
       })
   ).toThrow(/share buffers/);
   expect(
@@ -87,8 +88,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
         operation: 'union',
         left: weights(4, 12, false),
         right,
-        output: weights(4, 20),
-        overflow: view('uint32', 1)
+        output: {...weights(4, 20), status: {overflow: view('uint32', 1)}}
       })
   ).toThrow(/distances/);
   for (const order of [0, 1.5, 33]) {
@@ -103,8 +103,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
         operation: 'higherOrder',
         weights: left,
         order: 2,
-        output: weights(4, 20),
-        overflow: view('uint32', 1)
+        output: {...weights(4, 20), status: {overflow: view('uint32', 1)}}
       })
   ).toThrow(/no distances/);
   expect(
@@ -140,8 +139,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
         operation: 'block',
         groupIds: view('uint32', 4),
         groupCount: 0,
-        output: {...weights(4, 20), distances: undefined},
-        overflow: view('uint32', 1)
+        output: {...weights(4, 20), distances: undefined, status: {overflow: view('uint32', 1)}}
       })
   ).toThrow(/groupCount/);
 
@@ -158,8 +156,7 @@ it('GPUSpatialWeightsAlgebra validates props and declares nodes', () => {
       weights: left,
       order: 3,
       cumulative: true,
-      output: {...weights(4, 20), distances: undefined},
-      overflow: view('uint32', 1)
+      output: {...weights(4, 20), distances: undefined, status: {overflow: view('uint32', 1)}}
     })
   );
   expect(higher).toContain('spatial-weights-algebra-visited-3-offsets');
@@ -173,32 +170,31 @@ it('GPUSpatialWeightsSummary and the D/V transforms validate props', () => {
     () =>
       new GPUSpatialWeightsSummary({
         weights: input,
-        statistics: view('float32', 2),
-        counts: view('uint32', 6)
+        output: {statistics: view('float32', 2), counts: view('uint32', 6)}
       })
   ).toThrow(/statistics/);
   expect(
     () =>
       new GPUSpatialWeightsSummary({
         weights: input,
-        statistics: view('float32', 3),
-        counts: view('uint32', 4)
+        output: {statistics: view('float32', 3), counts: view('uint32', 4)}
       })
   ).toThrow(/counts/);
   expect(
     () =>
       new GPUSpatialWeightsSummary({
         weights: input,
-        statistics: view('float32', 3),
-        counts: view('uint32', 6),
-        cardinality: view('uint32', 3)
+        output: {
+          statistics: view('float32', 3),
+          counts: view('uint32', 6),
+          cardinality: view('uint32', 3)
+        }
       })
   ).toThrow(/cardinality/);
   expect(
     new GPUSpatialWeightsSummary({
       weights: input,
-      statistics: view('float32', 3),
-      counts: view('uint32', 6)
+      output: {statistics: view('float32', 3), counts: view('uint32', 6)}
     })
       .getCommandNodes(graph)
       .map(node => node.id)
@@ -370,4 +366,26 @@ it('CPU oracles match libpysal 4.15 Graph reference values (generated with real 
   expect(new Set(rowValues(0))).toEqual(new Set([0.436334]));
   expect(new Set(rowValues(1))).toEqual(new Set([0.356265]));
   expect(new Set(rowValues(4))).toEqual(new Set([0.308535]));
+});
+
+it('higherOrder adds no pipelines per order level (rule 12)', () => {
+  // The level only names nodes and transients; every middle level shares one source. Orders 3, 4
+  // and 6 compile the same distinct pipelines.
+  const countPipelines = (order: number, cumulative: boolean) => {
+    const {graph, view, weights} = setup();
+    const nodes = new GPUSpatialWeightsAlgebra({
+      operation: 'higherOrder',
+      weights: weights(10, 30, false),
+      order,
+      cumulative,
+      output: {...weights(10, 60, false), status: {overflow: view('uint32', 1)}}
+    }).getCommandNodes(graph);
+    return getGPUCommandNodePipelineKeys(nodes).size;
+  };
+  for (const cumulative of [false, true]) {
+    const base = countPipelines(3, cumulative);
+    expect(base).toBeGreaterThan(0);
+    expect(countPipelines(4, cumulative)).toBe(base);
+    expect(countPipelines(6, cumulative)).toBe(base);
+  }
 });

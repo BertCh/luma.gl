@@ -4,9 +4,9 @@
 
 import {
   GPU_RASTER_D8_DIRECTIONS,
-  getRasterD8Distance,
-  getRasterGroundCellSize
+  getRasterD8Distance
 } from '../../../src/gpu-raster/cost-distance/raster-grid-utils';
+import type {GPURasterMetadata} from '../../../src/gpu-raster';
 import {
   GPU_TERRAIN_FLOW_CELL_CLASS as CELL_CLASS,
   GPU_TERRAIN_FLOW_NONE,
@@ -16,7 +16,10 @@ import {
 import type {GPUTerrainFlowRouting} from '../../../src/gpu-terrain/hydrology/gpu-terrain-flow';
 import {resolveFlatsOnCPU} from './terrain-flow-flats-oracle';
 import {accumulateRoutingOnCPU} from './terrain-flow-routing-oracle';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+import {
+  getRasterGroundCellSize,
+  type GPURasterCellSizeMode
+} from '../../../src/analysis-core/raster-grid';
 import {createSeededRandom} from '../terrain-oracle-utils';
 
 const fround = Math.fround;
@@ -24,10 +27,9 @@ const fround = Math.fround;
 /** Inputs of {@link computeTerrainFlow}. NaN elevation marks an invalid cell. */
 export type TerrainFlowOracleInput = {
   elevation: Float32Array;
-  width: number;
-  height: number;
+  grid: GPURasterMetadata;
   settings: GPUTerrainFlowSettings;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   fillDepressions?: boolean;
   runoff?: Float32Array;
   area?: boolean;
@@ -49,12 +51,13 @@ export type TerrainFlowOracleResult = {
 
 /** CPU reference: Planchon-Darboux fill, steepest D8 descent, accumulation, stream mask. */
 export function computeTerrainFlow(input: TerrainFlowOracleInput): TerrainFlowOracleResult {
-  const {elevation, width, height} = input;
+  const {elevation} = input;
+  const {width, height} = input.grid;
   const cellSizeMode = input.cellSizeMode ?? 'uniform';
   const cellCount = width * height;
-  const packed = getGPUTerrainFlowParameterValues(input.settings);
+  const packed = getGPUTerrainFlowParameterValues(input.settings, input.grid);
   // Evaluate with the float32 values the GPU reads.
-  const gridSettings = {
+  const georeference = {
     cellSize: [packed[0], packed[1]] as [number, number],
     northEdge: packed[2],
     southEdge: packed[3]
@@ -135,7 +138,7 @@ export function computeTerrainFlow(input: TerrainFlowOracleInput): TerrainFlowOr
         hasEqualNeighbor = true;
       }
       const distance = fround(
-        getRasterD8Distance(cellSizeMode, direction, row, height, gridSettings)
+        getRasterD8Distance(cellSizeMode, direction, row, height, georeference)
       );
       const drop = fround(fround(surface[cell] - surface[neighbor]) / distance);
       if (drop > bestDrop) {
@@ -171,9 +174,9 @@ export function computeTerrainFlow(input: TerrainFlowOracleInput): TerrainFlowOr
     if (input.area) {
       const [groundX, groundY] = getRasterGroundCellSize(
         cellSizeMode,
+        georeference,
         Math.floor(cell / width) + 0.5,
-        height,
-        gridSettings
+        height
       );
       weight = fround(weight * fround(groundX * groundY));
     }
@@ -215,7 +218,7 @@ export function computeTerrainFlow(input: TerrainFlowOracleInput): TerrainFlowOr
       width,
       height,
       cellSizeMode,
-      gridSettings,
+      georeference,
       flowExponent: packed[6],
       surface,
       isValid,

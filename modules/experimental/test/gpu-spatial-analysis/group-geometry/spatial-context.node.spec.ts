@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   GPUGroupConvexHull,
   GPUGroupGeometry
@@ -49,11 +49,12 @@ it('GPUGroupGeometry and GPUGroupConvexHull are planar only', () => {
       labels: view(graph, 'uint32', 8),
       groupCount: 2,
       maximumVerticesPerGroup: 8,
-      totalCapacity: 16,
+      vertexCapacity: 16,
       output: {
         vertexIndices: view(graph, 'uint32', 16),
         offsets: view(graph, 'uint32', 3),
-        counts: view(graph, 'uint32', 2)
+        counts: view(graph, 'uint32', 2),
+        status: {overflow: view(graph, 'uint32', 1)}
       }
     });
   expect(() => createGeometry(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);

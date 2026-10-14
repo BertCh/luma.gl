@@ -4,16 +4,21 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {requireTestDevice} from './require-test-device';
 
-const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
-
-// Contributor GPU specs return early when no WebGPU device exists, so a run without one reports
-// green with no assertions. This spec makes that state visible: it is skipped (and listed as
-// skipped) when the browser has no WebGPU, and fails when WebGPU exists but yields no device.
-it.skipIf(!hasWebGPU)('WebGPU test devices are available for contributor GPU specs', async () => {
+// Contributor GPU specs call `requireTestDevice`, which fails them in browser-backed projects when
+// no WebGPU device exists. This canary states the provisioning requirement once: it fails under
+// the headless and browser projects when the browser has no WebGPU or WebGPU yields no device.
+it('WebGPU test devices are available for contributor GPU specs', async () => {
+  expect(typeof navigator !== 'undefined' && 'gpu' in navigator, 'navigator.gpu').toBe(true);
   const maxDevice = await getWebGPUTestDevice();
   const coreDevice = await getWebGPUTestDevice('core');
   expect(maxDevice, "featureLevel 'max' WebGPU test device").toBeTruthy();
   expect(coreDevice, "featureLevel 'core' WebGPU test device").toBeTruthy();
-  expect(coreDevice?.limits.maxStorageBuffersPerShaderStage).toBeGreaterThanOrEqual(8);
+  requireTestDevice(coreDevice);
+  expect(coreDevice.limits.maxStorageBuffersPerShaderStage).toBeGreaterThanOrEqual(8);
+});
+
+it('requireTestDevice fails, rather than skips, in browser-backed projects', () => {
+  expect(() => requireTestDevice(null)).toThrow('No WebGPU test device');
 });

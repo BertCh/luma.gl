@@ -44,11 +44,13 @@ function createProps(
       : undefined,
     output: {
       ids: createTransientView(graph, 'ids', 'uint32', capacity),
-      count: createTransientView(graph, 'count', 'uint32', 1),
-      overflow: createTransientView(graph, 'overflow', 'uint32', 1),
-      requiredCount: options.requiredCount
-        ? createTransientView(graph, 'total', 'uint32', 1)
-        : undefined
+      status: {
+        count: createTransientView(graph, 'count', 'uint32', 1),
+        overflow: createTransientView(graph, 'overflow', 'uint32', 1),
+        requiredCount: options.requiredCount
+          ? createTransientView(graph, 'total', 'uint32', 1)
+          : undefined
+      }
     }
   };
 }
@@ -188,9 +190,11 @@ it('GPUResidentRowSelection validates props', () => {
   expect(() => create({drawInstanceCount: view('empty-draw', 0)})).toThrow(
     /drawInstanceCount must contain one/
   );
-  expect(() => create({output: {...base.output, count: view('empty-count', 0)}})).toThrow(
-    /output.count/
-  );
+  expect(() =>
+    create({
+      output: {...base.output, status: {...base.output.status, count: view('empty-count', 0)}}
+    })
+  ).toThrow(/output.status.count/);
 
   const otherGraph = new GPUCommandGraph(device);
   const foreign = new GPUResidentRowSelection(createProps(otherGraph, 8));

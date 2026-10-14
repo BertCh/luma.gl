@@ -2,10 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {WgslReflect} from 'wgsl_reflect';
 import {expect, it} from 'vitest';
-import {GPUBufferSurface, GPUPolygonOverlay} from '../../../src/gpu-spatial-analysis';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  GPUBufferSurface,
+  GPUPolygonOverlay,
+  getGPUBufferSurfaceMaximumBoundaryRowCount,
+  getGPUOffsetCurveRowsPerVertex
+} from '../../../src/gpu-spatial-analysis';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {POLYGON_BUFFER_FIXTURES} from './polygon-buffer-fixtures';
 
 type FillRule = 'even-odd' | 'positive' | 'negative' | 'nonzero';
@@ -35,7 +45,7 @@ function getWinding(x: number, y: number, ring: readonly number[]): number {
   return winding;
 }
 
-/** Parity of the same crossings, as the even-odd path counts them. */
+/** Parity of the same crossings, as the even-odd line counts them. */
 function getParity(x: number, y: number, ring: readonly number[]): boolean {
   let inside = false;
   const count = ring.length / 2;
@@ -132,8 +142,10 @@ it('ring preparation drops closing and consecutive duplicate vertices', () => {
 it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'fill-rule'});
   let serial = 0;
-  const view = (format: 'float32x2' | 'uint32', length: number) =>
-    createTransientView(graph, `fill-rule-${serial++}`, format, length);
+  const view = <Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `fill-rule-${serial++}`, format, length);
   const polygons = () => ({
     kind: 'polygons' as const,
     positions: view('float32x2', 4),
@@ -190,15 +202,19 @@ it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
   const nodeIds = new GPUPolygonOverlay({...props, fillRule: 'nonzero', output: makeOutput()})
     .getCommandNodes(graph)
     .map(node => node.id);
-  expect(nodeIds).toContain('polygon-overlay-publish-required');
+  // Unclamped ring requirements are published with source IDs.
+  expect(nodeIds).toContain('polygon-overlay-source-ids');
+  expect(nodeIds).not.toContain('polygon-overlay-publish-required');
   expect(nodeIds.at(-1)).toBe('polygon-overlay-publish');
 });
 
-it('GPUBufferSurface prepares rings and lines before offsetting', () => {
-  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'buffer-prepare'});
+function createPolygonBufferNodes(device: Device, vertexCount: number = 5) {
+  const graph = new GPUCommandGraph(device, {id: 'buffer-prepare'});
   let serial = 0;
-  const view = (format: 'float32' | 'float32x2' | 'float32x4' | 'uint32', length: number) =>
-    createTransientView(graph, `buffer-prepare-${serial++}`, format, length);
+  const view = <Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `buffer-prepare-${serial++}`, format, length);
   const scalar = () => view('uint32', 1);
   const status = () => ({
     count: scalar(),
@@ -210,7 +226,7 @@ it('GPUBufferSurface prepares rings and lines before offsetting', () => {
   const surface = new GPUBufferSurface({
     geometry: {
       kind: 'polygons',
-      positions: view('float32x2', 5),
+      positions: view('float32x2', vertexCount),
       featureOffsets: view('uint32', 2),
       polygonOffsets: view('uint32', 2),
       ringOffsets: view('uint32', 2)
@@ -228,7 +244,6 @@ it('GPUBufferSurface prepares rings and lines before offsetting', () => {
         ringOffsets: view('uint32', 9),
         sourceIds
       },
-      sourceIds,
       status: status(),
       boundary: {
         endpoints: view('float32x4', 64),
@@ -238,10 +253,107 @@ it('GPUBufferSurface prepares rings and lines before offsetting', () => {
       }
     }
   });
-  const ids = surface.getCommandNodes(graph).map(node => node.id);
+  return surface.getCommandNodes(graph);
+}
+
+it('GPUBufferSurface prepares rings and lines before offsetting', () => {
+  const ids = createPolygonBufferNodes(createNullWebGPUDevice()).map(node => node.id);
   const compactIndex = ids.indexOf('buffer-surface-ring-compact-flags');
   expect(compactIndex).toBeGreaterThanOrEqual(0);
   expect(ids).toContain('buffer-surface-ring-compact-offsets');
   expect(ids).toContain('buffer-surface-ring-compact-scatter');
-  expect(compactIndex).toBeLessThan(ids.indexOf('buffer-surface-offset-generate'));
+  expect(compactIndex).toBeLessThan(ids.indexOf('buffer-surface-stroke-left-offset-generate'));
+});
+
+it('GPUBufferSurface derives its boundary maximum from the graph device', () => {
+  const device = createNullWebGPUDevice();
+  const rowsPerVertex = getGPUOffsetCurveRowsPerVertex('mitre', 8, 'buffer');
+  const getVertexCount = (boundaryRows: number) =>
+    Math.floor((boundaryRows - 64 - 3) / (1 + 2 * rowsPerVertex));
+  expect(getGPUBufferSurfaceMaximumBoundaryRowCount(device)).toBe(2 ** 20);
+  const coreVertices = getVertexCount(2 ** 20);
+  expect(() => createPolygonBufferNodes(device, coreVertices)).not.toThrow();
+  expect(() => createPolygonBufferNodes(device, coreVertices + 1)).toThrow(
+    'buffer-surface boundary rows must be at most 1048512'
+  );
+  Object.assign(device.limits, {
+    maxStorageBufferBindingSize: 2 ** 30,
+    maxBufferSize: 2 ** 30
+  });
+  expect(getGPUBufferSurfaceMaximumBoundaryRowCount(device)).toBe(2 ** 23);
+  expect(() => createPolygonBufferNodes(device, coreVertices + 1)).not.toThrow();
+  const largeVertices = getVertexCount(2 ** 23);
+  expect(() => createPolygonBufferNodes(device, largeVertices)).not.toThrow();
+  expect(() => createPolygonBufferNodes(device, largeVertices + 1)).toThrow(
+    'buffer-surface boundary rows must be at most 8388544'
+  );
+});
+
+it('GPUBufferSurface buffers polygons as the polygon and its ring strokes (D-02)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'buffer-pieces'});
+  let serial = 0;
+  const view = <Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `buffer-pieces-${serial++}`, format, length);
+  const status = () => ({
+    count: view('uint32', 1),
+    requiredCount: view('uint32', 1),
+    overflow: view('uint32', 1),
+    candidateOverflow: view('uint32', 1)
+  });
+  const sourceIds = view('uint32', 8);
+  const surface = new GPUBufferSurface({
+    geometry: {
+      kind: 'polygons',
+      positions: view('float32x2', 9),
+      featureOffsets: view('uint32', 2),
+      polygonOffsets: view('uint32', 2),
+      ringOffsets: view('uint32', 3)
+    },
+    parameters: view('float32', 4),
+    joinStyle: 'round',
+    vertexTolerance: 1e-5,
+    capacity: {intersections: 256, nodedSegments: 512},
+    output: {
+      geometry: {
+        kind: 'polygons',
+        positions: view('float32x2', 64),
+        featureOffsets: view('uint32', 9),
+        polygonOffsets: view('uint32', 9),
+        ringOffsets: view('uint32', 9),
+        sourceIds
+      },
+      status: status(),
+      boundary: {
+        endpoints: view('float32x4', 64),
+        operandIds: view('uint32', 64),
+        sourceFeatureIds: view('uint32', 64),
+        status: status()
+      }
+    }
+  });
+  const nodes = surface.getCommandNodes(graph);
+  const ids = nodes.map(node => node.id);
+  for (const id of [
+    'stroke-collapse',
+    'stroke-left-offset-generate',
+    'stroke-right-offset-generate',
+    'raw-layout',
+    'raw-pieces'
+  ]) {
+    expect(ids, id).toContain(`buffer-surface-${id}`);
+  }
+  // No offset of the ring itself: the polygon enters the dissolve as reversed rings.
+  expect(ids).not.toContain('buffer-surface-offset-generate');
+  const kernels = getGPUCommandNodeKernelSources(nodes);
+  for (const kernel of kernels) {
+    expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
+    // Core-device limit: at most eight storage buffers per stage (raw-pieces uses all eight).
+    expect(kernel.source.match(/var<storage/g)?.length ?? 0, kernel.id).toBeLessThanOrEqual(8);
+  }
+  // The dissolve keeps regions covered by reversed rings: the negative winding rule, applied where
+  // the face labelling turns polygon windings into operand coverage.
+  const coverage = kernels.find(kernel => kernel.id === 'buffer-surface-repair-group-coverage');
+  expect(coverage?.source).toMatch(/winding < 0/);
 });

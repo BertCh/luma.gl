@@ -28,6 +28,7 @@ import {
   joinPointsInPolygons,
   type OraclePolygonFeature
 } from './spatial-join-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -37,9 +38,7 @@ function toFloat32Points(points: Point[]): Float32Array {
 
 it('GPUPairwisePointInPolygon proves containment despite near-collinear far edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows: {point: Point; feature: OraclePolygonFeature}[] = [];
   for (const point of UNCERTAINTY_POINTS) {
     for (const feature of UNCERTAINTY_FEATURES) {
@@ -76,44 +75,46 @@ it('GPUPairwisePointInPolygon proves containment despite near-collinear far edge
   };
   const output = createOutputBuffer(device, rows.length);
   buffers.push(output);
-  new GPUPairwisePointInPolygon({
-    points: importGraphBuffer(
-      graph,
-      'points',
-      input(toFloat32Points(rows.map(row => row.point))),
-      'float32x2',
-      rows.length
-    ),
-    polygonPositions: importGraphBuffer(
-      graph,
-      'positions',
-      input(Float32Array.from(positions)),
-      'float32x2',
-      positions.length / 2
-    ),
-    geometryOffsets: importGraphBuffer(
-      graph,
-      'geometry-offsets',
-      input(Uint32Array.from(geometryOffsets)),
-      'uint32',
-      geometryOffsets.length
-    ),
-    polygonOffsets: importGraphBuffer(
-      graph,
-      'polygon-offsets',
-      input(Uint32Array.from(polygonOffsets)),
-      'uint32',
-      polygonOffsets.length
-    ),
-    ringOffsets: importGraphBuffer(
-      graph,
-      'ring-offsets',
-      input(Uint32Array.from(ringOffsets)),
-      'uint32',
-      ringOffsets.length
-    ),
-    output: importGraphBuffer(graph, 'output', output, 'uint32', rows.length)
-  }).addToGraph(graph);
+  graph.add(
+    new GPUPairwisePointInPolygon({
+      queryPositions: importGraphBuffer(
+        graph,
+        'points',
+        input(toFloat32Points(rows.map(row => row.point))),
+        'float32x2',
+        rows.length
+      ),
+      positions: importGraphBuffer(
+        graph,
+        'positions',
+        input(Float32Array.from(positions)),
+        'float32x2',
+        positions.length / 2
+      ),
+      featureOffsets: importGraphBuffer(
+        graph,
+        'geometry-offsets',
+        input(Uint32Array.from(geometryOffsets)),
+        'uint32',
+        geometryOffsets.length
+      ),
+      polygonOffsets: importGraphBuffer(
+        graph,
+        'polygon-offsets',
+        input(Uint32Array.from(polygonOffsets)),
+        'uint32',
+        polygonOffsets.length
+      ),
+      ringOffsets: importGraphBuffer(
+        graph,
+        'ring-offsets',
+        input(Uint32Array.from(ringOffsets)),
+        'uint32',
+        ringOffsets.length
+      ),
+      output: importGraphBuffer(graph, 'output', output, 'uint32', rows.length)
+    })
+  );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const classifications = await readUint32(output, rows.length);
@@ -133,9 +134,7 @@ it('GPUPairwisePointInPolygon proves containment despite near-collinear far edge
 
 it('GPUPointInPolygonJoin assigns near-collinear points and reports no uncertainty', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const arrays = buildPolygonFeatureArrays(UNCERTAINTY_FEATURES);
   const pointCount = UNCERTAINTY_POINTS.length;
   const featureCount = UNCERTAINTY_FEATURES.length;
@@ -153,58 +152,68 @@ it('GPUPointInPolygonJoin assigns near-collinear points and reports no uncertain
   };
   graph.add(
     new GPUPointInPolygonJoin({
-      points: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', pointCount),
-      polygonPositions: importGraphBuffer(
-        graph,
-        'polygon-positions',
-        buffers.polygonPositions,
-        'float32x2',
-        arrays.polygonPositions.length / 2
-      ),
-      featureOffsets: importGraphBuffer(
-        graph,
-        'feature-offsets',
-        buffers.featureOffsets,
-        'uint32',
-        arrays.featureOffsets.length
-      ),
-      polygonOffsets: importGraphBuffer(
-        graph,
-        'polygon-offsets',
-        buffers.polygonOffsets,
-        'uint32',
-        arrays.polygonOffsets.length
-      ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        buffers.ringOffsets,
-        'uint32',
-        arrays.ringOffsets.length
-      ),
+      points: {
+        kind: 'points',
+        positions: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', pointCount)
+      },
+      polygons: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
+          graph,
+          'polygon-positions',
+          buffers.polygonPositions,
+          'float32x2',
+          arrays.polygonPositions.length / 2
+        ),
+        featureOffsets: importGraphBuffer(
+          graph,
+          'feature-offsets',
+          buffers.featureOffsets,
+          'uint32',
+          arrays.featureOffsets.length
+        ),
+        polygonOffsets: importGraphBuffer(
+          graph,
+          'polygon-offsets',
+          buffers.polygonOffsets,
+          'uint32',
+          arrays.polygonOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
+          graph,
+          'ring-offsets',
+          buffers.ringOffsets,
+          'uint32',
+          arrays.ringOffsets.length
+        )
+      },
       candidateCapacity: pointCount * featureCount,
-      pointFeatureIds: importGraphBuffer(
-        graph,
-        'point-feature-ids',
-        buffers.pointFeatureIds,
-        'uint32',
-        pointCount
-      ),
-      featureCounts: importGraphBuffer(
-        graph,
-        'feature-counts',
-        buffers.featureCounts,
-        'uint32',
-        featureCount
-      ),
-      overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-      uncertainCount: importGraphBuffer(
-        graph,
-        'uncertain-count',
-        buffers.uncertainCount,
-        'uint32',
-        1
-      )
+      output: {
+        pointFeatureIds: importGraphBuffer(
+          graph,
+          'point-feature-ids',
+          buffers.pointFeatureIds,
+          'uint32',
+          pointCount
+        ),
+        featureCounts: importGraphBuffer(
+          graph,
+          'feature-counts',
+          buffers.featureCounts,
+          'uint32',
+          featureCount
+        ),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+          uncertainCount: importGraphBuffer(
+            graph,
+            'uncertain-count',
+            buffers.uncertainCount,
+            'uint32',
+            1
+          )
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -224,9 +233,7 @@ it('GPUPointInPolygonJoin assigns near-collinear points and reports no uncertain
 
 it('GPUPointInPolygonJoin skips empty parts and short rings instead of rejecting the feature', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // D-12. Feature 0: a MultiPolygon whose first part is empty, then the square (0,0)-(2,2).
   // Feature 1: one polygon with a 2-vertex ring first, then the square (4,0)-(6,2). shapely
   // (2.2: `MultiPolygon([Polygon(), box(0, 0, 2, 2)]).contains(Point(1, 1))` is True) treats
@@ -259,31 +266,41 @@ it('GPUPointInPolygonJoin skips empty parts and short rings instead of rejecting
     overflow: createOutputBuffer(device, 1),
     uncertainCount: createOutputBuffer(device, 1)
   };
-  const view = (name: string, format: 'uint32' | 'float32x2', length: number) =>
-    importGraphBuffer(graph, name, buffers[name], format, length);
+  const view = <Format extends 'uint32' | 'float32x2'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => importGraphBuffer(graph, name, buffers[name], format, length);
   graph.add(
     new GPUPointInPolygonJoin({
-      points: view('points', 'float32x2', points.length),
-      polygonPositions: view('polygonPositions', 'float32x2', vertices.length),
-      featureOffsets: view('featureOffsets', 'uint32', featureOffsets.length),
-      polygonOffsets: view('polygonOffsets', 'uint32', polygonOffsets.length),
-      ringOffsets: view('ringOffsets', 'uint32', ringOffsets.length),
+      points: {kind: 'points', positions: view('points', 'float32x2', points.length)},
+      polygons: {
+        kind: 'polygons',
+        positions: view('polygonPositions', 'float32x2', vertices.length),
+        featureOffsets: view('featureOffsets', 'uint32', featureOffsets.length),
+        polygonOffsets: view('polygonOffsets', 'uint32', polygonOffsets.length),
+        ringOffsets: view('ringOffsets', 'uint32', ringOffsets.length)
+      },
       candidateCapacity: points.length * 2,
-      pointFeatureIds: view('pointFeatureIds', 'uint32', points.length),
-      featureCounts: view('featureCounts', 'uint32', 2),
-      overflow: view('overflow', 'uint32', 1),
-      uncertainCount: view('uncertainCount', 'uint32', 1)
+      output: {
+        pointFeatureIds: view('pointFeatureIds', 'uint32', points.length),
+        featureCounts: view('featureCounts', 'uint32', 2),
+        status: {
+          overflow: view('overflow', 'uint32', 1),
+          uncertainCount: view('uncertainCount', 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  expect(await readUint32(buffers.pointFeatureIds, points.length)).toEqual([
+  expect(await readUint32(buffers['pointFeatureIds'], points.length)).toEqual([
     0,
     1,
     GPU_SPATIAL_JOIN_NO_FEATURE
   ]);
-  expect(await readUint32(buffers.featureCounts, 2)).toEqual([1, 1]);
-  expect(await readUint32(buffers.uncertainCount, 1)).toEqual([0]);
+  expect(await readUint32(buffers['featureCounts'], 2)).toEqual([1, 1]);
+  expect(await readUint32(buffers['uncertainCount'], 1)).toEqual([0]);
   compiled.destroy();
   for (const buffer of Object.values(buffers)) {
     buffer.destroy();

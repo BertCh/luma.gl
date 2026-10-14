@@ -6,7 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUEdgeBundling,
-  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingParameterValues,
   getGPUEdgeBundlingFixedPointExponent,
   type GPUEdgeBundlingProps
 } from '../../../src/gpu-network/edge-bundling';
@@ -17,10 +17,10 @@ function createProps(
   overrides: Partial<GPUEdgeBundlingProps> = {}
 ): GPUEdgeBundlingProps {
   return {
-    positions: createTransientView(graph, 'positions', 'float32x2', 10),
-    sourceVertices: createTransientView(graph, 'sources', 'uint32', 6),
-    targetVertices: createTransientView(graph, 'targets', 'uint32', 6),
-    paths: createTransientView(graph, 'paths', 'float32x2', 6 * 16),
+    nodePositions: createTransientView(graph, 'positions', 'float32x2', 10),
+    sourceNodes: createTransientView(graph, 'sources', 'uint32', 6),
+    targetNodes: createTransientView(graph, 'targets', 'uint32', 6),
+    output: {paths: createTransientView(graph, 'paths', 'float32x2', 6 * 16)},
     ...overrides
   };
 }
@@ -30,21 +30,24 @@ it('GPUEdgeBundling schedules box, initialize, per-iteration, finalize, and indi
   const graph = new GPUCommandGraph(device);
   const nodes = new GPUEdgeBundling({
     ...createProps(graph, {
-      paths: createTransientView(graph, 'paths-4', 'float32x2', 6 * 4),
+      output: {
+        paths: createTransientView(graph, 'paths-4', 'float32x2', 6 * 4),
+        lineOffsets: createTransientView(graph, 'start-indices', 'uint32', 7),
+        drawRecord: createTransientView(graph, 'draw-record', 'uint32', 4)
+      },
       edgeMask: createTransientView(graph, 'mask', 'uint32', 6),
-      parameters: createTransientView(graph, 'parameters', 'uint32', 5),
-      startIndices: createTransientView(graph, 'start-indices', 'uint32', 7),
-      drawRecord: createTransientView(graph, 'draw-record', 'uint32', 4)
+      parameters: createTransientView(graph, 'parameters', 'uint32', 5)
     }),
     id: 'bundle',
     pointsPerEdge: 4,
-    iterations: 2,
+    maximumIterations: 2,
     densityResolution: 32
   }).getCommandNodes(graph);
   expect(nodes.map(node => node.id)).toEqual([
     'bundle-box-reset',
     'bundle-box',
     'bundle-initialize',
+    'bundle-iteration-info',
     'bundle-gate',
     'bundle-clear-0',
     'bundle-splat-0',
@@ -60,7 +63,7 @@ it('GPUEdgeBundling schedules box, initialize, per-iteration, finalize, and indi
   const minimal = new GPUEdgeBundling(createProps(minimalGraph));
   expect(minimal.id).toBe('edge-bundling');
   const ids = minimal.getCommandNodes(minimalGraph).map(node => node.id);
-  expect(ids.length).toBe(3 + 3 * 15 + 1);
+  expect(ids.length).toBe(4 + 3 * 15 + 1);
   expect(ids[0]).toBe('edge-bundling-box-reset');
   expect(ids).not.toContain('edge-bundling-indices');
   device.destroy();
@@ -74,32 +77,37 @@ it('GPUEdgeBundling validates props', () => {
     new GPUEdgeBundling({...base, ...overrides});
   expect(() =>
     create({
-      targetVertices: createTransientView(graph, 'targets5', 'uint32', 5)
+      targetNodes: createTransientView(graph, 'targets5', 'uint32', 5)
     })
-  ).toThrow(/targetVertices length/);
+  ).toThrow(/targetNodes length/);
   expect(() => create({edgeMask: createTransientView(graph, 'mask5', 'uint32', 5)})).toThrow(
     /edgeMask length/
   );
   for (const pointsPerEdge of [1, 65, 2.5]) {
     expect(() => create({pointsPerEdge})).toThrow(/pointsPerEdge/);
   }
-  for (const iterations of [0, 65, 1.5]) {
-    expect(() => create({iterations})).toThrow(/iterations/);
+  for (const maximumIterations of [0, 65, 1.5]) {
+    expect(() => create({maximumIterations})).toThrow(/maximumIterations/);
   }
   expect(() => create({densityResolution: 4})).toThrow(/densityResolution/);
   expect(() =>
     create({
-      paths: createTransientView(graph, 'paths-short', 'float32x2', 10)
+      output: {paths: createTransientView(graph, 'paths-short', 'float32x2', 10)}
     })
-  ).toThrow(/paths length/);
+  ).toThrow(/output\.paths length/);
   expect(() =>
     create({
-      startIndices: createTransientView(graph, 'start-6', 'uint32', 6)
+      output: {
+        ...base.output,
+        lineOffsets: createTransientView(graph, 'start-6', 'uint32', 6)
+      }
     })
-  ).toThrow(/startIndices length/);
-  expect(() => create({drawRecord: createTransientView(graph, 'draw-3', 'uint32', 3)})).toThrow(
-    /drawRecord/
-  );
+  ).toThrow(/output\.lineOffsets length/);
+  expect(() =>
+    create({
+      output: {...base.output, drawRecord: createTransientView(graph, 'draw-3', 'uint32', 3)}
+    })
+  ).toThrow(/output\.drawRecord/);
   expect(() =>
     create({
       parameters: createTransientView(graph, 'parameters-3', 'uint32', 3)
@@ -112,14 +120,14 @@ it('GPUEdgeBundling validates props', () => {
   ).toThrow(/parameters/);
   expect(() =>
     create({
-      positions: createTransientView(graph, 'positions-flat', 'float32', 10) as never
+      nodePositions: createTransientView(graph, 'positions-flat', 'float32', 10) as never
     })
-  ).toThrow(/positions/);
+  ).toThrow(/nodePositions/);
   expect(() =>
     create({
-      positions: createTransientView(graph, 'positions-empty', 'float32x2', 0)
+      nodePositions: createTransientView(graph, 'positions-empty', 'float32x2', 0)
     })
-  ).toThrow(/at least one vertex/);
+  ).toThrow(/at least one node/);
   const shared = graph.createTransientBuffer({
     id: 'shared',
     byteLength: 1024,
@@ -127,11 +135,11 @@ it('GPUEdgeBundling validates props', () => {
   });
   expect(() =>
     create({
-      positions: graph.createDataView(shared, {
+      nodePositions: graph.createDataView(shared, {
         format: 'float32x2',
         length: 10
       }),
-      paths: graph.createDataView(shared, {format: 'float32x2', length: 96})
+      output: {paths: graph.createDataView(shared, {format: 'float32x2', length: 96})}
     })
   ).toThrow(/separate buffers/);
   const otherGraph = new GPUCommandGraph(device);
@@ -158,10 +166,10 @@ it('fixed-point exponent never allows density overflow', () => {
 });
 
 it('parameter values pack in both layouts', () => {
-  const words = createGPUEdgeBundlingParameterValues({activeIterations: 3, lambda: 0.7}, 'uint32');
+  const words = getGPUEdgeBundlingParameterValues({activeIterations: 3, lambda: 0.7}, 'uint32');
   expect(words[0]).toBe(3);
   expect(new Float32Array(words.buffer)[1]).toBeCloseTo(0.03, 6);
   expect(new Float32Array(words.buffer)[2]).toBeCloseTo(0.7, 6);
-  const floats = createGPUEdgeBundlingParameterValues({stepScale: 2}, 'float32');
+  const floats = getGPUEdgeBundlingParameterValues({stepScale: 2}, 'float32');
   expect(Array.from(floats)).toEqual([64, Math.fround(0.03), Math.fround(0.85), 0.5, 2]);
 });

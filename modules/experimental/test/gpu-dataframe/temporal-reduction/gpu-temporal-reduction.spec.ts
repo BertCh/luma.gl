@@ -10,10 +10,12 @@ import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-cont
 import {
   getGPUTemporalReductionParameterValues,
   getGPUTemporalReductionWordParameterValues,
-  GPUTemporalReduction,
+  GPUTemporalReduction
+} from '../../../src/gpu-dataframe/temporal-reduction';
+import {
   reduceTemporalBucketsOnCPU,
   type GPUTemporalReductionCPUResult
-} from '../../../src/gpu-dataframe/temporal-reduction';
+} from '../../../src/gpu-dataframe/temporal-reduction/temporal-reduction-cpu';
 import {ADVERSARIAL_WIDTHS, createAdversarialEdgeScene} from './adversarial-edges';
 import {getInt64TimeWords} from '../../../src/gpu-dataframe/time-window-filter';
 import {
@@ -23,6 +25,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Scene = {
   cellIds: Uint32Array;
@@ -87,8 +90,8 @@ function createFixture(device: Device, scene: Scene): Fixture {
   );
   const outputs = {
     counts: output(slotCount),
-    min: output(slotCount),
-    max: output(slotCount),
+    minimums: output(slotCount),
+    maximums: output(slotCount),
     first: output(slotCount),
     last: output(slotCount),
     ids: output(capacity),
@@ -115,15 +118,17 @@ function createFixture(device: Device, scene: Scene): Fixture {
       bucketCount: scene.bucketCount,
       output: {
         counts: importGraphBuffer(graph, 'o-counts', outputs.counts, 'uint32', slotCount),
-        min: importGraphBuffer(graph, 'o-min', outputs.min, 'float32', slotCount),
-        max: importGraphBuffer(graph, 'o-max', outputs.max, 'float32', slotCount),
+        minimums: importGraphBuffer(graph, 'o-min', outputs.minimums, 'float32', slotCount),
+        maximums: importGraphBuffer(graph, 'o-max', outputs.maximums, 'float32', slotCount),
         first: importGraphBuffer(graph, 'o-first', outputs.first, 'float32', slotCount),
         last: importGraphBuffer(graph, 'o-last', outputs.last, 'float32', slotCount),
         occupiedSlots: {
           ids: importGraphBuffer(graph, 'o-ids', outputs.ids, 'uint32', capacity),
-          count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'o-count', outputs.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'o-overflow', outputs.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'o-total', outputs.total, 'uint32', 1)
+          }
         }
       }
     })
@@ -141,8 +146,8 @@ function createFixture(device: Device, scene: Scene): Fixture {
       const [occupiedOverflow] = await readUint32(outputs.overflow, 1);
       return {
         count: Uint32Array.from(await readUint32(outputs.counts, slotCount)),
-        min: Float32Array.from(await readFloat32(outputs.min, slotCount)),
-        max: Float32Array.from(await readFloat32(outputs.max, slotCount)),
+        minimums: Float32Array.from(await readFloat32(outputs.minimums, slotCount)),
+        maximums: Float32Array.from(await readFloat32(outputs.maximums, slotCount)),
         first: Float32Array.from(await readFloat32(outputs.first, slotCount)),
         last: Float32Array.from(await readFloat32(outputs.last, slotCount)),
         occupiedSlots: [],
@@ -170,7 +175,7 @@ function expectParity(
 ) {
   const expected = reduceTemporalBucketsOnCPU({...scene, origin, width});
   expect(Array.from(actual.count)).toEqual(Array.from(expected.count));
-  for (const name of ['min', 'max', 'first', 'last'] as const) {
+  for (const name of ['minimums', 'maximums', 'first', 'last'] as const) {
     const actualBits = Array.from(new Uint32Array(actual[name].buffer));
     const expectedBits = Array.from(new Uint32Array(expected[name].buffer));
     const bits = (values: number[]) => values.map(bit => (bit === 0x7fc00000 ? 'nan' : bit));
@@ -207,9 +212,7 @@ function createRandomScene(
 
 it('GPUTemporalReduction matches the CPU oracle on random float32 data', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const seed of [1, 2, 3]) {
     const scene = createRandomScene(seed, 4000, 7, 12);
     scene.mask = Uint32Array.from({length: 4000}, (_, row) => (row % 5 === 3 ? 0 : 1));
@@ -223,9 +226,7 @@ it('GPUTemporalReduction matches the CPU oracle on random float32 data', async (
 
 it('GPUTemporalReduction handles ties, empty buckets, and out-of-range rows', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene: Scene = {
     cellIds: Uint32Array.from([0, 0, 0, 0, 0, 1, 1, 0xffffffff, 0, 0]),
     // Rows 0-3 tie: times 4, 4, 5, 5 inside bucket 1 (width 4); row 4 is before the origin and
@@ -240,18 +241,16 @@ it('GPUTemporalReduction handles ties, empty buckets, and out-of-range rows', as
   const expected = expectParity(actual, scene, 0, 4);
   expect(Array.from(expected.count)).toEqual([0, 4, 0, 0, 0, 2]);
   // First = lowest row among earliest time (row 0, value 3); last = lowest row among latest (row 2).
-  expect([expected.first[1], expected.last[1], expected.min[1], expected.max[1]]).toEqual([
-    3, 7, -2, 9
-  ]);
+  expect([expected.first[1], expected.last[1], expected.minimums[1], expected.maximums[1]]).toEqual(
+    [3, 7, -2, 9]
+  );
   expect(actual.occupiedIds).toEqual([1, 5]);
   fixture.destroy();
 });
 
 it('GPUTemporalReduction changes the bucketing between encodings without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(9, 3000, 5, 8);
   const fixture = createFixture(device, scene);
   for (const [origin, width] of [
@@ -273,9 +272,7 @@ it('GPUTemporalReduction changes the bucketing between encodings without recompi
 
 it('GPUTemporalReduction clamps the occupied list to capacity and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createRandomScene(5, 2000, 6, 10);
   scene.capacity = 9;
   const fixture = createFixture(device, scene);
@@ -288,9 +285,7 @@ it('GPUTemporalReduction clamps the occupied list to capacity and reports overfl
 
 it('GPUTemporalReduction reduces exact Int64 word times', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const origin = 1_700_000_000_000n;
   const width = 3_600_000;
   const random = createRandom(77);
@@ -325,9 +320,7 @@ it('GPUTemporalReduction reduces exact Int64 word times', async () => {
 
 it('GPUTemporalReduction assigns adversarial bucket edges like the oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const width of ADVERSARIAL_WIDTHS) {
     const {edgeBuckets: _edgeBuckets, ...scene} = createAdversarialEdgeScene(width);
     const fixture = createFixture(device, scene);

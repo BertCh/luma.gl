@@ -28,7 +28,11 @@ it('GPUSpatialErrorGM validates its inputs and declares its nodes', () => {
     predictors: view('float32', 20),
     response: view('float32', 10),
     predictorCount: 2,
-    output: {table: view('float32', 16), summary: view('float32', 13), status: view('uint32', 1)},
+    output: {
+      table: view('float32', 16),
+      summary: view('float32', 13),
+      status: {code: view('uint32', 1)}
+    },
     ...overrides
   });
   const expectThrows = (overrides: Partial<GPUSpatialErrorGMProps>, message: RegExp) =>
@@ -40,11 +44,23 @@ it('GPUSpatialErrorGM validates its inputs and declares its nodes', () => {
   expectThrows({predictors: view('float32', 19)}, /predictors length/);
   expectThrows({tileRowCount: 0}, /tileRowCount/);
   expectThrows(
-    {output: {table: view('float32', 15), summary: view('float32', 13), status: view('uint32', 1)}},
+    {
+      output: {
+        table: view('float32', 15),
+        summary: view('float32', 13),
+        status: {code: view('uint32', 1)}
+      }
+    },
     /output.table/
   );
   expectThrows(
-    {output: {table: view('float32', 16), summary: view('float32', 12), status: view('uint32', 1)}},
+    {
+      output: {
+        table: view('float32', 16),
+        summary: view('float32', 12),
+        status: {code: view('uint32', 1)}
+      }
+    },
     /output.summary/
   );
   // 15 predictors (the OLS and 16-wide Cholesky limit) are accepted.
@@ -57,7 +73,7 @@ it('GPUSpatialErrorGM validates its inputs and declares its nodes', () => {
           output: {
             table: view('float32', 68),
             summary: view('float32', 13),
-            status: view('uint32', 1)
+            status: {code: view('uint32', 1)}
           }
         })
       )

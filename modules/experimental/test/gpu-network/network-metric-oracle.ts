@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../src/gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../src/analysis-core/contracts/earth';
 
 /** Float64 twin of the WGSL from `getNetworkMetricWGSL`. Positions are `[x, y]` or `[lng, lat]`. */
 export type NetworkMetricOracle = {

@@ -20,9 +20,9 @@ export type RasterStretchScene = {
 export type RasterStretchStatistics = {
   /** Included valid finite cells (window and mask applied). */
   validCount: number;
-  domainMin: number;
-  domainMax: number;
-  /** Bin scale `binCount / (domainMax - domainMin)` in f32, 0 for an empty range. */
+  domainMinimum: number;
+  domainMaximum: number;
+  /** Bin scale `binCount / (domainMaximum - domainMinimum)` in f32, 0 for an empty range. */
   scale: number;
   binWidth: number;
   histogram: Uint32Array;
@@ -51,7 +51,7 @@ export function getBinOnCPU(
   stats: RasterStretchStatistics,
   binCount: number
 ): number {
-  const position = fround(fround(value - stats.domainMin) * stats.scale);
+  const position = fround(fround(value - stats.domainMinimum) * stats.scale);
   return Math.min(Math.floor(position), binCount - 1);
 }
 
@@ -62,8 +62,8 @@ export function getBinOnCPU(
 export function getPercentileValueOnCPU(
   target: number,
   cdf: Uint32Array,
-  domainMin: number,
-  domainMax: number,
+  domainMinimum: number,
+  domainMaximum: number,
   binWidth: number
 ): number {
   let bin = cdf.length - 1;
@@ -76,7 +76,10 @@ export function getPercentileValueOnCPU(
   const before = bin > 0 ? cdf[bin - 1] : 0;
   const count = cdf[bin] - before;
   const fraction = count > 0 ? Math.min(Math.max((target - before) / count, 0), 1) : 0;
-  return Math.min(Math.max(domainMin + (bin + fraction) * binWidth, domainMin), domainMax);
+  return Math.min(
+    Math.max(domainMinimum + (bin + fraction) * binWidth, domainMinimum),
+    domainMaximum
+  );
 }
 
 /** Computes domain, histogram, CDF and stretch bounds (steps 1 to 5 of the pipeline). */
@@ -105,37 +108,37 @@ export function computeRasterStretchStatistics(
     included.push(cell);
   }
   const explicit = parameters[4] !== 0;
-  let domainMin = 0;
-  let domainMax = 0;
+  let domainMinimum = 0;
+  let domainMaximum = 0;
   if (explicit) {
-    domainMin = parameters[5];
-    domainMax = parameters[6];
+    domainMinimum = parameters[5];
+    domainMaximum = parameters[6];
   } else if (included.length > 0) {
-    domainMin = Infinity;
-    domainMax = -Infinity;
+    domainMinimum = Infinity;
+    domainMaximum = -Infinity;
     for (const cell of included) {
-      domainMin = Math.min(domainMin, scene.values[cell]);
-      domainMax = Math.max(domainMax, scene.values[cell]);
+      domainMinimum = Math.min(domainMinimum, scene.values[cell]);
+      domainMaximum = Math.max(domainMaximum, scene.values[cell]);
     }
   }
-  const range = fround(domainMax - domainMin);
-  const hasRange = domainMax > domainMin;
+  const range = fround(domainMaximum - domainMinimum);
+  const hasRange = domainMaximum > domainMinimum;
   const stats: RasterStretchStatistics = {
     validCount: included.length,
-    domainMin,
-    domainMax,
+    domainMinimum,
+    domainMaximum,
     scale: hasRange ? fround(binCount / range) : 0,
     binWidth: hasRange ? fround(range / binCount) : 0,
     histogram: new Uint32Array(binCount),
     cdf: new Uint32Array(binCount),
     total: 0,
-    lo: domainMin,
-    hi: domainMax,
+    lo: domainMinimum,
+    hi: domainMaximum,
     isEmpty: !explicit && included.length === 0
   };
   for (const cell of included) {
     const value = scene.values[cell];
-    if (value < domainMin || value > domainMax) {
+    if (value < domainMinimum || value > domainMaximum) {
       continue;
     }
     stats.histogram[getBinOnCPU(value, stats, binCount)]++;
@@ -153,15 +156,15 @@ export function computeRasterStretchStatistics(
     stats.lo = getPercentileValueOnCPU(
       fround(parameters[8] * stats.total),
       stats.cdf,
-      domainMin,
-      domainMax,
+      domainMinimum,
+      domainMaximum,
       stats.binWidth
     );
     stats.hi = getPercentileValueOnCPU(
       fround(parameters[9] * stats.total),
       stats.cdf,
-      domainMin,
-      domainMax,
+      domainMinimum,
+      domainMaximum,
       stats.binWidth
     );
   }
@@ -181,12 +184,12 @@ export function stretchValueOnCPU(
   }
   let unit: number;
   if (parameters[7] === 2) {
-    if (value <= stats.domainMin) {
+    if (value <= stats.domainMinimum) {
       unit = 0;
-    } else if (value >= stats.domainMax) {
+    } else if (value >= stats.domainMaximum) {
       unit = 1;
     } else {
-      const position = fround(fround(value - stats.domainMin) * stats.scale);
+      const position = fround(fround(value - stats.domainMinimum) * stats.scale);
       const bin = Math.min(Math.floor(position), binCount - 1);
       const fraction = Math.min(Math.max(position - bin, 0), 1);
       const before = bin > 0 ? stats.cdf[bin - 1] : 0;
@@ -198,7 +201,7 @@ export function stretchValueOnCPU(
   }
   const gamma = parameters[10];
   if (gamma !== 1 && unit > 0 && unit < 1) {
-    unit = unit ** gamma;
+    unit = unit ** (1 / gamma);
   }
   const contrast = parameters[11];
   if (contrast > 0) {

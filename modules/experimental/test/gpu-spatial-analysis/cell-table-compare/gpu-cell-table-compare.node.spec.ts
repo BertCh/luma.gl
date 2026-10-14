@@ -9,7 +9,13 @@ import {
   GPUCellTableCompare,
   type GPUCellTableCompareProps
 } from '../../../src/gpu-spatial-analysis/cell-table-compare';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
+  CORE_WORKGROUP_STORAGE_LIMIT_BYTES,
+  getStorageBindingCount,
+  getWorkgroupMemoryBytes
+} from '../../utils/gpu-contributor-test-utils';
 import {
   compareCellTablesOnCPU,
   convertInt64ToFloat32,
@@ -26,8 +32,7 @@ function createTable(graph: GPUCommandGraph, capacity: number, withSums = true):
     cells: view('uint32x2', capacity),
     counts: view('uint32', capacity),
     sums: withSums ? view('uint32x2', capacity) : undefined,
-    count: view('uint32', 1),
-    overflow: view('uint32', 1)
+    status: {count: view('uint32', 1), overflow: view('uint32', 1)}
   };
 }
 
@@ -45,8 +50,7 @@ function createProps(
       presence: view('uint32', 8),
       delta: view('float32', 8),
       zScore: view('float32', 8),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1)
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     },
     ...overrides
   };
@@ -86,7 +90,7 @@ it('GPUCellTableCompare validates its props', () => {
         delta: createTransientView(graph, 'short', 'float32', 3)
       }
     }),
-    /same length/
+    /needs output.cells.length rows/
   );
   expectThrows(graph => {
     const before = createTable(graph, 8);
@@ -119,11 +123,61 @@ it('GPUCellTableCompare names nodes deterministically and stays within 8 binding
     'cmp-scan-level-0-scan',
     'cmp-merge',
     'cmp-measures',
+    'cmp-statistics-sums',
+    'cmp-statistics-squares',
     'cmp-statistics',
     'cmp-derived',
     'cmp-tail',
     'cmp-publish'
   ]);
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  for (const {id, source} of sources) {
+    expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
+    expect(getWorkgroupMemoryBytes(source), `${id} workgroup bytes`).toBeLessThanOrEqual(
+      CORE_WORKGROUP_STORAGE_LIMIT_BYTES
+    );
+  }
+  // The z-score reduction is three kernels, with no atomics, one workgroup tile per 256 slots.
+  const statistics = sources.filter(({id}) => id.startsWith('cmp-statistics'));
+  expect(statistics.map(({id}) => id)).toEqual([
+    'cmp-statistics-sums',
+    'cmp-statistics-squares',
+    'cmp-statistics'
+  ]);
+  for (const {id, source} of statistics) {
+    expect(source, id).not.toContain('atomic');
+    // Capacity 8 needs one workgroup.
+    expect(source, id).toContain('const GROUPS: u32 = 1u;');
+  }
+  device.destroy();
+});
+
+it('GPUCellTableCompare spreads the z-score reduction over workgroups for large capacities', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const capacity = 3000;
+  const view = <Format extends 'uint32' | 'uint32x2' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `large-${serial++}`, format, length);
+  const props = createProps(graph, {
+    zScore: 'standardized',
+    output: {
+      cells: view('uint32x2', capacity),
+      presence: view('uint32', capacity),
+      delta: view('float32', capacity),
+      zScore: view('float32', capacity),
+      status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+    }
+  });
+  const nodes = new GPUCellTableCompare({...props, id: 'big'}).getCommandNodes(graph);
+  const sources = getGPUCommandNodeKernelSources(nodes).filter(({id}) =>
+    id.startsWith('big-statistics')
+  );
+  expect(sources).toHaveLength(3);
+  // ceil(3000 / 256) = 12 workgroups.
+  for (const {id, source} of sources) {
+    expect(source, id).toContain('const GROUPS: u32 = 12u;');
+    expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
+  }
   device.destroy();
 });
 

@@ -13,7 +13,11 @@ import {
   GPU_SPATIAL_ERROR_MAXIMUM_LIKELIHOOD_MAXIMUM_PREDICTOR_COUNT,
   GPU_SPATIAL_LAG_MAXIMUM_LIKELIHOOD_MAXIMUM_PREDICTOR_COUNT
 } from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-parameters';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {createSeriesProbeNodes} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-nodes';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodePipelineKeys
+} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
 const ROWS = 10;
@@ -35,7 +39,7 @@ function createFixtures() {
     output: {
       table: view('float32', (predictorCount + 2) * 4),
       summary: view('float32', 22),
-      status: view('uint32', 1)
+      status: {code: view('uint32', 1)}
     }
   });
   return {graph, view, createProps};
@@ -60,7 +64,10 @@ it('GPUSpatialLagMaximumLikelihood validates its inputs and declares its nodes',
   const output = createProps().output;
   expectThrows({output: {...output, table: view('float32', 15)}}, /output.table/);
   expectThrows({output: {...output, summary: view('float32', 21)}}, /output.summary/);
-  expectThrows({output: {...output, converged: view('uint32', 0)}}, /output.converged/);
+  expectThrows(
+    {output: {...output, status: {...output.status, converged: view('uint32', 0)}}},
+    /output\.status\.converged/
+  );
   expectThrows({output: {...output, residuals: view('float32', ROWS - 1)}}, /output.residuals/);
   expectThrows({output: {...output, powerTraces: view('float32', 128)}}, /provided together/);
   expectThrows(
@@ -92,6 +99,7 @@ it('GPUSpatialLagMaximumLikelihood validates its inputs and declares its nodes',
     'weighted-prediction',
     'final-moments-tiles',
     'final-merge',
+    'tr3-batch-information',
     'tr3-probe-first-0-1',
     'tr3-probe-step-0-2',
     'tr3-probe-step-0-3',
@@ -116,7 +124,10 @@ it('GPUSpatialLagMaximumLikelihood accepts its predictor cap and no kernel excee
       maximumPower: 3,
       output: {
         ...createProps(cap).output,
-        converged: createTransientView(graph, `converged-${serial++}`, 'uint32', 1),
+        status: {
+          ...createProps(cap).output.status,
+          converged: createTransientView(graph, `converged-${serial++}`, 'uint32', 1)
+        },
         residuals: createTransientView(graph, `residuals-${serial++}`, 'float32', ROWS)
       }
     }).getCommandNodes(graph)
@@ -147,7 +158,7 @@ it('GPUSpatialLagMaximumLikelihood feeds GPUSpatialLagImpacts through its table 
         rowCount: ROWS,
         maximumPower: 16,
         traces: {powerTraces, powerSums, infinityNorm},
-        status: props.output.status,
+        status: props.output.status.code,
         output: {impacts: view('float32', k * 3)}
       })
   ).not.toThrow();
@@ -186,6 +197,7 @@ it('GPUSpatialErrorMaximumLikelihood validates its inputs and declares its nodes
     'filtered-solve',
     'residuals-tiles',
     'residuals-merge',
+    'tr3-batch-information',
     'tr3-probe-first-0-1',
     'tr3-probe-step-0-2',
     'tr3-probe-step-0-3',
@@ -219,7 +231,11 @@ it('the maximum-likelihood nodes pick stochastic traces above 4096 rows and batc
     response: view('float32', rows),
     predictorCount: 2,
     maximumPower: 3,
-    output: {table: view('float32', 16), summary: view('float32', 22), status: view('uint32', 1)}
+    output: {
+      table: view('float32', 16),
+      summary: view('float32', 22),
+      status: {code: view('uint32', 1)}
+    }
   });
   expect(model.traceMode).toBe('stochastic');
   const names = model.getCommandNodes(graph).map(node => node.id);
@@ -240,8 +256,82 @@ it('the maximum-likelihood nodes pick stochastic traces above 4096 rows and batc
         output: {
           table: view('float32', 16),
           summary: view('float32', 22),
-          status: view('uint32', 1)
+          status: {code: view('uint32', 1)}
         }
       })
   ).toThrow(/16384/);
+});
+
+// Rule 12: neither the series length nor the number of probe batches may reach WGSL text or
+// override constants, so building at N and N + 1 must give the same number of pipelines.
+const getSeriesProbePipelineCount = (
+  mode: 'exact' | 'stochastic',
+  maximumPower: number,
+  rowCount: number
+): {pipelines: number; batchCount: number} => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `series-view-${serial++}`, format, length);
+  const probes = createSeriesProbeNodes(graph, {
+    id: `series-${serial++}`,
+    operation: 'SeriesProbeTest',
+    weights: {
+      offsets: view('uint32', rowCount + 1),
+      neighbors: view('uint32', 4),
+      weights: view('float32', 4)
+    },
+    rowCount,
+    maximumPower,
+    mode,
+    probeCount: 64,
+    seedParameters: view('uint32', 1),
+    tileRowCount: Math.ceil(rowCount / 64),
+    tileCount: 64,
+    workspace: view('float32', 8),
+    parameterSlot: 1
+  });
+  const pipelines = getGPUCommandNodePipelineKeys(probes.nodes).size;
+  const batchCount = probes.nodes.filter(node => /probe-merge-/.test(node.id)).length;
+  device.destroy();
+  return {pipelines, batchCount};
+};
+
+it('the series probe pipelines do not depend on the series length or the number of batches', () => {
+  for (const mode of ['exact', 'stochastic'] as const) {
+    const base = getSeriesProbePipelineCount(mode, 4, 3000);
+    expect(base.pipelines).toBeGreaterThan(0);
+    expect(getSeriesProbePipelineCount(mode, 5, 3000).pipelines, `${mode} power`).toBe(
+      base.pipelines
+    );
+    expect(getSeriesProbePipelineCount(mode, 9, 3000).pipelines, `${mode} power`).toBe(
+      base.pipelines
+    );
+    // Exact: probeTotal = rows, so more rows gives more batches. Stochastic: 64 probes in
+    // batches of floor(8M / rows).
+    const rowCounts = mode === 'exact' ? [3000, 5000, 9000] : [1_000_000, 1_700_000, 2_500_000];
+    const counts = rowCounts.map(rowCount => getSeriesProbePipelineCount(mode, 4, rowCount));
+    expect(new Set(counts.map(count => count.batchCount)).size, mode).toBeGreaterThan(1);
+    expect(counts.every(count => count.batchCount > 1)).toBe(true);
+    expect(new Set(counts.map(count => count.pipelines)).size, `${mode} batches`).toBe(1);
+  }
+});
+
+it('the maximum likelihood contributors build the same pipelines at every series length', () => {
+  const getCount = (kind: 'lag' | 'error', maximumPower: number) => {
+    const {graph, createProps} = createFixtures();
+    const props = {...createProps(), id: `${kind}-${serial++}`, maximumPower};
+    const model =
+      kind === 'lag'
+        ? new GPUSpatialLagMaximumLikelihood(props)
+        : new GPUSpatialErrorMaximumLikelihood(props);
+    const nodes = model.getCommandNodes(graph);
+    const count = getGPUCommandNodePipelineKeys(nodes).size;
+    graph.device.destroy();
+    return count;
+  };
+  for (const kind of ['lag', 'error'] as const) {
+    expect(getCount(kind, 5), kind).toBe(getCount(kind, 4));
+    expect(getCount(kind, 8), kind).toBe(getCount(kind, 4));
+  }
 });

@@ -23,7 +23,7 @@ function createProps(
     length: number
   ) => createTransientView(graph, `${prefix}${name}`, format, length);
   return {
-    points: view('points', 'float32x2', 10),
+    points: {kind: 'points', positions: view('points', 'float32x2', 10)},
     features: {
       kind: 'segments',
       starts: view('starts', 'float32x2', 3),
@@ -31,7 +31,7 @@ function createProps(
     },
     distance: view('distance', 'float32', 1),
     candidateCapacity: 16,
-    outputMask: view('mask', 'uint32', 10),
+    output: {outputMask: view('mask', 'uint32', 10)},
     ...overrides
   };
 }
@@ -56,18 +56,25 @@ it('GPUBufferSelection builds one mask node per chunk and a publish node with ou
   ) => createTransientView(graph, name, format, length);
   const selection = new GPUBufferSelection(
     createProps(graph, {
-      points: createVectorView('points', 'float32x2', [
-        view('points-0', 'float32x2', 6),
-        view('points-1', 'float32x2', 4)
-      ]),
-      outputMask: createVectorView('mask', 'uint32', [
-        view('mask-0', 'uint32', 6),
-        view('mask-1', 'uint32', 4)
-      ]),
+      points: {
+        kind: 'points',
+        positions: createVectorView('points', 'float32x2', [
+          view('points-0', 'float32x2', 6),
+          view('points-1', 'float32x2', 4)
+        ])
+      },
       output: {
-        ids: view('out-ids', 'uint32', 4),
-        count: view('out-count', 'uint32', 1),
-        overflow: view('out-overflow', 'uint32', 1)
+        outputMask: createVectorView('mask', 'uint32', [
+          view('mask-0', 'uint32', 6),
+          view('mask-1', 'uint32', 4)
+        ]),
+        matches: {
+          ids: view('out-ids', 'uint32', 4),
+          status: {
+            count: view('out-count', 'uint32', 1),
+            overflow: view('out-overflow', 'uint32', 1)
+          }
+        }
       }
     })
   );
@@ -84,28 +91,34 @@ it('GPUBufferSelection validates outputs and the distance view', () => {
     format: Format,
     length: number
   ) => createTransientView(graph, name, format, length);
-  expect(
-    () => new GPUBufferSelection(createProps(graph, {outputMask: undefined, output: undefined}))
-  ).toThrow(/requires outputMask or output/);
+  expect(() => new GPUBufferSelection(createProps(graph, {output: {}}))).toThrow(
+    /needs output.outputMask or output.matches/
+  );
   expect(
     () => new GPUBufferSelection(createProps(graph, {distance: view('bad-distance', 'float32', 2)}))
-  ).toThrow(/distance must contain one float32 row/);
+  ).toThrow(/distance needs one float32 row/);
   expect(
-    () => new GPUBufferSelection(createProps(graph, {outputMask: view('short-mask', 'uint32', 9)}))
+    () =>
+      new GPUBufferSelection(
+        createProps(graph, {output: {outputMask: view('short-mask', 'uint32', 9)}})
+      )
   ).toThrow(/outputMask must match the source topology/);
   expect(
     () =>
       new GPUBufferSelection(
         createProps(graph, {
-          outputMask: undefined,
           output: {
-            ids: view('empty-ids', 'uint32', 0),
-            count: view('count', 'uint32', 1),
-            overflow: view('overflow', 'uint32', 1)
+            matches: {
+              ids: view('empty-ids', 'uint32', 0),
+              status: {
+                count: view('count', 'uint32', 1),
+                overflow: view('overflow', 'uint32', 1)
+              }
+            }
           }
         })
       )
-  ).toThrow(/output.ids must hold at least one row/);
+  ).toThrow(/output.matches.ids needs at least one row/);
   expect(() => new GPUBufferSelection(createProps(graph, {candidateCapacity: 0}))).toThrow(
     /candidateCapacity/
   );

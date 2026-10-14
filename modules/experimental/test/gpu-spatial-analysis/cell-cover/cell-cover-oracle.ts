@@ -14,6 +14,7 @@ import {
   h3ToBigInt,
   quadbinTileToCell
 } from '../cell-aggregation/cell-aggregation-oracle';
+import {isInsideRingsExact} from '../segment-intersection/exact-geometry-reference';
 
 const f = Math.fround;
 
@@ -104,11 +105,15 @@ function getBounds(rings: Vertex[][]): [number, number, number, number] | undefi
 }
 
 /**
- * Even-odd containment mirroring the WGSL `coverContains`: every operation is rounded to f32 in
- * the shader's order. With `exact` true it uses f64 instead.
+ * Even-odd containment. By default it mirrors the WGSL `coverContains`: the shared exact
+ * point-in-ring rule over f32 coordinates (`exact-geometry-reference.ts`). With `exact` true it is
+ * an independent f64 crossing test of the unrounded coordinates.
  */
 export function isInsideRings(rings: Vertex[][], p: Vertex, exact: boolean = false): boolean {
-  const r = exact ? (value: number) => value : f;
+  if (!exact) {
+    return isInsideRingsExact(rings, p);
+  }
+  const r = (value: number) => value;
   let inside = false;
   for (const ring of rings) {
     for (let index = 0; index < ring.length; index++) {
@@ -126,6 +131,9 @@ export function isInsideRings(rings: Vertex[][], p: Vertex, exact: boolean = fal
 }
 
 function segmentHitsRect(a: Vertex, b: Vertex, lo: Vertex, hi: Vertex): boolean {
+  if (![...a, ...b].every(value => Number.isFinite(value) && Math.abs(value) < 1e30)) {
+    return false;
+  }
   let lower = -1e30;
   let upper = 1e30;
   for (const axis of [0, 1]) {

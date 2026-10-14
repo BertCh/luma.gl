@@ -16,6 +16,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /*
  * Scene and oracle values come from shapely 2.1.2 (GEOS): minimum_rotated_rectangle /
@@ -53,7 +54,10 @@ const POSITIONS = Float32Array.from([
   1343.199951171875, 2033.699951171875, 1400.0, 2000.0, 1500.0, 2000.0, 1503.0, 2004.0
 ]);
 const RING_OFFSETS = Uint32Array.from([0, 40, 44, 47, 59, 71, 72, 74]);
+// Four-level polygon layout: one polygon per feature, so polygon p owns the rings of feature p.
 const FEATURE_RING_OFFSETS = Uint32Array.from([0, 1, 2, 3, 5, 6, 7]);
+const POLYGON_OFFSETS = FEATURE_RING_OFFSETS;
+const FEATURE_OFFSETS = Uint32Array.from([0, 1, 2, 3, 4, 5, 6]);
 const FEATURE_COUNT = 6;
 const ORACLE = [
   {
@@ -155,13 +159,8 @@ async function runMinimumBounds(
     mode === 'geometry'
       ? {
           ringOffsets: importGraphBuffer(graph, 'rings', input(RING_OFFSETS), 'uint32', 8),
-          featureRingOffsets: importGraphBuffer(
-            graph,
-            'features',
-            input(FEATURE_RING_OFFSETS),
-            'uint32',
-            7
-          )
+          polygonOffsets: importGraphBuffer(graph, 'polygons', input(POLYGON_OFFSETS), 'uint32', 7),
+          featureOffsets: importGraphBuffer(graph, 'features', input(FEATURE_OFFSETS), 'uint32', 7)
         }
       : (() => {
           const labels = new Uint32Array(rows);
@@ -193,7 +192,7 @@ async function runMinimumBounds(
         diameters: importGraphBuffer(graph, 'o-diameters', out.diameters, 'float32', 6),
         bounds: importGraphBuffer(graph, 'o-bounds', out.bounds, 'float32x4', 6),
         hullSizes: importGraphBuffer(graph, 'o-hull-sizes', out.hullSizes, 'uint32', 6),
-        overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)
+        status: {overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1)}
       }
     })
   );
@@ -238,9 +237,7 @@ function expectClose(actual: number, expected: number, relative: number, absolut
 for (const mode of ['geometry', 'labels'] as const) {
   it(`GPUMinimumBounds (${mode}) matches shapely rectangle, circle, diameter and envelope`, async () => {
     const device = await getWebGPUTestDevice();
-    if (!device) {
-      return;
-    }
+    requireTestDevice(device);
     const actual = await runMinimumBounds(device, mode);
     expect(actual.overflow).toBe(0);
     for (let feature = 0; feature < FEATURE_COUNT; feature++) {
@@ -286,9 +283,7 @@ for (const mode of ['geometry', 'labels'] as const) {
 
 it('GPUMinimumBounds flags hulls over maximumHullVertices and writes NaN for them', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const actual = await runMinimumBounds(device, 'geometry', 5);
   expect(actual.overflow & GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW).toBe(
     GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW
@@ -303,9 +298,7 @@ it('GPUMinimumBounds flags hulls over maximumHullVertices and writes NaN for the
 
 it('GPUMinimumBounds calipers on large hulls match a brute-force CPU scan', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Three groups with 60 to 220 hull vertices: a circle, a rotated thin ellipse (long aspect,
   // so the rectangle's extremes sweep a lot per edge) and a skewed superellipse.
   const groups: [number, number][][] = [];
@@ -368,11 +361,26 @@ it('GPUMinimumBounds calipers on large hulls match a brute-force CPU scan', asyn
         'uint32',
         offsets.length
       ),
+      // One polygon of one ring per group.
+      polygonOffsets: importGraphBuffer(
+        graph,
+        'polygons',
+        input(Uint32Array.from(offsets, (_, index) => index)),
+        'uint32',
+        offsets.length
+      ),
+      featureOffsets: importGraphBuffer(
+        graph,
+        'features',
+        input(Uint32Array.from(offsets, (_, index) => index)),
+        'uint32',
+        offsets.length
+      ),
       output: {
         rectangleSizes: importGraphBuffer(graph, 'o-sizes', sizes, 'float32x4', groupCount),
         longestLines: importGraphBuffer(graph, 'o-lines', lines, 'float32x4', groupCount),
         diameters: importGraphBuffer(graph, 'o-diameters', diameters, 'float32', groupCount),
-        overflow: importGraphBuffer(graph, 'o-overflow', overflow, 'uint32', 1)
+        status: {overflow: importGraphBuffer(graph, 'o-overflow', overflow, 'uint32', 1)}
       }
     })
   );

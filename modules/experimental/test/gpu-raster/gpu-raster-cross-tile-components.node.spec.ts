@@ -6,6 +6,7 @@ import {Buffer} from '@luma.gl/core';
 import {
   addGPUCommandNodes,
   type GPUCommandNodeProducer,
+  type GPUCommandNode,
   GraphBufferHandle,
   GraphDataView,
   type GPUCommandGraph,
@@ -23,7 +24,7 @@ import {
 import {describe, expect, test} from 'vitest';
 
 type RecordingGraph = GPUCommandGraph & {
-  passes: GPUCommandGraphComputeNode[];
+  passes: GPUCommandGraphComputeNode<void>[];
   transientBuffers: GraphBufferHandle[];
 };
 
@@ -249,7 +250,7 @@ describe('GPURasterCrossTileComponents graph composition', () => {
     expect(passIds).toContain('global-segmentation-tile-0-publish-labels');
     expect(passIds).toContain('global-segmentation-tile-1-merge-pixel-counts');
     expect(passIds).toContain('global-segmentation-tile-1-merge-intensity-counts');
-    expect(passIds).toContain('global-segmentation-tile-1-merge-column');
+    expect(passIds).toContain('global-segmentation-fixed-column-tile-1-terms');
     expect(passIds).toContain('global-segmentation-finalize-intensity');
     expect(passIds).toContain('global-segmentation-finalize-geometry');
     expect(
@@ -257,6 +258,44 @@ describe('GPURasterCrossTileComponents graph composition', () => {
     ).toBe(true);
     expect(graph.transientBuffers.every(buffer => buffer.transient)).toBe(true);
     expect(graph.passes.every(pass => (pass.resources?.length ?? 0) <= 8)).toBe(true);
+  });
+
+  test('rule 13: union iterations are gated on the convergence pass', () => {
+    const graph = makeRecordingGraph('cross-tile-gates');
+    new GPURasterCrossTileComponents({
+      ...makeProps(graph),
+      id: 'gated',
+      maximumIterations: 3
+    }).addToGraph(graph);
+    const passes = graph.passes;
+    const ids = passes.map(pass => pass.id);
+    const reset = ids.indexOf('gated-iteration-dispatch-reset');
+    expect(reset).toBeGreaterThanOrEqual(0);
+    expect(reset).toBeLessThan(ids.indexOf('gated-seam-0-1-0'));
+    const dispatch = graph.transientBuffers.find(
+      buffer => buffer.id === 'gated-iteration-dispatch'
+    )!;
+    for (let iteration = 0; iteration < 3; iteration++) {
+      const seam = passes.find(pass => pass.id === `gated-seam-0-1-${iteration}`)!;
+      const compress = passes.find(pass => pass.id === `gated-compress-${iteration}`)!;
+      // Seam 0 reads slot 0, compression the last slot (one seam here).
+      expect(seam.condition).toMatchObject({
+        source: 'gpu',
+        mode: 'indirect',
+        buffer: dispatch,
+        byteOffset: 0
+      });
+      expect(compress.condition).toMatchObject({
+        source: 'gpu',
+        mode: 'indirect',
+        buffer: dispatch,
+        byteOffset: 16
+      });
+      // The convergence pass itself always runs; it zeroes the slots.
+      expect(
+        passes.find(pass => pass.id === `gated-convergence-${iteration}`)!.condition
+      ).toBeUndefined();
+    }
   });
 
   test('records diagonal four-tile corner contacts only under eight-connectivity', () => {
@@ -346,7 +385,7 @@ function makeRecordingGraph(
   limitOverrides: Partial<GPUCommandGraph['device']['limits']> = {},
   deviceType: string = 'webgpu'
 ): RecordingGraph {
-  const passes: GPUCommandGraphComputeNode[] = [];
+  const passes: GPUCommandGraphComputeNode<void>[] = [];
   const transientBuffers: GraphBufferHandle[] = [];
   const graph = {
     id,
@@ -367,10 +406,13 @@ function makeRecordingGraph(
     },
     passes,
     transientBuffers,
-    add(this: GPUCommandGraph, primitive: GPUCommandNodeProducer): void {
-      addGPUCommandNodes(this, primitive.getCommandNodes(this));
+    add(this: GPUCommandGraph, primitive: GPUCommandNodeProducer | GPUCommandNode): void {
+      addGPUCommandNodes(
+        this,
+        'getCommandNodes' in primitive ? primitive.getCommandNodes(this) : [primitive]
+      );
     },
-    addComputePass(pass: GPUCommandGraphComputeNode): void {
+    addComputePass(pass: GPUCommandGraphComputeNode<void>): void {
       passes.push(pass);
     },
     createTransientBuffer(descriptor: {
@@ -517,3 +559,15 @@ function makeView<Format extends GPURasterScalarFormat>(
     rowByteLength: 4
   });
 }
+
+test('cross-tile sums use fixed-point scale, clear, accumulate and decode without float CAS', () => {
+  const graph = makeRecordingGraph('fixed-point-sums');
+  new GPURasterCrossTileComponents(makeProps(graph)).addToGraph(graph);
+  const ids = graph.passes.map(pass => pass.id);
+  for (const kind of ['sum', 'column', 'row']) {
+    const prefix = `gpu-raster-cross-tile-components-fixed-${kind}`;
+    expect(ids).toContain(`${prefix}-scale-clear`);
+    expect(ids.indexOf(`${prefix}-accumulate`)).toBeGreaterThan(ids.indexOf(`${prefix}-clear`));
+    expect(ids.indexOf(`${prefix}-decode`)).toBeGreaterThan(ids.indexOf(`${prefix}-accumulate`));
+  }
+});

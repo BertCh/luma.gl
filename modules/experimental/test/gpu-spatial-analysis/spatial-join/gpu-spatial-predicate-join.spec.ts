@@ -31,6 +31,7 @@ import {
   type OracleFeature,
   type OraclePredicate
 } from './spatial-predicate-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type JoinResult = {
   pairs: [number, number][];
@@ -119,6 +120,8 @@ async function runJoin(
   const total = output('total', 1);
   const candidateCount = output('candidate-count', 1);
   const uncertain = output('uncertain', 1);
+  // A seventh scalar output: the finalize step then needs a second kernel (core limit of 8).
+  const anyOverflow = output('any-overflow', 1);
   const offsets = output('weight-offsets', lefts.length + 1);
   const neighbors = output('weight-neighbors', pairCapacity);
   const weightBuffer = createOutputBuffer(device, pairCapacity);
@@ -131,21 +134,28 @@ async function runJoin(
     excludeSameRow: options.excludeSameRow,
     candidateCapacity: options.candidateCapacity ?? Math.max(lefts.length * rights.length, 1),
     leafCapacity: options.leafCapacity,
-    pairs: {
-      leftIds: leftIds.view,
-      rightIds: rightIds.view,
-      count: count.view,
-      overflow: overflow.view,
-      candidateOverflow: candidateOverflow.view,
-      requiredCount: total.view
-    },
-    weights: {
-      offsets: offsets.view,
-      neighbors: neighbors.view,
-      weights: importGraphBuffer(graph, 'weight-values', weightBuffer, 'float32', pairCapacity)
-    },
-    candidateCount: candidateCount.view,
-    uncertainCount: uncertain.view
+    output: {
+      pairs: {
+        leftIds: leftIds.view,
+        rightIds: rightIds.view,
+        status: {
+          count: count.view,
+          overflow: overflow.view,
+          candidateOverflow: candidateOverflow.view,
+          requiredCount: total.view
+        }
+      },
+      weights: {
+        offsets: offsets.view,
+        neighbors: neighbors.view,
+        weights: importGraphBuffer(graph, 'weight-values', weightBuffer, 'float32', pairCapacity)
+      },
+      status: {
+        candidateCount: candidateCount.view,
+        uncertainCount: uncertain.view,
+        overflow: anyOverflow.view
+      }
+    }
   };
   graph.add(new GPUSpatialPredicateJoin(props));
   const compiled = graph.compile();
@@ -155,6 +165,13 @@ async function runJoin(
   const lefted = await readUint32(leftIds.buffer, pairCapacity);
   const righted = await readUint32(rightIds.buffer, pairCapacity);
   const weightBytes = await weightBuffer.readAsync();
+  // `status.overflow` is set exactly when the pair list or the candidate list is incomplete.
+  expect((await readUint32(anyOverflow.buffer, 1))[0]).toBe(
+    Math.max(
+      (await readUint32(overflow.buffer, 1))[0],
+      (await readUint32(candidateOverflow.buffer, 1))[0]
+    )
+  );
   const result: JoinResult = {
     pairs: lefted.slice(0, countValue).map((leftRow, slot) => [leftRow, righted[slot]]),
     count: countValue,
@@ -253,9 +270,7 @@ it('oracle sanity: OGC boundary semantics', () => {
 
 it('GPUSpatialPredicateJoin matches the oracle for all kinds, predicates and degenerate cases', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Hand-built scenes cover shared edges, touching corners, collinear overlaps, holes and endpoints.
   const hole = polygonWithRings(
     [
@@ -328,9 +343,7 @@ it('GPUSpatialPredicateJoin matches the oracle for all kinds, predicates and deg
 
 it('GPUSpatialPredicateJoin matches the oracle on random scenes', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   let seed = 1;
   let totalMatches = 0;
   for (let round = 0; round < ROUNDS; round++) {
@@ -359,9 +372,7 @@ it('GPUSpatialPredicateJoin matches the oracle on random scenes', async () => {
 
 it('GPUSpatialPredicateJoin documented boundary semantics', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const square = rectangle(0, 0, 4, 4);
   const run = async (
     leftKind: OracleFeature['kind'],
@@ -448,9 +459,7 @@ it('GPUSpatialPredicateJoin documented boundary semantics', async () => {
 
 it('GPUSpatialPredicateJoin dwithin is inclusive and joins distant features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const lefts = [point(0, 0), point(20, 20)];
   const rights = [point(3, 4), point(3, 4.5), point(20, 25)];
   const result = await runJoin(device, 'points', lefts, 'points', rights, 'dwithin', {distance: 5});
@@ -462,9 +471,7 @@ it('GPUSpatialPredicateJoin dwithin is inclusive and joins distant features', as
 
 it('GPUSpatialPredicateJoin self-join with excludeSameRow produces symmetric weights', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const features = generateRandomFeatures('polygons', 12, 99);
   const expected = await expectJoinMatchesOracle(
     device,
@@ -485,9 +492,7 @@ it('GPUSpatialPredicateJoin self-join with excludeSameRow produces symmetric wei
 
 it('GPUSpatialPredicateJoin reports overflow and keeps a sorted prefix', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const lefts = generateRandomFeatures('polygons', 10, 5);
   const rights = generateRandomFeatures('polygons', 10, 6);
   const expected = joinWithOracle('intersects', lefts, rights);
@@ -534,9 +539,7 @@ it('GPUSpatialPredicateJoin reports overflow and keeps a sorted prefix', async (
 
 it('GPUSpatialPredicateJoin updates per frame', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'predicate-join-frames'});
   const buffers: Buffer[] = [];
   const lefts = [point(1, 1), point(8, 8)];
@@ -560,11 +563,15 @@ it('GPUSpatialPredicateJoin updates per frame', async () => {
       right,
       predicate: 'within',
       candidateCapacity: 4,
-      pairs: {
-        leftIds: importGraphBuffer(graph, 'l', leftIds, 'uint32', 4),
-        rightIds: importGraphBuffer(graph, 'r', rightIds, 'uint32', 4),
-        count: importGraphBuffer(graph, 'c', count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'o', overflow, 'uint32', 1)
+      output: {
+        pairs: {
+          leftIds: importGraphBuffer(graph, 'l', leftIds, 'uint32', 4),
+          rightIds: importGraphBuffer(graph, 'r', rightIds, 'uint32', 4),
+          status: {
+            count: importGraphBuffer(graph, 'c', count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'o', overflow, 'uint32', 1)
+          }
+        }
       }
     })
   );
@@ -585,9 +592,7 @@ it('GPUSpatialPredicateJoin updates per frame', async () => {
 
 it('GPUSpatialPredicateJoin validates its props', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'predicate-join-validation'});
   const buffers: Buffer[] = [];
   const geometry = createGeometry(device, graph, 'g', 'points', [point(0, 0)], buffers);
@@ -597,7 +602,8 @@ it('GPUSpatialPredicateJoin validates its props', async () => {
         left: geometry,
         right: geometry,
         predicate: 'dwithin',
-        candidateCapacity: 1
+        candidateCapacity: 1,
+        output: {}
       })
   ).toThrow(/distance|pairs/);
   expect(
@@ -606,9 +612,10 @@ it('GPUSpatialPredicateJoin validates its props', async () => {
         left: geometry,
         right: geometry,
         predicate: 'intersects',
-        candidateCapacity: 1
+        candidateCapacity: 1,
+        output: {}
       })
-  ).toThrow(/pairs, weights/);
+  ).toThrow(/needs output.pairs or output.weights/);
   for (const buffer of buffers) {
     buffer.destroy();
   }

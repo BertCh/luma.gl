@@ -34,10 +34,11 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 it('additional spatial statistics match direct CPU edge oracles', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const offsets = Uint32Array.from([0, 1, 3, 5, 6]);
   const neighbors = Uint32Array.from([1, 0, 2, 1, 3, 2]);
   const edgeWeights = Float32Array.from([1, 1, 1, 1, 1, 1]);
@@ -100,7 +101,7 @@ it('additional spatial statistics match direct CPU edge oracles', async () => {
         'float32',
         parameters.length
       ),
-      result: {
+      output: {
         statistic: importGraphBuffer(
           graph,
           'local-geary',
@@ -116,7 +117,7 @@ it('additional spatial statistics match direct CPU edge oracles', async () => {
       weights,
       values: valueView,
       secondValues: secondView,
-      result: {statistic: importGraphBuffer(graph, 'pearson', outputBuffers.pearson, 'float32', 1)}
+      output: {statistic: importGraphBuffer(graph, 'pearson', outputBuffers.pearson, 'float32', 1)}
     })
   );
   graph.add(
@@ -124,7 +125,7 @@ it('additional spatial statistics match direct CPU edge oracles', async () => {
       weights,
       values: valueView,
       operation: 'squared-difference',
-      result: {statistic: importGraphBuffer(graph, 'gamma', outputBuffers.gamma, 'float32', 1)}
+      output: {statistic: importGraphBuffer(graph, 'gamma', outputBuffers.gamma, 'float32', 1)}
     })
   );
   const compiled = graph.compile();
@@ -210,7 +211,7 @@ async function runLocalGeary(
           csr.neighbors.length
         ),
         weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', csr.weights.length),
-        info: options.rowStandardized
+        information: options.rowStandardized
           ? {rowCount: rows, transform: 'row', symmetric: 'unknown'}
           : undefined
       },
@@ -224,14 +225,16 @@ async function runLocalGeary(
       ),
       mask: inputs.mask && importGraphBuffer(graph, 'mask', inputs.mask, 'uint32', rows),
       islands: options.islands,
-      result: {statistic: importGraphBuffer(graph, 'geary', outputs.geary, 'float32', rows)},
-      globalStatistics: importGraphBuffer(
-        graph,
-        'global-statistics',
-        outputs.globalStatistics,
-        'float32',
-        5
-      )
+      output: {
+        statistic: importGraphBuffer(graph, 'geary', outputs.geary, 'float32', rows),
+        globalStatistics: importGraphBuffer(
+          graph,
+          'global-statistics',
+          outputs.globalStatistics,
+          'float32',
+          5
+        )
+      }
     })
   );
   const compiled = graph.compile();
@@ -248,9 +251,9 @@ async function runLocalGeary(
 
 it('GPULocalGeary matches esda Geary_Local on a fixture with an island (keep, exclude, masked)', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const values = getReferenceValues();
-  // Oracle: fix/work/A/oracle-u3-autocorrelation.py (esda 2.10.0 Geary_Local, row-standardized).
+  // Oracle: test/oracles/statistics-local-autocorrelation.py (esda 2.10.0 Geary_Local, row-standardized).
   // The masked configuration is esda on the subset W re-row-standardized.
   for (const [policy, mask, reference, count, islandCount] of [
     ['keep', undefined, REFERENCE.keep, REFERENCE_ROW_COUNT, 1],

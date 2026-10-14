@@ -6,7 +6,7 @@ import {Texture} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
-import {GPURasterTextureToBuffer} from '../../../src/gpu-raster';
+import {GPURasterTextureToBuffer, makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainDerivatives,
@@ -32,6 +32,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {computeSolarShadow, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {expectClose} from '../terrain-test-utils';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const SUN_SWEEP: GPUSolarShadowMaskSettings[] = [
   {azimuthDegrees: 135, altitudeDegrees: 12, ambientIntensity: 0.2},
@@ -52,9 +53,7 @@ const SUN_SWEEP: GPUSolarShadowMaskSettings[] = [
 
 it('GPUSolarShadowMask matches the oracle for a per-frame sun sweep', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 20;
   const height = 15;
   const pixelCount = width * height;
@@ -90,16 +89,17 @@ it('GPUSolarShadowMask matches the oracle for a per-frame sun sweep', async () =
       importGraphBuffer(graph, id, buffer, 'float32', length);
     graph.add(
       new GPUSolarShadowMask({
-        width,
-        height,
+        grid: makeGPURasterMetadata({width, height}),
         directionCount,
         horizon: float('horizon', inputs[0], pixelCount * directionCount),
-        settings: settings.importToGraph(graph),
+        parameters: settings.importToGraph(graph),
         slope: float('slope', inputs[1]),
         aspect: float('aspect', inputs[2]),
         skyViewFactor: float('svf', inputs[3]),
-        sunVisibility: float('visibility', outputs[0]),
-        illumination: float('illumination', outputs[1])
+        output: {
+          sunVisibility: float('visibility', outputs[0]),
+          illumination: float('illumination', outputs[1])
+        }
       })
     );
     const compiled = graph.compile();
@@ -132,9 +132,7 @@ it('GPUSolarShadowMask matches the oracle for a per-frame sun sweep', async () =
 
 it('GPUSolarShadowMask composes with GPUTerrainHorizon and GPUTerrainDerivatives', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 32;
   const height = 28;
   const pixelCount = width * height;
@@ -142,6 +140,7 @@ it('GPUSolarShadowMask composes with GPUTerrainHorizon and GPUTerrainDerivatives
   const elevation = createSmoothTerrain(width, height, 21);
   const elevationBuffer = createInputBuffer(device, elevation);
   const horizonBuffer = createOutputBuffer(device, pixelCount * directionCount);
+  const grid = makeGPURasterMetadata({width, height, cellSize: 10});
   const [slopeBuffer, aspectBuffer, svfBuffer, illuminationBuffer, readbackBuffer, validityBuffer] =
     Array.from({length: 6}, () => createOutputBuffer(device, pixelCount));
   const parameterBuffers = [
@@ -149,13 +148,13 @@ it('GPUSolarShadowMask composes with GPUTerrainHorizon and GPUTerrainDerivatives
       id: 'derivative-settings',
       format: 'float32',
       length: 8,
-      values: getGPUTerrainDerivativesParameterValues({cellSize: [10, 10]})
+      values: getGPUTerrainDerivativesParameterValues({}, grid)
     }),
     new GPUParameterBuffer(device, {
       id: 'horizon-settings',
       format: 'float32',
       length: 8,
-      values: getGPUTerrainHorizonParameterValues({cellSize: [10, 10]})
+      values: getGPUTerrainHorizonParameterValues({}, grid)
     }),
     new GPUParameterBuffer(device, {
       id: 'shadow-settings',
@@ -204,39 +203,36 @@ it('GPUSolarShadowMask composes with GPUTerrainHorizon and GPUTerrainDerivatives
     : undefined;
   graph.add(
     new GPUTerrainDerivatives({
-      width,
-      height,
+      grid,
       elevation: elevationBand,
-      settings: parameterBuffers[0].importToGraph(graph),
-      slope,
-      aspect
+      parameters: parameterBuffers[0].importToGraph(graph),
+      output: {slope, aspect}
     })
   );
   graph.add(
     new GPUTerrainHorizon({
-      width,
-      height,
+      grid,
       elevation: elevationBand,
-      settings: parameterBuffers[1].importToGraph(graph),
+      parameters: parameterBuffers[1].importToGraph(graph),
       directionCount,
       maximumRadius: 24,
       stepGrowth: 1.2,
-      horizon,
-      skyViewFactor
+      output: {horizon, skyViewFactor}
     })
   );
   graph.add(
     new GPUSolarShadowMask({
-      width,
-      height,
+      grid,
       directionCount,
       horizon,
-      settings: parameterBuffers[2].importToGraph(graph),
+      parameters: parameterBuffers[2].importToGraph(graph),
       slope,
       aspect,
       skyViewFactor,
-      illumination: float('illumination', illuminationBuffer),
-      sunVisibilityTexture: textureView
+      output: {
+        illumination: float('illumination', illuminationBuffer),
+        sunVisibilityTexture: textureView
+      }
     })
   );
   if (textureView) {
@@ -312,9 +308,7 @@ it('GPUSolarShadowMask composes with GPUTerrainHorizon and GPUTerrainDerivatives
 
 it('GPUSolarShadowMask decodes a unorm16 horizon within one code step of the float32 path', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 20;
   const height = 15;
   const pixelCount = width * height;
@@ -343,17 +337,18 @@ it('GPUSolarShadowMask decodes a unorm16 horizon within one code step of the flo
     });
     const graph = new GPUCommandGraph(device, {id: 'solar-shadow-unorm16-test'});
     const common = {
-      width,
-      height,
+      grid: makeGPURasterMetadata({width, height}),
       directionCount,
-      settings: settings.importToGraph(graph)
+      parameters: settings.importToGraph(graph)
     };
     graph.add(
       new GPUSolarShadowMask({
         ...common,
         id: 'float32-mask',
         horizon: importGraphBuffer(graph, 'horizon', inputs[0], 'float32', elementCount),
-        sunVisibility: importGraphBuffer(graph, 'visibility', outputs[0], 'float32', pixelCount)
+        output: {
+          sunVisibility: importGraphBuffer(graph, 'visibility', outputs[0], 'float32', pixelCount)
+        }
       })
     );
     graph.add(
@@ -362,13 +357,15 @@ it('GPUSolarShadowMask decodes a unorm16 horizon within one code step of the flo
         id: 'unorm16-mask',
         horizonFormat: 'unorm16',
         horizon: importGraphBuffer(graph, 'packed', inputs[1], 'uint32', packed.length),
-        sunVisibility: importGraphBuffer(
-          graph,
-          'packed-visibility',
-          outputs[1],
-          'float32',
-          pixelCount
-        )
+        output: {
+          sunVisibility: importGraphBuffer(
+            graph,
+            'packed-visibility',
+            outputs[1],
+            'float32',
+            pixelCount
+          )
+        }
       })
     );
     const compiled = graph.compile();

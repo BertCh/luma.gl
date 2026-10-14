@@ -27,6 +27,7 @@ import {
   computeGeographicallyWeightedRegressionOnCPU,
   type GeographicallyWeightedRegressionOracleResult
 } from './geographically-weighted-regression-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const LADDER_CAPACITY = 8;
 const MAXIMUM_NEIGHBOR_COUNT = 64;
@@ -313,9 +314,7 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
 
 it('GPUGeographicallyWeightedRegression recovers spatially constant coefficients', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const truth: [number, number, number] = [1, 2, -3];
   const scene = createScene(16, 5, () => truth, 0.02);
   const fixture = createFixture(device, scene);
@@ -347,9 +346,7 @@ it('GPUGeographicallyWeightedRegression recovers spatially constant coefficients
 
 it('GPUGeographicallyWeightedRegression recovers a coefficient that varies with x', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(20, 9, (x, y) => [1, x, 0.5], 0.1);
   const fixture = createFixture(device, scene);
   try {
@@ -375,7 +372,11 @@ it('GPUGeographicallyWeightedRegression recovers a coefficient that varies with 
       }
       // The recovered slope follows the x coordinate: strong correlation and small mean error.
       expect(getCorrelation(slopes, xs)).toBeGreaterThan(0.97);
-      expect(error / 400).toBeLessThan(0.4);
+      // A-25: the mean error against the truth is the kernel smoothing bias of the estimator, not a
+      // GPU error (accuracy against the f64 oracle is asserted by `compare` above, which bounds each
+      // coefficient to 2e-3). The scene is deterministic, so the bias is pinned at the measured value
+      // plus about 10% (0.299 gaussian adaptive, 0.126 bisquare fixed) instead of 0.4 for both.
+      expect(error / 400).toBeLessThan(settings.kernel === 'gaussian' ? 0.33 : 0.14);
     }
     expect(fixture.rebuildCount).toBe(0);
   } finally {
@@ -385,9 +386,7 @@ it('GPUGeographicallyWeightedRegression recovers a coefficient that varies with 
 
 it('GPUGeographicallyWeightedRegression picks the oracle AICc argmin on a designed ladder', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The slope changes quickly with x: a very small bandwidth overfits and a large one is biased.
   const scene = createScene(24, 21, (x, y) => [0.5, 1 + 0.8 * Math.sin(x), 0.3 * y], 0.3);
   const fixture = createFixture(device, scene);
@@ -416,9 +415,7 @@ it('GPUGeographicallyWeightedRegression picks the oracle AICc argmin on a design
 
 it('GPUGeographicallyWeightedRegression changes kernel, mode and ladder without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(14, 33, (x, y) => [1, 0.5 * x, 2 - 0.2 * y], 0.1);
   const fixture = createFixture(device, scene);
   try {
@@ -449,9 +446,7 @@ it('GPUGeographicallyWeightedRegression changes kernel, mode and ladder without 
 
 it('GPUGeographicallyWeightedRegression is bitwise reproducible', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(16, 41, (x, y) => [x, 1, y - 5], 0.2);
   const fixture = createFixture(device, scene);
   try {
@@ -474,9 +469,7 @@ it('GPUGeographicallyWeightedRegression is bitwise reproducible', async () => {
 
 it('GPUGeographicallyWeightedRegression excludes masked and non-finite rows and flags singular fits', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(12, 51, (x, y) => [1, 1, x * 0.2], 0.1);
   scene.mask = new Uint32Array(144).fill(1);
   scene.mask[7] = 0;
@@ -523,9 +516,7 @@ it('GPUGeographicallyWeightedRegression excludes masked and non-finite rows and 
 
 it('GPUGeographicallyWeightedRegression handles 4096 locations with an adaptive ladder', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createScene(64, 61, (x, y) => [1, 0.3 * x, 0.2 * y], 0.2);
   const fixture = createFixture(device, scene);
   try {

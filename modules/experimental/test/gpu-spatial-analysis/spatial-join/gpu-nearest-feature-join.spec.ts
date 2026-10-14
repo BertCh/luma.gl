@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
@@ -24,6 +24,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createRandom, joinNearestSegments} from './spatial-join-oracle';
 import './gpu-nearest-feature-join-neighbors.spec';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -105,8 +106,11 @@ function createNearestFixture(
     values: Float32Array.of(radiusValue)
   });
   const props: GPUNearestFeatureJoinProps = {
-    points: importGraphBuffer(graph, 'points', pointsBuffer, 'float32x2', pointCount),
-    sourceIds: importGraphBuffer(graph, 'source-ids', sourceIdsBuffer, 'uint32', pointCount),
+    queries: {
+      kind: 'points',
+      positions: importGraphBuffer(graph, 'points', pointsBuffer, 'float32x2', pointCount),
+      sourceIds: importGraphBuffer(graph, 'source-ids', sourceIdsBuffer, 'uint32', pointCount)
+    },
     features:
       features.kind === 'segments'
         ? {
@@ -132,15 +136,21 @@ function createNearestFixture(
           },
     radius: radius.importToGraph(graph),
     candidateCapacity: 64,
-    nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
-    nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
-    featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
-    overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-    candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1),
-    matches: {
-      ids: importGraphBuffer(graph, 'match-ids', matchIds, 'uint32', pointCount),
-      count: importGraphBuffer(graph, 'match-count', matchCount, 'uint32', 1),
-      overflow: importGraphBuffer(graph, 'match-overflow', matchOverflow, 'uint32', 1)
+    output: {
+      nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
+      nearestDistances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
+      featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
+      matches: {
+        ids: importGraphBuffer(graph, 'match-ids', matchIds, 'uint32', pointCount),
+        status: {
+          count: importGraphBuffer(graph, 'match-count', matchCount, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'match-overflow', matchOverflow, 'uint32', 1)
+        }
+      },
+      status: {
+        overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+        candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+      }
     },
     ...overrides
   };
@@ -185,9 +195,7 @@ function expectClose(actual: number[], expected: number[]): void {
 
 it('GPUNearestFeatureJoin snaps points to segments and follows a per-frame radius', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const exactTies = !isSoftwareDevice(device);
   const fixture = createNearestFixture(
     device,
@@ -235,9 +243,7 @@ it('GPUNearestFeatureJoin snaps points to segments and follows a per-frame radiu
 
 it('GPUNearestFeatureJoin writes feature IDs for point features', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const featureIdsBuffer = createInputBuffer(device, Uint32Array.from([7, 8, 9]));
   const fixture = createNearestFixture(
     device,
@@ -260,7 +266,11 @@ it('GPUNearestFeatureJoin writes feature IDs for point features', async () => {
   fixture.graph.add(
     new GPUNearestFeatureJoin({
       ...fixture.props,
-      featureIds: importGraphBuffer(fixture.graph, 'feature-ids', featureIdsBuffer, 'uint32', 3)
+      features: {
+        kind: 'points',
+        positions: (fixture.props.features as {positions: GraphDataView<'float32x2'>}).positions,
+        sourceIds: importGraphBuffer(fixture.graph, 'feature-ids', featureIdsBuffer, 'uint32', 3)
+      }
     })
   );
   const compiled = fixture.graph.compile();
@@ -274,9 +284,7 @@ it('GPUNearestFeatureJoin writes feature IDs for point features', async () => {
 
 it('GPUNearestFeatureJoin reports candidate overflow and matches a random oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const overflowFixture = createNearestFixture(
     device,
     QUERY_POINTS,

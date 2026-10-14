@@ -47,6 +47,7 @@ import {
   normalizeOracle,
   pageRankOracle
 } from './network-analytics-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Columns = {
   degree: number[];
@@ -106,14 +107,16 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
   };
   const props: GPUNetworkAnalyticsColumnsProps = {
     id: 'analytics',
-    offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', nodeCount + 1),
-    neighbors: importGraphBuffer(
-      graph,
-      'neighbors',
-      neighborsBuffer,
-      'uint32',
-      csr.neighbors.length
-    ),
+    topology: {
+      offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', nodeCount + 1),
+      neighbors: importGraphBuffer(
+        graph,
+        'neighbors',
+        neighborsBuffer,
+        'uint32',
+        csr.neighbors.length
+      )
+    },
     degree: {
       output: output('degree', 'uint32', nodeCount),
       normalized: options.normalize ? output('degree-normalized', 'float32', nodeCount) : undefined,
@@ -125,25 +128,31 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
         ? output('pageRank-normalized', 'float32', nodeCount)
         : undefined,
       damping: options.damping,
-      iterations: options.pageRankIterations,
+      iterationCount: options.pageRankIterations,
       residual: output('pageRank-residual', 'float32', 1)
     },
     coreNumber: {
       output: output('coreNumber', 'uint32', nodeCount),
       normalized: options.normalize ? output('core-normalized', 'float32', nodeCount) : undefined,
-      iterations: options.iterations,
-      converged: output('core-converged', 'uint32', 1),
+      maximumIterations: options.iterations,
+      status: {
+        converged: output('core-converged', 'uint32', 1)
+      },
       degeneracy: output('core-degeneracy', 'uint32', 1)
     },
     components: {
       output: output('components', 'uint32', nodeCount),
-      iterations: options.iterations,
-      converged: output('components-converged', 'uint32', 1)
+      maximumIterations: options.iterations,
+      status: {
+        converged: output('components-converged', 'uint32', 1)
+      }
     },
     communities: {
       output: output('communities', 'uint32', nodeCount),
-      iterations: options.iterations,
-      converged: output('communities-converged', 'uint32', 1)
+      maximumIterations: options.iterations,
+      status: {
+        converged: output('communities-converged', 'uint32', 1)
+      }
     }
   };
   let reverseOffsetsBuffer: Buffer | undefined;
@@ -152,20 +161,22 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     reverseOffsetsBuffer = createInputBuffer(device, reverse.offsets);
     reverseNeighborsBuffer = createInputBuffer(device, capacityOf(reverse.neighbors));
     buffers.push(reverseOffsetsBuffer, reverseNeighborsBuffer);
-    props.reverseOffsets = importGraphBuffer(
-      graph,
-      'reverse-offsets',
-      reverseOffsetsBuffer,
-      'uint32',
-      nodeCount + 1
-    );
-    props.reverseNeighbors = importGraphBuffer(
-      graph,
-      'reverse-neighbors',
-      reverseNeighborsBuffer,
-      'uint32',
-      reverse.neighbors.length
-    );
+    props.reverseTopology = {
+      offsets: importGraphBuffer(
+        graph,
+        'reverse-offsets',
+        reverseOffsetsBuffer,
+        'uint32',
+        nodeCount + 1
+      ),
+      neighbors: importGraphBuffer(
+        graph,
+        'reverse-neighbors',
+        reverseNeighborsBuffer,
+        'uint32',
+        reverse.neighbors.length
+      )
+    };
     props.inDegree = {output: output('inDegree', 'uint32', nodeCount)};
   }
   const contributor = new GPUNetworkAnalyticsColumns(props);
@@ -191,7 +202,6 @@ function getOutput(fixture: Fixture, name: string): Buffer {
 }
 
 function destroyFixture(fixture: Fixture): void {
-  fixture.contributor.destroy();
   for (const buffer of fixture.buffers) buffer.destroy();
 }
 
@@ -388,9 +398,7 @@ async function expectMatchesConventional(
 
 it('GPUNetworkAnalyticsColumns matches the oracle and conventional topology on an undirected grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const edges = createGridEdges(6, 6);
   const fixture = createFixture(device, {nodeCount: 36, edges, normalize: true, iterations: 64});
   const compiled = fixture.graph.compile();
@@ -426,9 +434,7 @@ it('GPUNetworkAnalyticsColumns matches the oracle and conventional topology on a
 
 it('GPUNetworkAnalyticsColumns handles a directed network with a reverse CSR', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const [nodeCount, edges] of [
     [8, F1_EDGES],
     [300, createRandomNetwork(11, 300, 900)]
@@ -445,9 +451,7 @@ it('GPUNetworkAnalyticsColumns handles a directed network with a reverse CSR', a
 
 it('GPUNetworkAnalyticsColumns handles a random symmetric network with custom PageRank options', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const nodeCount = 600;
   const edges = createSymmetricEdges(createRandomNetwork(5, nodeCount, 700));
   const fixture = createFixture(device, {
@@ -473,9 +477,7 @@ it('GPUNetworkAnalyticsColumns handles a random symmetric network with custom Pa
 
 it('GPUNetworkAnalyticsColumns normalizes a constant column to zeros', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A ring: every node has degree 2.
   const nodeCount = 10;
   const edges: NetworkEdge[] = [];
@@ -497,9 +499,7 @@ it('GPUNetworkAnalyticsColumns normalizes a constant column to zeros', async () 
 
 it('GPUNetworkAnalyticsColumns handles single-node and edgeless networks', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const nodeCount of [1, 5]) {
     const fixture = createFixture(device, {nodeCount, edges: [], normalize: true});
     const compiled = fixture.graph.compile();
@@ -520,9 +520,7 @@ it('GPUNetworkAnalyticsColumns handles single-node and edgeless networks', async
 
 it('GPUNetworkAnalyticsColumns recomputes after the CSR changes without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Two 4-node paths joined by the road 3-4.
   const roads: [number, number][] = [
     [0, 1],
@@ -604,9 +602,7 @@ function addTransientCSR(
 
 it('GPUNetworkAnalyticsColumns analyzes transient CSRs built by GPUCOOToCSR', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const directed of [false, true]) {
     const nodeCount = 30;
     // A 5x5 grid plus a separate 5-node path, so components and cores differ.
@@ -639,10 +635,10 @@ it('GPUNetworkAnalyticsColumns analyzes transient CSRs built by GPUCOOToCSR', as
     graph.add(
       new GPUNetworkAnalyticsColumns({
         id: 'transient-analytics',
-        offsets: forward.offsets,
-        neighbors: forward.neighbors,
-        reverseOffsets: reverse?.offsets,
-        reverseNeighbors: reverse?.neighbors,
+        topology: {offsets: forward.offsets, neighbors: forward.neighbors},
+        reverseTopology: reverse
+          ? {offsets: reverse.offsets, neighbors: reverse.neighbors}
+          : undefined,
         degree: {
           output: output('degree', 'uint32', nodeCount),
           // A transient raw column still feeds the normalized output.
@@ -653,13 +649,17 @@ it('GPUNetworkAnalyticsColumns analyzes transient CSRs built by GPUCOOToCSR', as
         coreNumber: {
           output: createTransientView(graph, 'core-scratch', 'uint32', nodeCount),
           normalized: output('core-normalized', 'float32', nodeCount),
-          iterations: 64,
-          converged: output('core-converged', 'uint32', 1)
+          maximumIterations: 64,
+          status: {
+            converged: output('core-converged', 'uint32', 1)
+          }
         },
         components: {
           output: output('components', 'uint32', nodeCount),
-          iterations: 64,
-          converged: output('components-converged', 'uint32', 1)
+          maximumIterations: 64,
+          status: {
+            converged: output('components-converged', 'uint32', 1)
+          }
         }
       })
     );

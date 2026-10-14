@@ -20,6 +20,7 @@ import {
   type CoverageDissolveScene,
   type CoverageValidityScene
 } from './coverage-topology-scenes';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type TestDevice = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 
@@ -35,8 +36,8 @@ type ValidityRun = {
   flagged: Set<string>;
   flags: number[];
   isValid: number;
-  invalidSegmentCount: number;
-  polygonInvalidCounts: number[];
+  invalidCount: number;
+  featureInvalidCounts: number[];
 };
 
 /** Reads flagged segments for the gap widths in order, re-encoding one compiled graph. */
@@ -52,8 +53,8 @@ async function runValidity(
   const polygonCount = polygons.length;
   const rig = new WeightsRig(device);
   const segmentFlags = rig.output('uint32', vertexCount);
-  const polygonInvalidCounts = rig.output('uint32', polygonCount);
-  const invalidSegmentCount = rig.output('uint32', 1);
+  const featureInvalidCounts = rig.output('uint32', polygonCount);
+  const invalidCount = rig.output('uint32', 1);
   const isValid = rig.output('uint32', 1);
   const parameters = new GPUParameterBuffer(device, {
     id: 'coverage-validity-parameters',
@@ -66,12 +67,17 @@ async function runValidity(
       positions: rig.input(layout.positions, 'float32x2', vertexCount),
       ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
       polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
+      featureOffsets: rig.input(
+        Uint32Array.from(layout.polygonOffsets, (_, index) => index),
+        'uint32',
+        layout.polygonOffsets.length
+      ),
       parameters: parameters.importToGraph(rig.graph),
       spatialSort,
       output: {
         segmentFlags: segmentFlags.view,
-        polygonInvalidCounts: polygonInvalidCounts.view,
-        invalidSegmentCount: invalidSegmentCount.view,
+        featureInvalidCounts: featureInvalidCounts.view,
+        status: {invalidCount: invalidCount.view},
         isValid: isValid.view
       }
     })
@@ -99,8 +105,8 @@ async function runValidity(
       flagged,
       flags,
       isValid: (await readUint32(isValid.buffer, 1))[0],
-      invalidSegmentCount: (await readUint32(invalidSegmentCount.buffer, 1))[0],
-      polygonInvalidCounts: await readUint32(polygonInvalidCounts.buffer, polygonCount)
+      invalidCount: (await readUint32(invalidCount.buffer, 1))[0],
+      featureInvalidCounts: await readUint32(featureInvalidCounts.buffer, polygonCount)
     });
   }
   compiled.destroy?.();
@@ -111,7 +117,7 @@ async function runValidity(
 
 it('GPUCoverageValidity matches Shapely coverage_invalid_edges on every scene', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const mismatches: string[] = [];
   let checkedSegments = 0;
   for (const scene of COVERAGE_VALIDITY_SCENES) {
@@ -135,8 +141,8 @@ it('GPUCoverageValidity matches Shapely coverage_invalid_edges on every scene', 
       expect(run.isValid, `${scene.name} gap ${testCase.gapWidth} isValid`).toBe(
         testCase.isValid ? 1 : 0
       );
-      expect(run.invalidSegmentCount).toBe(run.flagged.size);
-      expect(run.polygonInvalidCounts.reduce((sum, count) => sum + count, 0)).toBe(
+      expect(run.invalidCount).toBe(run.flagged.size);
+      expect(run.featureInvalidCounts.reduce((sum, count) => sum + count, 0)).toBe(
         run.flagged.size
       );
     });
@@ -147,7 +153,7 @@ it('GPUCoverageValidity matches Shapely coverage_invalid_edges on every scene', 
 
 it('GPUCoverageValidity reports flag kinds and re-encodes a new gap width without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const byName = (name: string): CoverageValidityScene =>
     COVERAGE_VALIDITY_SCENES.find(scene => scene.name === name)!;
   // One compiled graph, three gap widths: the gap appears only once the width reaches it.
@@ -204,6 +210,11 @@ async function runDissolve(
       positions: rig.input(layout.positions, 'float32x2', vertexCount),
       ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
       polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
+      featureOffsets: rig.input(
+        Uint32Array.from(layout.polygonOffsets, (_, index) => index),
+        'uint32',
+        layout.polygonOffsets.length
+      ),
       labels: rig.input(Uint32Array.from(scene.labels), 'uint32', scene.labels.length),
       snapTolerance: options.snapTolerance,
       output: {
@@ -212,9 +223,11 @@ async function runDissolve(
         ringAreas: out.ringAreas.view,
         ringIsHole: out.ringIsHole.view,
         ringGroups: out.ringGroups.view,
-        count: out.count.view,
-        overflow: out.overflow.view,
-        boundarySegmentCount: out.boundarySegmentCount.view
+        status: {
+          count: out.count.view,
+          overflow: out.overflow.view,
+          boundarySegmentCount: out.boundarySegmentCount.view
+        }
       }
     })
   );
@@ -257,7 +270,7 @@ async function runDissolve(
 
 it('GPUCoverageDissolve matches GeoPandas dissolve(method="coverage") per label', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   for (const scene of COVERAGE_DISSOLVE_SCENES) {
     const run = await runDissolve(device, scene);
     expect(run.overflow, scene.name).toBe(0);
@@ -284,7 +297,7 @@ it('GPUCoverageDissolve matches GeoPandas dissolve(method="coverage") per label'
 
 it('GPUCoverageDissolve snaps near-equal vertices, flags overflow and skips internal edges', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const grid = COVERAGE_DISSOLVE_SCENES.find(scene => scene.name === 'grid-4x4')!;
   const clean = await runDissolve(device, grid);
   // Move every vertex of odd polygons by far less than the snap tolerance.
@@ -318,7 +331,7 @@ it('GPUCoverageDissolve snaps near-equal vertices, flags overflow and skips inte
 
 it('GPUCoverageValidity and GPUCoverageDissolve scale to a 60 x 60 grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const size = 60;
   const block = 10;
   const polygons: OraclePolygons = [];
@@ -344,7 +357,7 @@ it('GPUCoverageValidity and GPUCoverageDissolve scale to a 60 x 60 grid', async 
   );
   const validityMilliseconds = performance.now() - startValidity;
   expect(valid.isValid).toBe(1);
-  expect(valid.invalidSegmentCount).toBe(0);
+  expect(valid.invalidCount).toBe(0);
   const startDissolve = performance.now();
   const run = await runDissolve(device, {polygons: polygons as never, labels});
   const dissolveMilliseconds = performance.now() - startDissolve;

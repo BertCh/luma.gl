@@ -6,7 +6,9 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {GPUContiguityWeights} from '../../../src/gpu-spatial-analysis/spatial-weights/index';
 import {
+  getGPUMapColoringParameterValues,
   GPUMapColoring,
+  GPU_MAP_COLORING_PARAMETER_LENGTH,
   GPU_MAP_COLORING_UNCOLORED
 } from '../../../src/gpu-spatial-analysis/map-coloring/index';
 import {readUint32} from '../../utils/gpu-contributor-test-utils';
@@ -15,9 +17,20 @@ import {
   computeContiguityOracle,
   createSeededRandom,
   flattenPolygons,
+  type OracleCSR,
   type OraclePolygons
 } from '../spatial-weights/spatial-weights-oracle';
-import {computeMapColoringOracle, countColoringConflicts} from './map-coloring-oracle';
+import {
+  computeMapColoringOracle,
+  countColoringConflicts,
+  createCliqueCSR,
+  createOracleCSRFromEdges,
+  createRandomPlanarCSR,
+  createRookLatticeCSR,
+  createStarCSR
+} from './map-coloring-oracle';
+import fixture from '../../oracles/fixtures/geometry-map-coloring.json';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type Point = [number, number];
 
@@ -60,16 +73,23 @@ function createRandomRectangles(count: number, seed: number): OraclePolygons {
 async function runColoring(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   polygons: OraclePolygons,
-  options: {seed?: number; maximumRounds?: number; upload?: boolean}
+  options: {
+    seed?: number;
+    maximumIterations?: number;
+    upload?: boolean;
+    priority?: 'largest-degree-first' | 'random';
+    /** Uploaded graph used instead of the contiguity of `polygons`. */
+    graph?: OracleCSR;
+  }
 ) {
   const rig = new WeightsRig(device);
-  const rows = polygons.length;
+  const rows = options.graph ? options.graph.offsets.length - 1 : polygons.length;
   const colors = rig.output('uint32', rows);
   const colorCount = rig.output('uint32', 1);
   const conflictCount = rig.output('uint32', 1);
   const converged = rig.output('uint32', 1);
-  const roundCount = rig.output('uint32', 1);
-  const csr = computeContiguityOracle(polygons, 'queen');
+  const iterationCount = rig.output('uint32', 1);
+  const csr = options.graph ?? computeContiguityOracle(polygons, 'queen');
   const producers = [];
   let weights;
   if (options.upload) {
@@ -83,24 +103,27 @@ async function runColoring(
     producers.push(
       new GPUContiguityWeights({
         criterion: 'queen',
-        positions: rig.input(layout.positions, 'float32x2', layout.positions.length / 2),
-        ringOffsets: rig.input(layout.ringOffsets, 'uint32', layout.ringOffsets.length),
-        polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
-        weights,
-        overflow: overflow.view
+        polygons: rig.polygons(layout),
+        output: {...output.spatialWeights, status: {overflow: overflow.view}}
       })
     );
   }
   producers.push(
     new GPUMapColoring({
       weights,
-      colors: colors.view,
-      colorCount: colorCount.view,
-      conflictCount: conflictCount.view,
-      converged: converged.view,
-      roundCount: roundCount.view,
-      seed: options.seed,
-      maximumRounds: options.maximumRounds
+      parameters: rig.input(
+        getGPUMapColoringParameterValues({seed: options.seed}),
+        'uint32',
+        GPU_MAP_COLORING_PARAMETER_LENGTH
+      ),
+      output: {
+        colors: colors.view,
+        colorCount: colorCount.view,
+        conflictCount: conflictCount.view,
+        status: {converged: converged.view, iterationCount: iterationCount.view}
+      },
+      maximumIterations: options.maximumIterations,
+      priority: options.priority
     })
   );
   rig.run(...producers);
@@ -110,7 +133,7 @@ async function runColoring(
     colorCount: (await readUint32(colorCount.buffer, 1))[0],
     conflicts: (await readUint32(conflictCount.buffer, 1))[0],
     converged: (await readUint32(converged.buffer, 1))[0],
-    roundCount: (await readUint32(roundCount.buffer, 1))[0]
+    iterationCount: (await readUint32(iterationCount.buffer, 1))[0]
   };
   rig.destroy();
   return result;
@@ -118,7 +141,7 @@ async function runColoring(
 
 it('GPUMapColoring matches the sequential priority-order oracle and is proper', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const scenes: [string, OraclePolygons][] = [
     ['grid', createSquareGrid(12, 9)],
     ['rectangles', createRandomRectangles(120, 4)]
@@ -135,14 +158,14 @@ it('GPUMapColoring matches the sequential priority-order oracle and is proper', 
       expect(result.colorCount).toBe(maximum);
       // Queen adjacency of a grid contains 4-cliques, so at least 4 colors are needed.
       expect(maximum).toBeGreaterThanOrEqual(name === 'grid' ? 4 : 2);
-      expect(result.roundCount).toBeGreaterThan(1);
+      expect(result.iterationCount).toBeGreaterThan(1);
     }
   }
 });
 
 it('GPUMapColoring chains behind GPUContiguityWeights in one graph', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const polygons = createSquareGrid(8, 6);
   const result = await runColoring(device, polygons, {seed: 3});
   expect(result.colors).toEqual(computeMapColoringOracle(result.csr, 3));
@@ -152,13 +175,13 @@ it('GPUMapColoring chains behind GPUContiguityWeights in one graph', async () =>
 
 it('GPUMapColoring reports non-convergence when the round cap is too small', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   const result = await runColoring(device, createSquareGrid(12, 9), {
     upload: true,
-    maximumRounds: 1
+    maximumIterations: 1
   });
   expect(result.converged).toBe(0);
-  expect(result.roundCount).toBe(1);
+  expect(result.iterationCount).toBe(1);
   expect(result.colors.some(color => color === GPU_MAP_COLORING_UNCOLORED)).toBe(true);
   expect(result.colors.some(color => color !== GPU_MAP_COLORING_UNCOLORED)).toBe(true);
   expect(result.conflicts).toBe(0);
@@ -166,12 +189,103 @@ it('GPUMapColoring reports non-convergence when the round cap is too small', asy
 
 it('GPUMapColoring fused rounds still equal sequential greedy on a large grid', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) return;
+  requireTestDevice(device);
   // Many rows per workgroup so rows color against neighbors written in the same round.
   for (const seed of [1, 5]) {
     const result = await runColoring(device, createSquareGrid(60, 50), {seed, upload: true});
     expect(result.colors).toEqual(computeMapColoringOracle(result.csr, seed));
     expect(result.converged).toBe(1);
     expect(result.conflicts).toBe(0);
+  }
+});
+
+it('GPUMapColoring equals sequential greedy for both priorities on lattice, planar, star, clique, empty and isolated graphs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graphs: [string, OracleCSR][] = [
+    ['rook lattice', createRookLatticeCSR(40, 30)],
+    ['random planar', createRandomPlanarCSR(50, 50, createSeededRandom(21))],
+    ['star', createStarCSR(200)],
+    ['clique', createCliqueCSR(12)],
+    ['isolated rows', createOracleCSRFromEdges(9, [[2, 3]])]
+  ];
+  let degreeFirstColors = 0;
+  let randomColors = 0;
+  for (const [name, graph] of graphs) {
+    for (const priority of ['largest-degree-first', 'random'] as const) {
+      for (const seed of [0, 9]) {
+        const result = await runColoring(device, [], {
+          graph,
+          upload: true,
+          seed,
+          priority,
+          maximumIterations: 128
+        });
+        const label = `${name} ${priority} seed ${seed}`;
+        expect(result.colors, label).toEqual(computeMapColoringOracle(graph, seed, priority));
+        expect(result.converged, label).toBe(1);
+        expect(result.conflicts, label).toBe(0);
+        if (name === 'random planar') {
+          if (priority === 'random') randomColors += result.colorCount;
+          else degreeFirstColors += result.colorCount;
+        }
+      }
+    }
+  }
+  // Quality: largest-degree-first does not use more colors than random order on the planar map.
+  expect(degreeFirstColors).toBeLessThanOrEqual(randomColors);
+  // A star needs exactly two colors, and the hub goes first under largest-degree-first.
+  const star = await runColoring(device, [], {graph: createStarCSR(200), upload: true});
+  expect(star.colorCount).toBe(2);
+  expect(star.iterationCount).toBeLessThanOrEqual(2);
+});
+
+it('GPUMapColoring A/B: color counts and rounds for both priorities on a ~1e5-polygon contiguity', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 316 x 316 = 99856 rectangles; queen contiguity of a grid (needs at least 4 colors).
+  const polygons = createSquareGrid(316, 316);
+  for (const priority of ['random', 'largest-degree-first'] as const) {
+    const start = performance.now();
+    const result = await runColoring(device, polygons, {
+      upload: true,
+      priority,
+      maximumIterations: 256
+    });
+    const milliseconds = performance.now() - start;
+    // eslint-disable-next-line no-console
+    console.log(
+      `map-coloring A/B ${priority}: colors=${result.colorCount} rounds=${result.iterationCount} converged=${result.converged} ms=${milliseconds.toFixed(1)}`
+    );
+    expect(result.converged).toBe(1);
+    expect(result.conflicts).toBe(0);
+  }
+}, 120_000);
+
+it('GPUMapColoring largest-degree-first matches networkx largest_first quality on Delaunay maps', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const graph of fixture.graphs) {
+    const csr: OracleCSR = {
+      offsets: graph.offsets,
+      neighbors: graph.neighbors,
+      weights: [],
+      distances: []
+    };
+    const counts: Record<string, number> = {};
+    for (const priority of ['largest-degree-first', 'random'] as const) {
+      const result = await runColoring(device, [], {graph: csr, upload: true, priority});
+      expect(result.colors, `${graph.name} ${priority}`).toEqual(
+        computeMapColoringOracle(csr, 0, priority)
+      );
+      expect(result.converged).toBe(1);
+      expect(result.conflicts).toBe(0);
+      counts[priority] = result.colorCount;
+    }
+    // Same heuristic as networkx largest_first with a different tie-break: one color of slack.
+    expect(counts['largest-degree-first'], graph.name).toBeLessThanOrEqual(
+      graph.networkxColorCounts.largest_first + 1
+    );
+    expect(counts['largest-degree-first'], graph.name).toBeLessThanOrEqual(counts['random']);
   }
 });

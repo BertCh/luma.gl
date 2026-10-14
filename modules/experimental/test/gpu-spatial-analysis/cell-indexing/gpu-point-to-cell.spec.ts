@@ -28,6 +28,9 @@ import {
   s2CellToCenter,
   s2PointToCell
 } from './cell-indexing-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
+import h3FixtureJson from '../../oracles/fixtures/cell-indexing-h3.json';
+import {decodeOracleFixture} from '../../oracles/oracle-fixture';
 
 const ROWS = 10240;
 /** Rows before the hand-picked edge cases (seams, poles) in `createPoints`. */
@@ -171,9 +174,7 @@ async function expectExact(
 
 it('GPUPointToCell quadbin equals the BigInt oracle bit for bit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const resolution of [0, 1, 5, 10, 15, 16, 20, 26]) {
     await expectExact(device, 'quadbin', resolution, (lng, lat) =>
       quadbinPointToCell(lng, lat, resolution)
@@ -183,9 +184,7 @@ it('GPUPointToCell quadbin equals the BigInt oracle bit for bit', async () => {
 
 it('GPUPointToCell quadkey equals the BigInt oracle bit for bit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const zoom of [1, 2, 6, 12, 20, 26, 27, 29]) {
     await expectExact(device, 'quadkey', zoom, (lng, lat) => quadkeyPointToCell(lng, lat, zoom));
   }
@@ -193,9 +192,7 @@ it('GPUPointToCell quadkey equals the BigInt oracle bit for bit', async () => {
 
 it('GPUPointToCell geohash equals the bisection oracle bit for bit', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const length of [1, 2, 3, 5, 8, 11, 12]) {
     await expectExact(device, 'geohash', length, (lng, lat) =>
       geohashPointToCell(lng, lat, length)
@@ -205,9 +202,7 @@ it('GPUPointToCell geohash equals the bisection oracle bit for bit', async () =>
 
 it('GPUPointToCell S2 mismatch rate against the f64 reference stays bounded per level', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = createPoints(5);
   const rates: Record<number, string> = {};
   const widths: Record<number, string> = {};
@@ -286,9 +281,7 @@ it('GPUPointToCell S2 mismatch rate against the f64 reference stays bounded per 
 
 it('GPUPointToCell H3 agrees with h3-js on f32 inputs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const points = createPoints(9);
   // H3_INDEX_WGSL: exact through resolution 4, about 1e-3 at 9, 1.8% at 12; mismatches are grid
   // neighbors. Bounds here are loose; the h3 forward specs measure exhaustively.
@@ -335,9 +328,7 @@ it('GPUPointToCell H3 agrees with h3-js on f32 inputs', async () => {
 
 it('GPUPointToCell zeroes masked rows and follows per-frame positions without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const oracles: Record<string, (lng: number, lat: number) => bigint> = {
     quadbin: (lng, lat) => quadbinPointToCell(lng, lat, 9),
     quadkey: (lng, lat) => quadkeyPointToCell(lng, lat, 9),
@@ -374,4 +365,69 @@ it('GPUPointToCell zeroes masked rows and follows per-frame positions without re
     expect(seenKeys.size).toBeGreaterThan(1);
     indexer.destroy();
   }
+});
+
+/** h3-py point-to-cell references with boundary margins (test/oracles/cells-h3.py). */
+const H3_INDEXING_REFERENCE = decodeOracleFixture<{
+  versions: Record<string, string>;
+  tolerances: {marginBound: number};
+  resolutions: number[];
+  points: [number, number][];
+  cells: Record<string, string[]>;
+  margins: Record<string, number[]>;
+  neighbors: Record<string, Record<string, string[]>>;
+  edgePolicy: {points: [number, number][]};
+}>(h3FixtureJson);
+
+it('GPUPointToCell H3 equals h3-py away from cell edges', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Oracle: test/oracles/cells-h3.py (h3-py latlng_to_cell on the float32 inputs). A point farther
+  // than marginBound (2e-7 rad, about 1.3 m: twice the largest measured float32 mismatch margin,
+  // 9.9e-8 rad) from every edge of its cell must get exactly the h3 cell; a nearer point may get a
+  // grid neighbor. Non-finite rows follow the edge policy: cell 0, invalid.
+  const {points, cells, margins, neighbors, resolutions, tolerances, edgePolicy} =
+    H3_INDEXING_REFERENCE;
+  const rows = points.length + edgePolicy.points.length;
+  expect(rows).toBeLessThanOrEqual(ROWS);
+  const input = new Float32Array(2 * ROWS).fill(NaN);
+  [...points, ...edgePolicy.points].forEach(([longitude, latitude], row) => {
+    input[2 * row] = longitude;
+    input[2 * row + 1] = latitude;
+  });
+  const counts: Record<number, string> = {};
+  let largestMargin = 0;
+  for (const resolution of resolutions) {
+    const indexer = createIndexer(device, 'h3', resolution, {validity: true});
+    const {keys, valid} = await indexer.run(input);
+    indexer.destroy();
+    let nearEdge = 0;
+    for (const [row, cell] of cells[resolution].entries()) {
+      expect(valid![row], `h3 ${resolution} row ${row} valid`).toBe(1);
+      const actual = keys[row].toString(16);
+      if (actual === cell) {
+        continue;
+      }
+      const margin = margins[resolution][row];
+      expect(
+        margin,
+        `h3 ${resolution} row ${row} (${points[row]}) GPU ${actual} != h3 ${cell}, margin ${margin}`
+      ).toBeLessThan(tolerances.marginBound);
+      expect(neighbors[resolution][row], `h3 ${resolution} row ${row} neighbor`).toContain(actual);
+      nearEdge++;
+      largestMargin = Math.max(largestMargin, margin);
+    }
+    for (let row = points.length; row < rows; row++) {
+      expect(keys[row], `h3 ${resolution} non-finite row ${row}`).toBe(0n);
+      expect(valid![row]).toBe(0);
+    }
+    counts[resolution] = `${nearEdge}/${Object.keys(neighbors[resolution]).length}`;
+  }
+  // eslint-disable-next-line no-console
+  console.log(
+    'H3 GPU vs h3-py: near-edge mismatches / points within the margin bound',
+    counts,
+    'largest mismatch margin (rad)',
+    largestMargin
+  );
 });

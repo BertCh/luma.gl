@@ -5,12 +5,12 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_LOCAL_PERMUTATION_NOT_TESTED,
   type GPULocalJoinCountCase,
   type GPULocalPermutationStatistic
 } from '../../../src/gpu-spatial-analysis/permutation-inference';
-import type {GPUInferenceAlternative} from '../../../src/gpu-spatial-analysis/contracts';
+import type {GPUInferenceAlternative} from '../../../src/analysis-core/contracts';
 import {createGlobalPermutationHarness, createLocalPermutationHarness} from './permutation-harness';
 import {
   computeGlobalPermutationOracle,
@@ -19,8 +19,9 @@ import {
   type CPUSpatialWeights
 } from './permutation-oracle';
 import {NEW_STATISTICS_REFERENCE as REFERENCE} from './new-statistics-reference';
+import {requireTestDevice} from '../../utils/require-test-device';
 
-// Oracle: fix/work/A/oracle-u7-new-statistics.py (esda 2.10.0 / libpysal 4.15.0). Statistics are
+// Oracle: test/oracles/statistics-local-join-counts-and-bivariate.py (esda 2.10.0 / libpysal 4.15.0). Statistics are
 // pinned against esda; exceedance counts against the TypeScript twin of the Philox draws
 // (permutation-oracle.ts); p-values against esda p_sim within a Monte Carlo bound at R = 9999.
 
@@ -30,7 +31,7 @@ const SEED = 20240607;
 const P_VALUE_BOUND = 5 * Math.sqrt((2 * 0.25) / PERMUTATIONS);
 /** esda's interpolated two-sided p-value adds a small definitional difference (see the node spec). */
 const TWO_SIDED_P_VALUE_BOUND = P_VALUE_BOUND + 0.015;
-const R = GPU_GLOBAL_PERMUTATION_RESULT;
+const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
 
 const weights: CPUSpatialWeights = createWeights(
   REFERENCE.neighbors.map(neighbors =>
@@ -124,10 +125,8 @@ const CASES: Case[] = [
 
 it('GPULocalPermutationTest new statistics match esda statistics, the twin counts and esda p_sim', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const parameters = {seed: SEED, permutations: PERMUTATIONS, significanceLevel: 0.05};
+  requireTestDevice(device);
+  const parameters = {seed: SEED, permutationCount: PERMUTATIONS, significanceLevel: 0.05};
   for (const item of CASES) {
     const scene = {
       weights,
@@ -209,10 +208,8 @@ it('GPULocalPermutationTest new statistics match esda statistics, the twin count
 
 it('GPULocalPermutationTest local Geary classes and bivariate Moran quadrants', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const parameters = {seed: SEED, permutations: 999, significanceLevel: 0.05};
+  requireTestDevice(device);
+  const parameters = {seed: SEED, permutationCount: 999, significanceLevel: 0.05};
   for (const multipleTesting of ['none', 'benjamini-hochberg'] as const) {
     const options = {
       scene: {weights, rowStandardized: true, values: x},
@@ -262,13 +259,11 @@ it('GPULocalPermutationTest local Geary classes and bivariate Moran quadrants', 
 
 it('GPULocalPermutationTest bivariate statistics exclude rows with a missing second value', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const missing = Float32Array.from(y);
   missing[4] = NaN;
   const mask = Uint32Array.from({length: REFERENCE.n}, (_, row) => (row === 9 ? 0 : 1));
-  const parameters = {seed: SEED, permutations: 199, significanceLevel: 0.05};
+  const parameters = {seed: SEED, permutationCount: 199, significanceLevel: 0.05};
   const harness = createLocalPermutationHarness(device, {
     scene: {weights, rowStandardized: true, values: x, secondValues: missing, mask},
     statistic: 'localBivariateMoran',
@@ -309,10 +304,8 @@ it('GPULocalPermutationTest bivariate statistics exclude rows with a missing sec
 
 it('GPUGlobalPermutationTest Lee L matches esda Spatial_Pearson, the twin and its p-value', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const parameters = {seed: SEED, permutations: PERMUTATIONS};
+  requireTestDevice(device);
+  const parameters = {seed: SEED, permutationCount: PERMUTATIONS};
   const harness = createGlobalPermutationHarness(device, {
     scene: {weights, rowStandardized: true, values: x, secondValues: y},
     statistic: 'leesL',

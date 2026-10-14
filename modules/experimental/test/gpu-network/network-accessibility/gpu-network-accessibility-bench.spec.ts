@@ -11,7 +11,7 @@ import {
   GPUNetworkAccessibility,
   GPUNetworkCostMatrix,
   GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
-  encodeGPUNetworkAccessibilityParameters
+  getGPUNetworkAccessibilityParameterValues
 } from '../../../src/gpu-network/network-accessibility';
 import {
   createInputBuffer,
@@ -101,16 +101,24 @@ function createMatrixGraph(
   buffers.push(costs, converged);
   const contributor = new GPUNetworkCostMatrix({
     id: 'matrix',
-    offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', nodeCount + 1),
-    neighbors: importGraphBuffer(
-      graph,
-      'neighbors',
-      input(csr.neighbors),
-      'uint32',
-      csr.neighbors.length
-    ),
-    weights: importGraphBuffer(graph, 'weights', input(csr.weights), 'float32', csr.weights.length),
-    seedNodes: importGraphBuffer(
+    topology: {
+      offsets: importGraphBuffer(graph, 'offsets', input(csr.offsets), 'uint32', nodeCount + 1),
+      neighbors: importGraphBuffer(
+        graph,
+        'neighbors',
+        input(csr.neighbors),
+        'uint32',
+        csr.neighbors.length
+      ),
+      weights: importGraphBuffer(
+        graph,
+        'weights',
+        input(csr.weights),
+        'float32',
+        csr.weights.length
+      )
+    },
+    startNodes: importGraphBuffer(
       graph,
       'seeds',
       input(Uint32Array.from(rowNodes)),
@@ -118,9 +126,13 @@ function createMatrixGraph(
       rowNodes.length
     ),
     laneCount,
-    maxIterations,
-    costs: importGraphBuffer(graph, 'costs', costs, 'float32', rowNodes.length * nodeCount),
-    converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
+    maximumIterations: maxIterations,
+    output: {
+      costs: importGraphBuffer(graph, 'costs', costs, 'float32', rowNodes.length * nodeCount),
+      status: {
+        converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
+      }
+    }
   });
   graph.add(contributor);
   return {graph, converged, costs, nodeCount};
@@ -230,7 +242,7 @@ it('GPUNetworkAccessibility bench: lane batching, search side, and per-frame sco
     sync,
     () =>
       parameters.write(
-        encodeGPUNetworkAccessibilityParameters({
+        getGPUNetworkAccessibilityParameterValues({
           threshold: 40,
           decay: 'exponential',
           beta: 0.05 + 0.01 * frame++

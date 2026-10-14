@@ -3,3 +3,5 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import './gpu-polygon-triangulation.spec';
+import './gpu-polygon-triangulation-monotone.spec';
+import './gpu-polygon-triangulation-monotone-benchmark.spec';

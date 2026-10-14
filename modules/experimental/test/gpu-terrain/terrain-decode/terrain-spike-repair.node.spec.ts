@@ -6,20 +6,26 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPU_TERRAIN_SPIKE_REPAIR_STATISTICS,
+  GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED,
   GPUTerrainSpikeRepair,
+  type GPUTerrainSpikeRepairOutput,
   type GPUTerrainSpikeRepairProps
 } from '../../../src/gpu-terrain/terrain-decode/gpu-terrain-spike-repair';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
 
 it('GPUTerrainSpikeRepair schedules canonicalisation, graph, components and repair kernels', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainSpikeRepairProps> = {}) => {
+  const create = (
+    overrides: Partial<GPUTerrainSpikeRepairProps> = {},
+    outputOverrides: Partial<GPUTerrainSpikeRepairOutput> = {}
+  ) => {
     instance++;
     return new GPUTerrainSpikeRepair({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: {
         id: `elevation-${instance}`,
         format: 'float32',
@@ -28,13 +34,16 @@ it('GPUTerrainSpikeRepair schedules canonicalisation, graph, components and repa
           values: createTransientView(graph, `e-${instance}`, 'float32', 30)
         }
       },
-      values: createTransientView(graph, `values-${instance}`, 'float32', 30),
-      validity: createTransientView(graph, `validity-${instance}`, 'uint32', 30),
+      output: {
+        values: createTransientView(graph, `values-${instance}`, 'float32', 30),
+        outputValidity: createTransientView(graph, `validity-${instance}`, 'uint32', 30),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
   const contributor = create();
-  expect(contributor.componentIterations).toBe(32);
+  expect(contributor.maximumComponentIterations).toBe(32);
   const nodeIds = contributor.getCommandNodes(graph).map(node => node.id);
   for (const step of [
     'clear',
@@ -53,7 +62,7 @@ it('GPUTerrainSpikeRepair schedules canonicalisation, graph, components and repa
   expect(nodeIds.some(id => id.startsWith('terrain-spike-repair-components'))).toBe(true);
   expect(nodeIds).not.toContain('terrain-spike-repair-publish-labels');
   expect(
-    create({id: 'repair', labels: createTransientView(graph, 'labels', 'uint32', 30)})
+    create({id: 'repair'}, {labels: createTransientView(graph, 'labels', 'uint32', 30)})
       .getCommandNodes(graph)
       .map(node => node.id)
   ).toContain('repair-publish-labels');
@@ -66,11 +75,13 @@ it('GPUTerrainSpikeRepair validates its properties', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let instance = 0;
-  const create = (overrides: Partial<GPUTerrainSpikeRepairProps> = {}) => {
+  const create = (
+    overrides: Partial<GPUTerrainSpikeRepairProps> = {},
+    outputOverrides: Partial<GPUTerrainSpikeRepairOutput> = {}
+  ) => {
     instance++;
     return new GPUTerrainSpikeRepair({
-      width: 6,
-      height: 5,
+      grid: makeGPURasterMetadata({width: 6, height: 5}),
       elevation: {
         id: `elevation-${instance}`,
         format: 'float32',
@@ -79,12 +90,15 @@ it('GPUTerrainSpikeRepair validates its properties', () => {
           values: createTransientView(graph, `e-${instance}`, 'float32', 30)
         }
       },
-      values: createTransientView(graph, `values-${instance}`, 'float32', 30),
-      validity: createTransientView(graph, `validity-${instance}`, 'uint32', 30),
+      output: {
+        values: createTransientView(graph, `values-${instance}`, 'float32', 30),
+        outputValidity: createTransientView(graph, `validity-${instance}`, 'uint32', 30),
+        ...outputOverrides
+      },
       ...overrides
     });
   };
-  expect(() => create({width: 0})).toThrow(/dimensions/);
+  expect(() => create({grid: makeGPURasterMetadata({width: 0, height: 5})})).toThrow(/dimensions/);
   expect(() => create({step: 0})).toThrow(/step/);
   expect(() => create({jump: -1})).toThrow(/jump/);
   expect(() => create({tolerance: 128})).toThrow(/less than step/);
@@ -95,12 +109,12 @@ it('GPUTerrainSpikeRepair validates its properties', () => {
   expect(() => create({agreement: 1.01})).toThrow(/agreement/);
   expect(() => create({maximumComponentFraction: 0})).toThrow(/maximumComponentFraction/);
   expect(() => create({maximumComponentFraction: 0.255})).toThrow(/maximumComponentFraction/);
-  expect(() => create({componentIterations: 0})).toThrow(/componentIterations/);
-  expect(() => create({componentIterations: 2000})).toThrow(/componentIterations/);
-  expect(() => create({values: createTransientView(graph, 'short', 'float32', 29)})).toThrow(
+  expect(() => create({maximumComponentIterations: 0})).toThrow(/maximumComponentIterations/);
+  expect(() => create({maximumComponentIterations: 2000})).toThrow(/maximumComponentIterations/);
+  expect(() => create({}, {values: createTransientView(graph, 'short', 'float32', 29)})).toThrow(
     /one value per pixel/
   );
-  expect(() => create({statistics: createTransientView(graph, 'stats4', 'uint32', 4)})).toThrow(
+  expect(() => create({}, {statistics: createTransientView(graph, 'stats4', 'uint32', 4)})).toThrow(
     /at least 5/
   );
   expect(() =>
@@ -108,20 +122,21 @@ it('GPUTerrainSpikeRepair validates its properties', () => {
   ).not.toThrow();
   const shared = createTransientView(graph, 'shared', 'float32', 30);
   expect(() =>
-    create({
-      elevation: {
-        id: 'shared-elevation',
-        format: 'float32',
-        storage: {kind: 'buffer', values: shared}
+    create(
+      {
+        elevation: {
+          id: 'shared-elevation',
+          format: 'float32',
+          storage: {kind: 'buffer', values: shared}
+        }
       },
-      values: shared
-    })
+      {values: shared}
+    )
   ).toThrow(/share buffers/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUTerrainSpikeRepair({
-      width: 2,
-      height: 2,
+      grid: makeGPURasterMetadata({width: 2, height: 2}),
       elevation: {
         id: 'foreign',
         format: 'float32',
@@ -130,9 +145,61 @@ it('GPUTerrainSpikeRepair validates its properties', () => {
           values: createTransientView(otherGraph, 'foreign-e', 'float32', 4)
         }
       },
-      values: createTransientView(otherGraph, 'foreign-values', 'float32', 4),
-      validity: createTransientView(otherGraph, 'foreign-validity', 'uint32', 4)
+      output: {
+        values: createTransientView(otherGraph, 'foreign-values', 'float32', 4),
+        outputValidity: createTransientView(otherGraph, 'foreign-validity', 'uint32', 4)
+      }
     }).getCommandNodes(graph)
   ).toThrow(/belong to the target graph/);
+  device.destroy();
+});
+
+it('review C-09: unconverged labelling marks the repaired outputs instead of copying them', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const nodes = new GPUTerrainSpikeRepair({
+    grid: makeGPURasterMetadata({width: 6, height: 5}),
+    elevation: {
+      id: 'elevation',
+      format: 'float32',
+      storage: {kind: 'buffer', values: createTransientView(graph, 'e', 'float32', 30)}
+    },
+    output: {
+      values: createTransientView(graph, 'values', 'float32', 30),
+      outputValidity: createTransientView(graph, 'validity', 'uint32', 30)
+    },
+    maximumComponentIterations: 1
+  }).getCommandNodes(graph);
+  const sources = getRasterPipelines(nodes).map(pipeline => pipeline.source);
+  // Before: an unconverged run copied the input, which reads as "nothing to repair".
+  expect(
+    sources.some(source =>
+      source.includes(
+        `validityOut[validityOutOffset + index] = ${GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}u;`
+      )
+    )
+  ).toBe(true);
+});
+
+it('review A §7.4: a second graph is rejected under the contributor id', () => {
+  const device = createNullWebGPUDevice();
+  const first = new GPUCommandGraph(device, {id: 'first'});
+  const second = new GPUCommandGraph(device, {id: 'second'});
+  const contributor = new GPUTerrainSpikeRepair({
+    id: 'repair',
+    grid: makeGPURasterMetadata({width: 6, height: 5}),
+    elevation: {
+      id: 'elevation',
+      format: 'float32',
+      storage: {kind: 'buffer', values: createTransientView(first, 'e', 'float32', 30)}
+    },
+    output: {
+      values: createTransientView(first, 'values', 'float32', 30),
+      outputValidity: createTransientView(first, 'validity', 'uint32', 30)
+    }
+  });
+  // The props' views belong to the first graph, so owned buffers can never be shared by two.
+  expect(() => contributor.getCommandNodes(second)).toThrow(/^repair /);
+  expect(contributor.getCommandNodes(first).length).toBeGreaterThan(0);
+  contributor.destroy();
   device.destroy();
 });

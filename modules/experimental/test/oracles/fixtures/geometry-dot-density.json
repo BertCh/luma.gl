@@ -1,0 +1,251 @@
+{
+ "generator": "geometry-dot-density.py",
+ "shapely": "2.2.0",
+ "note": "inside[row][column] = shapely contains() of the grid cell center; cells span xs[column]..xs[column + 1] and ys[row]..ys[row + 1].",
+ "features": [
+  {
+   "xs": [
+    0,
+    1.7,
+    100
+   ],
+   "ys": [
+    0,
+    1.7,
+    98.3,
+    100
+   ],
+   "inside": [
+    [
+     true,
+     true
+    ],
+    [
+     true,
+     false
+    ],
+    [
+     true,
+     true
+    ]
+   ],
+   "area": 504.22000000000025,
+   "boundingBoxFill": 0.05042200000000002,
+   "valid": true,
+   "rings": [
+    [
+     [
+      [
+       0,
+       0
+      ],
+      [
+       100,
+       0
+      ],
+      [
+       100,
+       1.7
+      ],
+      [
+       1.7,
+       1.7
+      ],
+      [
+       1.7,
+       98.3
+      ],
+      [
+       100,
+       98.3
+      ],
+      [
+       100,
+       100
+      ],
+      [
+       0,
+       100
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "xs": [
+    0,
+    2,
+    8,
+    10,
+    20,
+    30
+   ],
+   "ys": [
+    0,
+    2,
+    8,
+    10
+   ],
+   "inside": [
+    [
+     true,
+     true,
+     true,
+     false,
+     true
+    ],
+    [
+     true,
+     false,
+     true,
+     false,
+     true
+    ],
+    [
+     true,
+     true,
+     true,
+     false,
+     true
+    ]
+   ],
+   "area": 164.0,
+   "boundingBoxFill": 0.5466666666666666,
+   "valid": true,
+   "rings": [
+    [
+     [
+      [
+       0,
+       0
+      ],
+      [
+       10,
+       0
+      ],
+      [
+       10,
+       10
+      ],
+      [
+       0,
+       10
+      ]
+     ],
+     [
+      [
+       2,
+       2
+      ],
+      [
+       8,
+       2
+      ],
+      [
+       8,
+       8
+      ],
+      [
+       2,
+       8
+      ]
+     ]
+    ],
+    [
+     [
+      [
+       20,
+       0
+      ],
+      [
+       30,
+       0
+      ],
+      [
+       30,
+       10
+      ],
+      [
+       20,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "xs": [
+    40,
+    42,
+    48,
+    50
+   ],
+   "ys": [
+    0,
+    2,
+    8,
+    10
+   ],
+   "inside": [
+    [
+     true,
+     true,
+     true
+    ],
+    [
+     true,
+     false,
+     true
+    ],
+    [
+     true,
+     true,
+     true
+    ]
+   ],
+   "area": 64.0,
+   "boundingBoxFill": 0.64,
+   "valid": true,
+   "rings": [
+    [
+     [
+      [
+       40,
+       0
+      ],
+      [
+       50,
+       0
+      ],
+      [
+       50,
+       10
+      ],
+      [
+       40,
+       10
+      ]
+     ],
+     [
+      [
+       42,
+       2
+      ],
+      [
+       48,
+       2
+      ],
+      [
+       48,
+       8
+      ],
+      [
+       42,
+       8
+      ]
+     ]
+    ]
+   ]
+  }
+ ]
+}

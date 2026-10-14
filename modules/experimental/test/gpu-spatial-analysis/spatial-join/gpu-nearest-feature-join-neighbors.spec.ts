@@ -7,7 +7,11 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {describe, expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
-import {GPUNearestFeatureJoin} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-nearest-feature-join';
+import {
+  GPUNearestFeatureJoin,
+  type GPUNearestFeatureJoinOutput,
+  type GPUNearestFeatureJoinProps
+} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-nearest-feature-join';
 import {GPU_SPATIAL_JOIN_NO_FEATURE as NO_FEATURE} from '../../../src/gpu-spatial-analysis/spatial-join/spatial-join-types';
 import {
   GPU_NEAREST_NO_SEGMENT,
@@ -22,7 +26,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {GPUSpatialJoinPrepared} from '../../../src/gpu-spatial-analysis/spatial-join/spatial-join-prepared';
+import {GPUSpatialJoinPrepared} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-spatial-join-prepared';
 import {createRandom} from './spatial-join-oracle';
 import {
   buildNearestArrays,
@@ -31,6 +35,7 @@ import {
   type NearestPoint,
   type OracleNeighbor
 } from './nearest-feature-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 type NeighborCase = {
   queries: NearestOracleGeometry;
@@ -123,9 +128,7 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
   const featureCount = input.features.features.length;
   const capacity = input.capacity ?? input.k;
   const slotCount = queryCount * capacity;
-  let queryProps:
-    | {points: NonNullable<ConstructorParameters<typeof GPUNearestFeatureJoin>[0]['points']>}
-    | {queries: ReturnType<typeof importGeometry>};
+  let queries: GPUNearestFeatureJoinProps['queries'];
   if (input.queries.kind === 'points') {
     const positions = input.queries.features;
     const sizes = input.queryChunks ?? [positions.length];
@@ -140,12 +143,13 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
         importGraphBuffer(graph, `query-chunk-${index}`, buffer, 'float32x2', chunkPoints.length)
       );
     }
-    queryProps = {
-      points:
+    queries = {
+      kind: 'points',
+      positions:
         chunks.length === 1 ? chunks[0] : createVectorView('query-points', 'float32x2', chunks)
     };
   } else {
-    queryProps = {queries: importGeometry(device, graph, input.queries, 'queries', buffers)};
+    queries = importGeometry(device, graph, input.queries, 'queries', buffers);
   }
   const ids = createOutputBuffer(device, slotCount);
   const distances = createOutputBuffer(device, slotCount);
@@ -175,34 +179,35 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
   if (prepared) graph.add(prepared);
   graph.add(
     new GPUNearestFeatureJoin({
-      ...queryProps,
-      features,
-      featureIds,
+      queries,
+      features: {...features, sourceIds: featureIds},
       k: input.k,
       ties: input.ties,
       neighborCapacity: capacity,
       spatialSort: prepared ? undefined : input.spatialSort,
       leafCapacity: input.leafCapacity,
       prepared,
-      maxDistance: maxDistance?.importToGraph(graph),
-      neighborIds: importGraphBuffer(graph, 'neighbor-ids', ids, 'uint32', slotCount),
-      neighborDistances: importGraphBuffer(
-        graph,
-        'neighbor-distances',
-        distances,
-        'float32',
-        slotCount
-      ),
-      neighborFootPoints: importGraphBuffer(graph, 'neighbor-foot', foot, 'float32x2', slotCount),
-      neighborSegmentIndices: importGraphBuffer(
-        graph,
-        'neighbor-segments',
-        segments,
-        'uint32',
-        slotCount
-      ),
-      neighborCounts: importGraphBuffer(graph, 'neighbor-counts', counts, 'uint32', queryCount),
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+      radius: maxDistance?.importToGraph(graph),
+      output: {
+        neighborIds: importGraphBuffer(graph, 'neighbor-ids', ids, 'uint32', slotCount),
+        neighborDistances: importGraphBuffer(
+          graph,
+          'neighbor-distances',
+          distances,
+          'float32',
+          slotCount
+        ),
+        neighborFootPoints: importGraphBuffer(graph, 'neighbor-foot', foot, 'float32x2', slotCount),
+        neighborSegmentIndices: importGraphBuffer(
+          graph,
+          'neighbor-segments',
+          segments,
+          'uint32',
+          slotCount
+        ),
+        neighborCounts: importGraphBuffer(graph, 'neighbor-counts', counts, 'uint32', queryCount),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+      }
     })
   );
   const compiled = graph.compile();
@@ -343,7 +348,7 @@ async function getDevice(): Promise<Device | undefined> {
 describe('GPUNearestFeatureJoin neighbors mode', () => {
   it('returns k nearest points with lowest-ID ties against the oracle', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const random = createRandom(3);
     // A tight integer grid forces many exact distance ties.
     const input: NeighborCase = {
@@ -368,7 +373,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('writes feature IDs, honors maxDistance per frame, and pads missing neighbors', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const features: NearestPoint[] = [
       [0, 0],
       [10, 0],
@@ -418,7 +423,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('keeps all ties at the k-th distance and flags truncation', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     // Four features equidistant from the first query, one farther. The second query has no tie.
     const features: NearestPoint[] = [
       [2, 0],
@@ -469,7 +474,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('reports exact foot points and segment indices for lines', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const features: NearestPoint[][] = [
       [
         [0, 0],
@@ -513,7 +518,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('matches the oracle for point, line and polygon queries against lines and polygons', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const random = createRandom(21);
     const extent = 60;
     const geometries = {
@@ -563,7 +568,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('gives distance 0 for polygon containment and reports the contained vertex', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const outer = (x: number, y: number, s: number): NearestPoint[] => [
       [x, y],
       [x + s, y],
@@ -616,7 +621,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('reports crossing line geometries with the crossing point as the foot', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const queries: NearestOracleGeometry = {
       kind: 'lines',
       features: [
@@ -656,7 +661,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('reuses a prepared feature index across encodings until it is invalidated', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const random = createRandom(5);
     for (const features of [
       {kind: 'lines', features: randomIntegerLines(random, 40, 50)} as const,
@@ -685,7 +690,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('accepts a prepared index in nearest-feature mode', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const graph = new GPUCommandGraph(device, {id: 'nearest-prepared-legacy'});
     const buffers: Buffer[] = [];
     const features = importGeometry(
@@ -729,13 +734,15 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     graph.add(prepared);
     graph.add(
       new GPUNearestFeatureJoin({
-        points: queries.positions,
+        queries,
         features,
         prepared,
         radius: radius.importToGraph(graph),
         candidateCapacity: 32,
-        nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', 4),
-        overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+        output: {
+          nearestFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', 4),
+          status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+        }
       })
     );
     const compiled = graph.compile();
@@ -752,7 +759,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('handles empty and degenerate features and an empty feature set', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const queries: NearestOracleGeometry = {kind: 'points', features: [[1, 1]]};
     const lines: NearestOracleGeometry = {
       kind: 'lines',
@@ -779,7 +786,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
   it('matches the oracle on a deep tree with a large k', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const random = createRandom(77);
     const input: NeighborCase = {
       queries: {
@@ -816,7 +823,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 describe('GPUNearestFeatureJoin neighbors mode validation', () => {
   it('rejects inconsistent properties without a GPU device', async () => {
     const device = await getDevice();
-    if (!device) return;
+    requireTestDevice(device);
     const graph = new GPUCommandGraph(device, {id: 'nearest-validation'});
     const buffers = [0, 1, 2, 3, 4, 5].map(() => createInputBuffer(device, new Float32Array(16)));
     const view = <Format extends 'float32x2' | 'uint32' | 'float32'>(
@@ -825,24 +832,30 @@ describe('GPUNearestFeatureJoin neighbors mode validation', () => {
       length: number
     ) => importGraphBuffer(graph, `view-${index}`, buffers[index], format, length);
     const base = {
-      points: view(0, 'float32x2', 4),
+      queries: {kind: 'points', positions: view(0, 'float32x2', 4)} as const,
       features: {kind: 'points', positions: view(1, 'float32x2', 4)} as const,
-      neighborIds: view(2, 'uint32', 4),
-      neighborCounts: view(3, 'uint32', 4),
-      overflow: view(4, 'uint32', 1)
+      output: {
+        neighborIds: view(2, 'uint32', 4),
+        neighborCounts: view(3, 'uint32', 4),
+        status: {overflow: view(4, 'uint32', 1)}
+      }
     };
+    const withOutput = (output: Partial<GPUNearestFeatureJoinOutput>) => ({
+      ...base,
+      output: {...base.output, ...output}
+    });
     expect(() => new GPUNearestFeatureJoin(base)).not.toThrow();
     expect(() => new GPUNearestFeatureJoin({...base, k: 0})).toThrow(/k must be/);
     expect(() => new GPUNearestFeatureJoin({...base, neighborCapacity: 2})).toThrow(/ties/);
-    expect(() => new GPUNearestFeatureJoin({...base, neighborCounts: undefined})).toThrow(
+    expect(() => new GPUNearestFeatureJoin(withOutput({neighborCounts: undefined}))).toThrow(
       /neighborCounts/
     );
-    expect(() => new GPUNearestFeatureJoin({...base, nearestFeatureIds: base.neighborIds})).toThrow(
-      /belong to nearest-feature mode/
-    );
-    expect(() => new GPUNearestFeatureJoin({...base, neighborIds: view(5, 'uint32', 3)})).toThrow(
-      /length must be 4/
-    );
+    expect(
+      () => new GPUNearestFeatureJoin(withOutput({nearestFeatureIds: base.output.neighborIds}))
+    ).toThrow(/nearest-feature outputs need nearestFeatureIds/);
+    expect(
+      () => new GPUNearestFeatureJoin(withOutput({neighborIds: view(5, 'uint32', 3)}))
+    ).toThrow(/output.neighborIds needs 4 rows/);
     for (const buffer of buffers) buffer.destroy();
   });
 });

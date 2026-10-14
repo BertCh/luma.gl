@@ -5,6 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
 import {createRandom, GridStatisticsHarness} from './gpu-region-statistics-grid-harness';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const ROW_COUNT = 1_000_000;
 const DOMAIN_SIZE = 1000;
@@ -98,9 +99,7 @@ async function measurePipelinedEncoding(
 
 it('GPURegionStatistics grid index benchmark', {timeout: 120000}, async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const random = createRandom(2024);
   const positions = new Float32Array(ROW_COUNT * 2);
   const values = new Float32Array(ROW_COUNT);

@@ -9,8 +9,8 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUEdgeBundling,
-  createGPUEdgeBundlingParameterValues,
-  type GPUEdgeBundlingParameterValues
+  getGPUEdgeBundlingParameterValues,
+  type GPUEdgeBundlingSettings
 } from '../../../src/gpu-network/edge-bundling';
 import {
   createInputBuffer,
@@ -21,6 +21,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {bundleEdgesOracle, type EdgeBundlingOracleInput} from './edge-bundling-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /**
  * Tight parity tolerance, as a fraction of the work box side, for a single iteration. The schedule
@@ -40,7 +41,7 @@ type FixtureOptions = {
   iterations?: number;
   densityResolution?: number;
   parameterFormat?: 'uint32' | 'float32';
-  parameters?: GPUEdgeBundlingParameterValues;
+  parameters?: GPUEdgeBundlingSettings;
   withIndices?: boolean;
   geographic?: boolean;
 };
@@ -58,7 +59,7 @@ type Fixture = {
   pathsBuffer: Buffer;
   startIndicesBuffer?: Buffer;
   drawRecordBuffer?: Buffer;
-  setParameters(values: GPUEdgeBundlingParameterValues): void;
+  setParameters(values: GPUEdgeBundlingSettings): void;
   run(): Promise<Float32Array>;
   destroy(): void;
 };
@@ -93,26 +94,30 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
         length: 5,
         values:
           parameterFormat === 'uint32'
-            ? createGPUEdgeBundlingParameterValues(options.parameters, 'uint32')
-            : createGPUEdgeBundlingParameterValues(options.parameters, 'float32')
+            ? getGPUEdgeBundlingParameterValues(options.parameters, 'uint32')
+            : getGPUEdgeBundlingParameterValues(options.parameters, 'float32')
       })
     : undefined;
   const contributor = new GPUEdgeBundling({
-    positions: importGraphBuffer(graph, 'positions', buffers[0], 'float32x2', vertexCount),
-    sourceVertices: importGraphBuffer(graph, 'sources', buffers[1], 'uint32', edgeCount),
-    targetVertices: importGraphBuffer(graph, 'targets', buffers[2], 'uint32', edgeCount),
+    nodePositions: importGraphBuffer(graph, 'positions', buffers[0], 'float32x2', vertexCount),
+    sourceNodes: importGraphBuffer(graph, 'sources', buffers[1], 'uint32', edgeCount),
+    targetNodes: importGraphBuffer(graph, 'targets', buffers[2], 'uint32', edgeCount),
     edgeMask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', edgeCount),
     pointsPerEdge,
-    iterations,
+    maximumIterations: iterations,
     densityResolution,
-    geographic: options.geographic,
+    spatialContext: options.geographic
+      ? {coordinateSpace: 'longitude-latitude', metric: 'none'}
+      : undefined,
     parameters: parameterBuffer?.importToGraph(graph),
-    paths: importGraphBuffer(graph, 'paths', pathsBuffer, 'float32x2', edgeCount * pointsPerEdge),
-    startIndices:
-      startIndicesBuffer &&
-      importGraphBuffer(graph, 'start-indices', startIndicesBuffer, 'uint32', edgeCount + 1),
-    drawRecord:
-      drawRecordBuffer && importGraphBuffer(graph, 'draw-record', drawRecordBuffer, 'uint32', 4)
+    output: {
+      paths: importGraphBuffer(graph, 'paths', pathsBuffer, 'float32x2', edgeCount * pointsPerEdge),
+      lineOffsets:
+        startIndicesBuffer &&
+        importGraphBuffer(graph, 'start-indices', startIndicesBuffer, 'uint32', edgeCount + 1),
+      drawRecord:
+        drawRecordBuffer && importGraphBuffer(graph, 'draw-record', drawRecordBuffer, 'uint32', 4)
+    }
   });
   graph.add(contributor);
   const nodeCount =
@@ -134,8 +139,8 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
     setParameters(values) {
       parameterBuffer!.write(
         parameterFormat === 'uint32'
-          ? createGPUEdgeBundlingParameterValues(values, 'uint32')
-          : createGPUEdgeBundlingParameterValues(values, 'float32')
+          ? getGPUEdgeBundlingParameterValues(values, 'uint32')
+          : getGPUEdgeBundlingParameterValues(values, 'float32')
       );
     },
     async run() {
@@ -153,7 +158,7 @@ function createFixture(device: Device, scene: Scene, options: FixtureOptions = {
 function oracleFor(
   scene: Scene,
   fixture: Fixture,
-  parameters: GPUEdgeBundlingParameterValues = {}
+  parameters: GPUEdgeBundlingSettings = {}
 ): Omit<EdgeBundlingOracleInput, never> {
   return {
     positions: scene.positions,
@@ -261,9 +266,7 @@ function getMidpointSpread(paths: Float32Array, count: number, pointsPerEdge: nu
 
 it('GPUEdgeBundling matches the CPU oracle after one iteration', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createClusteredScene(48, 64, 7);
   const fixture = createFixture(device, scene, {
     pointsPerEdge: 16,
@@ -285,9 +288,7 @@ it('GPUEdgeBundling matches the CPU oracle after one iteration', async () => {
 
 it('GPUEdgeBundling tracks the CPU oracle statistically over a full schedule', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createClusteredScene(48, 64, 7);
   const fixture = createFixture(device, scene, {
     pointsPerEdge: 16,
@@ -309,9 +310,7 @@ it('GPUEdgeBundling tracks the CPU oracle statistically over a full schedule', a
 
 it('GPUEdgeBundling attracts nearby parallel edges and pins endpoints exactly', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pointsPerEdge = 33;
   const count = 6;
   const scene = createParallelScene(count, 12);
@@ -339,9 +338,7 @@ it('GPUEdgeBundling attracts nearby parallel edges and pins endpoints exactly', 
 
 it('GPUEdgeBundling leaves a lone straight edge essentially in place', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const pointsPerEdge = 25;
   const lone = createFixture(device, createParallelScene(1, 0), {
     pointsPerEdge,
@@ -373,9 +370,7 @@ it('GPUEdgeBundling leaves a lone straight edge essentially in place', async () 
 
 it('GPUEdgeBundling honors per-frame parameters without recompiling', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createClusteredScene(24, 32, 11);
   for (const parameterFormat of ['uint32', 'float32'] as const) {
     const fixture = createFixture(device, scene, {
@@ -386,7 +381,7 @@ it('GPUEdgeBundling honors per-frame parameters without recompiling', async () =
       parameters: {activeIterations: 1}
     });
     const side = bundleEdgesOracle(oracleFor(scene, fixture)).box[2];
-    const compare = async (parameters: GPUEdgeBundlingParameterValues) =>
+    const compare = async (parameters: GPUEdgeBundlingSettings) =>
       maxDivergence(
         await fixture.run(),
         bundleEdgesOracle(oracleFor(scene, fixture, parameters)).paths,
@@ -430,9 +425,7 @@ it('GPUEdgeBundling honors per-frame parameters without recompiling', async () =
 
 it('GPUEdgeBundling activeIterations 0 produces exact straight subdivisions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createParallelScene(3, 20);
   const pointsPerEdge = 9;
   const fixture = createFixture(device, scene, {
@@ -453,9 +446,7 @@ it('GPUEdgeBundling activeIterations 0 produces exact straight subdivisions', as
 
 it('GPUEdgeBundling excludes masked and invalid edges and collapses their paths', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const base = createClusteredScene(32, 24, 3);
   const mask = new Uint32Array(24).fill(1);
   mask[2] = 0;
@@ -520,9 +511,7 @@ it('GPUEdgeBundling excludes masked and invalid edges and collapses their paths'
 
 it('GPUEdgeBundling writes startIndices and the drawIndirect record', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createClusteredScene(16, 7, 5);
   const fixture = createFixture(device, scene, {
     pointsPerEdge: 6,
@@ -537,9 +526,7 @@ it('GPUEdgeBundling writes startIndices and the drawIndirect record', async () =
 
 it('GPUEdgeBundling is scale and translation invariant', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createClusteredScene(24, 30, 21);
   const scaled: Scene = {
     ...scene,
@@ -565,9 +552,7 @@ it('GPUEdgeBundling is scale and translation invariant', async () => {
 
 it('GPUEdgeBundling geographic input matches planar bundling of cos-latitude scaled longitude', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const planar = createClusteredScene(24, 30, 33);
   // Map the 0..100 scene to lon/lat degrees: 40 degrees of longitude by 10 of latitude near 60 N.
   const geographic: Scene = {

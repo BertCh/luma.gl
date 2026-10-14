@@ -1,0 +1,182 @@
+{
+  "geospatial": {
+    "GPUGridIndexView.count": {
+      "rule": "status",
+      "reason": "upstream-owned (mirrors the gpgpu GPUGridIndex views)"
+    },
+    "GPUGridIndexView.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned (mirrors the gpgpu GPUGridIndex views)"
+    }
+  },
+  "gpu-raster": {
+    "GPURasterBandMathProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterBandMathProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterConnectedComponentsProps.converged": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterConnectedComponentsProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterConnectedComponentsProps.iterationCount": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterConnectedComponentsProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContourClassifierProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContourClassifierProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContoursProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContoursProps.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContoursProps.requiredSegmentCount": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContoursProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContrastProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterContrastProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterCrossTile.converged": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterCrossTile.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterCrossTileComponentsProps.converged": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterCrossTileComponentsProps.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterCrossTileComponentsProps.requiredComponentCount": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterDenseComponentsProps.converged": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterDenseComponentsProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterDenseComponentsProps.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterDenseComponentsProps.requiredComponentCount": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterDenseComponentsProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterGlobalAccumulator.count": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterGlobalAccumulator.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterGlobalHistogramMergeProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterGlobalHistogramMergeProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterGlobalStatisticsMergeProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterGlobalStatisticsMergeProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterMorphologyBaseProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterMorphologyBaseProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterNDVIProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterNDVIProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterNeighborhoodProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterNeighborhoodProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterRegionMeasurementsProps.converged": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterRegionMeasurementsProps.overflow": {
+      "rule": "status",
+      "reason": "upstream-owned"
+    },
+    "GPURasterStatisticsProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterStatisticsProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterThresholdProps.height": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    },
+    "GPURasterThresholdProps.width": {
+      "rule": "raster grid",
+      "reason": "upstream-owned"
+    }
+  }
+}

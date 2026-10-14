@@ -23,6 +23,7 @@ import {
   interpolateGreatCircle
 } from './geodesic-oracle';
 import {getVincentyDirect, getVincentyInverse} from './vincenty-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const EARTH_RADIUS = 6371008.8;
 
@@ -102,13 +103,15 @@ function createPairsFixture(device: Device, model: 'sphere' | 'wgs84', pairCount
         ),
         ...(model === 'wgs84'
           ? {
-              converged: importGraphBuffer(
-                graph,
-                'o-converged',
-                outputs.converged,
-                'uint32',
-                pairCount
-              )
+              status: {
+                converged: importGraphBuffer(
+                  graph,
+                  'o-converged',
+                  outputs.converged,
+                  'uint32',
+                  pairCount
+                )
+              }
             }
           : {})
       }
@@ -153,9 +156,7 @@ const rounded = (values: Float32Array, row: number) => [values[2 * row], values[
 
 it('GPUGeodesicPairs sphere matches f64 haversine, bearings and midpoints', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {origins, targets} = getPairValues(PAIRS);
   const fixture = createPairsFixture(device, 'sphere', PAIRS.length);
   const actual = await fixture.run(origins, targets);
@@ -192,9 +193,7 @@ it('GPUGeodesicPairs sphere matches f64 haversine, bearings and midpoints', asyn
 
 it('GPUGeodesicPairs WGS84 Vincenty matches f64 Vincenty and flags near-antipodal pairs', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const {origins, targets} = getPairValues(PAIRS);
   const fixture = createPairsFixture(device, 'wgs84', PAIRS.length);
   const actual = await fixture.run(origins, targets);
@@ -232,9 +231,7 @@ it('GPUGeodesicPairs WGS84 Vincenty matches f64 Vincenty and flags near-antipoda
 
 it('GPUGeodesicDestination matches f64 sphere and Vincenty direct solutions', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const rows = [
     {origin: [2.35, 48.85], bearing: 45, distance: 1},
     {origin: [-73.98, 40.75], bearing: -120, distance: 1500},
@@ -294,7 +291,17 @@ it('GPUGeodesicDestination matches f64 sphere and Vincenty direct solutions', as
           ),
           finalBearings: importGraphBuffer(graph, 'o-final', finalBearings, 'float32', rows.length),
           ...(model === 'wgs84'
-            ? {converged: importGraphBuffer(graph, 'o-converged', converged, 'uint32', rows.length)}
+            ? {
+                status: {
+                  converged: importGraphBuffer(
+                    graph,
+                    'o-converged',
+                    converged,
+                    'uint32',
+                    rows.length
+                  )
+                }
+              }
             : {})
         }
       })

@@ -13,19 +13,19 @@ it('GPUEmpiricalBayesRates validates its props', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'eb-validation'});
   const events = createTransientView(graph, 'events', 'float32', 10);
   const populations = createTransientView(graph, 'populations', 'float32', 10);
-  expect(() => new GPUEmpiricalBayesRates({events, populations})).toThrow(/no output/);
+  expect(() => new GPUEmpiricalBayesRates({events, populations, output: {}})).toThrow(/no output/);
   expect(
     () =>
       new GPUEmpiricalBayesRates({
         events,
         populations: createTransientView(graph, 'short', 'float32', 9),
-        rawRates: createTransientView(graph, 'raw', 'float32', 10)
+        output: {rawRates: createTransientView(graph, 'raw', 'float32', 10)}
       })
   ).toThrow(/populations length/);
   const nodes = new GPUEmpiricalBayesRates({
     events,
     populations,
-    standardizedRates: createTransientView(graph, 'z', 'float32', 10)
+    output: {standardizedRates: createTransientView(graph, 'z', 'float32', 10)}
   }).getCommandNodes(graph);
   // partials-a, totals-a, partials-b, summary, rates
   expect(nodes.length).toBe(5);
@@ -55,8 +55,30 @@ it('GPUEmpiricalBayesRates builds the same nodes with and without the clamp', ()
       events,
       populations,
       clampPriorVariance,
-      smoothedRates: createTransientView(graph, `s-${clampPriorVariance}`, 'float32', 10)
+      output: {smoothedRates: createTransientView(graph, `s-${clampPriorVariance}`, 'float32', 10)}
     }).getCommandNodes(graph);
     expect(nodes.length).toBe(5);
   }
+});
+
+it('GPUEmpiricalBayesRates accepts uint32 counts with one conversion node per input', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'eb-uint32'});
+  const nodes = new GPUEmpiricalBayesRates({
+    events: createTransientView(graph, 'events', 'uint32', 10),
+    populations: createTransientView(graph, 'populations', 'uint32', 10),
+    output: {smoothedRates: createTransientView(graph, 'smoothed', 'float32', 10)}
+  }).getCommandNodes(graph);
+  expect(nodes.length).toBe(7);
+  expect(nodes.slice(0, 2).map(node => node.id)).toEqual([
+    'empirical-bayes-rates-events-to-float32',
+    'empirical-bayes-rates-populations-to-float32'
+  ]);
+  expect(
+    () =>
+      new GPUEmpiricalBayesRates({
+        events: createTransientView(graph, 'bad-events', 'sint32', 10) as never,
+        populations: createTransientView(graph, 'populations-2', 'float32', 10),
+        output: {smoothedRates: createTransientView(graph, 'smoothed-2', 'float32', 10)}
+      })
+  ).toThrow(/events/);
 });

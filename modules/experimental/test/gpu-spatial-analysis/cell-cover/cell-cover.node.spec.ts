@@ -34,7 +34,7 @@ function createProps(
   return {
     family: 'quadbin',
     resolution: 5,
-    polygonPositions: view('float32x2', 4),
+    positions: view('float32x2', 4),
     featureOffsets: view('uint32', 2),
     polygonOffsets: view('uint32', 2),
     ringOffsets: view('uint32', 2),
@@ -42,9 +42,11 @@ function createProps(
     output: {
       featureIds: view('uint32', 16),
       cells: view('uint32x2', 16),
-      count: view('uint32', 1),
-      overflow: view('uint32', 1),
-      candidateOverflow: view('uint32', 1)
+      status: {
+        count: view('uint32', 1),
+        overflow: view('uint32', 1),
+        candidateOverflow: view('uint32', 1)
+      }
     },
     ...overrides
   };
@@ -73,9 +75,11 @@ it('GPUCellCover validates its props', () => {
           output: {
             featureIds: view('uint32', 4),
             cells: view('uint32x2', 5),
-            count: view('uint32', 1),
-            overflow: view('uint32', 1),
-            candidateOverflow: view('uint32', 1)
+            status: {
+              count: view('uint32', 1),
+              overflow: view('uint32', 1),
+              candidateOverflow: view('uint32', 1)
+            }
           }
         })
       )
@@ -88,7 +92,7 @@ it('GPUCellCover validates its props', () => {
     () =>
       new GPUCellCover({
         ...shared,
-        output: {...shared.output, count: shared.featureOffsets}
+        output: {...shared.output, status: {...shared.output.status, count: shared.featureOffsets}}
       })
   ).toThrow(/share/);
   const otherGraph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'other'});
@@ -261,7 +265,14 @@ it('GPUCellCover declares longitude/latitude and wires antimeridian and polar st
   const base = createProps(graph);
   const ids = new GPUCellCover({
     ...base,
-    output: {...base.output, invalidCount: view('uint32', 1), uncertainCount: view('uint32', 1)}
+    output: {
+      ...base.output,
+      status: {
+        ...base.output.status,
+        invalidCount: view('uint32', 1),
+        uncertainCount: view('uint32', 1)
+      }
+    }
   })
     .getCommandNodes(graph)
     .map(node => node.id);

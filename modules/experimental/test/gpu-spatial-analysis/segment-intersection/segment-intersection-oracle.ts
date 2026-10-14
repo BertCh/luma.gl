@@ -53,12 +53,12 @@ export function buildArrays(features: OracleSegmentFeature[]): OracleArrays {
   const ringOffsets = [0];
   for (const feature of features) {
     if (feature.kind === 'lines') {
-      positions.push(...feature.vertices.flat());
+      for (const [x, y] of feature.vertices) positions.push(x, y);
       lineOffsets.push(positions.length / 2);
     } else {
       for (const polygon of feature.polygons) {
         for (const ring of polygon) {
-          positions.push(...ring.flat());
+          for (const [x, y] of ring) positions.push(x, y);
           ringOffsets.push(positions.length / 2);
         }
         polygonOffsets.push(ringOffsets.length - 1);

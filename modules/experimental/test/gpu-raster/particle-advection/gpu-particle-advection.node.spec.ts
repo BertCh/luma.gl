@@ -5,13 +5,15 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  advanceParticlesOnCPU,
-  createParticleAdvectionCPUState,
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   GPUParticleAdvection,
   type GPUParticleAdvectionProps
 } from '../../../src/gpu-raster/particle-advection';
+import {
+  advanceParticlesOnCPU,
+  createParticleAdvectionCPUState
+} from '../../../src/gpu-raster/particle-advection/particle-advection-cpu';
 import {getPhilox4x32} from '../../../src/utils/philox-random';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -30,15 +32,17 @@ function createProps(
     fieldWidth: 4,
     fieldHeight: 3,
     parameters: view('float32', 12),
-    wordParameters: view('uint32', 4),
+    uint32Parameters: view('uint32', 4),
     state: {
       positions: view('float32x2', 10),
       ages: view('uint32', 10),
       generations: view('uint32', 10)
     },
-    previousPositions: view('float32x2', 10),
-    speeds: view('float32', 10),
-    trails: {positions: view('float32x2', 30), length: 3},
+    output: {
+      previousPositions: view('float32x2', 10),
+      speeds: view('float32', 10),
+      trails: {positions: view('float32x2', 30), length: 3}
+    },
     ...overrides
   };
 }
@@ -53,7 +57,14 @@ it('GPUParticleAdvection validates props and builds deterministic nodes', () => 
     'wind-step',
     'wind-trails'
   ]);
-  const withoutTrails = new GPUParticleAdvection(createProps(graph, {trails: undefined}));
+  const withoutTrails = new GPUParticleAdvection(
+    createProps(graph, {
+      output: {
+        previousPositions: createTransientView(graph, 'no-trails-previous', 'float32x2', 10),
+        speeds: createTransientView(graph, 'no-trails-speeds', 'float32', 10)
+      }
+    })
+  );
   expect(withoutTrails.getCommandNodes(graph)).toHaveLength(1);
 
   expect(() => new GPUParticleAdvection(createProps(graph, {fieldWidth: 5}))).toThrow(
@@ -74,7 +85,7 @@ it('GPUParticleAdvection validates props and builds deterministic nodes', () => 
     () =>
       new GPUParticleAdvection(
         createProps(graph, {
-          speeds: createTransientView(graph, 'speeds-short', 'float32', 9)
+          output: {speeds: createTransientView(graph, 'speeds-short', 'float32', 9)}
         })
       )
   ).toThrow(/one row per particle/);
@@ -82,9 +93,11 @@ it('GPUParticleAdvection validates props and builds deterministic nodes', () => 
     () =>
       new GPUParticleAdvection(
         createProps(graph, {
-          trails: {
-            positions: createTransientView(graph, 'trail-short', 'float32x2', 20),
-            length: 3
+          output: {
+            trails: {
+              positions: createTransientView(graph, 'trail-short', 'float32x2', 20),
+              length: 3
+            }
           }
         })
       )
@@ -94,7 +107,7 @@ it('GPUParticleAdvection validates props and builds deterministic nodes', () => 
     () =>
       new GPUParticleAdvection({
         ...props,
-        speeds: props.parameters as never
+        output: {speeds: props.parameters as never}
       })
   ).toThrow();
   const otherGraph = new GPUCommandGraph(createNullWebGPUDevice(), {
@@ -115,7 +128,7 @@ it('GPUParticleAdvection parameter helpers pack the documented layout', () => {
   ).toEqual([10, 20, 2, 4, 0.5, 1, 0.25, 0, 10, 20, 26, 36]);
   expect(
     Array.from(
-      getGPUParticleAdvectionWordParameterValues({
+      getGPUParticleAdvectionUint32ParameterValues({
         seed: 5,
         frame: 9,
         maximumAge: 60,
@@ -124,7 +137,7 @@ it('GPUParticleAdvection parameter helpers pack the documented layout', () => {
     )
   ).toEqual([5, 9, 60, 1]);
   expect(() =>
-    getGPUParticleAdvectionWordParameterValues({
+    getGPUParticleAdvectionUint32ParameterValues({
       seed: -1,
       frame: 0,
       maximumAge: 1
@@ -161,7 +174,7 @@ it('advanceParticlesOnCPU moves exactly along a uniform field and keys spawns by
     state,
     field,
     parameters,
-    getGPUParticleAdvectionWordParameterValues({
+    getGPUParticleAdvectionUint32ParameterValues({
       seed: 11,
       frame: 0,
       maximumAge: 100,
@@ -183,7 +196,7 @@ it('advanceParticlesOnCPU moves exactly along a uniform field and keys spawns by
     state,
     field,
     parameters,
-    getGPUParticleAdvectionWordParameterValues({
+    getGPUParticleAdvectionUint32ParameterValues({
       seed: 11,
       frame: 1,
       maximumAge: 1000
@@ -202,7 +215,7 @@ it('advanceParticlesOnCPU moves exactly along a uniform field and keys spawns by
     small,
     field,
     parameters,
-    getGPUParticleAdvectionWordParameterValues({
+    getGPUParticleAdvectionUint32ParameterValues({
       seed: 11,
       frame: 0,
       maximumAge: 100,
@@ -227,7 +240,7 @@ it('advanceParticlesOnCPU drop rate is exact and independent between frames', ()
     state,
     field,
     parameters,
-    getGPUParticleAdvectionWordParameterValues({
+    getGPUParticleAdvectionUint32ParameterValues({
       seed: 1,
       frame: 0,
       maximumAge: 0,
@@ -238,7 +251,7 @@ it('advanceParticlesOnCPU drop rate is exact and independent between frames', ()
     state,
     field,
     parameters,
-    getGPUParticleAdvectionWordParameterValues({
+    getGPUParticleAdvectionUint32ParameterValues({
       seed: 1,
       frame: 1,
       maximumAge: 0

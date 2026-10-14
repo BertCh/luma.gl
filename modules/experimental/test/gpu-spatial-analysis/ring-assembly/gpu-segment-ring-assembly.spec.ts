@@ -11,9 +11,9 @@ import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUSegmentRingAssembly,
   GPU_SEGMENT_RING_ASSEMBLY_NONE
-} from '../../../src/gpu-spatial-analysis/ring-assembly';
+} from '../../../src/analysis-core/ring-assembly';
 import {GPUCellSetOutline} from '../../../src/gpu-spatial-analysis/cell-set-outline';
-import type {GPUSpatialContext} from '../../../src/gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   GPUPointInPolygonJoin,
   GPU_SPATIAL_JOIN_NO_FEATURE
@@ -39,6 +39,7 @@ import {
   containsPoint,
   type OracleSegment
 } from './ring-assembly-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** The former `geographic` flag (default true in the harness) expressed as a spatial context. */
 function getSpatialContext(geographic: boolean | undefined): GPUSpatialContext | undefined {
@@ -176,11 +177,13 @@ function getRingOutput(
       segments
     ),
     segmentFlags: importGraphBuffer(graph, 'segment-flags', buffers.flags, 'uint32', segments),
-    count: importGraphBuffer(graph, 'ring-count', buffers.count, 'uint32', 1),
-    overflow: importGraphBuffer(graph, 'ring-overflow', buffers.overflow, 'uint32', 1),
-    requiredCount: importGraphBuffer(graph, 'ring-total', buffers.total, 'uint32', 1),
-    openSegmentCount: importGraphBuffer(graph, 'ring-open', buffers.open, 'uint32', 1),
-    touchingSegmentCount: importGraphBuffer(graph, 'ring-touching', buffers.touching, 'uint32', 1)
+    status: {
+      count: importGraphBuffer(graph, 'ring-count', buffers.count, 'uint32', 1),
+      overflow: importGraphBuffer(graph, 'ring-overflow', buffers.overflow, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'ring-total', buffers.total, 'uint32', 1),
+      openSegmentCount: importGraphBuffer(graph, 'ring-open', buffers.open, 'uint32', 1),
+      touchingSegmentCount: importGraphBuffer(graph, 'ring-touching', buffers.touching, 'uint32', 1)
+    }
   };
 }
 
@@ -345,8 +348,10 @@ async function runOutlineRings(
         groups: groupValues
           ? importGraphBuffer(graph, 'out-groups', out.groups, 'uint32', capacity)
           : undefined,
-        count: importGraphBuffer(graph, 'out-count', out.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'out-overflow', out.overflow, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(graph, 'out-count', out.count, 'uint32', 1),
+          overflow: importGraphBuffer(graph, 'out-overflow', out.overflow, 'uint32', 1)
+        }
       },
       rings: {
         normalizeWinding: options.normalizeWinding,
@@ -461,9 +466,7 @@ function createPlanarScene(): OracleSegment[] {
 
 it('GPUSegmentRingAssembly chains shells, holes, islands and touching corners', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createPlanarScene();
   const options: AssemblyOptions = {
     ringCapacity: 16,
@@ -516,9 +519,7 @@ it('GPUSegmentRingAssembly chains shells, holes, islands and touching corners', 
 
 it('GPUSegmentRingAssembly chains UTM-offset rings at tiny tolerances and flags non-finite vertices', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Vertices near x 500,000, y 4,500,000 m (C-04): the old i32 floor(v * k) saturated, so every
   // vertex shared one hash bucket and assembly went quadratic. Integer meters are exact in f32.
   const scene: OracleSegment[] = [];
@@ -568,9 +569,7 @@ it('GPUSegmentRingAssembly chains UTM-offset rings at tiny tolerances and flags 
 
 it('GPUSegmentRingAssembly honors interiorSide, normalizeWinding and reversed input', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createPlanarScene();
   const reversed = scene.map(([x0, y0, x1, y1]): OracleSegment => [x1, y1, x0, y0]);
   for (const normalizeWinding of [false, true]) {
@@ -600,11 +599,39 @@ it('GPUSegmentRingAssembly honors interiorSide, normalizeWinding and reversed in
   }
 });
 
+it('GPUSegmentRingAssembly orients a sliver ring exactly at its lowest vertex', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Exact orientation of (0, 0), (1, 3), (5592405.5, 2^24) is 1 * 2^24 - 3 * 5592405.5 = -0.5:
+  // clockwise. In f32 without a fused multiply-add, 3 * 5592405.5 rounds to 2^24 and the shoelace
+  // sum is 0, so the old area-sign rule called this ring a shell. The lowest-vertex turn is exact.
+  const sliver: [number, number][] = [
+    [0, 0],
+    [1, 3],
+    [5592405.5, 16777216]
+  ];
+  // Control: a counter-clockwise square far from the sliver.
+  const scene = [
+    ...polygonSegments(sliver),
+    ...polygonSegments(square(0, 0, 4, 4, true), [-100, 0])
+  ];
+  const run = await runAssembly(device, scene, {
+    ringCapacity: 4,
+    vertexCapacity: 16,
+    tolerance: 0.25,
+    interiorSide: 'left',
+    geographic: false
+  });
+  expect(run.count).toBe(2);
+  // Rings are ordered by their lowest segment index: the sliver is ring 0.
+  expect(run.isHole.slice(0, 2)).toEqual([1, 0]);
+  // A hole of a clockwise-only scene has no enclosing shell.
+  expect(run.shells.slice(0, 2)).toEqual([NONE, 1]);
+});
+
 it('GPUSegmentRingAssembly leaves unclosed chains open and flags them', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const closed = polygonSegments(square(0, 0, 4, 4, true));
   const chain: OracleSegment[] = [
     [10, 0, 11, 0],
@@ -645,9 +672,7 @@ it('GPUSegmentRingAssembly leaves unclosed chains open and flags them', async ()
 
 it('GPUSegmentRingAssembly cancels exactly opposite segment pairs when asked', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // A square whose bottom edge carries a zero-width slit (a spike out and back), a spike hanging
   // off a corner, and a lone opposite pair in another group that must not cancel across groups.
   const square0 = polygonSegments(square(0, 0, 4, 4, true));
@@ -689,9 +714,7 @@ it('GPUSegmentRingAssembly cancels exactly opposite segment pairs when asked', a
 
 it('GPUSegmentRingAssembly writes whole rings only when capacity is short', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createPlanarScene();
   const full = await runAssembly(device, scene, {
     ringCapacity: 16,
@@ -814,9 +837,7 @@ async function expectH3RingsMatchPolygons(
 
 it('GPUCellSetOutline rings of an H3 set equal h3-js cellsToMultiPolygon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const resolution of [5, 6]) {
     const cells = createH3Scene(resolution);
     const polygons = cellsToMultiPolygon(cells.map(bigIntToH3), true);
@@ -828,9 +849,7 @@ it('GPUCellSetOutline rings of an H3 set equal h3-js cellsToMultiPolygon', async
 
 it('GPUCellSetOutline rings around H3 pentagons equal h3-js cellsToMultiPolygon', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   for (const resolution of [2, 3, 5]) {
     const pentagons = getPentagons(resolution);
     expect(pentagons.length).toBe(12);
@@ -911,9 +930,7 @@ function countComponents(tiles: Set<string>): number {
 
 it('GPUCellSetOutline rings of a Quadbin set handle holes and touching corners', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const z = 6;
   const tiles = new Set<string>();
   const addBlock = (x0: number, y0: number, x1: number, y1: number) => {
@@ -989,9 +1006,7 @@ it('GPUCellSetOutline rings of a Quadbin set handle holes and touching corners',
 
 it('GPUCellSetOutline rings never mix groups', async () => {
   const device = await getWebGPUTestDevice('core');
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const cells = createH3Scene(5);
   const groups = new Map(cells.map(cell => [cell, Number((cell >> 3n) % 3n)]));
   const result = await runOutlineRings(device, 'h3', cells, {
@@ -1018,9 +1033,7 @@ it('GPUCellSetOutline rings never mix groups', async () => {
 
 it('GPUSegmentRingAssembly without splitting joins holes that touch at a corner', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createPlanarScene();
   const options: AssemblyOptions = {
     ringCapacity: 16,
@@ -1120,33 +1133,43 @@ async function runPolygons(
   );
   graph.add(
     new GPUPointInPolygonJoin({
-      points: importGraphBuffer(
-        graph,
-        'points',
-        track(createInputBuffer(device, Float32Array.from(points.flat()))),
-        'float32x2',
-        points.length
-      ),
-      polygonPositions: polygons.positions,
-      featureOffsets: polygons.featureOffsets,
-      polygonOffsets: polygons.polygonOffsets,
-      ringOffsets: polygons.ringOffsets,
+      points: {
+        kind: 'points',
+        positions: importGraphBuffer(
+          graph,
+          'points',
+          track(createInputBuffer(device, Float32Array.from(points.flat()))),
+          'float32x2',
+          points.length
+        )
+      },
+      polygons: {
+        kind: 'polygons',
+        positions: polygons.positions,
+        featureOffsets: polygons.featureOffsets,
+        polygonOffsets: polygons.polygonOffsets,
+        ringOffsets: polygons.ringOffsets
+      },
       candidateCapacity: points.length * 2,
-      pointFeatureIds: importGraphBuffer(
-        graph,
-        'point-features',
-        polygonBuffers.pointFeatureIds,
-        'uint32',
-        points.length
-      ),
-      overflow: importGraphBuffer(graph, 'join-overflow', polygonBuffers.overflow, 'uint32', 1),
-      uncertainCount: importGraphBuffer(
-        graph,
-        'join-uncertain',
-        polygonBuffers.uncertain,
-        'uint32',
-        1
-      )
+      output: {
+        pointFeatureIds: importGraphBuffer(
+          graph,
+          'point-features',
+          polygonBuffers.pointFeatureIds,
+          'uint32',
+          points.length
+        ),
+        status: {
+          overflow: importGraphBuffer(graph, 'join-overflow', polygonBuffers.overflow, 'uint32', 1),
+          uncertainCount: importGraphBuffer(
+            graph,
+            'join-uncertain',
+            polygonBuffers.uncertain,
+            'uint32',
+            1
+          )
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -1171,9 +1194,7 @@ async function runPolygons(
 
 it('GPUSegmentRingAssembly polygon layout feeds GPUPointInPolygonJoin', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const scene = createPlanarScene();
   const options: AssemblyOptions = {
     ringCapacity: 16,
@@ -1276,9 +1297,7 @@ function circleRing(
 
 it('GPUSegmentRingAssembly sums rings longer than the workgroup cooperatively and prunes shells by bounds', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // Rings of 200, 150, 100, 80, 70, 66 and 40 vertices straddle the 64-lane serial/cooperative
   // switch. The circle at x = 300 is a hole inside no shell (shell NONE), and the island ring
   // sits inside the first hole, so the shell search has to reject some shells by bounding box and
@@ -1312,9 +1331,7 @@ it('GPUSegmentRingAssembly sums rings longer than the workgroup cooperatively an
 
 it('GPUSegmentRingAssembly mixes many small rings with several large rings per workgroup block', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // 130 small squares and 5 rings above 64 vertices: ring statistics give each lane its own small
   // ring and visit the large rings of a block cooperatively, so with 3 blocks at least two large
   // rings share a block whatever order assembly lists them in.

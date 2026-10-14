@@ -8,7 +8,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   computeAdjacencyMatrixOrder,
-  encodeGPUAdjacencyMatrixWindow,
+  getGPUAdjacencyMatrixParameterValues,
   getGPUAdjacencyMatrixFixedWeight,
   GPUAdjacencyMatrix,
   GPUAdjacencyMatrixOrder,
@@ -27,8 +27,7 @@ function createContext(device: Device) {
     return importGraphBuffer(graph, `${name}-${buffer.id}`, buffer, format, length);
   };
   const props = (overrides: Partial<GPUAdjacencyMatrixProps> = {}): GPUAdjacencyMatrixProps => ({
-    offsets: view('offsets', 'uint32', 7),
-    neighbors: view('neighbors', 'uint32', 10),
+    topology: {offsets: view('offsets', 'uint32', 7), neighbors: view('neighbors', 'uint32', 10)},
     resolution: 4,
     output: {counts: view('counts', 'uint32', 16)},
     ...overrides
@@ -49,9 +48,9 @@ it('GPUAdjacencyMatrix validates shapes and options', () => {
   expect(() => new GPUAdjacencyMatrix(props({edgeMask: view('mask', 'uint32', 9)}))).toThrow(
     /edgeMask/
   );
-  expect(() => new GPUAdjacencyMatrix(props({window: view('window', 'uint32', 3)}))).toThrow(
-    /window/
-  );
+  expect(
+    () => new GPUAdjacencyMatrix(props({parameters: view('parameters', 'uint32', 3)}))
+  ).toThrow(/parameters/);
   expect(() => new GPUAdjacencyMatrix(props({weightScale: 0}))).toThrow(/weightScale/);
   expect(
     () =>
@@ -68,14 +67,43 @@ it('GPUAdjacencyMatrix validates shapes and options', () => {
     () =>
       new GPUAdjacencyMatrix(
         props({
-          weights: view('weights', 'float32', 10),
+          topology: {
+            offsets: view('offsets', 'uint32', 7),
+            neighbors: view('neighbors', 'uint32', 10),
+            weights: view('weights', 'float32', 10)
+          },
           output: {
             counts: view('c3', 'uint32', 16),
-            maxWeightSum: view('m', 'uint32', 1)
+            maximumWeightSum: view('m', 'uint32', 1)
           }
         })
       )
   ).toThrow(/weightSums/);
+});
+
+it('GPUAdjacencyMatrix validates its topology', () => {
+  const device = createNullWebGPUDevice();
+  const {view, props} = createContext(device);
+  expect(
+    () =>
+      new GPUAdjacencyMatrix(
+        props({
+          topology: {
+            offsets: view('offsets', 'uint32', 7),
+            neighbors: view('neighbors', 'uint32', 10),
+            weights: view('weights', 'float32', 9)
+          }
+        })
+      )
+  ).toThrow(/topology\.weights length/);
+  expect(
+    () =>
+      new GPUAdjacencyMatrix(
+        props({
+          topology: {offsets: view('offsets', 'uint32', 1), neighbors: view('n', 'uint32', 2)}
+        })
+      )
+  ).toThrow(/topology\.offsets/);
 });
 
 it('GPUAdjacencyMatrix returns deterministic node ids', () => {
@@ -83,12 +111,16 @@ it('GPUAdjacencyMatrix returns deterministic node ids', () => {
   const {graph, view, props} = createContext(device);
   const contributor = new GPUAdjacencyMatrix(
     props({
-      weights: view('weights', 'float32', 10),
+      topology: {
+        offsets: view('offsets', 'uint32', 7),
+        neighbors: view('neighbors', 'uint32', 10),
+        weights: view('weights', 'float32', 10)
+      },
       output: {
         counts: view('c', 'uint32', 16),
         weightSums: view('w', 'uint32', 16),
-        maxCount: view('mc', 'uint32', 1),
-        maxWeightSum: view('mw', 'uint32', 1)
+        maximumCount: view('mc', 'uint32', 1),
+        maximumWeightSum: view('mw', 'uint32', 1)
       }
     })
   );
@@ -104,15 +136,35 @@ it('GPUAdjacencyMatrix returns deterministic node ids', () => {
   ]);
 });
 
-it('window encoding and fixed-point weights follow their documented rules', () => {
+it('parameters packing and fixed-point weights follow their documented rules', () => {
   expect(
-    Array.from(encodeGPUAdjacencyMatrixWindow({rowStart: 1, rowEnd: 9, colStart: 2, colEnd: 5}, 4))
+    Array.from(
+      getGPUAdjacencyMatrixParameterValues({
+        rowStart: 1,
+        rowEnd: 9,
+        colStart: 2,
+        colEnd: 5,
+        resolution: 4
+      })
+    )
   ).toEqual([1, 9, 2, 5]);
   expect(() =>
-    encodeGPUAdjacencyMatrixWindow({rowStart: 0, rowEnd: 2 ** 31, colStart: 0, colEnd: 1}, 4)
+    getGPUAdjacencyMatrixParameterValues({
+      rowStart: 0,
+      rowEnd: 2 ** 31,
+      colStart: 0,
+      colEnd: 1,
+      resolution: 4
+    })
   ).toThrow(/2\^32/);
   expect(() =>
-    encodeGPUAdjacencyMatrixWindow({rowStart: -1, rowEnd: 2, colStart: 0, colEnd: 1}, 4)
+    getGPUAdjacencyMatrixParameterValues({
+      rowStart: -1,
+      rowEnd: 2,
+      colStart: 0,
+      colEnd: 1,
+      resolution: 4
+    })
   ).toThrow(/uint32/);
   expect(getGPUAdjacencyMatrixFixedWeight(1.5, 1024)).toBe(1536);
   expect(getGPUAdjacencyMatrixFixedWeight(-3, 1024)).toBe(0);
@@ -132,13 +184,13 @@ it('GPUAdjacencyMatrixOrder validates and names its nodes', () => {
     () =>
       new GPUAdjacencyMatrixOrder({
         groups: view('g', 'uint32', 4),
-        order: view('o', 'uint32', 3)
+        output: {order: view('o', 'uint32', 3)}
       })
   ).toThrow(/order/);
   const contributor = new GPUAdjacencyMatrixOrder({
     groups: view('g2', 'uint32', 4),
     tieKeys: view('t', 'uint32', 4),
-    order: view('o2', 'uint32', 4)
+    output: {order: view('o2', 'uint32', 4)}
   });
   const ids = contributor.getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('adjacency-matrix-order-identity');

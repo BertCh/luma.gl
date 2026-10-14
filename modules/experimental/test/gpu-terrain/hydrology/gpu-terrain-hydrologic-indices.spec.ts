@@ -6,13 +6,18 @@ import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {expect, it} from 'vitest';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
+} from '../../../src/gpu-raster';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPUTerrainHydrologicIndices,
   getGPUTerrainHydrologicIndicesParameterValues,
   type GPUTerrainHydrologicIndicesSettings
 } from '../../../src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices';
-import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
+import type {GPURasterCellSizeMode} from '../../../src/analysis-core/raster-grid';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -23,7 +28,9 @@ import {
   computeHydrologicIndices,
   type HydrologicIndicesOracleResult
 } from './terrain-hydrologic-indices-oracle';
+import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {TERRAIN_FLOW_DEMS as DEMS, computeTerrainFlow} from './terrain-flow-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const OUTPUTS = ['slope', 'specificCatchmentArea', 'wetnessIndex', 'streamPowerIndex'] as const;
 
@@ -37,8 +44,17 @@ const WETNESS_TOLERANCE = 4e-6;
 
 type IndicesOptions = {
   settings: GPUTerrainHydrologicIndicesSettings;
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Ground cell size of the grid. */
+  cellSize: number | [number, number];
+  /** World position of the top-left corner of the grid. Defaults to `[0, 0]`. */
+  origin?: [number, number];
 };
+
+/** Returns the raster grid that a spec places its DEM on. */
+function getIndicesGrid(width: number, height: number, options: IndicesOptions): GPURasterMetadata {
+  return makeGPURasterMetadata({width, height, cellSize: options.cellSize, origin: options.origin});
+}
 
 async function runIndices(
   device: Device,
@@ -49,6 +65,7 @@ async function runIndices(
   options: IndicesOptions
 ): Promise<Record<(typeof OUTPUTS)[number], Float32Array>> {
   const cellCount = width * height;
+  const grid = getIndicesGrid(width, height, options);
   const elevationBuffer = createInputBuffer(device, elevation);
   const accumulationBuffer = createInputBuffer(device, accumulation);
   const outputs = Object.fromEntries(
@@ -58,22 +75,18 @@ async function runIndices(
     id: 'indices-settings',
     format: 'float32',
     length: 8,
-    values: getGPUTerrainHydrologicIndicesParameterValues(options.settings)
+    values: getGPUTerrainHydrologicIndicesParameterValues(options.settings, grid)
   });
   const graph = new GPUCommandGraph(device, {id: 'hydrologic-indices-test'});
   graph.add(
     new GPUTerrainHydrologicIndices({
-      width,
-      height,
+      grid,
       cellSizeMode: options.cellSizeMode,
-      elevation: {
-        id: 'elevation',
-        format: 'float32',
-        storage: {
-          kind: 'buffer',
-          values: importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount)
-        }
-      },
+      elevation: makeGPURasterBand(
+        importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount),
+        grid,
+        {id: 'elevation'}
+      ),
       accumulation: importGraphBuffer(
         graph,
         'accumulation',
@@ -81,8 +94,8 @@ async function runIndices(
         'float32',
         cellCount
       ),
-      settings: settingsBuffer.importToGraph(graph),
-      ...Object.fromEntries(
+      parameters: settingsBuffer.importToGraph(graph),
+      output: Object.fromEntries(
         OUTPUTS.map(name => [
           name,
           importGraphBuffer(graph, name, outputs[name], 'float32', cellCount)
@@ -125,17 +138,17 @@ function expectIndicesClose(
 
 it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
-  const cases: [string, IndicesOptions, GPUTerrainCellSizeMode | undefined][] = [
-    ['uniform', {settings: {cellSize: [30, 30]}}, undefined],
-    ['rectangular', {settings: {cellSize: [25, 40], minimumSlope: 0.01}}, undefined],
+  requireTestDevice(device);
+  const cases: [string, IndicesOptions, GPURasterCellSizeMode | undefined][] = [
+    ['uniform', {settings: {}, cellSize: 30}, undefined],
+    ['rectangular', {settings: {minimumSlope: 0.01}, cellSize: [25, 40]}, undefined],
     [
       'geographic',
       {
         cellSizeMode: 'geographic',
-        settings: {cellSize: [0.0003, 0.0002], northEdge: 46.8, southEdge: 46.79}
+        settings: {},
+        cellSize: [0.0003, 0.0002],
+        origin: [0, 46.8]
       },
       'geographic'
     ],
@@ -143,7 +156,9 @@ it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
       'web-mercator',
       {
         cellSizeMode: 'web-mercator',
-        settings: {cellSize: [40, 40], northEdge: 0.35, southEdge: 0.351}
+        settings: {},
+        cellSize: 40,
+        origin: [0, getOracleWebMercatorY(0.35)]
       },
       'web-mercator'
     ]
@@ -159,9 +174,8 @@ it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
         // Contributing area from the CPU flow oracle (the GPU flow contributor has its own tests).
         const flow = computeTerrainFlow({
           elevation,
-          width,
-          height,
-          settings: {...options.settings, fillEpsilon: 0.25},
+          grid: getIndicesGrid(width, height, options),
+          settings: {fillEpsilon: 0.25},
           cellSizeMode: options.cellSizeMode,
           fillDepressions: true,
           area: true
@@ -178,8 +192,7 @@ it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
         const expected = computeHydrologicIndices({
           elevation: flow.filled,
           accumulation: flow.accumulation,
-          width,
-          height,
+          grid: getIndicesGrid(width, height, options),
           settings: options.settings,
           cellSizeMode: options.cellSizeMode
         });
@@ -198,9 +211,7 @@ it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
 
 it('GPUTerrainHydrologicIndices handles flats, zero area, nodata, and the analytic plane', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const width = 6;
   const height = 4;
   const cellCount = width * height;
@@ -211,12 +222,17 @@ it('GPUTerrainHydrologicIndices handles flats, zero area, nodata, and the analyt
   area[7] = 0;
   area[8] = NaN;
   plane[15] = NaN;
-  const settings: GPUTerrainHydrologicIndicesSettings = {cellSize: [10, 10], minimumSlope: 0};
-  const actual = await runIndices(device, plane, area, width, height, {settings});
+  const settings: GPUTerrainHydrologicIndicesSettings = {minimumSlope: 0};
+  const actual = await runIndices(device, plane, area, width, height, {settings, cellSize: 10});
   expectIndicesClose(
     'plane',
     actual,
-    computeHydrologicIndices({elevation: plane, accumulation: area, width, height, settings})
+    computeHydrologicIndices({
+      elevation: plane,
+      accumulation: area,
+      grid: makeGPURasterMetadata({width, height, cellSize: 10}),
+      settings
+    })
   );
   expect(actual.slope[0]).toBeCloseTo(0.3, 6);
   expect(actual.specificCatchmentArea[0]).toBeCloseTo(10, 5);
@@ -231,7 +247,8 @@ it('GPUTerrainHydrologicIndices handles flats, zero area, nodata, and the analyt
   expect(actual.streamPowerIndex[5]).toBe(0);
 
   const clamped = await runIndices(device, plane, area, width, height, {
-    settings: {cellSize: [10, 10]}
+    settings: {},
+    cellSize: 10
   });
   expect(clamped.slope[5]).toBeCloseTo(0.001, 8);
   expect(clamped.wetnessIndex[5]).toBeCloseTo(Math.log(60 / 0.001), 4);

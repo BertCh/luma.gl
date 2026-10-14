@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {describe, expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
@@ -23,6 +23,7 @@ import {
   ON_ATTRIBUTE_FIXTURES,
   type NearestOptionsFixture
 } from './spatial-join-options-fixtures';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Imports a fixture geometry set as graph views. */
 function importGeometry(
@@ -34,32 +35,32 @@ function importGeometry(
   buffers: Buffer[]
 ): GPUNearestFeatureGeometry & {kind: 'points' | 'lines' | 'polygons'} {
   const arrays = buildNearestArrays({kind, features} as NearestOracleGeometry);
-  const make = (
+  const make = <Format extends 'uint32' | 'float32x2'>(
     suffix: string,
     values: Float32Array | Uint32Array,
-    format: string,
+    format: Format,
     rows: number
   ) => {
     const buffer = createInputBuffer(device, values);
     buffers.push(buffer);
-    return importGraphBuffer(graph, `${name}-${suffix}`, buffer, format as 'uint32', rows);
+    return importGraphBuffer(graph, `${name}-${suffix}`, buffer, format, rows);
   };
   const positions = make('positions', arrays.positions, 'float32x2', arrays.positions.length / 2);
   const offsets = (suffix: string, values: Uint32Array) =>
-    make(suffix, values, 'uint32', values.length) as GraphDataView<'uint32'>;
+    make(suffix, values, 'uint32', values.length);
   if (kind === 'points') {
-    return {kind, positions: positions as GraphDataView<'float32x2'>};
+    return {kind, positions};
   }
   if (kind === 'lines') {
     return {
       kind,
-      positions: positions as GraphDataView<'float32x2'>,
+      positions,
       lineOffsets: offsets('line-offsets', arrays.lineOffsets!)
     };
   }
   return {
     kind,
-    positions: positions as GraphDataView<'float32x2'>,
+    positions,
     featureOffsets: offsets('feature-offsets', arrays.featureOffsets!),
     polygonOffsets: offsets('polygon-offsets', arrays.polygonOffsets!),
     ringOffsets: offsets('ring-offsets', arrays.ringOffsets!)
@@ -114,7 +115,11 @@ async function runNearest(
     buffers.push(buffer);
     return importGraphBuffer(graph, name, buffer, 'uint32', values.length);
   };
-  const output = (name: string, length: number, format: 'uint32' | 'float32' | 'float32x2') => {
+  const output = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    name: string,
+    length: number,
+    format: Format
+  ) => {
     const buffer = createOutputBuffer(device, length * (format === 'float32x2' ? 2 : 1));
     buffers.push(buffer);
     return {buffer, view: importGraphBuffer(graph, name, buffer, format, length)};
@@ -129,9 +134,8 @@ async function runNearest(
   graph.add(
     new GPUNearestFeatureJoin({
       queries,
-      features,
+      features: {...features, sourceIds: explicit ? uint32('feature-ids', explicit) : undefined},
       exclusive: options.exclusive,
-      featureIds: explicit ? uint32('feature-ids', explicit) : undefined,
       queryIds: explicit ? uint32('query-ids', explicit) : undefined,
       onAttribute:
         options.keys && fixture.queryKeys && fixture.featureKeys
@@ -140,12 +144,14 @@ async function runNearest(
               right: uint32('feature-keys', fixture.featureKeys)
             }
           : undefined,
-      neighborIds: ids.view,
-      neighborCounts: counts.view,
-      neighborDistances: distances.view,
-      neighborFootPoints: foot.view,
-      neighborQueryPoints: options.queryPoints === false ? undefined : queryPoints.view,
-      overflow: overflow.view
+      output: {
+        neighborIds: ids.view,
+        neighborCounts: counts.view,
+        neighborDistances: distances.view,
+        neighborFootPoints: foot.view,
+        neighborQueryPoints: options.queryPoints === false ? undefined : queryPoints.view,
+        status: {overflow: overflow.view}
+      }
     })
   );
   expect(featureCount).toBeGreaterThan(0);
@@ -186,7 +192,7 @@ function expectMatchesFixture(run: NearestRun, fixture: NearestOptionsFixture, l
 describe('GPUNearestFeatureJoin options', () => {
   it('neighborQueryPoints equals shapely.shortest_line for every kind pair', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
+    requireTestDevice(device);
     for (const name of [
       'pointsToLines',
       'linesToPolygons',
@@ -202,7 +208,7 @@ describe('GPUNearestFeatureJoin options', () => {
 
   it('exclusive equals STRtree.query_nearest(exclusive=True) on self-joins', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
+    requireTestDevice(device);
     for (const name of ['pointsSelfExclusive', 'linesSelfExclusive', 'polygonsSelfExclusive']) {
       const fixture = NEAREST_OPTIONS_FIXTURES[name];
       expect(fixture.exclusive).toBe(true);
@@ -216,8 +222,8 @@ describe('GPUNearestFeatureJoin options', () => {
 
   it('exclusive compares explicit queryIds and featureIds, not rows', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
-    const fixture = NEAREST_OPTIONS_FIXTURES.pointsSelfExclusive;
+    requireTestDevice(device);
+    const fixture = NEAREST_OPTIONS_FIXTURES['pointsSelfExclusive'];
     const count = fixture.ids.length;
     const explicit = Array.from({length: count}, (_, row) => ((row * 5 + 3) % count) + 100);
     const run = await runNearest(device, fixture, {exclusive: true, explicitIds: explicit});
@@ -227,7 +233,7 @@ describe('GPUNearestFeatureJoin options', () => {
 
   it('onAttribute keeps only key-equal features, with and without exclusive', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
+    requireTestDevice(device);
     for (const [name, exclusive] of [
       ['linesToPolygonsKeys', false],
       ['pointsSelfExclusiveKeys', true]
@@ -243,8 +249,8 @@ describe('GPUNearestFeatureJoin options', () => {
 
   it('defaults are unchanged when the new outputs are absent', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
-    const fixture = NEAREST_OPTIONS_FIXTURES.polygonsToPolygons;
+    requireTestDevice(device);
+    const fixture = NEAREST_OPTIONS_FIXTURES['polygonsToPolygons'];
     const withQuery = await runNearest(device, fixture);
     const without = await runNearest(device, fixture, {queryPoints: false});
     expect(without.ids).toEqual(withQuery.ids);
@@ -254,8 +260,8 @@ describe('GPUNearestFeatureJoin options', () => {
 
   it('nearest-feature mode honors exclusive and onAttribute', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
-    const fixture = NEAREST_OPTIONS_FIXTURES.pointsSelfExclusiveKeys;
+    requireTestDevice(device);
+    const fixture = NEAREST_OPTIONS_FIXTURES['pointsSelfExclusiveKeys'];
     const count = fixture.ids.length;
     for (const withKeys of [false, true]) {
       const reference =
@@ -263,10 +269,10 @@ describe('GPUNearestFeatureJoin options', () => {
       const graph = new GPUCommandGraph(device, {id: 'nearest-feature-options'});
       const buffers: Buffer[] = [];
       const points = importGeometry(device, graph, 'points', reference.queries, 'points', buffers);
-      const make = (
+      const make = <Format extends 'uint32' | 'float32'>(
         name: string,
         values: number[] | Float32Array,
-        format: 'uint32' | 'float32'
+        format: Format
       ) => {
         const buffer = createInputBuffer(
           device,
@@ -280,9 +286,9 @@ describe('GPUNearestFeatureJoin options', () => {
       buffers.push(nearest, overflow);
       graph.add(
         new GPUNearestFeatureJoin({
-          points: points.positions,
+          queries: {kind: 'points', positions: points.positions},
           features: {kind: 'points', positions: points.positions},
-          radius: make('radius', [1000], 'float32') as GraphDataView<'float32'>,
+          radius: make('radius', [1000], 'float32'),
           candidateCapacity: count * count,
           exclusive: true,
           onAttribute: withKeys
@@ -291,8 +297,10 @@ describe('GPUNearestFeatureJoin options', () => {
                 right: make('right', reference.featureKeys!, 'uint32')
               }
             : undefined,
-          nearestFeatureIds: importGraphBuffer(graph, 'nearest', nearest, 'uint32', count),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+          output: {
+            nearestFeatureIds: importGraphBuffer(graph, 'nearest', nearest, 'uint32', count),
+            status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+          }
         })
       );
       const compiled = graph.compile();
@@ -306,8 +314,8 @@ describe('GPUNearestFeatureJoin options', () => {
 
   it('rejects queryIds without exclusive and misaligned onAttribute keys', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
-    const fixture = NEAREST_OPTIONS_FIXTURES.pointsToLines;
+    requireTestDevice(device);
+    const fixture = NEAREST_OPTIONS_FIXTURES['pointsToLines'];
     const graph = new GPUCommandGraph(device, {id: 'nearest-options-validation'});
     const buffers: Buffer[] = [];
     const features = importGeometry(device, graph, 'lines', fixture.features, 'features', buffers);
@@ -320,9 +328,11 @@ describe('GPUNearestFeatureJoin options', () => {
     const base = {
       queries,
       features,
-      neighborIds: view('ids', queryCount),
-      neighborCounts: view('counts', queryCount),
-      overflow: view('overflow', 1)
+      output: {
+        neighborIds: view('ids', queryCount),
+        neighborCounts: view('counts', queryCount),
+        status: {overflow: view('overflow', 1)}
+      }
     };
     expect(
       () => new GPUNearestFeatureJoin({...base, queryIds: view('query-ids', queryCount)})
@@ -333,7 +343,7 @@ describe('GPUNearestFeatureJoin options', () => {
           ...base,
           onAttribute: {left: view('left', queryCount), right: view('right', 1)}
         })
-    ).toThrow(/onAttribute keys/);
+    ).toThrow(/onAttribute needs one key per query and feature/);
     for (const item of buffers) item.destroy();
   });
 });
@@ -383,23 +393,25 @@ describe('GPUSpatialPredicateJoin onAttribute', () => {
                 left: uint32('left-keys', fixture.leftKeys),
                 right: uint32('right-keys', fixture.rightKeys)
               },
-        pairs: options.anti
-          ? undefined
-          : {
-              leftIds: leftIds.view,
-              rightIds: rightIds.view,
-              count: count.view,
-              overflow: overflow.view
-            },
-        unmatched: options.anti
-          ? {
-              ids: unmatchedIds.view,
-              count: unmatchedCount.view,
-              overflow: unmatchedOverflow.view
-            }
-          : undefined,
-        overflow: options.anti ? overflow.view : undefined,
-        candidateCount: candidateCount.view
+        output: {
+          pairs: options.anti
+            ? undefined
+            : {
+                leftIds: leftIds.view,
+                rightIds: rightIds.view,
+                status: {count: count.view, overflow: overflow.view}
+              },
+          unmatched: options.anti
+            ? {
+                ids: unmatchedIds.view,
+                status: {count: unmatchedCount.view, overflow: unmatchedOverflow.view}
+              }
+            : undefined,
+          status: {
+            overflow: options.anti ? overflow.view : undefined,
+            candidateCount: candidateCount.view
+          }
+        }
       })
     );
     const compiled = graph.compile();
@@ -424,7 +436,7 @@ describe('GPUSpatialPredicateJoin onAttribute', () => {
 
   it('matches geopandas sjoin(on_attribute=) for each kind pair', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
+    requireTestDevice(device);
     for (const [name, engine] of [
       ['pointsPolygons', undefined],
       ['polygonsPolygons', 'fast'],
@@ -441,7 +453,7 @@ describe('GPUSpatialPredicateJoin onAttribute', () => {
 
   it('anti join treats key-mismatched matches as unmatched', async () => {
     const device = await getWebGPUTestDevice('core');
-    if (!device) return;
+    requireTestDevice(device);
     const run = await runPairs(device, 'polygonsPolygons', {anti: true});
     expect(run.unmatched).toEqual(run.fixture.unmatched);
   });

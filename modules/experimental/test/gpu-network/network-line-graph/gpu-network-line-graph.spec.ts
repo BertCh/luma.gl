@@ -28,6 +28,7 @@ import {
   type AccessibilityEdge
 } from '../network-accessibility/network-accessibility-oracle';
 import {lineGraphOracle} from './network-line-graph-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 const WIDTH = 5;
 const HEIGHT = 4;
@@ -111,17 +112,25 @@ async function runLineGraph(
       spatialContext: coordinates.isGreatCircle
         ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
         : undefined,
-      offsets: input('offsets', BASE.offsets, 'uint32'),
-      neighbors: input('neighbors', BASE.neighbors, 'uint32'),
-      weights: input('weights', BASE.weights, 'float32'),
-      nodePositions: input('positions', coordinates.positions, 'float32x2'),
+      topology: {
+        offsets: input('offsets', BASE.offsets, 'uint32'),
+        neighbors: input('neighbors', BASE.neighbors, 'uint32'),
+        weights: input('weights', BASE.weights, 'float32'),
+        nodePositions: input('positions', coordinates.positions, 'float32x2')
+      },
       parameters: parameters.importToGraph(graph),
       bannedTurns: input('banned', Uint32Array.from(BANNED.flat()), 'uint32'),
-      lineOffsets: output('line-offsets', 'uint32', EDGE_COUNT + 1),
-      lineNeighbors: output('line-neighbors', 'uint32', arcCapacity),
-      lineWeights: output('line-weights', 'float32', arcCapacity),
-      arcCount: output('arc-count', 'uint32', 1),
-      overflow: output('overflow', 'uint32', 1)
+      output: {
+        topology: {
+          offsets: output('line-offsets', 'uint32', EDGE_COUNT + 1),
+          neighbors: output('line-neighbors', 'uint32', arcCapacity),
+          weights: output('line-weights', 'float32', arcCapacity)
+        },
+        arcCount: output('arc-count', 'uint32', 1),
+        status: {
+          overflow: output('overflow', 'uint32', 1)
+        }
+      }
     })
   );
   const compiled = graph.compile();
@@ -176,9 +185,7 @@ const TURN_SETTINGS: GPUNetworkLineGraphSettings = {
 
 it('GPUNetworkLineGraph matches the CPU line graph with turn costs, banned U-turns and bans', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const capacity = EDGE_COUNT * 4;
   const banned = await runLineGraph(device, TURN_SETTINGS, capacity, true);
   const oracle = expectMatchesOracle(banned, TURN_SETTINGS, capacity, true);
@@ -194,9 +201,7 @@ it('GPUNetworkLineGraph matches the CPU line graph with turn costs, banned U-tur
 
 it('GPUNetworkLineGraph clamps rows and flags overflow past the arc capacity', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const capacity = 40;
   const result = await runLineGraph(device, TURN_SETTINGS, capacity, true);
   expect(result.overflow).toBe(1);
@@ -207,9 +212,7 @@ it('GPUNetworkLineGraph clamps rows and flags overflow past the arc capacity', a
 
 it('GPUNetworkReachability over the line graph prices turns like the CPU Dijkstra', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   const capacity = EDGE_COUNT * 4;
   const result = await runLineGraph(device, TURN_SETTINGS, capacity, true);
   const oracle = lineGraphOracle(BASE, GRID.positions, BANNED, TURN_SETTINGS, capacity);
@@ -239,17 +242,17 @@ it('GPUNetworkReachability over the line graph prices turns like the CPU Dijkstr
   graph.add(
     new GPUNetworkReachability({
       id: 'line-reach',
-      offsets: input('line-offsets', Uint32Array.from(result.offsets), 'uint32'),
-      neighbors: input('line-neighbors', Uint32Array.from(result.neighbors), 'uint32'),
-      weights: input('line-weights', Float32Array.from(result.weights), 'float32'),
-      sources: input('sources', Uint32Array.from(seeds.map(seed => seed.node)), 'uint32'),
-      sourceCosts: input(
-        'source-costs',
-        Float32Array.from(seeds.map(seed => seed.cost)),
-        'float32'
-      ),
-      maxIterations: 64,
-      costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', EDGE_COUNT)
+      topology: {
+        offsets: input('line-offsets', Uint32Array.from(result.offsets), 'uint32'),
+        neighbors: input('line-neighbors', Uint32Array.from(result.neighbors), 'uint32'),
+        weights: input('line-weights', Float32Array.from(result.weights), 'float32')
+      },
+      startNodes: input('sources', Uint32Array.from(seeds.map(seed => seed.node)), 'uint32'),
+      startCosts: input('source-costs', Float32Array.from(seeds.map(seed => seed.cost)), 'float32'),
+      maximumIterations: 64,
+      output: {
+        costs: importGraphBuffer(graph, 'costs', costsBuffer, 'float32', EDGE_COUNT)
+      }
     })
   );
   const compiled = graph.compile();
@@ -273,9 +276,7 @@ it('GPUNetworkReachability over the line graph prices turns like the CPU Dijkstr
 
 it('GPUNetworkLineGraph prices turns from great-circle bearings on longitude/latitude', async () => {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return;
-  }
+  requireTestDevice(device);
   // The grid sheared and laid onto degrees at 60 N: column steps go east 0.01 degrees, row steps
   // north 0.005 degrees and east 0.004 degrees, so raw degree angles differ from ground angles
   // (a column-to-row turn is about 1.19 rad on the ground, 0.90 rad in raw degrees).

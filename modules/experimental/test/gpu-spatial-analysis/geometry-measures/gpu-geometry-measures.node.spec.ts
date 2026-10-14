@@ -31,25 +31,26 @@ function view<Format extends 'uint32' | 'float32' | 'float32x2' | 'float32x4'>(
   return createTransientView(graph, `view-${viewSerial++}`, format, length);
 }
 
+/** Polygon props (3 features, 4 polygons, 5 rings) with any prop overridden. */
 function createProps(
   graph: GPUCommandGraph,
-  overrides: Partial<GPUGeometryMeasuresProps> = {}
+  overrides: Record<string, unknown> = {}
 ): GPUGeometryMeasuresProps {
   return {
     spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     positions: view(graph, 'float32x2', 20),
     geometryType: 'polygons',
     ringOffsets: view(graph, 'uint32', 6),
-    featureRingOffsets: view(graph, 'uint32', 4),
+    polygonOffsets: view(graph, 'uint32', 5),
+    featureOffsets: view(graph, 'uint32', 4),
     output: {areas: view(graph, 'float32', 3), centroids: view(graph, 'float32x2', 3)},
     ...overrides
-  };
+  } as GPUGeometryMeasuresProps;
 }
 
 it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'measures'});
   const contributor = new GPUGeometryMeasures({
-    spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     ...createProps(graph),
     groupIds: view(graph, 'uint32', 3),
     groupCount: 2,
@@ -65,7 +66,12 @@ it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => 
   expect(
     () =>
       new GPUGeometryMeasures(
-        createProps(graph, {geometryType: 'lines', output: {areas: view(graph, 'float32', 3)}})
+        createProps(graph, {
+          geometryType: 'lines',
+          lineOffsets: view(graph, 'uint32', 6),
+          featureOffsets: view(graph, 'uint32', 4),
+          output: {areas: view(graph, 'float32', 3)}
+        })
       )
   ).toThrow(/requires geometryType 'polygons'/);
   expect(
@@ -87,17 +93,25 @@ it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => 
         })
       )
   ).toThrow(/metric/);
-  expect(() => new GPUGeometryMeasures(createProps(graph, {holeRule: 'evenodd' as never}))).toThrow(
-    /holeRule/
-  );
-  // Without featureRingOffsets every ring is a feature.
-  const rings = new GPUGeometryMeasures(
+  // Without featureOffsets every line is a feature.
+  const lines = new GPUGeometryMeasures(
     createProps(graph, {
-      featureRingOffsets: undefined,
+      geometryType: 'lines',
+      lineOffsets: view(graph, 'uint32', 6),
+      featureOffsets: undefined,
       output: {lengths: view(graph, 'float32', 5)}
     })
   );
-  expect(rings.featureCount).toBe(5);
+  expect(lines.featureCount).toBe(5);
+  // Without featureOffsets every point is a feature.
+  const points = new GPUGeometryMeasures(
+    createProps(graph, {
+      geometryType: 'points',
+      featureOffsets: undefined,
+      output: {vertexCounts: view(graph, 'uint32', 20)}
+    })
+  );
+  expect(points.featureCount).toBe(20);
 });
 
 it('geometry measures oracle matches closed forms', () => {
@@ -124,6 +138,10 @@ it('geometry measures oracle matches closed forms', () => {
   const flat = createFlatGeometry([[[[0, 0]]], [], [box[0], box[0]]]);
   expect(Array.from(flat.ringOffsets)).toEqual([0, 1, 5, 9]);
   expect(Array.from(flat.featureRingOffsets)).toEqual([0, 1, 1, 3]);
+  // Four-level polygon layout: one polygon per feature by default.
+  expect(Array.from(flat.polygonOffsets)).toEqual([0, 1, 1, 3]);
+  expect(Array.from(flat.featureOffsets)).toEqual([0, 1, 2, 3]);
+  expect(Array.from(flat.pointOffsets)).toEqual([0, 1, 1, 9]);
 });
 
 it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', () => {
@@ -135,7 +153,7 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
     origins,
     targets,
 
-    output: {distances: view(graph, 'float32', 4), converged: view(graph, 'uint32', 4)}
+    output: {distances: view(graph, 'float32', 4), status: {converged: view(graph, 'uint32', 4)}}
   });
   expect(pairs.getCommandNodes(graph).map(node => node.id)).toEqual(['geodesic-pairs-pairs']);
   expect(
@@ -148,7 +166,7 @@ it('GPUGeodesicPairs and GPUGeodesicDestination validate columns and models', ()
         },
         origins,
         targets,
-        output: {converged: view(graph, 'uint32', 4)}
+        output: {status: {converged: view(graph, 'uint32', 4)}}
       })
   ).toThrow(/requires model 'wgs84'/);
   expect(
@@ -264,7 +282,12 @@ it('GPUGeometryMeasures describes its measure model and validates status', () =>
   ).toBe('wgs84-authalic');
 
   const ids = new GPUGeometryMeasures(
-    createProps(graph, {status: {invalidCount: view(graph, 'uint32', 1)}})
+    createProps(graph, {
+      output: {
+        areas: view(graph, 'float32', 3),
+        status: {invalidCount: view(graph, 'uint32', 1)}
+      }
+    })
   )
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -273,7 +296,24 @@ it('GPUGeometryMeasures describes its measure model and validates status', () =>
   expect(
     () =>
       new GPUGeometryMeasures(
-        createProps(graph, {status: {invalidCount: view(graph, 'float32', 1) as never}})
+        createProps(graph, {
+          output: {
+            areas: view(graph, 'float32', 3),
+            status: {invalidCount: view(graph, 'float32', 1) as never}
+          }
+        })
       )
   ).toThrow(/invalidCount/);
+});
+
+it('GPUGeometryMeasures has no signedAreas column (areas is never negative)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'measures-no-signed'});
+  expect(
+    () =>
+      new GPUGeometryMeasures(
+        createProps(graph, {
+          output: {areas: view(graph, 'float32', 3), signedAreas: view(graph, 'float32', 3)}
+        })
+      )
+  ).toThrow(/output\.signedAreas is not a measure column/);
 });

@@ -39,7 +39,7 @@ const f = Math.fround;
 function isNoData(scene: IsolinesScene, cell: number): boolean {
   const value = scene.values[cell];
   return (
-    Number.isNaN(value) ||
+    !Number.isFinite(value) ||
     (scene.noDataValue !== undefined && value === f(scene.noDataValue)) ||
     (scene.validity !== undefined && scene.validity[cell] === 0)
   );
@@ -121,6 +121,7 @@ export function computeIsolinesOnCPU(
               break;
             }
           }
+          // Zero-length segments (a corner exactly at the level) are kept: they bridge chains.
           segments.push({
             cell,
             level: levelIndex,
@@ -188,12 +189,25 @@ export function getPolylineVertices(
   const vertices: number[] = [];
   const offsets = [0];
   for (const polyline of polylines) {
+    const start = vertices.length;
+    const push = (point: readonly number[]) => {
+      const length = vertices.length;
+      // Bit-identical consecutive vertices collapse (zero-length bridge segments).
+      if (
+        length > start &&
+        vertices[length - 2] === point[0] &&
+        vertices[length - 1] === point[1]
+      ) {
+        return;
+      }
+      vertices.push(point[0], point[1]);
+    };
     for (const index of polyline.segmentIndices) {
-      vertices.push(...segments[index].p0);
+      push(segments[index].p0);
     }
     const first = segments[polyline.segmentIndices[0]];
     const last = segments[polyline.segmentIndices[polyline.segmentIndices.length - 1]];
-    vertices.push(...(polyline.closed ? first.p0 : last.p1));
+    push(polyline.closed ? first.p0 : last.p1);
     offsets.push(vertices.length / 2);
   }
   return {vertices, offsets};

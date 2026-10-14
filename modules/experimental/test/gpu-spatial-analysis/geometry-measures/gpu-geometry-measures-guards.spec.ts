@@ -15,7 +15,12 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {createFlatGeometry, type NestedFeatures} from './geometry-measures-oracle';
+import {
+  createFlatGeometry,
+  getMeasuresGeometryFields,
+  type NestedFeatures
+} from './geometry-measures-oracle';
+import {requireTestDevice} from '../../utils/require-test-device';
 
 // Oracle values: modules/experimental scratch script
 // <scratchpad>/fix/work/E/E4-measures-lines/guards_oracle.py (pyproj 3.8.0, numpy 2.5.4).
@@ -77,9 +82,7 @@ async function measure(
   }
 ) {
   const device = await getWebGPUTestDevice();
-  if (!device) {
-    return undefined;
-  }
+  requireTestDevice(device);
   const flat = createFlatGeometry(features);
   const featureCount = features.length;
   const buffers: Buffer[] = [];
@@ -88,7 +91,6 @@ async function measure(
     return buffer;
   };
   const graph = new GPUCommandGraph(device, {id: 'geometry-measures-guards'});
-  const rowCount = flat.positions.length / 2;
   const rows = options.groupCount ?? featureCount;
   const areas = track(createOutputBuffer(device, featureCount));
   const centroids = track(createOutputBuffer(device, 2 * featureCount));
@@ -103,37 +105,34 @@ async function measure(
         metric: options.metric,
         units: 'meters'
       },
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        track(createInputBuffer(device, flat.positions)),
-        'float32x2',
-        rowCount
+      ...getMeasuresGeometryFields(
+        flat,
+        options.geometryType,
+        importGraphBuffer(
+          graph,
+          'positions',
+          track(createInputBuffer(device, flat.positions)),
+          'float32x2',
+          flat.positions.length / 2
+        ),
+        (name, values) =>
+          importGraphBuffer(
+            graph,
+            name,
+            track(createInputBuffer(device, values)),
+            'uint32',
+            values.length
+          )
       ),
-      ringOffsets: importGraphBuffer(
-        graph,
-        'ring-offsets',
-        track(createInputBuffer(device, flat.ringOffsets)),
-        'uint32',
-        flat.ringOffsets.length
-      ),
-      featureRingOffsets: importGraphBuffer(
-        graph,
-        'feature-ring-offsets',
-        track(createInputBuffer(device, flat.featureRingOffsets)),
-        'uint32',
-        flat.featureRingOffsets.length
-      ),
-      geometryType: options.geometryType,
       // Force the 64-lane cooperative kernel for every ring when requested.
       cooperativeRingRows: options.large ? 1 : undefined,
       output: {
         ...(isPolygon
           ? {areas: importGraphBuffer(graph, 'areas', areas, 'float32', featureCount)}
           : {}),
-        centroids: importGraphBuffer(graph, 'centroids', centroids, 'float32x2', featureCount)
+        centroids: importGraphBuffer(graph, 'centroids', centroids, 'float32x2', featureCount),
+        status: {invalidCount: importGraphBuffer(graph, 'invalid', invalid, 'uint32', 1)}
       },
-      status: {invalidCount: importGraphBuffer(graph, 'invalid', invalid, 'uint32', 1)},
       ...(options.groupIds
         ? {
             groupIds: importGraphBuffer(

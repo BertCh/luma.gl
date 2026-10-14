@@ -4,9 +4,10 @@
 
 import {describe, expect, it} from 'vitest';
 import {
-  getGPUSpaceTimeInferenceMetadata,
+  getGPUSpaceTimeParameterValues,
   getGPUSpaceTimeRelativeTimes
 } from '../../../src/gpu-spatial-analysis/space-time-tests/index';
+import {getGPUSpaceTimeInferenceMetadata} from '../../../src/gpu-spatial-analysis/space-time-tests/space-time-parameters';
 
 describe('getGPUSpaceTimeRelativeTimes', () => {
   const epoch = 1_700_000_000;
@@ -39,13 +40,28 @@ describe('getGPUSpaceTimeRelativeTimes', () => {
 });
 
 describe('getGPUSpaceTimeInferenceMetadata', () => {
-  it('states the one-sided Monte Carlo alternative', () => {
-    expect(getGPUSpaceTimeInferenceMetadata('knox', 99, 7)).toMatchObject({
+  it('states the one-sided Monte Carlo alternative from the packed settings', () => {
+    expect(getGPUSpaceTimeInferenceMetadata('knox', {seed: 7, permutationCount: 99}, 999)).toEqual({
       alternative: 'greater',
       permutationCount: 99,
       seed: 7,
-      multipleTesting: 'none'
+      multipleTesting: 'none',
+      testedRowsDefinition:
+        'all unordered event pairs listed in the spatial pair list, counted once'
     });
-    expect('seed' in getGPUSpaceTimeInferenceMetadata('mantel', 99)).toBe(false);
+  });
+
+  it('clamps the count as the kernels do and validates as the packer does', () => {
+    const settings = {seed: 1, permutationCount: 500};
+    expect(getGPUSpaceTimeInferenceMetadata('mantel', settings, 64).permutationCount).toBe(64);
+    expect(getGPUSpaceTimeParameterValues(settings)[2]).toBe(500);
+    for (const invalid of [
+      {seed: -1, permutationCount: 9},
+      {seed: 1, permutationCount: 0},
+      {seed: 1, permutationCount: 9, timeThreshold: -1}
+    ]) {
+      expect(() => getGPUSpaceTimeParameterValues(invalid)).toThrow();
+      expect(() => getGPUSpaceTimeInferenceMetadata('knox', invalid, 64)).toThrow();
+    }
   });
 });

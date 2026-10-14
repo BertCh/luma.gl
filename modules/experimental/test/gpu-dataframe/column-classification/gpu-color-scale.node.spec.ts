@@ -97,7 +97,7 @@ it('GPUColorScale parameter helper packs the documented layout', () => {
       domainCount: 1,
       paletteCount: 1
     })
-  ).toThrow(/Unknown/);
+  ).toThrow(/unknown scale/);
   expect(() =>
     getGPUColorScaleParameterValues(
       {scale: 'linear', domainCount: 1, paletteCount: 1},

@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** Flat paths used by the linear-referencing tests (f32-rounded values). */
-export type ReferencePaths = {
+/** Flat lines used by the linear-referencing tests (f32-rounded values). */
+export type ReferenceLines = {
   positions: Float32Array;
-  pathOffsets: Uint32Array;
+  lineOffsets: Uint32Array;
 };
 
 /** f64 projection of one point onto one segment. */
 export type SegmentProjection = {
-  path: number;
+  line: number;
   segmentRow: number;
   segmentIndex: number;
   fraction: number;
@@ -20,19 +20,19 @@ export type SegmentProjection = {
   side: number;
 };
 
-/** Returns f64 cumulative measures per vertex row (`NaN` outside paths). */
-export function getVertexMeasures(paths: ReferencePaths): number[] {
-  const rowCount = paths.positions.length / 2;
+/** Returns f64 cumulative measures per vertex row (`NaN` outside lines). */
+export function getVertexMeasures(lines: ReferenceLines): number[] {
+  const rowCount = lines.positions.length / 2;
   const measures = new Array<number>(rowCount).fill(NaN);
-  for (let path = 0; path + 1 < paths.pathOffsets.length; path++) {
-    const start = paths.pathOffsets[path];
-    const end = paths.pathOffsets[path + 1];
+  for (let line = 0; line + 1 < lines.lineOffsets.length; line++) {
+    const start = lines.lineOffsets[line];
+    const end = lines.lineOffsets[line + 1];
     let measure = 0;
     for (let row = start; row < end; row++) {
       if (row > start) {
         measure += Math.hypot(
-          paths.positions[2 * row] - paths.positions[2 * row - 2],
-          paths.positions[2 * row + 1] - paths.positions[2 * row - 1]
+          lines.positions[2 * row] - lines.positions[2 * row - 2],
+          lines.positions[2 * row + 1] - lines.positions[2 * row - 1]
         );
       }
       measures[row] = measure;
@@ -43,12 +43,12 @@ export function getVertexMeasures(paths: ReferencePaths): number[] {
 
 /** Projects `point` onto the segment starting at `segmentRow` (f64). */
 export function projectOntoSegment(
-  paths: ReferencePaths,
+  lines: ReferenceLines,
   measures: number[],
   point: readonly number[],
   segmentRow: number
 ): SegmentProjection {
-  const {positions, pathOffsets} = paths;
+  const {positions, lineOffsets} = lines;
   const ax = positions[2 * segmentRow];
   const ay = positions[2 * segmentRow + 1];
   const dx = positions[2 * segmentRow + 2] - ax;
@@ -60,14 +60,14 @@ export function projectOntoSegment(
     lengthSquared > 0 ? Math.min(1, Math.max(0, (rx * dx + ry * dy) / lengthSquared)) : 0;
   const distance = Math.hypot(rx - dx * fraction, ry - dy * fraction);
   const cross = dx * ry - dy * rx;
-  let path = 0;
-  while (pathOffsets[path + 1] <= segmentRow) {
-    path++;
+  let line = 0;
+  while (lineOffsets[line + 1] <= segmentRow) {
+    line++;
   }
   return {
-    path,
+    line,
     segmentRow,
-    segmentIndex: segmentRow - pathOffsets[path],
+    segmentIndex: segmentRow - lineOffsets[line],
     fraction,
     foot: [ax + dx * fraction, ay + dy * fraction],
     distance,
@@ -78,15 +78,15 @@ export function projectOntoSegment(
 
 /** Brute-force nearest segment within `radius`; ties go to the smallest segment row. */
 export function findNearestSegment(
-  paths: ReferencePaths,
+  lines: ReferenceLines,
   measures: number[],
   point: readonly number[],
   radius: number
 ): SegmentProjection | null {
   let best: SegmentProjection | null = null;
-  for (let path = 0; path + 1 < paths.pathOffsets.length; path++) {
-    for (let row = paths.pathOffsets[path]; row + 1 < paths.pathOffsets[path + 1]; row++) {
-      const projection = projectOntoSegment(paths, measures, point, row);
+  for (let line = 0; line + 1 < lines.lineOffsets.length; line++) {
+    for (let row = lines.lineOffsets[line]; row + 1 < lines.lineOffsets[line + 1]; row++) {
+      const projection = projectOntoSegment(lines, measures, point, row);
       if (projection.distance <= radius && (!best || projection.distance < best.distance)) {
         best = projection;
       }
@@ -97,15 +97,15 @@ export function findNearestSegment(
 
 /** f64 reference of `GPULineLocate` for one event. */
 export function locateAlong(
-  paths: ReferencePaths,
+  lines: ReferenceLines,
   measures: number[],
-  path: number,
+  line: number,
   eventMeasure: number,
   options: {fraction?: boolean; offset?: number} = {}
 ): {position: [number, number]; segmentIndex: number; tangent: [number, number]; status: number} {
-  const pathCount = paths.pathOffsets.length - 1;
-  const start = path < pathCount ? paths.pathOffsets[path] : 0;
-  const end = path < pathCount ? paths.pathOffsets[path + 1] : 0;
+  const lineCount = lines.lineOffsets.length - 1;
+  const start = line < lineCount ? lines.lineOffsets[line] : 0;
+  const end = line < lineCount ? lines.lineOffsets[line + 1] : 0;
   if (end <= start) {
     return {position: [NaN, NaN], segmentIndex: 0xffffffff, tangent: [NaN, NaN], status: 2};
   }
@@ -116,7 +116,7 @@ export function locateAlong(
     measure = Math.min(Math.max(measure, 0), total);
     status = 1;
   }
-  const {positions} = paths;
+  const {positions} = lines;
   let position: [number, number] = [positions[2 * start], positions[2 * start + 1]];
   let tangent: [number, number] = [0, 0];
   let segmentIndex = 0;

@@ -4,10 +4,11 @@
 
 import {
   GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT,
-  type GPUClassBreaksParameters
+  type GPUClassBreaksSettings
 } from '../../../src/gpu-dataframe/column-classification/class-breaks-parameters';
 import {getOrderedFloat32Key} from '../../../src/gpu-dataframe/column-classification/column-classification-shared';
 import {computeColumnQuantilesOracle} from './column-quantiles-oracle';
+import {computeNaturalBreaksMirror} from './natural-breaks-mirror';
 
 const fround = Math.fround;
 
@@ -15,7 +16,7 @@ const fround = Math.fround;
 export type ClassBreaksOracleInput = {
   values: Float32Array;
   mask?: Uint32Array;
-  parameters: GPUClassBreaksParameters;
+  parameters: GPUClassBreaksSettings;
   maximumClassCount: number;
   naturalBreaksBinCount: number;
 };
@@ -28,10 +29,12 @@ export type ClassBreaksOracleResult = {
   /** Finite minimum and maximum, by ordered key. */
   minimum: number;
   maximum: number;
-  /** Natural breaks only: start bin of every class after the first. */
+  /** Natural breaks only: coarse dynamic program start bin of every class after the first. */
   naturalStartBins?: number[];
   /** Natural breaks only: the bin histogram the GPU builds. */
   naturalHistogram?: Uint32Array;
+  /** Natural breaks only: inner edges before refinement (bin edges of the coarse partition). */
+  naturalCoarseEdges?: number[];
 };
 
 function isFinite32(value: number): boolean {
@@ -69,6 +72,10 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
       : method === 'custom'
         ? parameters.customEdges!.length - 1
         : (parameters.classCount ?? 5);
+  // The prepare kernel's clamp of a raw per-frame count (the CPU packer refuses these values).
+  if (method !== 'box-plot' && method !== 'custom') {
+    classCount = classCount >= 1 ? Math.min(Math.floor(classCount), maximumClassCount) : 1;
+  }
   const inner: number[] = [];
   const result: ClassBreaksOracleResult = {
     breaks: new Float32Array(maximumClassCount + 1).fill(NaN),
@@ -114,7 +121,10 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
     }
     case 'standard-deviation': {
       const mean = finite.reduce((sum, value) => sum + value, 0) / finite.length;
-      const variance = finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / finite.length;
+      // Sample variance (n - 1), as mapclassify StdMean; a single value has zero spread.
+      const variance =
+        finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+        Math.max(finite.length - 1, 1);
       const interval = (parameters.standardDeviationInterval ?? 1) * Math.sqrt(variance);
       const center = (classCount - 2) / 2;
       for (let edge = 1; edge < classCount; edge++) {
@@ -170,17 +180,18 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
       break;
     }
     case 'natural-breaks': {
-      const natural = computeNaturalBreaks(
+      const natural = computeNaturalBreaksMirror(
         finite,
         minimum,
         maximum,
-        Math.min(classCount, input.naturalBreaksBinCount),
+        classCount,
         input.naturalBreaksBinCount
       );
-      result.naturalStartBins = natural.startBins;
+      result.naturalStartBins = natural.coarseStarts;
       result.naturalHistogram = natural.histogram;
+      result.naturalCoarseEdges = natural.coarseEdges;
       inner.push(...natural.edges);
-      classCount = natural.startBins.length + 1;
+      classCount = natural.classCount;
       break;
     }
     case 'custom':
@@ -190,6 +201,10 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
   }
 
   if (method === 'custom') {
+    // A NaN edge makes the classification undefined (0 classes, NaN edges), as the publish kernel.
+    if (Array.from(parameters.customEdges!).some(edge => Number.isNaN(edge))) {
+      return result;
+    }
     result.classCount = classCount;
     Array.from(parameters.customEdges!).forEach((edge, index) => {
       result.breaks[index] = edge;
@@ -205,6 +220,9 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
     result.breaks[1] = maximum;
     return result;
   }
+  if (inner.slice(0, classCount - 1).some(edge => Number.isNaN(edge))) {
+    return result;
+  }
   result.classCount = classCount;
   result.breaks[0] = minimum;
   for (let edge = 1; edge < classCount; edge++) {
@@ -214,94 +232,111 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
   return result;
 }
 
-/** Returns the bin of `value` exactly as the GPU kernel computes it. */
-export function getNaturalBreaksBin(
-  value: number,
-  minimum: number,
-  width: number,
-  binCount: number
+/**
+ * Total squared deviation of the values from their class means, in f64, for the partition cut by
+ * the inner edges (the GPUClassBreaks class rule: a value at or above `e[i]` is in class `i` or
+ * later). The Fisher-Jenks objective.
+ */
+export function getWithinClassCost(
+  values: ArrayLike<number>,
+  innerEdges: readonly number[]
 ): number {
-  const difference = fround(value - minimum);
-  let bin = Math.floor(fround(difference / width));
-  bin = Math.min(Math.max(bin, 0), binCount - 1);
-  if (difference < fround(bin * width)) {
-    bin -= 1;
-  } else if (difference >= fround((bin + 1) * width)) {
-    bin += 1;
-  }
-  return Math.min(Math.max(bin, 0), binCount - 1);
-}
-
-/** Total weighted squared deviation of bin centres for a partition given by class start bins. */
-export function getNaturalBreaksCost(histogram: Uint32Array, startBins: number[]): number {
-  const bounds = [0, ...startBins, histogram.length];
+  const finite = Array.from(values).filter(Number.isFinite);
+  const sums = new Array<number>(innerEdges.length + 1).fill(0);
+  const counts = new Array<number>(innerEdges.length + 1).fill(0);
+  const classes = finite.map(value => {
+    let index = 0;
+    while (index < innerEdges.length && value >= innerEdges[index]) {
+      index++;
+    }
+    sums[index] += value;
+    counts[index]++;
+    return index;
+  });
   let total = 0;
-  for (let index = 0; index + 1 < bounds.length; index++) {
-    let weight = 0;
-    let sum = 0;
-    for (let bin = bounds[index]; bin < bounds[index + 1]; bin++) {
-      weight += histogram[bin];
-      sum += histogram[bin] * bin;
-    }
-    const mean = weight > 0 ? sum / weight : 0;
-    for (let bin = bounds[index]; bin < bounds[index + 1]; bin++) {
-      total += histogram[bin] * (bin - mean) ** 2;
-    }
-  }
+  finite.forEach((value, row) => {
+    total += (value - sums[classes[row]] / counts[classes[row]]) ** 2;
+  });
   return total;
 }
 
-function computeNaturalBreaks(
-  finite: number[],
-  minimum: number,
-  maximum: number,
-  classCount: number,
-  binCount: number
-): {edges: number[]; startBins: number[]; histogram: Uint32Array} {
-  const histogram = new Uint32Array(binCount);
-  const width = fround(fround(maximum - minimum) * fround(1 / binCount));
-  for (const value of finite) {
-    histogram[width > 0 ? getNaturalBreaksBin(value, minimum, width, binCount) : 0]++;
+/**
+ * Exact Fisher-Jenks lower edges `e[1..k-1]` of the finite values by the textbook O(k n^2) dynamic
+ * program in f64 on mean-centred sorted values (the independent reference of the specs; use for
+ * n up to a few thousand). `unique` is false when another partition costs within 1e-9 relative, or
+ * when the optimum splits a run of equal values; the edges are then not a unique answer.
+ */
+export function computeExactNaturalBreaks(
+  values: ArrayLike<number>,
+  classCount: number
+): {edges: number[]; unique: boolean} {
+  const sorted = Array.from(values)
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const count = sorted.length;
+  const mean = sorted.reduce((sum, value) => sum + value, 0) / count;
+  const prefixSum = new Float64Array(count + 1);
+  const prefixSquares = new Float64Array(count + 1);
+  for (let row = 0; row < count; row++) {
+    const centered = sorted[row] - mean;
+    prefixSum[row + 1] = prefixSum[row] + centered;
+    prefixSquares[row + 1] = prefixSquares[row] + centered * centered;
   }
-  // Exact f64 Fisher-Jenks over weighted bin centres, lowest start on ties.
-  // Class costs from running f64 sums; bin indices and counts keep them exact below 2^53.
-  const costs: number[][] = [];
-  for (let start = 0; start < binCount; start++) {
-    costs.push([]);
-    let weight = 0;
-    let sum = 0;
-    let squares = 0;
-    for (let end = start; end < binCount; end++) {
-      weight += histogram[end];
-      sum += histogram[end] * end;
-      squares += histogram[end] * end * end;
-      costs[start][end] = weight > 0 ? squares - (sum * sum) / weight : 0;
-    }
+  const getCost = (start: number, end: number) => {
+    const members = end - start + 1;
+    const sum = prefixSum[end + 1] - prefixSum[start];
+    return prefixSquares[end + 1] - prefixSquares[start] - (sum * sum) / members;
+  };
+  let previous = new Float64Array(count);
+  for (let end = 0; end < count; end++) {
+    previous[end] = getCost(0, end);
   }
-  const totals: number[][] = [costs[0].slice()];
-  const starts: number[][] = [new Array(binCount).fill(0)];
+  const lowest: Int32Array[] = [new Int32Array(count)];
+  const highest: Int32Array[] = [new Int32Array(count)];
   for (let layer = 1; layer < classCount; layer++) {
-    totals.push(new Array(binCount).fill(Infinity));
-    starts.push(new Array(binCount).fill(layer));
-    for (let end = layer; end < binCount; end++) {
+    const current = new Float64Array(count).fill(Infinity);
+    const lowestStarts = new Int32Array(count);
+    const highestStarts = new Int32Array(count);
+    for (let end = layer; end < count; end++) {
+      let best = Infinity;
       for (let start = layer; start <= end; start++) {
-        const candidate = totals[layer - 1][start - 1] + costs[start][end];
-        if (candidate < totals[layer][end]) {
-          totals[layer][end] = candidate;
-          starts[layer][end] = start;
+        best = Math.min(best, previous[start - 1] + getCost(start, end));
+      }
+      const tolerance = 1e-9 * Math.max(Math.abs(best), 1);
+      let first = -1;
+      let last = -1;
+      for (let start = layer; start <= end; start++) {
+        if (previous[start - 1] + getCost(start, end) <= best + tolerance) {
+          first = first < 0 ? start : first;
+          last = start;
         }
       }
+      current[end] = best;
+      lowestStarts[end] = first;
+      highestStarts[end] = last;
     }
+    previous = current;
+    lowest.push(lowestStarts);
+    highest.push(highestStarts);
   }
-  const startBins: number[] = [];
-  let end = binCount - 1;
-  for (let layer = classCount - 1; layer > 0; layer--) {
-    const start = starts[layer][end];
-    startBins.unshift(start);
-    end = start - 1;
-  }
-  const edges = startBins.map(start => fround(minimum + fround(start * width)));
-  return {edges, startBins, histogram};
+  const backtrack = (starts: Int32Array[]) => {
+    const result: number[] = [];
+    let end = count - 1;
+    for (let layer = classCount - 1; layer > 0; layer--) {
+      const start = starts[layer][end];
+      result.unshift(start);
+      end = start - 1;
+    }
+    return result;
+  };
+  const low = backtrack(lowest);
+  const high = backtrack(highest);
+  return {
+    edges: low.map(start => sorted[start]),
+    unique:
+      low.every((start, index) => start === high[index]) &&
+      low.every(start => sorted[start] !== sorted[start - 1])
+  };
 }
 
 /** Brute-force rows per class: class `i` holds values with `i` inner edge keys at or below theirs. */

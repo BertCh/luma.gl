@@ -4,11 +4,12 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {expect, it} from 'vitest';
+import {makeGPURasterMetadata} from '../../../src/gpu-raster';
 import {
-  GPU_POINT_HORIZON_PARAMETER_LENGTH,
+  GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH,
   GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH,
   getGPUPointHorizonDistanceLattice,
-  getGPUPointHorizonParameterValues,
+  getGPUPointHorizonProfileParameterValues,
   getGPUPointHorizonSegments,
   getGPUPointHorizonVisibilityParameterValues,
   GPUPointHorizonProfile,
@@ -25,6 +26,7 @@ import {
   POINT_HORIZON_VISIBILITY_PROJECTION_SLOT
 } from '../../../src/gpu-terrain/point-horizon/point-horizon-parameters';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {makeMercatorTestGrid} from './point-horizon-oracle';
 
 function createBand(graph: GPUCommandGraph, id: string, length: number) {
   return {
@@ -117,29 +119,33 @@ it('getGPUPointHorizonSegments breaks the great circle at observer-independent d
 });
 
 it('point horizon packers lay out settings', () => {
-  expect(GPU_POINT_HORIZON_PARAMETER_LENGTH).toBe(8);
+  const planarGrid = (cellSize: number | readonly [number, number]) =>
+    makeGPURasterMetadata({width: 16, height: 16, cellSize});
+  expect(GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH).toBe(8);
   expect(GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH).toBe(12);
   expect(
-    Array.from(getGPUPointHorizonParameterValues({cellSize: [2, 3], curvatureCoefficient: 0.5}))
+    Array.from(
+      getGPUPointHorizonProfileParameterValues({curvatureCoefficient: 0.5}, planarGrid([2, 3]))
+    )
   ).toEqual([0.5, 2, 3, 0, 0, 0, 0, 1]); // slot 7: planar projection tag
   const originY = 1000;
   const worldPixelSize = 512 * 2 ** 10;
-  const mercator = getGPUPointHorizonParameterValues({
-    worldPixelSize,
-    originY,
-    maximumDistance: 5000
-  });
+  // The Web Mercator words are derived from the EPSG:3857 grid: pixels per 360 degrees from the
+  // cell size, the Mercator ordinate of the top edge from the north edge.
+  const mercator = getGPUPointHorizonProfileParameterValues(
+    {projection: 'web-mercator', maximumDistance: 5000},
+    makeMercatorTestGrid(16, 16, worldPixelSize, originY)
+  );
   expect(mercator[0]).toBe(0);
-  expect(mercator[1]).toBe(worldPixelSize);
+  expect(mercator[1]).toBe(Math.fround(worldPixelSize));
   expect(mercator[2]).toBe(Math.fround(Math.PI * (1 - (2 * originY) / worldPixelSize)));
   expect(mercator[3]).toBe(5000);
   expect(mercator[4]).toBe(0); // the opaque-zero guard
   expect(mercator[7]).toBe(2); // Web Mercator projection tag
-  const visibility = getGPUPointHorizonVisibilityParameterValues({
-    cellSize: [10, 10],
-    sigmaZ: 7,
-    targetIgnoreFraction: 0.1
-  });
+  const visibility = getGPUPointHorizonVisibilityParameterValues(
+    {sigmaZ: 7, targetIgnoreFraction: 0.1},
+    planarGrid(10)
+  );
   expect(Array.from(visibility)).toEqual([
     0,
     10,
@@ -149,24 +155,33 @@ it('point horizon packers lay out settings', () => {
     Math.fround(0.02),
     7,
     Math.fround(0.05),
-    150,
+    -1, // derived default: one ground pixel along the ray at the target (review C-05)
     Math.fround(0.1),
     0,
     1 // planar projection tag
   ]);
   const reused = new Float32Array(12).fill(9);
-  getGPUPointHorizonParameterValues({cellSize: [1, 1]}, reused);
+  getGPUPointHorizonProfileParameterValues({}, planarGrid(1), reused);
   expect(Array.from(reused.slice(0, 8))).toEqual([0, 1, 1, 0, 0, 0, 0, 1]);
-  expect(() => getGPUPointHorizonParameterValues({cellSize: [0, 1]})).toThrow(/cell size/);
-  expect(() => getGPUPointHorizonParameterValues({worldPixelSize: 0, originY: 0})).toThrow(
-    /worldPixelSize/
+  expect(() => getGPUPointHorizonProfileParameterValues({}, planarGrid([0, 1]))).toThrow(
+    /cell size/
   );
-  expect(() => getGPUPointHorizonParameterValues({cellSize: [1, 1]}, new Float32Array(7))).toThrow(
-    /8 values/
-  );
+  // A Web Mercator grid needs square pixels and rows increasing south.
   expect(() =>
-    getGPUPointHorizonVisibilityParameterValues({cellSize: [1, 1]}, new Float32Array(11))
-  ).toThrow(/12 values/);
+    getGPUPointHorizonProfileParameterValues({projection: 'web-mercator'}, planarGrid([10, 20]))
+  ).toThrow(/square pixels/);
+  expect(() =>
+    getGPUPointHorizonProfileParameterValues(
+      {projection: 'web-mercator'},
+      makeGPURasterMetadata({width: 16, height: 16, cellSize: 10, rowDirection: 'north'})
+    )
+  ).toThrow(/rows increasing south/);
+  expect(() =>
+    getGPUPointHorizonProfileParameterValues({}, planarGrid(1), new Float32Array(7))
+  ).toThrow(/must hold 8 values/);
+  expect(() =>
+    getGPUPointHorizonVisibilityParameterValues({}, planarGrid(1), new Float32Array(11))
+  ).toThrow(/must hold 12 values/);
 });
 
 it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march chunks', () => {
@@ -176,14 +191,15 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   const create = (overrides: Partial<GPUPointHorizonProfileProps> = {}) => {
     instance++;
     return new GPUPointHorizonProfile({
-      width: 64,
-      height: 48,
+      grid: makeGPURasterMetadata({width: 64, height: 48, cellSize: 10}),
       elevation: createBand(graph, `terrain-${instance}`, 64 * 48),
       observers: createTransientView(graph, `observers-${instance}`, 'float32x4', 3),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 8),
-      tangent: createTransientView(graph, `tangent-${instance}`, 'float32', 3 * 720),
-      skylineAngle: createTransientView(graph, `skyline-angle-${instance}`, 'float32', 3 * 720),
-      distance: createTransientView(graph, `distance-${instance}`, 'float32', 3 * 720),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 8),
+      output: {
+        tangent: createTransientView(graph, `tangent-${instance}`, 'float32', 3 * 720),
+        skylineAngle: createTransientView(graph, `skyline-angle-${instance}`, 'float32', 3 * 720),
+        distance: createTransientView(graph, `distance-${instance}`, 'float32', 3 * 720)
+      },
       maximumDistance: 1000,
       cellSize: 10,
       ...overrides
@@ -197,54 +213,63 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   expect(levelCount).toBe(5); // 64 x 48 with 4 px blocks: 16x12, 8x6, 4x3, 2x2, 1x1
   // The pyramid builder may fuse its coarse levels into fewer nodes; only its presence matters.
   expect(ids[0]).toBe('point-horizon-profile-elevation');
-  expect(ids.at(-1)).toBe('point-horizon-profile-march-0');
-  expect(ids.slice(1, -1).length).toBeGreaterThanOrEqual(1);
-  expect(ids.slice(1, -1).every(id => id.includes('-pyramid-level'))).toBe(true);
-  // Every kernel binds at most 8 storage buffers (the full pyramid profile binds exactly 8).
+  // With tangent and skyline angle both wired, a per-ray pass derives the angle from the tangent.
+  expect(ids.at(-1)).toBe('point-horizon-profile-skyline-angle');
+  expect(ids.at(-2)).toBe('point-horizon-profile-march-0');
+  expect(ids.at(-3)).toBe('point-horizon-profile-chunks');
+  expect(ids.slice(1, -3).length).toBeGreaterThanOrEqual(1);
+  expect(ids.slice(1, -3).every(id => id.includes('-pyramid-level'))).toBe(true);
+  // Every kernel binds at most 8 storage buffers. This pyramid march binds 7: values, pyramid,
+  // settings, observers, tangent, distance and the chunk start word (review C-11 dropped the
+  // never-read validity binding); with `samples` too it binds exactly 8.
   for (const node of nodes) {
     expect(node.resources?.length ?? 0).toBeLessThanOrEqual(8);
   }
   const march = nodes.find(node => node.id.endsWith('march-0'));
-  expect(march?.resources?.length).toBe(8);
+  expect(march?.resources?.length).toBe(7);
 
   const marchOnly = create({id: 'ring', traversal: 'march'});
   expect(marchOnly.getCommandNodes(graph).map(node => node.id)).toEqual([
     'ring-elevation',
-    'ring-march-0'
+    'ring-chunks',
+    'ring-march-0',
+    'ring-skyline-angle'
   ]);
   const chunked = create({id: 'chunk', raysPerDispatch: 1000, traversal: 'march'});
   expect(chunked.getCommandNodes(graph).map(node => node.id)).toEqual([
     'chunk-elevation',
+    'chunk-chunks',
     'chunk-march-0',
     'chunk-march-1',
-    'chunk-march-2'
+    'chunk-march-2',
+    'chunk-skyline-angle'
   ]);
-  const single = create({id: 'single', skylineAngle: undefined, distance: undefined});
+  const tangentOnly = (name: string, length = 3 * 720) => ({
+    tangent: createTransientView(graph, name, 'float32', length)
+  });
+  const single = create({id: 'single', output: tangentOnly('single-tangent')});
   const singleMarch = single.getCommandNodes(graph).at(-1);
+  // values, pyramid, settings, observers, tangent and the chunk start word.
   expect(singleMarch?.resources?.length).toBe(6);
   const sector = create({
     id: 'sector',
     azimuthSpan: 100,
     firstAzimuth: 20,
-    tangent: createTransientView(graph, 'sector-tangent', 'float32', 300),
-    skylineAngle: undefined,
-    distance: undefined
+    output: tangentOnly('sector-tangent', 300)
   });
   expect(sector.model.azimuthSpan).toBe(100);
 
-  expect(() => create({tangent: undefined, skylineAngle: undefined, distance: undefined})).toThrow(
-    /at least one output/
+  expect(() => create({output: {}})).toThrow(/at least one output/);
+  expect(() => create({output: tangentOnly('short-tangent', 10)})).toThrow(
+    /observers \* azimuthSpan/
   );
   expect(() =>
-    create({tangent: createTransientView(graph, 'short-tangent', 'float32', 10)})
-  ).toThrow(/observers \* azimuthSpan/);
-  expect(() =>
-    create({settings: createTransientView(graph, 'settings-short', 'float32', 7)})
-  ).toThrow(/settings/);
+    create({parameters: createTransientView(graph, 'settings-short', 'float32', 7)})
+  ).toThrow(/parameters/);
   expect(() =>
     create({observers: createTransientView(graph, 'observers-int', 'uint32x4' as never, 3)})
   ).toThrow(/observers/);
-  expect(() => create({width: 1})).toThrow(/dimensions/);
+  expect(() => create({grid: makeGPURasterMetadata({width: 1, height: 48})})).toThrow(/dimensions/);
   expect(() => create({projection: 'polar' as never})).toThrow(/projection/);
   expect(() => create({traversal: 'fast' as never})).toThrow(/traversal/);
   expect(() => create({heightReference: 'relative' as never})).toThrow(/heightReference/);
@@ -258,18 +283,17 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   expect(() =>
     create({
       elevation: {...shared, storage: {kind: 'buffer', values: shared.storage.values}},
-      tangent: shared.storage.values
+      output: {tangent: shared.storage.values}
     })
   ).toThrow(/share buffers/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() =>
     new GPUPointHorizonProfile({
-      width: 4,
-      height: 4,
+      grid: makeGPURasterMetadata({width: 4, height: 4}),
       elevation: createBand(otherGraph, 'foreign', 16),
       observers: createTransientView(otherGraph, 'foreign-observers', 'float32x4', 1),
-      settings: createTransientView(otherGraph, 'foreign-settings', 'float32', 8),
-      tangent: createTransientView(otherGraph, 'foreign-tangent', 'float32', 720),
+      parameters: createTransientView(otherGraph, 'foreign-settings', 'float32', 8),
+      output: {tangent: createTransientView(otherGraph, 'foreign-tangent', 'float32', 720)},
       maximumDistance: 100,
       cellSize: 10
     }).getCommandNodes(graph)
@@ -284,14 +308,15 @@ it('GPUPointHorizonVisibility schedules classification chunks within 8 bindings'
   const create = (overrides: Partial<GPUPointHorizonVisibilityProps> = {}) => {
     instance++;
     return new GPUPointHorizonVisibility({
-      width: 64,
-      height: 48,
+      grid: makeGPURasterMetadata({width: 64, height: 48, cellSize: 10}),
       elevation: createBand(graph, `terrain-${instance}`, 64 * 48),
       observers: createTransientView(graph, `observers-${instance}`, 'float32x4', 2),
       targets: createTransientView(graph, `targets-${instance}`, 'float32x4', 5),
-      settings: createTransientView(graph, `settings-${instance}`, 'float32', 12),
-      visibility: createTransientView(graph, `visibility-${instance}`, 'uint32', 5),
-      details: createTransientView(graph, `details-${instance}`, 'float32x4', 5),
+      parameters: createTransientView(graph, `settings-${instance}`, 'float32', 12),
+      output: {
+        visibility: createTransientView(graph, `visibility-${instance}`, 'uint32', 5),
+        details: createTransientView(graph, `details-${instance}`, 'float32x4', 5)
+      },
       maximumDistance: 1000,
       cellSize: 10,
       projection: 'web-mercator',
@@ -305,24 +330,35 @@ it('GPUPointHorizonVisibility schedules classification chunks within 8 bindings'
   expect(nodes.at(-1)?.resources?.length).toBe(8);
   expect(nodes.some(node => node.id === 'point-horizon-visibility-pyramid-level-0')).toBe(true);
   expect(
-    create({id: 'chunked', targetsPerDispatch: 2, traversal: 'march', details: undefined})
+    create({
+      id: 'chunked',
+      targetsPerDispatch: 2,
+      traversal: 'march',
+      output: {visibility: createTransientView(graph, 'chunked-visibility', 'uint32', 5)}
+    })
       .getCommandNodes(graph)
       .map(node => node.id)
   ).toEqual([
     'chunked-elevation',
+    'chunked-chunks',
     'chunked-classify-0',
     'chunked-classify-1',
     'chunked-classify-2'
   ]);
   expect(() =>
-    create({visibility: createTransientView(graph, 'short-visibility', 'uint32', 4)})
+    create({output: {visibility: createTransientView(graph, 'short-visibility', 'uint32', 4)}})
   ).toThrow(/one value per target/);
   expect(() =>
-    create({details: createTransientView(graph, 'short-details', 'float32x4', 4)})
+    create({
+      output: {
+        visibility: createTransientView(graph, 'details-visibility', 'uint32', 5),
+        details: createTransientView(graph, 'short-details', 'float32x4', 4)
+      }
+    })
   ).toThrow(/one row per target/);
   expect(() =>
-    create({settings: createTransientView(graph, 'short-settings', 'float32', 11)})
-  ).toThrow(/settings/);
+    create({parameters: createTransientView(graph, 'short-settings', 'float32', 11)})
+  ).toThrow(/parameters/);
   expect(() => create({targetsPerDispatch: 0})).toThrow(/targetsPerDispatch/);
   expect(() =>
     create({targets: createTransientView(graph, 'bad-targets', 'float32x2' as never, 5)})
@@ -331,14 +367,15 @@ it('GPUPointHorizonVisibility schedules classification chunks within 8 bindings'
 });
 
 it('point horizon kernels reject settings packed for the other projection', () => {
-  // The settings shape implies the projection; the packers tag it and the kernels compare the tag
+  // settings.projection selects the tag the packers write; the kernels compare it and the kernels compare the tag
   // with their compile-time projection, so a mismatch marks every eye invalid (NaN / no-data)
   // instead of reading worldPixelSize as a cell size. Tag 0 (hand-written arrays) is accepted.
   expect(POINT_HORIZON_PROFILE_PROJECTION_SLOT).toBe(7);
   expect(POINT_HORIZON_VISIBILITY_PROJECTION_SLOT).toBe(11);
   const options = {maximumDistance: 2000, cellSize: 30, traversal: 'march' as const};
-  const planar = resolvePointHorizonModel('planar', 16, 16, options);
-  const mercator = resolvePointHorizonModel('mercator', 16, 16, {
+  const grid = makeGPURasterMetadata({width: 16, height: 16});
+  const planar = resolvePointHorizonModel('planar', grid, options);
+  const mercator = resolvePointHorizonModel('mercator', grid, {
     ...options,
     projection: 'web-mercator'
   });
@@ -349,9 +386,17 @@ it('point horizon kernels reject settings packed for the other projection', () =
   const mercatorWGSL = getPointHorizonMarchWGSL(mercator, POINT_HORIZON_VISIBILITY_PROJECTION_SLOT);
   expect(mercatorWGSL).toContain('let tag = settings[settingsOffset + 11u];');
   expect(mercatorWGSL).toContain('return tag == 0.0 || tag == 2.0;');
-  // The packers tag by settings shape in both layouts.
-  expect(getGPUPointHorizonVisibilityParameterValues({worldPixelSize: 1024, originY: 0})[11]).toBe(
-    2
-  );
-  expect(getGPUPointHorizonParameterValues({cellSize: [5, 5]})[7]).toBe(1);
+  // The packers tag by settings.projection in both layouts.
+  expect(
+    getGPUPointHorizonVisibilityParameterValues(
+      {projection: 'web-mercator'},
+      makeMercatorTestGrid(16, 16, 1024, 0)
+    )[11]
+  ).toBe(2);
+  expect(
+    getGPUPointHorizonProfileParameterValues(
+      {},
+      makeGPURasterMetadata({width: 16, height: 16, cellSize: 5})
+    )[7]
+  ).toBe(1);
 });

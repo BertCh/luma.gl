@@ -4,9 +4,9 @@
 
 import {PhiloxStream} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-random';
 import {
-  NETWORK_K_FUNCTION_LENGTH_RANGE,
+  getNetworkKFunctionLengthRange,
   NETWORK_K_FUNCTION_STREAM
-} from '../../../src/gpu-network/network-k-function/index';
+} from '../../../src/gpu-network/network-k-function/gpu-network-k-function';
 import {
   dijkstra,
   NONE,
@@ -24,16 +24,16 @@ export type KFunctionEvent = {
 
 const INACTIVE: KFunctionEvent = {first: NONE, second: NONE, firstCost: -1, secondCost: -1};
 
-/** Snaps events like `GPUNetworkSnapping` with `seedDirection: 'both'`. */
+/** Snaps events like `GPUNetworkSnapping` with `startDirection: 'both'`. */
 export function snapEvents(
   points: ArrayLike<number>,
   positions: ArrayLike<number>,
   csr: AccessibilityCSR,
-  maxSnapDistance: number = Infinity
+  maximumSnapDistance: number = Infinity
 ): KFunctionEvent[] {
   return snapOracle(points, positions, csr.sources, csr.neighbors, {
     edgeCosts: csr.weights,
-    maxSnapDistance
+    maximumSnapDistance
   }).map(snap =>
     snap.edge === NONE
       ? INACTIVE
@@ -48,25 +48,35 @@ export function snapEvents(
 
 /**
  * Draws `eventCount` random events like the GPU `simulate` kernel: an edge with probability
- * proportional to its quantized length through a Philox stream keyed by `seed`, `(event, pattern)`
+ * proportional to its length quantized against the longest live edge, through a Philox stream keyed by `seed`, `(event, pattern)`
  * counters and the K function tag, then a uniform fraction along it.
  */
 export function simulateEvents(
   csr: AccessibilityCSR,
   nodeCount: number,
-  networkLength: number,
   seed: number,
   pattern: number,
   eventCount: number,
   validCount: number
 ): KFunctionEvent[] {
-  const scale = Math.fround(NETWORK_K_FUNCTION_LENGTH_RANGE / Math.fround(networkLength));
+  // The GPU quantizes against the longest live edge, not networkLength (review B-24).
+  const isLive = (edge: number) =>
+    edge < csr.offsets[nodeCount] &&
+    Number.isFinite(csr.weights[edge]) &&
+    csr.weights[edge] >= 0 &&
+    csr.neighbors[edge] < nodeCount;
+  let maximum = 0;
+  for (let edge = 0; edge < csr.neighbors.length; edge++) {
+    if (isLive(edge)) {
+      maximum = Math.max(maximum, csr.weights[edge]);
+    }
+  }
+  const scale = Math.fround(getNetworkKFunctionLengthRange(csr.neighbors.length) / maximum);
   const prefix = new Uint32Array(csr.neighbors.length);
   let sum = 0;
   for (let edge = 0; edge < prefix.length; edge++) {
-    const weight = csr.weights[edge];
-    if (networkLength > 0 && weight >= 0 && csr.neighbors[edge] < nodeCount) {
-      sum += Math.floor(Math.fround(weight * scale));
+    if (maximum > 0 && isLive(edge)) {
+      sum += Math.floor(Math.fround(csr.weights[edge] * scale));
     }
     prefix[edge] = sum;
   }
@@ -97,11 +107,11 @@ export function getPairCounts(
   csr: AccessibilityCSR,
   nodeCount: number,
   events: readonly KFunctionEvent[],
-  maxDistance: number,
+  maximumDistance: number,
   bandCount: number
 ): number[] {
   const thresholds = Array.from({length: bandCount}, (_, band) =>
-    Math.fround(Math.fround(Math.fround(maxDistance) * band) / (bandCount - 1))
+    Math.fround(Math.fround(Math.fround(maximumDistance) * band) / (bandCount - 1))
   );
   const counts = new Array<number>(bandCount).fill(0);
   const isActive = (event: KFunctionEvent) => event.first < nodeCount && event.second < nodeCount;
@@ -116,7 +126,7 @@ export function getPairCounts(
         {node: row.first, cost: row.firstCost},
         {node: row.second, cost: row.secondCost}
       ],
-      maxDistance
+      maximumDistance
     );
     for (let columnIndex = rowIndex + 1; columnIndex < events.length; columnIndex++) {
       const column = events[columnIndex];

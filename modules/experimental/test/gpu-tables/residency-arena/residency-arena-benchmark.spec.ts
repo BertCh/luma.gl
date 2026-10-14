@@ -16,7 +16,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {GPUResidentRowSelection} from '../../../src/gpu-tables/residency-arena/gpu-resident-row-selection';
 import {
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   GPUTimeWindowFilter
 } from '../../../src/gpu-dataframe/time-window-filter';
 import {getTimeWindowClassifyNodes} from '../../../src/gpu-dataframe/time-window-filter/time-window-classify-node';
@@ -184,8 +184,10 @@ function buildVariant(
     );
     const output = {
       ids: packed('ids', buffers.ids, 'uint32', ROW_COUNT),
-      count: packed('count', buffers.count, 'uint32', 1),
-      overflow: packed('overflow', buffers.overflow, 'uint32', 1)
+      status: {
+        count: packed('count', buffers.count, 'uint32', 1),
+        overflow: packed('overflow', buffers.overflow, 'uint32', 1)
+      }
     };
     const liveMask = packed('live', buffers.live, 'uint32', ROW_COUNT);
     if (variant === 'd1 arena time filter') {
@@ -194,8 +196,7 @@ function buildVariant(
           timestamps: packed('times', buffers.times, 'float32', ROW_COUNT),
           window,
           additionalPredicates: [{kind: 'selection', mask: liveMask}],
-          output,
-          drawInstanceCount
+          output: {...output, drawInstanceCount}
         })
       );
     } else {
@@ -286,7 +287,9 @@ it('residency arena versus chunked visibility benchmark', {timeout: 150000}, asy
       const built = buildVariant(device, buffers, variant, chunkCount);
       const cells: string[] = [];
       for (const [fractionIndex, fraction] of FRACTIONS.entries()) {
-        buffers.window.write(getGPUTimeWindowParameterValues({start: 0, end: fraction.windowEnd}));
+        buffers.window.write(
+          getGPUTimeWindowFilterParameterValues({start: 0, end: fraction.windowEnd})
+        );
         // Correctness gate: count and the stable ID prefix match the CPU oracle.
         submitGraph(device, built.compiled, undefined);
         const count = await built.readCount();

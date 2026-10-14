@@ -75,14 +75,14 @@ export function checkGeospatialDistanceTypes(
   };
 
   ({
-    points: float32Positions,
+    positions: float32Positions,
     segmentStarts: float32Positions,
     segmentEnds: float32Positions,
     output: float32Distances
   }) satisfies GPUPairwisePointSegmentDistanceProps;
 
   ({
-    points: float64Positions,
+    positions: float64Positions,
     segmentStarts: float64Positions,
     segmentEnds: float64Positions,
     output: preciseDistances
@@ -90,7 +90,7 @@ export function checkGeospatialDistanceTypes(
 
   // @ts-expect-error raw binary64 segment inputs require a double-single output.
   const invalidFloat64SegmentOutput: GPUPairwisePointSegmentDistanceProps = {
-    points: float64Positions,
+    positions: float64Positions,
     segmentStarts: float64Positions,
     segmentEnds: float64Positions,
     output: float32Distances
@@ -98,25 +98,25 @@ export function checkGeospatialDistanceTypes(
 
   // @ts-expect-error every point and segment input must use the same coordinate format.
   const invalidMixedSegmentInputs: GPUPairwisePointSegmentDistanceProps = {
-    points: float32Positions,
+    positions: float32Positions,
     segmentStarts: float64Positions,
     segmentEnds: float32Positions,
     output: float32Distances
   };
 
   ({
-    points: float32Positions,
-    polygonPositions: float32Positions,
-    geometryOffsets: offsets,
+    queryPositions: float32Positions,
+    positions: float32Positions,
+    featureOffsets: offsets,
     polygonOffsets: offsets,
     ringOffsets: offsets,
     output: classifications
   }) satisfies GPUPairwisePointInPolygonProps;
 
   ({
-    points: float64Positions,
-    polygonPositions: float64Positions,
-    geometryOffsets: offsets,
+    queryPositions: float64Positions,
+    positions: float64Positions,
+    featureOffsets: offsets,
     polygonOffsets: offsets,
     ringOffsets: offsets,
     output: classifications
@@ -124,82 +124,84 @@ export function checkGeospatialDistanceTypes(
 
   // @ts-expect-error point and polygon storage formats must match.
   const invalidMixedPolygonInputs: GPUPairwisePointInPolygonProps = {
-    points: float32Positions,
-    polygonPositions: float64Positions,
-    geometryOffsets: offsets,
+    queryPositions: float32Positions,
+    positions: float64Positions,
+    featureOffsets: offsets,
     polygonOffsets: offsets,
     ringOffsets: offsets,
     output: classifications
   };
 
-  // @ts-expect-error point-in-polygon classifications require a uint32 output.
   const invalidPolygonOutput: GPUPairwisePointInPolygonProps = {
-    points: float32Positions,
-    polygonPositions: float32Positions,
-    geometryOffsets: offsets,
+    queryPositions: float32Positions,
+    positions: float32Positions,
+    featureOffsets: offsets,
     polygonOffsets: offsets,
     ringOffsets: offsets,
+    // @ts-expect-error point-in-polygon classifications require a uint32 output.
     output: float32Distances
   };
 
   ({
-    points: float32Positions,
-    linestringPositions: float32Positions,
-    geometryOffsets: offsets,
-    linestringOffsets: offsets,
-    output: float32Distances,
-    nearestPoints: float32Positions,
-    linestringIndices: classifications,
-    segmentIndices: classifications
+    queryPositions: float32Positions,
+    positions: float32Positions,
+    featureOffsets: offsets,
+    lineOffsets: offsets,
+    output: {
+      distances: float32Distances,
+      nearestPositions: float32Positions,
+      lineIndices: classifications,
+      segmentIndices: classifications
+    }
   }) satisfies GPUPairwisePointLinestringNearestProps;
 
   ({
-    points: float64Positions,
-    linestringPositions: float64Positions,
-    geometryOffsets: offsets,
-    linestringOffsets: offsets,
-    output: preciseDistances,
-    nearestPoints: precisePositions,
-    linestringIndices: classifications,
-    segmentIndices: classifications
+    queryPositions: float64Positions,
+    positions: float64Positions,
+    featureOffsets: offsets,
+    lineOffsets: offsets,
+    output: {
+      distances: preciseDistances,
+      nearestPositions: precisePositions,
+      lineIndices: classifications,
+      segmentIndices: classifications
+    }
   }) satisfies GPUPairwisePointLinestringNearestProps;
 
   // @ts-expect-error raw binary64 linestring inputs require double-single distance output.
   const invalidFloat64LinestringOutput: GPUPairwisePointLinestringNearestProps = {
-    points: float64Positions,
-    linestringPositions: float64Positions,
-    geometryOffsets: offsets,
-    linestringOffsets: offsets,
-    output: float32Distances
+    queryPositions: float64Positions,
+    positions: float64Positions,
+    featureOffsets: offsets,
+    lineOffsets: offsets,
+    output: {distances: float32Distances}
   };
 
-  // @ts-expect-error local f32 linestring inputs require float32x2 nearest points.
   const invalidFloat32NearestPointOutput: GPUPairwisePointLinestringNearestProps = {
-    points: float32Positions,
-    linestringPositions: float32Positions,
-    geometryOffsets: offsets,
-    linestringOffsets: offsets,
-    output: float32Distances,
-    nearestPoints: precisePositions
+    queryPositions: float32Positions,
+    positions: float32Positions,
+    featureOffsets: offsets,
+    lineOffsets: offsets,
+    // @ts-expect-error local f32 linestring inputs require float32x2 nearest points.
+    output: {distances: float32Distances, nearestPositions: precisePositions}
   };
 
   // @ts-expect-error point and linestring storage formats must match.
   const invalidMixedLinestringInputs: GPUPairwisePointLinestringNearestProps = {
-    points: float32Positions,
-    linestringPositions: float64Positions,
-    geometryOffsets: offsets,
-    linestringOffsets: offsets,
-    output: float32Distances
+    queryPositions: float32Positions,
+    positions: float64Positions,
+    featureOffsets: offsets,
+    lineOffsets: offsets,
+    output: {distances: float32Distances}
   };
 
-  // @ts-expect-error raw binary64 inputs require float32x4 nearest-point rows.
   const invalidFloat64NearestPointOutput: GPUPairwisePointLinestringNearestProps = {
-    points: float64Positions,
-    linestringPositions: float64Positions,
-    geometryOffsets: offsets,
-    linestringOffsets: offsets,
-    output: preciseDistances,
-    nearestPoints: float32Positions
+    queryPositions: float64Positions,
+    positions: float64Positions,
+    featureOffsets: offsets,
+    lineOffsets: offsets,
+    // @ts-expect-error raw binary64 inputs require float32x4 nearest-point rows.
+    output: {distances: preciseDistances, nearestPositions: float32Positions}
   };
 
   void [
