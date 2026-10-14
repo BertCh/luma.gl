@@ -22,6 +22,7 @@ import {
   validateRasterDescription,
   validateRasterSamplingView
 } from './raster-sampling-utils';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURasterProfile';
 const MAXIMUM_SAMPLES_PER_PATH = 1 << 24;
@@ -379,10 +380,7 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
         bindings: locateBindings,
         invocationCount: sampleCapacity,
         declarations: `${pathConstants}
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}`,
+${GET_NAN_WGSL}`,
         body: `let total = sampleOffsets[sampleOffsetsOffset + PATH_COUNT];
   if (index >= total) {
     positionsOut[positionsOutOffset + 2u * index] = getNaN();
@@ -509,11 +507,8 @@ fn getNaN() -> f32 {
         invocationCount: pathCount,
         declarations: `const PATH_COUNT: u32 = ${pathCount}u;
 const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }`,
+${GET_NAN_WGSL}
+${IS_FINITE_VALUE_WGSL}`,
         body: `let firstSample = min(sampleOffsets[sampleOffsetsOffset + index], SAMPLE_CAPACITY);
   let endSample = min(sampleOffsets[sampleOffsetsOffset + index + 1u], SAMPLE_CAPACITY);
   var gain = 0.0;

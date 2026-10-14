@@ -25,7 +25,7 @@ import {
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
   GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH
 } from './line-integral-convolution-parameters';
-import {PHILOX_WGSL} from '../vector-field-common/philox-random';
+import {PHILOX_WGSL} from '../../utils/philox-random';
 
 const OPERATION = 'GPULineIntegralConvolution';
 const MAXIMUM_STEP_COUNT = 256;

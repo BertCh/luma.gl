@@ -19,6 +19,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getBoundsReductionNodes} from './bounds-reduction';
+import {IS_FINITE_VALUE_WGSL, SPREAD_BITS_WGSL} from '../../utils/wgsl-common';
 
 // Upstream has no Hilbert curve index (the radix sort of the keys is already `GPUSort`).
 const OPERATION = 'GPUHilbertKeys';
@@ -200,9 +201,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
           {name: 'minima', view: minima!, type: 'f32', access: 'read'},
           {name: 'maxima', view: maxima!, type: 'f32', access: 'read'}
         ];
-    const declarations = `fn isFiniteValue(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+    const declarations = `${IS_FINITE_VALUE_WGSL}
 // Returns (x, y, valid, 0) for an item: the point, or the box center (halved before the sum to
 // avoid overflow near FLT_MAX).
 fn readItem(row: u32) -> vec4f {
@@ -265,14 +264,7 @@ fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
 }
 
 // Spreads the low 16 bits of a value to the even bit positions.
-fn spreadBits(value: u32) -> u32 {
-  var x = value & 0xffffu;
-  x = (x | (x << 8u)) & 0x00ff00ffu;
-  x = (x | (x << 4u)) & 0x0f0f0f0fu;
-  x = (x | (x << 2u)) & 0x33333333u;
-  x = (x | (x << 1u)) & 0x55555555u;
-  return x;
-}
+${SPREAD_BITS_WGSL}
 
 // The Hilbert curve index of cell (x, y) on a CELLS x CELLS grid, equal to the classic xy2d
 // rotation loop. The loop carries a rotate/flip state from the top bit down, so its 16 steps

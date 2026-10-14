@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {US_VIEW} from '../../cartography/gazetteer';
 import {formatPlaybackTime, playbackOptions} from '../../engine/playback';
 import {joinCredits} from '../../cartography/credits';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {FlightCorridorsOptions} from './flight-corridors.compute';
 import {MOVEMENT_CREDITS} from './movement-style';
-
-const US_VIEW = {longitude: -96, latitude: 38.5, zoom: 3.9};
 
 const ALTITUDE_RAMP_OPTIONS = [
   {value: 'magma', label: 'Magma'},

@@ -129,6 +129,18 @@ export const MAP_INK: GroundPair<MapInkTokens> = {
   }
 };
 
+/** Ink of selections, rings and focus outlines for a ground, as RGBA 0-255. */
+export function getInkColor(ground: keyof GroundPair<unknown>, alpha = 255): PaletteColor {
+  const color = hexToRgba(MAP_INK[ground].ink, alpha);
+  return [color[0], color[1], color[2], color[3]];
+}
+
+/** Ground-coloured casing (the halo token) under an ink line, as RGBA 0-255. */
+export function getCasingColor(ground: keyof GroundPair<unknown>, alpha = 235): PaletteColor {
+  const color = hexToRgba(MAP_INK[ground].halo, alpha);
+  return [color[0], color[1], color[2], color[3]];
+}
+
 /** No-data fill per ground (RGBA 0-255; light `#D9D9D9` at 0.7, dark `#3A3F46`). */
 export const NO_DATA_COLOR: GroundPair<PaletteColor> = {
   light: hexToRgba(MAP_INK.light.noData, Math.round(MAP_INK.light.noDataAlpha * 255)),

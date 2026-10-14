@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {US_VIEW} from '../../cartography/gazetteer';
 import {joinCredits} from '../../cartography/credits';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import type {FlightSpeedContrastOptions} from './flight-corridors-jet-stream.compute';
 import {MOVEMENT_CREDITS} from './movement-style';
-
-const US_VIEW = {longitude: -96, latitude: 38.5, zoom: 3.9};
 
 export default defineScene<FlightSpeedContrastOptions>({
   id: 'flight-corridors-jet-stream',

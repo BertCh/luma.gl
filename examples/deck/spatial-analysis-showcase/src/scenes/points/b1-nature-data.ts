@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CHICAGO_CITY_VIEW} from '../../cartography/gazetteer';
 import type {LoadedDataset} from '../../data/catalog';
 
 /** Camera that frames the City of Chicago. */
-export const CHICAGO_VIEW = {longitude: -87.68, latitude: 41.835, zoom: 9.8} as const;
+export const CHICAGO_VIEW = {...CHICAGO_CITY_VIEW, zoom: 9.8} as const;
 
 /** Iconic groups that are not wildlife (used for the "animal share" weight). */
 const NON_ANIMAL_CATEGORIES = new Set(['Plants', 'Fungi', 'Other life']);

@@ -3,9 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {makeClassTable} from '../../cartography/class-table';
-import {hexToRgba, MAP_INK} from '../../cartography/hue-registry';
+import {getInkColor} from '../../cartography/hue-registry';
 import type {ClassTable} from '../../cartography/types';
 import type {PaletteColor} from '../../engine/ramps';
+
+export {getCasingColor, getInkColor} from '../../cartography/hue-registry';
 
 /**
  * Symbolisation of the rate-smoothing scene that is not a shared table: the septile table of the
@@ -104,18 +106,6 @@ export function getZTable(ground: Ground): ClassTable {
     method: 'Assuncao-Reis z: how many standard deviations from the pooled rate',
     noData: {label: 'No data'}
   });
-}
-
-/** Ink of the extreme rings and the selection: achromatic, from the ground. */
-export function getInkColor(ground: Ground, alpha = 255): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].ink, alpha);
-  return [color[0], color[1], color[2], color[3]];
-}
-
-/** Ground-coloured casing under rings and selections. */
-export function getCasingColor(ground: Ground, alpha = 235): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].halo, alpha);
-  return [color[0], color[1], color[2], color[3]];
 }
 
 /** Ghost colour of the raw dots behind the smoothed dots of the funnel plot. */

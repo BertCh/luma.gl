@@ -26,6 +26,7 @@ import {
 } from './spatial-two-stage-least-squares-parameters';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import type {GPUSolverStatusPort} from '../contracts/index';
+import {ERFC_VALUE_WGSL, GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialTwoStageLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
@@ -672,14 +673,9 @@ fn getCenteredRow(
  */
 function getSolveWGSL(m: number, q: number): string {
   return /* wgsl */ `
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isFiniteValue(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_VALUE_WGSL}
 
 fn regressorMean(column: u32) -> f32 {
   return workspace[workspaceOffset + select(column, 2u * K, column == K)];
@@ -793,14 +789,7 @@ fn solveSystem(
 /** The finish kernel: coefficient table, summary and status. */
 function getFinishWGSL(k: number): string {
   return /* wgsl */ `
-fn erfcValue(x: f32) -> f32 {
-  let z = abs(x);
-  let t = 1.0 / (1.0 + 0.5 * z);
-  let r = t * exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
-    t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 +
-    t * (-0.82215223 + t * 0.17087277)))))))));
-  return select(2.0 - r, r, x >= 0.0);
-}
+${ERFC_VALUE_WGSL}
 
 fn fail(status: u32) {
   let nan = getNaN();

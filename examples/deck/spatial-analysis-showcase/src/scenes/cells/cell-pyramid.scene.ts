@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CHICAGO_CITY_VIEW, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {sampleRamp} from '../../engine/ramps';
 import type {LegendSpec} from '../scene';
 import {defineScene} from '../scene';
-import {CATEGORY_SELECT_OPTIONS, CHICAGO_VIEW, MONTH_NAMES} from './b8-common';
+import {CATEGORY_SELECT_OPTIONS, MONTH_NAMES} from './b8-common';
 import type {CellPyramidOptions} from './cell-pyramid.compute';
 
-const MONTROSE = [-87.6325, 41.9625] as const;
 const DEFAULT_ROLLUP = 14;
 
 const inView =
@@ -42,7 +42,7 @@ export default defineScene<CellPyramidOptions>({
     {id: 'chicago-nature', role: 'iNaturalist observations (2023)'},
     {id: 'chicago-community-areas', role: 'place names for readouts and tooltips'}
   ],
-  initialView: {...CHICAGO_VIEW},
+  initialView: {...CHICAGO_CITY_VIEW},
   basemap: ground('paperCity'),
   furniture: {
     title: {
@@ -590,7 +590,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
         'Chicago is covered by blue-green Quadbin cells whose density and size change with map zoom; the busiest cells remain concentrated along the lakefront.',
       body: 'A city-wide nature map should show neighbourhoods when you are zoomed out and blocks when you are zoomed in, without waiting for a server to re-aggregate. Here **`GPUCellPyramid`** keys all 43,557 observations into **Quadbin** cells once, at tile zoom 17 (about 230 m), then rolls the table up level by level to zoom 4.\n\nBright cells hold more observations per km2 (log scale, so levels stay comparable). Zoom and pan: the cells change resolution but nothing is recomputed. **Group** below filters the observations in every view (try Birds or Fungi).',
       options: {view: 'pyramid'},
-      camera: {...CHICAGO_VIEW, transitionMs: 1200},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1200},
       controls: ['category'],
       readouts: ['points', 'pyramid']
     },
@@ -602,8 +602,13 @@ const recipe = addPeriodComparisonRecipe(graph, {
         'The map shows a single Quadbin resolution selected from the precomputed pyramid, with active-cell and zoom-level readouts beside the map.',
       body: "Every frame, the map zoom goes into a one-word buffer and **`GPUCellLevelSelection`** publishes that level's row count and first row into an indirect draw record. The layer simply replays the record: no CPU work, no rebuild. The **Under the hood** drawer shows the pyramid graph encoded once (and again only when you change the filter).\n\nSlide **Cells finer than the zoom level** below to trade detail for noise, or tick **Choose the level by hand** and then slide **Quadbin resolution** to compare resolutions at one camera.",
       options: {resolutionOffset: 4},
-      camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 13.4, transitionMs: 2000},
-      callout: {coordinate: MONTROSE, text: 'Montrose Point: the cells follow your zoom'},
+      camera: {
+        longitude: MONTROSE_POINT[0],
+        latitude: MONTROSE_POINT[1],
+        zoom: 13.4,
+        transitionMs: 2000
+      },
+      callout: {coordinate: MONTROSE_POINT, text: 'Montrose Point: the cells follow your zoom'},
       highlight: {readout: 'activeCells'},
       controls: ['resolutionOffset', 'manualLevel', 'manualResolution'],
       readouts: ['activeCells', 'zoom', 'pyramid']
@@ -616,7 +621,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
         'Coarser Quadbin cells replace the fine grid while readouts report identical observation and research-grade totals before and after roll-up.',
       body: '**`GPUCellRollup`** reads the finest table and merges it to a coarser **parent resolution**. Counts and fixed-point sums are integers, so a parent holds exactly the sum of its children: the readouts compare the totals before and after and say *conserved exactly* and *bit-exact*. Floating-point sums could not promise that.\n\nThe table also carries the sum of the 0/1 research-grade flag, so the **research-grade share** (research-grade observations / observations) is available per cell for free. Raise **Parent resolution** below, or switch **Color the roll-up by** between density and research-grade share: each resolution is a small graph compiled the first time you use it.',
       options: {view: 'rollup', rollupResolution: 14, rollupColor: 'researchShare'},
-      camera: {...CHICAGO_VIEW, transitionMs: 1400},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1400},
       highlight: {readout: 'rollupCounts'},
       controls: ['rollupResolution', 'rollupColor', 'rateCeiling'],
       readouts: ['rollupCounts', 'rollupSums', 'rollupCells']
@@ -635,7 +640,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
         classCount: 5,
         rollupResolution: 15
       },
-      camera: {...CHICAGO_VIEW, transitionMs: 1400},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1400},
       highlight: {readout: 'classEdges'},
       controls: ['classMethod', 'classCount', 'classValue'],
       readouts: ['classEdges']
@@ -648,7 +653,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
         'A diverging cell map compares January through June with July through December; red cells gained observations, blue cells lost them and gray cells changed little.',
       body: 'Chicago has one year of data here (2023), so the comparison is **January to June against July to December**. **`addPeriodComparisonRecipe`** keys each period into its own cell table (`GPUCellAggregation`), outer-joins them with **`GPUCellTableCompare`** and classifies the change around zero.\n\nRed cells gained observations in the second half, blue lost them, gray changed less than the **No-change band**. Move **Earlier period (months)** and **Later period (months)** to compare other seasons. The second half has 23,167 observations against 20,390 in the first, but the year is lopsided: the spring surge around the City Nature Challenge (late April) lands in the first half, so lakefront and park cells can go either way. Look for the cells that go against the citywide trend.',
       options: {view: 'compare', changeColumn: 'classes', stableBand: 8},
-      camera: {...CHICAGO_VIEW, transitionMs: 1400},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1400},
       highlight: {readout: 'compareTotals'},
       controls: ['periodA', 'periodB', 'stableBand', 'changeClassing'],
       readouts: ['compareTotals', 'compareGainLoss']
@@ -680,7 +685,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
         'The comparison map remains visible while controls expose period, measure and resolution choices that alter the cell-level pattern.',
       body: 'Caveats: seasons are not years, so you cannot call a half-year difference a trend; periods of unequal length bias the totals; observations follow the observers, so counts measure effort as much as wildlife, and tile edges change which cell a sighting lands in (the modifiable areal unit problem: change the **Comparison resolution** and watch the pattern move); and the Poisson score ignores that observations are clustered, so treat it as a screening, not a test.\n\nTry it: set **Compared measure** to *Research-grade observations (sum of values)*, set **Group** to *Birds* (spring migration) or *Fungi*, or compare Mar-May (**Earlier period (months)**) with Jun-Aug (**Later period (months)**).',
       options: {view: 'compare', changeColumn: 'classes', periodA: [1, 6], periodB: [7, 12]},
-      camera: {...CHICAGO_VIEW, transitionMs: 1400},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1400},
       controls: ['compareResolution', 'compareMeasure', 'category', 'periodA', 'periodB']
     }
   ]

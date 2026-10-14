@@ -580,6 +580,7 @@ fn isEarTest(ear: u32) -> bool {
   return isEar(ear);
 }
 
+// Bounding-box test only: the caller has already established collinearity with areaSign().
 fn onSegment(p: vec2f, q: vec2f, r: vec2f) -> bool {
   return q.x <= max(p.x, r.x) && q.x >= min(p.x, r.x) && q.y <= max(p.y, r.y) && q.y >= min(p.y, r.y);
 }

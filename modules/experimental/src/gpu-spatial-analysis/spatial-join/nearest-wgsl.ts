@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {NearestSide} from './nearest-types';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Slots of the per-query header in the traversal result buffer: count, flags, bound bits. @internal */
 export const NEAREST_HEADER_WORDS = 3;
@@ -23,10 +24,11 @@ export const NEAREST_COMMON_WGSL = /* wgsl */ `
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const NO_FEATURE: u32 = 0xffffffffu;
 const NO_SEGMENT: u32 = 0xffffffffu;
-fn isFiniteValue(value: f32) -> bool { return value == value && abs(value) <= FLOAT32_MAXIMUM; }
+${IS_FINITE_VALUE_WGSL}
 fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
+// Collinearity first; spatial-predicate-wgsl tests the range first so uncertain signs are never reported.
 fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
   return orient(a, b, q) == 0.0 &&
     q.x >= min(a.x, b.x) && q.x <= max(a.x, b.x) &&

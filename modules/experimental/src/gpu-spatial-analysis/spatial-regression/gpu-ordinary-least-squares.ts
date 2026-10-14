@@ -35,6 +35,7 @@ import {
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
 } from './spatial-regression-solve';
 import type {GPUSolverStatusPort} from '../contracts/index';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
@@ -512,14 +513,9 @@ function getWorkspaceLayout(k: number): WorkspaceLayout {
 }
 
 const FINITE_WGSL = /* wgsl */ `
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isFiniteValue(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_VALUE_WGSL}
 `;
 
 /** Layout constants, workspace accessors, and the packed moment index. */

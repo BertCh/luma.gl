@@ -608,7 +608,9 @@ function getTotalSumNodes<Parameters>(
       segmentCount: props.partials.length,
       input: props.input,
       segmentOffsets: props.blockOffsets,
-      output: props.partials
+      output: props.partials,
+      // Block offsets are `min(block * BLOCK_ROWS, rows)` for the `rows` of `input` (see callers).
+      offsetsWithinInput: true
     }),
     createSegmentSumNode<Parameters>(graph, {
       id: `${props.id}-total`,
@@ -616,7 +618,9 @@ function getTotalSumNodes<Parameters>(
       segmentCount: 1,
       input: props.partials,
       segmentOffsets: props.totalOffsets,
-      output: props.output
+      output: props.output,
+      // Total offsets are `[0, blockCount]` and `partials` has `blockCount` rows.
+      offsetsWithinInput: true
     })
   ];
 }

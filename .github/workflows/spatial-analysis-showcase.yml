@@ -47,6 +47,12 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Typecheck spatial analysis showcase
+        run: yarn workspace luma.gl-examples-deck-spatial-analysis-showcase typecheck
+
+      - name: Check spatial analysis showcase scenes
+        run: yarn workspace luma.gl-examples-deck-spatial-analysis-showcase check
+
       - name: Build spatial analysis showcase
         run: yarn workspace luma.gl-examples-deck-spatial-analysis-showcase build:pages
 

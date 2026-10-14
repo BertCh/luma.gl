@@ -22,6 +22,7 @@ import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
 } from './spatial-autocorrelation-parameters';
+import {GET_QUIET_NAN_SEEDED_WGSL, IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 /** Rows reduced by one workgroup in the first level of the deterministic global sums. */
 const BLOCK_ROWS = 4096;
@@ -100,14 +101,10 @@ export function validateSpatialAutocorrelationInputs(
  * @internal
  */
 export const SPATIAL_AUTOCORRELATION_FLOAT_WGSL = /* wgsl */ `
-fn isFiniteFloat(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_FLOAT_WGSL}
 
 // A runtime operand keeps the quiet-NaN bit pattern out of constant evaluation.
-fn getQuietNaN(seed: u32) -> f32 {
-  return bitcast<f32>(0x7fc00000u | (seed & 0u));
-}
+${GET_QUIET_NAN_SEEDED_WGSL}
 
 // Two-sided normal p-value erfc(|z| / sqrt(2)) with the Numerical Recipes erfcc Chebyshev fit
 // (fractional error below 1.2e-7 in exact arithmetic), so tiny p-values keep relative accuracy.

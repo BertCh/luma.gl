@@ -25,6 +25,7 @@ import {
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
 import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
+import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 /**
  * Largest supported `groupCapacity`. A superedge key `source * groupCapacity + target` must stay
@@ -198,13 +199,7 @@ fn dequantize(low: u32, high: u32) -> f32 {
   let magnitude = f32(magnitudeHigh) * TWO_32 + f32(magnitudeLow);
   return select(magnitude, -magnitude, negative) / SCALE;
 }
-fn toOrderedKey(value: f32) -> u32 {
-  let bits = bitcast<u32>(value);
-  return select(~bits, bits | 0x80000000u, (bits & 0x80000000u) == 0u);
-}
-fn fromOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(select(~key, key & 0x7fffffffu, (key & 0x80000000u) != 0u));
-}`;
+${GET_ORDERED_KEY_WGSL}${DECODE_ORDERED_KEY_WGSL}`;
 }
 
 /** WGSL statements that add `vec2<u32>` `quantized` into the atomic array words `index`, `index + 1`. */
@@ -551,10 +546,10 @@ ${getFixedPointSource(scale)}`,
   let quantizedY = quantize(position.y);
   ${getFixedPointAddSource('groupAcc', 'groupAccOffset + base', 'quantizedX')}
   ${getFixedPointAddSource('groupAcc', 'groupAccOffset + base + 2u', 'quantizedY')}
-  atomicMin(&groupAcc[groupAccOffset + base + 6u], toOrderedKey(position.x));
-  atomicMin(&groupAcc[groupAccOffset + base + 7u], toOrderedKey(position.y));
-  atomicMax(&groupAcc[groupAccOffset + base + 8u], toOrderedKey(position.x));
-  atomicMax(&groupAcc[groupAccOffset + base + 9u], toOrderedKey(position.y));`
+  atomicMin(&groupAcc[groupAccOffset + base + 6u], getOrderedKey(position.x));
+  atomicMin(&groupAcc[groupAccOffset + base + 7u], getOrderedKey(position.y));
+  atomicMax(&groupAcc[groupAccOffset + base + 8u], getOrderedKey(position.x));
+  atomicMax(&groupAcc[groupAccOffset + base + 9u], getOrderedKey(position.y));`
       : ''
   }
   ${
@@ -954,10 +949,10 @@ ${getFixedPointSource(scale)}`,
         type: 'f32',
         access: 'read_write'
       });
-      finishStatements.push(`boundsOut[boundsOutOffset + 4u * index] = select(0.0, fromOrderedKey(groupAcc[groupAccOffset + base + 6u]), count > 0u);
-  boundsOut[boundsOutOffset + 4u * index + 1u] = select(0.0, fromOrderedKey(groupAcc[groupAccOffset + base + 7u]), count > 0u);
-  boundsOut[boundsOutOffset + 4u * index + 2u] = select(0.0, fromOrderedKey(groupAcc[groupAccOffset + base + 8u]), count > 0u);
-  boundsOut[boundsOutOffset + 4u * index + 3u] = select(0.0, fromOrderedKey(groupAcc[groupAccOffset + base + 9u]), count > 0u);`);
+      finishStatements.push(`boundsOut[boundsOutOffset + 4u * index] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 6u]), count > 0u);
+  boundsOut[boundsOutOffset + 4u * index + 1u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 7u]), count > 0u);
+  boundsOut[boundsOutOffset + 4u * index + 2u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 8u]), count > 0u);
+  boundsOut[boundsOutOffset + 4u * index + 3u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 9u]), count > 0u);`);
     }
     if (props.groupValueSum) {
       finishBindings.push({

@@ -4,9 +4,6 @@
 
 import type {LoadedDataset} from '../../data/catalog';
 
-/** Camera that frames the City of Chicago. */
-export const CHICAGO_VIEW = {longitude: -87.68, latitude: 41.835, zoom: 9.9} as const;
-
 /** `COLUMN` category option list: every iNaturalist group in the dataset plus "all". */
 export const CATEGORY_SELECT_OPTIONS = [
   {value: 'all', label: 'All observations'},

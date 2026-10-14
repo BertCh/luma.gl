@@ -3,11 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getClassPalette, makeClassTable} from '../../cartography/class-table';
-import {hexToRgba, MAP_INK, OTHER_GREY} from '../../cartography/hue-registry';
+import {getCasingColor, hexToRgba, OTHER_GREY} from '../../cartography/hue-registry';
 import type {ClassTable} from '../../cartography/types';
 import {sampleRamp, type PaletteColor} from '../../engine/ramps';
 import type {MetricDefinition} from './b5-group-metrics';
 import type {Classification, FrozenBreaks} from './group-statistics.stats';
+
+export {getCasingColor, getInkColor} from '../../cartography/hue-registry';
 
 /**
  * Symbolisation of the group-statistics scene that is not a shared table: the class tables of the
@@ -230,18 +232,6 @@ export function getMetricLegendCopy(metric: MetricDefinition): {
     default:
       return {title: metric.label};
   }
-}
-
-/** Ink of selections and rings: achromatic, from the ground. */
-export function getInkColor(ground: Ground, alpha = 255): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].ink, alpha);
-  return [color[0], color[1], color[2], color[3]];
-}
-
-/** Ground-coloured casing under selections and symbol strokes. */
-export function getCasingColor(ground: Ground, alpha = 235): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].halo, alpha);
-  return [color[0], color[1], color[2], color[3]];
 }
 
 /** Stripes of the hatched no-data swatch: ink at about a third on light, a light ink on dark. */

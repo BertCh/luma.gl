@@ -31,6 +31,7 @@ import {
   validateDisjointOutputs
 } from './spatial-join-passes';
 import {type GPUSpatialJoinGeometry, type GPUSpatialJoinPairs} from './spatial-join-types';
+import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialJoinCandidates';
 
@@ -107,12 +108,7 @@ const INTERNAL_NODE_COUNT: u32 = ${tree.internalNodeCount}u;
 const RIGHT_COUNT: u32 = ${rightCount}u;
 const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
 ${marginWGSL}
-fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
-  let component = node * 2u;
-  let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
-  let maximum = vec2f(nodeMaxima[nodeMaximaOffset + component], nodeMaxima[nodeMaximaOffset + component + 1u]);
-  return all(minimum <= queryMaximum) && all(queryMinimum <= maximum);
-}`;
+${NODE_OVERLAPS_WGSL}`;
   const probeBody = (
     leaf: string,
     prologue: string,

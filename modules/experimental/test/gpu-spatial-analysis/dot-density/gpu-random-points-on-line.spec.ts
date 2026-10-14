@@ -12,10 +12,7 @@ import {
   GPURandomPointsOnLine,
   RANDOM_POINTS_ON_LINE_PURPOSE
 } from '../../../src/gpu-spatial-analysis/dot-density/index';
-import {
-  getPhilox4x32,
-  getPhiloxUnitFloat
-} from '../../../src/gpu-spatial-analysis/dot-density/dot-density-random';
+import {getPhilox4x32, getPhiloxUnitFloat} from '../../../src/utils/philox-random';
 import {
   createInputBuffer,
   createOutputBuffer,

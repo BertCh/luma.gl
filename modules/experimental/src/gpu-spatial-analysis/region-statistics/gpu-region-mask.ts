@@ -19,13 +19,13 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import type {GPURegionShape} from './region-statistics-types';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Number of float32 elements in a region screen transform. */
 export const GPU_REGION_SCREEN_TRANSFORM_LENGTH = 20;
 
 /** WGSL helper that rejects NaN and infinities. @internal */
-export const REGION_STATISTICS_WGSL_HELPERS = /* wgsl */ `
-fn isFiniteValue(value: f32) -> bool { return value == value && abs(value) <= 3.402823466e+38; }`;
+export const REGION_STATISTICS_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
 
 /** Properties for {@link GPURegionMask}. */
 export type GPURegionMaskProps = {

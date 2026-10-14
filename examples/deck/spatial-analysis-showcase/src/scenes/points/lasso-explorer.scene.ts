@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {CHICAGO, labelsFor} from '../../cartography/gazetteer';
+import {CHICAGO, labelsFor, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {getRegistryColors} from '../../cartography/hue-registry';
 import {defineScene, type LegendSpec} from '../scene';
@@ -99,7 +99,6 @@ const AREA_NAMES = [
 
 const UPTOWN = CHICAGO.places.uptown.lngLat;
 const LOOP = CHICAGO.places.loop.lngLat;
-const MONTROSE_POINT = CHICAGO.places['montrose-point'].lngLat;
 
 /** The scene options the story steps keep resetting: the story is "fresh" at every step. */
 const SHARED_SHAPE = {shape: 'polygon', path: 'direct', space: 'world'} as const;

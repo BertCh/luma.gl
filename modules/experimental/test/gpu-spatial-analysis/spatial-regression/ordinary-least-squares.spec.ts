@@ -152,7 +152,10 @@ function createFixture(
 
 /**
  * Asserts `|actual - expected| <= relative * max(|expected|, floor)`, or both NaN. Values are
- * compared to a float64 oracle, so the tolerances cover f32 accumulation and solve error.
+ * compared to a float64 oracle, so the tolerances cover f32 accumulation and solve error. The
+ * callers' bounds are 10 to 100 times the worst relative error measured on these scenes (for
+ * example 1.6e-5 for coefficients, 3e-7 for standard errors, 4e-8 for R squared); the higher
+ * moment and Jarque-Bera bounds stay looser because they are sums of fourth powers of residuals.
  */
 function expectClose(
   label: string,
@@ -187,19 +190,19 @@ function expectParity(
     expect(Array.from(actual.residuals).every(Number.isNaN)).toBe(true);
     return;
   }
-  expectClose('coefficients', actual.coefficients, expected.coefficients, 2e-3, scale.coefficients);
-  expectClose('standardErrors', actual.standardErrors, expected.standardErrors, 5e-3, 1e-3);
-  expectClose('tStatistics', actual.tStatistics, expected.tStatistics, 1e-2, 1);
+  expectClose('coefficients', actual.coefficients, expected.coefficients, 3e-4, scale.coefficients);
+  expectClose('standardErrors', actual.standardErrors, expected.standardErrors, 1e-5, 1e-3);
+  expectClose('tStatistics', actual.tStatistics, expected.tStatistics, 5e-4, 1);
   const s = actual.summary;
   const e = expected.summary;
-  expectClose('rSquared', [s[1], s[2]], [e[1], e[2]], 1e-4, 1);
-  expectClose('sigma2', [s[3]], [e[3]], 5e-3, 1e-6);
-  expectClose('information', [s[4], s[5], s[6]], [e[4], e[5], e[6]], 1e-3, 1);
-  expectClose('residualSums', [s[11], s[12]], [e[11], e[12]], 5e-3, 1e-6);
-  expectClose('moments', [s[13], s[14]], [e[13], e[14]], 2e-2, 1);
-  expectClose('jarqueBera', [s[7]], [e[7]], 3e-2, 1);
+  expectClose('rSquared', [s[1], s[2]], [e[1], e[2]], 1e-5, 1);
+  expectClose('sigma2', [s[3]], [e[3]], 2e-5, 1e-6);
+  expectClose('information', [s[4], s[5], s[6]], [e[4], e[5], e[6]], 5e-5, 1);
+  expectClose('residualSums', [s[11], s[12]], [e[11], e[12]], 2e-5, 1e-6);
+  expectClose('moments', [s[13], s[14]], [e[13], e[14]], 5e-3, 1);
+  expectClose('jarqueBera', [s[7]], [e[7]], 1e-2, 1);
   expect(Math.abs(s[8] - e[8])).toBeLessThan(1e-2);
-  expectClose('breuschPagan', [s[9]], [e[9]], 3e-2, 1);
+  expectClose('breuschPagan', [s[9]], [e[9]], 2e-3, 1);
   expect(Math.abs(s[10] - e[10])).toBeLessThan(1e-2);
   expect(s[15]).toBe(e[15]);
   for (let row = 0; row < expected.residuals.length; row++) {
@@ -430,8 +433,8 @@ it('GPUOrdinaryLeastSquares changes the ridge penalty between encodings without 
     const expected = fitOrdinaryLeastSquaresOnCPU({...scene, ridgeLambda});
     expect(result.status).toBe(0);
     expect(result.summary[15]).toBe(ridgeLambda);
-    expectClose('ridge coefficients', result.coefficients, expected.coefficients, 5e-3, 0.05);
-    expectClose('ridge rss', [result.summary[11]], [expected.summary[11]], 5e-3, 1e-3);
+    expectClose('ridge coefficients', result.coefficients, expected.coefficients, 1e-4, 0.05);
+    expectClose('ridge rss', [result.summary[11]], [expected.summary[11]], 2e-5, 1e-3);
     if (ridgeLambda > 0 && ridgeLambda !== 5000) {
       expect(Math.abs(result.coefficients[1])).toBeLessThan(previousSlope + 1e-3);
     }

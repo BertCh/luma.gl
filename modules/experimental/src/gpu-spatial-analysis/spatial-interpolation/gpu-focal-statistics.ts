@@ -21,6 +21,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {GPU_FOCAL_STATISTICS_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUFocalStatistics';
 /** Largest compile-time window radius: a `(2 * 64 + 1)^2` window is 16,641 reads per cell. */
@@ -308,11 +309,8 @@ function getOutputEntries(
 function getValidityWGSL(hasValidity: boolean, noDataValue: number | undefined): string {
   return /* wgsl */ `
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${GET_NAN_WGSL}
+${IS_FINITE_VALUE_WGSL}
 fn readCell(cell: u32, value: ptr<function, f32>) -> bool {
   let sample = raster[rasterOffset + cell];
   *value = sample;

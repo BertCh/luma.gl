@@ -40,6 +40,7 @@ import {
   GPU_GWR_NONSTATIONARITY_SUMMARY,
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
 } from './geographically-weighted-regression-nonstationarity-parameters';
+import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGeographicallyWeightedRegressionNonstationarityTest';
 /** Rows per thread of the compaction count pass. */
@@ -849,14 +850,9 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
 }
 
 const COMMON_WGSL = /* wgsl */ `
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_BITS_WGSL}
 `;
 
 /** `isFiniteRow`: every coefficient of a row is finite. Needs the `coefficients` binding. */

@@ -259,8 +259,9 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
       expected: fixtures.affineCentroidRotate
     }
   ];
-  // Coordinates near 1e5 have an f32 spacing of 0.0078; allow a few ulps.
-  const tolerance = 0.03;
+  // Coordinates near 1e5 have an f32 spacing of 2^-7 = 0.0078. The affine chain rounds the input,
+  // the matrix product and the output, and measures up to 1.8 ulp on this fixture; allow 3 ulps.
+  const tolerance = 3 * 2 ** -7;
   for (const {name, values, expected} of runs) {
     run.parameterBuffer.write(values);
     submitGraph(device, compiled, undefined);
@@ -268,7 +269,8 @@ it('GPUAffineTransform matches shapely for fixed, center and centroid origins an
     expectPolygonsClose(actual, expected, tolerance, name);
   }
   const perFeature = toRows(await readFloat32(featureOutput.buffer, 2 * vertexCount), vertexCount);
-  expectPolygonsClose(perFeature, fixtures.affinePerFeature, 0.05, 'per-feature matrices');
+  // Coordinates near 2e5 have an f32 spacing of 2^-6; the reference is f32-exact, so one ulp is the bound.
+  expectPolygonsClose(perFeature, fixtures.affinePerFeature, 2 ** -6, 'per-feature matrices');
   run.destroy(compiled);
 });
 

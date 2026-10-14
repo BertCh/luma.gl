@@ -38,6 +38,7 @@ import {
   getRasterRelaxationTileWGSL,
   validateRasterIterations
 } from './raster-relaxation';
+import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUCostDistance';
 const DEFAULT_MAXIMUM_ITERATIONS = 512;
@@ -376,8 +377,8 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
         ],
         invocationCount: cellCount,
         declarations: /* wgsl */ `
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
-fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }`,
+${IS_FINITE_VALUE_WGSL}
+${GET_QUIET_NAN_WGSL}`,
         body: `${
           props.frictionParameters
             ? 'let value = frictionValues[frictionValuesOffset + index] * frictionParameters[frictionParametersOffset] + frictionParameters[frictionParametersOffset + 1u];'

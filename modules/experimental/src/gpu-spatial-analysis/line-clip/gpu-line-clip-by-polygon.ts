@@ -19,6 +19,7 @@ import {GPUSegmentIntersection} from '../segment-intersection/index';
 import {GPUPointInPolygonJoin, GPU_SPATIAL_JOIN_NO_FEATURE} from '../spatial-join/index';
 import type {GPUSpatialJoinLines, GPUSpatialJoinPolygons} from '../spatial-join/index';
 import type {GPULineSplitPieces} from '../line-split/index';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPULineClipByPolygon';
 
@@ -267,7 +268,7 @@ const LINE_COUNT: u32 = ${lineCount}u;
 fn vertexAt(vertex: u32) -> vec2f {
   return vec2f(positions[positionsOffset + vertex * 2u], positions[positionsOffset + vertex * 2u + 1u]);
 }
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 // Largest line whose first vertex is at most vertex.
 fn lineOfVertex(vertex: u32) -> u32 {
   var low = 0u;

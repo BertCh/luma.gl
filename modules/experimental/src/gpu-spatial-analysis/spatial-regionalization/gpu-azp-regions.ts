@@ -21,6 +21,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import type {GPUOptimizationStatusPort} from '../contracts/index';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 export const GPU_AZP_MAXIMUM_COLUMNS = 8;
 export const GPU_AZP_MAXIMUM_ITERATIONS = 256;
@@ -212,7 +213,7 @@ fn tieKey(row: u32) -> u32 {
   value = (value ^ (value >> 15u)) * 0x846ca68bu;
   return value ^ (value >> 16u);
 }
-fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+${IS_FINITE_FLOAT_WGSL}
 fn regionCount(region: u32) -> u32 { return u32(regions[regionsOffset + region * REGION_STRIDE]); }
 fn regionSum(region: u32, column: u32) -> f32 { return regions[regionsOffset + region * REGION_STRIDE + 1u + column]; }`;
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -261,7 +262,7 @@ fn regionSum(region: u32, column: u32) -> f32 { return regions[regionsOffset + r
         declarations: `const ROWS: u32 = ${rowCount}u;
 const COLUMNS: u32 = ${columnCount}u;
 const REGION_CAPACITY: u32 = ${props.regionCapacity}u;
-fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`,
+${IS_FINITE_FLOAT_WGSL}`,
         body: `let region = initialLabels[initialLabelsOffset + index];
   labels[labelsOffset + index] = region;
   sortKeys[sortKeysOffset + index] = min(region, REGION_CAPACITY);

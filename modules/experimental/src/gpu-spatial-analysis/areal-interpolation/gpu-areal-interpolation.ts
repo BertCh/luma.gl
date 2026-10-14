@@ -420,6 +420,8 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
           input: sortedMask,
           segmentOffsets: groups.groupStarts,
           output: areas
+          // Not within-input provable: `groupStarts` slots past the last run are never written, and
+          // `areas` has `capacity` rows, which can exceed `slotCount`.
         })
       );
     }

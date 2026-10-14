@@ -27,6 +27,7 @@ import {
   type GPUPointHorizonRowDirection,
   type GPUPointHorizonTraversal
 } from './point-horizon-parameters';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Largest supported number of lattice samples per ray (keeps every lattice index exact in f32). */
 const MAXIMUM_LATTICE_SAMPLES = 1 << 24;
@@ -570,7 +571,7 @@ fn pinMad(a: f32, b: f32, c: f32) -> f32 {
   return opaque(opaque(a * b) + c);
 }
 
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 // NaN built from the runtime zero word: WGSL rejects a constant-evaluated NaN.
 fn nanValue() -> f32 { return bitcast<f32>(0x7fc00000u | bitcast<u32>(settings[settingsOffset + 4u])); }
 

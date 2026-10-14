@@ -7,7 +7,9 @@
     "start": "vite",
     "build": "vite build",
     "build:pages": "WEBSITE_BASE_URL=/luma.gl/ vite build",
-    "serve": "vite preview"
+    "serve": "vite preview",
+    "typecheck": "tsc --noEmit -p .",
+    "check": "node scripts/check-cartography.mjs && node scripts/check-colours.mjs && node scripts/check-story-steps.mjs && node scripts/check-wgsl-identifiers.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "patch:@deck.gl/core@npm%3A9.4.0#~/.yarn/patches/@deck.gl-core-npm-9.4.0-707f3fb147.patch",

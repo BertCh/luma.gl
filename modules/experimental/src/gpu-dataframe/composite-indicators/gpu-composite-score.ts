@@ -25,6 +25,13 @@ import {
   GPU_COMPOSITE_SCORE_POWER_ITERATIONS,
   GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY_LENGTH
 } from './composite-score-parameters';
+import {
+  DECODE_ORDERED_KEY_WGSL,
+  GET_NAN_WGSL,
+  GET_ORDERED_KEY_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_NAN_BITS_WGSL
+} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUCompositeScore';
 /** Rows summed in fixed order by one thread of a tile pass. */
@@ -585,27 +592,15 @@ const HAS_PRINCIPAL_COMPONENT: bool = ${enablePrincipalComponent};`,
 
 /** Order keys, NaN helpers and finite checks shared by the composite-score kernels. */
 const COMPOSITE_SCORE_WGSL = /* wgsl */ `
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isNanBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u;
-}
+${IS_NAN_BITS_WGSL}
 
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_BITS_WGSL}
 
-fn getOrderedKey(x: f32) -> u32 {
-  let bits = bitcast<u32>(x);
-  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}
+${GET_ORDERED_KEY_WGSL}
 
-fn decodeOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u));
-}
+${DECODE_ORDERED_KEY_WGSL}
 `;
 
 // Correlation of direction-adjusted z-scores, then a fixed number of power-iteration steps.

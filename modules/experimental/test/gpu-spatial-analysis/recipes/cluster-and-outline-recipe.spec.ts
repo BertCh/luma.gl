@@ -15,6 +15,7 @@ import {
 } from '../spatial-clustering/spatial-clustering-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
 
+/** DBSCAN neighborhood radius in scene units (an algorithm parameter, not a comparison tolerance). */
 const EPSILON = 4;
 const MINIMUM_POINTS = 4;
 const MAXIMUM_CLUSTERS = 16;

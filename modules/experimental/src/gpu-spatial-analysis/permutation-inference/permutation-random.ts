@@ -8,11 +8,7 @@
 // streams, so CPU oracles reproduce GPU permutations exactly. Proposed for promotion to the shared
 // utils module once a second contributor needs it.
 
-const PHILOX_M0 = 0xd2511f53;
-const PHILOX_M1 = 0xcd9e8d57;
-const PHILOX_W0 = 0x9e3779b9;
-const PHILOX_W1 = 0xbb67ae85;
-const PHILOX_ROUNDS = 10;
+import {getPhilox4x32} from '../../utils/philox-random';
 
 /** Counter word `c` that tags the Feistel round-key block, kept apart from row streams. @internal */
 export const PERMUTATION_RANDOM_FEISTEL_STREAM = 0xfe157e10;
@@ -34,40 +30,7 @@ function multiplyHigh(a: number, b: number): number {
   return (highHigh + (lowHigh >>> 16) + (highLow >>> 16) + (middle >>> 16)) >>> 0;
 }
 
-/**
- * Philox 4x32-10 block function: encrypts a 128-bit `counter` under a 64-bit `key`.
- *
- * @param counter Four u32 counter words.
- * @param key Two u32 key words.
- * @returns Four u32 random words.
- * @internal
- */
-export function getPhilox4x32(
-  counter: readonly [number, number, number, number],
-  key: readonly [number, number]
-): [number, number, number, number] {
-  let c0 = counter[0] >>> 0;
-  let c1 = counter[1] >>> 0;
-  let c2 = counter[2] >>> 0;
-  let c3 = counter[3] >>> 0;
-  let k0 = key[0] >>> 0;
-  let k1 = key[1] >>> 0;
-  for (let round = 0; round < PHILOX_ROUNDS; round++) {
-    if (round > 0) {
-      k0 = (k0 + PHILOX_W0) >>> 0;
-      k1 = (k1 + PHILOX_W1) >>> 0;
-    }
-    const high0 = multiplyHigh(PHILOX_M0, c0);
-    const low0 = Math.imul(PHILOX_M0, c0) >>> 0;
-    const high1 = multiplyHigh(PHILOX_M1, c2);
-    const low1 = Math.imul(PHILOX_M1, c2) >>> 0;
-    c0 = (high1 ^ c1 ^ k0) >>> 0;
-    c1 = low1;
-    c2 = (high0 ^ c3 ^ k1) >>> 0;
-    c3 = low0;
-  }
-  return [c0, c1, c2, c3];
-}
+export {getPhilox4x32};
 
 /**
  * Sequential u32 stream for one `(key, a, b, c)` tuple: words are drawn from Philox blocks with

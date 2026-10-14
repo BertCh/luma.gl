@@ -24,6 +24,7 @@ import {
 } from '../segment-intersection/segment-intersection-wgsl';
 import type {GPUSegmentGeometry} from '../segment-intersection/segment-intersection-types';
 import {GPU_SEGMENT_NONE} from '../segment-intersection/segment-intersection-types';
+import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
 const OPERATION = 'GPUMinimumClearance';
 
@@ -70,14 +71,6 @@ export type GPUMinimumClearanceProps = {
    */
   spatialSort?: boolean;
 };
-
-function getNextPowerOfTwo(value: number): number {
-  let result = 1;
-  while (result < value) {
-    result *= 2;
-  }
-  return result;
-}
 
 /**
  * Computes the minimum clearance of every feature: the GPU analog of `shapely.minimum_clearance`

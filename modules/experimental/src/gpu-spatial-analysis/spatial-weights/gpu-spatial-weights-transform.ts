@@ -14,6 +14,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialWeightsTransform';
 
@@ -197,9 +198,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
     const write = (slot: string, value: string) => `values[valuesOffset + ${slot}] = ${value};`;
     const rowBounds = `let begin = offsets[offsetsOffset + index];
   let end = offsets[offsetsOffset + index + 1u];`;
-    const finite = `fn isFiniteFloat(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}`;
+    const finite = IS_FINITE_FLOAT_WGSL;
 
     if (operation === 'row') {
       return [

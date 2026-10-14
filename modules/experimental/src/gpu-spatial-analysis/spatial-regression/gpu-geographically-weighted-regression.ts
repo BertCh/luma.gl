@@ -38,6 +38,7 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   getGPUGeographicallyWeightedRegressionParameterLength
 } from './geographically-weighted-regression-parameters';
+import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGeographicallyWeightedRegression';
 /** Rows summed in fixed order by one thread of a tile pass. */
@@ -374,7 +375,10 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       format: Format,
       length: number
     ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
-    const rowValid = transient('row-valid', 'uint32', rowCount);
+    // One u32 buffer holds the row validity flags, then the per-row local results, then the
+    // selected candidate index. Sharing a binding keeps the final fit within the 8 storage buffers
+    // per stage of core WebGPU devices.
+    const rowValid = transient('row-state', 'uint32', rowCount * (1 + LOCAL_STRIDE) + 1);
     const tileResponse = transient('tile-response', 'float32', tileCount * 2);
     const tileTotal = transient('tile-total', 'float32', tileCount);
     const candidateScratch = transient(
@@ -393,7 +397,6 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     const summary =
       output.summary ??
       transient('summary', 'float32', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH);
-    const locals = transient('locals', 'uint32', rowCount * LOCAL_STRIDE);
 
     const gridPositions = indexGridSize ? transient('grid-positions', 'float32x2', rowCount) : null;
     const gridIndex =
@@ -430,6 +433,9 @@ const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighborCount}u;
 const TILE_ROWS: u32 = ${TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
 const LOCAL_STRIDE: u32 = ${LOCAL_STRIDE}u;
+// Layout of the rowValid binding: validity flags, local results, then the selected candidate.
+const LOCALS_BASE: u32 = ROW_COUNT;
+const SELECTION_WORD: u32 = ROW_COUNT * (1u + LOCAL_STRIDE);
 const HEADER: u32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH}u;
 const SENTINEL: f32 = 3.0e38;
 const ADAPTIVE_FACTOR: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_ADAPTIVE_BANDWIDTH_FACTOR};
@@ -668,6 +674,7 @@ ${getFitWGSL(P, indexGridSize, Boolean(output.localConditionNumber))}`;
           read('params', parameters, 'f32'),
           write('scores', scores, 'f32'),
           write('selection', selection, 'f32'),
+          write('rowValid', rowValid, 'u32'),
           write('summary', summary, 'f32')
         ],
         invocationCount: 1,
@@ -716,6 +723,7 @@ ${CANDIDATE_COUNT_WGSL}`,
     scores[scoresOffset + candidate] = score;
   }
   selection[selectionOffset] = f32(bestIndex);
+  rowValid[rowValidOffset + SELECTION_WORD] = bestIndex;
   selection[selectionOffset + 1u] = params[paramsOffset + HEADER + bestIndex];
   summary[summaryOffset] = bestResidual;
   summary[summaryOffset + 1u] = bestTrace;
@@ -735,19 +743,17 @@ ${CANDIDATE_COUNT_WGSL}`,
           read('positions', positions, 'f32'),
           read('predictors', predictors, 'f32'),
           read('response', response, 'f32'),
-          read('rowValid', rowValid, 'u32'),
+          write('rowValid', rowValid, 'u32'),
           read('params', parameters, 'f32'),
-          read('selection', selection, 'f32'),
           ...gridBindings,
-          write('coefficients', output.coefficients, 'f32'),
-          write('locals', locals, 'u32')
+          write('coefficients', output.coefficients, 'f32')
         ],
         invocationCount: rowCount,
         declarations: fitDeclarations,
         body: `${focalRowWGSL}
   let nan = getNaN();
   let coefficientBase = coefficientsOffset + focal * P;
-  let localBase = localsOffset + focal * LOCAL_STRIDE;
+  let localBase = rowValidOffset + LOCALS_BASE + focal * LOCAL_STRIDE;
   var status = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.SINGULAR}u;
   var localR2 = nan;
   var conditionNumber = nan;
@@ -761,7 +767,7 @@ ${CANDIDATE_COUNT_WGSL}`,
     status = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED}u;
   } else {
     let candidateCount = getCandidateCount();
-    let candidate = min(u32(max(selection[selectionOffset], 0.0)), LADDER - 1u);
+    let candidate = min(rowValid[rowValidOffset + SELECTION_WORD], LADDER - 1u);
     var neighbors: array<f32, MAXIMUM_NEIGHBORS>;
     let isAdaptive = params[paramsOffset + 1u] > 0.5;
     if (isAdaptive) {
@@ -787,12 +793,12 @@ ${CANDIDATE_COUNT_WGSL}`,
       }
     }
   }
-  locals[localBase] = bitcast<u32>(localR2);
-  locals[localBase + 1u] = bitcast<u32>(fittedValue);
-  locals[localBase + 2u] = bitcast<u32>(residual);
-  locals[localBase + 3u] = bitcast<u32>(hat);
-  locals[localBase + 4u] = status;
-  locals[localBase + 5u] = bitcast<u32>(conditionNumber);`
+  rowValid[localBase] = bitcast<u32>(localR2);
+  rowValid[localBase + 1u] = bitcast<u32>(fittedValue);
+  rowValid[localBase + 2u] = bitcast<u32>(residual);
+  rowValid[localBase + 3u] = bitcast<u32>(hat);
+  rowValid[localBase + 4u] = status;
+  rowValid[localBase + 5u] = bitcast<u32>(conditionNumber);`
       })
     );
 
@@ -804,9 +810,8 @@ ${CANDIDATE_COUNT_WGSL}`,
           operation: OPERATION,
           variant: 'fit-excluded',
           bindings: [
-            read('rowValid', rowValid, 'u32'),
-            write('coefficients', output.coefficients, 'f32'),
-            write('locals', locals, 'u32')
+            write('rowValid', rowValid, 'u32'),
+            write('coefficients', output.coefficients, 'f32')
           ],
           invocationCount: rowCount,
           declarations: common,
@@ -817,11 +822,11 @@ ${CANDIDATE_COUNT_WGSL}`,
   for (var column = 0u; column < P; column++) {
     coefficients[coefficientsOffset + index * P + column] = nan;
   }
-  let localBase = localsOffset + index * LOCAL_STRIDE;
+  let localBase = rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE;
   for (var word = 0u; word < LOCAL_STRIDE; word++) {
-    locals[localBase + word] = bitcast<u32>(nan);
+    rowValid[localBase + word] = bitcast<u32>(nan);
   }
-  locals[localBase + 4u] = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED}u;`
+  rowValid[localBase + 4u] = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED}u;`
         })
       );
     }
@@ -842,7 +847,7 @@ ${CANDIDATE_COUNT_WGSL}`,
           operation: OPERATION,
           variant: 'publish',
           bindings: [
-            read('locals', locals, 'u32'),
+            read('rowValid', rowValid, 'u32'),
             ...present.map(([name, view, type]) => write(name, view!, type))
           ],
           invocationCount: rowCount,
@@ -850,8 +855,8 @@ ${CANDIDATE_COUNT_WGSL}`,
           body: present
             .map(([name, , type, slot]) =>
               type === 'f32'
-                ? `${name}[${name}Offset + index] = bitcast<f32>(locals[localsOffset + index * LOCAL_STRIDE + ${slot}u]);`
-                : `${name}[${name}Offset + index] = locals[localsOffset + index * LOCAL_STRIDE + ${slot}u];`
+                ? `${name}[${name}Offset + index] = bitcast<f32>(rowValid[rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE + ${slot}u]);`
+                : `${name}[${name}Offset + index] = rowValid[rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE + ${slot}u];`
             )
             .join('\n  ')
         })
@@ -869,14 +874,9 @@ fn getCandidateCount() -> u32 {
 `;
 
 const GWR_COMMON_WGSL = /* wgsl */ `
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_BITS_WGSL}
 `;
 
 // Needs the bindings positions, predictors, response, rowValid and params, plus the Cholesky helpers.

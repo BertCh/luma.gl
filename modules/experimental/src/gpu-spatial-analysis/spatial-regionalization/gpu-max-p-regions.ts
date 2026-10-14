@@ -18,6 +18,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 export const GPU_MAX_P_MAXIMUM_COLUMNS = 8;
 const MAX_P_WORKGROUP_SIZE = 256;
@@ -166,7 +167,7 @@ const REGION_STRIDE: u32 = ${regionStride}u;
 const SEED: u32 = ${props.seed}u;
 const NONE: u32 = 0xffffffffu;
 const LARGE_DISTANCE: f32 = 3.402823466e+38;
-fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+${IS_FINITE_FLOAT_WGSL}
 fn tieKey(row: u32) -> u32 {
   var value = row ^ SEED;
   value = (value ^ (value >> 16u)) * 0x7feb352du;

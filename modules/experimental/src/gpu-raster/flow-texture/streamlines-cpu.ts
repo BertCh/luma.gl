@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {sampleFieldOnCPU, type FieldRaster} from '../vector-field-common/vector-field-sampling';
-import {getPhilox4x32, getPhiloxUnitFloat} from '../vector-field-common/philox-random';
+import {getPhilox4x32, getPhiloxUnitFloat} from '../../utils/philox-random';
 
 /** Philox key word 1 of the seed jitter and priority stream. */
 export const STREAMLINES_SEED_PURPOSE = 2;

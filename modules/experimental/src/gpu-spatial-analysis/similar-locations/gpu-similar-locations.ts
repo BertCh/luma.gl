@@ -22,6 +22,7 @@ import {
   getGPUSimilarLocationsParameterLength,
   GPU_SIMILAR_LOCATIONS_CONTROL_LENGTH
 } from './similar-locations-parameters';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSimilarLocations';
 /** Lanes of the column-reduction workgroups (one workgroup per attribute). */
@@ -266,11 +267,8 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
 const ATTRIBUTE_COUNT: u32 = ${attributeCount}u;
 const MAX_RESULTS: u32 = ${maximumResultCount}u;
 const NO_RANK: u32 = 0xffffffffu;
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}`;
+${IS_FINITE_VALUE_WGSL}
+${GET_NAN_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const kernel = (
       name: string,

@@ -4,6 +4,7 @@
 
 import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Throws unless `view` is a packed single view of `format` with at least `rowCount` rows. @internal */
 export function validateRasterSamplingView(
@@ -68,12 +69,9 @@ export function getRasterSamplingWGSL(options: RasterSamplingWGSLOptions): strin
   return /* wgsl */ `
 const RASTER_WIDTH: i32 = ${width};
 const RASTER_HEIGHT: i32 = ${height};
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 
 // Cell value with every nodata convention folded into NaN.
 fn fetchCell(column: i32, row: i32) -> f32 {

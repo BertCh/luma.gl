@@ -29,6 +29,7 @@ import {
   validateTerrainTracingCellView,
   validateTerrainTracingConvergedView
 } from './terrain-flow-tracing';
+import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUTerrainHeightAboveDrainage';
 
@@ -210,8 +211,8 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
         bindings,
         invocationCount: cellCount,
         declarations: `${getTerrainFlowTracingWGSL(width, height)}
-fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }`,
+${GET_QUIET_NAN_WGSL}
+${IS_FINITE_VALUE_WGSL}`,
         body: `let reached = pointer[pointerOffset + index];
   var drainage = NO_CELL;
   if (flowDirections[flowDirectionsOffset + index] != NO_CELL &&

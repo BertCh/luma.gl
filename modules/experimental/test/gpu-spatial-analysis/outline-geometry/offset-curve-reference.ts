@@ -443,6 +443,7 @@ export type VertexSnapReferenceCase = {
   expected: number[][];
 };
 
+/** Snap distance passed to shapely.snap and to the kernel (an algorithm parameter, not a comparison tolerance). */
 export const VERTEX_SNAP_TOLERANCE = 0.8;
 
 export const VERTEX_SNAP_REFERENCE_CASES: VertexSnapReferenceCase[] = [

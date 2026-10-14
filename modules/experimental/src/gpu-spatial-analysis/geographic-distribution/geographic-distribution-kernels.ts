@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GET_QUIET_NAN_SEEDED_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+
 /** Shared WGSL helpers of the geographic-distribution kernels. @internal */
 export const GEOGRAPHIC_DISTRIBUTION_WGSL = /* wgsl */ `
 const PI: f32 = 3.14159265358979;
 const HALF_PI: f32 = 1.57079632679490;
 const TWO_PI: f32 = 6.28318530717959;
 // Bit test: NaN and infinity have an all-ones exponent, and a float comparison may be folded away.
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
-fn getQuietNaN(seed: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (seed & 0u)); }
+${IS_FINITE_VALUE_WGSL}
+${GET_QUIET_NAN_SEEDED_WGSL}
 `;
 
 /**

@@ -29,6 +29,12 @@ import {
   GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
   GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH
 } from './temporal-reduction-parameters';
+import {
+  DECODE_ORDERED_KEY_WGSL,
+  GET_NAN_WGSL,
+  GET_ORDERED_KEY_WGSL,
+  IS_NAN_BITS_WGSL
+} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUTemporalReduction';
 /** Largest slot count reduced in workgroup-private tables (5 words per slot). */
@@ -515,23 +521,13 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
 /** Order-preserving u32 encoding of f32 and NaN test by bits, shared by several kernels. */
 const ORDERED_KEY_WGSL = /* wgsl */ `
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isNanBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u;
-}
+${IS_NAN_BITS_WGSL}
 
-fn getOrderedKey(x: f32) -> u32 {
-  let bits = bitcast<u32>(x);
-  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}
+${GET_ORDERED_KEY_WGSL}
 
-fn decodeOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u));
-}
+${DECODE_ORDERED_KEY_WGSL}
 `;
 
 const FLOAT_BUCKET_BODY = /* wgsl */ `let time = timestamps[timestampsOffset + index];

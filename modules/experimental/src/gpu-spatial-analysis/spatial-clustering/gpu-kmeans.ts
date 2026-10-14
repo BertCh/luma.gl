@@ -19,6 +19,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {GPU_SPATIAL_CLUSTERING_NOISE} from './spatial-clustering-parameters';
+import {GET_QUIET_NAN_SEEDED_WGSL, IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUKMeans';
 const NO_ROW = '0xffffffffu';
@@ -253,13 +254,9 @@ export class GPUKMeans implements GPUCommandNodeProducer {
     const sharedWGSL = `const K: u32 = ${k}u;
 const NOISE: u32 = ${GPU_SPATIAL_CLUSTERING_NOISE}u;
 
-fn isFiniteFloat(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_FLOAT_WGSL}
 
-fn getQuietNaN(seed: u32) -> f32 {
-  return bitcast<f32>(0x7fc00000u | (seed & 0u));
-}`;
+${GET_QUIET_NAN_SEEDED_WGSL}`;
 
     const nodes: GPUCommandNode<Parameters>[] = [
       createFillNode<Parameters>(graph, {

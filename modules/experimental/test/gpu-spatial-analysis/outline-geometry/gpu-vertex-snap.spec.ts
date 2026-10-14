@@ -136,6 +136,8 @@ it('GPUVertexSnap BVH path (many references) equals a linear scan, including dup
     positions[row * 2] = row % 2 ? Math.floor(random() * 40) / 2 : random() * 20;
     positions[row * 2 + 1] = row % 2 ? Math.floor(random() * 40) / 2 : random() * 20;
   }
+  // Snap distance (an algorithm parameter, not a comparison tolerance). Comparison is exact: the
+  // reference rows are checked with the kernel's own f32 arithmetic, so no numeric slack is needed.
   const tolerance = 1.25;
   const fixture = createGeometryFixture(device, {
     inputs: {

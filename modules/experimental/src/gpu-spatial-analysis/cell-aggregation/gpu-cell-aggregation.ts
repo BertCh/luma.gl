@@ -34,6 +34,7 @@ import {
   validateSumScale,
   type GPUCellTable
 } from './cell-table';
+import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUCellAggregation';
 
@@ -264,9 +265,7 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
 ${props.cells && props.family === 'h3' ? dggs.source : ''}
 ${CELL_KEY_WGSL}
 ${props.positions ? QUADBIN_TILE_WGSL : ''}
-fn isNanBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u;
-}`,
+${IS_NAN_BITS_WGSL}`,
       body: `var isValid = true;
   ${props.mask ? 'isValid = rowMask[rowMaskOffset + index] != 0u;' : ''}
   ${

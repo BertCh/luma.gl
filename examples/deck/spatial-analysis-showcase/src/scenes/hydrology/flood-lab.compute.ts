@@ -18,7 +18,7 @@ import {
   FrontierFloodSimulation,
   FRONTIER_FLOOD_PARAMETER_LENGTH,
   getFrontierFloodParameterValues
-} from '../frontier/frontier-flood';
+} from './frontier-flood';
 import {createCanyonGrid, flipRows} from './b15-common';
 
 /** Live controls of Flood Lab. */

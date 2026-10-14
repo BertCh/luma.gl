@@ -25,6 +25,7 @@ import {
   type KeyGroups
 } from './key-pair-grouping';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUContiguityWeights';
 const INVALID = `${KEY_PAIR_INVALID}u`;
@@ -228,9 +229,7 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
 const POLYGON_COUNT: u32 = ${polygonCount}u;
 const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 
-fn isFiniteFloat(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_FLOAT_WGSL}
 
 fn quantise(value: f32) -> u32 {
   if (SNAP_TOLERANCE <= 0.0) {

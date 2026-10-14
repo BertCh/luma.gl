@@ -127,6 +127,8 @@ function expectClose(
   );
 }
 
+// Relative bounds are 10 to 100 times the worst error measured against the float64 oracle and
+// spreg (about 7e-6 for coefficients, 1e-6 for standard errors and variances, 1e-5 for z).
 function expectParity(actual: Result, expected: ErrorGMOracleResult): void {
   expect(actual.status).toBe(0);
   const count = expected.coefficients.length;
@@ -136,19 +138,19 @@ function expectParity(actual: Result, expected: ErrorGMOracleResult): void {
       `coefficient ${row}`,
       actual.table[row * 4],
       expected.coefficients[row],
-      5e-3,
+      2e-4,
       0.05
     );
-    expectClose(`se ${row}`, actual.table[row * 4 + 1], expected.standardErrors[row], 1e-2, 1e-3);
-    expectClose(`z ${row}`, actual.table[row * 4 + 2], expected.zStatistics[row], 2e-2, 0.2);
+    expectClose(`se ${row}`, actual.table[row * 4 + 1], expected.standardErrors[row], 5e-5, 1e-3);
+    expectClose(`z ${row}`, actual.table[row * 4 + 2], expected.zStatistics[row], 5e-4, 0.2);
     expect(Math.abs(actual.table[row * 4 + 3] - expected.pValues[row])).toBeLessThan(5e-3);
   }
   expect(Math.abs(actual.table[count * 4] - expected.lambda)).toBeLessThan(5e-3);
   expect(Number.isNaN(actual.table[count * 4 + 1])).toBe(true);
   expect(Math.abs(actual.summary[1] - expected.lambda)).toBeLessThan(5e-3);
-  expectClose('sigma2', actual.summary[2], expected.sigmaSquared, 1e-2, 1e-3);
-  expectClose('pr2', actual.summary[3], expected.pseudoRSquared, 5e-3, 1e-3);
-  expectClose('rss', actual.summary[4], expected.residualSumOfSquares, 1e-2, 1e-3);
+  expectClose('sigma2', actual.summary[2], expected.sigmaSquared, 2e-5, 1e-3);
+  expectClose('pr2', actual.summary[3], expected.pseudoRSquared, 1e-5, 1e-3);
+  expectClose('rss', actual.summary[4], expected.residualSumOfSquares, 2e-5, 1e-3);
   expect(actual.summary[0]).toBe(expected.residuals.length);
   for (let row = 0; row < expected.residuals.length; row++) {
     expect(Math.abs(actual.residuals[row] - expected.residuals[row])).toBeLessThan(
@@ -223,24 +225,24 @@ for (const name of ['lattice', 'knn'] as const) {
     expect(actual.status).toBe(0);
     expect(Math.abs(actual.table[3 * 4] - reference.lambda)).toBeLessThan(5e-3);
     reference.betas.forEach((beta, row) => {
-      expectClose(`spreg beta ${row}`, actual.table[row * 4], beta, 5e-3, 0.05);
+      expectClose(`spreg beta ${row}`, actual.table[row * 4], beta, 5e-4, 0.05);
       expectClose(
         `spreg se ${row}`,
         actual.table[row * 4 + 1],
         reference.standardErrors[row],
-        1e-2,
+        5e-5,
         1e-3
       );
       expectClose(
         `spreg z ${row}`,
         actual.table[row * 4 + 2],
         reference.zStatistics[row],
-        2e-2,
+        5e-4,
         0.2
       );
     });
-    expectClose('spreg sigma2', actual.summary[2], reference.sigma2, 1e-2, 1e-3);
-    expectClose('spreg pr2', actual.summary[3], reference.pseudoRSquared, 5e-3, 1e-3);
+    expectClose('spreg sigma2', actual.summary[2], reference.sigma2, 2e-5, 1e-3);
+    expectClose('spreg pr2', actual.summary[3], reference.pseudoRSquared, 1e-5, 1e-3);
     expect(actual.summary[1]).toBeGreaterThan(0.3);
   });
 }

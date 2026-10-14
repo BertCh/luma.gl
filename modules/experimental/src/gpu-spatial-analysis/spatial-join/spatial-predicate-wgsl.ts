@@ -78,6 +78,7 @@ fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
 }`;
   return /* wgsl */ `${SPATIAL_JOIN_WGSL_HELPERS}
 ${orient}
+// Differs from nearest-wgsl: range test first, orient() may flag an uncertain sign.
 fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
   // The range test comes first so a sign that cannot matter is never reported as uncertain.
   return q.x >= min(a.x, b.x) && q.x <= max(a.x, b.x) &&

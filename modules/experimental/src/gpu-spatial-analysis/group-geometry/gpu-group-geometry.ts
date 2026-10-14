@@ -27,6 +27,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {GPUGeographicDistribution} from '../geographic-distribution/index';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from '../geographic-distribution/index';
+import {GET_QUIET_NAN_SEEDED_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGroupGeometry';
 const MAXIMUM_ROWS = 2 ** 24 - 1;
@@ -398,7 +399,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   bounds[boundsOffset + index * 4u + 1u] = select(minY[minYOffset + index], nan, isEmpty);
   bounds[boundsOffset + index * 4u + 2u] = select(maxX[maxXOffset + index], nan, isEmpty);
   bounds[boundsOffset + index * 4u + 3u] = select(maxY[maxYOffset + index], nan, isEmpty);`,
-          'fn getQuietNaN(seed: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (seed & 0u)); }'
+          GET_QUIET_NAN_SEEDED_WGSL
         )
       );
     }

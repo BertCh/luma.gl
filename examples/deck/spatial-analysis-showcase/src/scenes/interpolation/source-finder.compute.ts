@@ -13,7 +13,7 @@ import {
   FRONTIER_SOURCE_PARAMETER_LENGTH,
   FrontierSourceInference,
   getFrontierSourceParameterValues
-} from '../frontier/frontier-source';
+} from './frontier-source';
 
 /** Live inverse-model assumptions. */
 export type SourceFinderOptions = {

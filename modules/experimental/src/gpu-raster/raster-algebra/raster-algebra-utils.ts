@@ -10,6 +10,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Nodata description shared by raster-algebra contributors. @internal */
 export type RasterAlgebraNoData = {
@@ -28,12 +29,9 @@ export type RasterAlgebraNoData = {
 export function getRasterAlgebraValueWGSL(noDataValue: number | undefined): string {
   return /* wgsl */ `
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn isNoDataValue(value: f32) -> bool {
   return isNaNValue(value)${noDataValue !== undefined ? ` || value == ${getWGSLFloatLiteral(noDataValue)}` : ''};
 }`;

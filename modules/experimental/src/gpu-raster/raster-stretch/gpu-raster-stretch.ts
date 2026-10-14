@@ -25,6 +25,7 @@ import {
   GPU_RASTER_STRETCH_PARAMETER_LENGTH,
   GPU_RASTER_STRETCH_STATISTICS_LENGTH
 } from './raster-stretch-parameters';
+import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURasterStretch';
 const DEFAULT_BIN_COUNT = 1024;
@@ -311,10 +312,7 @@ const CELLS_PER_THREAD: u32 = ${REDUCE_CELLS_PER_THREAD}u;
 var<workgroup> tileMinimum: array<u32, ${STATISTICS_WORKGROUP_SIZE}>;
 var<workgroup> tileMaximum: array<u32, ${STATISTICS_WORKGROUP_SIZE}>;
 var<workgroup> tileCount: array<u32, ${STATISTICS_WORKGROUP_SIZE}>;
-fn getOrderedKey(value: f32) -> u32 {
-  let bits = bitcast<u32>(value);
-  return bits ^ select(0x80000000u, 0xffffffffu, (bits >> 31u) != 0u);
-}`,
+${GET_ORDERED_KEY_WGSL}`,
         body: `var minimumKey = 0xffffffffu;
   var maximumKey = 0u;
   var includedCount = 0u;
@@ -364,9 +362,7 @@ fn getOrderedKey(value: f32) -> u32 {
         ],
         invocationCount: 1,
         declarations: `const BIN_COUNT: u32 = ${binCount}u;
-fn decodeOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(key ^ select(0xffffffffu, 0x80000000u, (key >> 31u) != 0u));
-}`,
+${DECODE_ORDERED_KEY_WGSL}`,
         body: `let count = keys[keysOffset + 2u];
   var domainMin = 0.0;
   var domainMax = 0.0;

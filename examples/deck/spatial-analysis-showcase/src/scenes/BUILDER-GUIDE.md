@@ -192,7 +192,7 @@ colour ramps, and display toggles. Skip only options that make no visual sense.
   (`engine/ramps.ts`): `grayscale viridis magma inferno cividis diverging`. Use `diverging` with a
   symmetric `valueRange` for values with a meaningful zero. Do not hard-code RGB gradients.
 - `extent: 'gpu'` shows what you report with `ctx.setLegendExtent(id, [min, max])` after reading the
-  contributor's `extent` output with a `SummaryReader` (see `density.compute.ts`). Report once the
+  contributor's `extent` output with a `SummaryReader` (see `nature-density.compute.ts`). Report once the
   camera settles, not every frame.
 - Categorical colors: use the same RGB list for the layer `palette` and the legend entries.
 - Match `sqrtScale` between legend and layer. Always give a `unit` or a meaningful title.

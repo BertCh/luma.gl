@@ -24,6 +24,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
 import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUInverseDistanceWeighting';
 /** Largest compile-time nearest-neighbor capacity; each invocation keeps a private list this long. */
@@ -356,13 +357,10 @@ ${WEIGHT_ACCUMULATOR_WGSL}`,
 
 /** Same cell mapping as `GPUGridIndex`, plus finiteness and NaN helpers. */
 export const GRID_COORDINATE_WGSL = /* wgsl */ `
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn isNanValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }
   if (value == maximum) { return size - 1u; }

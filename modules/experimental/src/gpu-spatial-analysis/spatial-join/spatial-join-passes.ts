@@ -15,26 +15,19 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput, GPUUint32Rows} from '../../utils/gpu-contributor-types';
-import {getGraphViewChunks} from '../../utils/gpu-contributor-utils';
+import {getGraphViewChunks, getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL, NODE_OVERLAPS_WGSL, SPREAD_BITS_WGSL} from '../../utils/wgsl-common';
+export {getNextPowerOfTwo};
 
 /** Shared WGSL constants and helpers for spatial-join kernels. @internal */
 export const SPATIAL_JOIN_WGSL_HELPERS = /* wgsl */ `
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const NO_FEATURE: u32 = 0xffffffffu;
-fn isFiniteValue(value: f32) -> bool { return value == value && abs(value) <= FLOAT32_MAXIMUM; }`;
+${IS_FINITE_VALUE_WGSL}`;
 
 /** Returns whether `value` is a positive power of two. @internal */
 export function isPowerOfTwo(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 1 && (value & (value - 1)) === 0;
-}
-
-/** Returns the smallest power of two that is at least `value` (and at least 1). @internal */
-export function getNextPowerOfTwo(value: number): number {
-  let result = 1;
-  while (result < value) {
-    result *= 2;
-  }
-  return result;
 }
 
 /** Throws unless `view` has the same chunk lengths as `reference`. @internal */
@@ -285,14 +278,7 @@ var<workgroup> sharedMaxima: array<vec2f, 256>;`,
       ],
       invocationCount: featureCount,
       declarations: `${validFeatureDeclarations}
-fn spreadBits(value: u32) -> u32 {
-  var x = value & 0xffffu;
-  x = (x | (x << 8u)) & 0x00ff00ffu;
-  x = (x | (x << 4u)) & 0x0f0f0f0fu;
-  x = (x | (x << 2u)) & 0x33333333u;
-  x = (x | (x << 1u)) & 0x55555555u;
-  return x;
-}
+${SPREAD_BITS_WGSL}
 fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
   let extent = maximum - minimum;
   if (!(extent > 0.0) || !isFiniteValue(extent)) { return 0u; }
@@ -622,12 +608,7 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;
 const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
 const FEATURE_COUNT: u32 = ${props.featureCount}u;
 const CANDIDATE_CAPACITY: u32 = ${props.candidateCapacity}u;
-fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
-  let component = node * 2u;
-  let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
-  let maximum = vec2f(nodeMaxima[nodeMaximaOffset + component], nodeMaxima[nodeMaximaOffset + component + 1u]);
-  return all(minimum <= queryMaximum) && all(queryMinimum <= maximum);
-}`;
+${NODE_OVERLAPS_WGSL}`;
   const query = props.radius
     ? `let searchRadius = radius[radiusOffset];
   if (!(searchRadius >= 0.0) || searchRadius > FLOAT32_MAXIMUM) { return; }

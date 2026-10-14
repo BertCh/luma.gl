@@ -3,9 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getClassPalette, makeClassTable} from '../../cartography/class-table';
-import {hexToRgba, MAP_INK, RACE_GROUP_COLORS} from '../../cartography/hue-registry';
+import {hexToRgba, RACE_GROUP_COLORS} from '../../cartography/hue-registry';
 import type {ClassTable} from '../../cartography/types';
 import type {PaletteColor} from '../../engine/ramps';
+
+export {getCasingColor, getInkColor} from '../../cartography/hue-registry';
 
 /**
  * Symbolisation of the segregation scene that is not a shared table: the group registry, the
@@ -139,18 +141,6 @@ export function getDiversityTable(ground: Ground): ClassTable {
     format: value => value.toFixed(2),
     noData: {label: 'No residents', hatched: true}
   });
-}
-
-/** Ink of selections and ring-adjacent outlines: achromatic, from the ground. */
-export function getInkColor(ground: Ground, alpha = 255): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].ink, alpha);
-  return [color[0], color[1], color[2], color[3]];
-}
-
-/** Ground-coloured casing under selections. */
-export function getCasingColor(ground: Ground, alpha = 235): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].halo, alpha);
-  return [color[0], color[1], color[2], color[3]];
 }
 
 /**

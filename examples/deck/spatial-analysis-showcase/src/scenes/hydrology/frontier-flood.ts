@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {createFrontierKernelNode, type FrontierKernelBinding} from './frontier-kernel';
+import {createFrontierKernelNode, type FrontierKernelBinding} from '../../engine/frontier-kernel';
 
 /** Float32 parameter count consumed by {@link FrontierFloodSimulation}. */
 export const FRONTIER_FLOOD_PARAMETER_LENGTH = 14;

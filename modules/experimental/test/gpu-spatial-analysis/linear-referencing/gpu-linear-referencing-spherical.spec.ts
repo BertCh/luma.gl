@@ -32,7 +32,12 @@ import {
 } from './spherical-oracle-values';
 
 const NO_PATH = 0xffffffff;
-/** f32 longitude/latitude inputs plus f32 trigonometry: meters of slack on every length. */
+/**
+ * f32 longitude/latitude inputs plus f32 trigonometry: meters of slack on every length. One f32 ulp
+ * of a longitude in [128, 180] degrees is 2^-16 degree = 1.7 m at the equator, so rounding the
+ * inputs and the output foot point alone costs up to ~1.7 m; the measured worst error is 1.7 m
+ * (foot) and 1.5 m (distance), so 3 m is under two ulps and cannot be tightened meaningfully.
+ */
 const METER_TOLERANCE = 3;
 
 function createGraphHelpers(device: Device, id: string) {
@@ -437,6 +442,8 @@ it('GPULinearReferencing spherical prunes by bounding caps without changing near
     expect(
       Math.abs(actual.distances[index] - distances[0].distance),
       `point ${index}`
+      // The oracle here is a different spherical arc-distance formula over many more points, so allow
+      // four times the single-point bound.
     ).toBeLessThanOrEqual(METER_TOLERANCE * 4);
     if (distances[1].distance - distances[0].distance > 15) {
       const path = pathOffsets.findIndex((offset, p) => distances[0].row < pathOffsets[p + 1]);

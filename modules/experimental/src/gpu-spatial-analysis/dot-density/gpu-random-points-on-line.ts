@@ -25,7 +25,8 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {getDotSlotCountLimit} from './dot-density-cpu';
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
-import {PHILOX_WGSL} from './dot-density-random';
+import {PHILOX_WGSL} from '../../utils/philox-random';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURandomPointsOnLine';
 const NONE = '0xffffffffu';
@@ -205,7 +206,7 @@ fn segmentLength(vertex: u32) -> f32 {
         ],
         invocationCount: lineCount,
         declarations: `const LINE_LIMIT: u32 = ${limit}u;
-fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`,
+${IS_FINITE_FLOAT_WGSL}`,
         body: `let lineLength = lengths[lengthsOffset + index];
   var count = select(0u, sourceCounts[sourceCountsOffset + index], isFiniteFloat(lineLength) && lineLength > 0.0);
   if (count > LINE_LIMIT) {

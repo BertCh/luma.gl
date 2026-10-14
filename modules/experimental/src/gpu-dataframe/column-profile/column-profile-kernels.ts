@@ -21,6 +21,7 @@ import {
   GPU_COLUMN_PROFILE_STATISTIC,
   GPU_COLUMN_PROFILE_STATISTIC_COUNT
 } from './column-profile-parameters';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 /** Workgroup size of the reduction kernels. */
 export const COLUMN_PROFILE_WORKGROUP_SIZE = 256;
@@ -401,9 +402,7 @@ ${MOMENTS_WGSL}`,
         invocationCount: columnCount,
         declarations: `const INVERSE_BIN_COUNT: f32 = ${getWGSLFloatLiteral(1 / histogramBinCount)};
 ${COLUMN_ORDERED_KEY_WGSL}
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}`,
+${IS_FINITE_BITS_WGSL}`,
         body: `let column = index;
   let keyBase = keysOffset + column * ${KEY_STRIDE}u;
   var lo = getNaN();

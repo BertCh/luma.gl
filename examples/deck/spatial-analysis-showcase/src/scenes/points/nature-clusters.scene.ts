@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getClassTableLegend} from '../../cartography/class-table';
-import {CHICAGO, CITY_FRAMES, labelsFor} from '../../cartography/gazetteer';
+import {CHICAGO, CITY_FRAMES, labelsFor, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import {formatCategory} from './b1-nature-data';
 import {getSubjectColor, nextStoryLine, POINTS_CREDITS, pointsCartouche} from './b1-points-look';
@@ -29,7 +29,6 @@ const CATEGORIES = [
 ];
 
 /** Places the story frames, read from the gazetteer (never typed). */
-const MONTROSE = CHICAGO.places['montrose-point'].lngLat;
 const UPTOWN = CHICAGO.places.uptown.lngLat;
 
 /** Names that orient the reader in every step (drawn above the data). */
@@ -724,7 +723,12 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
       controls: ['epsilon', 'minimumPoints'],
       readouts: ['coreCount', 'borderCount', 'noiseCount'],
       stage: 'core',
-      camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 12.8, transitionMs: 1600},
+      camera: {
+        longitude: MONTROSE_POINT[0],
+        latitude: MONTROSE_POINT[1],
+        zoom: 12.8,
+        transitionMs: 1600
+      },
       furniture: {
         title: pointsCartouche(
           'What makes a record part of a place?',
@@ -776,7 +780,12 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
       controls: ['weight', 'showMedoids', 'showClusterEllipses'],
       readouts: ['winnerSize', 'hullArea', 'hullWaterShare', 'density'],
       stage: 'shapes',
-      camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 13.4, transitionMs: 1600},
+      camera: {
+        longitude: MONTROSE_POINT[0],
+        latitude: MONTROSE_POINT[1],
+        zoom: 13.4,
+        transitionMs: 1600
+      },
       furniture: {
         title: pointsCartouche(
           'What does the biggest hot spot hold?',

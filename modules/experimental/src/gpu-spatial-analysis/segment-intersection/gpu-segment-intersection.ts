@@ -26,6 +26,8 @@ import {
 } from './segment-intersection-wgsl';
 import {getSegmentBVHNodes} from './segment-bvh';
 import {createSegmentTableNode, getSegmentSlotCount} from './segment-table';
+import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
+import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
 const OPERATION = 'GPUSegmentIntersection';
 
@@ -77,15 +79,6 @@ export type GPUSegmentIntersectionProps = GPUSegmentIntersectionColumns & {
    */
   uncertainCount?: GraphDataView<'uint32'>;
 };
-
-/** Returns the smallest power of two that is at least `value`. */
-function getNextPowerOfTwo(value: number): number {
-  let result = 1;
-  while (result < value) {
-    result *= 2;
-  }
-  return result;
-}
 
 /**
  * Finds every intersecting pair of line segments between two geometries, or within one.
@@ -363,12 +356,7 @@ fn pairHit(left: u32, right: u32, withGeometry: bool) -> SegmentHit {
   }
   return hit;
 }
-fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
-  let component = node * 2u;
-  let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
-  let maximum = vec2f(nodeMaxima[nodeMaximaOffset + component], nodeMaxima[nodeMaximaOffset + component + 1u]);
-  return all(minimum <= queryMaximum) && all(queryMinimum <= maximum);
-}`;
+${NODE_OVERLAPS_WGSL}`;
     const probeBindings: WGSLKernelBinding[] = [
       {name: 'leftTable', view: leftTable, type: 'u32', access: 'read'},
       {name: 'rightTable', view: rightTable, type: 'u32', access: 'read'},

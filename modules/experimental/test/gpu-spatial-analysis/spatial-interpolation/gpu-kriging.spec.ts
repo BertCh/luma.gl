@@ -19,9 +19,14 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {KRIGING_REFERENCE} from './kriging-reference';
 
-/** f32 solve of a 9 x 9 system against PyKrige float64: absolute on values (scale ~70), relative on variance. */
-const VALUE_TOLERANCE = 0.2;
-const VARIANCE_TOLERANCE = 1e-2;
+/**
+ * f32 solve of a 9 x 9 system against PyKrige float64. Values are compared relative to the data
+ * scale (the largest reference magnitude, about 70) and variance relative to max(1, variance).
+ * The measured worst errors are 1.2e-5 absolute (1.7e-7 of the scale, one f32 ulp) on values and
+ * 9e-7 on variance; these bounds leave about two orders of magnitude for other GPUs.
+ */
+const VALUE_TOLERANCE_RELATIVE = 2e-5;
+const VARIANCE_TOLERANCE = 1e-4;
 
 it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding', async () => {
   const device = await getWebGPUTestDevice();
@@ -71,6 +76,7 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
     submitGraph(device, compiled, undefined);
     const actualValues = await readFloat32(valuesOut, cellCount);
     const actualVariance = await readFloat32(varianceOut, cellCount);
+    const valueScale = Math.max(...reference.values.map(Math.abs));
     let worstValue = 0;
     let worstVariance = 0;
     for (let cell = 0; cell < cellCount; cell++) {
@@ -81,7 +87,9 @@ it('GPUKriging matches PyKrige moving-window ordinary kriging without rebuilding
           Math.max(1, reference.variance[cell])
       );
     }
-    expect(worstValue, `${reference.model} values`).toBeLessThanOrEqual(VALUE_TOLERANCE);
+    expect(worstValue, `${reference.model} values`).toBeLessThanOrEqual(
+      VALUE_TOLERANCE_RELATIVE * valueScale
+    );
     expect(worstVariance, `${reference.model} variance`).toBeLessThanOrEqual(VARIANCE_TOLERANCE);
   }
 

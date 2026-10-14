@@ -19,6 +19,7 @@ import type {
   GPURegionRectangle,
   GPURegionStatisticsGridIndex
 } from './region-statistics-types';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURegionStatistics';
 
@@ -91,7 +92,7 @@ export function getGridCandidateNodes<Parameters>(
         ],
         invocationCount: 1,
         declarations: `const VERTEX_CAPACITY: u32 = ${selection.vertices.length}u;
-fn isFiniteValue(value: f32) -> bool { return value == value && abs(value) <= 3.402823466e+38; }`,
+${IS_FINITE_VALUE_WGSL}`,
         // GPURegionMask feeds non-finite vertices straight into its crossing test, whose result
         // is then not reliably bounded by the finite vertices. A lasso with any non-finite active
         // vertex therefore queries the whole finite range, so the candidate set (and the exact
@@ -162,7 +163,7 @@ const HEIGHT: u32 = ${height}u;
 const CAPACITY: u32 = ${capacity}u;
 const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(domainMinX)}, ${getWGSLFloatLiteral(domainMinY)});
 const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(domainMaxX)}, ${getWGSLFloatLiteral(domainMaxY)});
-fn isFiniteValue(value: f32) -> bool { return value == value && abs(value) <= 3.402823466e+38; }
+${IS_FINITE_VALUE_WGSL}
 // Same cell mapping as GPUGridIndex.
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }

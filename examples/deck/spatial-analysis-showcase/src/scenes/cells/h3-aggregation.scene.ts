@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CHICAGO_CITY_VIEW, MONTROSE_POINT} from '../../cartography/gazetteer';
 import {ground} from '../../cartography/grounds';
 import type {LegendSpec} from '../scene';
 import {defineScene} from '../scene';
-import {CATEGORY_SELECT_OPTIONS, CHICAGO_VIEW, MONTH_NAMES} from './b8-common';
+import {CATEGORY_SELECT_OPTIONS, MONTH_NAMES} from './b8-common';
 import type {H3AggregationOptions} from './h3-aggregation.compute';
-
-const MONTROSE = [-87.6325, 41.9625] as const;
 
 const tierColors = [
   [90, 110, 190, 255],
@@ -50,7 +49,7 @@ export default defineScene<H3AggregationOptions>({
     {id: 'chicago-nature', role: 'iNaturalist observations (2023)'},
     {id: 'chicago-community-areas', role: 'polygons to polyfill'}
   ],
-  initialView: {...CHICAGO_VIEW},
+  initialView: {...CHICAGO_CITY_VIEW},
   basemap: ground('paperCity'),
   furniture: {
     title: {
@@ -560,7 +559,7 @@ export default defineScene<H3AggregationOptions>({
         'Blue-green H3 hexagons cover Chicago, with the highest observation counts concentrated near Montrose Point and other lakefront sites.',
       body: 'People logged **43,557 wild plants, animals and fungi in Chicago on iNaturalist in 2023**. A dot map hides the answer behind overplotting, and a choropleth by community area forces one scale on every question.\n\nA **discrete global grid** gives a better common key: every place on Earth has a cell ID at every resolution. This map is already that answer: each observation was keyed to an **H3 hexagon** and counted, all on the GPU. Bright hexagons hold the most observations (legend, square-root scale). Filter by **Group** or **Months of 2023** below to see how the pattern moves; the next steps open the pipeline one contributor at a time.',
       options: {family: 'h3', resolutionOffset: 0},
-      camera: {...CHICAGO_VIEW, transitionMs: 1200},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1200},
       highlight: {readout: 'busiest'},
       controls: ['category', 'months'],
       readouts: ['points', 'busiest']
@@ -573,8 +572,13 @@ export default defineScene<H3AggregationOptions>({
         'A finer H3 grid divides broad concentrations into smaller occupied hexagons while readouts report grid resolution, occupancy and busiest-cell count.',
       body: '**`GPUPointToCell`** turns each longitude/latitude into a 64-bit H3 key. **`GPUCellAggregation`** then radix-sorts the keys and counts runs, writing a compact table of `(cell, count)` with integer atomics, so the result is exact and does not depend on thread order. Readouts show how many cells are occupied and the busiest one.\n\nSlide **Resolution (relative to default)** below by one step. H3 resolution 9 cells are about 2.7 times smaller in each direction: the Montrose Point hot spot splits into the harbor, the dunes and the meadow and the hot spots sharpen, while the map gets noisier. Changing it recompiles the graphs once (the badge says so); the observation mask, in contrast, is only a buffer write.',
       options: {resolutionOffset: 1},
-      camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 12.6, transitionMs: 1600},
-      callout: {coordinate: MONTROSE, text: 'Montrose Point: the busiest cells'},
+      camera: {
+        longitude: MONTROSE_POINT[0],
+        latitude: MONTROSE_POINT[1],
+        zoom: 12.6,
+        transitionMs: 1600
+      },
+      callout: {coordinate: MONTROSE_POINT, text: 'Montrose Point: the busiest cells'},
       highlight: {readout: 'occupied'},
       controls: ['resolutionOffset', 'category'],
       readouts: ['grid', 'occupied', 'busiest']
@@ -613,8 +617,13 @@ export default defineScene<H3AggregationOptions>({
         'A selected Chicago cell has a magenta outline and surrounding cyan cells fade with grid distance for disk, ring, parent or child operations.',
       body: '**`GPUCellTopology`** expands one cell into its grid **disk** (all cells within distance k), a **ring** (distance exactly k), its **parent** at a coarser resolution, or its **children** at a finer one. Click any hexagon. The magenta outline is the clicked cell; cyan cells fade with distance. **Topology operation** below switches between the four.\n\nThe disk is always computed at k = 8 and **Disk radius k** only filters its distance column on the GPU. The readout adds up the observations of the neighbourhood: a quick "how much is seen around here" without any spatial join.',
       options: {outline: 'off', showSelection: true, selectionOperation: 'disk', diskRadius: 3},
-      camera: {longitude: MONTROSE[0], latitude: MONTROSE[1], zoom: 13, transitionMs: 1600},
-      callout: {coordinate: MONTROSE, text: 'Default selection'},
+      camera: {
+        longitude: MONTROSE_POINT[0],
+        latitude: MONTROSE_POINT[1],
+        zoom: 13,
+        transitionMs: 1600
+      },
+      callout: {coordinate: MONTROSE_POINT, text: 'Default selection'},
       highlight: {readout: 'selection'},
       controls: ['showSelection', 'selectionOperation', 'diskRadius'],
       readouts: ['selected', 'selection']
@@ -653,7 +662,7 @@ export default defineScene<H3AggregationOptions>({
         showSelection: true,
         coverColor: 'area'
       },
-      camera: {...CHICAGO_VIEW, transitionMs: 1400},
+      camera: {...CHICAGO_CITY_VIEW, transitionMs: 1400},
       controls: ['category', 'months', 'selectionOperation', 'family', 'resolutionOffset']
     }
   ]

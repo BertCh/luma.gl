@@ -22,6 +22,8 @@ import {
 } from '../spatial-weights/spatial-weights';
 
 const OPERATION = 'GPUSpatialEmpiricalBayesRates';
+/** WebGPU core limit of storage buffers per shader stage. */
+const MAXIMUM_STORAGE_BUFFERS = 8;
 
 /**
  * Properties for {@link GPUSpatialEmpiricalBayesRates}.
@@ -160,11 +162,24 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
       priorMeans: 'priorMean',
       priorVariances: 'priorVariance'
     };
-    const writeOutputs = (valueFor: (name: string) => string) =>
-      outputs.map(([name]) => `${name}[${name}Offset + index] = ${valueFor(name)};`).join('\n  ');
-    return [
+    const writeOutputs = (
+      chunk: readonly WGSLKernelBinding[],
+      valueFor: (name: string) => string
+    ) => chunk.map(({name}) => `${name}[${name}Offset + index] = ${valueFor(name)};`).join('\n  ');
+    // Four inputs, an optional mask and the outputs must fit the 8 storage buffers per stage of
+    // core WebGPU devices. Requesting all four outputs with a mask takes two kernels that each
+    // recompute the neighborhood sums and write a share of the outputs.
+    const outputsPerKernel = MAXIMUM_STORAGE_BUFFERS - 4 - maskBinding.length;
+    const outputChunks: WGSLKernelBinding[][] = [];
+    for (let first = 0; first < outputBindings.length; first += outputsPerKernel) {
+      outputChunks.push(outputBindings.slice(first, first + outputsPerKernel));
+    }
+    if (outputChunks.length === 0) {
+      outputChunks.push([]);
+    }
+    return outputChunks.map((chunk, chunkIndex) =>
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-smooth`,
+        id: outputChunks.length > 1 ? `${id}-smooth-${chunkIndex}` : `${id}-smooth`,
         operation: OPERATION,
         variant: 'smooth',
         bindings: [
@@ -173,14 +188,14 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
           {name: 'events', view: events, type: 'f32', access: 'read'},
           {name: 'populations', view: populations, type: 'f32', access: 'read'},
           ...maskBinding,
-          ...outputBindings
+          ...chunk
         ],
         invocationCount: rows,
         declarations: `const ROWS: u32 = ${rows}u;
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
         body: `let nan = getQuietNaN(index);
   if (!${includedWGSL('index')}) {
-    ${writeOutputs(() => 'nan')}
+    ${writeOutputs(chunk, () => 'nan')}
     return;
   }
   let start = offsets[offsetsOffset + index];
@@ -214,9 +229,9 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
   let denominator = priorVariance + priorMean / ownPopulation;
   let weight = select(0.0, priorVariance / denominator, denominator > 0.0);
   let smoothed = weight * ownRate + (1.0 - weight) * priorMean;
-  ${writeOutputs(name => expressions[name])}`
+  ${writeOutputs(chunk, name => expressions[name])}`
       })
-    ];
+    );
   }
 
   private _getOutputs(): [string, GraphDataView<'float32'>][] {

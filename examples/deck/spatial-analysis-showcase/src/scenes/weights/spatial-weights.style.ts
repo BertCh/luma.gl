@@ -10,6 +10,8 @@ import type {ClassTable} from '../../cartography/types';
 import type {PaletteColor} from '../../engine/ramps';
 import type {SpatialWeightsDisplay, SpatialWeightsOptions} from './spatial-weights.compute';
 
+export {getCasingColor, getInkColor} from '../../cartography/hue-registry';
+
 /**
  * Symbolisation of the spatial-weights scene. Hue answers the question the map asks: BuGn is
  * "membership in W" (neighbour, weight, cardinality), YlOrBr is the variable and its lag, PuOr is
@@ -67,18 +69,6 @@ export function getMembershipColors(count: number, ground: Ground): PaletteColor
   return ground === 'dark'
     ? getClassPalette('BuGn', count, {ground})
     : getClassPalette('BuGn', count + 1).slice(1);
-}
-
-/** Ink (selection, rings, focus outline) of a ground as RGBA. */
-export function getInkColor(ground: Ground, alpha = 255): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].ink, alpha);
-  return [color[0], color[1], color[2], color[3]];
-}
-
-/** The ground-coloured casing under an ink line (the halo token of the ground) as RGBA. */
-export function getCasingColor(ground: Ground, alpha = 235): PaletteColor {
-  const color = hexToRgba(MAP_INK[ground].halo, alpha);
-  return [color[0], color[1], color[2], color[3]];
 }
 
 /** Colour of the "not a neighbour" swatch: the context ink, faint. */

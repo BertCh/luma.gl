@@ -17,17 +17,10 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
+import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
 /** Reference count above which the global mode searches a BVH instead of scanning every row. */
 const BVH_MINIMUM_REFERENCES = 64;
-
-function getNextPowerOfTwo(value: number): number {
-  let result = 1;
-  while (result < value) {
-    result *= 2;
-  }
-  return result;
-}
 
 const OPERATION = 'GPUVertexSnap';
 

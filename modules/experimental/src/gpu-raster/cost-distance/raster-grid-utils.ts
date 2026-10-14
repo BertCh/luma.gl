@@ -8,6 +8,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
+import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /**
  * Creates a contributor-owned transient view and attributes an ID collision to the contributor.
@@ -204,10 +205,10 @@ const RASTER_DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
 const RASTER_METERS_PER_DEGREE: f32 = ${RASTER_METERS_PER_DEGREE};
 
 // Bit tests: shader compilers may fold 'value != value' away under fast-math assumptions.
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
 fn getInfinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }
-fn getQuietNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }
+${GET_QUIET_NAN_WGSL}
 
 fn getD8ColumnOffset(direction: u32) -> i32 {
   var offsets = array<i32, 8>(1, 1, 0, -1, -1, -1, 0, 1);

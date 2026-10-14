@@ -13,6 +13,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getGraphViewChunks} from '../../utils/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUZonalStatistics';
 
@@ -116,7 +117,7 @@ export function createTransientFloat32Rows<Parameters>(
 
 const FINITE_HELPERS = /* wgsl */ `
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
-fn isFiniteValue(value: f32) -> bool { return value == value && abs(value) <= FLOAT32_MAXIMUM; }`;
+${IS_FINITE_VALUE_WGSL}`;
 
 /** Rows produced by the per-point prepare kernels. @internal */
 export type ZonalStatisticsPreparedRows = {

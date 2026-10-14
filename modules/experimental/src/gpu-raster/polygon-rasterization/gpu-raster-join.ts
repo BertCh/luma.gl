@@ -26,6 +26,7 @@ import {
   GPU_POLYGON_RASTERIZATION_NO_ZONE,
   POLYGON_RASTER_EXTENT_WGSL
 } from './polygon-rasterization-parameters';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURasterJoin';
 
@@ -405,7 +406,7 @@ ${POLYGON_RASTER_EXTENT_WGSL}`,
           ],
           invocationCount: pointCount,
           declarations: `const NO_ZONE: u32 = ${GPU_POLYGON_RASTERIZATION_NO_ZONE}u;
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }`,
+${IS_FINITE_VALUE_WGSL}`,
           body: `let value = values[valuesOffset + index];
   let isContributing = pointZones[pointZonesOffset + index] != NO_ZONE && isFiniteValue(value);
   contributions[contributionsOffset + index] = select(0.0, value, isContributing);`

@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  DECODE_ORDERED_KEY_WGSL,
+  GET_NAN_WGSL,
+  GET_ORDERED_KEY_WGSL,
+  IS_NAN_BITS_WGSL
+} from '../../utils/wgsl-common';
+
 /**
  * WGSL helpers shared by the column-classification contributors: a NaN constant, a NaN test by bits,
  * and the order-preserving `u32` encoding of `f32` values (`-0` sorts below `+0`).
@@ -13,23 +20,13 @@
  */
 export const COLUMN_ORDERED_KEY_WGSL = /* wgsl */ `
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isNanBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u;
-}
+${IS_NAN_BITS_WGSL}
 
-fn getOrderedKey(x: f32) -> u32 {
-  let bits = bitcast<u32>(x);
-  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}
+${GET_ORDERED_KEY_WGSL}
 
-fn decodeOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u));
-}
+${DECODE_ORDERED_KEY_WGSL}
 `;
 
 const scratchFloat = new Float32Array(1);

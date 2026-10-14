@@ -242,7 +242,9 @@ fn getTotal(zone: u32) -> f32 {
         segmentCount: zoneCount,
         input: sortedValues,
         segmentOffsets,
-        output: zoneSums
+        output: zoneSums,
+        // Exclusive scan of per-zone counts of valid cells, so the last offset is at most `cellCount`.
+        offsetsWithinInput: true
       })
     ];
 

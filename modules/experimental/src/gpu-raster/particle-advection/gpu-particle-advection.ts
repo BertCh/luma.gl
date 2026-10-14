@@ -24,7 +24,7 @@ import {
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
   GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
 } from './particle-advection-parameters';
-import {PHILOX_WGSL} from '../vector-field-common/philox-random';
+import {PHILOX_WGSL} from '../../utils/philox-random';
 
 const OPERATION = 'GPUParticleAdvection';
 

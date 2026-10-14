@@ -16,6 +16,9 @@ import {
   type PolygonLayout,
   type PolygonMesh
 } from './b5-geometry';
+import {getSortedFinite, getSortedQuantile as getQuantile} from './sorted-values';
+
+export {getQuantile, getSortedFinite};
 
 /** GPU geometry of one polygon dataset: static triangle and outline buffers plus a CPU locator. */
 export type ChoroplethGeometry = {
@@ -84,24 +87,6 @@ export function getOutlineColor(
   alpha = 130
 ): [number, number, number, number] {
   return theme === 'dark' ? [235, 240, 250, alpha] : [40, 50, 70, alpha];
-}
-
-/** Returns the sorted finite values of a column (a copy). */
-export function getSortedFinite(values: ArrayLike<number>): Float64Array {
-  const finite: number[] = [];
-  for (let index = 0; index < values.length; index++) {
-    if (Number.isFinite(values[index])) finite.push(values[index]);
-  }
-  return Float64Array.from(finite).sort();
-}
-
-/** Linear-interpolated quantile `q` in `[0, 1]` of a sorted array. */
-export function getQuantile(sorted: ArrayLike<number>, q: number): number {
-  if (sorted.length === 0) return NaN;
-  const position = Math.min(Math.max(q, 0), 1) * (sorted.length - 1);
-  const lower = Math.floor(position);
-  const upper = Math.min(lower + 1, sorted.length - 1);
-  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
 /** Reads a typed-array copy from a readback ArrayBuffer, advancing a byte cursor. */

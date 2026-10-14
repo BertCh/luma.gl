@@ -14,12 +14,13 @@ import {
   getRasterRelaxationTileWGSL
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 import {TERRAIN_FLOW_SWEEP_AFTER_ITERATION, type TerrainFlowGrid} from './terrain-flow-passes';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUTerrainFlow';
 
 /** WGSL bit-test helpers for kernels that do not include the raster grid declarations. */
 const FLOAT_HELPERS_WGSL = /* wgsl */ `
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn getInfinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }`;
 
 /**

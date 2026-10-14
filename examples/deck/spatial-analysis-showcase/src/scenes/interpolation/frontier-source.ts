@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {createFrontierKernelNode} from './frontier-kernel';
+import {createFrontierKernelNode} from '../../engine/frontier-kernel';
 
 export const FRONTIER_SOURCE_PARAMETER_LENGTH = 12;
 

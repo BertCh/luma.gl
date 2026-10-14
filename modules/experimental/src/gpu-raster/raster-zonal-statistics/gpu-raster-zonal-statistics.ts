@@ -27,6 +27,7 @@ import {
   validateTerrainBuffersDistinct,
   validateTerrainGrid
 } from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Zone ID that marks a cell as belonging to no zone. Default value of `ignoredZone`. */
 export const GPU_RASTER_ZONAL_STATISTICS_NO_ZONE = 0xffffffff;
@@ -365,7 +366,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
           invocationCount: cellCount,
           declarations: `const CAPACITY: u32 = ${zoneCapacity}u;
 const IGNORED: u32 = ${ignoredZone}u;
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }`,
+${IS_FINITE_VALUE_WGSL}`,
           body: `let zone = zones[zonesOffset + index];
   let inZone = zone < CAPACITY && zone != IGNORED;
   ${zoneMask ? 'zoneMask[zoneMaskOffset + index] = select(0u, 1u, inZone);' : ''}
@@ -622,7 +623,7 @@ const IGNORED: u32 = ${props.ignoredZone}u;
 const CELL_COUNT: u32 = ${cellCount}u;
 const CELLS_PER_THREAD: u32 = ${cellsPerThread}u;
 ${tables}
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 fn encodeOrderedFloat(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
   return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);

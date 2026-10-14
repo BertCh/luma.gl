@@ -6,6 +6,7 @@ import type {GPUBVH, GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {TIME_WORDS_WGSL} from '../../gpu-dataframe/time-window-filter/time-words';
 import {SPATIAL_JOIN_WGSL_HELPERS} from '../spatial-join/spatial-join-passes';
+import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUZoneEvents';
 /** Bit marking a candidate query row as a first-row point-in-polygon ray. @internal */
@@ -122,12 +123,7 @@ export function createZoneProbeNode<Parameters>(
 ${getTrackConstants(shape)}
 const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
 ${TRACK_LOOKUP_WGSL}
-fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
-  let component = node * 2u;
-  let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
-  let maximum = vec2f(nodeMaxima[nodeMaximaOffset + component], nodeMaxima[nodeMaximaOffset + component + 1u]);
-  return all(minimum <= queryMaximum) && all(queryMinimum <= maximum);
-}`,
+${NODE_OVERLAPS_WGSL}`,
     body: `let row = index;
   let track = findTrack(row);
   if (track == NO_TRACK) { return; }

@@ -15,7 +15,7 @@ import {
   FrontierResidualDiffusion,
   getFrontierResidualDiffusionCoefficients,
   getFrontierResidualDiffusionParameterValues
-} from '../frontier/frontier-neural';
+} from './frontier-neural';
 
 export type CloudRepairPlace = 'oahu' | 'venice';
 export type CloudRepairDisplay = 'cloudy' | 'diffusion' | 'naive' | 'prior';

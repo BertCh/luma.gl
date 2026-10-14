@@ -10,6 +10,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 /** Rows summed by one thread of the extent pass. */
 const BOUNDS_TILE_ROWS = 256;
@@ -63,9 +64,7 @@ export function createGridIndexNodes<Parameters>(
 const TILE_ROWS: u32 = ${BOUNDS_TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
 const SENTINEL: f32 = 3.0e38;
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}`;
+${IS_FINITE_BITS_WGSL}`;
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-tile-bounds`,

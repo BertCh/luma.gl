@@ -23,6 +23,7 @@ import {
   getGPUWeightedOverlayParameterLength,
   GPU_WEIGHTED_OVERLAY_MAXIMUM_LAYER_COUNT
 } from './weighted-overlay-parameters';
+import {DECODE_ORDERED_KEY_WGSL, GET_NAN_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUWeightedOverlay';
 
@@ -231,10 +232,7 @@ var<workgroup> tileMaximum: array<u32, 256>;`
 }
 ${getRasterAlgebraValueWGSL(props.noDataValue)}
 ${hasTables ? getBreakSearchWGSL('countBreaksBelow', 'remapBreaks') : ''}
-fn getOrderedKey(value: f32) -> u32 {
-  let bits = bitcast<u32>(value);
-  return bits ^ select(0x80000000u, 0xffffffffu, (bits >> 31u) != 0u);
-}`,
+${GET_ORDERED_KEY_WGSL}`,
         body: `${rangeKeys ? 'var minimumKey = 0xffffffffu;\n  var maximumKey = 0u;\n  if (index < CELL_COUNT) {' : ''}
   let normalizeWeights = params[paramsOffset] != 0.0;
   let ignoreNoData = params[paramsOffset + 1u] != 0.0;
@@ -329,13 +327,8 @@ fn getOrderedKey(value: f32) -> u32 {
             {name: 'rangeOut', view: output.scoreRange, type: 'f32', access: 'read_write'}
           ],
           invocationCount: 1,
-          declarations: `fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
-fn decodeOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(key ^ select(0xffffffffu, 0x80000000u, (key >> 31u) != 0u));
-}`,
+          declarations: `${GET_NAN_WGSL}
+${DECODE_ORDERED_KEY_WGSL}`,
           body: `let minimumKey = keys[keysOffset];
   let maximumKey = keys[keysOffset + 1u];
   let isEmpty = minimumKey > maximumKey;

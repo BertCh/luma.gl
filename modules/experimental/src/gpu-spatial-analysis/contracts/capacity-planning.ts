@@ -598,6 +598,7 @@ function saturatingMultiply(left: number, right: number): number {
   return Math.min(Number.MAX_SAFE_INTEGER, left * right);
 }
 
+// Differs from the shared getNextPowerOfTwo: saturates below MAX_SAFE_INTEGER instead of looping forever.
 function getNextPowerOfTwo(value: number): number {
   let result = 1;
   while (result < value && result < Number.MAX_SAFE_INTEGER / 2) {

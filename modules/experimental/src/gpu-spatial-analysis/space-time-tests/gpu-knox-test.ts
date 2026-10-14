@@ -31,6 +31,7 @@ import {
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from './space-time-parameters';
+import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUKnoxTest';
 
@@ -179,13 +180,7 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     const partials = u32('partials', slotCount * blocks);
     const pairPartials = u32('pair-partials', blocks);
     const orderedKeyWGSL = /* wgsl */ `
-fn getOrderedKey(value: f32) -> u32 {
-  let bits = bitcast<u32>(value);
-  return select(bits | 0x80000000u, ~bits, (bits >> 31u) == 1u);
-}
-fn getKeyValue(key: u32) -> f32 {
-  return bitcast<f32>(select(key ^ 0x80000000u, ~key, (key >> 31u) == 0u));
-}`;
+${GET_ORDERED_KEY_WGSL}${DECODE_ORDERED_KEY_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-keys`,
@@ -230,12 +225,12 @@ fn getKeyValue(key: u32) -> f32 {
 const ROWS: u32 = ${rows}u;`,
         // Sorted ascending, so rows after `index` within the threshold form a prefix.
         body: `let threshold = bitcast<f32>(parameters[parametersOffset + 3u]);
-  let time = getKeyValue(sortedKeys[sortedKeysOffset + index]);
+  let time = decodeOrderedKey(sortedKeys[sortedKeysOffset + index]);
   var low = index + 1u;
   var high = ROWS;
   while (low < high) {
     let middle = low + (high - low) / 2u;
-    if (abs(getKeyValue(sortedKeys[sortedKeysOffset + middle]) - time) <= threshold) {
+    if (abs(decodeOrderedKey(sortedKeys[sortedKeysOffset + middle]) - time) <= threshold) {
       low = middle + 1u;
     } else {
       high = middle;

@@ -12,6 +12,7 @@
 import type {ViewState} from '../../engine/types';
 import {haversineMeters} from '../anchors';
 import type {MapAnnotation} from '../types';
+import {CHICAGO} from './chicago';
 import type {Gazetteer, Place, PlaceKind} from './types';
 
 export {ALPS} from './alps';
@@ -40,6 +41,15 @@ export const CITY_FRAMES = {
   alps: {longitude: 7.76, latitude: 45.97, zoom: 11.7, pitch: 0, bearing: 0},
   dixie: {longitude: -120.87, latitude: 40.15, zoom: 9, pitch: 0, bearing: 0}
 } as const satisfies Record<string, ViewState>;
+
+/** Montrose Point, the bird sanctuary on the Chicago lakefront that several stories zoom to. */
+export const MONTROSE_POINT = CHICAGO.places['montrose-point'].lngLat;
+
+/** Camera that frames the City of Chicago (the cell and nature stories). */
+export const CHICAGO_CITY_VIEW = {longitude: -87.68, latitude: 41.835, zoom: 9.9} as const;
+
+/** Camera that frames the contiguous United States (the flight stories). */
+export const US_VIEW = {longitude: -96, latitude: 38.5, zoom: 3.9} as const;
 
 /** Normalizes a name for matching: lower case, no diacritics, only letters and digits. */
 function normalizeName(name: string): string {

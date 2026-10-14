@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getPhilox4x32, getPhiloxUnitFloat} from './dot-density-random';
+import {getPhilox4x32, getPhiloxUnitFloat} from '../../utils/philox-random';
 
 /** Philox key word 1 of the per-slot Bernoulli remainder stream. */
 export const DOT_DENSITY_REMAINDER_PURPOSE = 1;

@@ -29,7 +29,7 @@ import {
   getDotSlotCountLimit
 } from './dot-density-cpu';
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
-import {PHILOX_WGSL} from './dot-density-random';
+import {PHILOX_WGSL} from '../../utils/philox-random';
 
 /** Feature ID written past the published count. */
 const NO_FEATURE = '0xffffffffu';

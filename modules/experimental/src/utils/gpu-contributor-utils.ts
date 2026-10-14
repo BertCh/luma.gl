@@ -252,3 +252,12 @@ export function captureGraphCommandNodes<Parameters>(
   }
   return nodes;
 }
+
+/** Smallest power of two at or above `value`, and at least one. */
+export function getNextPowerOfTwo(value: number): number {
+  let result = 1;
+  while (result < value) {
+    result *= 2;
+  }
+  return result;
+}

@@ -21,6 +21,7 @@ import {CELL_KEY_WGSL, getCellKeyLayout, QUADBIN_TILE_WGSL} from '../cell-aggreg
 import {validateCellIndexResolution, type GPUCellIndexFamily} from './cell-index-families';
 import {GEOHASH_INDEX_WGSL, QUADKEY_INDEX_WGSL, S2_INDEX_WGSL} from './cell-index-wgsl';
 import {H3_INDEX_WGSL} from './h3-index-wgsl';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUPointToCell';
 
@@ -169,9 +170,7 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
         invocationCount: props.positions.length,
         declarations: `const RESOLUTION: u32 = ${resolution}u;
 ${getFamilyDeclarations(family)}
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}`,
+${IS_FINITE_BITS_WGSL}`,
         body: `let longitude = positions[positionsOffset + 2u * index];
   let latitude = positions[positionsOffset + 2u * index + 1u];
   var isValid = isFiniteBits(longitude) && isFiniteBits(latitude);

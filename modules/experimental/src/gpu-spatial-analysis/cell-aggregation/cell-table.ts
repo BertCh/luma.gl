@@ -22,6 +22,7 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCellTablePort} from '../contracts/index';
 import {CELL_KEY_WGSL, type CellKeyLayout} from './cell-keys';
+import {DECODE_ORDERED_KEY_WGSL, GET_NAN_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 /** Default fixed-point scale of {@link GPUCellTable.sums}: 16 fractional bits. */
 export const GPU_CELL_DEFAULT_SUM_SCALE = 65536;
@@ -694,19 +695,11 @@ ${getFixedPointWGSL(props.sumScale)}`,
  */
 export const ORDERED_KEY_WGSL = /* wgsl */ `
 // WGSL rejects NaN constants, so build one from a runtime bit pattern.
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn getOrderedKey(x: f32) -> u32 {
-  let bits = bitcast<u32>(x);
-  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}
+${GET_ORDERED_KEY_WGSL}
 
-fn decodeOrderedKey(key: u32) -> f32 {
-  return bitcast<f32>(select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u));
-}
+${DECODE_ORDERED_KEY_WGSL}
 `;
 
 /** Largest f32 below 2^62: scaled values saturate here so 64-bit sums of 2^31 rows cannot wrap far. */

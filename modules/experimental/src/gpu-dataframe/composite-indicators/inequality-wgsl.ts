@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GET_NAN_WGSL, GET_ORDERED_KEY_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+
 /** Floats per zone in the interleaved statistics buffer. */
 export const INEQUALITY_STATS_STRIDE = 10;
 
@@ -21,19 +23,11 @@ export const INEQUALITY_STAT = {
 
 /** Shared WGSL helpers. */
 export const INEQUALITY_HELPERS_WGSL = /* wgsl */ `
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isFiniteBits(x: f32) -> bool {
-  return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_BITS_WGSL}
 
-fn getOrderedKey(x: f32) -> u32 {
-  let bits = bitcast<u32>(x);
-  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}
+${GET_ORDERED_KEY_WGSL}
 
 fn interpolateLorenz(cut: f32, previousP: f32, nextP: f32, previousL: f32, nextL: f32) -> f32 {
   if (cut >= nextP) {

@@ -26,6 +26,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {GET_QUIET_NAN_SEEDED_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGroupConvexHull';
 const MAXIMUM_ROWS = 2 ** 24 - 1;
@@ -767,7 +768,7 @@ fn findGroup(row: u32) -> u32 {
   let nan = getQuietNaN(index);
   vertexPositions[vertexPositionsOffset + index * 2u] = select(positions[positionsOffset + row * 2u], nan, isEmpty);
   vertexPositions[vertexPositionsOffset + index * 2u + 1u] = select(positions[positionsOffset + row * 2u + 1u], nan, isEmpty);`,
-          'fn getQuietNaN(seed: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (seed & 0u)); }'
+          GET_QUIET_NAN_SEEDED_WGSL
         )
       );
     }

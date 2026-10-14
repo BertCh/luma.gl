@@ -28,6 +28,8 @@ import {
 } from '../segment-intersection/segment-intersection-wgsl';
 import {createRingOrientationNode} from './coverage-topology-kernels';
 import {GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH} from './coverage-validity-parameters';
+import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
+import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
 const OPERATION = 'GPUCoverageValidity';
 /** Vertex count from which `spatialSort` defaults to on, as `GPUSegmentIntersection`. */
@@ -110,14 +112,6 @@ export type GPUCoverageValidityProps = {
   /** Caller-owned outputs. */
   output: GPUCoverageValidityOutput;
 };
-
-function getNextPowerOfTwo(value: number): number {
-  let result = 1;
-  while (result < value) {
-    result *= 2;
-  }
-  return result;
-}
 
 /**
  * Validates a polygon coverage: Shapely `coverage_is_valid` and `coverage_invalid_edges`
@@ -350,12 +344,7 @@ const FLAG_UNCERTAIN: u32 = ${GPU_COVERAGE_VALIDITY_FLAG.uncertain}u;
 const MATCHED_BIT: u32 = 0x80000000u;
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 
-fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
-  let component = node * 2u;
-  let minimum = vec2f(nodeMinima[nodeMinimaOffset + component], nodeMinima[nodeMinimaOffset + component + 1u]);
-  let maximum = vec2f(nodeMaxima[nodeMaximaOffset + component], nodeMaxima[nodeMaximaOffset + component + 1u]);
-  return all(minimum <= queryMaximum) && all(queryMinimum <= maximum);
-}
+${NODE_OVERLAPS_WGSL}
 
 fn isFlipped(row: u32) -> bool {
   return ringFlip[ringFlipOffset + segmentRing(row)] != 0u;

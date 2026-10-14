@@ -205,6 +205,9 @@ function expectClose(
   );
 }
 
+// The LM statistics keep 2e-3: the robust variants subtract near-equal terms, and the measured worst
+// error reaches 0.53 (lmLag), 0.82 (robustLmLag) and 0.58 (spreg statistics) of that bound.
+// The summary scalars measured 1e-7 to 1e-5 relative, so their bounds are 20 to 100 times that.
 function expectParity(actual: Result, expected: DiagnosticsOracleResult): void {
   expect(actual.status).toBe(0);
   const tests = [
@@ -222,14 +225,14 @@ function expectParity(actual: Result, expected: DiagnosticsOracleResult): void {
   });
   const s = actual.summary;
   expect(s[0]).toBe(expected.residuals.length);
-  expectClose('sigma2', s[1], expected.sigmaSquared, 1e-3);
-  expectClose('trace', s[2], expected.trace, 1e-4);
-  expectClose('information', s[3], expected.information, 2e-3);
+  expectClose('sigma2', s[1], expected.sigmaSquared, 5e-5);
+  expectClose('trace', s[2], expected.trace, 1e-5);
+  expectClose('information', s[3], expected.information, 5e-4);
   expectClose('weightsSum', s[4], expected.weightsSum, 1e-5);
-  expectClose('moranI', s[5], expected.moranI, 2e-3, 1e-2);
-  expectClose('moranExpectation', s[6], expected.moranExpectation, 2e-3, 1e-4);
-  expectClose('moranVariance', s[7], expected.moranVariance, 1e-2, 1e-6);
-  expectClose('moranZ', s[8], expected.moranZ, 1e-2, 0.1);
+  expectClose('moranI', s[5], expected.moranI, 2e-4, 1e-2);
+  expectClose('moranExpectation', s[6], expected.moranExpectation, 1e-5, 1e-4);
+  expectClose('moranVariance', s[7], expected.moranVariance, 1e-5, 1e-6);
+  expectClose('moranZ', s[8], expected.moranZ, 2e-4, 0.1);
   expect(actual.tests[15]).toBe(s[8]);
   expect(actual.tests[16]).toBe(0);
   expect(Math.abs(s[9] - expected.moranPValue)).toBeLessThan(2e-3);
@@ -330,9 +333,9 @@ function expectMatchesSpreg(
     expectClose(`spreg statistic ${index}`, actual.tests[index * 3], statistic, 2e-3, 0.1);
     expect(Math.abs(actual.tests[index * 3 + 2] - pValue)).toBeLessThan(2e-3);
   });
-  expectClose('spreg sigma2', actual.summary[1], reference.sigmaSquared, 1e-3);
-  expectClose('spreg moran I', actual.summary[5], reference.moran[0], 2e-3, 1e-2);
-  expectClose('spreg moran z', actual.summary[8], reference.moran[1], 1e-2, 0.1);
+  expectClose('spreg sigma2', actual.summary[1], reference.sigmaSquared, 5e-5);
+  expectClose('spreg moran I', actual.summary[5], reference.moran[0], 2e-4, 1e-2);
+  expectClose('spreg moran z', actual.summary[8], reference.moran[1], 2e-4, 0.1);
   expect(Math.abs(actual.summary[9] - reference.moran[2])).toBeLessThan(2e-3);
 }
 

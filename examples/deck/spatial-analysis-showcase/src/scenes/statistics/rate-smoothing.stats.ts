@@ -4,30 +4,15 @@
 
 import type {ChartColor, ScatterChartData} from '../chart-types';
 import {FUNNEL_LIMITS, formatCompactNumber, RATE_SCALE} from './rate-smoothing.style';
+import {getSortedFinite as sortFinite, getSortedQuantile} from './sorted-values';
+
+export {sortFinite, getSortedQuantile};
 
 /**
  * CPU companions of the GPU rate contributors: the empirical-Bayes weight `w` (the library does
  * not expose it), the neighbourhood-pooled weight and rate of a county, quantiles and ranks for
  * tooltips, per-state cluster tallies and the funnel plot. Pure functions, no luma.gl.
  */
-
-/** The sorted finite values of an array (a copy). */
-export function sortFinite(values: ArrayLike<number>): Float64Array {
-  const finite: number[] = [];
-  for (let index = 0; index < values.length; index++) {
-    if (Number.isFinite(values[index])) finite.push(values[index]);
-  }
-  return Float64Array.from(finite).sort();
-}
-
-/** Linear-interpolated quantile `q` in `[0, 1]` of a sorted array; NaN when empty. */
-export function getSortedQuantile(sorted: ArrayLike<number>, q: number): number {
-  if (sorted.length === 0) return Number.NaN;
-  const position = Math.min(Math.max(q, 0), 1) * (sorted.length - 1);
-  const lower = Math.floor(position);
-  const upper = Math.min(lower + 1, sorted.length - 1);
-  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
-}
 
 /** Share of a sorted array at or below `value`, as a percentile 0-100. */
 export function getPercentile(sorted: ArrayLike<number>, value: number): number {

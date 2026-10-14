@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+
 /** Zone ID of a cell that no polygon covers, and of a point that joins no zone. */
 export const GPU_POLYGON_RASTERIZATION_NO_ZONE = 0xffffffff;
 
@@ -46,7 +48,7 @@ export function getGPUPolygonRasterizationExtentValues(
 
 /** WGSL helpers shared by the rasterization and join kernels. Requires an `extent` f32 binding. @internal */
 export const POLYGON_RASTER_EXTENT_WGSL = /* wgsl */ `
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }
+${IS_FINITE_VALUE_WGSL}
 struct RasterExtent { origin: vec2<f32>, cellSize: vec2<f32>, valid: bool };
 fn getRasterExtent() -> RasterExtent {
   let origin = vec2<f32>(extent[extentOffset], extent[extentOffset + 1u]);

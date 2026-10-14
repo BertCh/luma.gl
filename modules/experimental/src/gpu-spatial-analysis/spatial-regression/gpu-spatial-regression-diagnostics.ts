@@ -27,6 +27,7 @@ import {
   getCholeskyWGSL,
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
 } from './spatial-regression-solve';
+import {ERFC_VALUE_WGSL, GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialRegressionDiagnostics';
 const TILE_WORKGROUP_SIZE = 64;
@@ -518,24 +519,12 @@ function getFinishWGSL(p: number): string {
   return /* wgsl */ `
 var<private> columnScale: array<f32, ${p}>;
 
-fn getNaN() -> f32 {
-  var bits = 0x7fc00000u;
-  return bitcast<f32>(bits);
-}
+${GET_NAN_WGSL}
 
-fn isFiniteValue(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_VALUE_WGSL}
 
 // Complementary error function, fractional error below 1.2e-7 (Numerical Recipes erfcc).
-fn erfcValue(x: f32) -> f32 {
-  let z = abs(x);
-  let t = 1.0 / (1.0 + 0.5 * z);
-  let r = t * exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
-    t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 +
-    t * (-0.82215223 + t * 0.17087277)))))))));
-  return select(2.0 - r, r, x >= 0.0);
-}
+${ERFC_VALUE_WGSL}
 
 fn chiSquareSurvival(value: f32, degreesOfFreedom: u32) -> f32 {
   if (degreesOfFreedom == 1u) {

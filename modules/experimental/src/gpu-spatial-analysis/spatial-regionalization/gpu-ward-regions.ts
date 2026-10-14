@@ -26,6 +26,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import type {GPUOptimizationStatusPort} from '../contracts/index';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 export const GPU_WARD_MAXIMUM_COLUMNS = 8;
 const GPU_WARD_REDUCTION_WORKGROUP_SIZE = 256;
@@ -256,7 +257,7 @@ const REGION_STRIDE: u32 = ${regionStride}u;
 const TARGET_REGION_COUNT: u32 = ${props.targetRegionCount}u;
 const NONE: u32 = 0xffffffffu;
 const LARGE_INCREASE: f32 = 3.402823466e+38;
-fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+${IS_FINITE_FLOAT_WGSL}
 fn regionCount(region: u32) -> f32 { return regions[regionsOffset + region * REGION_STRIDE]; }
 fn regionSum(region: u32, column: u32) -> f32 { return regions[regionsOffset + region * REGION_STRIDE + 1u + column]; }
 fn pairKey(first: u32, second: u32) -> u32 {

@@ -21,10 +21,10 @@ import {
   captureGraphCommandNodes,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** WGSL helper shared by terrain kernels. @internal */
-export const TERRAIN_WGSL_HELPERS = /* wgsl */ `
-fn isFiniteValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u; }`;
+export const TERRAIN_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
 
 /**
  * Throws unless width and height are positive integers whose product fits in uint32.
