@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {
-  getGPUAffineTransformParameters,
+  getGPUAffineTransformParameterValues,
   GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH,
   GPUAffineTransform
 } from './gpu-affine-transform';
 export type {
   GPUAffineTransformOrigin,
   GPUAffineTransformOutput,
-  GPUAffineTransformParameters,
+  GPUAffineTransformSettings,
   GPUAffineTransformProps
 } from './gpu-affine-transform';
 export {
@@ -20,7 +20,7 @@ export {
 } from './gpu-geometry-orientation';
 export type {
   GPUGeometryOrientationOutput,
-  GPUGeometryOrientationParameters,
+  GPUGeometryOrientationSettings,
   GPUGeometryOrientationProps
 } from './gpu-geometry-orientation';
 export {
@@ -29,8 +29,11 @@ export {
   GPUGeometryCleanup
 } from './gpu-geometry-cleanup';
 export type {
+  GPUGeometryCleanupLineOutput,
   GPUGeometryCleanupOutput,
-  GPUGeometryCleanupParameters,
   GPUGeometryCleanupPointOutput,
-  GPUGeometryCleanupProps
+  GPUGeometryCleanupPolygonOutput,
+  GPUGeometryCleanupProps,
+  GPUGeometryCleanupSettings,
+  GPUGeometryCleanupStatus
 } from './gpu-geometry-cleanup';

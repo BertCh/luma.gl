@@ -729,57 +729,65 @@ export class LuSpatialGeographicPointQueryEffect implements Effect {
       byteOffset: LU_SPATIAL_GEOGRAPHIC_POINT_QUERY_DIAGNOSTIC_BYTE_OFFSETS.selectionCandidateCount
     });
 
-    new GPUPointSpatialQuery({
-      id: `${this.id}-viewport-query`,
-      positions,
-      index,
-      kind: 'bounds',
-      query: graph.createDataView(viewportQueryBuffer, {format: 'float32', length: 4}),
-      intersectedCellCount: viewportIntersectedCellCount,
-      candidateCount: viewportCandidateCount,
-      output: {
-        ids: graph.createDataView(viewportIdsBuffer, {
-          format: 'uint32',
-          length: this.pointCount
-        }),
-        count: graph.createDataView(drawCommandBuffer, {
-          format: 'uint32',
-          length: 1,
-          byteOffset: this.drawCommands.getInstanceCountByteOffset(0)
-        }),
-        overflow: graph.createDataView(viewportOverflowBuffer, {format: 'uint32', length: 1}),
-        requiredCount: graph.createDataView(viewportTotalCountBuffer, {
-          format: 'uint32',
-          length: 1
-        })
-      }
-    }).addToGraph(graph);
+    graph.add(
+      new GPUPointSpatialQuery({
+        id: `${this.id}-viewport-query`,
+        positions,
+        index,
+        kind: 'bounds',
+        parameters: graph.createDataView(viewportQueryBuffer, {format: 'float32', length: 4}),
+        output: {
+          ids: graph.createDataView(viewportIdsBuffer, {
+            format: 'uint32',
+            length: this.pointCount
+          }),
+          intersectedCellCount: viewportIntersectedCellCount,
+          candidateCount: viewportCandidateCount,
+          status: {
+            count: graph.createDataView(drawCommandBuffer, {
+              format: 'uint32',
+              length: 1,
+              byteOffset: this.drawCommands.getInstanceCountByteOffset(0)
+            }),
+            overflow: graph.createDataView(viewportOverflowBuffer, {format: 'uint32', length: 1}),
+            requiredCount: graph.createDataView(viewportTotalCountBuffer, {
+              format: 'uint32',
+              length: 1
+            })
+          }
+        }
+      })
+    );
 
-    new GPUPointSpatialQuery({
-      id: `${this.id}-radius-query`,
-      positions,
-      index,
-      kind: 'radius',
-      query: graph.createDataView(selectionQueryBuffer, {format: 'float32', length: 3}),
-      intersectedCellCount: selectionIntersectedCellCount,
-      candidateCount: selectionCandidateCount,
-      output: {
-        ids: graph.createDataView(selectedIdsBuffer, {
-          format: 'uint32',
-          length: this.pointCount
-        }),
-        count: graph.createDataView(drawCommandBuffer, {
-          format: 'uint32',
-          length: 1,
-          byteOffset: this.drawCommands.getInstanceCountByteOffset(1)
-        }),
-        overflow: graph.createDataView(selectionOverflowBuffer, {format: 'uint32', length: 1}),
-        requiredCount: graph.createDataView(selectionTotalCountBuffer, {
-          format: 'uint32',
-          length: 1
-        })
-      }
-    }).addToGraph(graph);
+    graph.add(
+      new GPUPointSpatialQuery({
+        id: `${this.id}-radius-query`,
+        positions,
+        index,
+        kind: 'radius',
+        parameters: graph.createDataView(selectionQueryBuffer, {format: 'float32', length: 3}),
+        output: {
+          ids: graph.createDataView(selectedIdsBuffer, {
+            format: 'uint32',
+            length: this.pointCount
+          }),
+          intersectedCellCount: selectionIntersectedCellCount,
+          candidateCount: selectionCandidateCount,
+          status: {
+            count: graph.createDataView(drawCommandBuffer, {
+              format: 'uint32',
+              length: 1,
+              byteOffset: this.drawCommands.getInstanceCountByteOffset(1)
+            }),
+            overflow: graph.createDataView(selectionOverflowBuffer, {format: 'uint32', length: 1}),
+            requiredCount: graph.createDataView(selectionTotalCountBuffer, {
+              format: 'uint32',
+              length: 1
+            })
+          }
+        }
+      })
+    );
     return graph.compile();
   }
 

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-algebra/raster-algebra-utils';
-import {getRasterLocalOrigin} from '../raster-utils';
+import {validateParameterTarget} from '../raster-band-utils';
+import {getRasterLocalOrigin, validateRasterExtent} from '../raster-utils';
+import type {GPURasterMetadata} from '../types';
 
 /** Number of float32 elements in a {@link GPUIsobands} parameter view. */
 export const GPU_ISOBANDS_PARAMETER_LENGTH = 12;
@@ -20,10 +21,6 @@ export type GPUIsobandsSettings = {
   breakCount: number;
   /** Raster extent `[minX, minY, maxX, maxY]` in world units. Row 0 is at `minY`. */
   extent: readonly [number, number, number, number];
-  /** Raster width in samples (must equal the contributor's `width`). */
-  width: number;
-  /** Raster height in samples (must equal the contributor's `height`). */
-  height: number;
   /** First band emitted as geometry. Defaults to 0. Does not affect `bandClasses`. */
   firstBand?: number;
   /** Last band (inclusive) emitted as geometry. Defaults to `breakCount` (every band). */
@@ -46,36 +43,37 @@ export type GPUIsobandsSettings = {
  * sizes are `(maxX - minX) / width` and `(maxY - minY) / height` rounded to float32, so a CPU
  * oracle can reproduce the GPU arithmetic.
  *
- * @param settings Break count, extent, raster size, optional band window and local origin.
+ * @param settings Break count, extent, optional band window and local origin.
+ * @param grid Frame raster grid; its width and height give the cell sizes and must match the
+ * contributor's.
  * @param target Optional destination of at least 12 elements.
  * @throws If the target is too short, a count is not a non-negative integer, or the extent is
- * not finite.
+ * not finite
+ * or has `max <= min` on an axis.
  */
 export function getGPUIsobandsParameterValues(
   settings: GPUIsobandsSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_ISOBANDS_PARAMETER_LENGTH)
 ): Float32Array {
-  validateParameterTarget('Isobands', target, GPU_ISOBANDS_PARAMETER_LENGTH);
+  validateParameterTarget('getGPUIsobandsParameterValues', target, GPU_ISOBANDS_PARAMETER_LENGTH);
   const firstBand = settings.firstBand ?? 0;
   const lastBand = settings.lastBand ?? settings.breakCount;
   for (const [name, count] of [
     ['breakCount', settings.breakCount],
     ['firstBand', firstBand],
-    ['lastBand', lastBand],
-    ['width', settings.width],
-    ['height', settings.height]
+    ['lastBand', lastBand]
   ] as const) {
     if (!Number.isSafeInteger(count) || count < 0) {
       throw new Error(`Isobands ${name} must be a non-negative integer`);
     }
   }
-  if (settings.width < 1 || settings.height < 1) {
-    throw new Error('Isobands width and height must be positive');
+  const {width, height} = grid;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
+    throw new Error('getGPUIsobandsParameterValues grid width and height must be positive');
   }
+  validateRasterExtent('Isobands', settings.extent);
   const [minX, minY, maxX, maxY] = settings.extent;
-  if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
-    throw new Error('Isobands extent must be finite');
-  }
   const [originX, originY] = getRasterLocalOrigin('Isobands', settings.localOrigin);
   target[0] = settings.breakCount;
   target[1] = firstBand;
@@ -85,8 +83,8 @@ export function getGPUIsobandsParameterValues(
   target[5] = minY - originY;
   target[6] = maxX - originX;
   target[7] = maxY - originY;
-  target[8] = (maxX - minX) / settings.width;
-  target[9] = (maxY - minY) / settings.height;
+  target[8] = (maxX - minX) / width;
+  target[9] = (maxY - minY) / height;
   target[10] = 0;
   target[11] = 0;
   return target;

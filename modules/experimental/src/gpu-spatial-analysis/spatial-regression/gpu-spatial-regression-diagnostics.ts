@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,8 +13,12 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
@@ -39,6 +42,29 @@ const SCALAR_MOMENT_COUNT = 7;
 /** Fitted-row count `n`, accumulated after the scalar moments and the `p` fitted-lag products. */
 const COUNT_MOMENT_COUNT = 1;
 
+/**
+ * Largest `rows * (predictorCount + 3)` of {@link GPUSpatialRegressionDiagnostics} on `device`: the
+ * per-row table holds the intercept, the predictors, the response and the residual,
+ * `predictorCount + 3` float32 values per row, and is read at random through the weights, so it
+ * must fit one storage binding, 2^25 values on a default device (128 MiB bindings). At 15
+ * predictors that is 1864135 rows.
+ */
+export function getGPUSpatialRegressionDiagnosticsMaximumRowTableValueCount(
+  device: Device
+): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
+/**
+ * Largest per-tile moment table of {@link GPUSpatialRegressionDiagnostics} on `device`, in float32
+ * values: `ceil(rows / tileRowCount) * (5 p^2 + p + 8)` with `p = predictorCount + 1`, which must
+ * fit one storage binding, so 2^25 on a default device. The default `tileRowCount` (at most 4096
+ * tiles) always fits; a small explicit `tileRowCount` on many rows may not.
+ */
+export function getGPUSpatialRegressionDiagnosticsMaximumTileMomentCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
 /** Caller-owned outputs of {@link GPUSpatialRegressionDiagnostics}. */
 export type GPUSpatialRegressionDiagnosticsOutput = {
   /**
@@ -52,8 +78,8 @@ export type GPUSpatialRegressionDiagnosticsOutput = {
    * excluded rows; see the `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_*` slot constants.
    */
   summary: GraphDataView<'float32'>;
-  /** One uint32; see the `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_*` constants. */
-  status: GraphDataView<'uint32'>;
+  /** One-row `code`; see the `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_*` constants. */
+  status: Pick<GPUSolverStatusPort, 'code'>;
 };
 
 /**
@@ -95,12 +121,17 @@ export type GPUSpatialRegressionDiagnosticsProps = {
    * Rows left without any fitted neighbor keep an all-zero row either way.
    */
   restandardizeRows?: boolean;
-  /** Number of predictor columns, compile-time, 1 to 15. The intercept is implicit. */
+  /**
+   * Number of predictor columns, compile-time, 1 to 15. The intercept is implicit.
+   * `rows * (predictorCount + 3)` is at most
+   * {@link getGPUSpatialRegressionDiagnosticsMaximumRowTableValueCount} (2^25 on a default device).
+   */
   predictorCount: number;
   /**
    * Rows reduced by one invocation of the accumulation pass. Defaults to
    * `max(64, ceil(rows / 4096))`. The tile layout fixes the summation order, so results are
-   * reproducible for a given value but differ in the last bits between values.
+   * reproducible for a given value but differ in the last bits between values. The tile moment
+   * table holds at most {@link getGPUSpatialRegressionDiagnosticsMaximumTileMomentCount} values.
    */
   tileRowCount?: number;
   /** Caller-owned outputs. */
@@ -173,25 +204,13 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const {predictorCount, output} = props;
-    if (
-      !Number.isInteger(predictorCount) ||
-      predictorCount < 1 ||
-      predictorCount > SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
-    ) {
-      throw new Error(
-        `${id} predictorCount must be an integer in [1, ${SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1}]`
-      );
-    }
-    for (const [name, view] of [
-      ['predictors', props.predictors],
-      ['response', props.response],
-      ['residuals', props.residuals],
-      ['mask', props.mask]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'predictorCount',
+      predictorCount,
+      1,
+      SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
+    );
     const rows = validateGPUSpatialWeights(id, props.weights);
     validatePackedView(props.predictors, ['float32'], `${id} predictors`);
     validatePackedView(props.response, ['float32'], `${id} response`);
@@ -206,7 +225,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       throw new Error(`${id} predictors length must equal the weights row count * predictorCount`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
@@ -223,14 +242,12 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
         `${id} output.summary must hold ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedUint32View(output.status, `${id} output.status`);
-    if (output.status.length < 1) {
-      throw new Error(`${id} output.status must hold one uint32 row`);
+    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    if (output.status.code.length < 1) {
+      throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     if (props.tileRowCount !== undefined) {
-      if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
-        throw new Error(`${id} tileRowCount must be a positive integer`);
-      }
+      validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
     this.tileRowCount =
@@ -239,7 +256,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
     this.tileCount = Math.ceil(rows / this.tileRowCount);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.tests, output.summary, output.status],
+      [output.tests, output.summary, output.status.code],
       [
         props.predictors,
         props.response,
@@ -272,10 +289,22 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       weights.weights,
       output.tests,
       output.summary,
-      output.status
+      output.status.code
     ]);
     const p = k + 1;
     const momentCount = 5 * p * p + SCALAR_MOMENT_COUNT + p + COUNT_MOMENT_COUNT;
+    validateMaximumCount(
+      id,
+      'rows x (predictorCount + 3)',
+      rowCount * (k + 3),
+      getGPUSpatialRegressionDiagnosticsMaximumRowTableValueCount(graph.device)
+    );
+    validateMaximumCount(
+      id,
+      'tiles x moments (rows, tileRowCount, predictorCount)',
+      tileCount * momentCount,
+      getGPUSpatialRegressionDiagnosticsMaximumTileMomentCount(graph.device)
+    );
     const restandardize = props.restandardizeRows === true;
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
@@ -542,7 +571,7 @@ ${getRowAccumulationWGSL()}`,
           {name: 'moments', view: moments, type: 'f32', access: 'read'},
           {name: 'testsOut', view: output.tests, type: 'f32', access: 'read_write'},
           {name: 'summaryOut', view: output.summary, type: 'f32', access: 'read_write'},
-          {name: 'statusOut', view: output.status, type: 'u32', access: 'read_write'}
+          {name: 'statusOut', view: output.status.code, type: 'u32', access: 'read_write'}
         ],
         invocationCount: 1,
         declarations: `${constants}

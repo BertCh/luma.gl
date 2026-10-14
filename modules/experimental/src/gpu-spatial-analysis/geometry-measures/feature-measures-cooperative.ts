@@ -12,36 +12,56 @@ export const COOPERATIVE_LANES = 64;
  */
 export const COOPERATIVE_RING_ROWS = 512;
 
+/** Which offset views the ring helpers of {@link getRingHelpersSource} read. @internal */
+export type RingHelperLayout = {
+  /** Row offsets per ring. Absent: ring `r` is the single row `r`. */
+  hasRingOffsets: boolean;
+  /** Feature-to-ring (or, with polygon offsets, feature-to-polygon) offsets. Absent: ring `f` is feature `f`. */
+  hasFeatureOffsets: boolean;
+  /** Polygon-to-ring offsets; needs `hasFeatureOffsets` and the `POLYGON_COUNT` constant. */
+  hasPolygonOffsets: boolean;
+};
+
 /**
  * WGSL helpers shared by the serial and cooperative kernels to classify features: the ring range
- * of a feature, the rows of a ring, and `isCooperativeFeature`. Needs the kernel's `ringOffsets`
- * (and `featureRingOffsets` when given) bindings and the `ROW_COUNT` and `RING_COUNT` constants.
+ * of a feature, the rows of a ring, and `isCooperativeFeature`. Needs the kernel's offset bindings
+ * named by `layout` and the `ROW_COUNT` and `RING_COUNT` constants.
  *
  * @internal
  */
 export function getRingHelpersSource(
-  hasFeatureRingOffsets: boolean,
+  layout: RingHelperLayout,
   cooperativeRingRows: number
 ): string {
+  let ringRange = 'return vec2<u32>(feature, feature + 1u);';
+  if (layout.hasPolygonOffsets) {
+    // Feature -> polygons -> rings: the first ring of each polygon is its shell.
+    ringRange = `let polygonBegin = min(featureOffsets[featureOffsetsOffset + feature], POLYGON_COUNT);
+  let polygonEnd = min(max(featureOffsets[featureOffsetsOffset + feature + 1u], polygonBegin), POLYGON_COUNT);
+  let ringBegin = min(polygonOffsets[polygonOffsetsOffset + polygonBegin], RING_COUNT);
+  let ringEnd = min(max(polygonOffsets[polygonOffsetsOffset + polygonEnd], ringBegin), RING_COUNT);
+  return vec2<u32>(ringBegin, ringEnd);`;
+  } else if (layout.hasFeatureOffsets) {
+    ringRange = `let ringBegin = min(featureOffsets[featureOffsetsOffset + feature], RING_COUNT);
+  let ringEnd = min(max(featureOffsets[featureOffsetsOffset + feature + 1u], ringBegin), RING_COUNT);
+  return vec2<u32>(ringBegin, ringEnd);`;
+  }
+  const ringRows = layout.hasRingOffsets
+    ? `let rowBegin = min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
+  let rowEnd = min(max(ringOffsets[ringOffsetsOffset + ring + 1u], rowBegin), ROW_COUNT);
+  return vec2<u32>(rowBegin, rowEnd - rowBegin);`
+    : `return vec2<u32>(min(ring, ROW_COUNT), select(0u, 1u, ring < ROW_COUNT));`;
   return /* wgsl */ `
 const COOPERATIVE_RING_ROWS: u32 = ${cooperativeRingRows}u;
 
 // Ring range (begin, end) of a feature.
 fn getFeatureRingRange(feature: u32) -> vec2<u32> {
-  ${
-    hasFeatureRingOffsets
-      ? `let ringBegin = min(featureRingOffsets[featureRingOffsetsOffset + feature], RING_COUNT);
-  let ringEnd = min(max(featureRingOffsets[featureRingOffsetsOffset + feature + 1u], ringBegin), RING_COUNT);
-  return vec2<u32>(ringBegin, ringEnd);`
-      : 'return vec2<u32>(feature, feature + 1u);'
-  }
+  ${ringRange}
 }
 
 // First row and row count of a ring.
 fn getRingRows(ring: u32) -> vec2<u32> {
-  let rowBegin = min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
-  let rowEnd = min(max(ringOffsets[ringOffsetsOffset + ring + 1u], rowBegin), ROW_COUNT);
-  return vec2<u32>(rowBegin, rowEnd - rowBegin);
+  ${ringRows}
 }
 
 // A feature with a ring above the threshold is measured by the cooperative kernel.
@@ -268,7 +288,7 @@ fn accumulateRange(
 }
 
 // Folds a finished ring into the feature (the serial kernel's end-of-ring step).
-fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, RingAccumulators>, rowCount: u32) {
+fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, RingAccumulators>, ringIndex: u32, rowCount: u32) {
   (*feature).vertexCount += rowCount;
   if (IS_POLYGON && IS_GEOGRAPHIC && (abs((*ring).winding) > POLE_WINDING_LIMIT || (*ring).ambiguousEdges > 0u)) {
     (*feature).invalidRings += 1u;
@@ -297,7 +317,7 @@ fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, Ri
   var ringFactor = 1.0;
   if (FIRST_RING_EXTERIOR) {
     let ringSign = select(-1.0, 1.0, getCompensated((*ring).area) >= 0.0);
-    ringFactor = select(-1.0, 1.0, (*feature).isFirstRing) * ringSign;
+    ringFactor = select(-1.0, 1.0, isShellRing(ringIndex, (*feature).isFirstRing)) * ringSign;
   }
   addCompensated(&(*feature).areaSum, ringFactor * getCompensated((*ring).area));
   addCompensated(&(*feature).straightSum, ringFactor * getCompensated((*ring).straightArea));
@@ -387,7 +407,7 @@ fn measureFeatureCooperatively(feature: u32, lane: u32) {
             rows.x, rows.y, 0u, rows.y,
             geodesicWrapLongitudeDelta(firstPosition.x - origin.x), origin, &smallRing
           );
-          mergeRing(&accumulated, &smallRing, rows.y);
+          mergeRing(&accumulated, &smallRing, ring, rows.y);
         }
         ring++;
       }
@@ -449,7 +469,7 @@ fn measureFeatureCooperatively(feature: u32, lane: u32) {
       for (var laneIndex = 0u; laneIndex < COOPERATIVE_LANES; laneIndex++) {
         addLanePartial(&combined, laneIndex);
       }
-      mergeRing(&accumulated, &combined, rows.y);
+      mergeRing(&accumulated, &combined, current, rows.y);
       ring = current + 1u;
     }
   }

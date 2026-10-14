@@ -124,9 +124,9 @@ export class GPUResidentRowSelection implements GPUCommandNodeProducer {
       id,
       [
         props.output.ids,
-        props.output.count,
-        props.output.overflow,
-        props.output.requiredCount,
+        props.output.status.count,
+        props.output.status.overflow,
+        props.output.status.requiredCount,
         props.outputMask,
         props.drawInstanceCount
       ],
@@ -155,9 +155,9 @@ export class GPUResidentRowSelection implements GPUCommandNodeProducer {
       props.outputMask,
       props.drawInstanceCount,
       output.ids,
-      output.count,
-      output.overflow,
-      output.requiredCount,
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount,
       ...additionalPredicates.map(predicate => predicate.mask)
     ]);
     const rows = liveMask.length;

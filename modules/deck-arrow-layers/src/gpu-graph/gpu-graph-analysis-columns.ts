@@ -204,7 +204,6 @@ export class GPUGraphAnalysisColumns {
   private readonly device: Device;
   private readonly buffers: Buffer[] = [];
   private readonly vectors: GPUVector[] = [];
-  private readonly contributors: {destroy?(): void}[] = [];
   private readonly seeds: Buffer;
   private readonly seedCount: Buffer;
   private readonly hops: Buffer;
@@ -314,8 +313,10 @@ export class GPUGraphAnalysisColumns {
         ) => importGraphBuffer(stage, `${id}-${groupIndex}-${name}`, buffer, format, length);
         const props: GPUNetworkAnalyticsColumnsProps = {
           id: `${id}-analytics-${groupIndex}`,
-          offsets: importColumn('csr-offsets', offsets, 'uint32', nodeCount + 1),
-          neighbors: importColumn('csr-neighbors', neighbors, 'uint32', symmetricCount)
+          topology: {
+            offsets: importColumn('csr-offsets', offsets, 'uint32', nodeCount + 1),
+            neighbors: importColumn('csr-neighbors', neighbors, 'uint32', symmetricCount)
+          }
         };
         if (group.includes('degree')) {
           props.degree = {
@@ -327,30 +328,29 @@ export class GPUGraphAnalysisColumns {
           props.pageRank = {
             output: importColumn('page-rank-raw', raw.pageRank, 'float32'),
             normalized: importColumn('page-rank-normalized', normalized.pageRank, 'float32'),
-            iterations: iterations ?? 20
+            iterationCount: iterations ?? 20
           };
         }
         if (group.includes('coreNumber')) {
           props.coreNumber = {
             output: importColumn('core-number-raw', raw.coreNumber, 'uint32'),
             normalized: importColumn('core-number-normalized', normalized.coreNumber, 'float32'),
-            iterations: iterations ?? 32
+            maximumIterations: iterations ?? 32
           };
         }
         if (group.includes('component')) {
           props.components = {
             output: importColumn('component', component, 'uint32'),
-            iterations: iterations ?? 32
+            maximumIterations: iterations ?? 32
           };
         }
         if (group.includes('community')) {
           props.communities = {
             output: importColumn('community', community, 'uint32'),
-            iterations: iterations ?? 16
+            maximumIterations: iterations ?? 16
           };
         }
         const contributor = new GPUNetworkAnalyticsColumns(props);
-        this.contributors.push(contributor);
         stage.add(contributor);
         analyticsGraphs.push(stage.compile());
       }
@@ -389,14 +389,15 @@ export class GPUGraphAnalysisColumns {
       const hoodMask = importInput('neighborhood-mask', this.neighborhoodMask, 'uint32', nodeCount);
       const neighborhood = new GPUNetworkNeighborhood({
         id: `${id}-neighborhood`,
-        offsets: csrOffsets,
-        neighbors: csrNeighbors,
-        seeds: importInput('hover-seed', this.seeds, 'uint32', 1),
-        seedCount: importInput('hover-seed-count', this.seedCount, 'uint32', 1),
+        topology: {offsets: csrOffsets, neighbors: csrNeighbors},
+        startNodes: importInput('hover-seed', this.seeds, 'uint32', 1),
+        startCount: importInput('hover-seed-count', this.seedCount, 'uint32', 1),
         hops: importInput('hops', this.hops, 'uint32', 1),
-        maxHops: MAXIMUM_NEIGHBORHOOD_HOPS,
-        hopDistances: importInput('hop-distances', this.hopDistances, 'uint32', nodeCount),
-        nodeMask: hoodMask
+        maximumHops: MAXIMUM_NEIGHBORHOOD_HOPS,
+        output: {
+          hopDistances: importInput('hop-distances', this.hopDistances, 'uint32', nodeCount),
+          nodeMask: hoodMask
+        }
       });
       interaction.add(neighborhood);
 
@@ -430,21 +431,21 @@ export class GPUGraphAnalysisColumns {
       );
       const reachability = new GPUNetworkReachability({
         id: `${id}-reachability`,
-        offsets: csrOffsets,
-        neighbors: csrNeighbors,
-        weights: unitWeights,
-        sources: importInput('path-source', this.pathSources, 'uint32', 1),
-        sourceCount: importInput('path-source-count', this.pathSourceCount, 'uint32', 1),
-        maxIterations: pathIterations,
-        costs,
-        predecessors,
-        bandThresholds: importInput(
+        topology: {offsets: csrOffsets, neighbors: csrNeighbors, weights: unitWeights},
+        startNodes: importInput('path-source', this.pathSources, 'uint32', 1),
+        startCount: importInput('path-source-count', this.pathSourceCount, 'uint32', 1),
+        maximumIterations: pathIterations,
+        costBreaks: importInput(
           'band-thresholds',
           bandThresholds,
           'float32',
           this.bandHopThresholds.length
         ),
-        bands: importInput('reachability-bands', this.reachabilityBands, 'uint32', nodeCount)
+        output: {
+          costs,
+          predecessors,
+          bands: importInput('reachability-bands', this.reachabilityBands, 'uint32', nodeCount)
+        }
       });
       interaction.add(reachability);
 
@@ -460,8 +461,8 @@ export class GPUGraphAnalysisColumns {
         costs,
         targets: importInput('path-target', this.pathTargets, 'uint32', 1),
         targetCount: importInput('path-target-count', this.pathTargetCount, 'uint32', 1),
-        maxPathLength: pathCapacity,
-        output: {ids: pathIds, count: pathCount, overflow: pathOverflow}
+        maximumPathLength: pathCapacity,
+        output: {ids: pathIds, status: {count: pathCount, overflow: pathOverflow}}
       });
       interaction.add(extraction);
 
@@ -604,7 +605,7 @@ export class GPUGraphAnalysisColumns {
     return true;
   }
 
-  /** Destroys compiled graphs, contributors and every buffer, including the published outputs. */
+  /** Destroys compiled graphs and every buffer, including the published outputs. */
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -615,7 +616,6 @@ export class GPUGraphAnalysisColumns {
     this.topologyGraph?.destroy();
     for (const graph of this.analyticsGraphs ?? []) graph.destroy();
     this.interactionGraph?.destroy();
-    for (const contributor of this.contributors) contributor.destroy?.();
     for (const vector of this.vectors.reverse()) vector.destroy();
     for (const buffer of this.buffers.reverse()) buffer.destroy();
   }

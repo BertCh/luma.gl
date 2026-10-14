@@ -7,9 +7,7 @@ import {
   GPUScan,
   GPUSort,
   GPUUint32Gather,
-  GraphVectorView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,15 +15,16 @@ import {
 import {
   createWGSLKernelNode,
   createPublishNode,
-  getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import type {GPUCellTablePort} from '../contracts/index';
+import {validatePackedView} from '../../utils/gpu-contributor-utils';
+import type {
+  GPUCardinalityPort,
+  GPUCellTablePort,
+  GPUOverflowStatusPort
+} from '../../analysis-core/contracts/index';
 import {CELL_KEY_WGSL, type CellKeyLayout} from './cell-keys';
-import {DECODE_ORDERED_KEY_WGSL, GET_NAN_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
-
-/** Default fixed-point scale of {@link GPUCellTable.sums}: 16 fractional bits. */
-export const GPU_CELL_DEFAULT_SUM_SCALE = 65536;
+import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 
 /** Key word written to every word of an unused cell table row. */
 export const GPU_CELL_EMPTY_KEY_WORD = 0xffffffff;
@@ -37,7 +36,7 @@ export const GPU_CELL_EMPTY_KEY_WORD = 0xffffffff;
  * Capacity is `cells.length`. Rows `[0, count)` hold one occupied cell each, in ascending key
  * order; later rows hold the empty key (`0xffffffff` in both words), a zero count and sum, and
  * NaN extremes. When more cells exist than fit, the cells with the largest keys are dropped and
- * `overflow` is 1. Every column must hold `cells.length` rows.
+ * `status.overflow` is 1. Every column must hold `cells.length` rows.
  */
 export type GPUCellTable = GPUCellTablePort & {
   /**
@@ -60,12 +59,12 @@ export type GPUCellTable = GPUCellTablePort & {
   minimums?: GraphDataView<'float32'>;
   /** Maximum value per cell. */
   maximums?: GraphDataView<'float32'>;
-  /** One-row scalar receiving the occupied row count, `min(requiredCount, cells.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when cells were dropped here or in any source level. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of occupied cells. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `count` receives the occupied row count, `min(requiredCount,
+   * cells.length)`, `overflow` receives 1 when cells were dropped here or in any source level,
+   * and the optional `requiredCount` receives the unclamped number of occupied cells.
+   */
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
 };
 
 /** Returns every view of a cell table, for graph membership and aliasing checks. @internal */
@@ -77,9 +76,9 @@ export function getCellTableViews(table: GPUCellTable): (GraphDataView | undefin
     table.sumValues,
     table.minimums,
     table.maximums,
-    table.count,
-    table.overflow,
-    table.requiredCount
+    table.status.count,
+    table.status.overflow,
+    table.status.requiredCount
   ];
 }
 
@@ -90,11 +89,6 @@ export function getCellTableFirstRow(table: GPUCellTable): number {
 
 /** Validates formats, packing and row counts of a cell table. @internal */
 export function validateCellTable(id: string, name: string, table: GPUCellTable): void {
-  for (const [column, view] of getCellTableViews(table).entries()) {
-    if ((view as unknown) instanceof GraphVectorView) {
-      throw new Error(`${id} ${name} column ${column} must be a single packed view`);
-    }
-  }
   validatePackedView(table.cells, ['uint32x2'], `${id} ${name}.cells`);
   const capacity = table.cells.length;
   if (capacity < 1) {
@@ -117,21 +111,14 @@ export function validateCellTable(id: string, name: string, table: GPUCellTable)
     }
   }
   for (const column of ['count', 'overflow', 'requiredCount'] as const) {
-    const view = table[column];
+    const view = table.status[column];
     if (!view) {
       continue;
     }
-    validatePackedUint32View(view, `${id} ${name}.${column}`);
+    validatePackedUint32View(view, `${id} ${name}.status.${column}`);
     if (view.length < 1) {
-      throw new Error(`${id} ${name}.${column} must contain one uint32 row`);
+      throw new Error(`${id} ${name}.status.${column} must contain one uint32 row`);
     }
-  }
-}
-
-/** Validates a fixed-point sum scale. @internal */
-export function validateSumScale(id: string, sumScale: number): void {
-  if (!Number.isFinite(sumScale) || sumScale <= 0 || Math.fround(sumScale) !== sumScale) {
-    throw new Error(`${id} sumScale must be a positive finite float32 value`);
   }
 }
 
@@ -161,7 +148,7 @@ export type CellTableNodesProps = {
   source: CellTableReductionSource;
   sumScale: number;
   output: GPUCellTable;
-  /** One-row flags ORed into `output.overflow`. */
+  /** One-row flags ORed into `output.status.overflow`. */
   overflowSources?: readonly GraphDataView<'uint32'>[];
   /** Extra one-row destinations of the clamped count. */
   extraCounts?: readonly GraphDataView<'uint32'>[];
@@ -677,66 +664,15 @@ ${getFixedPointWGSL(props.sumScale)}`,
       requiredCount: cellTotal,
       output: {
         ids: output.counts,
-        count: output.count,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount
+        status: {
+          count: output.status.count,
+          overflow: output.status.overflow,
+          requiredCount: output.status.requiredCount
+        }
       },
       overflowSources: props.overflowSources,
       extraCounts: props.extraCounts
     })
   );
   return nodes;
-}
-
-/**
- * Order-preserving u32 encoding of f32 (`-0` below `+0`) and a NaN builder.
- *
- * @internal
- */
-export const ORDERED_KEY_WGSL = /* wgsl */ `
-// WGSL rejects NaN constants, so build one from a runtime bit pattern.
-${GET_NAN_WGSL}
-
-${GET_ORDERED_KEY_WGSL}
-
-${DECODE_ORDERED_KEY_WGSL}
-`;
-
-/** Largest f32 below 2^62: scaled values saturate here so 64-bit sums of 2^31 rows cannot wrap far. */
-export const CELL_MAXIMUM_SCALED_VALUE = Math.fround(2 ** 62 - 2 ** 38);
-
-/** Signed 64-bit fixed-point helpers on `vec2u(high, low)`. @internal */
-export function getFixedPointWGSL(sumScale: number): string {
-  return /* wgsl */ `
-const SUM_SCALE: f32 = ${getWGSLFloatLiteral(sumScale)};
-const MAXIMUM_SCALED_VALUE: f32 = ${getWGSLFloatLiteral(CELL_MAXIMUM_SCALED_VALUE)};
-
-// Not dggs_u64_add and friends: pulling in the dggs module costs compile time (see cell-keys.ts).
-fn cellAddI64(left: vec2u, right: vec2u) -> vec2u {
-  let low = left.y + right.y;
-  return vec2u(left.x + right.x + select(0u, 1u, low < left.y), low);
-}
-
-fn cellNegateI64(value: vec2u) -> vec2u {
-  let low = ~value.y + 1u;
-  return vec2u(~value.x + select(0u, 1u, low == 0u), low);
-}
-
-/** roundHalfEven(value * SUM_SCALE), saturated, as a two's-complement 64-bit integer. */
-fn cellScaleValue(value: f32) -> vec2u {
-  let scaled = clamp(round(value * SUM_SCALE), -MAXIMUM_SCALED_VALUE, MAXIMUM_SCALED_VALUE);
-  let magnitude = abs(scaled);
-  let highFloat = floor(magnitude * 2.3283064365386963e-10);
-  let lowFloat = magnitude - highFloat * 4294967296.0;
-  let result = vec2u(u32(highFloat), u32(lowFloat));
-  return select(result, cellNegateI64(result), scaled < 0.0);
-}
-
-fn cellI64ToF32(value: vec2u) -> f32 {
-  let isNegative = (value.x & 0x80000000u) != 0u;
-  let magnitude = select(value, cellNegateI64(value), isNegative);
-  let result = f32(magnitude.x) * 4294967296.0 + f32(magnitude.y);
-  return select(result, -result, isNegative);
-}
-`;
 }

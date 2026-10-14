@@ -9,10 +9,11 @@ export {
   GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE,
   GPU_EDGE_BUNDLING_PARAMETER_LENGTH,
   GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
-  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingParameterValues,
   getGPUEdgeBundlingFixedPointExponent
 } from './gpu-edge-bundling';
 export type {
-  GPUEdgeBundlingParameterValues,
-  GPUEdgeBundlingProps
+  GPUEdgeBundlingOutput,
+  GPUEdgeBundlingProps,
+  GPUEdgeBundlingSettings
 } from './gpu-edge-bundling';

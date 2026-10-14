@@ -92,25 +92,32 @@ export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTO
  */
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING = 21;
 
+/** Per-frame settings of `GPUOrdinaryLeastSquares`, packed by {@link getGPUOrdinaryLeastSquaresParameterValues}. */
+export type GPUOrdinaryLeastSquaresSettings = {
+  /**
+   * Ridge penalty in squared predictor units, added as `lambda * I` to the centered normal matrix
+   * of the predictors (never to the intercept). A value that is not finite and positive means no
+   * penalty. Defaults to 0.
+   */
+  ridgeLambda?: number;
+};
+
 /**
- * Packs the per-frame parameters of `GPUOrdinaryLeastSquares`.
+ * Packs {@link GPUOrdinaryLeastSquaresSettings} into the per-frame `parameters` of
+ * `GPUOrdinaryLeastSquares`. Layout: `[ridgeLambda]` as float32.
  *
- * Layout: `[ridgeLambda]` as float32. The ridge penalty `lambda * I` is added to the centered
- * normal matrix of the predictors (never to the intercept); a value that is not finite and
- * positive means no penalty.
- *
- * @param ridgeLambda Ridge penalty in squared predictor units (the penalty is added to `X'X`).
- * @param target Optional destination of at least 1 element.
+ * @param settings Ridge penalty.
+ * @param target Optional destination of at least `GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH` elements.
  */
 export function getGPUOrdinaryLeastSquaresParameterValues(
-  ridgeLambda: number,
+  settings: GPUOrdinaryLeastSquaresSettings = {},
   target: Float32Array = new Float32Array(GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH) {
     throw new Error(
-      `Ordinary least squares parameter target must hold ${GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH} element`
+      `getGPUOrdinaryLeastSquaresParameterValues target must hold ${GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH} element`
     );
   }
-  target[0] = ridgeLambda;
+  target[0] = settings.ridgeLambda ?? 0;
   return target;
 }

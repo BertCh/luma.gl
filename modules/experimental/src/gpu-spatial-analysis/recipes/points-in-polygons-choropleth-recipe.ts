@@ -11,9 +11,19 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUPackedGeometryPort,
+  GPUPointGeometryPort,
+  GPUPolygonGeometryPort,
+  GPURecipeStatusPort,
+  GPUStatusScalar
+} from '../../analysis-core/contracts/index';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
-import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
+import {
+  getPointInPolygonContainmentContext,
+  type GPUPointInPolygonBoundaryRule
+} from '../spatial-join/gpu-point-in-polygon-join';
 import {GPUZonalStatistics} from '../zonal-statistics/index';
 import {
   assertRecipe,
@@ -32,22 +42,21 @@ const SUPPORT: GPUSpatialContextSupport = Object.freeze({
 /** Statistic mapped to the choropleth. `'count'` needs no values. */
 export type GPUChoroplethStatistic = 'count' | 'sum' | 'mean' | 'minimum' | 'maximum';
 
-/** Polygon features, GeoArrow layout of `GPUPointInPolygonJoin`. */
-export type GPUChoroplethPolygons = {
-  /** Flattened polygon vertices. */
-  polygonPositions: GraphDataView<'float32x2'>;
-  /** Feature-to-polygon offsets, `featureCount + 1` entries. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets. */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Ring-to-vertex offsets. */
-  ringOffsets: GraphDataView<'uint32'>;
+/**
+ * Polygon features in the four-level `GPUPolygonGeometryPort` layout (one packed `positions`
+ * view), one output row per feature, plus the join options. `sourceIds` are not read: every
+ * per-feature output is indexed by feature row.
+ */
+export type GPUChoroplethPolygons = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
   /** Maximum bounding-box candidate pairs per encoding. */
   candidateCapacity: number;
   /** BVH leaf slots (power of two). */
   leafCapacity?: number;
-  /** Count boundary points as contained. Defaults to true. */
-  includeBoundary?: boolean;
+  /**
+   * Ownership of points exactly on a boundary, see `GPUPointInPolygonJoinProps.boundaryRule`.
+   * Defaults to `'half-open'`: a point on an edge shared by two features counts once.
+   */
+  boundaryRule?: GPUPointInPolygonBoundaryRule;
 };
 
 /** Optional class breaks and colors of the per-feature statistic. */
@@ -72,7 +81,12 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
   {
     counts?: GraphDataView<'uint32'>;
     featureValues?: GraphDataView<'float32'>;
-    overflow?: GraphDataView<'uint32'>;
+    /** Mirrors `result.status`. */
+    status?: {
+      overflow?: GPUStatusScalar;
+      /** One-row count of uncertain point-in-polygon pairs (stage `zonal-statistics` or `point-in-polygon`). */
+      uncertainCount?: GPUStatusScalar;
+    };
     color?: {
       breaks?: GraphDataView<'float32'>;
       classCount?: GraphDataView<'uint32'>;
@@ -99,7 +113,7 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
    */
   spatialContext?: GPUSpatialContext;
   /** Points in the coordinates of `spatialContext` (planar unless declared otherwise). */
-  points: GraphDataView<'float32x2'>;
+  points: GPUPointGeometryPort;
   /** Per-point values. Required unless `statistic` is `'count'`. */
   values?: GraphDataView<'float32'>;
   /** Polygon features. */
@@ -120,8 +134,6 @@ export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
   counts: GraphDataView<'uint32'>;
   /** The mapped statistic per feature: the `uint32` `counts` view for `'count'`, else float32. */
   featureValues: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** One-row overflow flag of the join. */
-  overflow: GraphDataView<'uint32'>;
   /** Present when `color` was requested. */
   color?: {
     breaks: GraphDataView<'float32'>;
@@ -129,6 +141,16 @@ export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
     colors: GraphDataView<'uint32'>;
     classIndices: GraphDataView<'uint32'>;
   };
+  /** Status words next to the per-stage `stages`. */
+  status: {
+    /** One-row overflow flag of the join. */
+    overflow: GPUStatusScalar;
+    /**
+     * One-row count of (point, feature) candidates whose containment could not be proven; those
+     * points stay unassigned, so a nonzero value means the statistics may be low.
+     */
+    uncertainCount: GPUStatusScalar;
+  } & GPURecipeStatusPort;
 };
 
 /**
@@ -143,6 +165,9 @@ export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
  * Spatial context: planar by default; `longitude-latitude` is accepted because counts and value
  * statistics are topological (see `spatialContext`). Density is not mapped, so no polygon area is
  * involved.
+ *
+ * Status: stage `zonal-statistics` (overflow, uncertain count), or `point-in-polygon` (overflow,
+ * uncertain count) and `group-statistics` (count, overflow, required count) with `backend: 'group'`.
  */
 export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -154,6 +179,8 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   const backend = props.backend ?? 'zonal';
   const providedOutputs = props.outputs ?? {};
   const {polygons, points} = props;
+  // Rows are features: feature source IDs never index the outputs.
+  const polygonRows = {...polygons, sourceIds: undefined};
   const featureCount = polygons.featureOffsets.length - 1;
   assertRecipe(ID, featureCount >= 1, 'needs at least one feature');
   assertRecipe(ID, statistic === 'count' || props.values, `statistic ${statistic} needs values`);
@@ -180,8 +207,22 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
           featureCount,
           providedOutputs.featureValues
         );
-  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, providedOutputs.overflow);
+  const overflow = getOrCreateView(
+    graph,
+    `${id}-overflow`,
+    'uint32',
+    1,
+    providedOutputs.status?.overflow
+  );
+  const uncertainCount = getOrCreateView(
+    graph,
+    `${id}-uncertain-count`,
+    'uint32',
+    1,
+    providedOutputs.status?.uncertainCount
+  );
   let groupCount: GraphDataView<'uint32'> | undefined;
+  let groupRequiredCount: GraphDataView<'uint32'> | undefined;
   let groupOverflow: GraphDataView<'uint32'> | undefined;
 
   if (backend === 'zonal') {
@@ -195,12 +236,12 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
       new GPUZonalStatistics({
         id: `${id}-zonal`,
         spatialContext,
-        features: {kind: 'polygons', ...polygons},
-        points,
+        features: polygonRows,
+        positions: points.positions,
         values: statistic === 'count' ? undefined : props.values,
         output: {
           counts,
-          overflow,
+          status: {overflow, uncertainCount},
           ...(statistic === 'count' ? {} : {[statisticOutput[statistic]]: featureValues})
         }
       })
@@ -210,21 +251,24 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
       graph,
       `${id}-point-features`,
       'uint32',
-      points.length
+      points.positions.length
     );
     builder.add(
       new GPUPointInPolygonJoin({
         id: `${id}-join`,
         spatialContext: getPointInPolygonContainmentContext(spatialContext),
-        points,
-        ...polygons,
-        pointFeatureIds: pointFeatureRows,
-        overflow
+        points: {...points, sourceIds: undefined},
+        polygons: polygonRows,
+        candidateCapacity: polygons.candidateCapacity,
+        leafCapacity: polygons.leafCapacity,
+        boundaryRule: polygons.boundaryRule,
+        output: {pointFeatureIds: pointFeatureRows, status: {overflow, uncertainCount}}
       })
     );
     const groupKeys = getOrCreateView(graph, `${id}-group-keys`, 'uint32', featureCount);
     groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1);
     groupOverflow = getOrCreateView(graph, `${id}-group-overflow`, 'uint32', 1);
+    groupRequiredCount = getOrCreateView(graph, `${id}-group-required-count`, 'uint32', 1);
     const columnOutput = {
       sum: {sumValues: featureValues},
       mean: {means: featureValues},
@@ -246,7 +290,11 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
                   output: columnOutput[statistic] as GPUGroupStatisticsColumnOutput
                 }
               ],
-        output: {keys: groupKeys, counts, count: groupCount, overflow: groupOverflow}
+        output: {
+          keys: groupKeys,
+          counts,
+          status: {count: groupCount, overflow: groupOverflow, requiredCount: groupRequiredCount}
+        }
       })
     );
   }
@@ -257,16 +305,24 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
     featureCount,
     counts,
     featureValues,
-    overflow,
     outputs: {counts, featureValues},
     intermediates: {},
     status: {
+      overflow,
+      uncertainCount,
       stages:
         backend === 'zonal'
-          ? [{stage: 'zonal-statistics', status: {overflow}}]
+          ? [{stage: 'zonal-statistics', status: {overflow, uncertainCount}}]
           : [
-              {stage: 'point-in-polygon', status: {overflow}},
-              {stage: 'group-statistics', status: {count: groupCount!, overflow: groupOverflow!}}
+              {stage: 'point-in-polygon', status: {overflow, uncertainCount}},
+              {
+                stage: 'group-statistics',
+                status: {
+                  count: groupCount!,
+                  overflow: groupOverflow!,
+                  requiredCount: groupRequiredCount!
+                }
+              }
             ]
     }
   };

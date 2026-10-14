@@ -8,8 +8,6 @@ import {
   GPUFlagOffsets,
   GPUGridIndex,
   GPUGroupAggregation,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,15 +16,19 @@ import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  getGPUGridIndexMaximumCellCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getKeyGroupNodes, getKeyPairSortNodes} from '../spatial-weights/key-pair-grouping';
 import {
   createSpatialClusteringBorderNode,
   createSpatialClusteringBoxCountsNode,
   createSpatialClusteringBoxKeysNode,
+  createSpatialClusteringCellGatherNode,
   createSpatialClusteringGridBoundsNode,
   createSpatialClusteringGridPositionsNode,
   createSpatialClusteringCentroidsNode,
@@ -44,7 +46,7 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 /** Planar (native) or longitude/latitude with the great-circle metric. */
 const CLUSTERING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -55,11 +57,60 @@ const CLUSTERING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.free
 const OPERATION = 'GPUSpatialClustering';
 
 /**
+ * Largest cluster capacity (`output.clusters.ids` rows) of {@link GPUSpatialClustering} with
+ * `output.clusterCentroids` and the default `sumOrder: 'sorted'`: the sorted centroid sums run one
+ * 256-thread workgroup per cluster, and `capacity * 256` invocations must fit one uint32 dispatch,
+ * so `2^24 - 1`.
+ */
+export const GPU_SPATIAL_CLUSTERING_MAXIMUM_SORTED_CLUSTER_COUNT = 2 ** 24 - 1;
+
+/** Caller-owned outputs of {@link GPUSpatialClustering}. */
+export type GPUSpatialClusteringOutput = {
+  /** Labels, one row per point: compact cluster ID `0..k-1`, or `0xffffffff` (noise). */
+  labels: GraphDataView<'uint32'>;
+  /**
+   * Optional root rows, one per point: the smallest core row of the point's cluster
+   * (the row of its representative core point), or `0xffffffff` for noise. Border points report
+   * the root of the cluster they were assigned to.
+   */
+  rootRows?: GraphDataView<'uint32'>;
+  /** Optional core flags, one per point: `1` for core points, else `0`. */
+  coreFlags?: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving the unclamped number of clusters `k`. */
+  clusterCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional bounded per-cluster output. `ids[labelId]` is the `sourceIds` entry (or row index) of
+   * the cluster's root point, `count` is `min(k, ids.length)` and `overflow` is `1` when
+   * `k > ids.length`. `ids.length` is the cluster capacity and must be at least one (at most
+   * {@link GPU_SPATIAL_CLUSTERING_MAXIMUM_SORTED_CLUSTER_COUNT} with sorted centroid sums). Labels at or
+   * above the capacity are still written to `labels` but excluded from sizes and centroids.
+   */
+  clusters?: GPUCompactOutput;
+  /**
+   * Optional packed one-row view that receives the clamped cluster count (`clusters.status.count`),
+   * typically an indirect draw record's `instanceCount` imported with
+   * `graph.importGPUData(id, drawCommands.getInstanceCountData(0))`. Requires `clusters`.
+   */
+  drawInstanceCount?: GraphDataView<'uint32'>;
+  /** Optional per-cluster member count (core and border points); requires `clusters`. Length equals `clusters.ids.length`. */
+  clusterSizes?: GraphDataView<'uint32'>;
+  /**
+   * Optional per-cluster mean member position, `(0, 0)` for rows at or beyond the cluster count;
+   * requires `clusters`. With `sumOrder: 'atomic'` sums use f32 atomics, so
+   * the order of accumulation (and the last bits of the result) varies between runs. With the
+   * default `sumOrder: 'sorted'` the sums are bitwise reproducible across repeated encodings on one
+   * device: labels are canonical (independent of GPU scheduling),
+   * so cluster slots and memberships are fixed, and members are summed in a fixed order.
+   */
+  clusterCentroids?: GraphDataView<'float32x2'>;
+};
+
+/**
  * Properties for {@link GPUSpatialClustering}.
  *
  * Per-frame (no recompile): the contents of `positions`, `parameters` (bounds, epsilon, minimum
  * points) and `sourceIds`. Compile-time (needs a new graph): `positions.length`, `gridSize`,
- * `clusters.ids.length` (the cluster capacity), and which optional views are present.
+ * `output.clusters.ids.length` (the cluster capacity), and which optional views are present.
  *
  * `gridSize` is only a maximum cell lattice. Every encoding derives the active lattice on the GPU
  * from the per-frame bounds and epsilon so each cell is at least epsilon wide. Results never
@@ -99,47 +150,14 @@ export type GPUSpatialClusteringProps = {
   parameters: GraphDataView<'float32'>;
   /**
    * Maximum `[columns, rows]` of the neighbor-search cell lattice. Compile-time. Sizes the cell
-   * buffers; `columns * rows` must be below `2^32 - 1`.
+   * buffers; `columns * rows` is at most {@link getGPUGridIndexMaximumCellCount} (2^25 - 1 on a
+   * default device).
    */
   gridSize: readonly [number, number];
   /** Optional stable IDs, one per point, emitted in `clusters.ids`. Row indices otherwise. */
   sourceIds?: GraphDataView<'uint32'>;
-  /** Caller-owned labels, one row per point: compact cluster ID `0..k-1`, or `0xffffffff` (noise). */
-  labels: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned root rows, one per point: the smallest core row of the point's cluster
-   * (the row of its representative core point), or `0xffffffff` for noise. Border points report
-   * the root of the cluster they were assigned to.
-   */
-  rootRows?: GraphDataView<'uint32'>;
-  /** Optional caller-owned core flags, one per point: `1` for core points, else `0`. */
-  coreFlags?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of clusters `k`. */
-  clusterCount?: GraphDataView<'uint32'>;
-  /**
-   * Optional bounded per-cluster output. `ids[labelId]` is the `sourceIds` entry (or row index) of
-   * the cluster's root point, `count` is `min(k, ids.length)` and `overflow` is `1` when
-   * `k > ids.length`. `ids.length` is the cluster capacity and must be at least one. Labels at or
-   * above the capacity are still written to `labels` but excluded from sizes and centroids.
-   */
-  clusters?: GPUCompactOutput;
-  /**
-   * Optional packed one-row view that receives the clamped cluster count (`clusters.count`),
-   * typically an indirect draw record's `instanceCount` imported with
-   * `graph.importGPUData(id, drawCommands.getInstanceCountData(0))`. Requires `clusters`.
-   */
-  drawInstanceCount?: GraphDataView<'uint32'>;
-  /** Optional per-cluster member count (core and border points); requires `clusters`. Length equals `clusters.ids.length`. */
-  clusterSizes?: GraphDataView<'uint32'>;
-  /**
-   * Optional per-cluster mean member position, `(0, 0)` for rows at or beyond the cluster count;
-   * requires `clusters`. With `sumOrder: 'atomic'` sums use f32 atomics, so
-   * the order of accumulation (and the last bits of the result) varies between runs. With the
-   * default `sumOrder: 'sorted'` the sums are bitwise reproducible across repeated encodings on one
-   * device: labels are canonical (independent of GPU scheduling),
-   * so cluster slots and memberships are fixed, and members are summed in a fixed order.
-   */
-  clusterCentroids?: GraphDataView<'float32x2'>;
+  /** Caller-owned outputs. */
+  output: GPUSpatialClusteringOutput;
   /**
    * Accumulation order of the centroid sums. Compile-time; defaults to `'sorted'`.
    *
@@ -184,7 +202,8 @@ export type GPUSpatialClusteringProps = {
  *
  * Composition: grid-domain and grid-point kernels feeding `GPUGridIndex` (its domain is a buffer, so
  * bounds and epsilon never recompile; order within a cell is unspecified and nothing depends on
- * it), a core-point kernel, a lock-free CAS union-find kernel that hooks the
+ * it), a gather that copies positions (and, after the core pass, core flags) into grid-cell order
+ * so every neighbor scan reads the points of a cell from consecutive words, a core-point kernel, a lock-free CAS union-find kernel that hooks the
  * larger root under the smaller, resolve and border kernels, `GPUFlagOffsets` for compact IDs,
  * and optional `GPUCompaction`, `GPUGroupAggregation` and publish nodes for cluster outputs.
  *
@@ -244,82 +263,90 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       );
     }
     const [columns, gridRows] = props.gridSize;
-    if (
-      !Number.isInteger(columns) ||
-      !Number.isInteger(gridRows) ||
-      columns < 1 ||
-      gridRows < 1 ||
-      columns * gridRows >= 0xffffffff
-    ) {
-      throw new Error(
-        `${id} gridSize must be two positive integers with columns * rows < 2^32 - 1`
-      );
+    if (!Number.isInteger(columns) || !Number.isInteger(gridRows) || columns < 1 || gridRows < 1) {
+      throw new Error(`${id} gridSize must be two positive integers`);
     }
     for (const [name, view] of [
       ['sourceIds', props.sourceIds],
-      ['labels', props.labels],
-      ['rootRows', props.rootRows],
-      ['coreFlags', props.coreFlags]
+      ['output.labels', props.output.labels],
+      ['output.rootRows', props.output.rootRows],
+      ['output.coreFlags', props.output.coreFlags]
     ] as const) {
       if (!view) {
         continue;
       }
-      validatePackedUint32View(view, `${id} ${name}`);
+      validatePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length !== rows) {
         throw new Error(`${id} ${name} length must equal positions length`);
       }
     }
-    if (props.clusterCount) {
-      validatePackedUint32View(props.clusterCount, `${id} clusterCount`);
-      if (props.clusterCount.length < 1) {
-        throw new Error(`${id} clusterCount must contain one uint32 row`);
+    if (props.output.clusterCount) {
+      validatePackedView(props.output.clusterCount, ['uint32'], `${id} output.clusterCount`);
+      if (props.output.clusterCount.length < 1) {
+        throw new Error(`${id} output.clusterCount must contain one uint32 row`);
       }
     }
-    if (props.clusters) {
-      validateCompactOutput(id, props.clusters);
-      if (props.clusters.ids.length < 1) {
-        throw new Error(`${id} clusters.ids must hold at least one row`);
+    if (props.output.clusters) {
+      validateCompactOutput(id, props.output.clusters);
+      if (props.output.clusters.ids.length < 1) {
+        throw new Error(`${id} output.clusters.ids must hold at least one row`);
       }
     }
-    if (props.drawInstanceCount) {
-      validatePackedUint32View(props.drawInstanceCount, `${id} drawInstanceCount`);
-      if (props.drawInstanceCount.length < 1) {
-        throw new Error(`${id} drawInstanceCount must contain one uint32 row`);
+    if (props.output.drawInstanceCount) {
+      validatePackedView(
+        props.output.drawInstanceCount,
+        ['uint32'],
+        `${id} output.drawInstanceCount`
+      );
+      if (props.output.drawInstanceCount.length < 1) {
+        throw new Error(`${id} output.drawInstanceCount must contain one uint32 row`);
       }
-      if (!props.clusters) {
-        throw new Error(`${id} drawInstanceCount requires clusters`);
-      }
-    }
-    if ((props.clusterSizes || props.clusterCentroids) && !props.clusters) {
-      throw new Error(`${id} clusterSizes and clusterCentroids require clusters`);
-    }
-    const capacity = props.clusters?.ids.length ?? 0;
-    if (props.clusterSizes) {
-      validatePackedUint32View(props.clusterSizes, `${id} clusterSizes`);
-      if (props.clusterSizes.length !== capacity) {
-        throw new Error(`${id} clusterSizes length must equal clusters.ids length`);
+      if (!props.output.clusters) {
+        throw new Error(`${id} output.drawInstanceCount requires clusters`);
       }
     }
-    if (props.clusterCentroids) {
-      validatePackedView(props.clusterCentroids, ['float32x2'], `${id} clusterCentroids`);
-      if (props.clusterCentroids.length !== capacity) {
-        throw new Error(`${id} clusterCentroids length must equal clusters.ids length`);
+    if ((props.output.clusterSizes || props.output.clusterCentroids) && !props.output.clusters) {
+      throw new Error(`${id} output.clusterSizes and clusterCentroids require clusters`);
+    }
+    const capacity = props.output.clusters?.ids.length ?? 0;
+    if (props.output.clusterSizes) {
+      validatePackedView(props.output.clusterSizes, ['uint32'], `${id} output.clusterSizes`);
+      if (props.output.clusterSizes.length !== capacity) {
+        throw new Error(`${id} output.clusterSizes length must equal clusters.ids length`);
+      }
+    }
+    if (props.output.clusterCentroids) {
+      validatePackedView(
+        props.output.clusterCentroids,
+        ['float32x2'],
+        `${id} output.clusterCentroids`
+      );
+      if (props.output.clusterCentroids.length !== capacity) {
+        throw new Error(`${id} output.clusterCentroids length must equal clusters.ids length`);
+      }
+      if (props.sumOrder !== 'atomic') {
+        validateMaximumCount(
+          id,
+          'clusters.ids rows with sorted centroid sums',
+          capacity,
+          GPU_SPATIAL_CLUSTERING_MAXIMUM_SORTED_CLUSTER_COUNT
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.labels,
-        props.rootRows,
-        props.coreFlags,
-        props.clusterCount,
-        props.clusters?.ids,
-        props.clusters?.count,
-        props.clusters?.overflow,
-        props.clusters?.requiredCount,
-        props.clusterSizes,
-        props.clusterCentroids,
-        props.drawInstanceCount
+        props.output.labels,
+        props.output.rootRows,
+        props.output.coreFlags,
+        props.output.clusterCount,
+        props.output.clusters?.ids,
+        props.output.clusters?.status.count,
+        props.output.clusters?.status.overflow,
+        props.output.clusters?.status.requiredCount,
+        props.output.clusterSizes,
+        props.output.clusterCentroids,
+        props.output.drawInstanceCount
       ],
       [props.positions, props.parameters, props.sourceIds]
     );
@@ -371,32 +398,39 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {positions, parameters, gridSize, clusters} = props;
+    const {positions, parameters, gridSize} = props;
+    const {clusters} = props.output;
     const geographicRadius = this.geographicRadius;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
       props.sourceIds,
-      props.labels,
-      props.rootRows,
-      props.coreFlags,
-      props.clusterCount,
+      props.output.labels,
+      props.output.rootRows,
+      props.output.coreFlags,
+      props.output.clusterCount,
       clusters?.ids,
-      clusters?.count,
-      clusters?.overflow,
-      clusters?.requiredCount,
-      props.clusterSizes,
-      props.clusterCentroids,
-      props.drawInstanceCount
+      clusters?.status.count,
+      clusters?.status.overflow,
+      clusters?.status.requiredCount,
+      props.output.clusterSizes,
+      props.output.clusterCentroids,
+      props.output.drawInstanceCount
     ]);
+    const cellCount = gridSize[0] * gridSize[1];
+    validateMaximumCount(
+      id,
+      'gridSize cells',
+      cellCount,
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
     const rows = positions.length;
     const capacity = clusters?.ids.length ?? 0;
-    const cellCount = gridSize[0] * gridSize[1];
-    const wantsCentroids = Boolean(props.clusterCentroids);
+    const wantsCentroids = Boolean(props.output.clusterCentroids);
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     const clusterCount =
-      props.clusterCount ?? createTransientView(graph, `${id}-cluster-count`, 'uint32', 1);
+      props.output.clusterCount ?? createTransientView(graph, `${id}-cluster-count`, 'uint32', 1);
 
     if (rows === 0) {
       // No points: every per-point output is empty, so only the scalar and cluster outputs remain.
@@ -410,23 +444,23 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
           componentCount: 1
         })
       );
-      if (props.clusterSizes) {
+      if (props.output.clusterSizes) {
         nodes.push(
           createFillNode<Parameters>(graph, {
             id: `${id}-cluster-sizes`,
             operation: OPERATION,
-            view: props.clusterSizes,
+            view: props.output.clusterSizes,
             type: 'u32',
             value: '0u'
           })
         );
       }
-      if (props.clusterCentroids) {
+      if (props.output.clusterCentroids) {
         nodes.push(
           createFillNode<Parameters>(graph, {
             id: `${id}-cluster-centroids`,
             operation: OPERATION,
-            view: props.clusterCentroids,
+            view: props.output.clusterCentroids,
             type: 'f32',
             value: '0.0',
             componentCount: capacity * 2
@@ -440,7 +474,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
             operation: OPERATION,
             requiredCount: clusterCount,
             output: clusters,
-            extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
+            extraCounts: props.output.drawInstanceCount ? [props.output.drawInstanceCount] : []
           })
         );
       }
@@ -452,20 +486,22 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
     const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
     const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', rows);
+    const cellPositions = createTransientView(graph, `${id}-cell-positions`, 'float32x2', rows);
+    const cellCoreFlags = createTransientView(graph, `${id}-cell-core-flags`, 'uint32', rows);
     const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
     const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
     const coreFlags =
-      props.coreFlags ?? createTransientView(graph, `${id}-core-flags`, 'uint32', rows);
+      props.output.coreFlags ?? createTransientView(graph, `${id}-core-flags`, 'uint32', rows);
     const parents = createTransientView(graph, `${id}-parents`, 'uint32', rows);
     const rootLabels =
-      props.rootRows ?? createTransientView(graph, `${id}-root-labels`, 'uint32', rows);
+      props.output.rootRows ?? createTransientView(graph, `${id}-root-labels`, 'uint32', rows);
     const rootFlags = createTransientView(graph, `${id}-root-flags`, 'uint32', rows);
     const clusterOffsets = createTransientView(graph, `${id}-cluster-offsets`, 'uint32', rows);
     const boxCounts = props.denseBoxShortcut
       ? createTransientView(graph, `${id}-box-counts`, 'uint32', rows)
       : undefined;
     const gridViews = {
-      positions,
+      cellPositions,
       parameters,
       sortedRows,
       gridCount,
@@ -500,6 +536,15 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         count: gridCount,
         overflow: gridOverflow
       }).getCommandNodes(graph),
+      // Cell-ordered copy: neighbor scans walk `sortedRows`, so they read consecutive slots.
+      createSpatialClusteringCellGatherNode<Parameters>(graph, {
+        id: `${id}-cell-positions`,
+        variant: 'cell-positions',
+        values: positions,
+        sortedRows,
+        gridCount,
+        cellValues: cellPositions
+      }),
       ...(boxCounts ? this._getBoxCountNodes(graph, boxCounts) : []),
       // The core pass visits valid points only, so excluded rows need their zero flag first.
       createFillNode<Parameters>(graph, {
@@ -517,6 +562,14 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         coreFlags,
         boxCounts
       }),
+      createSpatialClusteringCellGatherNode<Parameters>(graph, {
+        id: `${id}-cell-core-flags`,
+        variant: 'cell-core-flags',
+        values: coreFlags,
+        sortedRows,
+        gridCount,
+        cellValues: cellCoreFlags
+      }),
       createSpatialClusteringParentsInitNode<Parameters>(graph, {
         id: `${id}-parents-init`,
         parents
@@ -526,7 +579,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         ...gridViews,
         gridSize,
         geographicRadius,
-        coreFlags,
+        cellCoreFlags,
         parents
       }),
       createSpatialClusteringResolveNode<Parameters>(graph, {
@@ -540,7 +593,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         ...gridViews,
         gridSize,
         geographicRadius,
-        coreFlags,
+        cellCoreFlags,
         rootLabels
       }),
       createSpatialClusteringRootFlagsNode<Parameters>(graph, {
@@ -569,7 +622,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         positions,
         rootLabels,
         clusterOffsets,
-        labels: props.labels,
+        labels: props.output.labels,
         memberXs,
         memberYs
       })
@@ -593,7 +646,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     );
 
     const sizes =
-      props.clusterSizes ??
+      props.output.clusterSizes ??
       (wantsCentroids
         ? createTransientView(graph, `${id}-cluster-size-values`, 'uint32', capacity)
         : undefined);
@@ -601,12 +654,12 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       nodes.push(
         ...new GPUGroupAggregation({
           id: `${id}-cluster-sizes`,
-          keys: props.labels,
+          keys: props.output.labels,
           output: sizes
         }).getCommandNodes(graph)
       );
     }
-    if (props.clusterCentroids && sizes && memberXs && memberYs) {
+    if (props.output.clusterCentroids && sizes && memberXs && memberYs) {
       const sumsX = createTransientView(graph, `${id}-cluster-sum-values-x`, 'float32', capacity);
       const sumsY = createTransientView(graph, `${id}-cluster-sum-values-y`, 'float32', capacity);
       if (props.sumOrder !== 'atomic') {
@@ -617,7 +670,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
             id: `${id}-cluster-sums`,
             operation: OPERATION,
             segmentCount: capacity,
-            segmentKeys: props.labels,
+            segmentKeys: props.output.labels,
             reductions: [
               {name: 'x', contributions: memberXs, output: sumsX},
               {name: 'y', contributions: memberYs, output: sumsY}
@@ -628,14 +681,14 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         nodes.push(
           ...new GPUGroupAggregation({
             id: `${id}-cluster-sums-x`,
-            keys: props.labels,
+            keys: props.output.labels,
             values: memberXs,
             output: sumsX,
             operation: 'sum'
           }).getCommandNodes(graph),
           ...new GPUGroupAggregation({
             id: `${id}-cluster-sums-y`,
-            keys: props.labels,
+            keys: props.output.labels,
             values: memberYs,
             output: sumsY,
             operation: 'sum'
@@ -648,7 +701,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
           sizes,
           sumsX,
           sumsY,
-          centroids: props.clusterCentroids
+          centroids: props.output.clusterCentroids
         })
       );
     }
@@ -660,7 +713,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         requiredCount: clusterCount,
         compactIds: rootIds,
         output: clusters,
-        extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
+        extraCounts: props.output.drawInstanceCount ? [props.output.drawInstanceCount] : []
       })
     );
     return nodes;

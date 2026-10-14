@@ -5,29 +5,36 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPULineGeometryPort} from '../contracts/index';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validatePackedView,
+  validatePowerOfTwo
+} from '../../utils/gpu-contributor-utils';
+import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 import {
   GPUSegmentRingAssembly,
   GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED,
   GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING,
   GPU_SEGMENT_RING_ASSEMBLY_NONE
-} from '../ring-assembly/index';
-import {GPULineNoding} from './gpu-line-noding';
+} from '../../analysis-core/ring-assembly/index';
+import {GPULineNoding, validateLineNodingBounds} from './gpu-line-noding';
 import {
   GPU_POLYGONIZE_EDGE_CLASS,
   GPU_TOPOLOGY_NONE,
   type GPUPolygonizeOutput,
   type GPUTopologyPrecisionPolicy
 } from './topology-types';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUPolygonize';
 
@@ -42,19 +49,26 @@ export type GPUPolygonizeProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Arbitrary finite planar linework; rings need not be pre-noded or consistently oriented. */
-  lines: Omit<GPULineGeometryPort, 'positions' | 'sourceIds'> & {
-    positions: GraphDataView<'float32x2'>;
+  lines: GPUPackedGeometryPort<GPULineGeometryPort> & {
+    /** Optional source feature ID per line. */
     sourceIds?: GraphDataView<'uint32'>;
   };
   /** Optional polygonization group per input line; omitted lines belong to one shared group. */
   groupIds?: GraphDataView<'uint32'>;
-  /** Capacity of the exact intersection event list used by noding. */
+  /**
+   * Capacity of the exact intersection event list used by noding. The line count plus four times
+   * this capacity is at most {@link getGPULineSplitMaximumPieceBound} (4194304 on a default
+   * device), and `lines.positions` has at most {@link getGPUSegmentIntersectionMaximumVertexCount}
+   * rows.
+   */
   intersectionCapacity: number;
   /** Explicit precision and vertex identity policy. */
   precision: GPUTopologyPrecisionPolicy;
-  /** Caller-owned noding, half-edge, polygon and diagnostic outputs. */
+  /**
+   * Caller-owned noding, half-edge, polygon and diagnostic outputs. `output.status.uncertainCount`
+   * is the optional uncertain-predicate counter.
+   */
   output: GPUPolygonizeOutput;
-  uncertainCount?: GraphDataView<'uint32'>;
   spatialSort?: boolean;
   leafCapacity?: number;
 };
@@ -91,6 +105,11 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     }
     if (precision.predicates !== 'exact-or-uncertain' || precision.storage !== 'float32') {
       throw new Error(`${id} supports exact-or-uncertain predicates with float32 storage`);
+    }
+    // Delegates are built later, in getCommandNodes: check forwarded options now, under this id.
+    validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
+    if (props.leafCapacity !== undefined) {
+      validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
     if (props.groupIds) {
       validatePackedUint32View(props.groupIds, `${id} groupIds`);
@@ -180,9 +199,15 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
       output.polygons.sourceIds,
       output.diagnostics.edgeClasses,
       ...Object.values(output.diagnostics).filter(view => view !== output.diagnostics.edgeClasses),
-      ...Object.values(output.status),
-      props.uncertainCount
+      ...Object.values(output.status)
     ]);
+    validateLineNodingBounds(
+      id,
+      graph.device,
+      props.lines.positions.length,
+      props.lines.lineOffsets.length - 1,
+      props.intersectionCapacity
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     nodes.push(
       ...new GPULineNoding({
@@ -190,8 +215,13 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
         spatialContext: this.spatialContext,
         lines: props.lines,
         intersectionCapacity: props.intersectionCapacity,
-        output: output.nodedSegments,
-        uncertainCount: props.uncertainCount,
+        output: {
+          ...output.nodedSegments,
+          status: {
+            ...output.nodedSegments.status,
+            uncertainCount: output.status.uncertainCount
+          }
+        },
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity
       }).getCommandNodes(graph)
@@ -374,9 +404,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
           ringShells,
           segmentRings: output.directedEdges.ringIds,
           segmentFlags: output.directedEdges.flags,
-          count: ringCount,
-          requiredCount: ringRequiredCount,
-          overflow: ringOverflow,
+          status: {count: ringCount, requiredCount: ringRequiredCount, overflow: ringOverflow},
           polygons: output.polygons
         }
       }).getCommandNodes(graph)

@@ -22,6 +22,8 @@ import {
   createRasterIterationResetNode,
   createRasterIterationState
 } from '../cost-distance/raster-relaxation';
+import {validateRasterGrid} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {
   getIsolinesCornersWGSL,
@@ -46,26 +48,42 @@ export type GPUIsolinesOutput = {
    * `(c, r) -> (c, r + 1)` is `height * (width - 1) + r * width + c`.
    */
   segmentEdges?: GraphDataView<'uint32x2'>;
+  /** Optional stitched polyline outputs; presence schedules stitching. */
+  polylines?: GPUIsolinesPolylineOutput;
+  /** One-row status words. */
+  status: GPUIsolinesStatus;
+};
+
+/** One-row status words of {@link GPUIsolines}. */
+export type GPUIsolinesStatus = {
   /** One row receiving `min(requiredCount, segments.length)`. */
   count: GraphDataView<'uint32'>;
-  /** One row receiving 1 when segments were dropped for lack of capacity, otherwise 0. */
-  overflow: GraphDataView<'uint32'>;
   /** Optional one row receiving the unclamped segment count. */
   requiredCount?: GraphDataView<'uint32'>;
+  /** One row receiving 1 when segments were dropped for lack of capacity, otherwise 0. */
+  overflow: GraphDataView<'uint32'>;
+  /**
+   * One row receiving 1 when segments or polylines were dropped, otherwise 0. Required with
+   * `output.polylines`.
+   */
+  polylineOverflow?: GraphDataView<'uint32'>;
 };
 
 /**
- * Optional stitched polyline outputs of {@link GPUIsolines}. Presence of this object schedules the
- * stitching pass.
+ * Optional stitched polyline outputs of {@link GPUIsolines} (`output.polylines`). Presence of this
+ * object schedules the stitching pass.
  *
  * Chains are formed per level. Open chains start at the segment with no predecessor. Closed rings
  * start at their smallest segment index and repeat the first vertex at the end. Polylines are
- * ordered by head segment index. Vertices are copies of segment endpoints. Polyline `p` spans
+ * ordered by head segment index. Vertices are copies of segment endpoints, with bit-identical
+ * consecutive vertices of a polyline collapsed (zero-length segments, where a corner equals the
+ * level exactly, are kept in the raw segment output because they bridge chains in the stitching).
+ * The capacity check uses the count before that collapse. Polyline `p` spans
  * vertex rows `[polylineOffsets[p], polylineOffsets[p + 1])` and is complete: a polyline that does
- * not fit into `vertices` is dropped, with all later ones, and `overflow` is set. Worst case needs
+ * not fit into `vertices` is dropped, with all later ones, and `status.polylineOverflow` is set. Worst case needs
  * `2 * segmentCapacity` vertices (every chain one segment long).
  *
- * If the segment output overflowed, no polyline is produced and `overflow` is set.
+ * If the segment output overflowed, no polyline is produced and `status.polylineOverflow` is set.
  */
 export type GPUIsolinesPolylineOutput = {
   /** World positions relative to the parameters' `localOrigin`; the capacity is `vertices.length`. */
@@ -80,25 +98,21 @@ export type GPUIsolinesPolylineOutput = {
   polylineCount: GraphDataView<'uint32'>;
   /** One row receiving the number of vertices written (`polylineOffsets[polylineCount]`). */
   vertexCount: GraphDataView<'uint32'>;
-  /** One row receiving 1 when segments or polylines were dropped, otherwise 0. */
-  overflow: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUIsolines}.
  *
- * Topology: `width`, `height`, `levels.length` (the maximum level count), the segment and vertex
+ * Topology: `grid` size, `levels.length` (the maximum level count), the segment and vertex
  * capacities, `noDataValue`, and which optional views exist. Per-frame (no recompile): raster and
  * `levels` contents, and `parameters` (`levelCount`, extent).
  */
 export type GPUIsolinesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'isolines'`. */
   id?: string;
-  /** Raster width in samples, at least 2. */
-  width: number;
-  /** Raster height in samples, at least 2. */
-  height: number;
-  /** Packed row-major float32 raster of at least `width * height` rows. NaN is nodata. */
+  /** Raster grid: its width and height (each at least 2) size the kernels. */
+  grid: GPURasterMetadata;
+  /** Packed row-major float32 raster of at least `width * height` rows. NaN and infinities are nodata. */
   values: GraphDataView<'float32'>;
   /** Optional nonzero-is-valid mask over the raster. */
   validity?: GraphDataView<'uint32'>;
@@ -108,10 +122,8 @@ export type GPUIsolinesProps = {
   levels: GraphDataView<'float32'>;
   /** Per-frame float32 view written with `getGPUIsolinesParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Caller-owned segment outputs. */
+  /** Caller-owned outputs: segments, optional polylines, and status words. */
   output: GPUIsolinesOutput;
-  /** Optional polyline outputs; schedules stitching. */
-  polylines?: GPUIsolinesPolylineOutput;
 };
 
 /**
@@ -147,14 +159,12 @@ export class GPUIsolines implements GPUCommandNodeProducer {
     this.id = props.id ?? 'isolines';
     this.props = props;
     const {id} = this;
-    const {width, height, output, polylines} = props;
-    for (const [name, value] of [
-      ['width', width],
-      ['height', height]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 2) {
-        throw new Error(`${id} ${name} must be an integer of at least 2`);
-      }
+    const {output} = props;
+    const polylines = output?.polylines;
+    validateRasterGrid(id, props.grid);
+    const {width, height} = props.grid;
+    if (width < 2 || height < 2) {
+      throw new Error(`${id} grid width and height must be at least 2`);
     }
     if (width * height > 0xffffffff / 2) {
       throw new Error(`${id} raster is too large for 32-bit edge identifiers`);
@@ -184,45 +194,58 @@ export class GPUIsolines implements GPUCommandNodeProducer {
     validateIsolinesView(id, 'output.segments', output.segments, 'float32x4', 1);
     validateIsolinesView(id, 'output.segmentLevels', output.segmentLevels, 'uint32', capacity);
     validateIsolinesView(id, 'output.segmentEdges', output.segmentEdges, 'uint32x2', capacity);
+    if (!output.status.count) {
+      throw new Error(`${id} needs output.status.count`);
+    }
+    if (!output.status?.overflow) {
+      throw new Error(`${id} needs output.status.overflow`);
+    }
     for (const [name, scalar] of [
-      ['count', output.count],
-      ['overflow', output.overflow],
-      ['requiredCount', output.requiredCount]
+      ['status.count', output.status.count],
+      ['status.overflow', output.status.overflow],
+      ['status.requiredCount', output.status.requiredCount]
     ] as const) {
-      if (name !== 'requiredCount' && !scalar) {
-        throw new Error(`${id} needs output.${name}`);
-      }
       validateIsolinesView(id, `output.${name}`, scalar, 'uint32', 1);
     }
     if (polylines) {
-      validateIsolinesView(id, 'polylines.vertices', polylines.vertices, 'float32x2', 1);
+      validateIsolinesView(id, 'output.polylines.vertices', polylines.vertices, 'float32x2', 1);
       validateIsolinesView(
         id,
-        'polylines.polylineOffsets',
+        'output.polylines.polylineOffsets',
         polylines.polylineOffsets,
         'uint32',
         capacity + 1
       );
       validateIsolinesView(
         id,
-        'polylines.polylineLevels',
+        'output.polylines.polylineLevels',
         polylines.polylineLevels,
         'uint32',
         capacity
       );
       validateIsolinesView(
         id,
-        'polylines.polylineClosed',
+        'output.polylines.polylineClosed',
         polylines.polylineClosed,
         'uint32',
         capacity
       );
-      for (const name of ['polylineCount', 'vertexCount', 'overflow'] as const) {
+      for (const name of ['polylineCount', 'vertexCount'] as const) {
         if (!polylines[name]) {
-          throw new Error(`${id} needs polylines.${name}`);
+          throw new Error(`${id} needs output.polylines.${name}`);
         }
-        validateIsolinesView(id, `polylines.${name}`, polylines[name], 'uint32', 1);
+        validateIsolinesView(id, `output.polylines.${name}`, polylines[name], 'uint32', 1);
       }
+      if (!output.status.polylineOverflow) {
+        throw new Error(`${id} needs output.status.polylineOverflow`);
+      }
+      validateIsolinesView(
+        id,
+        'output.status.polylineOverflow',
+        output.status.polylineOverflow,
+        'uint32',
+        1
+      );
     }
     validateIsolinesAliasing(
       id,
@@ -232,21 +255,22 @@ export class GPUIsolines implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): GraphDataView[] {
-    const {output, polylines} = this.props;
+    const {output} = this.props;
+    const {polylines, status} = output;
     return [
       output.segments,
       output.segmentLevels,
       output.segmentEdges,
-      output.count,
-      output.overflow,
-      output.requiredCount,
+      output.status.count,
+      output.status.requiredCount,
+      status.overflow,
+      status.polylineOverflow,
       polylines?.vertices,
       polylines?.polylineOffsets,
       polylines?.polylineLevels,
       polylines?.polylineClosed,
       polylines?.polylineCount,
-      polylines?.vertexCount,
-      polylines?.overflow
+      polylines?.vertexCount
     ].filter(view => view !== undefined);
   }
 
@@ -255,7 +279,9 @@ export class GPUIsolines implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, segmentCapacity, maximumLevelCount} = this;
-    const {width, height, output, polylines} = props;
+    const {output} = props;
+    const {polylines} = output;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.validity,
@@ -367,20 +393,14 @@ ${getCrossingWGSL()}`,
     }
     let entries = getEntryMask(mask);
     // Saddles have two exits. High corners are joined when the centre is high.
-    let centre = ((v.x + v.y) + (v.z + v.w)) * 0.25;
-    let isJoined = countOneBits(exits) < 2u || centre >= level;
+    let isJoined = countOneBits(exits) < 2u || isCentreHigh(v, level);
     for (var exitEdge = 0u; exitEdge < 4u; exitEdge++) {
       if (((exits >> exitEdge) & 1u) == 0u) {
         continue;
       }
-      var entryEdge = exitEdge;
-      for (var step = 1u; step < 4u; step++) {
-        let candidate = select((exitEdge + 4u - step) % 4u, (exitEdge + step) % 4u, isJoined);
-        if (((entries >> candidate) & 1u) != 0u) {
-          entryEdge = candidate;
-          break;
-        }
-      }
+      let entryEdge = getPairedEntry(exitEdge, entries, isJoined);
+      // A corner exactly at the level gives a zero-length segment. It stays: it is the bridge
+      // that links the neighbouring cells' chains in the edge-based stitching.
       if (position < CAPACITY) {
         let start = getEdgeCrossing(exitEdge, level, v, cx, cy);
         let end = getEdgeCrossing(entryEdge, level, v, cx, cy);
@@ -408,9 +428,11 @@ ${getCrossingWGSL()}`,
         requiredCount: total,
         output: {
           ids: output.segmentLevels,
-          count: output.count,
-          overflow: output.overflow,
-          requiredCount: output.requiredCount
+          status: {
+            count: output.status.count,
+            overflow: output.status.overflow,
+            requiredCount: output.status.requiredCount
+          }
         }
       })
     );
@@ -483,8 +505,8 @@ ${declarations}`,
     kernel(
       'stitch-active',
       [
-        read('countIn', output.count),
-        read('overflowIn', output.overflow),
+        read('countIn', output.status.count),
+        read('overflowIn', output.status.overflow),
         write('activeOut', active)
       ],
       `activeOut[activeOutOffset] =
@@ -562,7 +584,7 @@ ${declarations}`,
         state: jumpState,
         maxIterations: roundCount,
         groupSize: 2,
-        createRound: ({nodeId, iteration, groupOffset, condition, extraResources}) =>
+        createRound: ({nodeId, iteration, slotBinding, roundSlotWGSL, condition, extraResources}) =>
           createWGSLKernelNode<Parameters>(graph, {
             id: nodeId,
             operation: OPERATION,
@@ -570,7 +592,8 @@ ${declarations}`,
             bindings: [
               read('stateIn', states[iteration % 2]),
               write('stateOut', states[(iteration + 1) % 2]),
-              {name: 'status', view: jumpState.status, type: 'atomic<u32>', access: 'read_write'}
+              {name: 'status', view: jumpState.status, type: 'atomic<u32>', access: 'read_write'},
+              slotBinding
             ],
             invocationCount: jumpState.invocationCount,
             body: `let ownBase = stateInOffset + 4u * index;
@@ -588,8 +611,9 @@ ${declarations}`,
     ownWins
   );
   stateOut[outBase + 3u] = stateIn[ownBase + 3u] + stateIn[jumpBase + 3u];
-  if (!ownWins && (atomicLoad(&status[statusOffset]) & ${1 << groupOffset}u) == 0u) {
-    atomicOr(&status[statusOffset], ${1 << groupOffset}u);
+  let roundBit = 1u << ${roundSlotWGSL};
+  if (!ownWins && (atomicLoad(&status[statusOffset]) & roundBit) == 0u) {
+    atomicOr(&status[statusOffset], roundBit);
   }`,
             condition,
             extraResources
@@ -699,6 +723,14 @@ ${declarations}`,
     );
 
     const vertexCapacity = polylines.vertices.length;
+    // Vertices are first written uncompacted (`vertexOffset + rank`), then consecutive duplicates
+    // (bit-identical neighbours, from zero-length bridge segments) are compacted out.
+    const stagedVertices = createTransientView(
+      graph,
+      `${id}-staged-vertices`,
+      'float32x2',
+      vertexCapacity
+    );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-vertices`,
@@ -711,7 +743,7 @@ ${declarations}`,
           read('chainLength', chainLength),
           read('vertexOffset', vertexOffset),
           {name: 'segments', view: output.segments, type: 'f32', access: 'read'},
-          {name: 'vertices', view: polylines.vertices, type: 'f32', access: 'read_write'}
+          {name: 'vertices', view: stagedVertices, type: 'f32', access: 'read_write'}
         ],
         invocationCount: capacity,
         declarations: `const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
@@ -762,11 +794,11 @@ ${declarations}`,
       'stitch-publish',
       [
         read('totals', totals),
-        read('segmentOverflow', output.overflow),
+        read('segmentOverflow', output.status.overflow),
         write('polylineOffsets', polylines.polylineOffsets),
         write('polylineCountOut', polylines.polylineCount),
         write('vertexCountOut', polylines.vertexCount),
-        write('overflowOut', polylines.overflow)
+        write('overflowOut', output.status.polylineOverflow!)
       ],
       `let polylineTotal = totals[totalsOffset];
   let vertexTotal = totals[totalsOffset + 1u];
@@ -792,6 +824,118 @@ ${declarations}`,
       `const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
       1
     );
+
+    // Compaction of consecutive duplicate vertices within each polyline.
+    const startFlag = transient('start-flag', vertexCapacity);
+    const keepFlag = transient('keep-flag', vertexCapacity);
+    const keepOffset = transient('keep-offset', vertexCapacity);
+    const capacityDeclaration = `const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`;
+    const readStaged: WGSLKernelBinding = {
+      name: 'staged',
+      view: stagedVertices,
+      type: 'f32',
+      access: 'read'
+    };
+    nodes.push(
+      createFillNode<Parameters>(graph, {
+        id: `${id}-start-flag-clear`,
+        operation: OPERATION,
+        view: startFlag,
+        type: 'u32',
+        value: '0u'
+      })
+    );
+    kernel(
+      'start-flags',
+      [
+        read('headKind', headKind),
+        read('vertexOffset', vertexOffset),
+        write('startOut', startFlag)
+      ],
+      `if (headKind[headKindOffset + index] != 0u) {
+    let first = vertexOffset[vertexOffsetOffset + index];
+    if (first < VERTEX_CAPACITY) {
+      startOut[startOutOffset + first] = 1u;
+    }
+  }`,
+      capacityDeclaration
+    );
+    kernel(
+      'keep-flags',
+      [
+        readStaged,
+        read('startFlag', startFlag),
+        read('vertexCount', polylines.vertexCount),
+        write('keepOut', keepFlag)
+      ],
+      `var keep = 0u;
+  if (index < vertexCount[vertexCountOffset]) {
+    let current = staged[stagedOffset + 2u * index];
+    let currentY = staged[stagedOffset + 2u * index + 1u];
+    let isStart = startFlag[startFlagOffset + index] != 0u || index == 0u;
+    // Bit-identical neighbours inside one polyline collapse; polyline starts always stay.
+    let isDuplicate = !isStart &&
+      staged[stagedOffset + 2u * index - 2u] == current &&
+      staged[stagedOffset + 2u * index - 1u] == currentY;
+    keep = select(1u, 0u, isDuplicate);
+  }
+  keepOut[keepOutOffset + index] = keep;`,
+      capacityDeclaration,
+      vertexCapacity
+    );
+    nodes.push(
+      ...new GPUScan({id: `${id}-keep-scan`, input: keepFlag, output: keepOffset}).getCommandNodes(
+        graph
+      )
+    );
+    kernel(
+      'compact-vertices',
+      [
+        readStaged,
+        read('keepFlag', keepFlag),
+        read('keepOffset', keepOffset),
+        {name: 'vertices', view: polylines.vertices, type: 'f32', access: 'read_write'}
+      ],
+      `if (keepFlag[keepFlagOffset + index] != 0u) {
+    let destination = verticesOffset + 2u * keepOffset[keepOffsetOffset + index];
+    vertices[destination] = staged[stagedOffset + 2u * index];
+    vertices[destination + 1u] = staged[stagedOffset + 2u * index + 1u];
+  }`,
+      capacityDeclaration,
+      vertexCapacity
+    );
+    kernel(
+      'compact-offsets',
+      [
+        read('keepFlag', keepFlag),
+        read('keepOffset', keepOffset),
+        read('polylineCount', polylines.polylineCount),
+        read('vertexCount', polylines.vertexCount),
+        write('polylineOffsets', polylines.polylineOffsets)
+      ],
+      `if (index <= polylineCount[polylineCountOffset]) {
+    let old = polylineOffsets[polylineOffsetsOffset + index];
+    let total = keepOffset[keepOffsetOffset + VERTEX_CAPACITY - 1u] +
+      keepFlag[keepFlagOffset + VERTEX_CAPACITY - 1u];
+    polylineOffsets[polylineOffsetsOffset + index] =
+      select(keepOffset[keepOffsetOffset + old], total, old >= vertexCount[vertexCountOffset]);
+  }`,
+      capacityDeclaration,
+      capacity + 1
+    );
+    kernel(
+      'compact-totals',
+      [
+        read('keepFlag', keepFlag),
+        read('keepOffset', keepOffset),
+        write('vertexCountOut', polylines.vertexCount)
+      ],
+      `vertexCountOut[vertexCountOutOffset] =
+    keepOffset[keepOffsetOffset + VERTEX_CAPACITY - 1u] +
+    keepFlag[keepFlagOffset + VERTEX_CAPACITY - 1u];`,
+      capacityDeclaration,
+      1
+    );
     return nodes;
   }
 }
@@ -799,6 +943,22 @@ ${declarations}`,
 /** WGSL `getEdgeCrossing(k, level, v, cx, cy)` in world coordinates, canonical edge direction. */
 function getCrossingWGSL(): string {
   return /* wgsl */ `
+// Saddles have two exits. High corners are joined when the centre is high.
+fn isCentreHigh(v: vec4<f32>, level: f32) -> bool {
+  return ((v.x + v.y) + (v.z + v.w)) * 0.25 >= level;
+}
+
+// The entry edge a segment leaving through exitEdge ends on, walking the cell boundary.
+fn getPairedEntry(exitEdge: u32, entries: u32, isJoined: bool) -> u32 {
+  for (var step = 1u; step < 4u; step++) {
+    let candidate = select((exitEdge + 4u - step) % 4u, (exitEdge + step) % 4u, isJoined);
+    if (((entries >> candidate) & 1u) != 0u) {
+      return candidate;
+    }
+  }
+  return exitEdge;
+}
+
 fn getEdgeCrossing(k: u32, level: f32, v: vec4<f32>, cx: u32, cy: u32) -> vec2<f32> {
   let minX = params[paramsOffset + 1u];
   let minY = params[paramsOffset + 2u];

@@ -10,8 +10,6 @@ import {
   GPUGroupAggregation,
   GPUHistogram,
   GPUReduction,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUConvolutionStrategy,
@@ -24,25 +22,33 @@ import type {GPUFloat32Positions} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
+  getCoreBindingElementLimit,
   getGraphViewChunks,
-  validateGraphViewsBelongToGraph
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
   type GPUSampledSurfacePort,
   type GPUSpatialContext
-} from '../contracts/index';
+} from '../../analysis-core/contracts/index';
 import {
   createPointDensityClearOverflowNode,
-  createPointDensityClearSumsNode,
   createPointDensityFinalizeNode,
   createPointDensityGridKeysNode,
   createPointDensityHexagonKeysNode,
   createPointDensityMaskedPositionsNode,
   createPointDensityWorkgroupSumNode,
-  POINT_DENSITY_WORKGROUP_SUM_SIZE,
   type PointDensityResolvedBounds
 } from './point-density-kernels';
+import {
+  createFixedPointClearNode,
+  createFixedPointDecodeNode,
+  createFixedPointScaleNodes,
+  FIXED_POINT_WORD_COUNT
+} from '../../utils/fixed-point-accumulator';
 
 /** Cell shape. `'grid'` is row-major rectangular cells; `'hexagon'` is pointy-top odd-r hexagons. */
 export type GPUPointDensityBinning = 'grid' | 'hexagon';
@@ -51,32 +57,34 @@ export type GPUPointDensityBinning = 'grid' | 'hexagon';
 export type GPUPointDensityStatistic = 'count' | 'sum' | 'mean';
 
 /**
- * How weighted per-cell sums are accumulated. `'auto'` (default) uses workgroup pre-aggregation
- * only for sufficiently large, dense inputs over a small cell grid. `'workgroup'` pre-aggregates
- * rows that share a cell inside each workgroup, so hotspot cells stay fast (1M points in one cell:
- * tens of milliseconds). `'atomic'` adds every row with a global compare-exchange float atomic: it
- * skips the key pass but serializes on cells that many points share (seconds at 1M points per cell).
- * Both are order-dependent in the last float bits.
+ * How weighted per-cell sums are accumulated. `'auto'` (default) selects `'workgroup'`, the
+ * deterministic path (algorithms roadmap decision 4: reproducible sums are the contract). `'workgroup'` quantizes each
+ * weight to a shared data-derived fixed-point unit and pre-aggregates rows that share a cell inside
+ * each workgroup, so hotspot cells stay fast (1M points in one cell: tens of milliseconds) and the
+ * sums are bitwise reproducible for every run and row order (each sum is the f32 nearest to the
+ * exact sum of the quantized weights; weights below `2^(h - 71)` of the largest, with `h` the bit
+ * length of the row count, round to the unit). `'atomic'` adds every row with a global
+ * compare-exchange float atomic: it skips the key and scale passes but serializes on cells that
+ * many points share (seconds at 1M points per cell) and is NOT deterministic: the last float bits
+ * depend on the atomic interleaving. Use it only as an explicit opt-in.
  */
 export type GPUPointDensitySumAccumulation = 'auto' | 'workgroup' | 'atomic';
 
-const AUTO_WORKGROUP_SUM_MINIMUM_ROW_COUNT = POINT_DENSITY_WORKGROUP_SUM_SIZE * 4;
-const AUTO_WORKGROUP_SUM_MINIMUM_ROWS_PER_CELL = 32;
+/**
+ * Largest `gridSize` cell count of {@link GPUPointDensity} with `weights` and the deterministic
+ * `'workgroup'` sums (the `'auto'` default): the fixed-point sum table holds three `uint32` words
+ * (12 bytes) per cell and must fit one 128 MiB storage binding, so `floor(2^27 / 12)`. Larger
+ * weighted grids need `sumAccumulation: 'atomic'`.
+ */
+export const GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT = getCoreBindingElementLimit(
+  4 * FIXED_POINT_WORD_COUNT
+);
 
-/** Selects the sum implementation from compile-time topology without inspecting GPU-resident keys. */
+/** Selects the sum implementation: `'auto'` is the deterministic fixed-point `'workgroup'` path. */
 function resolvePointDensitySumAccumulation(
-  requested: GPUPointDensitySumAccumulation | undefined,
-  rowCount: number,
-  cellCount: number
+  requested: GPUPointDensitySumAccumulation | undefined
 ): Exclude<GPUPointDensitySumAccumulation, 'auto'> {
-  if (requested === 'atomic' || requested === 'workgroup') {
-    return requested;
-  }
-  return rowCount >= AUTO_WORKGROUP_SUM_MINIMUM_ROW_COUNT &&
-    cellCount <= POINT_DENSITY_WORKGROUP_SUM_SIZE &&
-    rowCount / cellCount >= AUTO_WORKGROUP_SUM_MINIMUM_ROWS_PER_CELL
-    ? 'workgroup'
-    : 'atomic';
+  return requested === 'atomic' ? 'atomic' : 'workgroup';
 }
 
 /**
@@ -148,8 +156,11 @@ export type GPUPointDensityOutput = {
   histogram?: GraphDataView<'uint32'>;
   /** Optional `r32float` storage texture with `width = columns` and `height = rows`. */
   texture?: GraphTextureView<'r32float'>;
-  /** Optional flag: 1 when an in-bounds point fell outside the hexagon lattice. Always 0 for grids. */
-  overflow?: GraphDataView<'uint32'>;
+  /** Optional completeness scalars. */
+  status?: {
+    /** Optional flag: 1 when an in-bounds point fell outside the hexagon lattice. Always 0 for grids. */
+    overflow?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -192,9 +203,10 @@ export type GPUPointDensityProps = {
    */
   hexagonRadius?: number | GraphDataView<'float32'>;
   /**
-   * Weighted sum accumulation. Defaults to `'auto'`. Auto selects workgroup aggregation only for
-   * at least 1,024 rows, at most 256 cells, and at least 32 input rows per cell on average. Ignored
-   * without `weights`.
+   * Weighted sum accumulation. Defaults to `'auto'`, which selects the deterministic
+   * `'workgroup'` fixed-point path, which supports at most
+   * {@link GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT} cells; `'atomic'` is a
+   * non-deterministic opt-in. Ignored without `weights`.
    */
   sumAccumulation?: GPUPointDensitySumAccumulation;
   /** Field statistic. Defaults to `'count'`. `'sum'` and `'mean'` require `weights`. */
@@ -249,11 +261,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     const id = this.id;
     const [columns, rows] = props.gridSize;
     this.cellCount = columns * rows;
-    this.sumAccumulation = resolvePointDensitySumAccumulation(
-      props.sumAccumulation,
-      props.positions.length,
-      this.cellCount
-    );
+    this.sumAccumulation = resolvePointDensitySumAccumulation(props.sumAccumulation);
     this.surface = {values: props.output.values, columns, rows};
     const {output, weights, smoothing, mask} = props;
 
@@ -266,14 +274,18 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     if (!['auto', 'workgroup', 'atomic'].includes(props.sumAccumulation ?? 'auto')) {
       throw new Error(`${id} sumAccumulation must be auto, workgroup, or atomic`);
     }
-    if (
-      !Number.isSafeInteger(columns) ||
-      !Number.isSafeInteger(rows) ||
-      columns < 1 ||
-      rows < 1 ||
-      this.cellCount >= 0xffffffff
-    ) {
-      throw new Error(`${id} gridSize must be two positive integers`);
+    validateCapacity(id, 'gridSize columns', columns);
+    validateCapacity(id, 'gridSize rows', rows);
+    if (this.cellCount >= 0xffffffff) {
+      throw new Error(`${id} gridSize cell count must be below 2^32 - 1`);
+    }
+    if (weights && this.sumAccumulation === 'workgroup') {
+      validateMaximumCount(
+        id,
+        'gridSize cells',
+        this.cellCount,
+        GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT
+      );
     }
     for (const chunk of getGraphViewChunks(props.positions)) {
       validatePackedView(chunk, ['float32x2'], `${id} positions`);
@@ -296,7 +308,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       }
     }
     if (mask) {
-      validatePackedUint32View(mask, `${id} mask`);
+      validatePackedView(mask, ['uint32'], `${id} mask`);
       if (mask.length !== props.positions.length) {
         throw new Error(`${id} mask length must equal positions length`);
       }
@@ -383,10 +395,10 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['histogram', output.histogram],
-      ['overflow', output.overflow]
+      ['status.overflow', output.status?.overflow]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} output.${name} must have at least one row`);
         }
@@ -408,7 +420,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       output.means,
       output.extent,
       output.histogram,
-      output.overflow
+      output.status?.overflow
     ]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
@@ -449,7 +461,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       output.means,
       output.extent,
       output.histogram,
-      output.overflow
+      output.status?.overflow
     ]);
     if (output.texture && output.texture.texture.graph !== graph) {
       throw new Error(`${id} views must belong to the target graph`);
@@ -480,9 +492,9 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         : undefined);
 
     const nodes: GPUCommandNode<Parameters>[] = [];
-    if (output.overflow) {
+    if (output.status?.overflow) {
       nodes.push(
-        createPointDensityClearOverflowNode(graph, `${id}-clear-overflow`, output.overflow)
+        createPointDensityClearOverflowNode(graph, `${id}-clear-overflow`, output.status.overflow)
       );
     }
     if (this.binning === 'hexagon') {
@@ -501,7 +513,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
               radius: props.hexagonRadius as number | GraphDataView<'float32'>,
               mask,
               maskStart: keyStart,
-              overflow: output.overflow
+              overflow: output.status?.overflow
             })
           );
         }
@@ -717,7 +729,11 @@ function validatePointDensityBounds(id: string, bounds: GPUPointDensityBounds): 
   }
 }
 
-/** Clears `sums`, then adds each weight chunk through workgroup-local pre-aggregation. */
+/**
+ * Deterministic weighted sums (algorithms roadmap decision 4): the fixed-point scale over every
+ * weight, a clear, one workgroup pre-aggregated fixed-point add per weight chunk, then a decode
+ * into `sums`.
+ */
 function createWorkgroupSumNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
@@ -725,7 +741,26 @@ function createWorkgroupSumNodes<Parameters>(
   keys: GraphDataView<'uint32'>,
   sums: GraphDataView<'float32'>
 ): GPUCommandNode<Parameters>[] {
-  const nodes = [createPointDensityClearSumsNode(graph, `${id}-clear`, sums)];
+  const scale = createTransientView(graph, `${id}-scale`, 'uint32', 1);
+  const fixedPointSums = createTransientView(
+    graph,
+    `${id}-fixed-point`,
+    'uint32',
+    sums.length * FIXED_POINT_WORD_COUNT
+  );
+  const nodes = [
+    ...createFixedPointScaleNodes<Parameters>(graph, {
+      id: `${id}-scale`,
+      operation: 'GPUPointDensity',
+      values: weights,
+      scale
+    }),
+    createFixedPointClearNode<Parameters>(graph, {
+      id: `${id}-clear`,
+      operation: 'GPUPointDensity',
+      words: fixedPointSums
+    })
+  ];
   let keyStart = 0;
   for (const [chunkIndex, chunk] of getGraphViewChunks(weights).entries()) {
     if (chunk.length > 0) {
@@ -735,11 +770,23 @@ function createWorkgroupSumNodes<Parameters>(
           weights: chunk,
           keys,
           keyStart,
-          sums
+          fixedPointSums,
+          scale,
+          rowCount: weights.length
         })
       );
     }
     keyStart += chunk.length;
   }
+  nodes.push(
+    createFixedPointDecodeNode<Parameters>(graph, {
+      id: `${id}-decode`,
+      operation: 'GPUPointDensity',
+      words: fixedPointSums,
+      scale,
+      maximumTermCount: weights.length,
+      output: sums
+    })
+  );
   return nodes;
 }

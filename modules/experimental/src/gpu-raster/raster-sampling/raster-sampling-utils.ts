@@ -5,6 +5,8 @@
 import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {validateRasterGrid} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 
 /** Throws unless `view` is a packed single view of `format` with at least `rowCount` rows. @internal */
 export function validateRasterSamplingView(
@@ -26,27 +28,21 @@ export function validateRasterSamplingView(
   }
 }
 
-/** Throws unless the raster description is valid. @internal */
+/** Throws unless the grid and nodata sentinel are valid; returns the pixel count. @internal */
 export function validateRasterDescription(
   id: string,
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   noDataValue: number | undefined
-): void {
-  for (const [name, value] of [
-    ['width', width],
-    ['height', height]
-  ] as const) {
-    if (!Number.isSafeInteger(value) || value < 1) {
-      throw new Error(`${id} ${name} must be a positive integer`);
-    }
-  }
-  if (width * height > 0x7fffffff) {
-    throw new Error(`${id} width * height must not exceed 2^31 - 1`);
+): number {
+  const pixelCount = validateRasterGrid(id, grid);
+  // Cell indices are computed as i32 in the sampling kernel.
+  if (pixelCount > 0x7fffffff) {
+    throw new Error(`${id} grid width * height must not exceed 2^31 - 1`);
   }
   if (noDataValue !== undefined && !Number.isFinite(noDataValue)) {
     throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
   }
+  return pixelCount;
 }
 
 /** Options of {@link getRasterSamplingWGSL}. @internal */
@@ -171,8 +167,10 @@ fn sampleRaster(x: f32, y: f32) -> f32 {
   }
   let method = u32(params[paramsOffset + 8u]);
   let renormalize = params[paramsOffset + 9u] != 0.0;
+  // The row coordinate counts from the outer edge of row 0 with a signed step, so it is correct
+  // for rows that advance toward larger or smaller y.
   let tx = (x - minX) * params[paramsOffset + 6u];
-  let ty = (y - minY) * params[paramsOffset + 7u];
+  let ty = (y - params[paramsOffset + 11u]) * params[paramsOffset + 7u];
   if (method == 0u) {
     return fetchClamped(i32(floor(tx)), i32(floor(ty)));
   }

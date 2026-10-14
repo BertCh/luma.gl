@@ -15,7 +15,7 @@ export const GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH = 4;
  *   gap. Position, heading, and speed are interpolated.
  * - `beforeStart`: the playhead is earlier than the first sample.
  * - `afterEnd`: the playhead is later than the last sample.
- * - `gap`: the playhead lies strictly inside a bracketing interval longer than `maxGap`.
+ * - `gap`: the playhead lies strictly inside a bracketing interval longer than `maximumGap`.
  */
 export const GPU_TRAJECTORY_PLAYHEAD_STATUS = {
   empty: 0,
@@ -35,7 +35,7 @@ export type GPUTrajectoryPlayheadStatus =
  * Times use the unit of the timestamps: relative f32 time for float32 timestamps, or Int64 units
  * (for example epoch milliseconds) for word timestamps.
  */
-export type GPUTrajectoryPlayheadTime = {
+export type GPUTrajectoryPlayheadSettings = {
   /**
    * Playhead instant. Float32 mode: a number in the timestamps' relative epoch. Word mode: a
    * `bigint` (exact integer) or a `number` whose fractional part becomes the f32 sub-unit fraction.
@@ -45,55 +45,55 @@ export type GPUTrajectoryPlayheadTime = {
    * Largest bracketing interval that is still interpolated, in time units. When the playhead lies
    * strictly inside a longer interval the track status is `gap`. 0 (default) disables the rule.
    */
-  maxGap?: number;
+  maximumGap?: number;
 };
 
 /**
  * Packs a playhead for float32 (relative) timestamps.
  *
- * Layout: `[playhead, maxGap, 0, 0]` as float32. Write it into a `GPUParameterBuffer` with
+ * Layout: `[playhead, maximumGap, 0, 0]` as float32. Write it into a `GPUParameterBuffer` with
  * `format: 'float32'` between encodings; the compiled graph is reused.
  *
  * @param playhead Playhead and optional gap limit.
  * @param target Optional destination of at least 4 elements. A new array is returned when omitted.
- * @throws If a value is not finite, `maxGap` is negative, `playhead` is a `bigint`, or `target` is
+ * @throws If a value is not finite, `maximumGap` is negative, `playhead` is a `bigint`, or `target` is
  * too short.
  */
 export function getGPUTrajectoryPlayheadParameterValues(
-  playhead: GPUTrajectoryPlayheadTime,
+  playhead: GPUTrajectoryPlayheadSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH)
 ): Float32Array {
   checkTarget(target);
   if (typeof playhead.playhead === 'bigint') {
-    throw new Error('Float32 trajectory playheads must be numbers; use the word parameters');
+    throw new Error('Float32 playheads must be numbers, not bigints');
   }
-  const maxGap = getMaxGap(playhead);
+  const maximumGap = getMaximumGap(playhead);
   if (!Number.isFinite(playhead.playhead)) {
     throw new Error('Trajectory playhead must be finite');
   }
-  target.set([playhead.playhead, maxGap, 0, 0]);
+  target.set([playhead.playhead, maximumGap, 0, 0]);
   return target;
 }
 
 /**
  * Packs a playhead for exact Int64 word timestamps.
  *
- * Layout: `[playheadLow, playheadHigh, playheadFraction, maxGap]` as uint32, where the last two are
+ * Layout: `[playheadLow, playheadHigh, playheadFraction, maximumGap]` as uint32, where the last two are
  * f32 bit patterns. Write it into a `GPUParameterBuffer` with `format: 'uint32'`.
  *
  * @param playhead Playhead and optional gap limit. The integer part may be any signed 64-bit value.
  * @param target Optional destination of at least 4 elements. A new array is returned when omitted.
- * @throws If the playhead cannot be split into words, `maxGap` is negative or not finite, or
+ * @throws If the playhead cannot be split into words, `maximumGap` is negative or not finite, or
  * `target` is too short.
  */
 export function getGPUTrajectoryPlayheadWordParameterValues(
-  playhead: GPUTrajectoryPlayheadTime,
+  playhead: GPUTrajectoryPlayheadSettings,
   target: Uint32Array = new Uint32Array(GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH)
 ): Uint32Array {
   checkTarget(target);
-  const maxGap = getMaxGap(playhead);
+  const maximumGap = getMaximumGap(playhead);
   const words = splitTimeWords(playhead.playhead);
-  const floats = new Float32Array([words.fraction, maxGap]);
+  const floats = new Float32Array([words.fraction, maximumGap]);
   target[0] = words.low;
   target[1] = words.high;
   target.set(new Uint32Array(floats.buffer), 2);
@@ -108,10 +108,10 @@ function checkTarget(target: Float32Array | Uint32Array): void {
   }
 }
 
-function getMaxGap(playhead: GPUTrajectoryPlayheadTime): number {
-  const maxGap = playhead.maxGap ?? 0;
-  if (!Number.isFinite(maxGap) || maxGap < 0) {
-    throw new Error('Trajectory playhead maxGap must be finite and non-negative');
+function getMaximumGap(playhead: GPUTrajectoryPlayheadSettings): number {
+  const maximumGap = playhead.maximumGap ?? 0;
+  if (!Number.isFinite(maximumGap) || maximumGap < 0) {
+    throw new Error('Playhead maximumGap must be finite and non-negative');
   }
-  return maxGap;
+  return maximumGap;
 }

@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,24 +12,40 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {
+  GPULineGeometryFields,
+  GPUPolygonGeometryFields
+} from '../../analysis-core/contracts/index';
+import {assert} from '@luma.gl/core';
 import {createFillNode} from '../../utils/wgsl-kernel-nodes';
 import {
   createCleanupEmitNode,
   createCleanupFlagNode,
   createCleanupPointsNode,
-  createCleanupPublishNode
+  createCleanupPublishNode,
+  createCleanupRepeatApplyNode,
+  createCleanupRepeatFlagNode,
+  createCleanupRepeatGate,
+  createCleanupRepeatGateNode,
+  createCleanupRepeatResolveNode,
+  CLEANUP_RING_STATE_WORDS,
+  getCleanupRepeatGate
 } from './geometry-edit-kernels';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUGeometryCleanup';
 
 /** Number of float32 elements in a `GPUGeometryCleanup` parameter buffer. */
 export const GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH = 4;
 
-/** CPU description of the per-frame parameters of `GPUGeometryCleanup`. */
-export type GPUGeometryCleanupParameters = {
+/** CPU description of the per-frame settings of `GPUGeometryCleanup`. */
+export type GPUGeometryCleanupSettings = {
   /**
    * Grid size to snap every vertex to, `round(x / gridSize) * gridSize` with ties rounding up as
    * in GEOS (`shapely.set_precision(mode='pointwise')`). `0` (default) disables snapping.
@@ -53,15 +66,15 @@ export type GPUGeometryCleanupParameters = {
 };
 
 /**
- * Packs `GPUGeometryCleanup` parameters into the 4-element float32 layout
+ * Packs `GPUGeometryCleanup` settings into the 4-element float32 layout
  * `[gridSize, tolerance, removeRepeatedPoints, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If `gridSize` or `tolerance` is negative or NaN, or `target` is too short.
  */
 export function getGPUGeometryCleanupParameterValues(
-  parameters: GPUGeometryCleanupParameters = {},
+  settings: GPUGeometryCleanupSettings = {},
   target: Float32Array = new Float32Array(GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH) {
@@ -69,19 +82,17 @@ export function getGPUGeometryCleanupParameterValues(
       `Geometry cleanup target must hold ${GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH} elements`
     );
   }
-  const gridSize = parameters.gridSize ?? 0;
-  const tolerance = parameters.tolerance ?? 0;
+  const gridSize = settings.gridSize ?? 0;
+  const tolerance = settings.tolerance ?? 0;
   if (!Number.isFinite(gridSize) || !Number.isFinite(tolerance) || gridSize < 0 || tolerance < 0) {
     throw new Error('Geometry cleanup gridSize and tolerance must be finite and non-negative');
   }
-  target.set([gridSize, tolerance, parameters.removeRepeatedPoints === false ? 0 : 1, 0]);
+  target.set([gridSize, tolerance, settings.removeRepeatedPoints === false ? 0 : 1, 0]);
   return target;
 }
 
-/** Outputs shared by every {@link GPUGeometryCleanup} geometry type. */
-type GPUGeometryCleanupBaseOutput = {
-  /** Compacted output vertices, `capacity` rows. Rows at or past `count` are unspecified. */
-  positions: GraphDataView<'float32x2'>;
+/** Completeness scalars of {@link GPUGeometryCleanup}. */
+export type GPUGeometryCleanupStatus = {
   /** One-row scalar receiving the clamped vertex count. */
   count: GraphDataView<'uint32'>;
   /** One-row scalar receiving `1` when the vertex capacity overflowed, otherwise `0`. */
@@ -91,35 +102,54 @@ type GPUGeometryCleanupBaseOutput = {
 };
 
 /** Caller-owned, capacity-bounded point outputs of {@link GPUGeometryCleanup}. */
-export type GPUGeometryCleanupPointOutput = GPUGeometryCleanupBaseOutput & {
-  /** Point features have no ring offsets. */
+export type GPUGeometryCleanupPointOutput = {
+  /** Compacted output positions, `capacity` rows. Rows at or past `status.count` are unspecified. */
+  positions: GraphDataView<'float32x2'>;
+  /** Point features have no line or ring offsets. */
+  lineOffsets?: never;
   ringOffsets?: never;
-  /** Point features cannot collapse. */
-  collapsedRings?: never;
+  status: GPUGeometryCleanupStatus;
 };
 
-/** Caller-owned, capacity-bounded line or polygon outputs of {@link GPUGeometryCleanup}. */
-export type GPUGeometryCleanupOutput = GPUGeometryCleanupBaseOutput & {
+/** Caller-owned, capacity-bounded line outputs of {@link GPUGeometryCleanup}. */
+export type GPUGeometryCleanupLineOutput = {
+  /** Compacted output vertices, `capacity` rows. Rows at or past `status.count` are unspecified. */
+  positions: GraphDataView<'float32x2'>;
+  /**
+   * Republished line offsets, `lineCount + 1` rows, clamped to the capacity. Every input line
+   * keeps its index, so the input `featureOffsets` stay valid.
+   */
+  lineOffsets: GraphDataView<'uint32'>;
+  status: GPUGeometryCleanupStatus;
+};
+
+/** Caller-owned, capacity-bounded polygon outputs of {@link GPUGeometryCleanup}. */
+export type GPUGeometryCleanupPolygonOutput = {
+  /** Compacted output vertices, `capacity` rows. Rows at or past `status.count` are unspecified. */
+  positions: GraphDataView<'float32x2'>;
   /**
    * Republished ring offsets, `ringCount + 1` rows, clamped to the capacity. Every input ring
-   * keeps its index (collapsed rings become empty), so feature and polygon offsets of the input
-   * stay valid.
+   * keeps its index (collapsed rings become empty), so the input `featureOffsets` and
+   * `polygonOffsets` stay valid: together with `positions` this output is a full polygon layout.
    */
   ringOffsets: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row scalar receiving the number of polygon rings emptied because fewer than 3
-   * vertices survived (GEOS raises on these rings).
-   */
-  collapsedRings?: GraphDataView<'uint32'>;
+  status: GPUGeometryCleanupStatus & {
+    /**
+     * Optional one-row scalar receiving the number of polygon rings emptied because fewer than 3
+     * vertices survived (GEOS raises on these rings).
+     */
+    collapsedCount?: GraphDataView<'uint32'>;
+  };
 };
 
-/**
- * Properties for {@link GPUGeometryCleanup}.
- *
- * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Compile-time:
- * view lengths, `geometryType`, the output capacity, and which optional outputs are present.
- */
-export type GPUGeometryCleanupProps = {
+/** Caller-owned output of {@link GPUGeometryCleanup}; the shape follows `geometryType`. */
+export type GPUGeometryCleanupOutput =
+  | GPUGeometryCleanupPointOutput
+  | GPUGeometryCleanupLineOutput
+  | GPUGeometryCleanupPolygonOutput;
+
+/** Props shared by every geometry type of {@link GPUGeometryCleanup}. */
+type GPUGeometryCleanupSharedProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-cleanup'`. */
   id?: string;
   /**
@@ -136,24 +166,36 @@ export type GPUGeometryCleanupProps = {
    * elements written with `getGPUGeometryCleanupParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-} & (
-  | {
-      /** Independent Point features, one per position row. */
-      geometryType: 'points';
-      /** Point features do not use ring offsets. */
-      ringOffsets?: never;
-      /** Point output views. `output.positions.length` is the point capacity. */
-      output: GPUGeometryCleanupPointOutput;
-    }
-  | {
-      /** Paths or closed polygon rings; polygon rings that collapse are emptied. */
-      geometryType: 'lines' | 'polygons';
-      /** `ringCount + 1` monotonic offsets; ring `r` owns `[offsets[r], offsets[r + 1])`. */
-      ringOffsets: GraphDataView<'uint32'>;
-      /** Output views. `output.positions.length` is the vertex capacity. */
-      output: GPUGeometryCleanupOutput;
-    }
-);
+  /**
+   * Compiles only the sequential per-ring repeat pass even at `tolerance = 0`, for A/B timing
+   * against the vertex-parallel pass.
+   *
+   * @internal
+   */
+  forceSequentialRepeatRemoval?: boolean;
+};
+
+/**
+ * Properties for {@link GPUGeometryCleanup}, discriminated by `geometryType`.
+ *
+ * - `'points'`: independent Point features, one per position row; `output.positions.length` is the
+ *   point capacity.
+ * - `'lines'`: {@link GPULineGeometryFields}; `output.lineOffsets` republishes the line offsets.
+ * - `'polygons'`: the four-level layout of {@link GPUPolygonGeometryFields}; polygon rings that
+ *   collapse are emptied and `output.ringOffsets` republishes the ring offsets, so the input
+ *   `featureOffsets` and `polygonOffsets` describe the output too.
+ *
+ * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Compile-time:
+ * view lengths, `geometryType`, the output capacity, and which optional outputs are present.
+ */
+export type GPUGeometryCleanupProps = GPUGeometryCleanupSharedProps &
+  (
+    | {geometryType: 'points'; output: GPUGeometryCleanupPointOutput}
+    | ({geometryType: 'lines'} & GPULineGeometryFields & {output: GPUGeometryCleanupLineOutput})
+    | ({geometryType: 'polygons'} & GPUPolygonGeometryFields & {
+          output: GPUGeometryCleanupPolygonOutput;
+        })
+  );
 
 /**
  * Snaps coordinates to a grid and removes repeated line or polygon vertices on the GPU
@@ -165,15 +207,23 @@ export type GPUGeometryCleanupProps = {
  * dropped when it lies within `tolerance` (inclusive) of the previously kept vertex; and a kept
  * interior vertex within `tolerance` of the last vertex is replaced by it. Rings and paths with
  * fewer than 2 vertices are untouched. A polygon ring left with fewer than 3 vertices is emptied
- * and counted in `collapsedRings`; the polygon, its feature and the other rings keep their index
+ * and counted in `status.collapsedCount`; the polygon, its feature and the other rings keep their index
  * (GEOS raises for these rings, and `set_precision(mode='pointwise')` alone never removes
  * vertices). Vertices outside every ring are dropped. In point mode each position row is an
  * independent Point feature: snapping applies, but `tolerance` and `removeRepeatedPoints` are
  * ignored so coincident features remain distinct.
  *
- * Composition: points use one direct per-row kernel. Lines and polygons use a per-ring kernel to
- * flag surviving vertices (sequential, deterministic, latency grows with the largest ring), an
- * exclusive `GPUScan` to rank them, a per-vertex emit kernel, and a publish kernel.
+ * Composition: points use one direct per-row kernel. Lines and polygons flag surviving vertices,
+ * rank them with an exclusive `GPUScan`, then run a per-vertex emit kernel and a publish kernel.
+ * Flagging has two compiled paths and the GPU picks one per frame from the `tolerance` word, with
+ * indirect dispatch gates: a per-ring kernel that walks each ring in order (used when
+ * `tolerance > 0`; latency grows with the largest ring), and, for `tolerance = 0` (exact repeats
+ * after snapping), a vertex-parallel path whose work per vertex is constant. In the parallel path
+ * a vertex repeats when its snapped position equals the previous vertex's (`-0` equals `+0`; a
+ * NaN or infinite coordinate never repeats, as in the sequential path), then a per-ring step
+ * applies the closing rule and the polygon collapse rule, and a per-vertex step clears the
+ * affected flags. Both paths give bitwise identical output at `tolerance = 0`. Positions with
+ * subnormal differences are outside this guarantee if the device flushes subnormals.
  *
  * Precision: f32. Snapping computes `floor(x / gridSize + 0.5) * gridSize`, exact for
  * `|x / gridSize| < 2^24`; ties in f32 may differ from the f64 GEOS decision for grid sizes that are
@@ -192,22 +242,6 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
-    const ringOffsets = 'ringOffsets' in props ? props.ringOffsets : undefined;
-    const outputRingOffsets = 'ringOffsets' in props.output ? props.output.ringOffsets : undefined;
-    const outputCollapsedRings =
-      'collapsedRings' in props.output ? props.output.collapsedRings : undefined;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      ringOffsets,
-      parameters: props.parameters,
-      ...Object.fromEntries(
-        Object.entries(props.output).map(([key, view]) => [`output.${key}`, view])
-      )
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     if (
       props.geometryType !== 'points' &&
       props.geometryType !== 'lines' &&
@@ -219,14 +253,36 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
+    const {output} = props;
+    const layout = getCleanupLayout(props);
     if (props.geometryType === 'points') {
-      if (ringOffsets || outputRingOffsets || outputCollapsedRings) {
-        throw new Error(`${id} point geometry must not provide ring outputs or offsets`);
+      const inputs = props as {lineOffsets?: unknown; ringOffsets?: unknown};
+      if (
+        inputs.lineOffsets ||
+        inputs.ringOffsets ||
+        props.output.lineOffsets ||
+        props.output.ringOffsets
+      ) {
+        throw new Error(`${id} point geometry must not provide offsets`);
       }
     } else {
-      validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
-      if (props.ringOffsets.length < 2) {
+      // Lines and polygons always resolve both offsets views.
+      assert(layout.ringOffsets && layout.outputRingOffsets);
+      validatePackedView(layout.ringOffsets, ['uint32'], `${id} ringOffsets`);
+      if (layout.ringOffsets.length < 2) {
         throw new Error(`${id} ringOffsets must contain at least two rows`);
+      }
+      validatePackedView(layout.outputRingOffsets, ['uint32'], `${id} output ring offsets`);
+      if (layout.outputRingOffsets.length !== layout.ringOffsets.length) {
+        throw new Error(`${id} output offsets length must equal input offsets length`);
+      }
+    }
+    if (props.geometryType === 'polygons') {
+      for (const name of ['polygonOffsets', 'featureOffsets'] as const) {
+        validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+        if (props[name].length < 2) {
+          throw new Error(`${id} ${name} must contain at least two rows`);
+        }
       }
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -235,27 +291,22 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH} float32 values`
       );
     }
-    const {output} = props;
     validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
     if (output.positions.length < 1) {
       throw new Error(`${id} output.positions must hold at least one row`);
     }
-    if (props.geometryType !== 'points') {
-      validatePackedUint32View(props.output.ringOffsets, `${id} output.ringOffsets`);
-      if (props.output.ringOffsets.length !== props.ringOffsets.length) {
-        throw new Error(`${id} output.ringOffsets length must equal ringOffsets length`);
-      }
-    }
+    const collapsedCount =
+      'collapsedCount' in output.status ? output.status.collapsedCount : undefined;
     for (const [name, scalar] of [
-      ['count', output.count],
-      ['overflow', output.overflow],
-      ['requiredCount', output.requiredCount],
-      ['collapsedRings', outputCollapsedRings]
+      ['count', output.status.count],
+      ['overflow', output.status.overflow],
+      ['requiredCount', output.status.requiredCount],
+      ['collapsedCount', collapsedCount]
     ] as const) {
       if (scalar) {
-        validatePackedUint32View(scalar, `${id} output.${name}`);
+        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
-          throw new Error(`${id} output.${name} must contain one uint32 row`);
+          throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }
       }
     }
@@ -263,32 +314,39 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
       id,
       [
         output.positions,
-        outputRingOffsets,
-        output.count,
-        output.overflow,
-        output.requiredCount,
-        outputCollapsedRings
+        layout.outputRingOffsets,
+        output.status.count,
+        output.status.overflow,
+        output.status.requiredCount,
+        collapsedCount
       ],
-      [props.positions, ringOffsets, props.parameters]
+      [
+        props.positions,
+        layout.ringOffsets,
+        layout.polygonOffsets,
+        layout.featureOffsets,
+        props.parameters
+      ]
     );
   }
 
   /**
-   * Returns the point kernel, or the line/polygon clear, flag, scan, emit and publish nodes.
+   * Returns the point kernel, or the line/polygon clear, flag (sequential and tolerance-0 parallel, GPU-gated), scan, emit and publish nodes.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    const layout = getCleanupLayout(props);
     if (props.geometryType === 'points') {
       const {output} = props;
       validateGraphViewsBelongToGraph(id, graph, [
         props.positions,
         props.parameters,
         output.positions,
-        output.count,
-        output.overflow,
-        output.requiredCount
+        output.status.count,
+        output.status.overflow,
+        output.status.requiredCount
       ]);
       return [
         createCleanupPointsNode<Parameters>(graph, {
@@ -297,29 +355,118 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
           positions: props.positions,
           parameters: props.parameters,
           outputPositions: output.positions,
-          count: output.count,
-          overflow: output.overflow,
-          requiredCount: output.requiredCount
+          count: output.status.count,
+          overflow: output.status.overflow,
+          requiredCount: output.status.requiredCount
         })
       ];
     }
     const {output} = props;
+    const {ringOffsets, outputRingOffsets} = layout;
+    // Lines and polygons always resolve both offsets views.
+    assert(ringOffsets && outputRingOffsets);
+    const collapsedRings =
+      'collapsedCount' in output.status ? output.status.collapsedCount : undefined;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.ringOffsets,
+      ringOffsets,
+      layout.polygonOffsets,
+      layout.featureOffsets,
       props.parameters,
       output.positions,
-      output.ringOffsets,
-      output.count,
-      output.overflow,
-      output.requiredCount,
-      output.collapsedRings
+      outputRingOffsets,
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount,
+      collapsedRings
     ]);
     const vertexCount = props.positions.length;
     const keepFlags = createTransientView(graph, `${id}-keep-flags`, 'uint32', vertexCount);
     const ranks = createTransientView(graph, `${id}-ranks`, 'uint32', vertexCount);
     const collapsedCount =
-      output.collapsedRings ?? createTransientView(graph, `${id}-collapsed`, 'uint32', 1);
+      collapsedRings ?? createTransientView(graph, `${id}-collapsed`, 'uint32', 1);
+    const isPolygon = props.geometryType === 'polygons';
+    const ringCount = ringOffsets.length - 1;
+    const parallel = !props.forceSequentialRepeatRemoval;
+    const repeatGate = parallel
+      ? createCleanupRepeatGate<Parameters>(graph, {
+          id: `${id}-repeat-dispatch`,
+          operation: OPERATION,
+          vertexCount,
+          ringCount
+        })
+      : undefined;
+    const ringState = parallel
+      ? createTransientView(
+          graph,
+          `${id}-ring-state`,
+          'uint32',
+          CLEANUP_RING_STATE_WORDS * ringCount
+        )
+      : undefined;
+    const sequentialGate = repeatGate
+      ? getCleanupRepeatGate(repeatGate, 'sequential', `${id}-flags`)
+      : undefined;
+    const flagNodes: GPUCommandNode<Parameters>[] = [
+      ...(repeatGate && ringState
+        ? [
+            createFillNode<Parameters>(graph, {
+              id: `${id}-clear-ring-state`,
+              operation: OPERATION,
+              view: ringState,
+              type: 'u32',
+              value: '0u'
+            }),
+            createCleanupRepeatGateNode<Parameters>(graph, {
+              id: `${id}-repeat-gate`,
+              operation: OPERATION,
+              parameters: props.parameters,
+              gate: repeatGate
+            })
+          ]
+        : []),
+      createCleanupFlagNode<Parameters>(graph, {
+        id: `${id}-flags`,
+        operation: OPERATION,
+        positions: props.positions,
+        ringOffsets,
+        parameters: props.parameters,
+        isPolygon,
+        keepFlags,
+        collapsedCount,
+        condition: sequentialGate?.condition,
+        extraResources: sequentialGate?.extraResources
+      })
+    ];
+    if (repeatGate && ringState) {
+      const shared = (pass: 'flag' | 'resolve' | 'apply', nodeId: string) => ({
+        id: nodeId,
+        operation: OPERATION,
+        ringOffsets,
+        ringState,
+        ...getCleanupRepeatGate(repeatGate, pass, nodeId)
+      });
+      flagNodes.push(
+        createCleanupRepeatFlagNode<Parameters>(graph, {
+          ...shared('flag', `${id}-repeat-flags`),
+          positions: props.positions,
+          parameters: props.parameters,
+          keepFlags
+        }),
+        createCleanupRepeatResolveNode<Parameters>(graph, {
+          ...shared('resolve', `${id}-repeat-resolve`),
+          positions: props.positions,
+          parameters: props.parameters,
+          isPolygon,
+          collapsedCount
+        }),
+        createCleanupRepeatApplyNode<Parameters>(graph, {
+          ...shared('apply', `${id}-repeat-apply`),
+          positionCount: vertexCount,
+          keepFlags
+        })
+      );
+    }
     return [
       createFillNode<Parameters>(graph, {
         id: `${id}-clear-flags`,
@@ -336,16 +483,7 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
         value: '0u',
         componentCount: 1
       }),
-      createCleanupFlagNode<Parameters>(graph, {
-        id: `${id}-flags`,
-        operation: OPERATION,
-        positions: props.positions,
-        ringOffsets: props.ringOffsets,
-        parameters: props.parameters,
-        isPolygon: props.geometryType === 'polygons',
-        keepFlags,
-        collapsedCount
-      }),
+      ...flagNodes,
       ...new GPUScan({
         id: `${id}-scan`,
         input: keepFlags,
@@ -364,15 +502,37 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
       createCleanupPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        ringOffsets: props.ringOffsets,
+        ringOffsets,
         keepFlags,
         ranks,
-        outputRingOffsets: output.ringOffsets,
-        count: output.count,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount,
+        outputRingOffsets,
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
         capacity: output.positions.length
       })
     ];
+  }
+}
+
+/** Input and output ring offsets of the props, plus the polygon levels above them. */
+function getCleanupLayout(props: GPUGeometryCleanupProps): {
+  ringOffsets?: GraphDataView<'uint32'>;
+  outputRingOffsets?: GraphDataView<'uint32'>;
+  polygonOffsets?: GraphDataView<'uint32'>;
+  featureOffsets?: GraphDataView<'uint32'>;
+} {
+  switch (props.geometryType) {
+    case 'lines':
+      return {ringOffsets: props.lineOffsets, outputRingOffsets: props.output.lineOffsets};
+    case 'polygons':
+      return {
+        ringOffsets: props.ringOffsets,
+        outputRingOffsets: props.output.ringOffsets,
+        polygonOffsets: props.polygonOffsets,
+        featureOffsets: props.featureOffsets
+      };
+    default:
+      return {};
   }
 }

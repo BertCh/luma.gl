@@ -5,10 +5,9 @@
 export {
   GPUNetworkKFunction,
   GPU_NETWORK_K_FUNCTION_MAXIMUM_BAND_COUNT,
-  NETWORK_K_FUNCTION_LENGTH_RANGE,
-  NETWORK_K_FUNCTION_STREAM
+  getGPUNetworkKFunctionMaximumSeedWordCount
 } from './gpu-network-k-function';
-export type {GPUNetworkKFunctionProps} from './gpu-network-k-function';
+export type {GPUNetworkKFunctionOutput, GPUNetworkKFunctionProps} from './gpu-network-k-function';
 export {
   getGPUNetworkKFunctionParameterValues,
   GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH

@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration, Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {GPUCommandGraph, GraphDataView, GraphResourceUse} from '@luma.gl/gpgpu/gpu-core';
-import {createTransientView, getViewBinding, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {GPUReduction} from '@luma.gl/gpgpu/gpu-core';
 import {getRasterDeviceLimits} from './raster-device-limits';
+import {validateMaximumCount} from '../utils/gpu-contributor-utils';
 import {
   assertRasterStorageBindingFits,
   getRasterDispatchSize,
@@ -19,11 +20,23 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
+
+/**
+ * Largest `width x height` pixel count of {@link GPURasterStatistics} on `device`: the hierarchical
+ * reductions cover the pixels with one 1-D dispatch of 256-invocation workgroups, limited to
+ * `maxComputeWorkgroupsPerDimension` workgroups, so 16776960 on a default device (65535 workgroups).
+ */
+export function getGPURasterStatisticsMaximumPixelCount(device: Device): number {
+  return device.limits.maxComputeWorkgroupsPerDimension * 256;
+}
 
 /** Explicit caller-owned output buffers for nodata-aware float32 raster statistics. */
 export type GPURasterStatisticsProps = {
   id?: string;
+  /** Raster width in pixels. `width * height` is at most {@link getGPURasterStatisticsMaximumPixelCount} (16776960 on a default device). */
   width: number;
+  /** Raster height in pixels. */
   height: number;
   /** Packed float32 samples, optional validity flags, nodata sentinel, and calibration. */
   input: GPURasterBufferBand<'float32'>;
@@ -108,6 +121,12 @@ export class GPURasterStatistics {
 
   /** Adds validity preparation, hierarchical scalar reductions, and GPU mean finalization. */
   addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+    validateMaximumCount(
+      this.id,
+      'width x height',
+      this.width * this.height,
+      getGPURasterStatisticsMaximumPixelCount(graph.device)
+    );
     const inputViews = [
       this.input.storage.values,
       ...(this.input.validity ? [this.input.validity] : [])
@@ -209,17 +228,19 @@ export class GPURasterStatistics {
           source: this.getPreparationShader(calibratedValues, resolvedValidity),
           shaderLayout: {bindings}
         });
+        const bindingViews: Record<string, GraphDataView> = {
+          sourceValues: this.input.storage.values,
+          calibratedValues: calibratedValues,
+          resolvedValidity: resolvedValidity
+        };
+        if (this.input.validity) {
+          bindingViews['sourceValidity'] = this.input.validity;
+        }
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews);
         return {
           encode: ({computePass, getBuffer}) => {
-            const resolvedBindings: Record<string, Binding> = {
-              sourceValues: getViewBinding(this.input.storage.values, getBuffer),
-              calibratedValues: getViewBinding(calibratedValues, getBuffer),
-              resolvedValidity: getViewBinding(resolvedValidity, getBuffer)
-            };
-            if (this.input.validity) {
-              resolvedBindings['sourceValidity'] = getViewBinding(this.input.validity, getBuffer);
-            }
-            computation.setBindings(resolvedBindings);
+            const changedBindings = resolveChangedBindings(getBuffer);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(computePass, dispatchSize[0], dispatchSize[1]);
           },
           destroy: () => computation.destroy()
@@ -299,13 +320,16 @@ fn main() {
             ]
           }
         });
+        const bindingViews: Record<string, GraphDataView> = {
+          countValues: this.count,
+          sumValues: this.sum,
+          meanValues: this.mean
+        };
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews);
         return {
           encode: ({computePass, getBuffer}) => {
-            computation.setBindings({
-              countValues: getViewBinding(this.count, getBuffer),
-              sumValues: getViewBinding(this.sum, getBuffer),
-              meanValues: getViewBinding(this.mean, getBuffer)
-            });
+            const changedBindings = resolveChangedBindings(getBuffer);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(computePass, 1);
           },
           destroy: () => computation.destroy()

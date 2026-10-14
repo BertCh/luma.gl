@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import {getStorageBindingElementLimit} from '../../utils/gpu-contributor-utils';
+
 /** Number of float32 elements in a `GPUInequality` parameter view. */
 export const GPU_INEQUALITY_PARAMETER_LENGTH = 4;
 
@@ -10,6 +13,23 @@ export const GPU_INEQUALITY_DEFAULT_PALMA_TOP_SHARE = 0.1;
 
 /** Default Palma denominator: the poorest 40% of the population. */
 export const GPU_INEQUALITY_DEFAULT_PALMA_BOTTOM_SHARE = 0.4;
+
+/**
+ * Largest `zoneCount` of {@link GPUInequality} on `device`: the per-zone scratch binding with the
+ * widest rows holds 44 bytes per zone in one storage binding, so 3050402 on a default device
+ * (128 MiB bindings).
+ */
+export function getGPUInequalityMaximumZoneCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 44);
+}
+
+/**
+ * Largest `zoneCount * lorenzKnotCount` of {@link GPUInequality} on `device`: the Lorenz knot table
+ * holds one float32 per zone and knot in one storage binding, so 33554432 on a default device.
+ */
+export function getGPUInequalityMaximumLorenzKnotTotal(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
 
 /** Largest Atkinson epsilon accepted; larger values overflow `(x / mean) ^ (1 - epsilon)` in f32. */
 export const GPU_INEQUALITY_MAXIMUM_EPSILON = 32;

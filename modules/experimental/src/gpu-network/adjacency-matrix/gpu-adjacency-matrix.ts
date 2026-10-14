@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
@@ -12,51 +11,65 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPURasterBufferToTexture} from '../../gpu-raster/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
+import {
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology
+} from '../../analysis-core/network-topology';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   captureGraphCommandNodes,
+  validateCapacity,
+  validatePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 
-/** Number of words of the per-frame window view: `[rowStart, rowEnd, colStart, colEnd]`. */
-export const GPU_ADJACENCY_MATRIX_WINDOW_LENGTH = 4;
+/** Number of words of the per-frame `parameters` view: `[rowStart, rowEnd, colStart, colEnd]`. */
+export const GPU_ADJACENCY_MATRIX_PARAMETER_LENGTH = 4;
 
 /** Default fixed-point scale of weight sums: one unit of weight is 1024 integer steps. */
 export const GPU_ADJACENCY_MATRIX_DEFAULT_WEIGHT_SCALE = 1024;
 
-/** A zoom window in matrix positions. Ends are exclusive. */
-export type GPUAdjacencyMatrixWindow = {
+/** Per-frame zoom window of one {@link GPUAdjacencyMatrix}, in matrix positions. Ends are exclusive. */
+export type GPUAdjacencyMatrixSettings = {
+  /** First row position. */
   rowStart: number;
+  /** One past the last row position. */
   rowEnd: number;
+  /** First column position. */
   colStart: number;
+  /** One past the last column position. */
   colEnd: number;
+  /** Matrix resolution `R` of the {@link GPUAdjacencyMatrix}, used to bound the window extents. */
+  resolution: number;
 };
 
 /**
- * Encodes the per-frame zoom window into the four `uint32` words of the `window` view.
+ * Packs the per-frame zoom window into the four `uint32` words of the `parameters` view.
  *
  * Write the result with `GPUParameterBuffer.write`. An empty window (`end <= start`)
  * produces an all-zero matrix. The GPU computes `(position - start) * resolution` in `u32`, so
- * each extent times `resolution` must stay below 2^32; this function throws otherwise.
+ * each extent times `settings.resolution` must stay below 2^32.
+ *
+ * @throws If a bound is not a uint32 integer or an extent times `resolution` reaches 2^32.
  */
-export function encodeGPUAdjacencyMatrixWindow(
-  window: GPUAdjacencyMatrixWindow,
-  resolution: number
+export function getGPUAdjacencyMatrixParameterValues(
+  settings: GPUAdjacencyMatrixSettings
 ): Uint32Array {
-  const words = new Uint32Array([window.rowStart, window.rowEnd, window.colStart, window.colEnd]);
-  for (const value of [window.rowStart, window.rowEnd, window.colStart, window.colEnd]) {
+  const {rowStart, rowEnd, colStart, colEnd, resolution} = settings;
+  for (const value of [rowStart, rowEnd, colStart, colEnd]) {
     if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) {
       throw new Error('GPUAdjacencyMatrix window bounds must be uint32 integers');
     }
   }
-  for (const extent of [window.rowEnd - window.rowStart, window.colEnd - window.colStart]) {
+  for (const extent of [rowEnd - rowStart, colEnd - colStart]) {
     if (extent * resolution > 0xffffffff) {
       throw new Error('GPUAdjacencyMatrix window extent times resolution must be below 2^32');
     }
   }
-  return words;
+  return new Uint32Array([rowStart, rowEnd, colStart, colEnd]);
 }
 
 /** Fixed-point weight contributed by one edge: `clamp(round(weight * scale), 0, 2^32 - 1)`. */
@@ -72,17 +85,16 @@ export function getGPUAdjacencyMatrixFixedWeight(weight: number, scale: number):
  * Properties for {@link GPUAdjacencyMatrix}.
  *
  * Compile-time: node count, `resolution`, `directed`, `mirrorSlots`, `weightScale`, and
- * which optional views exist. Per-frame: CSR contents, masks, `order` and `window`.
+ * which optional views exist. Per-frame: CSR contents, masks, `order` and `parameters`.
  */
 export type GPUAdjacencyMatrixProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'adjacency-matrix'`. */
   id?: string;
-  /** Forward CSR row offsets with `nodeCount + 1` rows. */
-  offsets: GraphDataView<'uint32'>;
-  /** Forward CSR destination per slot. Indices `>= nodeCount` are dead slots. */
-  neighbors: GraphDataView<'uint32'>;
-  /** Optional per-slot `float32` weights aligned with `neighbors`. Required for weight outputs. */
-  weights?: GraphDataView<'float32'>;
+  /**
+   * Forward CSR network. Neighbor indices `>= nodeCount` are dead slots. `weights` are required
+   * for weight outputs.
+   */
+  topology: GPUNetworkAdjacency;
   /** Treat slots as directed edges (row = source, column = target). Default false. */
   directed?: boolean;
   /**
@@ -92,17 +104,17 @@ export type GPUAdjacencyMatrixProps = {
    * `(v, u)` (a self-loop once), for edge-list-style CSRs that list each edge once.
    */
   mirrorSlots?: boolean;
-  /** Optional per-vertex mask, nonzero = live. */
-  vertexMask?: GraphDataView<'uint32'>;
+  /** Optional per-node mask, nonzero = live. */
+  nodeMask?: GraphDataView<'uint32'>;
   /** Optional per-slot mask, nonzero = live. A slot is live iff both endpoints are live too. */
   edgeMask?: GraphDataView<'uint32'>;
-  /** Optional permutation view (vertex to matrix position, `nodeCount` rows). Default identity. */
+  /** Optional permutation view (node to matrix position, `nodeCount` rows). Default identity. */
   order?: GraphDataView<'uint32'>;
   /**
-   * Per-frame `'uint32'` view of four words, see {@link encodeGPUAdjacencyMatrixWindow}. When
-   * omitted the window is `[0, nodeCount)` on both axes.
+   * Per-frame `'uint32'` view of four words, see {@link getGPUAdjacencyMatrixParameterValues}.
+   * When omitted the window is `[0, nodeCount)` on both axes.
    */
-  window?: GraphDataView<'uint32'>;
+  parameters?: GraphDataView<'uint32'>;
   /** Matrix resolution `R` in bins per axis, compile-time, 1 to 4096. */
   resolution: number;
   /**
@@ -117,9 +129,9 @@ export type GPUAdjacencyMatrixProps = {
     /** Optional same-size fixed-point weight sums. Requires `weights`. */
     weightSums?: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the maximum of `counts`. */
-    maxCount?: GraphDataView<'uint32'>;
+    maximumCount?: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the maximum of `weightSums`. */
-    maxWeightSum?: GraphDataView<'uint32'>;
+    maximumWeightSum?: GraphDataView<'uint32'>;
     /** Optional `r32float` `R x R` storage texture; row = y, column = x. */
     texture?: GraphTextureView<'r32float'>;
     /** Texture contents: raw counts (default) or `weightSums / weightScale`. */
@@ -134,26 +146,26 @@ export type GPUAdjacencyMatrixProps = {
  * A live slot `u -> v` lands in cell `(bin(position(u), rows), bin(position(v), columns))`, where
  * `position` is the optional `order` permutation (identity by default) and, for window
  * `[start, end)`, `bin(p) = floor((p - start) * R / (end - start))` for `start <= p < end`;
- * positions outside the window are dropped. Panning or zooming rewrites the four window words and
+ * positions outside the window are dropped. Panning or zooming rewrites the four `parameters` words and
  * the next encoding rewrites every bin, with no recompilation.
  *
  * Counts are exact `u32` atomic adds. Weight sums are fixed-point `u32` atomic adds of
  * `round(weight * weightScale)`; integer addition is associative, so results are bit-identical
  * regardless of thread order. The cost is a quantization of at most half a step per edge and
  * wraparound at 2^32 total (4,194,304 units of weight per cell at the default scale). Float
- * atomics are not used. Dead vertices keep their matrix positions but write no cells. Maxima are
+ * atomics are not used. Dead nodes keep their matrix positions but write no cells. Maxima are
  * `atomicMax` over the finished bins. `R * R` zeroing, binning and the maxima are separate nodes.
  *
- * The binning kernels use one invocation per vertex that walks its row, like
- * `GPUNetworkStatistics`; a hub vertex serializes its own row. Vertex positions must be a
- * permutation if the caller wants distinct rows per vertex; this is not validated on the GPU.
+ * The binning kernels use one invocation per node that walks its row, like
+ * `GPUNetworkStatistics`; a hub node serializes its own row. Node positions must be a
+ * permutation if the caller wants distinct rows per node; this is not validated on the GPU.
  */
 export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUAdjacencyMatrixProps;
-  /** Number of vertices, `offsets.length - 1`. */
+  /** Number of nodes, `topology.offsets.length - 1`. */
   readonly nodeCount: number;
   /** Bins per axis. */
   readonly resolution: number;
@@ -164,20 +176,9 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     this.id = props.id ?? 'adjacency-matrix';
     this.props = props;
     const {id} = this;
-    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
-    validatePackedView(props.neighbors, ['uint32'], `${id} neighbors`);
-    this.nodeCount = props.offsets.length - 1;
-    if (this.nodeCount < 1) {
-      throw new Error(`${id} offsets must contain at least two rows`);
-    }
+    this.nodeCount = validateGPUNetworkTopology(id, props.topology).nodeCount;
     this.resolution = props.resolution;
-    if (
-      !Number.isSafeInteger(props.resolution) ||
-      props.resolution < 1 ||
-      props.resolution > 4096
-    ) {
-      throw new Error(`${id} resolution must be an integer between 1 and 4096`);
-    }
+    validateCapacity(id, 'resolution', props.resolution, 1, 4096);
     if (this.nodeCount * props.resolution > 0xffffffff) {
       throw new Error(`${id} node count times resolution must be below 2^32`);
     }
@@ -186,9 +187,9 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       throw new Error(`${id} weightScale must be positive and finite`);
     }
     for (const [name, view, length] of [
-      ['vertexMask', props.vertexMask, this.nodeCount],
+      ['nodeMask', props.nodeMask, this.nodeCount],
       ['order', props.order, this.nodeCount],
-      ['edgeMask', props.edgeMask, props.neighbors.length]
+      ['edgeMask', props.edgeMask, props.topology.neighbors.length]
     ] as const) {
       if (!view) {
         continue;
@@ -198,16 +199,10 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must contain ${length} rows`);
       }
     }
-    if (props.weights) {
-      validatePackedView(props.weights, ['float32'], `${id} weights`);
-      if (props.weights.length !== props.neighbors.length) {
-        throw new Error(`${id} weights must contain one row per neighbor slot`);
-      }
-    }
-    if (props.window) {
-      validatePackedView(props.window, ['uint32'], `${id} window`);
-      if (props.window.length < GPU_ADJACENCY_MATRIX_WINDOW_LENGTH) {
-        throw new Error(`${id} window must contain at least four uint32 rows`);
+    if (props.parameters) {
+      validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+      if (props.parameters.length < GPU_ADJACENCY_MATRIX_PARAMETER_LENGTH) {
+        throw new Error(`${id} parameters must contain at least four uint32 rows`);
       }
     }
     const {output} = props;
@@ -215,15 +210,17 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     for (const [name, view, length] of [
       ['counts', output.counts, cellCount],
       ['weightSums', output.weightSums, cellCount],
-      ['maxCount', output.maxCount, 1],
-      ['maxWeightSum', output.maxWeightSum, 1]
+      ['maximumCount', output.maximumCount, 1],
+      ['maximumWeightSum', output.maximumWeightSum, 1]
     ] as const) {
       if (!view) {
         continue;
       }
       validatePackedView(view, ['uint32'], `${id} output.${name}`);
       if (
-        name === 'maxCount' || name === 'maxWeightSum' ? view.length < 1 : view.length !== length
+        name === 'maximumCount' || name === 'maximumWeightSum'
+          ? view.length < 1
+          : view.length !== length
       ) {
         throw new Error(
           `${id} output.${name} must contain ${length === 1 ? 'at least one row' : `exactly ${length} rows`}`
@@ -231,13 +228,13 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       }
     }
     if (
-      (output.weightSums || output.maxWeightSum || output.textureStatistic === 'weightSum') &&
-      !props.weights
+      (output.weightSums || output.maximumWeightSum || output.textureStatistic === 'weightSum') &&
+      !props.topology.weights
     ) {
       throw new Error(`${id} weight outputs require weights`);
     }
-    if (output.maxWeightSum && !output.weightSums) {
-      throw new Error(`${id} output.maxWeightSum requires output.weightSums`);
+    if (output.maximumWeightSum && !output.weightSums) {
+      throw new Error(`${id} output.maximumWeightSum requires output.weightSums`);
     }
     if (output.textureStatistic === 'weightSum' && !output.weightSums) {
       throw new Error(`${id} textureStatistic 'weightSum' requires output.weightSums`);
@@ -252,15 +249,13 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.counts, output.weightSums, output.maxCount, output.maxWeightSum],
+      [output.counts, output.weightSums, output.maximumCount, output.maximumWeightSum],
       [
-        props.offsets,
-        props.neighbors,
-        props.weights,
-        props.vertexMask,
+        ...getGPUNetworkTopologyViews(props.topology),
+        props.nodeMask,
         props.edgeMask,
         props.order,
-        props.window
+        props.parameters
       ]
     );
   }
@@ -270,18 +265,17 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, resolution} = this;
     const {output} = props;
+    const {offsets, neighbors, weights} = props.topology;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.offsets,
-      props.neighbors,
-      props.weights,
-      props.vertexMask,
+      ...getGPUNetworkTopologyViews(props.topology),
+      props.nodeMask,
       props.edgeMask,
       props.order,
-      props.window,
+      props.parameters,
       output.counts,
       output.weightSums,
-      output.maxCount,
-      output.maxWeightSum
+      output.maximumCount,
+      output.maximumWeightSum
     ]);
     if (output.texture && output.texture.texture.graph !== graph) {
       throw new Error(`${id} views must belong to the target graph`);
@@ -305,20 +299,20 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     };
     fill('zero-counts', output.counts);
     fill('zero-weight-sums', output.weightSums);
-    fill('zero-max-count', output.maxCount);
-    fill('zero-max-weight-sum', output.maxWeightSum);
+    fill('zero-max-count', output.maximumCount);
+    fill('zero-max-weight-sum', output.maximumWeightSum);
 
-    const windowBinding: WGSLKernelBinding[] = props.window
+    const windowBinding: WGSLKernelBinding[] = props.parameters
       ? [
           {
             name: 'windowWords',
-            view: props.window,
+            view: props.parameters,
             type: 'u32',
             access: 'read'
           }
         ]
       : [];
-    const windowSource = props.window
+    const windowSource = props.parameters
       ? `let rowStart = windowWords[windowWordsOffset];
   let rowEnd = windowWords[windowWordsOffset + 1u];
   let colStart = windowWords[windowWordsOffset + 2u];
@@ -335,10 +329,10 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       targets: readonly {kind: 'count' | 'weight'; view: GraphDataView<'uint32'>}[]
     ) => {
       const bindings: WGSLKernelBinding[] = [
-        {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+        {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
         {
           name: 'neighbors',
-          view: props.neighbors,
+          view: neighbors,
           type: 'u32',
           access: 'read'
         },
@@ -352,10 +346,10 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
           access: 'read'
         });
       }
-      if (props.vertexMask) {
+      if (props.nodeMask) {
         bindings.push({
           name: 'vertexMask',
-          view: props.vertexMask,
+          view: props.nodeMask,
           type: 'u32',
           access: 'read'
         });
@@ -371,7 +365,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       if (targets.some(target => target.kind === 'weight')) {
         bindings.push({
           name: 'weights',
-          view: props.weights!,
+          view: weights!,
           type: 'f32',
           access: 'read'
         });
@@ -424,7 +418,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
   return (position - start) * RESOLUTION / (end - start);
 }`,
           body: `${windowSource}
-  if (${props.vertexMask ? 'vertexMask[vertexMaskOffset + index] == 0u' : 'false'}) {
+  if (${props.nodeMask ? 'vertexMask[vertexMaskOffset + index] == 0u' : 'false'}) {
     return;
   }
   let source = ${props.order ? 'order[orderOffset + index]' : 'index'};
@@ -440,7 +434,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     if (neighbor >= NODE_COUNT) {
       continue;
     }
-    ${props.vertexMask ? 'if (vertexMask[vertexMaskOffset + neighbor] == 0u) { continue; }' : ''}
+    ${props.nodeMask ? 'if (vertexMask[vertexMaskOffset + neighbor] == 0u) { continue; }' : ''}
     ${props.edgeMask ? 'if (edgeMask[edgeMaskOffset + slot] == 0u) { continue; }' : ''}
     let targetPosition = ${props.order ? 'order[orderOffset + neighbor]' : 'neighbor'};
     if (source >= rowStart && source < rowEnd && targetPosition >= colStart && targetPosition < colEnd) {
@@ -469,7 +463,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
       2 +
       windowBinding.length +
       Number(Boolean(props.order)) +
-      Number(Boolean(props.vertexMask)) +
+      Number(Boolean(props.nodeMask)) +
       Number(Boolean(props.edgeMask)) +
       Number(binTargets.length > 1) +
       binTargets.length;
@@ -483,7 +477,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
       addBinKernel('bin-weights', [binTargets[1]]);
     }
 
-    if (output.maxCount || output.maxWeightSum) {
+    if (output.maximumCount || output.maximumWeightSum) {
       // One workgroup-local maximum per workgroup, then one global atomicMax per workgroup instead
       // of one per cell on a single address.
       const bindings: WGSLKernelBinding[] = [];
@@ -491,12 +485,12 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
       let reduce = '';
       let flush = '';
       let shared = '';
-      if (output.maxCount) {
+      if (output.maximumCount) {
         bindings.push(
           {name: 'counts', view: output.counts, type: 'u32', access: 'read'},
           {
-            name: 'maxCountOut',
-            view: output.maxCount,
+            name: 'maximumCountOut',
+            view: output.maximumCount,
             type: 'atomic<u32>',
             access: 'read_write'
           }
@@ -506,9 +500,9 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
           'sharedCounts[localInvocationIndex] = select(0u, counts[countsOffset + index], inRange);\n  ';
         reduce +=
           'sharedCounts[localInvocationIndex] = max(sharedCounts[localInvocationIndex], sharedCounts[localInvocationIndex + stride]);\n      ';
-        flush += 'atomicMax(&maxCountOut[maxCountOutOffset], sharedCounts[0]);\n    ';
+        flush += 'atomicMax(&maximumCountOut[maximumCountOutOffset], sharedCounts[0]);\n    ';
       }
-      if (output.maxWeightSum) {
+      if (output.maximumWeightSum) {
         bindings.push(
           {
             name: 'sums',
@@ -518,7 +512,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
           },
           {
             name: 'maxSumOut',
-            view: output.maxWeightSum,
+            view: output.maximumWeightSum,
             type: 'atomic<u32>',
             access: 'read_write'
           }

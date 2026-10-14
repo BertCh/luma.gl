@@ -31,15 +31,15 @@ export function getGPUNetworkKFunctionParameterValues(
 ): Uint32Array {
   if (target.length < GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH) {
     throw new Error(
-      `K function parameter target must hold ${GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH} elements`
+      `GPUNetworkKFunction parameter target must hold ${GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH} elements`
     );
   }
   const {seed, activeSimulations} = settings;
   if (!Number.isSafeInteger(seed) || seed < 0) {
-    throw new Error('K function seed must be a non-negative safe integer');
+    throw new Error('GPUNetworkKFunction seed must be a non-negative safe integer');
   }
   if (!Number.isSafeInteger(activeSimulations) || activeSimulations < 0) {
-    throw new Error('K function activeSimulations must be a non-negative integer');
+    throw new Error('GPUNetworkKFunction activeSimulations must be a non-negative integer');
   }
   target[0] = seed % 2 ** 32;
   target[1] = Math.floor(seed / 2 ** 32);

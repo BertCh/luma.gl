@@ -2,16 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUDotDensity, GPURandomPointsInPolygon} from './gpu-dot-density';
-export type {
-  GPUDotDensityProps,
-  GPURandomPointsInPolygonProps
-} from './gpu-dot-density';
-export type {
-  GPUDotDensityMask,
-  GPUDotDensityOutput,
-  GPUDotDensityPolygons
-} from './dot-density-sampling';
+export {GPUDotDensity} from './gpu-dot-density';
+export type {GPUDotDensityProps} from './gpu-dot-density';
+export {GPURandomPointsInPolygon} from './gpu-random-points-in-polygon';
+export type {GPURandomPointsInPolygonProps} from './gpu-random-points-in-polygon';
+export {getGPUDotDensityMaximumCapacity} from './dot-density-sampling';
+export type {GPUDotDensityMask, GPUDotDensityOutput} from './dot-density-sampling';
 export {
   getGPUDotDensityParameterValues,
   GPU_DOT_DENSITY_PARAMETER_LENGTH
@@ -22,8 +18,3 @@ export type {
   GPURandomPointsOnLineOutput,
   GPURandomPointsOnLineProps
 } from './gpu-random-points-on-line';
-export {generateDotsOnCPU} from './dot-density-cpu';
-export type {
-  DotDensityCPUInput,
-  DotDensityCPUResult
-} from './dot-density-cpu';

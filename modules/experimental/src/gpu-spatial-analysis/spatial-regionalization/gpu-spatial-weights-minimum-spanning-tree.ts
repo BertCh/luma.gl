@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUCompaction,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -14,9 +12,11 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createPublishNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
@@ -59,19 +59,25 @@ export type GPUSpatialWeightsMinimumSpanningTreeProps = {
    * `values` is already standardised or when exact integer costs matter.
    */
   standardize?: boolean;
+  /** Caller-owned outputs. */
+  output: GPUSpatialWeightsMinimumSpanningTreeOutput;
+};
+
+/** Caller-owned outputs of {@link GPUSpatialWeightsMinimumSpanningTree}. */
+export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
   /**
-   * Caller-owned flags, one per weights slot (`weights.neighbors.length` entries). Slot `s` is
+   * Flags, one per weights slot (`weights.neighbors.length` entries). Slot `s` is
    * `1` when it is the lower-row slot of an MST edge, otherwise `0`. The slot index is the
    * stable edge ID used by every other output.
    */
   treeEdgeFlags: GraphDataView<'uint32'>;
   /**
-   * Caller-owned forest component label per row (`rows` entries): the smallest row index of the
+   * Forest component label per row (`rows` entries): the smallest row index of the
    * row's tree. Isolated rows label themselves.
    */
   componentLabels: GraphDataView<'uint32'>;
   /**
-   * Optional caller-owned copy of the standardised attribute table (`rows * columnCount`
+   * Optional copy of the standardised attribute table (`rows * columnCount`
    * entries), so {@link GPUSkaterRegions} cuts under the same metric. Requires `standardize`.
    */
   standardizedValues?: GraphDataView<'float32'>;
@@ -82,8 +88,8 @@ export type GPUSpatialWeightsMinimumSpanningTreeProps = {
   edges?: GPUCompactOutput;
   /** Optional `[row, neighbor]` pair per compact edge (`2 * edges.ids.length` entries). */
   edgeEndpoints?: GraphDataView<'uint32'>;
-  /** Optional squared dissimilarity per compact edge (`edges.ids.length` entries). */
-  edgeCosts?: GraphDataView<'float32'>;
+  /** Optional squared attribute dissimilarity per compact edge (`edges.ids.length` entries). */
+  edgeDissimilarities?: GraphDataView<'float32'>;
 };
 
 /**
@@ -117,65 +123,62 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
     const columnCount = props.columnCount ?? 1;
-    if (
-      !Number.isSafeInteger(columnCount) ||
-      columnCount < 1 ||
-      columnCount > GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS
-    ) {
-      throw new Error(
-        `${id} columnCount must be an integer in [1, ${GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS}]`
-      );
-    }
+    const {output} = props;
+    validateCapacity(id, 'columnCount', columnCount, 1, GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS);
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
     }
-    validatePackedUint32View(props.treeEdgeFlags, `${id} treeEdgeFlags`);
-    if (props.treeEdgeFlags.length !== props.weights.neighbors.length) {
-      throw new Error(`${id} treeEdgeFlags length must equal the weights slot capacity`);
+    validatePackedView(output.treeEdgeFlags, ['uint32'], `${id} output.treeEdgeFlags`);
+    if (output.treeEdgeFlags.length !== props.weights.neighbors.length) {
+      throw new Error(`${id} output.treeEdgeFlags length must equal the weights slot capacity`);
     }
-    validatePackedUint32View(props.componentLabels, `${id} componentLabels`);
-    if (props.componentLabels.length !== rows) {
-      throw new Error(`${id} componentLabels length must equal the weights row count`);
+    validatePackedView(output.componentLabels, ['uint32'], `${id} output.componentLabels`);
+    if (output.componentLabels.length !== rows) {
+      throw new Error(`${id} output.componentLabels length must equal the weights row count`);
     }
-    if (props.standardizedValues) {
-      validatePackedView(props.standardizedValues, ['float32'], `${id} standardizedValues`);
-      if (props.standardizedValues.length !== rows * columnCount) {
-        throw new Error(`${id} standardizedValues length must equal rows * columnCount`);
+    if (output.standardizedValues) {
+      validatePackedView(output.standardizedValues, ['float32'], `${id} output.standardizedValues`);
+      if (output.standardizedValues.length !== rows * columnCount) {
+        throw new Error(`${id} output.standardizedValues length must equal rows * columnCount`);
       }
       if (props.standardize === false) {
-        throw new Error(`${id} standardizedValues requires standardize`);
+        throw new Error(`${id} output.standardizedValues requires standardize`);
       }
     }
-    if (props.edges) {
-      validateCompactOutput(id, props.edges);
-    } else if (props.edgeEndpoints || props.edgeCosts) {
-      throw new Error(`${id} edgeEndpoints and edgeCosts require edges`);
+    if (output.edges) {
+      validateCompactOutput(id, output.edges);
+    } else if (output.edgeEndpoints || output.edgeDissimilarities) {
+      throw new Error(`${id} edge details require output.edges`);
     }
-    const capacity = props.edges?.ids.length ?? 0;
-    if (props.edgeEndpoints) {
-      validatePackedUint32View(props.edgeEndpoints, `${id} edgeEndpoints`);
-      if (props.edgeEndpoints.length < 2 * capacity) {
-        throw new Error(`${id} edgeEndpoints must hold two entries per edge slot`);
+    const capacity = output.edges?.ids.length ?? 0;
+    if (output.edgeEndpoints) {
+      validatePackedView(output.edgeEndpoints, ['uint32'], `${id} output.edgeEndpoints`);
+      if (output.edgeEndpoints.length < 2 * capacity) {
+        throw new Error(`${id} output.edgeEndpoints must hold two entries per edge slot`);
       }
     }
-    if (props.edgeCosts) {
-      validatePackedView(props.edgeCosts, ['float32'], `${id} edgeCosts`);
-      if (props.edgeCosts.length < capacity) {
-        throw new Error(`${id} edgeCosts must hold one entry per edge slot`);
+    if (output.edgeDissimilarities) {
+      validatePackedView(
+        output.edgeDissimilarities,
+        ['float32'],
+        `${id} output.edgeDissimilarities`
+      );
+      if (output.edgeDissimilarities.length < capacity) {
+        throw new Error(`${id} output.edgeDissimilarities must hold one entry per edge slot`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.treeEdgeFlags,
-        props.componentLabels,
-        props.standardizedValues,
-        props.edges?.ids,
-        props.edges?.count,
-        props.edges?.overflow,
-        props.edgeEndpoints,
-        props.edgeCosts
+        output.treeEdgeFlags,
+        output.componentLabels,
+        output.standardizedValues,
+        output.edges?.ids,
+        output.edges?.status.count,
+        output.edges?.status.overflow,
+        output.edgeEndpoints,
+        output.edgeDissimilarities
       ],
       [props.values, props.weights.offsets, props.weights.neighbors]
     );
@@ -186,18 +189,19 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, treeEdgeFlags, componentLabels} = props;
+    const {weights, output} = props;
+    const {treeEdgeFlags, componentLabels} = output;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       treeEdgeFlags,
       componentLabels,
-      props.standardizedValues,
-      props.edges?.ids,
-      props.edges?.count,
-      props.edges?.overflow,
-      props.edges?.requiredCount,
-      props.edgeEndpoints,
-      props.edgeCosts,
+      output.standardizedValues,
+      output.edges?.ids,
+      output.edges?.status.count,
+      output.edges?.status.overflow,
+      output.edges?.status.requiredCount,
+      output.edgeEndpoints,
+      output.edgeDissimilarities,
       weights.offsets,
       weights.neighbors
     ]);
@@ -219,7 +223,7 @@ ${REGIONALIZATION_CSR_WGSL}`;
     let table = props.values;
     if (standardize) {
       table =
-        props.standardizedValues ??
+        output.standardizedValues ??
         createTransientView(graph, `${id}-table`, 'float32', rows * columnCount);
       // One workgroup per column: each lane sums a strided share of the rows and a fixed binary
       // tree merges the lanes, so the reductions are `O(rows / 256 + log 256)` deep instead of one
@@ -520,8 +524,8 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
       })
     );
 
-    if (props.edges) {
-      const {edges} = props;
+    if (output.edges) {
+      const {edges} = output;
       const slotIds = createTransientView(graph, `${id}-slot-ids`, 'uint32', capacity);
       const compactSlots = createTransientView(graph, `${id}-compact-slots`, 'uint32', capacity);
       const requiredCount = createTransientView(graph, `${id}-edge-total`, 'uint32', 1);
@@ -549,27 +553,32 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
           output: edges
         })
       );
-      if (props.edgeEndpoints || props.edgeCosts) {
+      if (output.edgeEndpoints || output.edgeDissimilarities) {
         const bindings = [
           ...csrBindings,
           {name: 'edgeIds', view: edges.ids, type: 'u32' as const, access: 'read' as const},
-          {name: 'edgeCount', view: edges.count, type: 'u32' as const, access: 'read' as const},
+          {
+            name: 'edgeCount',
+            view: edges.status.count,
+            type: 'u32' as const,
+            access: 'read' as const
+          },
           {name: 'slotCost', view: slotCost, type: 'f32' as const, access: 'read' as const},
-          ...(props.edgeEndpoints
+          ...(output.edgeEndpoints
             ? [
                 {
                   name: 'endpoints',
-                  view: props.edgeEndpoints,
+                  view: output.edgeEndpoints,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
               ]
             : []),
-          ...(props.edgeCosts
+          ...(output.edgeDissimilarities
             ? [
                 {
-                  name: 'costs',
-                  view: props.edgeCosts,
+                  name: 'dissimilarities',
+                  view: output.edgeDissimilarities,
                   type: 'f32' as const,
                   access: 'read_write' as const
                 }
@@ -589,12 +598,12 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
   }
   let slot = edgeIds[edgeIdsOffset + index];
   ${
-    props.edgeEndpoints
+    output.edgeEndpoints
       ? `endpoints[endpointsOffset + 2u * index] = getRowOfSlot(slot);
   endpoints[endpointsOffset + 2u * index + 1u] = neighbors[neighborsOffset + slot];`
       : ''
   }
-  ${props.edgeCosts ? 'costs[costsOffset + index] = slotCost[slotCostOffset + slot];' : ''}`
+  ${output.edgeDissimilarities ? 'dissimilarities[dissimilaritiesOffset + index] = slotCost[slotCostOffset + slot];' : ''}`
           })
         );
       }

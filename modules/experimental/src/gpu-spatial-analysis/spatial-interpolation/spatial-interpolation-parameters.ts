@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
+
 /** Number of float32 elements in a {@link GPUInverseDistanceWeighting} parameter view. */
 export const GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH = 9;
 
@@ -15,10 +19,34 @@ export const GPU_FOCAL_STATISTICS_PARAMETER_LENGTH = 4;
  */
 export type GPUInverseDistanceWeightingTaper = 'none' | 'modified-shepard';
 
+/**
+ * Returns the two outer corners `[startX, startY, endX, endY]` of an axis-aligned raster grid in
+ * grid order: `(startX, startY)` is the outer corner of cell `(0, 0)` and `(endX, endY)` is the
+ * opposite outer corner. Point pixels are centered on their coordinates, so their start corner
+ * moves by half a cell. The end corner is smaller than the start corner on an axis whose cell
+ * step is negative (the usual north-up rows).
+ *
+ * @param name Name of the calling function, for the error text.
+ * @throws If the grid is rotated or sheared, or its dimensions or affine are invalid.
+ * @internal
+ */
+export function getRasterGridCorners(
+  name: string,
+  grid: GPURasterMetadata
+): [number, number, number, number] {
+  validateRasterGrid(name, grid);
+  const [stepX, shearX, originX, shearY, stepY, originY] = grid.affine;
+  if (shearX !== 0 || shearY !== 0) {
+    throw new Error(`${name} needs an axis-aligned grid`);
+  }
+  const cornerShift = grid.pixelInterpretation === 'point' ? -0.5 : 0;
+  const startX = originX + stepX * cornerShift;
+  const startY = originY + stepY * cornerShift;
+  return [startX, startY, startX + stepX * grid.width, startY + stepY * grid.height];
+}
+
 /** Per-frame settings of {@link GPUInverseDistanceWeighting}. */
 export type GPUInverseDistanceWeightingSettings = {
-  /** Output raster extent `[minX, minY, maxX, maxY]` in position units. Cell centers are sampled. */
-  extent: readonly [number, number, number, number];
   /**
    * Search radius in position units. `Infinity` searches the whole index domain, except with the
    * `'modified-shepard'` taper, which needs a finite radius.
@@ -40,16 +68,22 @@ export type GPUInverseDistanceWeightingSettings = {
 /**
  * Packs per-frame {@link GPUInverseDistanceWeighting} parameters.
  *
- * Layout (float32): `[minX, minY, maxX, maxY, searchRadius, power, neighborCount,
- * minimumNeighborCount, taper (0 none, 1 modified-shepard)]`.
+ * Layout (float32): `[startX, startY, endX, endY, searchRadius, power, neighborCount,
+ * minimumNeighborCount, taper (0 none, 1 modified-shepard)]`. The first four values are the outer
+ * corners of the output grid in grid order: `(startX, startY)` is the outer corner of cell
+ * `(0, 0)` and `(endX, endY)` the opposite corner, so a north-up grid (`grid.affine[4] < 0`) has
+ * `endY < startY` and row 0 at the top, and a grid whose rows advance north has row 0 at `minY`.
  *
- * @param settings Extent, search radius, power, taper, and neighbor limits.
+ * @param settings Search radius, power, taper, and neighbor limits.
+ * @param grid The output grid: axis-aligned; its width and height must match the contributor's.
  * @param target Optional destination of at least 9 elements.
- * @throws If the target is too short, a count is not a non-negative integer, the taper is unknown,
- *   or the `'modified-shepard'` taper is requested with a non-finite radius.
+ * @throws If the grid is rotated or sheared or invalid, the target is too short, a count is not a
+ *   non-negative integer, the taper is unknown, or the `'modified-shepard'` taper is requested
+ *   with a non-finite radius.
  */
 export function getGPUInverseDistanceWeightingParameterValues(
   settings: GPUInverseDistanceWeightingSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH) {
@@ -63,9 +97,7 @@ export function getGPUInverseDistanceWeightingParameterValues(
     ['neighborCount', neighborCount],
     ['minimumNeighborCount', minimumNeighborCount]
   ] as const) {
-    if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(`Inverse distance weighting ${name} must be a non-negative integer`);
-    }
+    validateCapacity('Inverse distance weighting', name, count, 0);
   }
   const taper = settings.taper ?? 'none';
   if (taper !== 'none' && taper !== 'modified-shepard') {
@@ -74,7 +106,7 @@ export function getGPUInverseDistanceWeightingParameterValues(
   if (taper === 'modified-shepard' && !Number.isFinite(settings.searchRadius)) {
     throw new Error('Inverse distance weighting taper needs a finite searchRadius');
   }
-  target.set(settings.extent, 0);
+  target.set(getRasterGridCorners('getGPUInverseDistanceWeightingParameterValues', grid), 0);
   target[4] = settings.searchRadius;
   target[5] = settings.power ?? 2;
   target[6] = neighborCount;
@@ -121,9 +153,7 @@ export function getGPUFocalStatisticsParameterValues(
     );
   }
   const minimumCount = settings.minimumCount ?? 1;
-  if (!Number.isSafeInteger(minimumCount) || minimumCount < 0) {
-    throw new Error('Focal statistics minimumCount must be a non-negative integer');
-  }
+  validateCapacity('Focal statistics', 'minimumCount', minimumCount, 0);
   const shape = settings.shape ?? 'square';
   if (shape !== 'square' && shape !== 'circle') {
     throw new Error("Focal statistics shape must be 'square' or 'circle'");

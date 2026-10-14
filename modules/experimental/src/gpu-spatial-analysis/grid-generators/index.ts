@@ -11,9 +11,8 @@ export {
   GPUGridGenerator
 } from './gpu-grid-generator';
 export type {
-  GPUGridGeneratorExtent,
   GPUGridGeneratorOutput,
-  GPUGridGeneratorParameters,
+  GPUGridGeneratorSettings,
   GPUGridGeneratorProps,
   GPUGridType
 } from './gpu-grid-generator';
@@ -27,7 +26,7 @@ export {
 export type {
   GPUShapeCoordinateSystem,
   GPUShapeGeneratorOutput,
-  GPUShapeGeneratorParameters,
+  GPUShapeGeneratorSettings,
   GPUShapeGeneratorProps,
   GPUShapeType
 } from './gpu-shape-generator';

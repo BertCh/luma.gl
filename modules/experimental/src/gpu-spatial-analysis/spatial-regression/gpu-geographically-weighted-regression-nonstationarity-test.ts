@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,13 +11,16 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {getGPUPermutationParameterValues} from '../permutation-inference/permutation-parameters';
+import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../permutation-inference/permutation-parameters';
 import {getPermutationParameterWGSL} from '../permutation-inference/permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
-import {PERMUTATION_SHUFFLE_WGSL} from '../permutation-inference/permutation-shuffle';
+import {getPermutationShuffleWGSL} from '../permutation-inference/permutation-shuffle';
+import {PHILOX_PURPOSES} from '../../utils/philox-random';
 import {
   createGridIndexNodes,
   getGridLookupWGSL,
@@ -41,7 +41,10 @@ import {
   GPU_GWR_NONSTATIONARITY_SUMMARY,
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
 } from './geographically-weighted-regression-nonstationarity-parameters';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGeographicallyWeightedRegressionNonstationarityTest';
@@ -213,60 +216,33 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     this.props = props;
     const {predictorCount, output, maximumPermutations} = props;
     resolveGPUSpatialContext(id, props.spatialContext);
-    if (
-      !Number.isInteger(predictorCount) ||
-      predictorCount < 1 ||
-      predictorCount > GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT
-    ) {
-      throw new Error(
-        `${id} predictorCount must be an integer in [1, ${GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT}]`
-      );
-    }
-    if (
-      !Number.isInteger(maximumPermutations) ||
-      maximumPermutations < 1 ||
-      maximumPermutations > 2 ** 20
-    ) {
-      throw new Error(`${id} maximumPermutations must be an integer in [1, 2^20]`);
-    }
+    validateCapacity(
+      id,
+      'predictorCount',
+      predictorCount,
+      1,
+      GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT
+    );
+    validateCapacity(id, 'maximumPermutations', maximumPermutations, 1, 2 ** 20);
     this.coefficientCount = predictorCount + 1;
     this.maximumBandwidthCount =
       props.maximumBandwidthCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH;
-    if (
-      !Number.isInteger(this.maximumBandwidthCount) ||
-      this.maximumBandwidthCount < 1 ||
-      this.maximumBandwidthCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH
-    ) {
-      throw new Error(
-        `${id} maximumBandwidthCount must be an integer in [1, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumBandwidthCount',
+      this.maximumBandwidthCount,
+      1,
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH
+    );
     this.maximumNeighborCount =
       props.maximumNeighborCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT;
-    if (
-      !Number.isInteger(this.maximumNeighborCount) ||
-      this.maximumNeighborCount < 1 ||
-      this.maximumNeighborCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT
-    ) {
-      throw new Error(
-        `${id} maximumNeighborCount must be an integer in [1, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT}]`
-      );
-    }
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['predictors', props.predictors],
-      ['response', props.response],
-      ['mask', props.mask],
-      ['bandwidthParameters', props.bandwidthParameters],
-      ['selectedBandwidth', props.selectedBandwidth],
-      ['coefficients', props.coefficients],
-      ['parameters', props.parameters],
-      ...Object.entries(output)
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'maximumNeighborCount',
+      this.maximumNeighborCount,
+      1,
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.rowCount = props.positions.length;
     if (this.rowCount < 2 || this.rowCount > MAXIMUM_ROW_COUNT) {
@@ -306,7 +282,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       throw new Error(`${id} response length must equal the row count`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -326,11 +302,9 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     if (props.coefficients.length < this.rowCount * this.coefficientCount) {
       throw new Error(`${id} coefficients must hold rows * (predictorCount + 1) values`);
     }
-    validatePackedUint32View(props.parameters, `${id} parameters`);
-    if (
-      props.parameters.length < getGPUPermutationParameterValues({seed: 0, permutations: 1}).length
-    ) {
-      throw new Error(`${id} parameters must hold GPU_PERMUTATION_PARAMETER_LENGTH uint32 values`);
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    if (props.parameters.length < GPU_PERMUTATION_PARAMETER_LENGTH) {
+      throw new Error(`${id} parameters must hold ${GPU_PERMUTATION_PARAMETER_LENGTH} uint32`);
     }
     const tableLength = this.coefficientCount * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE;
     validatePackedView(output.table, ['float32'], `${id} output.table`);
@@ -353,9 +327,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     const partialStride = 2 * this.coefficientCount + 1;
     const partialRunCount = maximumPermutations + 1;
     if (props.tileRowCount !== undefined) {
-      if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
-        throw new Error(`${id} tileRowCount must be a positive integer`);
-      }
+      validateCapacity(id, 'tileRowCount', props.tileRowCount);
       this.tileRowCount = props.tileRowCount;
     } else {
       const tileLimit = Math.max(
@@ -748,7 +720,7 @@ ${gridDeclarations}
 const TILE_GROUP_COUNT: u32 = ${tileGroupCount}u;
 const PERMUTED_WORKGROUP_SIZE: u32 = ${PERMUTED_WORKGROUP_SIZE}u;
 ${PERMUTATION_RANDOM_WGSL}
-${PERMUTATION_SHUFFLE_WGSL}
+${getPermutationShuffleWGSL(PHILOX_PURPOSES.geographicallyWeightedRegressionNonstationarityShuffle.id)}
 ${getCholeskyWGSL(P)}
 ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
         // No early return before the barrier: every invocation of the workgroup must reach it.
@@ -836,12 +808,12 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
         invocationCount: P,
         declarations: permutationDeclarations,
         body: `let nan = getNaN();
-  let permutations = readPermutationCount();
+  let permutationCount = readPermutationCount();
   let observed = standardDeviations[standardDeviationsOffset + index];
   var greater = 0u;
   var validCount = 0.0;
   var total = 0.0;
-  for (var run = 1u; run <= permutations; run++) {
+  for (var run = 1u; run <= permutationCount; run++) {
     let value = standardDeviations[standardDeviationsOffset + run * P + index];
     if (isFiniteBits(value)) {
       validCount += 1.0;
@@ -853,7 +825,7 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
   }
   let mean = select(nan, total / validCount, validCount > 0.0);
   var squares = 0.0;
-  for (var run = 1u; run <= permutations; run++) {
+  for (var run = 1u; run <= permutationCount; run++) {
     let value = standardDeviations[standardDeviationsOffset + run * P + index];
     if (isFiniteBits(value)) {
       squares += (value - mean) * (value - mean);
@@ -862,7 +834,7 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
   let simulatedDeviation = select(nan, sqrt(squares / validCount), validCount > 0.0);
   let base = tableOffset + index * ${GPU_GWR_NONSTATIONARITY_TABLE_STRIDE}u;
   table[base] = observed;
-  table[base + 1u] = select(nan, f32(greater + 1u) / f32(permutations + 1u), isFiniteBits(observed));
+  table[base + 1u] = select(nan, f32(greater + 1u) / f32(permutationCount + 1u), isFiniteBits(observed));
   table[base + 2u] = select(nan, f32(greater), isFiniteBits(observed));
   table[base + 3u] = mean;
   table[base + 4u] = simulatedDeviation;
@@ -870,10 +842,10 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
   if (index == 0u) {
     let count = rows[rowsOffset + ${rowCountSlot}u];
     var failed = 0.0;
-    for (var run = 1u; run <= permutations; run++) {
+    for (var run = 1u; run <= permutationCount; run++) {
       failed += count - fitCounts[fitCountsOffset + run];
     }
-    summary[summaryOffset + ${GPU_GWR_NONSTATIONARITY_SUMMARY.permutations}u] = f32(permutations);
+    summary[summaryOffset + ${GPU_GWR_NONSTATIONARITY_SUMMARY.permutationCount}u] = f32(permutationCount);
     summary[summaryOffset + ${GPU_GWR_NONSTATIONARITY_SUMMARY.locationCount}u] = count;
     summary[summaryOffset + ${GPU_GWR_NONSTATIONARITY_SUMMARY.observedFitCount}u] = fitCounts[fitCountsOffset];
     summary[summaryOffset + ${GPU_GWR_NONSTATIONARITY_SUMMARY.failedFitCount}u] = failed;

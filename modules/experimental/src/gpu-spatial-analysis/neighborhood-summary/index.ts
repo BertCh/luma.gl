@@ -8,6 +8,7 @@ export {
   GPU_NEIGHBORHOOD_SUMMARY_NO_MODE
 } from './gpu-neighborhood-summary';
 export type {
+  GPUNeighborhoodSummaryOutput,
   GPUNeighborhoodSummaryProps,
   GPUNeighborhoodSummaryStatistic
 } from './gpu-neighborhood-summary';

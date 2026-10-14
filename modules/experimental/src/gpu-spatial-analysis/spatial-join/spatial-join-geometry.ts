@@ -2,13 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  validatePackedUint32View,
-  validatePackedView,
-  type GPUCommandGraph,
-  type GPUCommandNode,
-  type GraphDataView
-} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {validateGPUFeatureGeometryPort} from '../../analysis-core/contracts/index';
+import {validatePackedView} from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {createSpatialJoinBoundsNode, SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
@@ -43,31 +39,39 @@ export function getSpatialJoinGeometryViews(geometry: GPUSpatialJoinGeometry): G
   return [geometry.positions];
 }
 
-/** Throws unless the geometry views are packed and the geometry has at least one feature. @internal */
+/**
+ * Throws unless the geometry views are packed, the port layout is valid and, unless `allowEmpty`,
+ * the geometry has at least one feature. @internal
+ */
 export function validateSpatialJoinGeometry(
   id: string,
   name: string,
-  geometry: GPUSpatialJoinGeometry
+  geometry: GPUSpatialJoinGeometry,
+  options: {allowEmpty?: boolean} = {}
 ): void {
-  validatePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
-  const offsetViews =
-    geometry.kind === 'lines'
-      ? [['lineOffsets', geometry.lineOffsets] as const]
-      : geometry.kind === 'polygons'
-        ? [
-            ['featureOffsets', geometry.featureOffsets] as const,
-            ['polygonOffsets', geometry.polygonOffsets] as const,
-            ['ringOffsets', geometry.ringOffsets] as const
-          ]
-        : [];
-  for (const [offsetName, view] of offsetViews) {
-    validatePackedUint32View(view, `${id} ${name}.${offsetName}`);
-    if (view.length < 1) {
-      throw new Error(`${id} ${name}.${offsetName} requires a terminal entry`);
+  for (const view of [...getSpatialJoinGeometryViews(geometry), geometry.sourceIds]) {
+    if (view) {
+      validatePackedView(view, [view.format as 'float32x2' | 'uint32'], `${id} ${name}`);
     }
   }
-  if (getSpatialJoinFeatureCount(geometry) < 1) {
-    throw new Error(`${id} ${name} must contain at least one feature`);
+  validateGPUFeatureGeometryPort(`${id} ${name}`, geometry);
+  if (!options.allowEmpty && getSpatialJoinFeatureCount(geometry) < 1) {
+    throw new Error(`${id} ${name} needs at least one feature`);
+  }
+}
+
+/** Throws unless every present status scalar is a packed uint32 view with one row. @internal */
+export function validateStatusScalars(
+  id: string,
+  status: Readonly<Record<string, GraphDataView | undefined>>
+): void {
+  for (const [name, view] of Object.entries(status)) {
+    if (view) {
+      validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+      if (view.length < 1) {
+        throw new Error(`${id} output.status.${name} needs one row`);
+      }
+    }
   }
 }
 

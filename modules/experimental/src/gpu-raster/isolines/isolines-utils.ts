@@ -4,6 +4,7 @@
 
 import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /**
  * Throws unless `view` is one packed view of `format` with at least `rowCount` rows.
@@ -51,8 +52,8 @@ export function validateIsolinesAliasing(
 
 /**
  * WGSL `getNaN`, `Corners` and `loadCorners(cx, cy)` for a raster binding `raster` with optional
- * `validity`. A cell is nodata when it is NaN, equals the optional sentinel, or has a zero
- * validity word; infinities are values. Cell `(cx, cy)` reads samples v0 `(cx, cy)`, v1 `(cx + 1,
+ * `validity`. A cell is nodata when it is non-finite (NaN or an infinity, which a crossing cannot
+ * interpolate), equals the optional sentinel, or has a zero validity word. Cell `(cx, cy)` reads samples v0 `(cx, cy)`, v1 `(cx + 1,
  * cy)`, v2 `(cx + 1, cy + 1)`, v3 `(cx, cy + 1)`; `valid` is false when any corner is nodata.
  *
  * @internal
@@ -62,11 +63,12 @@ export function getIsolinesCornersWGSL(
   noDataValue: number | undefined
 ): string {
   return /* wgsl */ `
+${IS_FINITE_VALUE_WGSL}
 fn readCell(cell: u32, value: ptr<function, f32>) -> bool {
   let sample = raster[rasterOffset + cell];
   *value = sample;
-  // Compare bits: NaN is nodata, and infinities are kept as values.
-  var isValid = (bitcast<u32>(sample) & 0x7fffffffu) <= 0x7f800000u;
+  // Compare bits: NaN and infinities are nodata, since a crossing cannot interpolate them.
+  var isValid = isFiniteValue(sample);
   ${noDataValue !== undefined ? `isValid = isValid && sample != ${getWGSLFloatLiteral(noDataValue)};` : ''}
   ${hasValidity ? 'isValid = isValid && validity[validityOffset + cell] != 0u;' : ''}
   return isValid;

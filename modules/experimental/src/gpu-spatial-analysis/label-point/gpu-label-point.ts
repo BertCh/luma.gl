@@ -2,20 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 
 const OPERATION = 'GPULabelPoint';
@@ -54,8 +57,12 @@ export type GPULabelPointOutput = {
  *
  * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
  * grid sizes, `refinementRounds`, and which outputs are present.
+ *
+ * Polygons are the four-level layout of {@link GPUPolygonGeometryFields}, one row per feature. The
+ * rings of one feature combine by the even-odd rule, so holes and multi-polygon parts work in
+ * either winding.
  */
-export type GPULabelPointProps = {
+export type GPULabelPointProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node IDs. Defaults to `'label-point'`. */
   id?: string;
   /**
@@ -65,16 +72,6 @@ export type GPULabelPointProps = {
    * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed vertex positions in a planar coordinate system (project longitude/latitude first). */
-  positions: GraphDataView<'float32x2'>;
-  /** `ringCount + 1` monotonic vertex offsets, as in `GPUGeometryMeasures`. Rings close implicitly. */
-  ringOffsets: GraphDataView<'uint32'>;
-  /**
-   * Optional `featureCount + 1` monotonic ring offsets. Rings of one feature combine by the
-   * even-odd rule (holes and multi-polygon parts work in either winding). When omitted every ring
-   * is its own feature.
-   */
-  featureRingOffsets?: GraphDataView<'uint32'>;
   /** Samples per axis of the first grid over the feature's bounds. Default 16. */
   initialGridSize?: number;
   /** Samples per axis of every refinement grid. Default 8. */
@@ -112,7 +109,9 @@ export type GPULabelPointProps = {
  * **Guarantees.** The seeds are interior in exact arithmetic for any non-degenerate polygon, and a
  * candidate only replaces the best by a strictly larger signed distance, so the label point is
  * inside the polygon (outside holes) whenever the polygon has interior; `degenerate` flags the
- * rest. **Precision.** The final grid spacing is
+ * rest. When no part is hit by the three feature scanlines (an archipelago of tiny parts in a large
+ * extent) the scanlines are repeated through the bounds of the largest ring before the search
+ * falls back to the first vertex. **Precision.** The final grid spacing is
  * `2 * halfExtent * (2 / initialGridSize) * (2 / refinementGridSize)^refinementRounds /
  * refinementGridSize` (about `1e-5` of the bounds with the defaults), but the search is greedy:
  * it refines only the best coarse cells, so long thin or multi-lobed shapes can return the best
@@ -165,52 +164,22 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     this.smallFeatureVertexLimit =
       props.smallFeatureVertexLimit ?? GPU_LABEL_POINT_DEFAULT_SMALL_FEATURE_VERTEX_LIMIT;
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      ringOffsets: props.ringOffsets,
-      featureRingOffsets: props.featureRingOffsets,
-      ...props.output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
-    if (!Number.isInteger(this.initialGridSize) || this.initialGridSize < 2) {
-      throw new Error(`${id} initialGridSize must be an integer of at least 2`);
-    }
-    if (!Number.isInteger(this.refinementGridSize) || this.refinementGridSize < 3) {
-      throw new Error(`${id} refinementGridSize must be an integer of at least 3`);
-    }
-    if (!Number.isInteger(this.refinementRounds) || this.refinementRounds < 0) {
-      throw new Error(`${id} refinementRounds must be a non-negative integer`);
-    }
-    if (
-      !Number.isInteger(this.refinementCandidates) ||
-      this.refinementCandidates < 1 ||
-      this.refinementCandidates > 16
-    ) {
-      throw new Error(`${id} refinementCandidates must be an integer from 1 to 16`);
-    }
-    if (!Number.isInteger(this.smallFeatureVertexLimit) || this.smallFeatureVertexLimit < 0) {
-      throw new Error(`${id} smallFeatureVertexLimit must be a non-negative integer`);
-    }
+    validateCapacity(id, 'initialGridSize', this.initialGridSize, 2);
+    validateCapacity(id, 'refinementGridSize', this.refinementGridSize, 3);
+    validateCapacity(id, 'refinementRounds', this.refinementRounds, 0);
+    validateCapacity(id, 'refinementCandidates', this.refinementCandidates, 1, 16);
+    validateCapacity(id, 'smallFeatureVertexLimit', this.smallFeatureVertexLimit, 0);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
-    if (props.ringOffsets.length < 2) {
-      throw new Error(`${id} ringOffsets must contain at least two rows`);
-    }
-    if (props.featureRingOffsets) {
-      validatePackedUint32View(props.featureRingOffsets, `${id} featureRingOffsets`);
-      if (props.featureRingOffsets.length < 2) {
-        throw new Error(`${id} featureRingOffsets must contain at least two rows`);
+    for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
+      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      if (props[name].length < 2) {
+        throw new Error(`${id} ${name} must contain at least two rows`);
       }
     }
-    this.featureCount = props.featureRingOffsets
-      ? props.featureRingOffsets.length - 1
-      : props.ringOffsets.length - 1;
+    this.featureCount = props.featureOffsets.length - 1;
     const {points, distances, degenerate} = props.output;
     validatePackedView(points, ['float32x2'], `${id} output.points`);
     if (points.length !== this.featureCount) {
@@ -223,7 +192,7 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
       }
     }
     if (degenerate) {
-      validatePackedUint32View(degenerate, `${id} output.degenerate`);
+      validatePackedView(degenerate, ['uint32'], `${id} output.degenerate`);
       if (degenerate.length !== this.featureCount) {
         throw new Error(`${id} output.degenerate must hold ${this.featureCount} rows`);
       }
@@ -231,7 +200,7 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [points, distances, degenerate],
-      [props.positions, props.ringOffsets, props.featureRingOffsets]
+      [props.positions, props.ringOffsets, props.featureOffsets, props.polygonOffsets]
     );
   }
 
@@ -244,23 +213,18 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.ringOffsets,
-      props.featureRingOffsets,
+      props.featureOffsets,
+      props.polygonOffsets,
       points,
       distances,
       degenerate
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'}
+      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+      {name: 'featureOffsets', view: props.featureOffsets, type: 'u32', access: 'read'},
+      {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'}
     ];
-    if (props.featureRingOffsets) {
-      bindings.push({
-        name: 'featureRingOffsets',
-        view: props.featureRingOffsets,
-        type: 'u32',
-        access: 'read'
-      });
-    }
     bindings.push({name: 'pointsOut', view: points, type: 'f32', access: 'read_write'});
     if (distances) {
       bindings.push({name: 'distancesOut', view: distances, type: 'f32', access: 'read_write'});
@@ -270,6 +234,7 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     }
     const declarations = `const ROW_COUNT: u32 = ${props.positions.length}u;
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
 const FEATURE_COUNT: u32 = ${this.featureCount}u;
 const INITIAL_GRID_SIZE: u32 = ${this.initialGridSize}u;
 const REFINEMENT_GRID_SIZE: u32 = ${this.refinementGridSize}u;
@@ -279,11 +244,14 @@ const SMALL_FEATURE_VERTEX_LIMIT: u32 = ${this.smallFeatureVertexLimit}u;
 const WORKGROUP_SIZE: u32 = ${WORKGROUP_SIZE}u;
 const LARGE: f32 = 3.0e38;
 ${LABEL_POINT_WGSL}
+// Feature -> polygons -> rings.
 fn getRingStart(feature: u32) -> u32 {
-  ${props.featureRingOffsets ? 'return min(featureRingOffsets[featureRingOffsetsOffset + feature], RING_COUNT);' : 'return feature;'}
+  let polygon = min(featureOffsets[featureOffsetsOffset + feature], POLYGON_COUNT);
+  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
 }
 fn getRingEnd(feature: u32) -> u32 {
-  ${props.featureRingOffsets ? 'return min(featureRingOffsets[featureRingOffsetsOffset + feature + 1u], RING_COUNT);' : 'return feature + 1u;'}
+  let polygon = min(featureOffsets[featureOffsetsOffset + feature + 1u], POLYGON_COUNT);
+  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
 }`;
     const writeOutputs = (feature: string, emptyCondition: string) => `
   pointsOut[pointsOutOffset + 2u * ${feature}] = result.x;
@@ -331,6 +299,22 @@ fn getRingEnd(feature: u32) -> u32 {
         if (!bestIsSet || candidate.z > best.z) {
           best = candidate;
           bestIsSet = true;
+        }
+      }
+    }
+    if (!bestIsSet) {
+      // Archipelago fallback: every part missed the three feature scanlines, so repeat them through
+      // the bounds of the largest ring instead of settling for a boundary vertex.
+      let part = getLargestRingBounds(ringStart, ringEnd, origin);
+      for (var seedIndex = 0u; seedIndex < 3u; seedIndex++) {
+        let fraction = select(select(0.0, -0.2, seedIndex == 1u), 0.2, seedIndex == 2u);
+        let seed = getScanlineSeed(ringStart, ringEnd, origin, 0.5 * (part.y + part.w) + fraction * (part.w - part.y));
+        if (seed.z > 0.0) {
+          let candidate = vec3<f32>(seed.xy, getSignedDistance(seed.xy, ringStart, ringEnd, origin));
+          if (!bestIsSet || candidate.z > best.z) {
+            best = candidate;
+            bestIsSet = true;
+          }
         }
       }
     }
@@ -418,6 +402,21 @@ fn getRingEnd(feature: u32) -> u32 {
       if (!bestIsSet || candidate.z > best.z) {
         best = candidate;
         bestIsSet = true;
+      }
+    }
+  }
+  if (!bestIsSet) {
+    // Archipelago fallback (see the serial kernel): scanlines through the largest ring's bounds.
+    let part = getLargestRingBoundsCooperative(lane, ringStart, ringEnd, origin);
+    for (var seedIndex = 0u; seedIndex < 3u; seedIndex++) {
+      let fraction = select(select(0.0, -0.2, seedIndex == 1u), 0.2, seedIndex == 2u);
+      let seed = getScanlineSeedCooperative(lane, ringStart, ringEnd, origin, 0.5 * (part.y + part.w) + fraction * (part.w - part.y));
+      if (seed.z > 0.0) {
+        let candidate = vec3<f32>(seed.xy, getSignedDistanceCooperative(lane, seed.xy, ringStart, ringEnd, origin));
+        if (!bestIsSet || candidate.z > best.z) {
+          best = candidate;
+          bestIsSet = true;
+        }
       }
     }
   }
@@ -533,6 +532,7 @@ fn getSignedDistance(p: vec2<f32>, ringStart: u32, ringEnd: u32, origin: vec2<f3
       for (var row = rowStart; row < rowEnd; row++) {
         let current = getPosition(row) - origin;
         minimumSquared = min(minimumSquared, getSegmentDistanceSquared(p, previous, current));
+        // f32 sampling test: it only places the candidate label point; topology uses utils/exact-geometry-wgsl.ts.
         if ((current.y > p.y) != (previous.y > p.y)) {
           let crossingX = previous.x + (p.y - previous.y) * (current.x - previous.x) / (current.y - previous.y);
           if (p.x < crossingX) {
@@ -547,8 +547,38 @@ fn getSignedDistance(p: vec2<f32>, ringStart: u32, ringEnd: u32, origin: vec2<f3
   return select(-distance, distance, inside);
 }
 
+// Bounds (minimum.xy, maximum.xy) relative to origin of ring 'ring'.
+fn getRingBounds(ring: u32, origin: vec2<f32>) -> vec4<f32> {
+  let rowStart = getRingRowStart(ring);
+  let rowEnd = getRingRowEnd(ring);
+  var minimum = vec2<f32>(LARGE);
+  var maximum = vec2<f32>(-LARGE);
+  for (var row = rowStart; row < rowEnd; row++) {
+    let p = getPosition(row) - origin;
+    minimum = min(minimum, p);
+    maximum = max(maximum, p);
+  }
+  return vec4<f32>(minimum, maximum);
+}
+
+// Bounds of the ring with the largest extent (first on ties), used only when the feature-wide
+// scanlines found no interior seed.
+fn getLargestRingBounds(ringStart: u32, ringEnd: u32, origin: vec2<f32>) -> vec4<f32> {
+  var largest = vec4<f32>(0.0);
+  var largestExtent = -LARGE;
+  for (var ring = ringStart; ring < ringEnd; ring++) {
+    let bounds = getRingBounds(ring, origin);
+    let extent = max(bounds.z - bounds.x, bounds.w - bounds.y);
+    if (extent > largestExtent) {
+      largestExtent = extent;
+      largest = bounds;
+    }
+  }
+  return largest;
+}
+
 // Midpoint of the leftmost interior interval on the horizontal line y = lineY (relative to the
-// bounds center). Returns (x, y, 1) or z = 0 when there is none.
+// bounds center). f32 sampling code like getSignedDistance (see utils/exact-geometry-wgsl.ts for topology). Returns (x, y, 1) or z = 0 when there is none.
 fn getScanlineSeed(ringStart: u32, ringEnd: u32, origin: vec2<f32>, lineY: f32) -> vec3<f32> {
   var firstX = LARGE;
   var firstCount = 0u;
@@ -713,6 +743,7 @@ fn getSignedDistanceCooperative(lane: u32, p: vec2<f32>, ringStart: u32, ringEnd
       let current = getPosition(row) - origin;
       let previous = getPosition(select(row - 1u, ringRowEnd - 1u, row == ringRowStart)) - origin;
       minimumSquared = min(minimumSquared, getSegmentDistanceSquared(p, previous, current));
+      // f32 sampling test: it only places the candidate label point; topology uses utils/exact-geometry-wgsl.ts.
       if ((current.y > p.y) != (previous.y > p.y)) {
         let crossingX = previous.x + (p.y - previous.y) * (current.x - previous.x) / (current.y - previous.y);
         if (p.x < crossingX) {
@@ -723,6 +754,24 @@ fn getSignedDistanceCooperative(lane: u32, p: vec2<f32>, ringStart: u32, ringEnd
   }
   let distance = sqrt(reduceMinFloat(lane, minimumSquared));
   return select(-distance, distance, (reduceSumUint(lane, crossings) & 1u) == 1u);
+}
+
+// Same ring as getLargestRingBounds: lanes stride over the rings, the largest extent wins (lowest
+// ring on ties), and every lane then reads that ring's bounds. Workgroup-uniform result.
+fn getLargestRingBoundsCooperative(lane: u32, ringStart: u32, ringEnd: u32, origin: vec2<f32>) -> vec4<f32> {
+  var laneExtent = -LARGE;
+  var laneRing = NO_CELL;
+  for (var ring = ringStart + lane; ring < ringEnd; ring += WORKGROUP_SIZE) {
+    let bounds = getRingBounds(ring, origin);
+    let extent = max(bounds.z - bounds.x, bounds.w - bounds.y);
+    if (extent > laneExtent) {
+      laneExtent = extent;
+      laneRing = ring;
+    }
+  }
+  let winner = reduceArgMax(lane, laneExtent, laneRing);
+  if (winner.cell == NO_CELL) { return vec4<f32>(0.0); }
+  return getRingBounds(winner.cell, origin);
 }
 
 // Same value as getScanlineSeed. Pass 0 finds the leftmost crossing, pass 1 counts the crossings

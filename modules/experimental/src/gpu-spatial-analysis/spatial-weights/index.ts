@@ -4,23 +4,43 @@
 
 export {
   GPU_DEFAULT_ISLAND_POLICY,
+  GPU_SPATIAL_WEIGHTS_CAPACITY_HEADROOM,
+  GPU_SPATIAL_WEIGHTS_DISTANCE_BYTE_LENGTH,
+  GPU_SPATIAL_WEIGHTS_SLOT_BYTE_LENGTH,
   describeGPUSpatialWeights,
-  getGPUSpatialWeightsCapacity,
+  getGPUSpatialWeightsCapacityPlan,
   isGPUSpatialWeightsRowStandardized,
   resolveGPUIslandPolicy,
-  validateGPUSpatialWeights
+  validateGPUSpatialWeights,
+  validateGPUSpatialWeightsOutput
 } from './spatial-weights';
 export type {
   GPUIslandPolicy,
   GPUSpatialWeights,
-  GPUSpatialWeightsInfo,
+  GPUSpatialWeightsCapacityPlan,
+  GPUSpatialWeightsCapacityPlanOptions,
+  GPUSpatialWeightsInformation,
+  GPUSpatialWeightsOutput,
   GPUSpatialWeightsProvenance,
   GPUSpatialWeightsTransformState
 } from './spatial-weights';
-export {GPUContiguityWeights} from './gpu-contiguity-weights';
-export type {GPUContiguityCriterion, GPUContiguityWeightsProps} from './gpu-contiguity-weights';
+export type {GPUFloat32OrUint32Values} from './float32-values';
+export {
+  GPUContiguityWeights,
+  GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR
+} from './gpu-contiguity-weights';
+export type {
+  GPUContiguityCriterion,
+  GPUContiguityWeightsCapacityPlan,
+  GPUContiguityWeightsObservation,
+  GPUContiguityWeightsProps
+} from './gpu-contiguity-weights';
 export {GPULatticeWeights, GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS} from './gpu-lattice-weights';
-export type {GPULatticeCriterion, GPULatticeWeightsProps} from './gpu-lattice-weights';
+export type {
+  GPULatticeCriterion,
+  GPULatticeWeightsCapacityPlan,
+  GPULatticeWeightsProps
+} from './gpu-lattice-weights';
 export {
   GPUSpatialWeightsTransform,
   GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON,
@@ -51,11 +71,20 @@ export {
   GPUSpatialWeightsSummary,
   GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT
 } from './gpu-spatial-weights-summary';
-export type {GPUSpatialWeightsSummaryProps} from './gpu-spatial-weights-summary';
+export type {
+  GPUSpatialWeightsSummaryOutput,
+  GPUSpatialWeightsSummaryProps
+} from './gpu-spatial-weights-summary';
 export {GPUSpatialWeightsTranspose} from './gpu-spatial-weights-transpose';
-export type {GPUSpatialWeightsTransposeProps} from './gpu-spatial-weights-transpose';
+export type {
+  GPUSpatialWeightsTransposeOutput,
+  GPUSpatialWeightsTransposeProps
+} from './gpu-spatial-weights-transpose';
 export {
   GPUSpatialWeightsValidation,
   GPU_SPATIAL_WEIGHTS_VIOLATION
 } from './gpu-spatial-weights-validation';
-export type {GPUSpatialWeightsValidationProps} from './gpu-spatial-weights-validation';
+export type {
+  GPUSpatialWeightsValidationOutput,
+  GPUSpatialWeightsValidationProps
+} from './gpu-spatial-weights-validation';

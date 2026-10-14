@@ -8,8 +8,8 @@ export const GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH = 4;
 /** scikit-learn's `LocalOutlierFactor` adds this to the mean reachability distance. */
 export const GPU_LOCAL_OUTLIER_FACTOR_DEFAULT_DENSITY_FLOOR = 1e-10;
 
-/** Per-frame parameters of {@link GPULocalOutlierFactor}, packed by {@link getGPULocalOutlierFactorParameterValues}. */
-export type GPULocalOutlierFactorParameters = {
+/** Per-frame settings of {@link GPULocalOutlierFactor}, packed by {@link getGPULocalOutlierFactorParameterValues}. */
+export type GPULocalOutlierFactorSettings = {
   /**
    * Rows with `lof > threshold` are flagged in the `outlier` mask and counted. There is no default:
    * LOF has no null distribution, so no cut is calibrated (Breunig et al. 2000 give none; values
@@ -31,16 +31,16 @@ export type GPULocalOutlierFactorParameters = {
 };
 
 /**
- * Packs {@link GPULocalOutlierFactorParameters} into the float32 layout read by the kernels.
+ * Packs {@link GPULocalOutlierFactorSettings} into the float32 layout read by the kernels.
  *
  * Layout: `[threshold (NaN when omitted: nothing is flagged), densityFloor, 0, 0]`.
  */
 export function getGPULocalOutlierFactorParameterValues(
-  parameters: GPULocalOutlierFactorParameters = {}
+  settings: GPULocalOutlierFactorSettings = {}
 ): Float32Array {
-  const threshold = parameters.threshold ?? Number.NaN;
-  const densityFloor = parameters.densityFloor ?? GPU_LOCAL_OUTLIER_FACTOR_DEFAULT_DENSITY_FLOOR;
-  if (parameters.threshold !== undefined && Number.isNaN(parameters.threshold)) {
+  const threshold = settings.threshold ?? Number.NaN;
+  const densityFloor = settings.densityFloor ?? GPU_LOCAL_OUTLIER_FACTOR_DEFAULT_DENSITY_FLOOR;
+  if (settings.threshold !== undefined && Number.isNaN(settings.threshold)) {
     throw new Error('GPULocalOutlierFactor threshold must not be NaN');
   }
   if (!Number.isFinite(densityFloor) || !(Math.fround(densityFloor) > 0)) {

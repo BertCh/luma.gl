@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,10 +12,17 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUInferenceResultPort, GPUPermutationStatisticAdapter} from '../contracts/index';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
+import type {GPUPermutationStatisticAdapter} from '../../analysis-core/contracts/index';
 import {
   isGPUSpatialWeightsRowStandardized,
   resolveGPUIslandPolicy,
@@ -31,30 +38,53 @@ import {
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
 
-/** Lanes of the single workgroup that reduces a global edge-association statistic. */
+/** Lanes of every workgroup that reduces a global edge-association statistic. */
 const EDGE_ASSOCIATION_WORKGROUP_SIZE = 256;
+
+/** Upper bound of the workgroups that share the row reduction of an edge-association statistic. */
+const EDGE_ASSOCIATION_MAXIMUM_GROUPS = 256;
+
+/** Float words per workgroup in the partials: stage 1 at 0..2, stage 2 at 3..5. */
+const EDGE_ASSOCIATION_PARTIAL_WORDS = 6;
+
+/** Caller-owned output of {@link GPUSpatialPearson} and {@link GPUGammaStatistic}. */
+export type GPUEdgeAssociationOutput = {
+  /** One float32: the global statistic (NaN when undefined). There is no analytic p-value. */
+  statistic: GraphDataView<'float32'>;
+};
 
 /** Inputs shared by global edge-association statistics. */
 type GPUEdgeAssociationProps = {
   id?: string;
   weights: GPUSpatialWeights;
-  values: GraphDataView<'float32'>;
-  secondValues?: GraphDataView<'float32'>;
+  /** First variable, one per row, `float32` or `uint32` (converted to f32, exact below 2^24). */
+  values: GPUFloat32OrUint32Values;
+  /** Optional second variable, one per row, `float32` or `uint32`. */
+  secondValues?: GPUFloat32OrUint32Values;
   mask?: GraphDataView<'uint32'>;
-  /** One caller-owned float32 statistic. */
-  result: GPUInferenceResultPort;
+  /** Caller-owned output. */
+  output: GPUEdgeAssociationOutput;
+};
+
+/** Caller-owned outputs of {@link GPULocalGeary}. */
+export type GPULocalGearyOutput = {
+  /** One local Geary value per weights row. */
+  statistic: GraphDataView<'float32'>;
+  /** Optional `[n, mean, variance, standardDeviation, islandCount]` used this frame. */
+  globalStatistics?: GraphDataView<'float32'>;
 };
 
 /** Properties for {@link GPULocalGeary}. */
 export type GPULocalGearyProps = {
   id?: string;
   /**
-   * Square self-join weights. Used as given, except that when `weights.info.transform` is `'row'`
+   * Square self-join weights. Used as given, except that when `weights.information.transform` is `'row'`
    * each row is re-standardized over the neighbors that remain after masking. A neighbor is a slot
    * with a positive weight that points at another included row.
    */
   weights: GPUSpatialWeights;
-  values: GraphDataView<'float32'>;
+  /** Analysis values, one per row, `float32` or `uint32` (converted to f32, exact below 2^24). */
+  values: GPUFloat32OrUint32Values;
   parameters: GraphDataView<'float32'>;
   mask?: GraphDataView<'uint32'>;
   /**
@@ -63,10 +93,8 @@ export type GPULocalGearyProps = {
    * reported in `globalStatistics[4]`.
    */
   islands?: GPUIslandPolicy;
-  /** One local Geary value per weights row. */
-  result: GPUInferenceResultPort;
-  /** Optional `[n, mean, variance, standardDeviation, islandCount]` used this frame. */
-  globalStatistics?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPULocalGearyOutput;
 };
 
 /**
@@ -158,17 +186,18 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
     this.id = props.id ?? 'local-geary';
     this.props = props;
     this.islands = resolveGPUIslandPolicy(this.id, props.islands);
-    const rows = validateSpatialAutocorrelationInputs({...props, id: this.id});
-    validatePackedView(props.result.statistic, ['float32'], `${this.id} result.statistic`);
-    if (props.result.statistic.length !== rows) {
-      throw new Error(`${this.id} result.statistic length must equal the weights row count`);
-    }
-    if (props.result.pValues || props.result.adjustedPValues || props.result.classifications) {
-      throw new Error(`${this.id} analytic inference is not defined; use permutation inference`);
+    const rows = validateSpatialAutocorrelationInputs({
+      ...props,
+      id: this.id,
+      globalStatistics: props.output.globalStatistics
+    });
+    validatePackedView(props.output.statistic, ['float32'], `${this.id} output.statistic`);
+    if (props.output.statistic.length !== rows) {
+      throw new Error(`${this.id} output.statistic length must equal the row count`);
     }
     validateGraphOutputsDisjointFromInputs(
       this.id,
-      [props.result.statistic, props.globalStatistics],
+      [props.output.statistic, props.output.globalStatistics],
       [
         props.weights.offsets,
         props.weights.neighbors,
@@ -193,12 +222,13 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       props.values,
       props.parameters,
       props.mask,
-      props.result.statistic,
-      props.globalStatistics
+      props.output.statistic,
+      props.output.globalStatistics
     ]);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes(graph, {
       ...props,
+      globalStatistics: props.output.globalStatistics,
       id,
       islands: this.islands,
       operation: 'GPULocalGeary'
@@ -214,7 +244,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
           {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
           {name: 'weights', view: props.weights.weights, type: 'f32', access: 'read'},
           {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
-          {name: 'result', view: props.result.statistic, type: 'f32', access: 'read_write'}
+          {name: 'result', view: props.output.statistic, type: 'f32', access: 'read_write'}
         ],
         declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 ${getSpatialAutocorrelationConstantsWGSL(rows, props.weights.neighbors.length)}
@@ -246,7 +276,7 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(props.weights)};`
 /** Properties for {@link GPUSpatialPearson}. */
 export type GPUSpatialPearsonProps = GPUEdgeAssociationProps & {
   /** Second variable is required for the spatial cross-correlation. */
-  secondValues: GraphDataView<'float32'>;
+  secondValues: GPUFloat32OrUint32Values;
 };
 
 /** Spatial Pearson shares the global bivariate cross-product permutation engine. */
@@ -275,7 +305,7 @@ export class GPUSpatialPearson implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    return [createEdgeAssociationNode(graph, this.id, this.props, 'pearson')];
+    return createEdgeAssociationNodes(graph, this.id, this.props, 'pearson');
   }
 }
 
@@ -324,32 +354,30 @@ export class GPUGammaStatistic implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    return [createEdgeAssociationNode(graph, this.id, this.props, this.operation)];
+    return createEdgeAssociationNodes(graph, this.id, this.props, this.operation);
   }
 }
 
 function validateEdgeAssociationProps(id: string, props: GPUEdgeAssociationProps): void {
   const rows = validateGPUSpatialWeights(id, props.weights);
-  validatePackedView(props.values, ['float32'], `${id} values`);
-  if (props.values.length !== rows) throw new Error(`${id} values length must equal weights rows`);
-  if (props.secondValues) {
-    validatePackedView(props.secondValues, ['float32'], `${id} secondValues`);
-    if (props.secondValues.length !== rows)
-      throw new Error(`${id} secondValues length must equal weights rows`);
+  if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
+    throw new Error(`${id} values length must equal weights rows`);
+  }
+  if (
+    props.secondValues &&
+    validateFloat32OrUint32Values(props.secondValues, `${id} secondValues`) !== rows
+  ) {
+    throw new Error(`${id} secondValues length must equal weights rows`);
   }
   if (props.mask) {
     validatePackedUint32View(props.mask, `${id} mask`);
     if (props.mask.length !== rows) throw new Error(`${id} mask length must equal weights rows`);
   }
-  validatePackedView(props.result.statistic, ['float32'], `${id} result.statistic`);
-  if (props.result.statistic.length < 1)
-    throw new Error(`${id} result.statistic must hold one value`);
-  if (props.result.pValues || props.result.adjustedPValues || props.result.classifications) {
-    throw new Error(`${id} analytic inference is not defined; use permutation inference`);
-  }
+  validatePackedView(props.output.statistic, ['float32'], `${id} output.statistic`);
+  validateCapacity(id, 'output.statistic length', props.output.statistic.length);
   validateGraphOutputsDisjointFromInputs(
     id,
-    [props.result.statistic],
+    [props.output.statistic],
     [
       props.weights.offsets,
       props.weights.neighbors,
@@ -361,12 +389,19 @@ function validateEdgeAssociationProps(id: string, props: GPUEdgeAssociationProps
   );
 }
 
-function createEdgeAssociationNode<Parameters>(
+/**
+ * Three kernels reduce the edges deterministically (no float atomics): `-moments` (one partial of
+ * weight, weighted x and weighted y per workgroup), `-centered` (every workgroup first combines the
+ * moment partials in the same fixed tree order, so all derive bit-identical means, then writes a
+ * partial of numerator and squared deviations) and `-statistic` (one workgroup combines the
+ * partials in fixed tree order and writes the answer).
+ */
+function createEdgeAssociationNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   props: GPUEdgeAssociationProps,
   operation: 'pearson' | GPUGammaOperation
-): GPUCommandNode<Parameters> {
+): GPUCommandNode<Parameters>[] {
   validateGraphViewsBelongToGraph(id, graph, [
     props.weights.offsets,
     props.weights.neighbors,
@@ -374,19 +409,32 @@ function createEdgeAssociationNode<Parameters>(
     props.values,
     props.secondValues,
     props.mask,
-    props.result.statistic
+    props.output.statistic
   ]);
-  const secondValues = props.secondValues ?? props.values;
-  const bindings: WGSLKernelBinding[] = [
+  const rows = props.values.length;
+  const valuesInput = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
+  const secondInput = props.secondValues
+    ? createFloat32ValuesNodes(graph, `${id}-second-values`, props.secondValues)
+    : valuesInput;
+  const groups = Math.max(
+    1,
+    Math.min(EDGE_ASSOCIATION_MAXIMUM_GROUPS, Math.ceil(rows / EDGE_ASSOCIATION_WORKGROUP_SIZE))
+  );
+  const partials = createTransientView(
+    graph,
+    `${id}-partials`,
+    'float32',
+    groups * EDGE_ASSOCIATION_PARTIAL_WORDS
+  );
+  const edgeBindings: WGSLKernelBinding[] = [
     {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
     {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
     {name: 'weights', view: props.weights.weights, type: 'f32', access: 'read'},
-    {name: 'values', view: props.values, type: 'f32', access: 'read'},
-    {name: 'secondValues', view: secondValues, type: 'f32', access: 'read'},
+    {name: 'values', view: valuesInput.view, type: 'f32', access: 'read'},
+    {name: 'secondValues', view: secondInput.view, type: 'f32', access: 'read'},
     ...(props.mask
       ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
-      : []),
-    {name: 'result', view: props.result.statistic, type: 'f32', access: 'read_write'}
+      : [])
   ];
   const term =
     operation === 'cross-product' || operation === 'pearson'
@@ -396,27 +444,69 @@ function createEdgeAssociationNode<Parameters>(
         : operation === 'absolute-difference'
           ? 'abs(x - y)'
           : '0.0';
-  return createWGSLKernelNode(graph, {
-    id: `${id}-statistic`,
-    operation: operation === 'pearson' ? 'GPUSpatialPearson' : 'GPUGammaStatistic',
-    variant: operation,
-    // One workgroup reduces all edges: lanes stripe rows and combine in a fixed tree order.
-    workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
-    invocationCount: EDGE_ASSOCIATION_WORKGROUP_SIZE,
-    guardIndex: false,
-    bindings,
-    declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-const ROWS: u32 = ${props.values.length}u;
+  const operationName = operation === 'pearson' ? 'GPUSpatialPearson' : 'GPUGammaStatistic';
+  const declarations = `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+const ROWS: u32 = ${rows}u;
 const LANES: u32 = ${EDGE_ASSOCIATION_WORKGROUP_SIZE}u;
+const GROUPS: u32 = ${groups}u;
+const PARTIAL_WORDS: u32 = ${EDGE_ASSOCIATION_PARTIAL_WORDS}u;
 var<workgroup> sharedA: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
 var<workgroup> sharedB: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
 var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
-`,
-    body: `let lane = localInvocationIndex;
+`;
+  const filters = (code: string) =>
+    code
+      .replaceAll(
+        '%ROW_OK%',
+        `${props.mask ? 'mask[maskOffset + row] == 0u || ' : ''}!isFiniteFloat(values[valuesOffset + row])`
+      )
+      .replaceAll(
+        '%NEIGHBOR_OK%',
+        `neighbor >= ROWS || neighbor == row || !(weights[weightsOffset + slot] > 0.0) || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])`
+      );
+  // Fixed-order tree reduction of the lane values staged in sharedA/B/C. Ends with a barrier.
+  const reduceWGSL = `workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) {
+      sharedA[lane] += sharedA[lane + stride];
+      sharedB[lane] += sharedB[lane + stride];
+      sharedC[lane] += sharedC[lane + stride];
+    }
+    workgroupBarrier();
+  }`;
+  // Lane `g < GROUPS` loads the three partial words at `wordOffset` of workgroup `g`; the rest add 0.
+  const loadPartialsWGSL = (wordOffset: number) => `sharedA[lane] = 0.0;
+  sharedB[lane] = 0.0;
+  sharedC[lane] = 0.0;
+  if (lane < GROUPS) {
+    sharedA[lane] = partials[partialsOffset + lane * PARTIAL_WORDS + ${wordOffset}u];
+    sharedB[lane] = partials[partialsOffset + lane * PARTIAL_WORDS + ${wordOffset + 1}u];
+    sharedC[lane] = partials[partialsOffset + lane * PARTIAL_WORDS + ${wordOffset + 2}u];
+  }
+  ${reduceWGSL}`;
+  const partialsBinding = (access: 'read' | 'read_write'): WGSLKernelBinding => ({
+    name: 'partials',
+    view: partials,
+    type: 'f32',
+    access
+  });
+
+  // Workgroup g strides rows g * LANES + lane, step GROUPS * LANES.
+  const momentsNode = createWGSLKernelNode(graph, {
+    id: `${id}-moments`,
+    operation: operationName,
+    variant: `${operation}-moments`,
+    workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    invocationCount: groups * EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    guardIndex: false,
+    bindings: [...edgeBindings, partialsBinding('read_write')],
+    declarations,
+    body: filters(`let lane = localInvocationIndex;
+  let group = index / LANES;
   var laneWeight = 0.0;
   var laneX = 0.0;
   var laneY = 0.0;
-  for (var row = lane; row < ROWS; row += LANES) {
+  for (var row = index; row < ROWS; row += GROUPS * LANES) {
     if (%ROW_OK%) { continue; }
     for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       let neighbor = neighbors[neighborsOffset + slot];
@@ -430,15 +520,27 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
   sharedA[lane] = laneWeight;
   sharedB[lane] = laneX;
   sharedC[lane] = laneY;
-  workgroupBarrier();
-  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
-    if (lane < stride) {
-      sharedA[lane] += sharedA[lane + stride];
-      sharedB[lane] += sharedB[lane + stride];
-      sharedC[lane] += sharedC[lane + stride];
-    }
-    workgroupBarrier();
-  }
+  ${reduceWGSL}
+  if (lane == 0u) {
+    partials[partialsOffset + group * PARTIAL_WORDS] = sharedA[0];
+    partials[partialsOffset + group * PARTIAL_WORDS + 1u] = sharedB[0];
+    partials[partialsOffset + group * PARTIAL_WORDS + 2u] = sharedC[0];
+  }`)
+  });
+
+  const centeredNode = createWGSLKernelNode(graph, {
+    id: `${id}-centered`,
+    operation: operationName,
+    variant: `${operation}-centered`,
+    workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    invocationCount: groups * EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    guardIndex: false,
+    // The moment words (0..2) are only read and the centered words (3..5) only written.
+    bindings: [...edgeBindings, partialsBinding('read_write')],
+    declarations,
+    body: filters(`let lane = localInvocationIndex;
+  let group = index / LANES;
+  ${loadPartialsWGSL(0)}
   let weightTotal = sharedA[0];
   let meanX = sharedB[0] / weightTotal;
   let meanY = sharedC[0] / weightTotal;
@@ -446,7 +548,7 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
   var laneNumerator = 0.0;
   var laneSquareX = 0.0;
   var laneSquareY = 0.0;
-  for (var row = lane; row < ROWS; row += LANES) {
+  for (var row = index; row < ROWS; row += GROUPS * LANES) {
     if (%ROW_OK%) { continue; }
     for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       let neighbor = neighbors[neighborsOffset + slot];
@@ -462,15 +564,31 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
   sharedA[lane] = laneNumerator;
   sharedB[lane] = laneSquareX;
   sharedC[lane] = laneSquareY;
+  ${reduceWGSL}
+  if (lane == 0u) {
+    partials[partialsOffset + group * PARTIAL_WORDS + 3u] = sharedA[0];
+    partials[partialsOffset + group * PARTIAL_WORDS + 4u] = sharedB[0];
+    partials[partialsOffset + group * PARTIAL_WORDS + 5u] = sharedC[0];
+  }`)
+  });
+
+  const statisticNode = createWGSLKernelNode(graph, {
+    id: `${id}-statistic`,
+    operation: operationName,
+    variant: operation,
+    workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    invocationCount: EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    guardIndex: false,
+    bindings: [
+      partialsBinding('read'),
+      {name: 'result', view: props.output.statistic, type: 'f32', access: 'read_write'}
+    ],
+    declarations,
+    body: `let lane = localInvocationIndex;
+  ${loadPartialsWGSL(0)}
+  let weightTotal = sharedA[0];
   workgroupBarrier();
-  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
-    if (lane < stride) {
-      sharedA[lane] += sharedA[lane + stride];
-      sharedB[lane] += sharedB[lane + stride];
-      sharedC[lane] += sharedC[lane + stride];
-    }
-    workgroupBarrier();
-  }
+  ${loadPartialsWGSL(3)}
   if (lane == 0u) {
     let numerator = sharedA[0];
     let squareX = sharedB[0];
@@ -483,13 +601,8 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
     }
     result[resultOffset] = answer;
   }`
-      .replaceAll(
-        '%ROW_OK%',
-        `${props.mask ? 'mask[maskOffset + row] == 0u || ' : ''}!isFiniteFloat(values[valuesOffset + row])`
-      )
-      .replaceAll(
-        '%NEIGHBOR_OK%',
-        `neighbor >= ROWS || neighbor == row || !(weights[weightsOffset + slot] > 0.0) || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])`
-      )
   });
+  const conversionNodes =
+    secondInput === valuesInput ? valuesInput.nodes : [...valuesInput.nodes, ...secondInput.nodes];
+  return [...conversionNodes, momentsNode, centeredNode, statisticNode];
 }

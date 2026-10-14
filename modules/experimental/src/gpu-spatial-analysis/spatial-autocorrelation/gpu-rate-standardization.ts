@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -13,9 +12,16 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUAssuncaoReisStandardization';
@@ -38,6 +44,28 @@ export const GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH = 5;
 /** Offsets inside `statistics` (internal). */
 const STATISTIC = {count: 0, mean: 1, variance: 2, priorVariance: 3, population: 4} as const;
 
+/** Caller-owned outputs of {@link GPUAssuncaoReisStandardization}. */
+export type GPUAssuncaoReisStandardizationOutput = {
+  /**
+   * EB-standardized rate `z_i`, one float32 per row; NaN for missing and masked rows and where the
+   * standardizing variance is not positive.
+   */
+  standardizedRates: GraphDataView<'float32'>;
+  /**
+   * Optional global quantities, at least {@link GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH}
+   * float32 values: `[n, b, s2, a, totalPopulation]` (see {@link GPUAssuncaoReisStandardization}).
+   */
+  statistics?: GraphDataView<'float32'>;
+  /** Optional status. */
+  status?: {
+    /**
+     * One uint32: the number of unmasked rows rejected as missing (non-finite or negative events,
+     * or a population that is not finite and positive).
+     */
+    invalidCount?: GraphDataView<'uint32'>;
+  };
+};
+
 /**
  * Properties for {@link GPUAssuncaoReisStandardization}.
  *
@@ -47,29 +75,20 @@ const STATISTIC = {count: 0, mean: 1, variance: 2, priorVariance: 3, population:
 export type GPUAssuncaoReisStandardizationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'assuncao-reis-standardization'`. */
   id?: string;
-  /** Event counts `e_i`, one per row. Negative or non-finite events mark the row as missing. */
-  events: GraphDataView<'float32'>;
-  /** Population at risk `n_i`, one per row. Populations that are not finite or not > 0 are missing. */
-  populations: GraphDataView<'float32'>;
+  /**
+   * Event counts `e_i`, one per row, `float32` or `uint32` (converted to f32, exact below 2^24).
+   * Negative or non-finite events mark the row as missing.
+   */
+  events: GPUFloat32OrUint32Values;
+  /**
+   * Population at risk `n_i`, one per row, `float32` or `uint32`. Populations that are not finite
+   * or not > 0 are missing.
+   */
+  populations: GPUFloat32OrUint32Values;
   /** Optional row selection: nonzero includes the row; masked rows are not part of the analysis. */
   mask?: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned output `z_i`, one float32 per row: the EB-standardized rate, NaN for missing and
-   * masked rows and where the standardizing variance is not positive.
-   */
-  standardizedRates: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned global quantities, at least
-   * {@link GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH} float32 values:
-   * `[n, b, s2, a, totalPopulation]` (see {@link GPUAssuncaoReisStandardization}).
-   */
-  statistics?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned count of unmasked rows that were rejected as missing (non-finite or
-   * negative events, or a population that is not finite and positive). This is the
-   * `GPUInvalidStatusPort.invalidCount` of the status vocabulary.
-   */
-  invalidCount?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUAssuncaoReisStandardizationOutput;
 };
 
 /** One fixed-order block accumulator of {@link createBlockSumNodes}. */
@@ -228,7 +247,7 @@ ${workgroupDeclarations}`,
  *
  * - EB Moran's I for rates (`esda.Moran_Rate`, default `transformation='r'`): run this node, feed
  *   `standardizedRates` as `values` to `GPUGlobalSpatialStatistics` with `statistics: ['moran']`
- *   and row-standardized weights (`weights.info.transform === 'row'`, from
+ *   and row-standardized weights (`weights.information.transform === 'row'`, from
  *   `GPUSpatialWeightsTransform`). `I` equals `Moran_Rate.I`, `EI` equals `Moran_Rate.EI`, and
  *   `zRandomization` equals `Moran_Rate.z_rand` (esda recomputes the Moran of the standardized
  *   values, ignoring the EB sampling variance). Use `islands: 'keep'` for esda's convention.
@@ -250,16 +269,14 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
     const id = props.id ?? 'assuncao-reis-standardization';
     this.id = id;
     this.props = props;
-    validatePackedView(props.events, ['float32'], `${id} events`);
-    validatePackedView(props.populations, ['float32'], `${id} populations`);
-    validatePackedView(props.standardizedRates, ['float32'], `${id} standardizedRates`);
-    const rows = props.events.length;
-    if (rows >= MAXIMUM_ROWS) {
-      throw new Error(`${id} events must hold fewer than 2^24 rows`);
-    }
+    const {output} = props;
+    const rows = validateFloat32OrUint32Values(props.events, `${id} events`);
+    validateFloat32OrUint32Values(props.populations, `${id} populations`);
+    validatePackedView(output.standardizedRates, ['float32'], `${id} output.standardizedRates`);
+    validateCapacity(id, 'events length', rows, 0, MAXIMUM_ROWS - 1);
     for (const [name, view] of [
       ['populations', props.populations],
-      ['standardizedRates', props.standardizedRates]
+      ['output.standardizedRates', output.standardizedRates]
     ] as const) {
       if (view.length !== rows) {
         throw new Error(`${id} ${name} length must equal the events length`);
@@ -271,23 +288,23 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the events length`);
       }
     }
-    if (props.statistics) {
-      validatePackedView(props.statistics, ['float32'], `${id} statistics`);
-      if (props.statistics.length < GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH) {
-        throw new Error(
-          `${id} statistics must hold ${GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH} float32 values`
-        );
-      }
+    if (output.statistics) {
+      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      validateCapacity(
+        id,
+        'output.statistics length',
+        output.statistics.length,
+        GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
+      );
     }
-    if (props.invalidCount) {
-      validatePackedUint32View(props.invalidCount, `${id} invalidCount`);
-      if (props.invalidCount.length < 1) {
-        throw new Error(`${id} invalidCount must hold 1 uint32 value`);
-      }
+    const invalidCount = output.status?.invalidCount;
+    if (invalidCount) {
+      validatePackedUint32View(invalidCount, `${id} output.status.invalidCount`);
+      validateCapacity(id, 'output.status.invalidCount length', invalidCount.length);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.standardizedRates, props.statistics, props.invalidCount],
+      [output.standardizedRates, output.statistics, invalidCount],
       [props.events, props.populations, props.mask]
     );
   }
@@ -297,18 +314,28 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {events, populations, mask, standardizedRates, invalidCount} = props;
+    const {mask} = props;
+    const {standardizedRates} = props.output;
+    const invalidCount = props.output.status?.invalidCount;
     validateGraphViewsBelongToGraph(id, graph, [
-      events,
-      populations,
+      props.events,
+      props.populations,
       mask,
       standardizedRates,
-      props.statistics,
+      props.output.statistics,
       invalidCount
     ]);
+    const eventsInput = createFloat32ValuesNodes(graph, `${id}-events`, props.events);
+    const populationsInput = createFloat32ValuesNodes(
+      graph,
+      `${id}-populations`,
+      props.populations
+    );
+    const events = eventsInput.view;
+    const populations = populationsInput.view;
     const rows = events.length;
     const statistics =
-      props.statistics ??
+      props.output.statistics ??
       createTransientView(
         graph,
         `${id}-statistics`,
@@ -342,7 +369,7 @@ fn isRowValid(row: u32) -> bool {
     const eventTerm = 'events[eventsOffset + row]';
     const populationTerm = 'populations[populationsOffset + row]';
 
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...eventsInput.nodes, ...populationsInput.nodes];
     // Pass 1: count, sum of events, sum of populations, rejected rows -> provisional b.
     nodes.push(
       ...createBlockSumNodes(graph, {

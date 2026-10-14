@@ -26,11 +26,11 @@ export const PAIR_STATISTICS_MINIMUM_UNIT_FRACTION = 2 ** -32;
  */
 export const PAIR_STATISTICS_ZERO_SPREAD_UNIT_FRACTION = 2 ** -12;
 
-/** Standard deviations in the interquartile range of a normal distribution, `2 * 0.6744898`. */
-const INTERQUARTILE_RANGE_PER_SIGMA = 1.3489795;
+/** Standard deviations in the interquartile range of a normal distribution, `2 * 0.6744898`. @internal */
+export const PAIR_STATISTICS_INTERQUARTILE_RANGE_PER_SIGMA = 1.3489795;
 
-/** A variance below this (f32) is treated as zero: its reciprocal scale would overflow. */
-const MINIMUM_VARIANCE = 1e-30;
+/** A variance below this (f32) is treated as zero: its reciprocal scale would overflow. @internal */
+export const PAIR_STATISTICS_MINIMUM_VARIANCE = 1e-30;
 
 /**
  * Builds the nodes that write the "typical term variance" `u` of a value column to a one-row
@@ -104,47 +104,13 @@ export function getPairStatisticsUnitVarianceNodes<Parameters>(
       declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
 const MOMENTS: u32 = ${rows}u;`,
       body: `let variance = statistics[statisticsOffset + MOMENTS + 2u] / statistics[statisticsOffset + MOMENTS];
-  let spread = (quantiles[quantilesOffset + 1u] - quantiles[quantilesOffset]) / ${INTERQUARTILE_RANGE_PER_SIGMA};
+  let spread = (quantiles[quantilesOffset + 1u] - quantiles[quantilesOffset]) / ${PAIR_STATISTICS_INTERQUARTILE_RANGE_PER_SIGMA};
   let usable = isFiniteFloat(spread) && spread > 0.0;
   let robustVariance = select(variance * ${PAIR_STATISTICS_ZERO_SPREAD_UNIT_FRACTION}, spread * spread, usable);
   let unit = clamp(robustVariance, variance * ${PAIR_STATISTICS_MINIMUM_UNIT_FRACTION}, variance);
   unitVariance[unitVarianceOffset] =
-    select(0.0, unit, isFiniteFloat(variance) && variance > ${MINIMUM_VARIANCE});`
+    select(0.0, unit, isFiniteFloat(variance) && variance > ${PAIR_STATISTICS_MINIMUM_VARIANCE});`
     })
   ];
   return {nodes, unitVariance};
-}
-
-/**
- * CPU mirror of the unit variance kernel for oracles: the robust variance from the `linear`
- * interpolated quartiles of the finite `values`, clamped to `[variance * 2^-32, variance]`.
- *
- * @internal
- */
-export function getPairStatisticsUnitVarianceOnCPU(values: ArrayLike<number>): number {
-  const finite = Array.from(values)
-    .filter(value => Number.isFinite(value))
-    .sort((a, b) => a - b);
-  const count = finite.length;
-  if (count === 0) {
-    return 0;
-  }
-  const mean = finite.reduce((sum, value) => sum + value, 0) / count;
-  const variance = finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / count;
-  if (!(variance > MINIMUM_VARIANCE)) {
-    return 0;
-  }
-  const quantile = (p: number) => {
-    const height = (count - 1) * p;
-    const lower = Math.floor(height);
-    const upper = Math.min(lower + 1, count - 1);
-    return finite[lower] + (finite[upper] - finite[lower]) * (height - lower);
-  };
-  const spread = (quantile(0.75) - quantile(0.25)) / INTERQUARTILE_RANGE_PER_SIGMA;
-  const robustVariance =
-    spread > 0 ? spread * spread : variance * PAIR_STATISTICS_ZERO_SPREAD_UNIT_FRACTION;
-  return Math.min(
-    Math.max(robustVariance, variance * PAIR_STATISTICS_MINIMUM_UNIT_FRACTION),
-    variance
-  );
 }

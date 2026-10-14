@@ -10,22 +10,22 @@ import {BALANCED_SEARCH_WORKGROUP_SIZE, getBalancedSearchSource} from './balance
 
 /**
  * Words per output piece in the internal piece column:
- * `[path, startMeasure, endMeasure, flags, firstInteriorRow, interiorEndRow, vertexCount, pathStart,
- * pathEnd, 0]`.
+ * `[line, startMeasure, endMeasure, flags, firstInteriorRow, interiorEndRow, vertexCount, lineStart,
+ * lineEnd, 0]`.
  *
  * @internal
  */
 export const LINE_PIECE_STRIDE = 10;
 
-/** Piece flag: copy the path's rows verbatim (zero-length paths). @internal */
+/** Piece flag: copy the line's rows verbatim (zero-length lines). @internal */
 const PIECE_COPY = 1;
 
-/** How `createPieceCountNode` splits each path. @internal */
+/** How `createPieceCountNode` splits each line. @internal */
 export type LinePieceMode = 'chunk' | 'substring';
 
 /**
- * Per-input-path piece count: chunks `min(ceil(length / chunkLength), maximumPieces)` (one piece
- * for zero-length paths or a non-positive chunk length), substrings one piece. Empty paths have
+ * Per-input-line piece count: chunks `min(ceil(length / chunkLength), maximumPieces)` (one piece
+ * for zero-length lines or a non-positive chunk length), substrings one piece. Empty lines have
  * no pieces.
  *
  * @internal
@@ -36,7 +36,7 @@ export function createPieceCountNode<Parameters>(
     id: string;
     operation: string;
     mode: LinePieceMode;
-    pathOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     rowMeasures: GraphDataView<'float32'>;
     parameters: GraphDataView<'float32'>;
     rowCount: number;
@@ -49,24 +49,24 @@ export function createPieceCountNode<Parameters>(
     operation: props.operation,
     variant: 'piece-count',
     bindings: [
-      {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
       {name: 'rowMeasures', view: props.rowMeasures, type: 'f32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'pieceCounts', view: props.pieceCounts, type: 'u32', access: 'read_write'}
     ],
-    invocationCount: props.pathOffsets.length - 1,
+    invocationCount: props.lineOffsets.length - 1,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
 const MAXIMUM_PIECES: u32 = ${props.maximumPieces}u;
 const IS_CHUNK: bool = ${props.mode === 'chunk'};`,
-    body: /* wgsl */ `let start = min(pathOffsets[pathOffsetsOffset + index], ROW_COUNT);
-  let end = min(max(pathOffsets[pathOffsetsOffset + index + 1u], start), ROW_COUNT);
+    body: /* wgsl */ `let start = min(lineOffsets[lineOffsetsOffset + index], ROW_COUNT);
+  let end = min(max(lineOffsets[lineOffsetsOffset + index + 1u], start), ROW_COUNT);
   var count = 0u;
   if (end > start) {
     count = 1u;
-    let pathLength = rowMeasures[rowMeasuresOffset + end - 1u];
+    let lineLength = rowMeasures[rowMeasuresOffset + end - 1u];
     let chunkLength = parameters[parametersOffset];
-    if (IS_CHUNK && pathLength > 0.0 && chunkLength > 0.0) {
-      count = u32(min(ceil(pathLength / chunkLength), f32(MAXIMUM_PIECES)));
+    if (IS_CHUNK && lineLength > 0.0 && chunkLength > 0.0) {
+      count = u32(min(ceil(lineLength / chunkLength), f32(MAXIMUM_PIECES)));
       count = clamp(count, 1u, MAXIMUM_PIECES);
     }
   }
@@ -75,7 +75,7 @@ const IS_CHUNK: bool = ${props.mode === 'chunk'};`,
 }
 
 /**
- * Per output piece slot: finds the source path by binary search over the scanned piece starts,
+ * Per output piece slot: finds the source line by binary search over the scanned piece starts,
  * resolves the piece's measure range, the interior vertex rows strictly inside it (two binary
  * searches over the cumulative measures) and its vertex count. Slot 0 also writes the unclamped
  * piece total.
@@ -88,7 +88,7 @@ export function createPieceRangeNode<Parameters>(
     id: string;
     operation: string;
     mode: LinePieceMode;
-    pathOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     rowMeasures: GraphDataView<'float32'>;
     parameters: GraphDataView<'float32'>;
     pieceCounts: GraphDataView<'uint32'>;
@@ -99,13 +99,13 @@ export function createPieceRangeNode<Parameters>(
     pieceTotal: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const pathCount = props.pathOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'piece-range',
     bindings: [
-      {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
       {name: 'rowMeasures', view: props.rowMeasures, type: 'f32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'pieceCounts', view: props.pieceCounts, type: 'u32', access: 'read'},
@@ -115,7 +115,7 @@ export function createPieceRangeNode<Parameters>(
       {name: 'pieceTotal', view: props.pieceTotal, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.vertexCounts.length,
-    declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+    declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const ROW_COUNT: u32 = ${props.rowCount}u;
 const STRIDE: u32 = ${LINE_PIECE_STRIDE}u;
 const IS_CHUNK: bool = ${props.mode === 'chunk'};
@@ -140,7 +140,7 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
   }
   return first;
 }`,
-    body: /* wgsl */ `let total = pieceStarts[pieceStartsOffset + PATH_COUNT - 1u] + pieceCounts[pieceCountsOffset + PATH_COUNT - 1u];
+    body: /* wgsl */ `let total = pieceStarts[pieceStartsOffset + LINE_COUNT - 1u] + pieceCounts[pieceCountsOffset + LINE_COUNT - 1u];
   if (index == 0u) {
     pieceTotal[pieceTotalOffset] = total;
   }
@@ -151,9 +151,9 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
     vertexCounts[vertexCountsOffset + index] = 0u;
     return;
   }
-  // Largest path whose first piece is at most index (paths without pieces are skipped).
+  // Largest line whose first piece is at most index (lines without pieces are skipped).
   var low = 0u;
-  var high = PATH_COUNT;
+  var high = LINE_COUNT;
   while (high - low > 1u) {
     let middle = (low + high) / 2u;
     if (pieceStarts[pieceStartsOffset + middle] <= index) {
@@ -162,19 +162,19 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
       high = middle;
     }
   }
-  let path = low;
-  let local = index - pieceStarts[pieceStartsOffset + path];
-  let pieceCount = pieceCounts[pieceCountsOffset + path];
-  let start = min(pathOffsets[pathOffsetsOffset + path], ROW_COUNT);
-  let end = min(max(pathOffsets[pathOffsetsOffset + path + 1u], start), ROW_COUNT);
-  let pathLength = getMeasure(end - 1u);
+  let line = low;
+  let local = index - pieceStarts[pieceStartsOffset + line];
+  let pieceCount = pieceCounts[pieceCountsOffset + line];
+  let start = min(lineOffsets[lineOffsetsOffset + line], ROW_COUNT);
+  let end = min(max(lineOffsets[lineOffsetsOffset + line + 1u], start), ROW_COUNT);
+  let lineLength = getMeasure(end - 1u);
   var startMeasure = 0.0;
-  var endMeasure = pathLength;
+  var endMeasure = lineLength;
   var flags = 0u;
   var firstInterior = start;
   var interiorEnd = end;
   var vertexCount = end - start;
-  if (!(pathLength > 0.0)) {
+  if (!(lineLength > 0.0)) {
     flags = PIECE_COPY;
   } else {
     if (IS_CHUNK) {
@@ -186,8 +186,8 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
         }
       }
     } else {
-      startMeasure = clamp(parameters[parametersOffset + 1u], 0.0, pathLength);
-      endMeasure = clamp(parameters[parametersOffset + 2u], 0.0, pathLength);
+      startMeasure = clamp(parameters[parametersOffset + 1u], 0.0, lineLength);
+      endMeasure = clamp(parameters[parametersOffset + 2u], 0.0, lineLength);
     }
     if (startMeasure > endMeasure) {
       vertexCount = 0u;
@@ -199,7 +199,7 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
       vertexCount = 2u + interiorEnd - firstInterior;
     }
   }
-  pieces[base] = path;
+  pieces[base] = line;
   pieces[base + 1u] = bitcast<u32>(startMeasure);
   pieces[base + 2u] = bitcast<u32>(endMeasure);
   pieces[base + 3u] = flags;
@@ -214,7 +214,7 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
 
 /**
  * Emits every piece: an interpolated start vertex, the interior input vertices, and an
- * interpolated end vertex (or the path's rows verbatim for zero-length paths).
+ * interpolated end vertex (or the line's rows verbatim for zero-length lines).
  *
  * @internal
  */
@@ -266,7 +266,7 @@ export function createPieceEmitNode<Parameters>(
     operation: props.operation,
     variant: 'piece-emit',
     bindings,
-    // One invocation per output vertex (not per piece), so a piece spanning a long path copies in
+    // One invocation per output vertex (not per piece), so a piece spanning a long line copies in
     // parallel instead of serializing one lane (see balanced-search).
     invocationCount: props.outputPositions.length,
     workgroupSize: BALANCED_SEARCH_WORKGROUP_SIZE,
@@ -283,7 +283,7 @@ fn getMeasure(row: u32) -> f32 {
   return rowMeasures[rowMeasuresOffset + row];
 }
 
-// Position of an input row, with spherical longitudes unwrapped along the path.
+// Position of an input row, with spherical longitudes unwrapped along the line.
 fn getVertex(row: u32) -> vec2<f32> {
   var vertex = vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
   ${spherical && props.rowShifts ? 'vertex.x = vertex.x + rowShifts[rowShiftsOffset + row];' : ''}
@@ -328,14 +328,14 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
     writeVertex(index, getVertex(row), getMeasure(row), row);
     return;
   }
-  let pathStart = pieces[base + 7u];
-  let pathEnd = pieces[base + 8u];
+  let lineStart = pieces[base + 7u];
+  let lineEnd = pieces[base + 8u];
   let startMeasure = bitcast<f32>(pieces[base + 1u]);
   let endMeasure = bitcast<f32>(pieces[base + 2u]);
-  // A measure lies on the segment ending at the first row past it, clamped to the path's
-  // segments (the path has at least two rows because its length is positive).
-  let startSegment = clamp(firstInterior, pathStart + 1u, pathEnd - 1u) - 1u;
-  let endSegment = clamp(interiorEnd, pathStart + 1u, pathEnd - 1u) - 1u;
+  // A measure lies on the segment ending at the first row past it, clamped to the line's
+  // segments (the line has at least two rows because its length is positive).
+  let startSegment = clamp(firstInterior, lineStart + 1u, lineEnd - 1u) - 1u;
+  let endSegment = clamp(interiorEnd, lineStart + 1u, lineEnd - 1u) - 1u;
   if (local == 0u) {
     writeVertex(index, interpolate(startSegment, startMeasure), startMeasure, startSegment);
   } else if (local <= interiorEnd - firstInterior) {
@@ -348,8 +348,8 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
 }
 
 /**
- * Publishes piece path offsets (clamped), the vertex count and overflow (vertex or path capacity),
- * the optional total and clamped path count, and the optional source-path column.
+ * Publishes piece line offsets (clamped), the vertex count and overflow (vertex or line capacity),
+ * the optional total and clamped line count, and the optional source-line-index column.
  *
  * @internal
  */
@@ -362,29 +362,29 @@ export function createPiecePublishNode<Parameters>(
     pieces: GraphDataView<'uint32'>;
     vertexStarts: GraphDataView<'uint32'>;
     capacity: number;
-    outputPathOffsets: GraphDataView<'uint32'>;
+    outputLineOffsets: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     requiredCount?: GraphDataView<'uint32'>;
-    pathCountOutput?: GraphDataView<'uint32'>;
+    lineCountOutput?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const pathCapacity = props.vertexStarts.length;
+  const lineCapacity = props.vertexStarts.length;
   const bindings: WGSLKernelBinding[] = [
     {name: 'pieceTotal', view: props.pieceTotal, type: 'u32', access: 'read'},
     {name: 'pieces', view: props.pieces, type: 'u32', access: 'read'},
     {name: 'vertexStarts', view: props.vertexStarts, type: 'u32', access: 'read'},
-    {name: 'outputPathOffsets', view: props.outputPathOffsets, type: 'u32', access: 'read_write'},
+    {name: 'outputLineOffsets', view: props.outputLineOffsets, type: 'u32', access: 'read_write'},
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
   if (props.requiredCount) {
     bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
-  if (props.pathCountOutput) {
+  if (props.lineCountOutput) {
     bindings.push({
-      name: 'pathCountOut',
-      view: props.pathCountOutput,
+      name: 'lineCountOut',
+      view: props.lineCountOutput,
       type: 'u32',
       access: 'read_write'
     });
@@ -394,51 +394,51 @@ export function createPiecePublishNode<Parameters>(
     operation: props.operation,
     variant: 'piece-publish',
     bindings,
-    invocationCount: pathCapacity + 1,
-    declarations: `const PATH_CAPACITY: u32 = ${pathCapacity}u;
+    invocationCount: lineCapacity + 1,
+    declarations: `const LINE_CAPACITY: u32 = ${lineCapacity}u;
 const CAPACITY: u32 = ${props.capacity}u;
 const STRIDE: u32 = ${LINE_PIECE_STRIDE}u;`,
-    body: /* wgsl */ `let lastBase = piecesOffset + (PATH_CAPACITY - 1u) * STRIDE;
-  let total = vertexStarts[vertexStartsOffset + PATH_CAPACITY - 1u] + pieces[lastBase + 6u];
+    body: /* wgsl */ `let lastBase = piecesOffset + (LINE_CAPACITY - 1u) * STRIDE;
+  let total = vertexStarts[vertexStartsOffset + LINE_CAPACITY - 1u] + pieces[lastBase + 6u];
   var start = total;
-  if (index < PATH_CAPACITY) {
+  if (index < LINE_CAPACITY) {
     start = vertexStarts[vertexStartsOffset + index];
   }
-  outputPathOffsets[outputPathOffsetsOffset + index] = min(start, CAPACITY);
+  outputLineOffsets[outputLineOffsetsOffset + index] = min(start, CAPACITY);
   if (index == 0u) {
     let pieceTotal = pieceTotal[pieceTotalOffset];
     countOut[countOutOffset] = min(total, CAPACITY);
-    overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY || pieceTotal > PATH_CAPACITY);
+    overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY || pieceTotal > LINE_CAPACITY);
     ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-    ${props.pathCountOutput ? 'pathCountOut[pathCountOutOffset] = min(pieceTotal, PATH_CAPACITY);' : ''}
+    ${props.lineCountOutput ? 'lineCountOut[lineCountOutOffset] = min(pieceTotal, LINE_CAPACITY);' : ''}
   }`
   });
 }
 
 /**
- * Writes `sourcePaths[slot]` from the piece column (`0xffffffff` past the piece count).
+ * Writes `sourceLineIndices[slot]` from the piece column (`0xffffffff` past the piece count).
  *
  * @internal
  */
-export function createPieceSourcePathsNode<Parameters>(
+export function createPieceSourceLineIndicesNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     operation: string;
     pieces: GraphDataView<'uint32'>;
-    sourcePaths: GraphDataView<'uint32'>;
+    sourceLineIndices: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    variant: 'piece-source-paths',
+    variant: 'piece-source-line-indexs',
     bindings: [
       {name: 'pieces', view: props.pieces, type: 'u32', access: 'read'},
-      {name: 'sourcePaths', view: props.sourcePaths, type: 'u32', access: 'read_write'}
+      {name: 'sourceLineIndices', view: props.sourceLineIndices, type: 'u32', access: 'read_write'}
     ],
-    invocationCount: props.sourcePaths.length,
+    invocationCount: props.sourceLineIndices.length,
     declarations: `const STRIDE: u32 = ${LINE_PIECE_STRIDE}u;`,
-    body: 'sourcePaths[sourcePathsOffset + index] = pieces[piecesOffset + index * STRIDE];'
+    body: 'sourceLineIndices[sourceLineIndicesOffset + index] = pieces[piecesOffset + index * STRIDE];'
   });
 }

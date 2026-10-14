@@ -3,47 +3,51 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {
   getRasterGridWGSL,
-  validateRasterCellSizeMode,
-  writeRasterGridSettings,
-  type RasterGridSettings
+  writeRasterGridPrefix
 } from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/index';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateParameterTarget,
+  validateRasterBandBelongsToGraph,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 
 const OPERATION = 'GPUTerrainFlowField';
 
-/** Number of float32 values read from `GPUTerrainFlowFieldProps.settings`. */
+/** Number of float32 values read from `GPUTerrainFlowFieldProps.parameters`. */
 export const GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH = 8;
 
 /**
  * CPU-side description packed by {@link getGPUTerrainFlowFieldParameterValues}.
  *
- * Cell sizes follow the shared raster grid prefix: with `cellSizeMode` `'uniform'` they are
- * projected meters; with `'web-mercator'` (equatorial meters) or `'geographic'` (degrees) the
- * ground spacing is evaluated per row from `northEdge`/`southEdge`, so the gradient honors the
- * latitude-dependent cell width. Elevations are meters after the band's scale and offset.
+ * Cell sizes and the latitude band come from the grid passed next to it: with `cellSizeMode`
+ * `'uniform'` the cell size is in projected meters; with `'web-mercator'` (equatorial meters) or
+ * `'geographic'` (degrees) the ground spacing is evaluated per row from the grid's row edges, so
+ * the gradient honors the latitude-dependent cell width. Elevations are meters after the band's
+ * scale and offset.
  */
-export type GPUTerrainFlowFieldSettings = RasterGridSettings & {
+export type GPUTerrainFlowFieldSettings = {
   /**
    * Horizontal wind `[x, y]` in the raster frame: x along increasing columns, y along increasing
    * rows (south for a north-up raster whose row 0 is the northern edge). Any speed unit; the
@@ -55,18 +59,22 @@ export type GPUTerrainFlowFieldSettings = RasterGridSettings & {
 };
 
 /**
- * Packs `[cellSizeX, cellSizeY, northEdge, southEdge, windX, windY, verticalExaggeration, 0]`.
+ * Packs `[cellSizeX, cellSizeY, northEdge, southEdge, windX, windY, verticalExaggeration, 0]`,
+ * with the cell size and the row-edge world y taken from `grid`.
  *
  * @throws If `target` holds fewer than 8 values.
  */
 export function getGPUTerrainFlowFieldParameterValues(
   settings: GPUTerrainFlowFieldSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH) {
-    throw new Error('Terrain flow field settings target must hold 8 values');
-  }
-  writeRasterGridSettings(target, settings);
+  validateParameterTarget(
+    'getGPUTerrainFlowFieldParameterValues',
+    target,
+    GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH
+  );
+  writeRasterGridPrefix(target, grid);
   target[4] = settings.wind[0];
   target[5] = settings.wind[1];
   target[6] = settings.verticalExaggeration ?? 1;
@@ -74,28 +82,8 @@ export function getGPUTerrainFlowFieldParameterValues(
   return target;
 }
 
-/**
- * Properties for {@link GPUTerrainFlowField}.
- *
- * Compile-time: `width`, `height`, `cellSizeMode`, and the elevation format and calibration.
- * Per-frame (no recompile): the contents of `elevation` and `settings` (wind, exaggeration).
- */
-export type GPUTerrainFlowFieldProps = {
-  /** Prefix for node and transient IDs. Defaults to `'terrain-flow-field'`. Compile-time. */
-  id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
-  /**
-   * Elevation band, buffer or texture. Validity, nodata, scale, and offset are honored; cells
-   * without a finite calibrated elevation are invalid.
-   */
-  elevation: GPURasterBand;
-  /** Settings with at least 8 float32 values, see {@link getGPUTerrainFlowFieldParameterValues}. Per-frame. */
-  settings: GraphDataView<'float32'>;
-  /** Cell size interpretation. Defaults to `'uniform'`. Compile-time. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+/** Caller-owned outputs of {@link GPUTerrainFlowField}. */
+export type GPUTerrainFlowFieldOutput = {
   /**
    * Output field, `width * height` rows of `(u, v)` in the raster frame (u along increasing
    * columns, v along increasing rows), in the wind's unit. NaN where the cell or a neighbor used by
@@ -103,6 +91,31 @@ export type GPUTerrainFlowFieldProps = {
    * `GPUStreamlines` and `GPULineIntegralConvolution` (row 0 is their smallest y).
    */
   velocities: GraphDataView<'float32x2'>;
+};
+
+/**
+ * Properties for {@link GPUTerrainFlowField}.
+ *
+ * Compile-time: `grid` size, `cellSizeMode`, and the elevation format and calibration.
+ * Per-frame (no recompile): the contents of `elevation` and `parameters` (grid cell size and
+ * latitude band, wind, exaggeration).
+ */
+export type GPUTerrainFlowFieldProps = {
+  /** Prefix for node and transient IDs. Defaults to `'terrain-flow-field'`. Compile-time. */
+  id?: string;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
+  /**
+   * Elevation band, buffer or texture. Validity, nodata, scale, and offset are honored; cells
+   * without a finite calibrated elevation are invalid.
+   */
+  elevation: GPURasterBand;
+  /** Parameters with at least 8 float32 values, see {@link getGPUTerrainFlowFieldParameterValues}. Per-frame. */
+  parameters: GraphDataView<'float32'>;
+  /** Cell size interpretation. Defaults to `'uniform'`. Compile-time. */
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Caller-owned outputs. */
+  output: GPUTerrainFlowFieldOutput;
 };
 
 /**
@@ -134,17 +147,19 @@ export class GPUTerrainFlowField implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-flow-field';
     this.props = props;
     const {id} = this;
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH);
-    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validatePackedView(props.velocities, ['float32x2'], `${id} velocities`);
-    if (props.velocities.length !== cellCount) {
-      throw new Error(`${id} velocities must contain one row per cell`);
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validatePackedView(output.velocities, ['float32x2'], `${id} output.velocities`);
+    if (output.velocities.length !== cellCount) {
+      throw new Error(`${id} output.velocities must contain one row per cell`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.velocities],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      [output.velocities],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -153,10 +168,11 @@ export class GPUTerrainFlowField implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.settings, props.velocities]);
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
+    validateGraphViewsBelongToGraph(id, graph, [props.parameters, output.velocities]);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const elevation = source.band.storage.values as GraphDataView<'float32'>;
     const grid = {width, height, cellSizeMode: props.cellSizeMode ?? 'uniform'};
     const deflect = createWGSLKernelNode<Parameters>(graph, {
@@ -165,8 +181,8 @@ export class GPUTerrainFlowField implements GPUCommandNodeProducer {
       variant: 'deflect',
       bindings: [
         {name: 'elevation', view: elevation, type: 'f32', access: 'read'},
-        {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
-        {name: 'velocities', view: props.velocities, type: 'f32', access: 'read_write'}
+        {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
+        {name: 'velocities', view: output.velocities, type: 'f32', access: 'read_write'}
       ],
       invocationCount: width * height,
       declarations: `${getRasterGridWGSL(grid)}

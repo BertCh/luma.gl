@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUVisibilityWorkflow,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
@@ -17,34 +15,66 @@ import {
   createPublishNode,
   createTransientUint32Rows
 } from '../../utils/wgsl-kernel-nodes';
-import type {
-  GPUCompactOutput,
-  GPUFloat32Positions,
-  GPUUint32Rows
-} from '../../utils/gpu-contributor-types';
+import type {GPUCompactOutput, GPUUint32Rows} from '../../utils/gpu-contributor-types';
+import type {GPUPointGeometryPort} from '../../analysis-core/contracts/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewTopology,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validateCapacity,
+  validatePackedView,
+  validatePowerOfTwo
 } from '../../utils/gpu-contributor-utils';
 import {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
+import {validateStatusScalars} from './spatial-join-geometry';
 import type {SpatialSortCurve} from './spatial-join-passes';
 import {GPU_SPATIAL_JOIN_NO_FEATURE, type GPUNearestFeatureSource} from './spatial-join-types';
 
-import type {GPUSpatialContext} from '../contracts/spatial-context';
-import {resolveNearestSpatialContext} from './nearest-types';
+import {
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUBufferSelection';
+
+/** Caller-owned outputs of {@link GPUBufferSelection}. */
+export type GPUBufferSelectionOutput = {
+  /** Optional per-point 0/1 mask, chunked like the points. Rewritten on every encoding. */
+  outputMask?: GPUUint32Rows;
+  /**
+   * Optional bounded stable-ID result in ascending row order. `matches.ids.length` must be at
+   * least one. `matches.overflow` is set when the selection exceeds the capacity or when the join
+   * overflowed.
+   */
+  matches?: GPUCompactOutput;
+  /**
+   * Optional one-row draw count: the clamped selected count (`matches.count`), written by the same
+   * publish node. Bind it as the instance count of an indirect draw, or as the source of an
+   * indirect-args copy, so the selected points are drawn without a readback or a hand-copied count.
+   * Requires `matches`.
+   */
+  drawInstanceCount?: GraphDataView<'uint32'>;
+  /** Optional per-point distance to the nearest feature (planar, or meters when great-circle), or -1 outside. Chunked like the points. */
+  distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
+  /** Optional per-point nearest feature row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like the points. */
+  nearestFeatureIds?: GPUUint32Rows;
+  /** Completeness scalars. */
+  status?: {
+    /** Optional one-row flag: 1 when the join's BVH leaf or candidate capacity overflowed. */
+    overflow?: GraphDataView<'uint32'>;
+  };
+};
 
 /**
  * Properties for {@link GPUBufferSelection}.
  *
  * Per-frame: `distance` and the contents of every input buffer (points, features, source IDs).
  * Compile-time: view lengths and chunk topology, the feature kind, `candidateCapacity`,
- * `leafCapacity`, `spatialSort`, `output.ids.length`, and which optional views exist.
+ * `leafCapacity`, `spatialSort`, `output.matches.ids.length`, and which optional views exist.
  */
 export type GPUBufferSelectionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'buffer-selection'`. */
@@ -59,10 +89,12 @@ export type GPUBufferSelectionProps = {
    * throw at construction.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed planar points to test. Contents are per-frame. At least one row is required. */
-  points: GPUFloat32Positions;
-  /** Optional stable IDs written to `output.ids`, with the chunk topology of `points`. Row indices are used when omitted. */
-  sourceIds?: GPUUint32Rows;
+  /**
+   * Points to test, possibly chunked; contents are per-frame and at least one row is required.
+   * Optional `sourceIds` (same chunk topology) are written to `output.matches.ids`; row indices
+   * are used when omitted.
+   */
+  points: GPUPointGeometryPort;
   /**
    * Point features, or segment features. Express a polyline as consecutive segment rows.
    * Contents are per-frame; the feature count is compile-time.
@@ -91,27 +123,14 @@ export type GPUBufferSelectionProps = {
    * traversal cost changes.
    */
   spatialSortCurve?: SpatialSortCurve;
-  /** Optional per-point 0/1 mask, chunked like `points`. Rewritten on every encoding. */
-  outputMask?: GPUUint32Rows;
   /**
-   * Optional bounded stable-ID result in ascending row order. `output.ids.length` must be at
-   * least one. `overflow` is set when the selection exceeds the capacity or when the join
-   * overflowed.
+   * Processes the points in Hilbert order over the feature BVH bounds, forwarded to
+   * `GPUNearestFeatureJoin`. Compile-time. Results are identical either way. Defaults to on from
+   * 4096 points and 256 features.
    */
-  output?: GPUCompactOutput;
-  /**
-   * Optional one-row draw count: the clamped selected count (`output.count`), written by the same
-   * publish node. Bind it as the instance count of an indirect draw, or as the source of an
-   * indirect-args copy, so the selected points are drawn without a readback or a hand-copied count.
-   * Requires `output`.
-   */
-  drawInstanceCount?: GraphDataView<'uint32'>;
-  /** Optional per-point distance to the nearest feature (planar, or meters when great-circle), or -1 outside. Chunked like `points`. */
-  distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
-  /** Optional per-point nearest feature row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like `points`. */
-  nearestFeatureIds?: GPUUint32Rows;
-  /** Optional one-row flag: 1 when the join's BVH leaf or candidate capacity overflowed. */
-  overflow?: GraphDataView<'uint32'>;
+  querySort?: boolean;
+  /** Caller-owned outputs; at least one of `outputMask` and `matches` is required. */
+  output: GPUBufferSelectionOutput;
 };
 
 /**
@@ -119,7 +138,7 @@ export type GPUBufferSelectionProps = {
  *
  * The contributor composes {@link GPUNearestFeatureJoin} (a feature BVH, candidate pairs, and exact
  * point-to-segment distances) with a mask kernel (`nearestFeatureIds != no feature`) and, when
- * `output` is requested, `GPUVisibilityWorkflow` over that mask.
+ * `output.matches` is requested, `GPUVisibilityWorkflow` over that mask.
  *
  * This differs from the join's own `matches` output, which is unordered (atomic append). The
  * buffer selection publishes a source-aligned 0/1 mask and stable IDs in ascending row order, so
@@ -142,60 +161,63 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     this.id = props.id ?? 'buffer-selection';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveNearestSpatialContext(id, props.spatialContext).spatialContext;
-    const {points, sourceIds, outputMask, output, distances, nearestFeatureIds, overflow} = props;
-    if (!outputMask && !output) {
-      throw new Error(`${id} requires outputMask or output`);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
+    const points = props.points.positions;
+    const {sourceIds} = props.points;
+    const {outputMask, matches, distances, nearestFeatureIds, drawInstanceCount} = props.output;
+    if (!outputMask && !matches) {
+      throw new Error(`${id} needs output.outputMask or output.matches`);
     }
     this.pointCount = points.length;
     if (this.pointCount === 0) {
-      throw new Error(`${id} requires at least one point`);
+      throw new Error(`${id} needs at least one point`);
     }
     for (const chunk of getGraphViewChunks(points)) {
-      validatePackedView(chunk, ['float32x2'], `${id} points`);
+      validatePackedView(chunk, ['float32x2'], `${id} points.positions`);
     }
     validatePackedView(props.distance, ['float32'], `${id} distance`);
     if (props.distance.length !== 1) {
-      throw new Error(`${id} distance must contain one float32 row`);
+      throw new Error(`${id} distance needs one float32 row`);
     }
     for (const [name, view] of [
-      ['sourceIds', sourceIds],
-      ['outputMask', outputMask],
-      ['nearestFeatureIds', nearestFeatureIds]
+      ['points.sourceIds', sourceIds],
+      ['output.outputMask', outputMask],
+      ['output.nearestFeatureIds', nearestFeatureIds]
     ] as const) {
       for (const chunk of view ? getGraphViewChunks(view) : []) {
-        validatePackedUint32View(chunk, `${id} ${name}`);
+        validatePackedView(chunk, ['uint32'], `${id} ${name}`);
       }
       validateGraphViewTopology(id, name, points, view);
     }
     for (const chunk of distances ? getGraphViewChunks(distances) : []) {
-      validatePackedView(chunk, ['float32'], `${id} distances`);
+      validatePackedView(chunk, ['float32'], `${id} output.distances`);
     }
-    validateGraphViewTopology(id, 'distances', points, distances);
-    if (overflow) {
-      validatePackedUint32View(overflow, `${id} overflow`);
-      if (overflow.length < 1) {
-        throw new Error(`${id} overflow must contain one uint32 row`);
+    validateGraphViewTopology(id, 'output.distances', points, distances);
+    validateStatusScalars(id, {overflow: props.output.status?.overflow});
+    if (drawInstanceCount) {
+      if (!matches) {
+        throw new Error(`${id} drawInstanceCount needs matches`);
+      }
+      validatePackedView(drawInstanceCount, ['uint32'], `${id} output.drawInstanceCount`);
+      if (drawInstanceCount.length < 1) {
+        throw new Error(`${id} output.drawInstanceCount needs one row`);
       }
     }
-    if (props.drawInstanceCount) {
-      if (!output) {
-        throw new Error(`${id} drawInstanceCount requires output`);
-      }
-      validatePackedUint32View(props.drawInstanceCount, `${id} drawInstanceCount`);
-      if (props.drawInstanceCount.length < 1) {
-        throw new Error(`${id} drawInstanceCount must contain one uint32 row`);
+    if (matches) {
+      validateCompactOutput(id, matches);
+      if (matches.ids.length < 1) {
+        throw new Error(`${id} output.matches.ids needs at least one row`);
       }
     }
-    if (output) {
-      validateCompactOutput(id, output);
-      if (output.ids.length < 1) {
-        throw new Error(`${id} output.ids must hold at least one row`);
-      }
-    }
-    // Feature views and leafCapacity are validated by the join when getCommandNodes builds it.
-    if (!Number.isSafeInteger(props.candidateCapacity) || props.candidateCapacity < 1) {
-      throw new Error(`${id} candidateCapacity must be a positive integer`);
+    // Feature views are validated by the join when getCommandNodes builds it; forwarded scalar
+    // options are checked here so the error names this contributor.
+    validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
+    if (props.leafCapacity !== undefined) {
+      validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
     validateGraphOutputsDisjointFromInputs(id, getOutputs(props), getInputs(props));
   }
@@ -205,29 +227,35 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, pointCount} = this;
-    const {points, sourceIds, outputMask, output} = props;
+    const points = props.points.positions;
+    const {sourceIds} = props.points;
+    const {outputMask, matches} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     const nearestFeatureIds =
-      props.nearestFeatureIds ??
+      props.output.nearestFeatureIds ??
       createTransientUint32Rows(graph, `${id}-nearest-feature-ids`, points);
     const joinOverflow =
-      props.overflow ?? createTransientView(graph, `${id}-join-overflow`, 'uint32', 1);
+      props.output.status?.overflow ??
+      createTransientView(graph, `${id}-join-overflow`, 'uint32', 1);
     nodes.push(
       ...new GPUNearestFeatureJoin({
         id: `${id}-join`,
         spatialContext: this.spatialContext,
-        points,
+        queries: {kind: 'points', positions: points},
         features: props.features,
         radius: props.distance,
         candidateCapacity: props.candidateCapacity,
         leafCapacity: props.leafCapacity,
         spatialSort: props.spatialSort,
         spatialSortCurve: props.spatialSortCurve,
-        nearestFeatureIds,
-        nearestDistances: props.distances,
-        overflow: joinOverflow
+        querySort: props.querySort,
+        output: {
+          nearestFeatureIds,
+          nearestDistances: props.output.distances,
+          status: {overflow: joinOverflow}
+        }
       }).getCommandNodes(graph)
     );
 
@@ -255,7 +283,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       );
     }
 
-    if (output) {
+    if (matches) {
       const selectedIds = createTransientView(graph, `${id}-selected-ids`, 'uint32', pointCount);
       const selectedTotal = createTransientView(graph, `${id}-selected-total`, 'uint32', 1);
       nodes.push(
@@ -273,9 +301,9 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
           operation: OPERATION,
           requiredCount: selectedTotal,
           compactIds: selectedIds,
-          output,
+          output: matches,
           overflowSources: [joinOverflow],
-          extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
+          extraCounts: props.output.drawInstanceCount ? [props.output.drawInstanceCount] : []
         })
       );
     }
@@ -289,10 +317,11 @@ function getInputs(
 ): (GraphDataView | GraphVectorView | undefined)[] {
   const {features} = props;
   return [
-    props.points,
-    props.sourceIds,
+    props.points.positions,
+    props.points.sourceIds,
     props.distance,
-    ...(features.kind === 'points' ? [features.positions] : [features.starts, features.ends])
+    ...(features.kind === 'points' ? [features.positions] : [features.starts, features.ends]),
+    features.sourceIds
   ];
 }
 
@@ -301,15 +330,16 @@ function getOutputs(
   props: GPUBufferSelectionProps
 ): (GraphDataView | GraphVectorView | undefined)[] {
   const {output} = props;
+  const {matches} = output;
   return [
-    props.outputMask,
-    props.distances,
-    props.nearestFeatureIds,
-    props.overflow,
-    props.drawInstanceCount,
-    output?.ids,
-    output?.count,
-    output?.overflow,
-    output?.requiredCount
+    output.outputMask,
+    output.distances,
+    output.nearestFeatureIds,
+    output.status?.overflow,
+    output.drawInstanceCount,
+    matches?.ids,
+    matches?.status.count,
+    matches?.status.overflow,
+    matches?.status.requiredCount
   ];
 }

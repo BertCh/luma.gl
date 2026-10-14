@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -16,7 +17,10 @@ import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView,
+  validatePowerOfTwo
 } from '../../utils/gpu-contributor-utils';
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {createSegmentTableNode} from '../segment-intersection/segment-table';
@@ -25,6 +29,7 @@ import {
   SEGMENT_TABLE_STRIDE
 } from '../segment-intersection/segment-intersection-wgsl';
 import type {GPUSegmentGeometry} from '../segment-intersection/segment-intersection-types';
+import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/segment-intersection-wgsl';
 import {GPU_SEGMENT_NONE} from '../segment-intersection/segment-intersection-types';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
@@ -32,6 +37,30 @@ const OPERATION = 'GPUMinimumClearance';
 
 /** Vertex count from which `spatialSort` defaults to on. */
 const SPATIAL_SORT_MINIMUM_SLOTS = 1024;
+
+/** Lanes of the per-feature minimum workgroup. */
+const FEATURE_REDUCTION_WORKGROUP_SIZE = 64;
+
+/** Caller-owned per-feature outputs of {@link GPUMinimumClearance}; at least one is required. */
+export type GPUMinimumClearanceOutput = {
+  /**
+   * Caller-owned `float32` clearance per feature, like `shapely.minimum_clearance`. `Infinity` for
+   * a feature with no clearance (empty, a single distinct point, or a degenerate linestring).
+   */
+  clearances?: GraphDataView<'float32'>;
+  /**
+   * Caller-owned `float32x4` per feature, like `shapely.minimum_clearance_line`: `(x0, y0, x1, y1)`
+   * where `(x0, y0)` is the fragile vertex and `(x1, y1)` the nearest point it must not approach (a
+   * point on a non-adjacent segment, or another vertex). All four are `NaN` for a feature with no
+   * clearance (GEOS returns an empty line).
+   */
+  lines?: GraphDataView<'float32x4'>;
+  /**
+   * Optional caller-owned `uint32` per feature: the row of the fragile vertex in the `positions`
+   * view, or `0xffffffff` when the feature has no clearance.
+   */
+  vertexIds?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUMinimumClearance}.
@@ -51,26 +80,13 @@ export type GPUMinimumClearanceProps = {
   spatialContext?: GPUSpatialContext;
   /**
    * Linestring or polygon features in the layouts of `GPUSpatialPredicateJoin`. Polygon rings may
-   * be explicitly closed or not; rings with fewer than three vertices are ignored.
+   * be explicitly closed or not; rings with fewer than three vertices are ignored. At most
+   * {@link getGPUSegmentIntersectionMaximumVertexCount} vertex rows (4194304 on a default device; the 32-byte segment table
+   * per vertex must fit one storage binding).
    */
   geometry: GPUSegmentGeometry;
-  /**
-   * Caller-owned `float32` clearance per feature, like `shapely.minimum_clearance`. `Infinity` for
-   * a feature with no clearance (empty, a single distinct point, or a degenerate linestring).
-   */
-  clearances?: GraphDataView<'float32'>;
-  /**
-   * Caller-owned `float32x4` per feature, like `shapely.minimum_clearance_line`: `(x0, y0, x1, y1)`
-   * where `(x0, y0)` is the fragile vertex and `(x1, y1)` the nearest point it must not approach (a
-   * point on a non-adjacent segment, or another vertex). All four are `NaN` for a feature with no
-   * clearance (GEOS returns an empty line).
-   */
-  lines?: GraphDataView<'float32x4'>;
-  /**
-   * Optional caller-owned `uint32` per feature: the row of the fragile vertex in the `positions`
-   * view, or `0xffffffff` when the feature has no clearance.
-   */
-  vertexIds?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs; at least one column is required. */
+  output: GPUMinimumClearanceOutput;
   /** Power-of-two BVH leaf slots over the segments. Defaults to the next power of two of the vertex count. */
   leafCapacity?: number;
   /**
@@ -92,10 +108,11 @@ export type GPUMinimumClearanceProps = {
  * Pipeline: a segment table and a `GPUBVH` over all segments, one nearest-neighbor probe per
  * vertex (branch and bound, nearest child first, restricted to the vertex's own feature; each
  * segment contributes its distance to the vertex, or the distance to its other endpoint when the
- * vertex is one of its endpoints), then a fixed-order per-feature minimum with two integer
- * `atomicMin` passes: the distance bits, then the lowest vertex row reaching them. Non-negative
- * f32 values order like their bit patterns, so the result is deterministic and ties go to the
- * lowest vertex row. Nothing is read back.
+ * vertex is one of its endpoints), then a per-feature minimum: one 64-lane workgroup per feature
+ * strides over the feature's contiguous vertex range and reduces the lexicographic minimum of
+ * (distance bits, vertex row) with a fixed binary tree (no atomics). Non-negative f32 values order
+ * like their bit patterns, so the result is deterministic and ties go to the lowest vertex row.
+ * Nothing is read back.
  *
  * **Precision.** Distances are f32. Subtract a common origin from large coordinates, as for
  * `GPUGeometryMeasures`; distances far below the coordinate magnitude times 1e-7 are not resolved.
@@ -144,7 +161,7 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
             ['ringOffsets', geometry.ringOffsets] as const
           ];
     for (const [name, view] of offsetViews) {
-      validatePackedUint32View(view, `${id} geometry.${name}`);
+      validatePackedView(view, ['uint32'], `${id} geometry.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} geometry.${name} requires a terminal entry`);
       }
@@ -153,45 +170,31 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
     if (this.vertexCount < 1) {
       throw new Error(`${id} geometry must contain at least one vertex`);
     }
-    if (this.vertexCount >= 0x80000000) {
-      throw new Error(`${id} geometry has too many vertices`);
-    }
     this.featureCount =
       (geometry.kind === 'lines' ? geometry.lineOffsets.length : geometry.featureOffsets.length) -
       1;
     if (this.featureCount < 1) {
       throw new Error(`${id} geometry must contain at least one feature`);
     }
-    if (!props.clearances && !props.lines && !props.vertexIds) {
+    const {clearances, lines, vertexIds} = props.output;
+    if (!clearances && !lines && !vertexIds) {
       throw new Error(`${id} requires at least one of clearances, lines or vertexIds`);
     }
-    if (props.clearances) {
-      validatePackedView(props.clearances, ['float32'], `${id} clearances`);
-    }
-    if (props.lines) {
-      validatePackedView(props.lines, ['float32x4'], `${id} lines`);
-    }
-    if (props.vertexIds) {
-      validatePackedUint32View(props.vertexIds, `${id} vertexIds`);
-    }
-    for (const [name, view] of [
-      ['clearances', props.clearances],
-      ['lines', props.lines],
-      ['vertexIds', props.vertexIds]
+    for (const [name, view, format] of [
+      ['clearances', clearances, 'float32'],
+      ['lines', lines, 'float32x4'],
+      ['vertexIds', vertexIds, 'uint32']
     ] as const) {
-      if (view && view.length !== this.featureCount) {
-        throw new Error(`${id} ${name} length must equal the feature count`);
+      if (view) {
+        validatePackedView(view, [format], `${id} output.${name}`);
+        if (view.length !== this.featureCount) {
+          throw new Error(`${id} output.${name} length must equal the feature count`);
+        }
       }
     }
     this.spatialSort = props.spatialSort ?? this.vertexCount >= SPATIAL_SORT_MINIMUM_SLOTS;
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(this.vertexCount);
-    if (
-      !Number.isSafeInteger(this.leafCapacity) ||
-      this.leafCapacity < 1 ||
-      (this.leafCapacity & (this.leafCapacity - 1)) !== 0
-    ) {
-      throw new Error(`${id} leafCapacity must be a positive power of two`);
-    }
+    validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
   }
 
   private getInputViews(): GraphDataView[] {
@@ -207,7 +210,7 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {clearances, lines, vertexIds} = this.props;
+    const {clearances, lines, vertexIds} = this.props.output;
     return [clearances, lines, vertexIds];
   }
 
@@ -216,8 +219,16 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, featureCount, vertexCount, leafCapacity, spatialSort} = this;
-    const {geometry, clearances, lines, vertexIds} = props;
+    const {geometry} = props;
+    const {clearances, lines, vertexIds} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    // The segment table holds 32 bytes per vertex, as in GPUSegmentIntersection.
+    validateMaximumCount(
+      id,
+      'geometry.positions rows',
+      vertexCount,
+      getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+    );
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -455,7 +466,9 @@ fn boxDistanceSquared(node: u32, point: vec2f) -> f32 {
       })
     );
 
-    // Per feature: [minimum distance bits, lowest vertex row reaching them].
+    // Per feature: [minimum distance bits, lowest vertex row reaching them]. Library rule 14: one
+    // workgroup per feature reduces the feature's contiguous vertex range with a fixed binary tree,
+    // instead of per-vertex atomics onto two words per feature (contention on large features).
     const featureState = createTransientView(
       graph,
       `${id}-feature-state`,
@@ -464,53 +477,76 @@ fn boxDistanceSquared(node: u32, point: vec2f) -> f32 {
     );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-clear`,
+        id: `${id}-feature-minimum`,
         operation: OPERATION,
-        variant: 'clear',
-        bindings: [{name: 'featureState', view: featureState, type: 'u32', access: 'read_write'}],
-        invocationCount: featureCount * 2,
-        body: 'featureState[featureStateOffset + index] = 0xffffffffu;'
-      })
-    );
-    const reduceDeclarations = `const SEGMENT_NONE: u32 = ${GPU_SEGMENT_NONE}u;
+        variant: `feature-minimum-${geometry.kind}`,
+        bindings: [
+          ...featureBindings,
+          {name: 'vertexFeatures', view: vertexFeatures, type: 'u32', access: 'read'},
+          {name: 'nearest', view: nearest, type: 'f32', access: 'read'},
+          {name: 'featureState', view: featureState, type: 'u32', access: 'read_write'}
+        ],
+        workgroupSize: FEATURE_REDUCTION_WORKGROUP_SIZE,
+        invocationCount: featureCount * FEATURE_REDUCTION_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `const SEGMENT_NONE: u32 = ${GPU_SEGMENT_NONE}u;
 const INFINITY_BITS: u32 = 0x7f800000u;
-fn distanceBits(vertex: u32) -> u32 { return bitcast<u32>(nearest[nearestOffset + vertex * 4u]); }`;
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-minimum-distance`,
-        operation: OPERATION,
-        variant: 'minimum-distance',
-        bindings: [
-          {name: 'vertexFeatures', view: vertexFeatures, type: 'u32', access: 'read'},
-          {name: 'nearest', view: nearest, type: 'f32', access: 'read'},
-          {name: 'featureState', view: featureState, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: vertexCount,
-        declarations: reduceDeclarations,
-        body: `let feature = vertexFeatures[vertexFeaturesOffset + index];
-  let bits = distanceBits(index);
-  if (feature != SEGMENT_NONE && bits < INFINITY_BITS) {
-    atomicMin(&featureState[featureStateOffset + feature * 2u], bits);
-  }`
-      })
-    );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-minimum-row`,
-        operation: OPERATION,
-        variant: 'minimum-row',
-        bindings: [
-          {name: 'vertexFeatures', view: vertexFeatures, type: 'u32', access: 'read'},
-          {name: 'nearest', view: nearest, type: 'f32', access: 'read'},
-          {name: 'featureState', view: featureState, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: vertexCount,
-        declarations: reduceDeclarations,
-        body: `let feature = vertexFeatures[vertexFeaturesOffset + index];
-  let bits = distanceBits(index);
-  if (feature != SEGMENT_NONE && bits < INFINITY_BITS &&
-      bits == atomicLoad(&featureState[featureStateOffset + feature * 2u])) {
-    atomicMin(&featureState[featureStateOffset + feature * 2u + 1u], index);
+const VERTEX_COUNT: u32 = ${vertexCount}u;
+const LANE_COUNT: u32 = ${FEATURE_REDUCTION_WORKGROUP_SIZE}u;
+${
+  isPolygons
+    ? `const RING_COUNT: u32 = ${geometry.ringOffsets.length - 1}u;
+const POLYGON_COUNT: u32 = ${geometry.polygonOffsets.length - 1}u;
+// First vertex row of a feature row (the feature count gives the end), clamped like the offsets.
+fn getFeatureStart(row: u32) -> u32 {
+  let polygon = min(featureOffsets[featureOffsetsOffset + row], POLYGON_COUNT);
+  let ring = min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
+  return min(ringOffsets[ringOffsetsOffset + ring], VERTEX_COUNT);
+}`
+    : `fn getFeatureStart(row: u32) -> u32 {
+  return min(lineOffsets[lineOffsetsOffset + row], VERTEX_COUNT);
+}`
+}
+var<workgroup> laneBits: array<u32, ${FEATURE_REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> laneRows: array<u32, ${FEATURE_REDUCTION_WORKGROUP_SIZE}>;
+// Lexicographic (distance bits, vertex row) order: non-negative f32 values order like their bits.
+fn isBefore(bits: u32, row: u32, otherBits: u32, otherRow: u32) -> bool {
+  return bits < otherBits || (bits == otherBits && row < otherRow);
+}`,
+        // No early return: every invocation of a workgroup must reach the barriers.
+        body: `let feature = index / LANE_COUNT;
+  let isInRange = index < INVOCATION_COUNT;
+  var bestBits = 0xffffffffu;
+  var bestRow = 0xffffffffu;
+  if (isInRange) {
+    let begin = getFeatureStart(feature);
+    let end = getFeatureStart(feature + 1u);
+    for (var vertex = begin + localInvocationIndex; vertex < end; vertex += LANE_COUNT) {
+      let bits = bitcast<u32>(nearest[nearestOffset + vertex * 4u]);
+      if (vertexFeatures[vertexFeaturesOffset + vertex] == feature && bits < INFINITY_BITS &&
+          isBefore(bits, vertex, bestBits, bestRow)) {
+        bestBits = bits;
+        bestRow = vertex;
+      }
+    }
+  }
+  laneBits[localInvocationIndex] = bestBits;
+  laneRows[localInvocationIndex] = bestRow;
+  workgroupBarrier();
+  for (var stride = LANE_COUNT / 2u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      let otherBits = laneBits[localInvocationIndex + stride];
+      let otherRow = laneRows[localInvocationIndex + stride];
+      if (isBefore(otherBits, otherRow, laneBits[localInvocationIndex], laneRows[localInvocationIndex])) {
+        laneBits[localInvocationIndex] = otherBits;
+        laneRows[localInvocationIndex] = otherRow;
+      }
+    }
+    workgroupBarrier();
+  }
+  if (isInRange && localInvocationIndex == 0u) {
+    featureState[featureStateOffset + feature * 2u] = laneBits[0];
+    featureState[featureStateOffset + feature * 2u + 1u] = laneRows[0];
   }`
       })
     );

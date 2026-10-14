@@ -3,12 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {validatePackedView} from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   createRasterIterationFinalizeNode,
@@ -19,11 +18,12 @@ import {
 
 /**
  * WGSL constants and helpers shared by the D8 tracing kernels: `GRID_WIDTH`, `GRID_HEIGHT`,
- * `NO_CELL`, and `getFlowReceiver(cell, code)`.
+ * `NO_CELL`, `UNRESOLVED_DIRECTION`, and `getFlowReceiver(cell, code)`.
  *
  * A code has a receiver only when it is a single bit in `1..128` (ESRI D8: `1 << direction`, east
  * first, clockwise) and the neighbor lies inside the grid. Terminal (0), invalid
- * (`0xffffffff`), multi-bit, and out-of-grid codes are all terminal. The helpers do not read the
+ * (`0xffffffff`), unresolved (`0xfffffffe`), multi-bit, and out-of-grid codes have no receiver; a
+ * path that stops at an unresolved cell is itself unresolved, which the callers report. The helpers do not read the
  * grid `settings`, so kernels that use them need no settings binding.
  *
  * @internal
@@ -33,6 +33,9 @@ export function getTerrainFlowTracingWGSL(width: number, height: number): string
 const GRID_WIDTH: u32 = ${width}u;
 const GRID_HEIGHT: u32 = ${height}u;
 const NO_CELL: u32 = 0xffffffffu;
+// GPU_TERRAIN_FLOW_UNRESOLVED: a valid cell whose direction is unknown. It has no receiver but is
+// not a terminal cell, so consumers must not read it as an outlet or a sink.
+const UNRESOLVED_DIRECTION: u32 = 0xfffffffeu;
 
 fn getFlowReceiver(cell: u32, code: u32) -> u32 {
   if (code == 0u || code > 128u || (code & (code - 1u)) != 0u) { return NO_CELL; }
@@ -173,12 +176,12 @@ export function createTerrainFlowPointerNodes<Parameters>(
       operation: props.operation,
       state,
       maxIterations: props.maxIterations,
-      createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+      createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
         createWGSLKernelNode<Parameters>(graph, {
           id: nodeId,
           operation: props.operation,
           variant: 'pointer-round',
-          bindings: roundBindings,
+          bindings: [...roundBindings, slotBinding],
           invocationCount: cellCount,
           body: getRoundBody(markChangedWGSL),
           condition,
@@ -214,16 +217,29 @@ export function validateTerrainTracingCellView(
   }
 }
 
-/** Throws unless `view` is a packed one-row `uint32` view. @internal */
-export function validateTerrainTracingConvergedView(
+/** One-row status words of a pointer-jumping loop. @internal */
+export type TerrainFlowTracingStatus = {
+  /** One row set to 1 when pointer jumping reached its fixpoint. */
+  converged?: GraphDataView<'uint32'>;
+  /** One row: gated pointer-jumping rounds executed. */
+  iterationCount?: GraphDataView<'uint32'>;
+};
+
+/** Throws unless every status view is a packed one-row `uint32` view. @internal */
+export function validateTerrainTracingStatus(
   id: string,
-  view: GraphDataView<'uint32'> | undefined
+  status: TerrainFlowTracingStatus | undefined
 ): void {
-  if (!view) {
-    return;
-  }
-  validatePackedUint32View(view, `${id} converged`);
-  if (view.length !== 1) {
-    throw new Error(`${id} converged must contain one row`);
+  for (const [name, view] of [
+    ['converged', status?.converged],
+    ['iterationCount', status?.iterationCount]
+  ] as const) {
+    if (!view) {
+      continue;
+    }
+    validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+    if (view.length !== 1) {
+      throw new Error(`${id} output.status.${name} must contain one row`);
+    }
   }
 }

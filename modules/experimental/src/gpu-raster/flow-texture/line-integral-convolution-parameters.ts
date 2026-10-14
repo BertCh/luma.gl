@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../utils/philox-random';
+
 /** Number of float32 elements in a {@link GPULineIntegralConvolution} parameter view. */
 export const GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH = 12;
 
-/** Number of uint32 elements in a {@link GPULineIntegralConvolution} word parameter view. */
-export const GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH = 4;
+/** Number of uint32 elements in a {@link GPULineIntegralConvolution} uint32 parameter view. */
+export const GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH = 4;
+
+/** Philox key word 1 of the LIC white-noise stream, shared by the GPU kernel and the CPU oracle. @internal */
+export const LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE =
+  PHILOX_PURPOSES.lineIntegralConvolutionNoise.id;
 
 /** Per-frame settings of {@link GPULineIntegralConvolution}. */
 export type GPULineIntegralConvolutionSettings = {
@@ -61,13 +67,13 @@ export function getGPULineIntegralConvolutionParameterValues(
  * @param settings Per-frame settings; only `seed` is read.
  * @param target Optional destination of at least 4 elements.
  */
-export function getGPULineIntegralConvolutionWordParameterValues(
+export function getGPULineIntegralConvolutionUint32ParameterValues(
   settings: Pick<GPULineIntegralConvolutionSettings, 'seed'>,
-  target: Uint32Array = new Uint32Array(GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH)
+  target: Uint32Array = new Uint32Array(GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH)
 ): Uint32Array {
-  if (target.length < GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH) {
+  if (target.length < GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH) {
     throw new Error(
-      `Line integral convolution word parameter target must hold ${GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH} elements`
+      `Line integral convolution uint32 parameter target must hold ${GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH} elements`
     );
   }
   const seed = settings.seed ?? 0;

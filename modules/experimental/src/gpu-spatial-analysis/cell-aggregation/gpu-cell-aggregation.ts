@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -16,7 +13,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   CELL_KEY_WGSL,
@@ -29,14 +27,13 @@ import {
 import {
   getCellTableNodes,
   getCellTableViews,
-  GPU_CELL_DEFAULT_SUM_SCALE,
   hasCellKeyHighWord,
   validateCellTable,
-  validateSumScale,
   type GPUCellTable
 } from './cell-table';
+import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUCellAggregation';
 
@@ -147,16 +144,6 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
     if (props.positions && props.family !== 'quadbin') {
       throw new Error(`${id} positions are supported for the quadbin family only`);
     }
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['cells', props.cells],
-      ['values', props.values],
-      ['mask', props.mask]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     const rows = (props.positions ?? props.cells)!.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -171,7 +158,7 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
       validatePackedView(props.values, ['float32'], `${id} values`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     for (const [name, view] of [
       ['values', props.values],

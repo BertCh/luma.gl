@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {GPURasterMetadata} from '../../gpu-raster/index';
 import {createContributorTransientView} from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {validateRasterIterations} from '../../gpu-raster/cost-distance/raster-relaxation';
 import {
@@ -18,17 +18,18 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 import {
   createTerrainFlowPointerNodes,
   getTerrainFlowTracingWGSL,
   validateTerrainTracingCellView,
-  validateTerrainTracingConvergedView
+  validateTerrainTracingStatus
 } from './terrain-flow-tracing';
 
 const OPERATION = 'GPUTerrainWatersheds';
@@ -37,9 +38,40 @@ const OPERATION = 'GPUTerrainWatersheds';
 export const GPU_TERRAIN_WATERSHED_NONE = 0xffffffff;
 
 /**
+ * Label of valid cells whose watershed is unknown: the D8 path meets a
+ * `GPU_TERRAIN_FLOW_UNRESOLVED` direction before a stop cell, or pointer jumping stopped at
+ * `maximumIterations` before the path reached its stop cell. A converged run on resolved directions
+ * never writes it. Never a legitimate label: pour point indices and cell indices are smaller.
+ */
+export const GPU_TERRAIN_WATERSHED_UNRESOLVED = 0xfffffffe;
+
+/** One-row status words of {@link GPUTerrainWatersheds}. */
+export type GPUTerrainWatershedsStatus = {
+  /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
+  converged?: GraphDataView<'uint32'>;
+  /** One row: gated pointer-jumping rounds executed. Presence is compile-time. */
+  iterationCount?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUTerrainWatersheds}. */
+export type GPUTerrainWatershedsOutput = {
+  /**
+   * With pour points: the index (into `pourPoints`) of the nearest pour point downstream of each
+   * cell, inclusive, or `GPU_TERRAIN_WATERSHED_NONE` when the path reaches none. Without pour points:
+   * the cell index of the terminal cell (outlet or pit) the cell drains to. Invalid cells are always
+   * `GPU_TERRAIN_WATERSHED_NONE`. `GPU_TERRAIN_WATERSHED_UNRESOLVED` on valid cells whose path
+   * meets an unresolved direction before a stop cell, and on every cell whose pointer jumping did
+   * not reach its fixpoint (`status.converged` 0).
+   */
+  labels: GraphDataView<'uint32'>;
+  /** One-row status words. */
+  status?: GPUTerrainWatershedsStatus;
+};
+
+/**
  * Properties for {@link GPUTerrainWatersheds}.
  *
- * Compile-time: `width`, `height`, `maxIterations`, and the presence of `pourPoints`, `converged`.
+ * Compile-time: `grid` size, `maximumIterations`, and the presence of `pourPoints` and `output.status`.
  * Per-frame: the contents of `flowDirections` and `pourPoints`. The contributor works on D8 receiver
  * indices only, so it has no cell-size model (`uniform`, `web-mercator` and `geographic` spacing
  * give the same labels).
@@ -49,15 +81,14 @@ export const GPU_TERRAIN_WATERSHED_NONE = 0xffffffff;
 export type GPUTerrainWatershedsProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-watersheds'`. Compile-time. */
   id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
    * ESRI D8 codes, one per cell: 1 east, 2 south-east, 4 south, 8 south-west, 16 west, 32
-   * north-west, 64 north, 128 north-east; 0 terminal; `0xffffffff` invalid. Any other code, and
-   * any code pointing outside the grid, is treated as terminal. Typically
-   * `GPUTerrainFlow.flowDirections`. Per-frame.
+   * north-west, 64 north, 128 north-east; 0 terminal; `0xffffffff` invalid;
+   * `GPU_TERRAIN_FLOW_UNRESOLVED` (0xfffffffe) unknown, which makes the labels that depend on it
+   * `GPU_TERRAIN_WATERSHED_UNRESOLVED`. Any other code, and any code pointing outside the grid, is
+   * treated as terminal. Typically `GPUTerrainFlow.flowDirections`. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
   /**
@@ -67,20 +98,13 @@ export type GPUTerrainWatershedsProps = {
    * drainage basins.
    */
   pourPoints?: GraphDataView<'uint32'>;
-  /**
-   * With pour points: the index (into `pourPoints`) of the nearest pour point downstream of each
-   * cell, inclusive, or `GPU_TERRAIN_WATERSHED_NONE` when the path reaches none. Without pour points:
-   * the cell index of the terminal cell (outlet or pit) the cell drains to. Invalid cells are always
-   * `GPU_TERRAIN_WATERSHED_NONE`.
-   */
-  labels: GraphDataView<'uint32'>;
-  /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
-  converged?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainWatershedsOutput;
   /**
    * Maximum gated pointer-jumping rounds in `[1, 1024]`. Defaults to 32: paths of up to 2^32 cells
    * need at most 32 doubling rounds. Compile-time.
    */
-  maxIterations?: number;
+  maximumIterations?: number;
 };
 
 /**
@@ -96,7 +120,8 @@ export type GPUTerrainWatershedsProps = {
  *
  * Without pour points the labels are drainage basins (the outlet or pit cell index), as in the
  * basin step of standard hydrologic toolboxes. Receiver cycles, possible only in caller-supplied
- * directions, leave `converged` at 0.
+ * directions, leave `output.status.converged` at 0 and the labels of the affected cells at
+ * `GPU_TERRAIN_WATERSHED_UNRESOLVED`.
  *
  * Compose it with {@link GPUTerrainFlow} through `flowDirections`; grids imported from TauDEM or
  * Whitebox work as well. Results are tile-local: watersheds do not continue across tile edges.
@@ -111,17 +136,18 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-watersheds';
     this.props = props;
     const {id} = this;
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
-    validateRasterIterations(id, 'maxIterations', props.maxIterations ?? 32);
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
+    validateRasterIterations(id, 'maximumIterations', props.maximumIterations ?? 32);
     validateTerrainTracingCellView(id, 'flowDirections', props.flowDirections, 'uint32', cellCount);
-    validateTerrainTracingCellView(id, 'labels', props.labels, 'uint32', cellCount);
+    validateTerrainTracingCellView(id, 'output.labels', output.labels, 'uint32', cellCount);
     if (props.pourPoints) {
-      validatePackedUint32View(props.pourPoints, `${id} pourPoints`);
+      validatePackedView(props.pourPoints, ['uint32'], `${id} pourPoints`);
     }
-    validateTerrainTracingConvergedView(id, props.converged);
-    const outputs = [props.labels, props.converged];
+    validateTerrainTracingStatus(id, output.status);
+    const outputs = [output.labels, output.status?.converged, output.status?.iterationCount];
     validateGraphOutputsDisjointFromInputs(id, outputs, [props.flowDirections, props.pourPoints]);
-    validateTerrainBuffersDistinct(id, outputs, []);
+    validateRasterBuffersDistinct(id, outputs, []);
   }
 
   /** Returns marker, pointer-jumping and labeling nodes. */
@@ -129,12 +155,14 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       props.flowDirections,
       props.pourPoints,
-      props.labels,
-      props.converged
+      output.labels,
+      output.status?.converged,
+      output.status?.iterationCount
     ]);
     const cellCount = width * height;
     const pointer = createContributorTransientView(
@@ -189,11 +217,12 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
         operation: OPERATION,
         width,
         height,
-        maxIterations: props.maxIterations ?? 32,
+        maxIterations: props.maximumIterations ?? 32,
         flowDirections: props.flowDirections,
         pointer,
         stops: markers ? {kind: 'markers', markers} : {kind: 'none'},
-        converged: props.converged
+        converged: output.status?.converged,
+        iterationCount: output.status?.iterationCount
       })
     );
     const bindings: WGSLKernelBinding[] = [
@@ -202,7 +231,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
       ...(markers
         ? [{name: 'markers', view: markers, type: 'u32' as const, access: 'read' as const}]
         : []),
-      {name: 'labels', view: props.labels, type: 'u32', access: 'read_write'}
+      {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'}
     ];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -217,8 +246,16 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
   if (flowDirections[flowDirectionsOffset + index] != NO_CELL) {
     ${
       markers
-        ? 'label = markers[markersOffset + reached];'
-        : 'if (flowDirections[flowDirectionsOffset + reached] != NO_CELL) { label = reached; }'
+        ? `label = markers[markersOffset + reached];
+    let isStop = label != NO_CELL;`
+        : `if (flowDirections[flowDirectionsOffset + reached] != NO_CELL) { label = reached; }
+    let isStop = false;`
+    }
+    // A pointer that is not a fixpoint means the jumping stopped early. A path that ends on an
+    // unresolved direction (and no pour point) has an unknown destination, not an outlet.
+    if (pointer[pointerOffset + reached] != reached ||
+        (!isStop && flowDirections[flowDirectionsOffset + reached] == UNRESOLVED_DIRECTION)) {
+      label = ${GPU_TERRAIN_WATERSHED_UNRESOLVED}u;
     }
   }
   labels[labelsOffset + index] = label;`

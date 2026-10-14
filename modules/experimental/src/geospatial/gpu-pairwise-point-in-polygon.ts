@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {
   GEOSPATIAL_WORKGROUP_SIZE,
@@ -16,6 +21,7 @@ import {
   validateDisjointGeospatialViews,
   validateRowView
 } from './geospatial-utils';
+import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 const PRECISE_PREDICATE_WGSL = /* wgsl */ `
@@ -64,16 +70,16 @@ type GPUPairwisePointInPolygonBaseProps = {
   /** Prefix for generated graph-node IDs. */
   id?: string;
   /**
-   * Row-to-polygon offsets with `points.length + 1` entries.
+   * Feature-to-polygon offsets with `queryPositions.length + 1` entries.
    *
    * Each point row is paired with one polygon or multipolygon geometry.
    */
-  geometryOffsets: GraphDataView<'uint32'>;
+  featureOffsets: GraphDataView<'uint32'>;
   /** Polygon-to-ring offsets with one terminal entry. */
   polygonOffsets: GraphDataView<'uint32'>;
   /** Ring-to-vertex offsets with one terminal entry. Rings close implicitly. */
   ringOffsets: GraphDataView<'uint32'>;
-  /** Caller-owned classification rows aligned one-to-one with `points`. */
+  /** Caller-owned classification rows aligned one-to-one with `queryPositions`. */
   output: GraphDataView<'uint32'>;
 };
 
@@ -82,22 +88,22 @@ export type GPUPairwisePointInPolygonProps = GPUPairwisePointInPolygonBaseProps 
   (
     | {
         /** Local f32 point rows. */
-        points: GraphDataView<'float32x2'>;
+        queryPositions: GraphDataView<'float32x2'>;
         /** Flattened local f32 polygon vertices. */
-        polygonPositions: GraphDataView<'float32x2'>;
+        positions: GraphDataView<'float32x2'>;
       }
     | {
         /** Raw binary64 point rows in browser `Float64Array` word order. */
-        points: GraphDataView<'uint32x4'>;
+        queryPositions: GraphDataView<'uint32x4'>;
         /** Flattened raw binary64 polygon vertices in browser `Float64Array` word order. */
-        polygonPositions: GraphDataView<'uint32x4'>;
+        positions: GraphDataView<'uint32x4'>;
       }
   );
 
 /**
  * Classifies one point against one polygon or multipolygon per row.
  *
- * `geometryOffsets` maps point rows to polygons, `polygonOffsets` maps polygons to rings, and
+ * `featureOffsets` maps point rows to polygons, `polygonOffsets` maps polygons to rings, and
  * `ringOffsets` maps rings to flattened vertices. Rings close implicitly. Rings within one polygon
  * use even/odd fill semantics, while polygons within one multipolygon are unioned. Non-finite
  * coordinates, malformed offsets, invalid rings, and predicates that exceed the double-single
@@ -105,11 +111,11 @@ export type GPUPairwisePointInPolygonProps = GPUPairwisePointInPolygonBaseProps 
  * edges that can affect the result are tested against the envelope: an edge strictly above or below
  * the point, or strictly to one side of it, is decided exactly from coordinate signs.
  */
-export class GPUPairwisePointInPolygon {
+export class GPUPairwisePointInPolygon implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly points: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
-  readonly polygonPositions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
-  readonly geometryOffsets: GraphDataView<'uint32'>;
+  readonly queryPositions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
+  readonly positions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
+  readonly featureOffsets: GraphDataView<'uint32'>;
   readonly polygonOffsets: GraphDataView<'uint32'>;
   readonly ringOffsets: GraphDataView<'uint32'>;
   readonly output: GraphDataView<'uint32'>;
@@ -117,45 +123,41 @@ export class GPUPairwisePointInPolygon {
   /** Creates a predicate contributor without compiling or submitting GPU work. */
   constructor(props: GPUPairwisePointInPolygonProps) {
     this.id = props.id ?? 'gpu-pairwise-point-in-polygon';
-    this.points = props.points;
-    this.polygonPositions = props.polygonPositions;
-    this.geometryOffsets = props.geometryOffsets;
+    this.queryPositions = props.queryPositions;
+    this.positions = props.positions;
+    this.featureOffsets = props.featureOffsets;
     this.polygonOffsets = props.polygonOffsets;
     this.ringOffsets = props.ringOffsets;
     this.output = props.output;
 
-    validateRowView(this.points, ['float32x2', 'uint32x4'], `${this.id} points`);
-    validateRowView(
-      this.polygonPositions,
-      ['float32x2', 'uint32x4'],
-      `${this.id} polygonPositions`
-    );
-    if (this.points.format !== this.polygonPositions.format) {
+    validateRowView(this.queryPositions, ['float32x2', 'uint32x4'], `${this.id} queryPositions`);
+    validateRowView(this.positions, ['float32x2', 'uint32x4'], `${this.id} positions`);
+    if (this.queryPositions.format !== this.positions.format) {
       throw new Error(`${this.id} point and polygon position formats must match`);
     }
     for (const [name, offsets] of [
-      ['geometryOffsets', this.geometryOffsets],
+      ['featureOffsets', this.featureOffsets],
       ['polygonOffsets', this.polygonOffsets],
       ['ringOffsets', this.ringOffsets]
     ] as const) {
       validateRowView(offsets, ['uint32'], `${this.id} ${name}`);
     }
-    if (this.geometryOffsets.length !== this.points.length + 1) {
-      throw new Error(`${this.id} geometryOffsets.length must equal points.length + 1`);
+    if (this.featureOffsets.length !== this.queryPositions.length + 1) {
+      throw new Error(`${this.id} featureOffsets.length must equal queryPositions.length + 1`);
     }
     if (this.polygonOffsets.length < 1 || this.ringOffsets.length < 1) {
       throw new Error(`${this.id} polygonOffsets and ringOffsets require a terminal entry`);
     }
     validateRowView(this.output, ['uint32'], `${this.id} output`);
-    if (this.output.length !== this.points.length) {
-      throw new Error(`${this.id} output.length must equal points.length`);
+    if (this.output.length !== this.queryPositions.length) {
+      throw new Error(`${this.id} output.length must equal queryPositions.length`);
     }
     validateDisjointGeospatialViews(
       this.id,
       [
-        ['points', this.points],
-        ['polygonPositions', this.polygonPositions],
-        ['geometryOffsets', this.geometryOffsets],
+        ['queryPositions', this.queryPositions],
+        ['positions', this.positions],
+        ['featureOffsets', this.featureOffsets],
         ['polygonOffsets', this.polygonOffsets],
         ['ringOffsets', this.ringOffsets]
       ],
@@ -163,32 +165,40 @@ export class GPUPairwisePointInPolygon {
     );
   }
 
-  /** Adds one predicate node to the target graph when at least one point row is present. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns one predicate node when at least one point row is present, for `graph.add(contributor)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    // The shared geospatial pass helper schedules through `graph.addComputePass`, so the
+    // adapter collects its nodes instead of adding them.
+    return captureGraphCommandNodes(graph, () => this.addNodes(graph));
+  }
+
+  private addNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertGraphOwnership(
       graph,
       [
-        this.points,
-        this.polygonPositions,
-        this.geometryOffsets,
+        this.queryPositions,
+        this.positions,
+        this.featureOffsets,
         this.polygonOffsets,
         this.ringOffsets,
         this.output
       ],
       this.id
     );
-    if (this.points.length === 0) return;
+    if (this.queryPositions.length === 0) return;
     this.addPass(graph);
   }
 
   private addPass<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    const pointSource = getPositionReadSource('points', this.points);
-    const polygonSource = getPositionReadSource('polygonPositions', this.polygonPositions);
+    const pointSource = getPositionReadSource('points', this.queryPositions);
+    const polygonSource = getPositionReadSource('polygonPositions', this.positions);
     const dispatchLayout = getGeospatialDispatchLayout(
-      this.points.length,
+      this.queryPositions.length,
       graph.device.limits.maxComputeWorkgroupsPerDimension
     );
-    const raw = this.points.format === 'uint32x4';
+    const raw = this.queryPositions.format === 'uint32x4';
     const source = /* wgsl */ `
 ${raw ? RAW_POINT_WGSL : ''}
 ${PRECISE_PREDICATE_WGSL}
@@ -196,11 +206,11 @@ const OUTSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.outside}u;
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
 const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;
-const ELEMENT_COUNT: u32 = ${this.points.length}u;
+const ELEMENT_COUNT: u32 = ${this.queryPositions.length}u;
 const POLYGON_COUNT: u32 = ${this.polygonOffsets.length - 1}u;
 const RING_COUNT: u32 = ${this.ringOffsets.length - 1}u;
-const VERTEX_COUNT: u32 = ${this.polygonPositions.length}u;
-const GEOMETRY_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.geometryOffsets)}u;
+const VERTEX_COUNT: u32 = ${this.positions.length}u;
+const GEOMETRY_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.featureOffsets)}u;
 const POLYGON_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.polygonOffsets)}u;
 const RING_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.ringOffsets)}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(this.output)}u;
@@ -227,17 +237,17 @@ fn main(
       id: this.id,
       source,
       resources: [
-        {buffer: this.points, usage: 'storage-read'},
-        {buffer: this.polygonPositions, usage: 'storage-read'},
-        {buffer: this.geometryOffsets, usage: 'storage-read'},
+        {buffer: this.queryPositions, usage: 'storage-read'},
+        {buffer: this.positions, usage: 'storage-read'},
+        {buffer: this.featureOffsets, usage: 'storage-read'},
         {buffer: this.polygonOffsets, usage: 'storage-read'},
         {buffer: this.ringOffsets, usage: 'storage-read'},
         {buffer: this.output, usage: 'storage-write'}
       ],
       bindings: {
-        points: this.points,
-        polygonPositions: this.polygonPositions,
-        geometryOffsets: this.geometryOffsets,
+        points: this.queryPositions,
+        polygonPositions: this.positions,
+        geometryOffsets: this.featureOffsets,
         polygonOffsets: this.polygonOffsets,
         ringOffsets: this.ringOffsets,
         classifications: this.output

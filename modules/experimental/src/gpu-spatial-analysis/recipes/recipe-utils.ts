@@ -13,8 +13,12 @@ import {
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTopology, getCellTopologyStride} from '../cell-topology/index';
-import type {GPURecipeStatusPort} from '../contracts/index';
-import type {GPUSpatialWeights} from '../spatial-weights/index';
+import type {GPURecipeStatusPort} from '../../analysis-core/contracts/index';
+import {
+  getGPUSpatialWeightsCapacityPlan,
+  type GPUSpatialWeights,
+  type GPUSpatialWeightsOutput
+} from '../spatial-weights/index';
 
 /**
  * The only caller-ownership override categories accepted by recipes.
@@ -83,20 +87,70 @@ export function getOrCreateView<Format extends VertexFormat, Parameters>(
   return provided ?? createTransientView(graph, id, format, length);
 }
 
-/** Creates a graph-owned transient CSR with `rows + 1` offsets and `capacity` slots. @internal */
+/** Caller-provided parts of a recipe-allocated {@link GPUCellTable}. @internal */
+export type ProvidedCellTable = Omit<Partial<GPUCellTable>, 'status'> & {
+  status?: Partial<GPUCellTable['status']>;
+};
+
+/** Caller-provided parts of a recipe-allocated {@link GPUSpatialWeightsOutput}. @internal */
+export type ProvidedSpatialWeightsOutput = Partial<GPUSpatialWeights> & {
+  status?: Partial<GPUSpatialWeightsOutput['status']>;
+};
+
+/**
+ * Creates a {@link GPUSpatialWeightsOutput} with `rowCount + 1` offsets, the slot capacity of
+ * `getGPUSpatialWeightsCapacityPlan({rowCount, capacity})` (the same plan the caller's grow loop
+ * reads back with the published `requiredCount`), an `overflow` flag and a `requiredCount`
+ * scalar. Each view is `provided` when given, else graph-owned.
+ * @internal
+ */
 export function createTransientSpatialWeights<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  rows: number,
+  rowCount: number,
   capacity: number,
-  provided?: Partial<GPUSpatialWeights>
-): GPUSpatialWeights {
+  provided?: ProvidedSpatialWeightsOutput
+): GPUSpatialWeightsOutput {
+  const slots = getGPUSpatialWeightsCapacityPlan({rowCount, capacity}).capacity;
   return {
-    offsets: getOrCreateView(graph, `${id}-offsets`, 'uint32', rows + 1, provided?.offsets),
-    neighbors: getOrCreateView(graph, `${id}-neighbors`, 'uint32', capacity, provided?.neighbors),
-    weights: getOrCreateView(graph, `${id}-weights`, 'float32', capacity, provided?.weights),
-    ...(provided?.distances ? {distances: provided.distances} : {})
+    offsets: getOrCreateView(graph, `${id}-offsets`, 'uint32', rowCount + 1, provided?.offsets),
+    neighbors: getOrCreateView(graph, `${id}-neighbors`, 'uint32', slots, provided?.neighbors),
+    weights: getOrCreateView(graph, `${id}-weights`, 'float32', slots, provided?.weights),
+    ...(provided?.distances ? {distances: provided.distances} : {}),
+    status: {
+      overflow: getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, provided?.status?.overflow),
+      requiredCount: getOrCreateView(
+        graph,
+        `${id}-required-count`,
+        'uint32',
+        1,
+        provided?.status?.requiredCount
+      )
+    }
   };
+}
+
+/**
+ * Adds one node writing `offsets[i] = i` for `i` in `[0, count]` and returns the `count + 1`
+ * view: the feature or polygon offsets of a layout with one part per row.
+ * @internal
+ */
+export function createIdentityOffsetsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  count: number
+): GraphDataView<'uint32'> {
+  const offsets = createTransientView(graph, `${id}-offsets`, 'uint32', count + 1);
+  graph.add(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-offsets`,
+      operation: 'GPURecipeIdentityOffsets',
+      bindings: [{name: 'offsets', view: offsets, type: 'u32', access: 'read_write'}],
+      invocationCount: count + 1,
+      body: 'offsets[offsetsOffset + index] = index;'
+    })
+  );
+  return offsets;
 }
 
 /**
@@ -194,6 +248,8 @@ export type CellDiskWeightsProps = {
   weights: GPUSpatialWeights;
   /** One-row scalar receiving 1 when `neighborCapacity` truncated the CSR. */
   overflow: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving the unclamped slot total, for the capacity grow loop. */
+  requiredCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -282,7 +338,17 @@ ${getCellKeySearchWGSL('findStudyCell', 'cells', 'countScalar[countScalarOffset]
       bindings: [
         {name: 'slotEnds', view: inclusive, type: 'u32', access: 'read'},
         {name: 'rowOffsets', view: weights.offsets, type: 'u32', access: 'read_write'},
-        {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+        {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
+        ...(props.requiredCount
+          ? [
+              {
+                name: 'requiredCount',
+                view: props.requiredCount,
+                type: 'u32' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : [])
       ],
       invocationCount: rows + 1,
       declarations,
@@ -293,6 +359,7 @@ ${getCellKeySearchWGSL('findStudyCell', 'cells', 'countScalar[countScalarOffset]
   rowOffsets[rowOffsetsOffset + index] = rowOffset;
   if (index == ROWS) {
     overflow[overflowOffset] = select(0u, 1u, slotEnds[slotEndsOffset + ROWS - 1u] > CAPACITY);
+    ${props.requiredCount ? 'requiredCount[requiredCountOffset] = slotEnds[slotEndsOffset + ROWS - 1u];' : ''}
   }`
     })
   );

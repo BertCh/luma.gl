@@ -3,24 +3,25 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 
 /** Terrain ruggedness index definition. */
 export type GPUTerrainRuggednessAlgorithm = 'riley' | 'wilson';
@@ -28,22 +29,8 @@ export type GPUTerrainRuggednessAlgorithm = 'riley' | 'wilson';
 /** Treatment of the outermost one-cell ring of the raster. */
 export type GPUTerrainRuggednessEdgeMode = 'nodata' | 'extrapolate';
 
-/**
- * Properties for {@link GPUTerrainRuggedness}.
- *
- * Every output is expressed in elevation units. The operators compare elevations only, so there
- * is no cell-size model: the result is independent of projected metres (`'uniform'`),
- * `'web-mercator'`, or `'geographic'` degrees and needs no settings buffer or z factor.
- */
-export type GPUTerrainRuggednessProps = {
-  /** Prefix for node and transient IDs. Defaults to `'terrain-ruggedness'`. */
-  id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
-  /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
-  elevation: GPURasterBand;
+/** Caller-owned outputs of {@link GPUTerrainRuggedness}; at least one is required. */
+export type GPUTerrainRuggednessOutput = {
   /** Optional topographic position index: centre minus the mean of its 8 neighbours. */
   topographicPositionIndex?: GraphDataView<'float32'>;
   /** Optional terrain ruggedness index, see `terrainRuggednessAlgorithm`. */
@@ -51,7 +38,25 @@ export type GPUTerrainRuggednessProps = {
   /** Optional roughness: maximum minus minimum elevation of the 3x3 window. */
   roughness?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where every output is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUTerrainRuggedness}.
+ *
+ * Every output is expressed in elevation units. The operators compare elevations only, so there
+ * is no cell-size model: the result is independent of projected metres (`'uniform'`),
+ * `'web-mercator'`, or `'geographic'` degrees and needs no parameters buffer or z factor.
+ */
+export type GPUTerrainRuggednessProps = {
+  /** Prefix for node and transient IDs. Defaults to `'terrain-ruggedness'`. */
+  id?: string;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
+  /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
+  elevation: GPURasterBand;
+  /** Caller-owned outputs. */
+  output: GPUTerrainRuggednessOutput;
   /**
    * `'riley'` (default, gdaldem 3.3+): square root of the summed squared neighbour differences.
    * `'wilson'`: mean absolute neighbour difference.
@@ -84,31 +89,33 @@ export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-ruggedness';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const {width, height} = props.grid;
+    const pixelCount = validateRasterGrid(id, props.grid);
     if (
-      !props.topographicPositionIndex &&
-      !props.terrainRuggednessIndex &&
-      !props.roughness &&
-      !props.validity
+      !output.topographicPositionIndex &&
+      !output.terrainRuggednessIndex &&
+      !output.roughness &&
+      !output.outputValidity
     ) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view] of [
-      ['topographicPositionIndex', props.topographicPositionIndex],
-      ['terrainRuggednessIndex', props.terrainRuggednessIndex],
-      ['roughness', props.roughness]
+      ['topographicPositionIndex', output.topographicPositionIndex],
+      ['terrainRuggednessIndex', output.terrainRuggednessIndex],
+      ['roughness', output.roughness]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    if (props.validity) {
-      validatePackedUint32View(props.validity, `${id} validity`);
-      if (props.validity.length !== pixelCount) {
-        throw new Error(`${id} validity must contain one value per pixel`);
+    if (output.outputValidity) {
+      validatePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
+      if (output.outputValidity.length !== pixelCount) {
+        throw new Error(`${id} output.outputValidity must contain one value per pixel`);
       }
     }
     if (!['riley', 'wilson'].includes(props.terrainRuggednessAlgorithm ?? 'riley')) {
@@ -118,18 +125,18 @@ export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
     if (!['nodata', 'extrapolate'].includes(edgeMode)) {
       throw new Error(`${id} edgeMode must be nodata or extrapolate`);
     }
-    if (edgeMode === 'extrapolate' && (props.width < 2 || props.height < 2)) {
+    if (edgeMode === 'extrapolate' && (width < 2 || height < 2)) {
       throw new Error(`${id} edgeMode extrapolate requires width and height of at least 2`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
       [
-        props.topographicPositionIndex,
-        props.terrainRuggednessIndex,
-        props.roughness,
-        props.validity
+        output.topographicPositionIndex,
+        output.terrainRuggednessIndex,
+        output.roughness,
+        output.outputValidity
       ],
-      getTerrainBandViews(props.elevation)
+      getRasterBandViews(props.elevation)
     );
   }
 
@@ -138,21 +145,16 @@ export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.topographicPositionIndex,
-      props.terrainRuggednessIndex,
-      props.roughness,
-      props.validity
+      output.topographicPositionIndex,
+      output.terrainRuggednessIndex,
+      output.roughness,
+      output.outputValidity
     ]);
-    const source = getTerrainElevationNodes(
-      graph,
-      id,
-      props.elevation,
-      props.width,
-      props.height,
-      true
-    );
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const bindings: WGSLKernelBinding[] = [
       {name: 'elevation', view: source.band.storage.values, type: 'f32', access: 'read'},
       {
@@ -163,10 +165,10 @@ export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
       }
     ];
     const outputs: [string, GraphDataView | undefined, 'f32' | 'u32'][] = [
-      ['tpiValues', props.topographicPositionIndex, 'f32'],
-      ['rugValues', props.terrainRuggednessIndex, 'f32'],
-      ['roughnessValues', props.roughness, 'f32'],
-      ['validityValues', props.validity, 'u32']
+      ['tpiValues', output.topographicPositionIndex, 'f32'],
+      ['rugValues', output.terrainRuggednessIndex, 'f32'],
+      ['roughnessValues', output.roughness, 'f32'],
+      ['validityValues', output.outputValidity, 'u32']
     ];
     for (const [name, view, type] of outputs) {
       if (view) {
@@ -180,8 +182,8 @@ export class GPUTerrainRuggedness implements GPUCommandNodeProducer {
       operation: 'GPUTerrainRuggedness',
       variant: `${edgeMode}-${algorithm}`,
       bindings,
-      invocationCount: props.width * props.height,
-      declarations: getDeclarations(props.width, props.height, edgeMode),
+      invocationCount: width * height,
+      declarations: getDeclarations(width, height, edgeMode),
       body: getBody(props, algorithm)
     });
     return [...source.nodes, node];
@@ -195,7 +197,7 @@ function getDeclarations(
 ): string {
   const header = `const WIDTH: i32 = ${width};
 const HEIGHT: i32 = ${height};
-${TERRAIN_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}
 fn isSampleValid(row: i32, column: i32) -> bool {
   let sampleIndex = u32(row * WIDTH + column);
   return elevationValidity[elevationValidityOffset + sampleIndex] != 0u &&
@@ -296,8 +298,8 @@ function getBody(
   isValid = isValid && isFiniteValue(topographicPosition) && isFiniteValue(ruggedness) &&
     isFiniteValue(roughness);
   let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
-  ${props.topographicPositionIndex ? 'tpiValues[tpiValuesOffset + index] = select(invalidValue, topographicPosition, isValid);' : ''}
-  ${props.terrainRuggednessIndex ? 'rugValues[rugValuesOffset + index] = select(invalidValue, ruggedness, isValid);' : ''}
-  ${props.roughness ? 'roughnessValues[roughnessValuesOffset + index] = select(invalidValue, roughness, isValid);' : ''}
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`;
+  ${props.output.topographicPositionIndex ? 'tpiValues[tpiValuesOffset + index] = select(invalidValue, topographicPosition, isValid);' : ''}
+  ${props.output.terrainRuggednessIndex ? 'rugValues[rugValuesOffset + index] = select(invalidValue, ruggedness, isValid);' : ''}
+  ${props.output.roughness ? 'roughnessValues[roughnessValuesOffset + index] = select(invalidValue, roughness, isValid);' : ''}
+  ${props.output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`;
 }

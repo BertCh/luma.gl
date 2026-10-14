@@ -12,25 +12,27 @@ import {
   GPUSort,
   GPU_HASH_INDEX_STATISTICS_LENGTH,
   GPU_HASH_QUERY_STATISTICS_LENGTH,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
+import {createPublishNode, createWGSLActiveCountDispatch} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput, GPUFloat32Positions} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
+  validateCapacity,
+  validateMaximumCount,
+  validatePackedView,
+  validatePowerOfTwo,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
-import {GPU_TIME_WINDOW_PARAMETER_LENGTH} from '../../gpu-dataframe/time-window-filter/time-window-parameters';
-import {GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH} from '../../gpu-dataframe/time-window-filter/time-words';
-import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
+import {GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from '../../gpu-dataframe/time-window-filter/time-window-parameters';
+import {GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH} from '../../gpu-dataframe/time-window-filter/time-words';
+import {getSortedSegmentSumNodes, SEGMENT_WORKGROUP_SIZE} from '../../utils/sorted-segment-sums';
 import {getTimeWindowClassifyNodes} from '../../gpu-dataframe/time-window-filter/time-window-classify-node';
 import {
   createFlowContributionNodes,
@@ -117,10 +119,10 @@ export type GPUFlowAggregationZones =
  *
  * Two modes, chosen by the `timestamps` format:
  * - Float: packed `float32` timestamps, optional `timestampsLow`, and a `float32` window written with
- *   `getGPUTimeWindowParameterValues`.
+ *   `getGPUTimeWindowFilterParameterValues`.
  * - Int64 words: packed `uint32x2` `(low, high)` timestamps (for example epoch milliseconds from an
  *   Arrow `Int64` column) and a packed `uint32` window written with
- *   `getGPUTimeWindowWordParameterValues`. Acceptance is exact.
+ *   `getGPUTimeWindowFilterWordParameterValues`. Acceptance is exact.
  */
 export type GPUFlowAggregationTimeWindow = {
   /** Packed `float32` timestamp per row, or packed `uint32x2` Int64 words per row. Per-frame contents. */
@@ -128,8 +130,8 @@ export type GPUFlowAggregationTimeWindow = {
   /** Optional double-single low parts from `splitTimestamps`. Float timestamps only. Per-frame contents. */
   timestampsLow?: GraphDataView<'float32'>;
   /**
-   * Float timestamps: packed window of at least 8 `float32` rows from `getGPUTimeWindowParameterValues`.
-   * Word timestamps: packed window of at least 8 `uint32` rows from `getGPUTimeWindowWordParameterValues`.
+   * Float timestamps: packed window of at least 8 `float32` rows from `getGPUTimeWindowFilterParameterValues`.
+   * Word timestamps: packed window of at least 8 `uint32` rows from `getGPUTimeWindowFilterWordParameterValues`.
    * Per-frame.
    */
   window: GraphDataView<'float32'> | GraphDataView<'uint32'>;
@@ -152,7 +154,7 @@ export type GPUFlowAggregationSumOrder = 'atomic' | 'sorted';
 /**
  * Properties for {@link GPUFlowAggregation}.
  *
- * Compile-time: zone kind, grid size, zone count, `pairCapacity`, `maxProbeCount`,
+ * Compile-time: zone kind, grid size, zone count, `pairCapacity`, `maximumProbeCount`,
  * `excludeSelfFlows`, literal bounds and radius, all lengths, and which optional views exist.
  * Per-frame: the contents of every input view (positions, zone IDs, weights, mask, timestamps, time
  * window, GPU bounds and radius).
@@ -185,10 +187,23 @@ export type GPUFlowAggregationProps = {
   excludeSelfFlows?: boolean;
   /** Hash table slots, a power of two: the maximum number of distinct pairs retained. Compile-time. */
   pairCapacity: number;
-  /** Forwarded to `GPUHashIndex` and its query. Defaults to `pairCapacity`. Compile-time. */
-  maxProbeCount?: number;
-  /** Top-K output. `ids` receives pair keys; `ids.length` is K. */
-  output: GPUCompactOutput;
+  /**
+   * Forwarded to `GPUHashIndex` and its query. Defaults to `pairCapacity`. Compile-time. The
+   * aggregate probe count `rows x maximumProbeCount` is at most 4294967295 (2^32 - 1), so large
+   * inputs need a probe limit below the default.
+   */
+  maximumProbeCount?: number;
+  /** Top-K output and optional per-flow and per-zone outputs. `ids` receives pair keys; `ids.length` is K. */
+  output: GPUFlowAggregationOutput;
+};
+
+/** GPU-written outputs of {@link GPUFlowAggregation}, beside the top-K {@link GPUCompactOutput}. */
+export type GPUFlowAggregationOutput = GPUCompactOutput & {
+  /** Status words beside the compact top-K cardinality. */
+  status: GPUCompactOutput['status'] & {
+    /** Optional one row: 1 when an accepted row's pair could not be stored in the table. */
+    pairOverflow?: GraphDataView<'uint32'>;
+  };
   /** Optional K rows of origin zone IDs aligned with `output.ids`. */
   flowOriginZoneIds?: GraphDataView<'uint32'>;
   /** Optional K rows of destination zone IDs aligned with `output.ids`. */
@@ -197,8 +212,6 @@ export type GPUFlowAggregationProps = {
   flowCounts?: GraphDataView<'uint32'>;
   /** Optional K rows: sum of finite weights per pair, or the count as float32 without `weights`. */
   flowWeights?: GraphDataView<'float32'>;
-  /** Optional one row: 1 when an accepted row's pair could not be stored in the table. */
-  pairOverflow?: GraphDataView<'uint32'>;
   /** Optional `zoneCount` rows: accepted rows per origin zone. */
   zoneOutCounts?: GraphDataView<'uint32'>;
   /** Optional `zoneCount` rows: accepted rows per destination zone. */
@@ -233,10 +246,10 @@ export type GPUFlowAggregationProps = {
  * given, and not a self flow when `excludeSelfFlows`.
  *
  * Output: flows are sorted by weight descending, ties by pair key ascending (origin zone, then
- * destination zone); without `weights` the weight is the count. `output.requiredCount` is the number
- * of distinct pairs retained in the table, `output.count = min(requiredCount, K)`, and
- * `output.overflow` is 1 when `requiredCount > K` or `pairOverflow` is set. `requiredCount > K` alone means
- * the list is a top-K truncation but every aggregate is exact. `pairOverflow` means distinct pairs
+ * destination zone); without `weights` the weight is the count. `output.status.requiredCount` is the number
+ * of distinct pairs retained in the table, `output.status.count = min(requiredCount, K)`, and
+ * `output.status.overflow` is 1 when `requiredCount > K` or `status.pairOverflow` is set. `requiredCount > K` alone means
+ * the list is a top-K truncation but every aggregate is exact. `status.pairOverflow` means distinct pairs
  * exceeded `pairCapacity` (or the probe limit): aggregates are incomplete and which pairs were
  * retained is unspecified (the `GPUHashIndex` contract). Rows `k >= count` of every K-row output are
  * rewritten each encoding with sentinels (`0xffffffff` IDs, zero counts and weights). Zone totals
@@ -254,7 +267,8 @@ export type GPUFlowAggregationProps = {
  * (`uint32x2`), see {@link GPUFlowAggregationTimeWindow}.
  *
  * Pair keys are one uint32, so `zoneCount * zoneCount` must stay below `0xffffffff`, which caps
- * `zoneCount` at 65535. `GPUHashIndex` also requires `rows * maxProbeCount` to fit in a uint32.
+ * `zoneCount` at 65535. The aggregate probe count `rows * maximumProbeCount` must be at most 4294967295 (checked under the
+ * flow aggregation's own ID).
  *
  * Non-goals: geodesic or great-circle zones, more than 65535 zones (64-bit pair keys), flow
  * bundling or edge routing, chunked (vector) zone IDs, masks, or timestamps, and table resizing.
@@ -285,27 +299,13 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       this.zoneCount = zones.zoneCount;
     } else if (zones.kind === 'grid' || zones.kind === 'hexagon') {
       const [columns, rows] = zones.gridSize;
-      if (
-        !Number.isSafeInteger(columns) ||
-        !Number.isSafeInteger(rows) ||
-        columns < 1 ||
-        rows < 1
-      ) {
-        throw new Error(`${id} gridSize must be two positive integers`);
-      }
+      validateCapacity(id, 'gridSize columns', columns);
+      validateCapacity(id, 'gridSize rows', rows);
       this.zoneCount = columns * rows;
     } else {
       throw new Error(`${id} zones.kind must be grid, hexagon, or ids`);
     }
-    if (
-      !Number.isSafeInteger(this.zoneCount) ||
-      this.zoneCount < 1 ||
-      this.zoneCount > GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT
-    ) {
-      throw new Error(
-        `${id} zone count must be an integer from 1 to ${GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT}`
-      );
-    }
+    validateCapacity(id, 'zone count', this.zoneCount, 1, GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT);
 
     if (zones.kind === 'ids') {
       if (!props.originZoneIds || !props.destinationZoneIds) {
@@ -314,8 +314,8 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       if (props.origins || props.destinations) {
         throw new Error(`${id} ids zones do not accept origins or destinations`);
       }
-      validatePackedUint32View(props.originZoneIds, `${id} originZoneIds`);
-      validatePackedUint32View(props.destinationZoneIds, `${id} destinationZoneIds`);
+      validatePackedView(props.originZoneIds, ['uint32'], `${id} originZoneIds`);
+      validatePackedView(props.destinationZoneIds, ['uint32'], `${id} destinationZoneIds`);
       this.rowCount = props.originZoneIds.length;
       if (props.destinationZoneIds.length !== this.rowCount) {
         throw new Error(`${id} destinationZoneIds length must equal originZoneIds length`);
@@ -339,7 +339,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       }
       validateFlowBounds(id, zones.bounds);
       if (zones.activeGridSize) {
-        validatePackedUint32View(zones.activeGridSize, `${id} activeGridSize`);
+        validatePackedView(zones.activeGridSize, ['uint32'], `${id} activeGridSize`);
         if (zones.activeGridSize.length < 2) {
           throw new Error(`${id} activeGridSize must contain two uint32 rows [columns, rows]`);
         }
@@ -368,7 +368,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       }
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -391,32 +391,36 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       }
       if (isWordTime) {
         validatePackedView(window, ['uint32'], `${id} word window`);
-        if (window.length < GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH) {
+        if (window.length < GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH) {
           throw new Error(
-            `${id} word window must hold ${GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH} uint32 values`
+            `${id} word window must hold ${GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH} uint32 values`
           );
         }
       } else {
         validatePackedView(window, ['float32'], `${id} window`);
-        if (window.length < GPU_TIME_WINDOW_PARAMETER_LENGTH) {
+        if (window.length < GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH) {
           throw new Error(
-            `${id} window must hold ${GPU_TIME_WINDOW_PARAMETER_LENGTH} float32 values`
+            `${id} window must hold ${GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} float32 values`
           );
         }
       }
     }
 
     const capacity = props.pairCapacity;
-    if (!Number.isSafeInteger(capacity) || capacity < 1 || (capacity & (capacity - 1)) !== 0) {
-      throw new Error(`${id} pairCapacity must be a positive power of two`);
+    validatePowerOfTwo(id, 'pairCapacity', capacity, 1, 0x80000000);
+    // The sorted pair sum runs one 256-lane workgroup per stored pair (rule 16: checked here, not
+    // at graph build).
+    if (
+      props.weights &&
+      this.sumOrder === 'sorted' &&
+      capacity * SEGMENT_WORKGROUP_SIZE > 0xffffffff
+    ) {
+      throw new Error(`${id} pairCapacity must be at most 2^23 with weights and sumOrder 'sorted'`);
     }
-    if (capacity > 0x80000000) {
-      throw new Error(`${id} pairCapacity must fit in uint32`);
-    }
-    const maxProbeCount = props.maxProbeCount ?? capacity;
-    if (!Number.isSafeInteger(maxProbeCount) || maxProbeCount < 1 || maxProbeCount > capacity) {
-      throw new Error(`${id} maxProbeCount must be an integer from one through pairCapacity`);
-    }
+    const probeLimit = props.maximumProbeCount ?? capacity;
+    validateCapacity(id, 'maximumProbeCount', probeLimit, 1, capacity);
+    // The hash index counts `rows * maximumProbeCount` aggregate probes in one uint32.
+    validateMaximumCount(id, 'rows x maximumProbeCount', this.rowCount * probeLimit, 0xffffffff);
 
     validateCompactOutput(id, output);
     const topCount = output.ids.length;
@@ -424,70 +428,70 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       throw new Error(`${id} output.ids must contain at least one row`);
     }
     for (const [name, view] of [
-      ['flowOriginZoneIds', props.flowOriginZoneIds],
-      ['flowDestinationZoneIds', props.flowDestinationZoneIds],
-      ['flowCounts', props.flowCounts]
+      ['flowOriginZoneIds', output.flowOriginZoneIds],
+      ['flowDestinationZoneIds', output.flowDestinationZoneIds],
+      ['flowCounts', output.flowCounts]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== topCount) {
-          throw new Error(`${id} ${name} length must equal output.ids length`);
+          throw new Error(`${id} output.${name} length must equal output.ids length`);
         }
       }
     }
-    if (props.flowWeights) {
-      validatePackedView(props.flowWeights, ['float32'], `${id} flowWeights`);
-      if (props.flowWeights.length !== topCount) {
-        throw new Error(`${id} flowWeights length must equal output.ids length`);
+    if (output.flowWeights) {
+      validatePackedView(output.flowWeights, ['float32'], `${id} output.flowWeights`);
+      if (output.flowWeights.length !== topCount) {
+        throw new Error(`${id} output.flowWeights length must equal output.ids length`);
       }
     }
     for (const [name, view] of [
-      ['pairOverflow', props.pairOverflow],
-      ['drawInstanceCount', props.drawInstanceCount]
+      ['status.pairOverflow', output.status.pairOverflow],
+      ['drawInstanceCount', output.drawInstanceCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
-          throw new Error(`${id} ${name} must contain one uint32 row`);
+          throw new Error(`${id} output.${name} must contain one uint32 row`);
         }
       }
     }
     for (const [name, view] of [
-      ['zoneOutCounts', props.zoneOutCounts],
-      ['zoneInCounts', props.zoneInCounts]
+      ['zoneOutCounts', output.zoneOutCounts],
+      ['zoneInCounts', output.zoneInCounts]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== this.zoneCount) {
-          throw new Error(`${id} ${name} length must equal the zone count`);
+          throw new Error(`${id} output.${name} length must equal the zone count`);
         }
       }
     }
     for (const [name, view] of [
-      ['zoneOutCountExtent', props.zoneOutCountExtent],
-      ['zoneInCountExtent', props.zoneInCountExtent]
+      ['zoneOutCountExtent', output.zoneOutCountExtent],
+      ['zoneInCountExtent', output.zoneInCountExtent]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== 2) {
-          throw new Error(`${id} ${name} must contain two float32 rows`);
+          throw new Error(`${id} output.${name} must contain two float32 rows`);
         }
       }
     }
     for (const [name, view] of [
-      ['zoneOutWeights', props.zoneOutWeights],
-      ['zoneInWeights', props.zoneInWeights],
-      ['flowWeights', props.flowWeights]
+      ['zoneOutWeights', output.zoneOutWeights],
+      ['zoneInWeights', output.zoneInWeights],
+      ['flowWeights', output.flowWeights]
     ] as const) {
       if (!view) {
         continue;
       }
       if (name !== 'flowWeights' && !weights) {
-        throw new Error(`${id} ${name} requires weights`);
+        throw new Error(`${id} output.${name} requires weights`);
       }
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validatePackedView(view, ['float32'], `${id} output.${name}`);
       if (name !== 'flowWeights' && view.length !== this.zoneCount) {
-        throw new Error(`${id} ${name} length must equal the zone count`);
+        throw new Error(`${id} output.${name} length must equal the zone count`);
       }
     }
 
@@ -504,7 +508,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
     const {id, props, zoneCount, rowCount} = this;
     const {zones, weights, output} = props;
     const capacity = props.pairCapacity;
-    const maxProbeCount = props.maxProbeCount ?? capacity;
+    const maxProbeCount = props.maximumProbeCount ?? capacity;
     const topCount = output.ids.length;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
 
@@ -681,9 +685,41 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         Math.max(rowCount, 1)
       );
     }
+    // Two stable ascending sorts form an LSD composite key: pair key first, then weight descending.
+    const slotKeys = createTransientView(graph, `${id}-slot-keys`, 'uint32', capacity);
+    const slotIndices = createTransientView(graph, `${id}-slot-indices`, 'uint32', capacity);
+    const sortedPairKeys = createTransientView(graph, `${id}-sorted-pair-keys`, 'uint32', capacity);
+    const slotsByPair = createTransientView(graph, `${id}-slots-by-pair`, 'uint32', capacity);
+    const weightKeys = createTransientView(graph, `${id}-weight-keys`, 'uint32', capacity);
+    const sortedWeightKeys = createTransientView(
+      graph,
+      `${id}-sorted-weight-keys`,
+      'uint32',
+      capacity
+    );
+    const rankedSlots = createTransientView(graph, `${id}-ranked-slots`, 'uint32', capacity);
+    nodes.push(
+      createFlowSlotKeysNode(graph, {
+        id: `${id}-slot-keys`,
+        tableKeys,
+        slotKeys,
+        slotIndices,
+        zoneCount
+      }),
+      ...new GPUSort({
+        id: `${id}-sort-pairs`,
+        keys: slotKeys,
+        values: slotIndices,
+        outputKeys: sortedPairKeys,
+        outputValues: slotsByPair,
+        // Pair keys are below zoneCount^2, which empty slots take (see createFlowSlotKeysNode).
+        keyBits: Math.max(1, (zoneCount * zoneCount).toString(2).length)
+      }).getCommandNodes(graph)
+    );
+
     if (weights && rowWeights && contributions) {
       // Stable sort of rows by representative row, offsets from the exact per-pair counts, gather
-      // in sorted order, and one fixed-tree segment sum per table slot.
+      // in sorted order, and one fixed-tree segment sum per stored pair.
       const sortKeys = createTransientView(graph, `${id}-pair-sum-sort-keys`, 'uint32', rowCount);
       const sortIndices = createTransientView(
         graph,
@@ -704,6 +740,15 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         rowCount
       );
       const rowOffsets = createTransientView(graph, `${id}-pair-sum-offsets`, 'uint32', rowCount);
+      // One workgroup per stored pair, not per table slot (review B-18).
+      const pairSumDispatch = createWGSLActiveCountDispatch(graph, {
+        id: `${id}-pair-sum-dispatch`,
+        operation: 'GPUFlowAggregation',
+        count: buildStatistics,
+        maximumItemCount: capacity,
+        workgroupSize: SEGMENT_WORKGROUP_SIZE,
+        invocationsPerItem: SEGMENT_WORKGROUP_SIZE
+      });
       const sortedContributions = createTransientView(
         graph,
         `${id}-pair-sum-sorted-contributions`,
@@ -737,8 +782,12 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
           contributions,
           sortedContributions
         }),
+        pairSumDispatch.updateNode,
         createFlowPairSumNode(graph, {
           id: `${id}-pair-sum`,
+          slotsByPair,
+          statistics: buildStatistics,
+          condition: pairSumDispatch.condition,
           tableKeys,
           tableValues,
           rowCounts,
@@ -759,36 +808,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       );
     }
 
-    // Two stable ascending sorts form an LSD composite key: pair key first, then weight descending.
-    const slotKeys = createTransientView(graph, `${id}-slot-keys`, 'uint32', capacity);
-    const slotIndices = createTransientView(graph, `${id}-slot-indices`, 'uint32', capacity);
-    const sortedPairKeys = createTransientView(graph, `${id}-sorted-pair-keys`, 'uint32', capacity);
-    const slotsByPair = createTransientView(graph, `${id}-slots-by-pair`, 'uint32', capacity);
-    const weightKeys = createTransientView(graph, `${id}-weight-keys`, 'uint32', capacity);
-    const sortedWeightKeys = createTransientView(
-      graph,
-      `${id}-sorted-weight-keys`,
-      'uint32',
-      capacity
-    );
-    const rankedSlots = createTransientView(graph, `${id}-ranked-slots`, 'uint32', capacity);
     nodes.push(
-      createFlowSlotKeysNode(graph, {
-        id: `${id}-slot-keys`,
-        tableKeys,
-        slotKeys,
-        slotIndices,
-        zoneCount
-      }),
-      ...new GPUSort({
-        id: `${id}-sort-pairs`,
-        keys: slotKeys,
-        values: slotIndices,
-        outputKeys: sortedPairKeys,
-        outputValues: slotsByPair,
-        // Pair keys are below zoneCount^2, which empty slots take (see createFlowSlotKeysNode).
-        keyBits: Math.max(1, (zoneCount * zoneCount).toString(2).length)
-      }).getCommandNodes(graph),
       createFlowWeightKeysNode(graph, {
         id: `${id}-weight-keys`,
         slotsByPair,
@@ -817,7 +837,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         ids: output.ids
       })
     );
-    if (props.flowCounts || props.flowWeights) {
+    if (output.flowCounts || output.flowWeights) {
       nodes.push(
         createFlowGatherValuesNode(graph, {
           id: `${id}-gather-values`,
@@ -827,25 +847,25 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
           tableValues,
           rowCounts,
           rowWeights,
-          flowCounts: props.flowCounts,
-          flowWeights: props.flowWeights
+          flowCounts: output.flowCounts,
+          flowWeights: output.flowWeights
         })
       );
     }
-    if (props.flowOriginZoneIds || props.flowDestinationZoneIds) {
+    if (output.flowOriginZoneIds || output.flowDestinationZoneIds) {
       nodes.push(
         createFlowDecodeZonesNode(graph, {
           id: `${id}-decode-zones`,
           zoneCount,
           ids: output.ids,
-          originZoneIds: props.flowOriginZoneIds,
-          destinationZoneIds: props.flowDestinationZoneIds
+          originZoneIds: output.flowOriginZoneIds,
+          destinationZoneIds: output.flowDestinationZoneIds
         })
       );
     }
 
     const pairOverflow =
-      props.pairOverflow ?? createTransientView(graph, `${id}-pair-overflow`, 'uint32', 1);
+      output.status.pairOverflow ?? createTransientView(graph, `${id}-pair-overflow`, 'uint32', 1);
     nodes.push(
       createFlowPairOverflowNode(graph, {
         id: `${id}-pair-overflow`,
@@ -862,7 +882,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
         }),
         output,
         overflowSources: [pairOverflow],
-        extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
+        extraCounts: output.drawInstanceCount ? [output.drawInstanceCount] : []
       })
     );
 
@@ -870,16 +890,16 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
       [
         'out',
         acceptedOriginZones,
-        props.zoneOutCounts,
-        props.zoneOutWeights,
-        props.zoneOutCountExtent
+        output.zoneOutCounts,
+        output.zoneOutWeights,
+        output.zoneOutCountExtent
       ],
       [
         'in',
         acceptedDestinationZones,
-        props.zoneInCounts,
-        props.zoneInWeights,
-        props.zoneInCountExtent
+        output.zoneInCounts,
+        output.zoneInWeights,
+        output.zoneInCountExtent
       ]
     ] as const) {
       const counts =
@@ -962,25 +982,24 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {props} = this;
-    const {output} = props;
+    const {output} = this.props;
     return [
       output.ids,
-      output.count,
-      output.overflow,
-      output.requiredCount,
-      props.flowOriginZoneIds,
-      props.flowDestinationZoneIds,
-      props.flowCounts,
-      props.flowWeights,
-      props.pairOverflow,
-      props.zoneOutCounts,
-      props.zoneInCounts,
-      props.zoneOutWeights,
-      props.zoneInWeights,
-      props.drawInstanceCount,
-      props.zoneOutCountExtent,
-      props.zoneInCountExtent
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount,
+      output.flowOriginZoneIds,
+      output.flowDestinationZoneIds,
+      output.flowCounts,
+      output.flowWeights,
+      output.status.pairOverflow,
+      output.zoneOutCounts,
+      output.zoneInCounts,
+      output.zoneOutWeights,
+      output.zoneInWeights,
+      output.drawInstanceCount,
+      output.zoneOutCountExtent,
+      output.zoneInCountExtent
     ];
   }
 }

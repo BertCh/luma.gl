@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,11 +12,16 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
+  getGPUInequalityMaximumLorenzKnotTotal,
+  getGPUInequalityMaximumZoneCount,
   GPU_INEQUALITY_PARAMETER_LENGTH
 } from './inequality-parameters';
 import {
@@ -30,7 +32,11 @@ import {
   INEQUALITY_GINI_FINISH_BODY,
   INEQUALITY_GINI_TILE_PREFIX_BODY,
   INEQUALITY_GINI_TILE_ROWS,
+  INEQUALITY_GINI_FINISH_DECLARATIONS,
+  INEQUALITY_GINI_TILE_PREFIX_DECLARATIONS,
   INEQUALITY_GLOBAL_SUMS_BODY,
+  INEQUALITY_GLOBAL_SUMS_DECLARATIONS,
+  INEQUALITY_REDUCTION_LANES,
   INEQUALITY_HELPERS_WGSL,
   INEQUALITY_STAT,
   INEQUALITY_STATS_STRIDE,
@@ -64,7 +70,7 @@ export type GPUInequalityOutput = {
   /** Weighted mean value per zone; NaN for an empty zone. */
   mean?: GraphDataView<'float32'>;
   /** Number of included rows per zone. */
-  count?: GraphDataView<'uint32'>;
+  counts?: GraphDataView<'uint32'>;
   /** Lorenz curve knots, row-major `zone * lorenzKnotCount + knot`; NaN for an empty zone. */
   lorenzKnots?: GraphDataView<'float32'>;
   /**
@@ -88,7 +94,10 @@ export type GPUInequalityProps = {
   values: GraphDataView<'float32'>;
   /** Packed uint32 zone per row. `0xffffffff` or any value `>= zoneCount` excludes the row. */
   zoneIds: GraphDataView<'uint32'>;
-  /** Number of zones. Compile-time. */
+  /**
+   * Number of zones, at most {@link getGPUInequalityMaximumZoneCount} (3050402 on a default
+   * device). Compile-time.
+   */
   zoneCount: number;
   /** Optional packed float32 population weights; rows without a finite weight above 0 are excluded. */
   weights?: GraphDataView<'float32'>;
@@ -99,7 +108,11 @@ export type GPUInequalityProps = {
    * written with `getGPUInequalityParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /** Lorenz knots per zone at evenly spaced population fractions, 2 to 1025. Defaults to 11. Compile-time. */
+  /**
+   * Lorenz knots per zone at evenly spaced population fractions, 2 to 1025. Defaults to 11.
+   * `zoneCount * lorenzKnotCount` is at most {@link getGPUInequalityMaximumLorenzKnotTotal}
+   * (33554432 on a default device). Compile-time.
+   */
   lorenzKnotCount?: number;
   /** Caller-owned outputs. */
   output: GPUInequalityOutput;
@@ -142,7 +155,8 @@ export type GPUInequalityProps = {
  * fixed order. No atomics are used at all, so results are bitwise reproducible on one adapter.
  *
  * Cost: one thread walks a whole zone, O(segment length) serial work, so one zone holding most
- * rows serializes the pass; the global sums are a single-thread pass over zones (the pooled Gini is tiled: its depth is rows / 256 + 256). Sums are plain f32 in sorted order, so precision degrades for segments of
+ * rows serializes the pass; the global sums and the pooled Gini finish use one 256-lane workgroup with strided
+ * reads and a fixed binary tree (depth zones / 256 + 8; the pooled Gini is tiled: rows / 256 per tile). Sums are plain f32 in sorted order, so precision degrades for segments of
  * millions of rows.
  */
 export class GPUInequality implements GPUCommandNodeProducer {
@@ -160,32 +174,18 @@ export class GPUInequality implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {output, zoneCount} = props;
-    if (!Number.isInteger(zoneCount) || zoneCount < 1 || zoneCount >= 0x7fffffff) {
-      throw new Error(`${id} zoneCount must be a positive integer`);
-    }
+    // The device-dependent maximum is checked at declaration.
+    validateCapacity(id, 'zoneCount', zoneCount, 1, 0xfffffffe);
     this.lorenzKnotCount = props.lorenzKnotCount ?? 11;
-    if (
-      !Number.isInteger(this.lorenzKnotCount) ||
-      this.lorenzKnotCount < MINIMUM_LORENZ_KNOT_COUNT ||
-      this.lorenzKnotCount > MAXIMUM_LORENZ_KNOT_COUNT
-    ) {
-      throw new Error(
-        `${id} lorenzKnotCount must be an integer in [${MINIMUM_LORENZ_KNOT_COUNT}, ${MAXIMUM_LORENZ_KNOT_COUNT}]`
-      );
-    }
-    for (const [name, view] of [
-      ['values', props.values],
-      ['zoneIds', props.zoneIds],
-      ['weights', props.weights],
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'lorenzKnotCount',
+      this.lorenzKnotCount,
+      MINIMUM_LORENZ_KNOT_COUNT,
+      MAXIMUM_LORENZ_KNOT_COUNT
+    );
     validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedUint32View(props.zoneIds, `${id} zoneIds`);
+    validatePackedView(props.zoneIds, ['uint32'], `${id} zoneIds`);
     this.rowCount = props.values.length;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -200,7 +200,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
       }
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -219,7 +219,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
       ['hoover', zoneCount, 'float32'],
       ['palma', zoneCount, 'float32'],
       ['mean', zoneCount, 'float32'],
-      ['count', zoneCount, 'uint32'],
+      ['counts', zoneCount, 'uint32'],
       ['lorenzKnots', zoneCount * this.lorenzKnotCount, 'float32'],
       ['globalSummary', GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH, 'float32']
     ];
@@ -230,9 +230,6 @@ export class GPUInequality implements GPUCommandNodeProducer {
         continue;
       }
       outputCount++;
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} output.${name} must be a single packed view, not a chunked vector`);
-      }
       validatePackedView(view, [format], `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} values`);
@@ -259,6 +256,13 @@ export class GPUInequality implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, rowCount, lorenzKnotCount} = this;
     const {output, zoneCount, values, zoneIds, weights, mask, parameters} = props;
+    validateCapacity(id, 'zoneCount', zoneCount, 1, getGPUInequalityMaximumZoneCount(graph.device));
+    validateMaximumCount(
+      id,
+      'zoneCount x lorenzKnotCount',
+      zoneCount * lorenzKnotCount,
+      getGPUInequalityMaximumLorenzKnotTotal(graph.device)
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       values,
       zoneIds,
@@ -280,7 +284,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
     const sortedZoneKeys = transient('sorted-zone-keys', 'uint32', rowCount);
     const zoneSortedRows = transient('zone-sorted-rows', 'uint32', rowCount);
     const stats = transient('stats', 'float32', zoneCount * INEQUALITY_STATS_STRIDE);
-    const counts = output.count ?? transient('counts', 'uint32', zoneCount);
+    const counts = output.counts ?? transient('counts', 'uint32', zoneCount);
     const lorenz =
       output.lorenzKnots ?? transient('lorenz', 'float32', zoneCount * lorenzKnotCount);
 
@@ -433,8 +437,10 @@ ${INEQUALITY_HELPERS_WGSL}`;
             read('counts', counts, 'u32'),
             write('summary', output.globalSummary, 'f32')
           ],
-          invocationCount: 1,
-          declarations,
+          invocationCount: INEQUALITY_REDUCTION_LANES,
+          workgroupSize: INEQUALITY_REDUCTION_LANES,
+          guardIndex: false,
+          declarations: `${declarations}${INEQUALITY_GLOBAL_SUMS_DECLARATIONS}`,
           body: INEQUALITY_GLOBAL_SUMS_BODY
         })
       );
@@ -473,8 +479,10 @@ const GINI_TILE_COUNT: u32 = ${tileCount}u;`;
             write('tileTotals', tileTotals, 'f32'),
             write('pooledTotals', pooledTotals, 'f32')
           ],
-          invocationCount: 1,
-          declarations: tileDeclarations,
+          invocationCount: INEQUALITY_REDUCTION_LANES,
+          workgroupSize: INEQUALITY_REDUCTION_LANES,
+          guardIndex: false,
+          declarations: `${tileDeclarations}${INEQUALITY_GINI_TILE_PREFIX_DECLARATIONS}`,
           body: INEQUALITY_GINI_TILE_PREFIX_BODY
         })
       );
@@ -504,8 +512,10 @@ const GINI_TILE_COUNT: u32 = ${tileCount}u;`;
             read('pooledTotals', pooledTotals, 'f32'),
             write('summary', output.globalSummary, 'f32')
           ],
-          invocationCount: 1,
-          declarations: tileDeclarations,
+          invocationCount: INEQUALITY_REDUCTION_LANES,
+          workgroupSize: INEQUALITY_REDUCTION_LANES,
+          guardIndex: false,
+          declarations: `${tileDeclarations}${INEQUALITY_GINI_FINISH_DECLARATIONS}`,
           body: INEQUALITY_GINI_FINISH_BODY
         })
       );

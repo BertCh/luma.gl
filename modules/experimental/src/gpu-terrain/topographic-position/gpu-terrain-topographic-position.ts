@@ -2,36 +2,51 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  getStorageBindingElementLimit,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 import {
   addTerrainSummedAreaTableNodes,
+  getGPUTerrainSummedAreaMaximumCellCount,
   TERRAIN_SUMMED_AREA_BOX_WGSL,
   TERRAIN_SUMMED_AREA_WGSL_HELPERS
 } from './terrain-summed-area-table';
 
 /** Default elevation quantum, 1/256 elevation unit (the Terrarium encoding step in metres). */
 export const GPU_TERRAIN_TOPOGRAPHIC_POSITION_DEFAULT_QUANTUM = 1 / 256;
+
+/**
+ * Largest `grid` cells x `scales` product of {@link GPUTerrainTopographicPosition} on `device` when
+ * `output.topographicPositionIndex` or `output.deviationFromMean` is requested: each holds one
+ * float32 per cell and scale in one storage binding, so 33554432 on a default device (128 MiB
+ * bindings).
+ */
+export function getGPUTerrainTopographicPositionMaximumPlaneCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
 
 /** Largest number of scales one {@link GPUTerrainTopographicPosition} evaluates. */
 export const GPU_TERRAIN_TOPOGRAPHIC_POSITION_MAXIMUM_SCALES = 64;
@@ -50,36 +65,8 @@ export type GPUTerrainTopographicPositionScale = {
   innerRadius?: number;
 };
 
-/**
- * Properties for {@link GPUTerrainTopographicPosition}.
- *
- * Every scale is in cells, so the contributor is independent of the cell-size model: with projected
- * (`'uniform'`) metres, Web Mercator, or geographic degrees alike, a radius of `r` cells covers
- * `r` rows and `r` columns. On geographic grids the window is therefore narrower in ground metres
- * east-west than north-south by cos(latitude). Outputs are in elevation units (TPI) or
- * dimensionless (DEV).
- *
- * Topology: grid size, scales, quantum, and which outputs exist. There are no per-frame settings.
- */
-export type GPUTerrainTopographicPositionProps = {
-  /** Prefix for node and transient IDs. Defaults to `'terrain-topographic-position'`. */
-  id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
-  /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
-  elevation: GPURasterBand;
-  /** One to {@link GPU_TERRAIN_TOPOGRAPHIC_POSITION_MAXIMUM_SCALES} neighbourhood scales. */
-  scales: readonly GPUTerrainTopographicPositionScale[];
-  /**
-   * Elevation quantum of the exact integer summed-area table. Must be a power of two. Defaults to
-   * 1/256. Box sums are exact for quantized elevations while
-   * `(2R + 1)² · (relief / quantum)² < 2^64`, where `relief` is the elevation range inside the
-   * largest window of radius `R`; with the default that is `relief < 2^32 / (256 · (2R + 1))`,
-   * e.g. 16.7 km at `R = 500`.
-   */
-  quantum?: number;
+/** Caller-owned outputs of {@link GPUTerrainTopographicPosition}; at least one is required. */
+export type GPUTerrainTopographicPositionOutput = {
   /**
    * Optional TPI planes: `scales.length * width * height` values, plane `k` holding
    * `z - mean(annulus k)` in elevation units. NaN where the centre or the whole annulus is invalid.
@@ -96,7 +83,42 @@ export type GPUTerrainTopographicPositionProps = {
   /** Optional per-pixel radius in cells of the scale with the largest |DEV|; first scale on ties. */
   maximumDeviationRadius?: GraphDataView<'uint32'>;
   /** Optional per-pixel 1 where the centre elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUTerrainTopographicPosition}.
+ *
+ * Every scale is in cells, so the contributor is independent of the cell-size model: with projected
+ * (`'uniform'`) metres, Web Mercator, or geographic degrees alike, a radius of `r` cells covers
+ * `r` rows and `r` columns. On geographic grids the window is therefore narrower in ground metres
+ * east-west than north-south by cos(latitude). Outputs are in elevation units (TPI) or
+ * dimensionless (DEV).
+ *
+ * Topology: grid size, scales, quantum, and which outputs exist. There are no per-frame settings.
+ */
+export type GPUTerrainTopographicPositionProps = {
+  /** Prefix for node and transient IDs. Defaults to `'terrain-topographic-position'`. */
+  id?: string;
+  /**
+   * Raster grid: its width and height size the kernels. At most
+   * {@link getGPUTerrainSummedAreaMaximumCellCount} cells (11184810 on a default device).
+   */
+  grid: GPURasterMetadata;
+  /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
+  elevation: GPURasterBand;
+  /** One to {@link GPU_TERRAIN_TOPOGRAPHIC_POSITION_MAXIMUM_SCALES} neighbourhood scales. */
+  scales: readonly GPUTerrainTopographicPositionScale[];
+  /**
+   * Elevation quantum of the exact integer summed-area table. Must be a power of two. Defaults to
+   * 1/256. Box sums are exact for quantized elevations while
+   * `(2R + 1)² · (relief / quantum)² < 2^64`, where `relief` is the elevation range inside the
+   * largest window of radius `R`; with the default that is `relief < 2^32 / (256 · (2R + 1))`,
+   * e.g. 16.7 km at `R = 500`.
+   */
+  quantum?: number;
+  /** Caller-owned outputs. */
+  output: GPUTerrainTopographicPositionOutput;
 };
 
 /**
@@ -109,9 +131,12 @@ export type GPUTerrainTopographicPositionProps = {
  * quantizes elevations to integers (`quantum`, default 1/256), builds a 64-bit modular table with
  * the GPU Core `GPUScanUint64`, `GPUScan`, and `GPUTranspose` primitives, and recovers every box
  * sum exactly. Variance is then formed relative to the centre cell in exact integer arithmetic,
- * `Σ(q - q_c)² = Σq² - 2 q_c Σq + N q_c²` (mod 2^64), so the only float32 rounding left is in the
- * final division and square root. The quantization changes each elevation by at most half a
- * quantum.
+ * `Σ(q - q_c)² = Σq² - 2 q_c Σq + N q_c²` (mod 2^64), and then re-centred, again exactly, on the
+ * integer `s` nearest the window mean: `Σ(d - s)² = Σd² - 2 s Σd + N s²` with `d = q - q_c`. The
+ * float32 variance is `Σ(d - s)² / N - r²` with a residual mean `|r|` of about half a quantum, so
+ * it does not cancel when the centre is far from the window mean (large radii on slopes). The
+ * float32 rounding left is that of the conversions, divisions and square root. The quantization
+ * changes each elevation by at most half a quantum.
  *
  * Every scale costs O(1) per pixel. Windows are clipped to the raster and to valid cells (the
  * count of valid cells is a third table plane), which differs from WhiteboxTools only along the
@@ -129,7 +154,8 @@ export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-topographic-position';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const {scales} = props;
     if (
       !Array.isArray(scales) ||
@@ -162,47 +188,47 @@ export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
     }
     this.requiredHalo = Math.max(...scales.map(scale => scale.radius));
     if (
-      !props.topographicPositionIndex &&
-      !props.deviationFromMean &&
-      !props.maximumDeviation &&
-      !props.maximumDeviationRadius &&
-      !props.validity
+      !output.topographicPositionIndex &&
+      !output.deviationFromMean &&
+      !output.maximumDeviation &&
+      !output.maximumDeviationRadius &&
+      !output.outputValidity
     ) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view, length] of [
-      ['topographicPositionIndex', props.topographicPositionIndex, pixelCount * scales.length],
-      ['deviationFromMean', props.deviationFromMean, pixelCount * scales.length],
-      ['maximumDeviation', props.maximumDeviation, pixelCount]
+      ['topographicPositionIndex', output.topographicPositionIndex, pixelCount * scales.length],
+      ['deviationFromMean', output.deviationFromMean, pixelCount * scales.length],
+      ['maximumDeviation', output.maximumDeviation, pixelCount]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== length) {
-          throw new Error(`${id} ${name} must contain ${length} values`);
+          throw new Error(`${id} output.${name} must contain ${length} values`);
         }
       }
     }
     for (const [name, view] of [
-      ['maximumDeviationRadius', props.maximumDeviationRadius],
-      ['validity', props.validity]
+      ['maximumDeviationRadius', output.maximumDeviationRadius],
+      ['outputValidity', output.outputValidity]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
       [
-        props.topographicPositionIndex,
-        props.deviationFromMean,
-        props.maximumDeviation,
-        props.maximumDeviationRadius,
-        props.validity
+        output.topographicPositionIndex,
+        output.deviationFromMean,
+        output.maximumDeviation,
+        output.maximumDeviationRadius,
+        output.outputValidity
       ],
-      getTerrainBandViews(props.elevation)
+      getRasterBandViews(props.elevation)
     );
   }
 
@@ -211,18 +237,33 @@ export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, scales} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output, scales} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.topographicPositionIndex,
-      props.deviationFromMean,
-      props.maximumDeviation,
-      props.maximumDeviationRadius,
-      props.validity
+      output.topographicPositionIndex,
+      output.deviationFromMean,
+      output.maximumDeviation,
+      output.maximumDeviationRadius,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
+    validateMaximumCount(
+      id,
+      'grid cells',
+      pixelCount,
+      getGPUTerrainSummedAreaMaximumCellCount(graph.device)
+    );
+    if (output.topographicPositionIndex || output.deviationFromMean) {
+      validateMaximumCount(
+        id,
+        'grid cells x scales',
+        pixelCount * props.scales.length,
+        getGPUTerrainTopographicPositionMaximumPlaneCount(graph.device)
+      );
+    }
     const quantum = props.quantum ?? GPU_TERRAIN_TOPOGRAPHIC_POSITION_DEFAULT_QUANTUM;
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const summedArea = addTerrainSummedAreaTableNodes(graph, {
       id,
       width,
@@ -235,11 +276,11 @@ export class GPUTerrainTopographicPosition implements GPUCommandNodeProducer {
       {name: 'highTable', view: summedArea.highTable, type: 'u32', access: 'read'}
     ];
     const outputs: [string, GraphDataView | undefined, 'f32' | 'u32'][] = [
-      ['tpiValues', props.topographicPositionIndex, 'f32'],
-      ['deviationValues', props.deviationFromMean, 'f32'],
-      ['maximumDeviationValues', props.maximumDeviation, 'f32'],
-      ['maximumRadiusValues', props.maximumDeviationRadius, 'u32'],
-      ['validityValues', props.validity, 'u32']
+      ['tpiValues', output.topographicPositionIndex, 'f32'],
+      ['deviationValues', output.deviationFromMean, 'f32'],
+      ['maximumDeviationValues', output.maximumDeviation, 'f32'],
+      ['maximumRadiusValues', output.maximumDeviationRadius, 'u32'],
+      ['validityValues', output.outputValidity, 'u32']
     ];
     for (const [name, view, type] of outputs) {
       if (view) {
@@ -309,7 +350,25 @@ fn getCentredSum(box: TerrainBoxSums, magnitude: u32, isNegative: bool) -> vec2<
     );
     let count = f32(outer.count);
     let meanOffset = signed64ToFloat(centredSum) / count;
-    let variance = unsigned64ToFloat(centredSquare) / count - meanOffset * meanOffset;
+    // Review C-16: d2 / n - (d1 / n)^2 in f32 cancels when the centre is far from the window mean.
+    // Re-centre exactly on the integer s nearest that mean: sum (d - s)^2 = d2 - 2 s d1 + n s^2 in
+    // modular 64-bit integers, so only the residual mean (|r| about 0.5 quanta) is squared in f32.
+    let shiftValue = round(meanOffset);
+    let shiftMagnitude = u32(abs(shiftValue));
+    let shiftNegative = shiftValue < 0.0;
+    var shiftedCross = multiply64By32(centredSum, shiftMagnitude);
+    shiftedCross = add64(shiftedCross, shiftedCross);
+    var shiftTotal = multiply64By32(vec2<u32>(outer.count, 0u), shiftMagnitude);
+    if (shiftNegative) {
+      shiftedCross = negate64(shiftedCross);
+      shiftTotal = negate64(shiftTotal);
+    }
+    let shiftedSquare = add64(
+      subtract64(centredSquare, shiftedCross),
+      multiply64By32(multiplyWide32(shiftMagnitude, shiftMagnitude), outer.count)
+    );
+    let residualMean = signed64ToFloat(subtract64(centredSum, shiftTotal)) / count;
+    let variance = unsigned64ToFloat(shiftedSquare) / count - residualMean * residualMean;
     var deviation = 0.0;
     if (variance > 0.0) {
       deviation = -meanOffset / sqrt(variance);
@@ -318,7 +377,7 @@ fn getCentredSum(box: TerrainBoxSums, magnitude: u32, isNegative: bool) -> vec2<
       deviation = invalidValue;
     }
     ${
-      props.deviationFromMean
+      output.deviationFromMean
         ? 'deviationValues[deviationValuesOffset + scaleIndex * PIXEL_COUNT + index] = deviation;'
         : ''
     }
@@ -328,7 +387,7 @@ fn getCentredSum(box: TerrainBoxSums, magnitude: u32, isNegative: bool) -> vec2<
       maximumRadius = u32(scale.x);
     }
     ${
-      props.topographicPositionIndex
+      output.topographicPositionIndex
         ? `let inner = readClippedBox(column, row, scale.y);
     let annulus = TerrainBoxSums(
       subtract64(outer.sum, inner.sum),
@@ -343,9 +402,9 @@ fn getCentredSum(box: TerrainBoxSums, magnitude: u32, isNegative: bool) -> vec2<
         : ''
     }
   }
-  ${props.maximumDeviation ? 'maximumDeviationValues[maximumDeviationValuesOffset + index] = maximumDeviation;' : ''}
-  ${props.maximumDeviationRadius ? 'maximumRadiusValues[maximumRadiusValuesOffset + index] = maximumRadius;' : ''}
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.maximumDeviation ? 'maximumDeviationValues[maximumDeviationValuesOffset + index] = maximumDeviation;' : ''}
+  ${output.maximumDeviationRadius ? 'maximumRadiusValues[maximumRadiusValuesOffset + index] = maximumRadius;' : ''}
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
     });
     return [...source.nodes, ...summedArea.nodes, evaluate];
   }

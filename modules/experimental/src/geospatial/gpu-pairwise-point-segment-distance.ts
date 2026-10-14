@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import {type GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer
+} from '@luma.gl/gpgpu/gpu-core';
 import type {
   GPUFloat32Positions,
   GPUFloat64Positions,
@@ -26,10 +30,11 @@ import {
   validateRowView,
   validateSeparateBuffers
 } from './geospatial-utils';
+import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../gpu-spatial-analysis/contracts/spatial-context';
+} from '../analysis-core/contracts/spatial-context';
 
 type GPUPairwisePointSegmentDistanceBaseProps = {
   /** Prefix for generated graph-node IDs. */
@@ -47,7 +52,7 @@ export type GPUPairwisePointSegmentDistanceProps = GPUPairwisePointSegmentDistan
   (
     | {
         /** Local f32 point rows. */
-        points: GPUFloat32Positions;
+        positions: GPUFloat32Positions;
         /** Local f32 segment-start rows. */
         segmentStarts: GPUFloat32Positions;
         /** Local f32 segment-end rows. */
@@ -57,7 +62,7 @@ export type GPUPairwisePointSegmentDistanceProps = GPUPairwisePointSegmentDistan
       }
     | {
         /** Raw binary64 point rows. */
-        points: GPUFloat64Positions;
+        positions: GPUFloat64Positions;
         /** Raw binary64 segment-start rows. */
         segmentStarts: GPUFloat64Positions;
         /** Raw binary64 segment-end rows. */
@@ -72,9 +77,9 @@ export type GPUPairwisePointSegmentDistanceProps = GPUPairwisePointSegmentDistan
  *
  * Planar only: longitude/latitude positions are rejected at construction.
  */
-export class GPUPairwisePointSegmentDistance {
+export class GPUPairwisePointSegmentDistance implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly points: GPUFloat32Positions | GPUFloat64Positions;
+  readonly positions: GPUFloat32Positions | GPUFloat64Positions;
   readonly segmentStarts: GPUFloat32Positions | GPUFloat64Positions;
   readonly segmentEnds: GPUFloat32Positions | GPUFloat64Positions;
   readonly output: GPUScalarRows | GPUPreciseScalarRows;
@@ -85,39 +90,47 @@ export class GPUPairwisePointSegmentDistance {
   constructor(props: GPUPairwisePointSegmentDistanceProps) {
     this.id = props.id ?? 'gpu-pairwise-point-segment-distance';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    this.points = props.points;
+    this.positions = props.positions;
     this.segmentStarts = props.segmentStarts;
     this.segmentEnds = props.segmentEnds;
     this.output = props.output;
-    for (const [name, positions] of [
-      ['points', this.points],
+    for (const [name, view] of [
+      ['positions', this.positions],
       ['segmentStarts', this.segmentStarts],
       ['segmentEnds', this.segmentEnds]
     ] as const) {
-      validateRowView(positions, POSITION_FORMATS, `${this.id} ${name}`);
-      if (positions.format !== this.points.format) {
+      validateRowView(view, POSITION_FORMATS, `${this.id} ${name}`);
+      if (view.format !== this.positions.format) {
         throw new Error(`${this.id} position formats must match`);
       }
-      validateMatchingRows(this.points, positions, `${this.id} ${name}`);
+      validateMatchingRows(this.positions, view, `${this.id} ${name}`);
     }
-    const outputFormat = this.points.format === 'uint32x4' ? 'float32x2' : 'float32';
+    const outputFormat = this.positions.format === 'uint32x4' ? 'float32x2' : 'float32';
     validateRowView(this.output, [outputFormat], `${this.id} output`);
-    validateMatchingRows(this.points, this.output, `${this.id} input and output`);
+    validateMatchingRows(this.positions, this.output, `${this.id} input and output`);
     validateSeparateBuffers(
       this.output,
-      [this.points, this.segmentStarts, this.segmentEnds],
+      [this.positions, this.segmentStarts, this.segmentEnds],
       this.id
     );
   }
 
-  /** Adds one distance node per non-empty input chunk to the target graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns one distance node per non-empty input chunk, for `graph.add(contributor)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    // The shared geospatial pass helper schedules through `graph.addComputePass`, so the
+    // adapter collects its nodes instead of adding them.
+    return captureGraphCommandNodes(graph, () => this.addNodes(graph));
+  }
+
+  private addNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertGraphOwnership(
       graph,
-      [this.points, this.segmentStarts, this.segmentEnds, this.output],
+      [this.positions, this.segmentStarts, this.segmentEnds, this.output],
       this.id
     );
-    const pointChunks = getRowChunks(this.points);
+    const pointChunks = getRowChunks(this.positions);
     const startChunks = getRowChunks(this.segmentStarts);
     const endChunks = getRowChunks(this.segmentEnds);
     const outputChunks = getRowChunks(this.output);
@@ -158,7 +171,7 @@ fn main(
   ${expression}
 }`;
       addGeospatialPass(graph, {
-        id: isGraphVectorView(this.points) ? `${this.id}-chunk-${chunkIndex}` : this.id,
+        id: isGraphVectorView(this.positions) ? `${this.id}-chunk-${chunkIndex}` : this.id,
         source,
         resources: [
           {buffer: points, usage: 'storage-read'},

@@ -2,31 +2,41 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
-import type {GPUSpatialJoinPolygons} from '../spatial-join/index';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES,
+  getMonotoneTriangulationNodes,
+  getGPUPolygonTriangulationMonotoneMaximumVertexCount,
+  validatePolygonTriangulationMonotoneCapacity
+} from './polygon-triangulation-monotone';
+import {getSizeRouteWGSL} from './polygon-triangulation-monotone-wgsl';
+import {
+  validateCapacity,
+  getStorageBindingElementLimit,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUPolygonTriangulation';
 
 /** Default `maximumWork` of {@link GPUPolygonTriangulation}: about 4 million elementary steps. */
 export const GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK = 4_000_000;
-
-/** GeoArrow-layout polygons triangulated by {@link GPUPolygonTriangulation}. */
-export type GPUPolygonTriangulationPolygons = Pick<
-  GPUSpatialJoinPolygons,
-  'positions' | 'polygonOffsets' | 'ringOffsets'
->;
 
 /**
  * Number of `uint32` index slots {@link GPUPolygonTriangulation} writes for a layout: exactly
@@ -42,11 +52,101 @@ export function getPolygonTriangulationIndexCount(
 }
 
 /**
- * Properties for {@link GPUPolygonTriangulation}.
+ * Largest scratch node count of {@link GPUPolygonTriangulation} on `device`: each node takes 7
+ * `uint32` words (28 bytes) with the z-order hash (the default) or 4 words (16 bytes) without it,
+ * and the scratch must fit one storage binding, so 4793490 (8388608 without the hash) on a default
+ * device (128 MiB bindings). The node count of a layout is
+ * `2 * (vertices + 2 * (rings - polygons)) + 8 * polygons`, see
+ * {@link getPolygonTriangulationNodeCount}, about `2` to `3` per input vertex.
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` bounds the scratch.
+ * @param useZOrderHash Whether the z-order hash is used (the default).
+ */
+export function getGPUPolygonTriangulationMaximumNodeCount(
+  device: Device,
+  useZOrderHash: boolean = true
+): number {
+  return getStorageBindingElementLimit(device, useZOrderHash ? 28 : 16);
+}
+
+/**
+ * Number of scratch nodes {@link GPUPolygonTriangulation} allocates for a layout:
+ * `2 * (vertices + 2 * (rings - polygons)) + 8 * polygons`, twice the minimum node count for
+ * diagonal splits plus a margin per polygon.
+ */
+export function getPolygonTriangulationNodeCount(
+  vertexCount: number,
+  ringCount: number,
+  polygonCount: number
+): number {
+  return 2 * (vertexCount + 2 * (ringCount - polygonCount)) + 8 * polygonCount;
+}
+
+/**
+ * Throws unless the scratch of a polygon layout fits one storage binding of `device`: its
+ * {@link getPolygonTriangulationNodeCount} is at most
+ * {@link getGPUPolygonTriangulationMaximumNodeCount}. Contributors that triangulate internally call
+ * it under their own ID, at declaration.
+ *
+ * @param device Device the graph runs on.
+ * @param id Contributor ID, for the message.
+ * @param vertexCount Vertex rows of the layout.
+ * @param ringCount Rings of the layout.
+ * @param polygonCount Polygons of the layout.
+ * @param useZOrderHash Whether the z-order hash is used (the default).
+ */
+export function validatePolygonTriangulationScratch(
+  device: Device,
+  id: string,
+  vertexCount: number,
+  ringCount: number,
+  polygonCount: number,
+  useZOrderHash: boolean = true
+): void {
+  validateMaximumCount(
+    id,
+    'scratch nodes',
+    getPolygonTriangulationNodeCount(vertexCount, ringCount, polygonCount),
+    getGPUPolygonTriangulationMaximumNodeCount(device, useZOrderHash)
+  );
+}
+
+/** Caller-owned outputs of {@link GPUPolygonTriangulation}. */
+export type GPUPolygonTriangulationOutput = {
+  /**
+   * Triangle indices, at least {@link getPolygonTriangulationIndexCount} rows.
+   * Polygon `p` owns the slice starting at
+   * `3 * (ringOffsets[polygonOffsets[p]] + 2 * polygonOffsets[p] - 4 * p)`, a prefix that is
+   * computed from the offsets, so no count pass is needed. Indices refer to rows of
+   * `positions`. Slots a polygon does not use (collinear or duplicate vertices dropped,
+   * or a failed polygon) hold the degenerate triangle `(first, first, first)` of that polygon, so
+   * drawing the whole buffer is always safe.
+   */
+  indices: GraphDataView<'uint32'>;
+  /**
+   * Flag per polygon, `polygonCount` rows: 1 when the triangulation completed, 0 when
+   * it failed (shell with fewer than three vertices, self-intersecting or otherwise
+   * untriangulable rings, scratch overflow, or `maximumWork` exceeded). A failed polygon's slice
+   * is entirely degenerate. The polygons of feature `f` are
+   * `[featureOffsets[f], featureOffsets[f + 1])`.
+   */
+  valid: GraphDataView<'uint32'>;
+  /** Optional count of real (non-degenerate padding) triangles per polygon, `polygonCount` rows. */
+  triangleCount?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUPolygonTriangulation}: the four-level layout of
+ * {@link GPUPolygonGeometryFields} (`positions`, `featureOffsets`, `polygonOffsets`,
+ * `ringOffsets`). Every polygon needs a shell of at least three vertices; the first ring of a
+ * polygon is the shell and later rings are holes. Rings close implicitly, a repeated first vertex
+ * is tolerated. Winding of either kind is accepted. Triangulation runs per polygon, so a
+ * multipolygon feature contributes one slice per polygon and `output.valid` and
+ * `output.triangleCount` have one row per polygon.
  *
  * Per-frame: the contents of every input buffer. Topology: view lengths and `maximumWork`.
  */
-export type GPUPolygonTriangulationProps = {
+export type GPUPolygonTriangulationProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'polygon-triangulation'`. */
   id?: string;
   /**
@@ -56,31 +156,8 @@ export type GPUPolygonTriangulationProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
-  /**
-   * Polygons in GeoArrow layout. Every polygon needs a shell of at least three vertices; the first
-   * ring of a polygon is the shell and later rings are holes. Rings close implicitly, a repeated
-   * first vertex is tolerated. Winding of either kind is accepted.
-   */
-  polygons: GPUPolygonTriangulationPolygons;
-  /**
-   * Caller-owned triangle indices, at least {@link getPolygonTriangulationIndexCount} rows.
-   * Polygon `p` owns the slice starting at
-   * `3 * (ringOffsets[polygonOffsets[p]] + 2 * polygonOffsets[p] - 4 * p)`, a prefix that is
-   * computed from the offsets, so no count pass is needed. Indices refer to rows of
-   * `polygons.positions`. Slots a polygon does not use (collinear or duplicate vertices dropped,
-   * or a failed polygon) hold the degenerate triangle `(first, first, first)` of that polygon, so
-   * drawing the whole buffer is always safe.
-   */
-  indices: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned flag per polygon, `polygonCount` rows: 1 when the triangulation completed, 0 when
-   * it failed (shell with fewer than three vertices, self-intersecting or otherwise
-   * untriangulable rings, scratch overflow, or `maximumWork` exceeded). A failed polygon's slice
-   * is entirely degenerate.
-   */
-  valid: GraphDataView<'uint32'>;
-  /** Optional caller-owned count of real (non-degenerate padding) triangles per polygon. */
-  triangleCount?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUPolygonTriangulationOutput;
   /**
    * Work budget per polygon in elementary steps (ring walks and predicate scans). A polygon that
    * exceeds it is flagged invalid instead of hanging the device, which bounds the O(n^2) worst
@@ -98,6 +175,45 @@ export type GPUPolygonTriangulationProps = {
    * when every polygon is tiny. Baked into the shader.
    */
   useZOrderHash?: boolean;
+  /**
+   * What happens to polygons that per-invocation Earcut cannot finish (default `'monotone'`).
+   *
+   * - `'monotone'`: polygons with at least {@link GPUPolygonTriangulationProps.monotoneMinimumVertices}
+   *   vertices skip Earcut, and every polygon for which Earcut fails (`maximumWork` exceeded, or
+   *   rings it cannot split) is retried, by a parallel y-monotone decomposition followed by a
+   *   linear stack triangulation of each monotone piece. A polygon that skipped Earcut and that
+   *   the monotone path flags invalid (rings touching at a vertex, input beyond
+   *   {@link GPUPolygonTriangulationProps.monotoneMaximumVertices}) is then given to Earcut within
+   *   `maximumWork`, so the method never does worse than `'none'`. The output contract is
+   *   unchanged: the same slice, `valid` and `triangleCount`. Polygons that Earcut triangulates are
+   *   bit-identical to `'none'`. The path costs fixed O(vertices) scans and sorts (sized by
+   *   {@link GPUPolygonTriangulationProps.monotoneMaximumVertices}) and a few hundred bytes of
+   *   scratch per vertex, even when no polygon is large.
+   * - `'none'`: today's behavior, a polygon over `maximumWork` is flagged `valid = 0` with a
+   *   degenerate slice. Use it when all polygons are known to be small.
+   *
+   * Baked into the graph.
+   */
+  largePolygonMethod?: 'monotone' | 'none';
+  /**
+   * Polygons with at least this many vertices (all rings) are routed straight to the monotone path
+   * and skip Earcut (default 4096). Earcut with its z-order hash is near-linear for typical
+   * outlines up to a few thousand vertices; its worst case, bounded only by `maximumWork`, is
+   * quadratic, so a lower value trades Earcut's output for guaranteed linear-time-per-piece work.
+   * Used with `largePolygonMethod: 'monotone'`. Baked into the shader.
+   */
+  monotoneMinimumVertices?: number;
+  /**
+   * Capacity of the monotone path in cleaned vertices (default: all `positions` rows). Scratch,
+   * scans and sorts are sized by it, so a smaller value cuts the fixed cost for inputs whose large
+   * polygons are known to total fewer vertices. Large polygons (in row order) whose vertices do not
+   * fit skip the monotone path and are given to Earcut within `maximumWork` (`valid = 0` with a
+   * degenerate slice if that fails too). At most
+   * {@link getGPUPolygonTriangulationMonotoneMaximumVertexCount}; only an explicit larger value
+   * throws. Inputs with more rows than that limit skip the monotone path entirely and behave like
+   * `'none'`. Baked into the graph.
+   */
+  monotoneMaximumVertices?: number;
 };
 
 /** Polygons with more vertices than this use the z-order hash (same threshold as Earcut). */
@@ -108,7 +224,11 @@ const Z_ORDER_HASH_MINIMUM_VERTICES = 80;
  * tessellation, comparable to `geo` `TriangulateEarcut` and Sedona `ST_TriangulatePolygon`.
  *
  * Each polygon runs on one invocation (the ear-clipping list is sequential), so throughput comes
- * from many polygons, not from one huge ring. The port follows Earcut: holes are bridged into the
+ * from many polygons, not from one huge ring. Polygons that are too large for that, or on which
+ * Earcut fails within `maximumWork`, take the monotone path
+ * ({@link GPUPolygonTriangulationProps.largePolygonMethod}): a parallel y-monotone decomposition
+ * and a linear stack triangulation of each monotone piece, with the same output contract. The
+ * Earcut port follows Earcut: holes are bridged into the
  * shell by Eberly's rightmost-vertex rule (holes processed left to right), ears are clipped from a
  * circular list, and stalls fall back to filtering collinear points, curing local
  * self-intersections and splitting along a valid diagonal. Orientation tests use the exact
@@ -117,12 +237,14 @@ const Z_ORDER_HASH_MINIMUM_VERTICES = 80;
  * ({@link GPUPolygonTriangulationProps.useZOrderHash}), so ear tests visit only nearby vertices.
  *
  * Output is bounded without a count pass: exactly `3 * (vertices + 2 * holes - 2)` indices per
- * polygon, see {@link GPUPolygonTriangulationProps.indices}. Like Earcut the result is not a
+ * polygon, see {@link GPUPolygonTriangulationOutput.indices}. Like Earcut the result is not a
  * Delaunay triangulation and may contain slivers.
  *
- * **Limits.** Work is budgeted by `maximumWork`; a larger polygon is flagged in `valid` rather than
- * hung. Scratch memory is 56 bytes per vertex of input (twice the minimum node count for diagonal splits;
- * 32 bytes without the z-order hash).
+ * **Limits.** Earcut's work is budgeted by `maximumWork`; a larger polygon is retried by the
+ * monotone path, or with `largePolygonMethod: 'none'` flagged in `valid` rather than hung. Scratch memory is 56 bytes per vertex of input (twice the minimum node count for diagonal splits;
+ * 32 bytes without the z-order hash) and must fit one storage binding: at most
+ * {@link getGPUPolygonTriangulationMaximumNodeCount} scratch nodes (4793490 on a default device;
+ * 8388608 with `useZOrderHash: false`), see {@link getPolygonTriangulationNodeCount}.
  * Polygons need at least three shell vertices and no empty rings, otherwise the index slices of
  * later polygons shift. Holes with fewer than three vertices are ignored.
  */
@@ -145,76 +267,85 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
-    const {polygons} = props;
-    validatePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
-    for (const [name, view] of [
-      ['polygonOffsets', polygons.polygonOffsets],
-      ['ringOffsets', polygons.ringOffsets]
-    ] as const) {
-      validatePackedUint32View(view, `${id} polygons.${name}`);
-      if (view.length < 1) {
-        throw new Error(`${id} polygons.${name} requires a terminal entry`);
+    const {output} = props;
+    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    for (const name of ['featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
+      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      if (props[name].length < 1) {
+        throw new Error(`${id} ${name} requires a terminal entry`);
       }
     }
-    this.polygonCount = polygons.polygonOffsets.length - 1;
-    this.ringCount = polygons.ringOffsets.length - 1;
+    this.polygonCount = props.polygonOffsets.length - 1;
+    this.ringCount = props.ringOffsets.length - 1;
     if (this.polygonCount < 1) {
-      throw new Error(`${id} polygons must contain at least one polygon`);
+      throw new Error(`${id} geometry must contain at least one polygon`);
     }
-    if (polygons.positions.length < 1) {
-      throw new Error(`${id} polygons must contain at least one vertex`);
+    if (props.positions.length < 1) {
+      throw new Error(`${id} geometry must contain at least one vertex`);
     }
     this.indexCount = getPolygonTriangulationIndexCount(
-      polygons.positions.length,
+      props.positions.length,
       this.ringCount,
       this.polygonCount
     );
-    validatePackedUint32View(props.indices, `${id} indices`);
-    if (props.indices.length < this.indexCount) {
-      throw new Error(`${id} indices needs at least ${this.indexCount} rows`);
+    validatePackedView(output.indices, ['uint32'], `${id} output.indices`);
+    if (output.indices.length < this.indexCount) {
+      throw new Error(`${id} output.indices needs at least ${this.indexCount} rows`);
     }
-    validatePackedUint32View(props.valid, `${id} valid`);
-    if (props.valid.length !== this.polygonCount) {
-      throw new Error(`${id} valid length must equal the polygon count`);
+    validatePackedView(output.valid, ['uint32'], `${id} output.valid`);
+    if (output.valid.length !== this.polygonCount) {
+      throw new Error(`${id} output.valid length must equal the polygon count`);
     }
-    if (props.triangleCount) {
-      validatePackedUint32View(props.triangleCount, `${id} triangleCount`);
-      if (props.triangleCount.length !== this.polygonCount) {
-        throw new Error(`${id} triangleCount length must equal the polygon count`);
+    if (output.triangleCount) {
+      validatePackedView(output.triangleCount, ['uint32'], `${id} output.triangleCount`);
+      if (output.triangleCount.length !== this.polygonCount) {
+        throw new Error(`${id} output.triangleCount length must equal the polygon count`);
       }
     }
+    if (props.maximumWork !== undefined) {
+      validateCapacity(id, 'maximumWork', props.maximumWork);
+    }
     if (
-      props.maximumWork !== undefined &&
-      (!Number.isSafeInteger(props.maximumWork) ||
-        props.maximumWork < 1 ||
-        props.maximumWork > 0xffffffff)
+      props.largePolygonMethod !== undefined &&
+      !['monotone', 'none'].includes(props.largePolygonMethod)
     ) {
-      throw new Error(`${id} maximumWork must be a positive 32-bit integer`);
+      throw new Error(`${id} largePolygonMethod must be 'monotone' or 'none'`);
+    }
+    if (props.monotoneMinimumVertices !== undefined) {
+      validateCapacity(id, 'monotoneMinimumVertices', props.monotoneMinimumVertices);
+    }
+    if (props.monotoneMaximumVertices !== undefined) {
+      validateCapacity(id, 'monotoneMaximumVertices', props.monotoneMaximumVertices);
     }
   }
 
   private getViews(): (GraphDataView | undefined)[] {
-    const {polygons, indices, valid, triangleCount} = this.props;
-    return [
-      polygons.positions,
-      polygons.polygonOffsets,
-      polygons.ringOffsets,
-      indices,
-      valid,
-      triangleCount
-    ];
+    const {positions, featureOffsets, polygonOffsets, ringOffsets, output} = this.props;
+    const {indices, valid, triangleCount} = output;
+    return [positions, featureOffsets, polygonOffsets, ringOffsets, indices, valid, triangleCount];
   }
 
-  /** Returns the single triangulation node. */
+  /**
+   * Returns the Earcut node and, with `largePolygonMethod: 'monotone'`, the routing node before it
+   * and the monotone-path nodes after it.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, polygonCount, ringCount} = this;
-    const {polygons} = props;
+    const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, this.getViews());
-    const vertexCount = polygons.positions.length;
+    validatePolygonTriangulationScratch(
+      graph.device,
+      id,
+      props.positions.length,
+      ringCount,
+      polygonCount,
+      props.useZOrderHash ?? true
+    );
+    const vertexCount = props.positions.length;
     // Scratch nodes: 4 words each, with a capacity of 2 * (vertices + 2 * holes) + 8 per polygon.
-    const nodeCount = 2 * (vertexCount + 2 * (ringCount - polygonCount)) + 8 * polygonCount;
+    const nodeCount = getPolygonTriangulationNodeCount(vertexCount, ringCount, polygonCount);
     const useZOrderHash = props.useZOrderHash ?? true;
     // Words 0..4n-1 hold the ring nodes; the z-order list (z, previous, next) of node n follows at
     // 4 * nodeCount + 3 * n.
@@ -224,43 +355,94 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       'uint32',
       Math.max((useZOrderHash ? 7 : 4) * nodeCount, 4)
     );
+    // The monotone path binds up to 40 bytes per input row; larger inputs keep today's behavior
+    // (Earcut within `maximumWork`), so the default never makes an accepted input throw.
+    const useMonotone =
+      (props.largePolygonMethod ?? 'monotone') === 'monotone' &&
+      vertexCount <= getGPUPolygonTriangulationMonotoneMaximumVertexCount(graph.device);
     const bindings: WGSLKernelBinding[] = [
-      {name: 'positions', view: polygons.positions, type: 'f32', access: 'read'},
-      {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
-      {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
-      {name: 'indices', view: props.indices, type: 'u32', access: 'read_write'},
-      {name: 'valid', view: props.valid, type: 'u32', access: 'read_write'},
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+      {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
+      {name: 'indices', view: output.indices, type: 'u32', access: 'read_write'},
+      {name: 'valid', view: output.valid, type: 'u32', access: 'read_write'},
       {name: 'scratch', view: scratch, type: 'u32', access: 'read_write'}
     ];
-    if (props.triangleCount) {
+    if (output.triangleCount) {
       bindings.push({
         name: 'triangleCount',
-        view: props.triangleCount,
+        view: output.triangleCount,
         type: 'u32',
         access: 'read_write'
       });
     }
-    return [
+    // Monotone method: the Earcut kernel also reads and writes the routing word of each polygon.
+    const routing = useMonotone
+      ? createTransientView(graph, `${id}-routing`, 'uint32', Math.max(polygonCount, 1))
+      : undefined;
+    if (routing) {
+      bindings.push({name: 'routing', view: routing, type: 'u32', access: 'read_write'});
+    }
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    let monotoneNodes: GPUCommandNode<Parameters>[] = [];
+    if (routing) {
+      const monotoneProps = {
+        id: `${id}-monotone`,
+        operation: OPERATION,
+        positions: props.positions,
+        polygonOffsets: props.polygonOffsets,
+        ringOffsets: props.ringOffsets,
+        routing,
+        output,
+        capacity: Math.max(1, Math.min(props.monotoneMaximumVertices ?? vertexCount, vertexCount)),
+        minimumVertices:
+          props.monotoneMinimumVertices ??
+          GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES
+      };
+      if (props.monotoneMaximumVertices !== undefined) {
+        validatePolygonTriangulationMonotoneCapacity(
+          graph.device,
+          id,
+          props.monotoneMaximumVertices
+        );
+      }
+      monotoneNodes = getMonotoneTriangulationNodes(graph, monotoneProps);
+    }
+    const monotoneMinimumVertices =
+      props.monotoneMinimumVertices ?? GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES;
+    const createEarcutNode = (nodeId: string, routingPass?: 'first' | 'fallback') =>
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-earcut`,
+        id: nodeId,
         operation: OPERATION,
         variant: 'earcut',
         bindings,
         invocationCount: polygonCount,
         workgroupSize: 64,
         declarations: `${EXACT_ORIENTATION_WGSL}
+// Only sosPointSide and exactCompareSign are called; exactOrientSigns (the helper's orientSign
+// call site) is never called here and is dropped as dead code.
+${EXACT_GEOMETRY_WGSL}
 ${getTriangulationWGSL({
   vertexCount,
   polygonCount,
-  indexLength: props.indices.length,
+  indexLength: output.indices.length,
   nodeCount,
   useZOrderHash,
   maximumWork: props.maximumWork ?? GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK,
-  writeTriangleCount: Boolean(props.triangleCount)
+  writeTriangleCount: Boolean(output.triangleCount),
+  routingPass,
+  minimumVertices: monotoneMinimumVertices
 })}`,
         body: 'triangulatePolygon(index);'
-      })
-    ];
+      });
+    nodes.push(createEarcutNode(`${id}-earcut`, routing ? 'first' : undefined));
+    // Polygons that the monotone path flagged invalid get a second chance with Earcut (route 4),
+    // so the method never does worse than `'none'`: a valid polygon with rings that touch, or one
+    // beyond the monotone capacity, is still triangulated within `maximumWork`.
+    if (routing) {
+      monotoneNodes.push(createEarcutNode(`${id}-earcut-fallback`, 'fallback'));
+    }
+    return [...nodes, ...monotoneNodes];
   }
 }
 
@@ -272,6 +454,8 @@ function getTriangulationWGSL(options: {
   useZOrderHash: boolean;
   maximumWork: number;
   writeTriangleCount: boolean;
+  routingPass?: 'first' | 'fallback';
+  minimumVertices: number;
 }): string {
   return /* wgsl */ `
 const VERTEX_COUNT: u32 = ${options.vertexCount}u;
@@ -283,7 +467,7 @@ const USE_Z_HASH: bool = ${options.useZOrderHash};
 const Z_HASH_MINIMUM_VERTICES: u32 = ${Z_ORDER_HASH_MINIMUM_VERTICES}u;
 const WORK_LIMIT: u32 = ${options.maximumWork}u;
 const NONE: u32 = 0xffffffffu;
-
+${options.routingPass === 'first' ? getSizeRouteWGSL(options.minimumVertices) : ''}
 var<private> nodeBase: u32;
 var<private> nodeCursor: u32;
 var<private> nodeLimit: u32;
@@ -620,6 +804,10 @@ fn locallyInside(a: u32, b: u32) -> bool {
   return areaSign(pa, pb, before) < 0 || areaSign(pa, after, pb) < 0;
 }
 
+// Whether the diagonal midpoint is inside the working polygon: a topology decision, so the parity
+// of a ray toward +x uses the exact rule of utils/exact-geometry-wgsl.ts. The midpoint is only a
+// rounded f32 placement; its side of each straddling edge is the exact orientSign (through
+// orientOf, no new orientSign call site) with Simulation-of-Simplicity ties from sosPointSide.
 fn middleInside(a: u32, b: u32) -> bool {
   let middle = (pointOf(a) + pointOf(b)) * 0.5;
   var p = a;
@@ -630,9 +818,14 @@ fn middleInside(a: u32, b: u32) -> bool {
     let following = nextOf(p);
     let edgeStart = pointOf(p);
     let edgeEnd = pointOf(following);
-    if ((edgeStart.y > middle.y) != (edgeEnd.y > middle.y) &&
-        middle.x < (edgeEnd.x - edgeStart.x) * (middle.y - edgeStart.y) / (edgeEnd.y - edgeStart.y) + edgeStart.x) {
-      inside = !inside;
+    if ((edgeStart.y >= middle.y) != (edgeEnd.y >= middle.y)) {
+      // orientOf is orientSign (positive when the midpoint is left of edgeStart -> edgeEnd) with
+      // uncertain counted as zero, which sosPointSide then breaks by perturbation.
+      let side = sosPointSide(orientOf(edgeStart, edgeEnd, middle), edgeStart, edgeEnd);
+      let isUpward = edgeEnd.y > edgeStart.y;
+      if ((isUpward && side > 0) || (!isUpward && side < 0)) {
+        inside = !inside;
+      }
     }
     p = following;
     if (p == a) { break; }
@@ -847,7 +1040,9 @@ fn sectorContainsSector(m: u32, p: u32) -> bool {
     areaSign(pointOf(nextOf(p)), pm, pointOf(nextOf(m))) < 0;
 }
 
-// David Eberly's bridge between a hole's leftmost vertex and the outer ring, or NONE.
+// David Eberly's bridge between a hole's leftmost vertex and the outer ring, or NONE. The f32
+// ray intersection x below only places the candidate bridge vertex (it is not a parity or
+// containment decision); validity of the resulting diagonal is decided exactly by isValidDiagonal.
 fn findHoleBridge(hole: u32, outerNode: u32) -> u32 {
   let hp = pointOf(hole);
   var p = outerNode;
@@ -965,6 +1160,8 @@ fn baseSlotOf(polygon: u32) -> i32 {
 }
 
 fn triangulatePolygon(polygon: u32) {
+  ${options.routingPass === 'first' ? 'routing[routingOffset + polygon] = sizeRouteOf(polygon);\n  if (routing[routingOffset + polygon] == 1u) { return; }' : ''}
+  ${options.routingPass === 'fallback' ? 'if (routing[routingOffset + polygon] != 4u) { return; }' : ''}
   failed = false;
   incomplete = false;
   filteredOut = false;
@@ -1011,6 +1208,7 @@ fn triangulatePolygon(polygon: u32) {
     }
   }
   let ok = !failed && !incomplete;
+  ${options.routingPass === 'first' ? 'if (!ok && ringLast > ringFirst && shellEnd >= shellStart + 3u) { routing[routingOffset + polygon] = 2u; }' : ''}
   let written = select(0u, trianglesWritten, ok);
   // Failed polygons overwrite everything with degenerate triangles; partial output is unusable.
   for (var slot = written; slot < triangleSlots; slot++) {

@@ -2,11 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {EXACT_ORIENTATION_WGSL} from './exact-orientation-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import type {Device} from '@luma.gl/core';
+import {getStorageBindingElementLimit} from '../../utils/gpu-contributor-utils';
 import {GPU_SEGMENT_INTERSECTION_KIND, GPU_SEGMENT_NONE} from './segment-intersection-types';
 
 /** Number of `u32` words per segment-table row. @internal */
 export const SEGMENT_TABLE_STRIDE = 8;
+
+/**
+ * Largest vertex row count of one segment geometry (`left.positions` or `right.positions`) on
+ * `device`: the segment table holds one row of {@link SEGMENT_TABLE_STRIDE} `u32` words (32 bytes)
+ * per vertex in one storage binding, so 4194304 on a default device (128 MiB bindings).
+ * Contributors that build a segment intersection validate their vertex rows against it under their
+ * own ID.
+ */
+export function getGPUSegmentIntersectionMaximumVertexCount(device: Device): number {
+  return getStorageBindingElementLimit(device, SEGMENT_TABLE_STRIDE * 4);
+}
 
 /**
  * WGSL helpers shared by the segment kernels: segment classification on top of the exact

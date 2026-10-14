@@ -17,8 +17,9 @@
 
 import {PhiloxStream} from './permutation-random';
 
-/** Counter word `c` that tags the swap-or-not round material, kept apart from other streams. @internal */
-export const PERMUTATION_SHUFFLE_STREAM = 0x5a0b5a0b;
+// Every caller passes its own Philox purpose ID (counter word `c` of the round material, from
+// `PHILOX_PURPOSES` in utils/philox-random.ts), so two analyses with the same seed never share a
+// permutation stream.
 
 /** Largest number of rounds the WGSL twin supports (domains below 2^24: 6 * 24 + 6). @internal */
 export const PERMUTATION_SHUFFLE_MAXIMUM_ROUNDS = 150;
@@ -47,22 +48,23 @@ export type SwapOrNotRounds = {
 
 /**
  * Draws the round material of permutation number `permutation` under `key` for a domain of
- * `count` values.
+ * `count` values, on the Philox purpose `stream` of the caller.
  *
  * @internal
  */
 export function getSwapOrNotRounds(
   key: readonly [number, number],
   permutation: number,
-  count: number
+  count: number,
+  stream: number
 ): SwapOrNotRounds {
   const roundCount = getSwapOrNotRoundCount(count);
   const keys = new Uint32Array(roundCount);
   const salts = new Uint32Array(roundCount);
   for (let round = 0; round < roundCount; round++) {
-    const stream = new PhiloxStream(key, permutation, round, PERMUTATION_SHUFFLE_STREAM);
-    keys[round] = stream.nextBelow(count);
-    salts[round] = stream.nextUint32();
+    const philox = new PhiloxStream(key, permutation, round, stream);
+    keys[round] = philox.nextBelow(count);
+    salts[round] = philox.nextUint32();
   }
   return {keys, salts};
 }
@@ -96,9 +98,10 @@ export function fillShufflePermutation(
   output: Uint32Array,
   count: number,
   key: readonly [number, number],
-  permutation: number
+  permutation: number,
+  stream: number
 ): void {
-  const rounds = getSwapOrNotRounds(key, permutation, count);
+  const rounds = getSwapOrNotRounds(key, permutation, count, stream);
   for (let index = 0; index < count; index++) {
     output[index] = getSwapOrNotPermutationIndex(index, count, rounds);
   }
@@ -113,10 +116,12 @@ export function fillShufflePermutation(
  * - `getSwapOrNotPermutationIndex(index, rounds)`: bit-identical to the TypeScript function;
  *   `rounds` is `getSwapOrNotRoundCount(count)`, also available as `getSwapOrNotRoundCount`.
  *
+ * @param stream Philox purpose ID of the caller (`PHILOX_PURPOSES.<name>.id`).
  * @internal
  */
-export const PERMUTATION_SHUFFLE_WGSL = /* wgsl */ `
-const PERMUTATION_SHUFFLE_STREAM: u32 = ${PERMUTATION_SHUFFLE_STREAM}u;
+export function getPermutationShuffleWGSL(stream: number): string {
+  return /* wgsl */ `
+const PERMUTATION_SHUFFLE_STREAM: u32 = ${stream >>> 0}u;
 const PERMUTATION_SHUFFLE_MAXIMUM_ROUNDS: u32 = ${PERMUTATION_SHUFFLE_MAXIMUM_ROUNDS}u;
 var<workgroup> swapOrNotKeys: array<u32, ${PERMUTATION_SHUFFLE_MAXIMUM_ROUNDS}>;
 var<workgroup> swapOrNotSalts: array<u32, ${PERMUTATION_SHUFFLE_MAXIMUM_ROUNDS}>;
@@ -160,3 +165,4 @@ fn getSwapOrNotPermutationIndex(index: u32, count: u32) -> u32 {
   return position;
 }
 `;
+}

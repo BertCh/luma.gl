@@ -5,11 +5,8 @@
 import {
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
   type GPUSpatialContext
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,7 +16,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from './h3-boundary-wgsl';
@@ -164,16 +162,6 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       );
     }
     const {output} = props;
-    for (const [name, view] of [
-      ['cells', props.cells],
-      ['output.centers', output.centers],
-      ['output.boundaries', output.boundaries],
-      ['output.vertexCounts', output.vertexCounts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     if (rows < 1) {
@@ -200,7 +188,7 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
       }
     }
     if (output.vertexCounts) {
-      validatePackedUint32View(output.vertexCounts, `${id} output.vertexCounts`);
+      validatePackedView(output.vertexCounts, ['uint32'], `${id} output.vertexCounts`);
       if (output.vertexCounts.length !== rows) {
         throw new Error(`${id} output.vertexCounts length must equal the row count`);
       }

@@ -5,7 +5,6 @@
 import {
   createTransientView,
   GPUReduction,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -14,7 +13,8 @@ import {
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 import {
@@ -52,16 +52,24 @@ export type GPUSpatialWeightsValidationProps = {
   id?: string;
   /** Square weights to check. Read only. */
   weights: GPUSpatialWeights;
+  /** Caller-owned outputs. */
+  output: GPUSpatialWeightsValidationOutput;
+};
+
+/** Caller-owned outputs of {@link GPUSpatialWeightsValidation}. */
+export type GPUSpatialWeightsValidationOutput = {
   /**
-   * Caller-owned one-row uint32 receiving the number of rows with at least one violation. Zero
-   * means the weights satisfy every {@link GPUSpatialWeights} invariant.
-   */
-  invalidCount: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned uint32 per row (length equal to the row count) receiving the violation
-   * bits of {@link GPU_SPATIAL_WEIGHTS_VIOLATION}.
+   * Optional uint32 per row (length equal to the row count) receiving the violation bits of
+   * {@link GPU_SPATIAL_WEIGHTS_VIOLATION}.
    */
   flags?: GraphDataView<'uint32'>;
+  status: {
+    /**
+     * One-row uint32 receiving the number of rows with at least one violation. Zero means the
+     * weights satisfy every {@link GPUSpatialWeights} invariant.
+     */
+    invalidCount: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -71,7 +79,7 @@ export type GPUSpatialWeightsValidationProps = {
  * Uploaded CSR must satisfy the invariants, because consumers rely on them without checking:
  * `findWeight` binary-searches the neighbor IDs of a row, so unsorted or duplicate IDs give wrong
  * `S1`, `S2` and symmetry counts. Run this node once after upload (the CSR rarely changes) and
- * read `invalidCount` before using the weights. There is no GPU sort or dedupe: fix the CSR on
+ * read `output.status.invalidCount` before using the weights. There is no GPU sort or dedupe: fix the CSR on
  * the CPU (sort each row by neighbor ID, merge duplicates by summing, drop self slots) and upload
  * it again.
  *
@@ -96,24 +104,28 @@ export class GPUSpatialWeightsValidation implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
-    validatePackedUint32View(props.invalidCount, `${id} invalidCount`);
-    if (props.invalidCount.length < 1) {
+    validatePackedView(props.output.status.invalidCount, ['uint32'], `${id} invalidCount`);
+    if (props.output.status.invalidCount.length < 1) {
       throw new Error(`${id} invalidCount must hold one uint32`);
     }
-    if (props.flags) {
-      validatePackedUint32View(props.flags, `${id} flags`);
-      if (props.flags.length !== rows) {
+    if (props.output.flags) {
+      validatePackedView(props.output.flags, ['uint32'], `${id} flags`);
+      if (props.output.flags.length !== rows) {
         throw new Error(`${id} flags length must equal the weights row count`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.invalidCount, props.flags],
+      [props.output.status.invalidCount, props.output.flags],
       [props.weights.offsets, props.weights.neighbors, props.weights.weights]
     );
     this.outputWeights = describeGPUSpatialWeights(props.weights, {
-      info: props.weights.info ?? {rowCount: rows, transform: 'unknown', symmetric: 'unknown'},
-      status: {invalidCount: props.invalidCount}
+      information: props.weights.information ?? {
+        rowCount: rows,
+        transform: 'unknown',
+        symmetric: 'unknown'
+      },
+      status: {invalidCount: props.output.status.invalidCount}
     });
   }
 
@@ -127,13 +139,13 @@ export class GPUSpatialWeightsValidation implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
-      props.invalidCount,
-      props.flags
+      props.output.status.invalidCount,
+      props.output.flags
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
     const violated = createTransientView(graph, `${id}-violated`, 'uint32', rows);
-    const flags = props.flags ?? createTransientView(graph, `${id}-flags`, 'uint32', rows);
+    const flags = props.output.flags ?? createTransientView(graph, `${id}-flags`, 'uint32', rows);
     const bits = GPU_SPATIAL_WEIGHTS_VIOLATION;
     return [
       createWGSLKernelNode<Parameters>(graph, {
@@ -181,7 +193,7 @@ const CAPACITY: u32 = ${capacity}u;`,
       ...new GPUReduction({
         id: `${id}-count`,
         input: violated,
-        output: props.invalidCount,
+        output: props.output.status.invalidCount,
         operation: 'sum'
       }).getCommandNodes(graph)
     ];

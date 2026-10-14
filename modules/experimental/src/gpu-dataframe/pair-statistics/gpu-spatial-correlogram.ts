@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,8 +12,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   getPairHistogramNodes,
@@ -27,7 +28,8 @@ import {
   getPairStatisticsInputNodes,
   getPairStatisticsTotalSumNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
-  validatePairStatisticsInputs
+  validatePairStatisticsInputs,
+  validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {
   GPU_SPATIAL_CORRELOGRAM_NO_BAND,
@@ -38,11 +40,11 @@ import {
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   validateGPUStatusPort,
-  type GPUStatusScalar
-} from '../../gpu-spatial-analysis/contracts/status';
+  type GPUOverflowStatusPort
+} from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUSpatialCorrelogram';
 
@@ -78,12 +80,54 @@ const BAND_RESULT_LENGTH = 4;
  */
 export type GPUSpatialCorrelogramBandMode = 'cumulative' | 'annulus';
 
+/** Caller-owned output views of {@link GPUSpatialCorrelogram}. */
+export type GPUSpatialCorrelogramOutput = {
+  /** Caller-owned global Moran's I per band (`bandCount` rows). Quiet NaN when undefined. */
+  moransI: GraphDataView<'float32'>;
+  /** Optional caller-owned z-score per band. Quiet NaN when undefined. */
+  zScores?: GraphDataView<'float32'>;
+  /** Optional caller-owned two-sided normal p-value per band. Quiet NaN when undefined. */
+  pValues?: GraphDataView<'float32'>;
+  /** Optional caller-owned expected I, `-1 / (n - 1)`, per band. */
+  expectedI?: GraphDataView<'float32'>;
+  /** Optional caller-owned analytic variance of I per band. Quiet NaN when undefined. */
+  varianceI?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned number of unordered neighbor pairs per band (saturates at
+   * `0xffffffff`).
+   */
+  pairCounts?: GraphDataView<'uint32'>;
+  /**
+   * Optional caller-owned `[firstPeakBand, maximumBand]` (2 rows): the smallest band whose finite
+   * z-score is strictly greater than both neighboring finite z-scores (ArcGIS "first peak"; the
+   * first and last band are never peaks), and the band of the largest finite z-score (smallest band
+   * on ties). `GPU_SPATIAL_CORRELOGRAM_NO_BAND` when none.
+   */
+  peakBands?: GraphDataView<'uint32'>;
+  /**
+   * Optional caller-owned `[n, mean, variance, sumOfSquares, kurtosis]` of the included values
+   * (`GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH` rows; population variance, `kurtosis =
+   * n * sum c^4 / (sum c^2)^2`).
+   */
+  statistics?: GraphDataView<'float32'>;
+  /** Optional caller-owned one-row status scalars. */
+  status?: {
+    /**
+     * One row: 1 when the integer sums are incomplete, because a
+     * product sum carried out of 64 bits (beyond `2^40` robust variances for products below 256,
+     * `2^52` for larger ones), a single product was beyond the clamp (`2^51` robust variances), or a band
+     * pair count reached `2^32 - 1` (`pairCounts` then saturates). 0 otherwise.
+     */
+    overflow?: GPUOverflowStatusPort['overflow'];
+  };
+};
+
 /**
  * Properties for {@link GPUSpatialCorrelogram}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `values`, `mask` and
  * `parameters` (bounds, maximum distance, variance assumption). Compile-time: the row count,
- * `gridSize`, `bandCount`, `bandMode`, and which optional outputs are present.
+ * `gridSize`, `bandCount`, `bandMode`, and which optional `output` views are present.
  */
 export type GPUSpatialCorrelogramProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-correlogram'`. */
@@ -116,41 +160,8 @@ export type GPUSpatialCorrelogramProps = {
   bandMode?: GPUSpatialCorrelogramBandMode;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
-  /** Caller-owned global Moran's I per band (`bandCount` rows). Quiet NaN when undefined. */
-  moransI: GraphDataView<'float32'>;
-  /** Optional caller-owned z-score per band. Quiet NaN when undefined. */
-  zScores?: GraphDataView<'float32'>;
-  /** Optional caller-owned two-sided normal p-value per band. Quiet NaN when undefined. */
-  pValues?: GraphDataView<'float32'>;
-  /** Optional caller-owned expected I, `-1 / (n - 1)`, per band. */
-  expectedI?: GraphDataView<'float32'>;
-  /** Optional caller-owned analytic variance of I per band. Quiet NaN when undefined. */
-  varianceI?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned number of unordered neighbor pairs per band (saturates at
-   * `0xffffffff`).
-   */
-  pairCounts?: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned `[firstPeakBand, maximumBand]` (2 rows): the smallest band whose finite
-   * z-score is strictly greater than both neighboring finite z-scores (ArcGIS "first peak"; the
-   * first and last band are never peaks), and the band of the largest finite z-score (smallest band
-   * on ties). `GPU_SPATIAL_CORRELOGRAM_NO_BAND` when none.
-   */
-  peakBands?: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned `[n, mean, variance, sumOfSquares, kurtosis]` of the included values
-   * (`GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH` rows; population variance, `kurtosis =
-   * n * sum c^4 / (sum c^2)^2`).
-   */
-  statistics?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned one-row status: 1 when the integer sums are incomplete, because a
-   * product sum carried out of 64 bits (beyond `2^40` robust variances for products below 256,
-   * `2^52` for larger ones), a single product was beyond the clamp (`2^51` robust variances), or a band
-   * pair count reached `2^32 - 1` (`pairCounts` then saturates). 0 otherwise.
-   */
-  overflow?: GPUStatusScalar;
+  /** Caller-owned output views. */
+  output: GPUSpatialCorrelogramOutput;
 };
 
 /**
@@ -213,20 +224,18 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       throw new Error(`${id} bandMode must be cumulative or annulus`);
     }
     this.bandMode = bandMode;
-    const {bandCount} = props;
-    if (!Number.isInteger(bandCount) || bandCount < 1 || bandCount > MAXIMUM_BAND_COUNT) {
-      throw new Error(`${id} bandCount must be an integer from 1 to ${MAXIMUM_BAND_COUNT}`);
-    }
+    const {bandCount, output} = props;
+    validateCapacity(id, 'bandCount', bandCount, 1, MAXIMUM_BAND_COUNT);
     validatePairHistogramShape(id, bandCount, CHANNEL_COUNT);
-    if (props.overflow) {
-      validateGPUStatusPort(id, {overflow: props.overflow});
+    if (output.status?.overflow) {
+      validateGPUStatusPort(id, {overflow: output.status?.overflow});
     }
     for (const [name, view] of [
-      ['moransI', props.moransI],
-      ['zScores', props.zScores],
-      ['pValues', props.pValues],
-      ['expectedI', props.expectedI],
-      ['varianceI', props.varianceI]
+      ['output.moransI', output.moransI],
+      ['output.zScores', output.zScores],
+      ['output.pValues', output.pValues],
+      ['output.expectedI', output.expectedI],
+      ['output.varianceI', output.varianceI]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -235,38 +244,38 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
         }
       }
     }
-    if (props.pairCounts) {
-      validatePackedUint32View(props.pairCounts, `${id} pairCounts`);
-      if (props.pairCounts.length < bandCount) {
-        throw new Error(`${id} pairCounts must hold bandCount rows`);
+    if (output.pairCounts) {
+      validatePackedUint32View(output.pairCounts, `${id} output.pairCounts`);
+      if (output.pairCounts.length < bandCount) {
+        throw new Error(`${id} output.pairCounts must hold bandCount rows`);
       }
     }
-    if (props.peakBands) {
-      validatePackedUint32View(props.peakBands, `${id} peakBands`);
-      if (props.peakBands.length < 2) {
-        throw new Error(`${id} peakBands must hold 2 rows`);
+    if (output.peakBands) {
+      validatePackedUint32View(output.peakBands, `${id} output.peakBands`);
+      if (output.peakBands.length < 2) {
+        throw new Error(`${id} output.peakBands must hold 2 rows`);
       }
     }
-    if (props.statistics) {
-      validatePackedView(props.statistics, ['float32'], `${id} statistics`);
-      if (props.statistics.length < GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH) {
+    if (output.statistics) {
+      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      if (output.statistics.length < GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH) {
         throw new Error(
-          `${id} statistics must hold ${GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH} rows`
+          `${id} output.statistics must hold ${GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH} rows`
         );
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.moransI,
-        props.zScores,
-        props.pValues,
-        props.expectedI,
-        props.varianceI,
-        props.pairCounts,
-        props.peakBands,
-        props.statistics,
-        props.overflow
+        output.moransI,
+        output.zScores,
+        output.pValues,
+        output.expectedI,
+        output.varianceI,
+        output.pairCounts,
+        output.peakBands,
+        output.statistics,
+        output.status?.overflow
       ],
       [props.positions, props.values, props.parameters, props.mask]
     );
@@ -277,21 +286,22 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, bandMode} = this;
-    const {positions, parameters, gridSize, bandCount} = props;
+    const {positions, parameters, gridSize, bandCount, output} = props;
+    validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       props.values,
       parameters,
       props.mask,
-      props.moransI,
-      props.zScores,
-      props.pValues,
-      props.expectedI,
-      props.varianceI,
-      props.pairCounts,
-      props.peakBands,
-      props.statistics,
-      props.overflow
+      output.moransI,
+      output.zScores,
+      output.pValues,
+      output.expectedI,
+      output.varianceI,
+      output.pairCounts,
+      output.peakBands,
+      output.statistics,
+      output.status?.overflow
     ]);
     const rows = positions.length;
     const cumulative = bandMode === 'cumulative';
@@ -504,13 +514,13 @@ fn toFloat(sum: vec2<u32>) -> f32 {
 
     const publishBindings: WGSLKernelBinding[] = [
       {name: 'bandResults', view: bandResults, type: 'f32', access: 'read'},
-      {name: 'moransI', view: props.moransI, type: 'f32', access: 'read_write'}
+      {name: 'moransI', view: output.moransI, type: 'f32', access: 'read_write'}
     ];
     const outputLines = [`moransI[moransIOffset + index] = bandResults[bandResultsOffset + base];`];
     for (const [name, view, slot] of [
-      ['expectedI', props.expectedI, 1],
-      ['varianceI', props.varianceI, 2],
-      ['zScores', props.zScores, 3]
+      ['expectedI', output.expectedI, 1],
+      ['varianceI', output.varianceI, 2],
+      ['zScores', output.zScores, 3]
     ] as const) {
       if (view) {
         publishBindings.push({name, view, type: 'f32', access: 'read_write'});
@@ -519,20 +529,20 @@ fn toFloat(sum: vec2<u32>) -> f32 {
         );
       }
     }
-    if (props.pValues) {
+    if (output.pValues) {
       publishBindings.push({
         name: 'pValues',
-        view: props.pValues,
+        view: output.pValues,
         type: 'f32',
         access: 'read_write'
       });
       outputLines.push(`let zScore = bandResults[bandResultsOffset + base + 3u];
   pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteFloat(zScore));`);
     }
-    if (props.pairCounts) {
+    if (output.pairCounts) {
       publishBindings.push(
         {name: 'bandCounts', view: bandCounts, type: 'u32', access: 'read'},
-        {name: 'pairCounts', view: props.pairCounts, type: 'u32', access: 'read_write'}
+        {name: 'pairCounts', view: output.pairCounts, type: 'u32', access: 'read_write'}
       );
       outputLines.push(
         'pairCounts[pairCountsOffset + index] = bandCounts[bandCountsOffset + index];'
@@ -552,7 +562,7 @@ ${TWO_SIDED_P_VALUE_WGSL}`,
       })
     );
 
-    if (props.overflow) {
+    if (output.status?.overflow) {
       // One row: the histogram overflow word, a saturated band count, or (cumulative bands) a
       // product channel whose sum over the bands carries out of 64 bits.
       nodes.push(
@@ -563,7 +573,7 @@ ${TWO_SIDED_P_VALUE_WGSL}`,
           bindings: [
             {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
             {name: 'bandCounts', view: bandCounts, type: 'u32', access: 'read'},
-            {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+            {name: 'overflow', view: output.status?.overflow, type: 'u32', access: 'read_write'}
           ],
           invocationCount: 1,
           declarations: getPairHistogramReadWGSL('accumulators', CHANNEL_COUNT, '', bandCount),
@@ -595,7 +605,7 @@ ${TWO_SIDED_P_VALUE_WGSL}`,
       );
     }
 
-    if (props.peakBands) {
+    if (output.peakBands) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-peaks`,
@@ -603,7 +613,7 @@ ${TWO_SIDED_P_VALUE_WGSL}`,
           variant: 'peaks',
           bindings: [
             {name: 'bandResults', view: bandResults, type: 'f32', access: 'read'},
-            {name: 'peakBands', view: props.peakBands, type: 'u32', access: 'read_write'}
+            {name: 'peakBands', view: output.peakBands, type: 'u32', access: 'read_write'}
           ],
           invocationCount: 1,
           declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
@@ -639,7 +649,7 @@ fn readZ(band: u32) -> f32 {
       );
     }
 
-    if (props.statistics) {
+    if (output.statistics) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-statistics`,
@@ -648,7 +658,7 @@ fn readZ(band: u32) -> f32 {
           bindings: [
             {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
             {name: 'fourthTotal', view: fourthTotal, type: 'f32', access: 'read'},
-            {name: 'statisticsOut', view: props.statistics, type: 'f32', access: 'read_write'}
+            {name: 'statisticsOut', view: output.statistics, type: 'f32', access: 'read_write'}
           ],
           invocationCount: 1,
           declarations: `const MOMENTS: u32 = ${rows}u;`,

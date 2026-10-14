@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
@@ -15,7 +16,13 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  getStorageBindingElementLimit,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount
+} from '../../utils/gpu-contributor-utils';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../utils/gpu-contributor-types';
+import type {GPURasterMetadata} from '../types';
 import {GPU_RASTER_PROFILE_PARAMETER_LENGTH} from './raster-sampling-parameters';
 import {
   getRasterSamplingWGSL,
@@ -23,71 +30,82 @@ import {
   validateRasterSamplingView
 } from './raster-sampling-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {
+  DISTANCE_SCAN_STATE_WORDS,
+  PROFILE_SCAN_STATE_WORDS,
+  SEGMENTED_SCAN_WORKGROUP_SIZE,
+  getDistanceScanDeclarations,
+  getProfileScanDeclarations,
+  getScanBlockBody,
+  getScanCarryBody,
+  getSegmentedScanBlockCount
+} from './gpu-raster-profile-scan';
 
 const OPERATION = 'GPURasterProfile';
-const MAXIMUM_SAMPLES_PER_PATH = 1 << 24;
+const MAXIMUM_SAMPLES_PER_LINE = 1 << 24;
 
-/** Path ID written to profile sample rows at or beyond `count`. */
-export const GPU_RASTER_PROFILE_NO_PATH_ID = 0xffffffff;
+/** Line ID written to profile sample rows at or beyond `count`. */
+export const GPU_RASTER_PROFILE_NO_LINE_ID = 0xffffffff;
 
 /** Caller-owned outputs of {@link GPURasterProfile}. Any subset of the optional views may be given. */
 export type GPURasterProfileOutput = {
-  /** One-row count of emitted sample rows, clamped to the sample capacity. */
-  count: GraphDataView<'uint32'>;
-  /** One-row flag: 1 when samples exceeded the capacity or a path hit the per-path limit. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped sample count. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `count` receives the emitted sample rows, clamped to the sample
+   * capacity; `overflow` is 1 when samples exceeded the capacity or a line hit the per-line limit;
+   * the optional `requiredCount` receives the unclamped sample count.
+   */
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
   /** Sample positions relative to the parameters' `localOrigin`; NaN at rows at or beyond `count`. */
   samplePositions?: GraphDataView<'float32x2'>;
-  /** Planar distance along the path of each sample; NaN beyond `count`. */
+  /** Planar distance along the line of each sample; NaN beyond `count`. */
   sampleDistances?: GraphDataView<'float32'>;
   /** Raster value at each sample; NaN outside the extent, at nodata, and beyond `count`. */
   sampleValues?: GraphDataView<'float32'>;
-  /** Source path index of each sample; {@link GPU_RASTER_PROFILE_NO_PATH_ID} beyond `count`. */
-  samplePathIds?: GraphDataView<'uint32'>;
-  /** Running positive elevation change along the path up to and including each sample; rows at or beyond `count` are not written. */
+  /** Source line index of each sample; {@link GPU_RASTER_PROFILE_NO_LINE_ID} beyond `count`. */
+  sampleLineIds?: GraphDataView<'uint32'>;
+  /** Running positive elevation change along the line up to and including each sample; rows at or beyond `count` are not written. */
   sampleCumulativeGain?: GraphDataView<'float32'>;
-  /** Running descent (a positive magnitude) along the path up to and including each sample; rows at or beyond `count` are not written. */
+  /** Running descent (a positive magnitude) along the line up to and including each sample; rows at or beyond `count` are not written. */
   sampleCumulativeLoss?: GraphDataView<'float32'>;
-  /** `pathCount + 1` first-sample rows per path, clamped to the sample capacity. */
-  pathSampleOffsets?: GraphDataView<'uint32'>;
-  /** Planar length of each path (0 for paths with fewer than two vertices). */
-  pathLength?: GraphDataView<'float32'>;
-  /** Total gain per path over its emitted samples. */
-  pathGain?: GraphDataView<'float32'>;
-  /** Total loss per path (a positive magnitude). */
-  pathLoss?: GraphDataView<'float32'>;
-  /** Minimum finite sample value per path; NaN when none is finite. */
-  pathMinimum?: GraphDataView<'float32'>;
-  /** Maximum finite sample value per path; NaN when none is finite. */
-  pathMaximum?: GraphDataView<'float32'>;
+  /** `lineCount + 1` first-sample rows per line, clamped to the sample capacity. */
+  lineSampleOffsets?: GraphDataView<'uint32'>;
+  /** Planar length of each line (0 for lines with fewer than two vertices). */
+  lineLengths?: GraphDataView<'float32'>;
+  /** Total gain per line over its emitted samples. */
+  lineGains?: GraphDataView<'float32'>;
+  /** Total loss per line (a positive magnitude). */
+  lineLosses?: GraphDataView<'float32'>;
+  /** Minimum finite sample value per line; NaN when none is finite. */
+  lineMinimums?: GraphDataView<'float32'>;
+  /** Maximum finite sample value per line; NaN when none is finite. */
+  lineMaximums?: GraphDataView<'float32'>;
 };
 
 /**
  * Properties for {@link GPURasterProfile}.
  *
  * Per-frame (no recompile): raster, vertex and offset contents and `parameters` (extent, method,
- * nodata policy, spacing). Topology: `width`, `height`, `noDataValue`, `pathOffsets.length`,
+ * nodata policy, spacing). Topology: `grid` size, `noDataValue`, `lineOffsets.length`,
  * vertex and sample capacities, and which optional outputs exist.
  */
 export type GPURasterProfileProps = {
   /** Prefix for generated node IDs. Defaults to `'raster-profile'`. */
   id?: string;
-  /** Raster width in cells. */
-  width: number;
-  /** Raster height in cells. */
-  height: number;
-  /** Row-major raster of at least `width * height` rows; row 0 is at `minY`. NaN is nodata. */
+  /** Raster grid: its width and height size the kernels; its extent places the samples. */
+  grid: GPURasterMetadata;
+  /** Row-major raster of at least `width * height` rows (row 0 is the grid's first row). NaN is nodata. */
   values: GraphDataView<'float32'>;
   /** Optional finite sentinel treated as nodata. */
   noDataValue?: number;
   /** Optional raster validity; zero marks a nodata cell. */
   validity?: GraphDataView<'uint32'>;
-  /** Packed path vertices in extent units, relative to the parameters' `localOrigin`. */
-  pathPositions: GraphDataView<'float32x2'>;
-  /** CSR spans: path `p` owns vertices `[pathOffsets[p], pathOffsets[p + 1])`; `pathCount + 1` rows. */
-  pathOffsets: GraphDataView<'uint32'>;
+  /** Packed line vertices in grid world units, relative to the parameters' `localOrigin`. */
+  positions: GraphDataView<'float32x2'>;
+  /**
+   * CSR spans: line `p` owns vertices `[lineOffsets[p], lineOffsets[p + 1])`; `lineCount + 1` rows,
+   * with `lineCount` at most {@link getGPURasterProfileMaximumLineCount} (8388608 on a default device).
+   */
+  lineOffsets: GraphDataView<'uint32'>;
   /**
    * Sample row capacity. Defaults to the length of the first provided sample column; every
    * provided sample column must hold at least this many rows. Required when none is provided.
@@ -100,30 +118,52 @@ export type GPURasterProfileProps = {
 };
 
 /**
+ * Largest line count (`lineOffsets.length - 1`) of {@link GPURasterProfile} on `device`: the line
+ * summaries keep four `float32` (16 bytes) per line in one transient storage binding, so 8388608
+ * on a default device (128 MiB bindings).
+ */
+export function getGPURasterProfileMaximumLineCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 16);
+}
+
+/**
  * Elevation profiles: samples a raster along polylines at a per-frame spacing.
  *
- * Distances are planar in extent units. Each path is sampled at along-distances `0, s, 2s, ...`
- * while below its length `L`, plus the final vertex at exactly `L`; a zero-length path (one vertex,
- * or coincident vertices) gives one sample and a path without vertices gives none. Sample rows are
- * ordered by path then distance. A path may emit at most `min(2^24, floor((2^32 - 1) / (pathCount +
+ * Distances are planar in extent units. Each line is sampled at along-distances `0, s, 2s, ...`
+ * while below its length `L`, plus the final vertex at exactly `L`; a zero-length line (one vertex,
+ * or coincident vertices) gives one sample and a line without vertices gives none. Sample rows are
+ * ordered by line then distance. A line may emit at most `min(2^24, floor((2^32 - 1) / (lineCount +
  * 1)))` samples: beyond that its samples are truncated (the last row still sits at the final
  * vertex), and `overflow` is set. Samples beyond `sampleCapacity` are dropped and set `overflow`.
  *
- * Pipeline: per-path serial walk (cumulative vertex distances and sample counts), `GPUScan` of the
- * counts, a per-sample kernel that binary searches its path and segment and interpolates the
- * position, the shared raster sampling kernel ({@link GPURasterSampling} semantics for `method` and
- * `noDataPolicy`), then a per-path serial pass for cumulative gain and loss and summaries. Gain and
- * loss sum positive and negative differences between consecutive finite samples (skipping
- * non-finite ones); minimum and maximum cover finite samples. The serial passes are fixed-order, so
- * results are deterministic, but a single very long path is processed by one invocation.
+ * Pipeline: a segmented scan of edge lengths over vertices (cumulative vertex distances; lines are
+ * segments), per-line sample counts, `GPUScan` of the counts, a per-sample kernel that binary
+ * searches its line and segment and interpolates the position, the shared raster sampling kernel
+ * ({@link GPURasterSampling} semantics for `method` and `noDataPolicy`), then a segmented scan
+ * over samples for cumulative gain and loss and the per-line summaries. Gain and loss sum positive
+ * and negative differences between consecutive finite samples (skipping non-finite ones); minimum
+ * and maximum cover finite samples. Both scans are reduce-then-scan over 256-item blocks, so the
+ * work is parallel over vertices and samples and a single line of millions of samples is not a
+ * single-invocation loop. The carry pass walks at most `ceil(blocks / 256)` blocks per lane.
  *
- * Rows at or beyond `count` of the position, distance, value and path ID columns hold NaN (path IDs
- * {@link GPU_RASTER_PROFILE_NO_PATH_ID}); the cumulative columns are left unwritten there.
+ * Summation order is a fixed tree (inside a block, then across blocks), so results are
+ * deterministic, but a sum differs from a left-to-right serial sum in float32 rounding. Minimum,
+ * maximum and which samples are skipped are unaffected; a sample count differs only where a line
+ * length lies within that rounding of a multiple of the spacing. For `n` items the tree has height
+ * at most `2 * ceil(ceil(n / 256) / 256) + 15` (23 for 2e5 samples; gain and loss add up to two
+ * terms per combine, so twice that), so a distance or a total of non-negative terms is within about
+ * that many float32 ulps relative to its exact value,
+ * where a serial sum may drift by up to `n - 1`. Integer-valued or dyadic data below 2^24 units sum
+ * exactly in any order. Line offsets must be non-decreasing (CSR), as the vertex scan finds a
+ * vertex's line by binary search.
  *
- * Precision: path vertices, sample positions and the extent are float32 relative to the packer's
+ * Rows at or beyond `count` of the position, distance, value and line ID columns hold NaN (line IDs
+ * {@link GPU_RASTER_PROFILE_NO_LINE_ID}); the cumulative columns are left unwritten there.
+ *
+ * Precision: line vertices, sample positions and the extent are float32 relative to the packer's
  * `localOrigin`. Absolute positions (the default origin `[0, 0]`) are quantized to the float32 ulp,
  * 0.5 m at a UTM northing of 4.6e6 m (2 m at 2e7 m in EPSG:3857). Set `localOrigin` to the raster
- * or tile corner, upload path vertices relative to it, and add it back to sample positions on the
+ * or tile corner, upload line vertices relative to it, and add it back to sample positions on the
  * CPU or as the layer's coordinate origin; positions then keep about `1.2e-7` of their distance
  * from it.
  */
@@ -132,8 +172,8 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURasterProfileProps;
-  /** Number of paths. */
-  readonly pathCount: number;
+  /** Number of lines. */
+  readonly lineCount: number;
   /** Sample row capacity. */
   readonly sampleCapacity: number;
 
@@ -141,14 +181,14 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-profile';
     this.props = props;
     const {id} = this;
-    const {width, height, output} = props;
-    validateRasterDescription(id, width, height, props.noDataValue);
-    validateRasterSamplingView(id, 'values', props.values, 'float32', width * height);
+    const {output} = props;
+    const pixelCount = validateRasterDescription(id, props.grid, props.noDataValue);
+    validateRasterSamplingView(id, 'values', props.values, 'float32', pixelCount);
     if (props.validity) {
-      validateRasterSamplingView(id, 'validity', props.validity, 'uint32', width * height);
+      validateRasterSamplingView(id, 'validity', props.validity, 'uint32', pixelCount);
     }
-    validateRasterSamplingView(id, 'pathPositions', props.pathPositions, 'float32x2', 1);
-    validateRasterSamplingView(id, 'pathOffsets', props.pathOffsets, 'uint32', 2);
+    validateRasterSamplingView(id, 'positions', props.positions, 'float32x2', 1);
+    validateRasterSamplingView(id, 'lineOffsets', props.lineOffsets, 'uint32', 2);
     validateRasterSamplingView(
       id,
       'parameters',
@@ -156,15 +196,15 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       'float32',
       GPU_RASTER_PROFILE_PARAMETER_LENGTH
     );
-    if (!output?.count || !output.overflow) {
-      throw new Error(`${id} needs output.count and output.overflow`);
+    if (!output?.status?.count || !output.status.overflow) {
+      throw new Error(`${id} needs output.status.count and output.status.overflow`);
     }
-    this.pathCount = props.pathOffsets.length - 1;
+    this.lineCount = props.lineOffsets.length - 1;
     const sampleColumns = [
       output.samplePositions,
       output.sampleDistances,
       output.sampleValues,
-      output.samplePathIds,
+      output.sampleLineIds,
       output.sampleCumulativeGain,
       output.sampleCumulativeLoss
     ].filter(view => view !== undefined);
@@ -180,7 +220,7 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       ['samplePositions', 'float32x2'],
       ['sampleDistances', 'float32'],
       ['sampleValues', 'float32'],
-      ['samplePathIds', 'uint32'],
+      ['sampleLineIds', 'uint32'],
       ['sampleCumulativeGain', 'float32'],
       ['sampleCumulativeLoss', 'float32']
     ] as const;
@@ -190,36 +230,39 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       }
     }
     for (const name of ['count', 'overflow', 'requiredCount'] as const) {
-      if (output[name]) {
-        validateRasterSamplingView(id, `output.${name}`, output[name], 'uint32', 1);
+      if (output.status[name]) {
+        validateRasterSamplingView(id, `output.status.${name}`, output.status[name], 'uint32', 1);
       }
     }
-    if (output.pathSampleOffsets) {
+    if (output.lineSampleOffsets) {
       validateRasterSamplingView(
         id,
-        'output.pathSampleOffsets',
-        output.pathSampleOffsets,
+        'output.lineSampleOffsets',
+        output.lineSampleOffsets,
         'uint32',
-        this.pathCount + 1
+        this.lineCount + 1
       );
     }
     for (const name of [
-      'pathLength',
-      'pathGain',
-      'pathLoss',
-      'pathMinimum',
-      'pathMaximum'
+      'lineLengths',
+      'lineGains',
+      'lineLosses',
+      'lineMinimums',
+      'lineMaximums'
     ] as const) {
       if (output[name]) {
-        validateRasterSamplingView(id, `output.${name}`, output[name], 'float32', this.pathCount);
+        validateRasterSamplingView(id, `output.${name}`, output[name], 'float32', this.lineCount);
       }
     }
-    const outputs = Object.values(output).filter(view => view !== undefined);
+    const {status, ...outputColumns} = output;
+    const outputs = [...Object.values(outputColumns), ...Object.values(status)].filter(
+      view => view !== undefined
+    );
     if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
       throw new Error(`${id} outputs must not share buffers`);
     }
     const inputBuffers = new Set(
-      [props.values, props.validity, props.pathPositions, props.pathOffsets, props.parameters]
+      [props.values, props.validity, props.positions, props.lineOffsets, props.parameters]
         .filter(view => view !== undefined)
         .map(view => view.buffer)
     );
@@ -228,24 +271,31 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
     }
   }
 
-  /** Returns the measure, scan, locate, sample, cumulative and finish nodes. */
+  /** Returns the vertex-distance scan, count, locate, sample, cumulative scan and finish nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, pathCount, sampleCapacity} = this;
+    const {id, props, lineCount, sampleCapacity} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.validity,
-      props.pathPositions,
-      props.pathOffsets,
+      props.positions,
+      props.lineOffsets,
       props.parameters,
-      ...Object.values(output)
+      ...Object.values({...output, status: undefined}),
+      ...Object.values(output.status)
     ]);
-    const vertexCount = props.pathPositions.length;
-    const maximumPerPath = Math.max(
+    validateMaximumCount(
+      id,
+      'line count (lineOffsets.length - 1)',
+      lineCount,
+      getGPURasterProfileMaximumLineCount(graph.device)
+    );
+    const vertexCount = props.positions.length;
+    const maximumPerLine = Math.max(
       1,
-      Math.min(MAXIMUM_SAMPLES_PER_PATH, Math.floor(0xffffffff / (pathCount + 1)))
+      Math.min(MAXIMUM_SAMPLES_PER_LINE, Math.floor(0xffffffff / (lineCount + 1)))
     );
     const nodes: GPUCommandNode<Parameters>[] = [];
     const vertexDistances = createTransientView(
@@ -254,12 +304,12 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       'float32',
       vertexCount
     );
-    const sampleCounts = createTransientView(graph, `${id}-sample-counts`, 'uint32', pathCount + 1);
+    const sampleCounts = createTransientView(graph, `${id}-sample-counts`, 'uint32', lineCount + 1);
     const sampleOffsets = createTransientView(
       graph,
       `${id}-sample-offsets`,
       'uint32',
-      pathCount + 1
+      lineCount + 1
     );
     const truncated = createTransientView(graph, `${id}-truncated`, 'uint32', 1);
     const samplePositions =
@@ -268,18 +318,31 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
     const sampleValues =
       output.sampleValues ??
       createTransientView(graph, `${id}-sample-values`, 'float32', sampleCapacity);
-    const pathConstants = `const PATH_COUNT: u32 = ${pathCount}u;
+    const lineConstants = `const LINE_COUNT: u32 = ${lineCount}u;
 const VERTEX_COUNT: u32 = ${vertexCount}u;
 const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;
-const MAXIMUM_PER_PATH: u32 = ${maximumPerPath}u;
-fn getVertexBegin(path: u32) -> u32 {
-  return min(pathOffsets[pathOffsetsOffset + path], VERTEX_COUNT);
+const MAXIMUM_PER_LINE: u32 = ${maximumPerLine}u;
+fn getVertexBegin(line: u32) -> u32 {
+  return min(lineOffsets[lineOffsetsOffset + line], VERTEX_COUNT);
 }
-fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
-  return max(min(pathOffsets[pathOffsetsOffset + path + 1u], VERTEX_COUNT), vertexBegin);
+fn getVertexEnd(line: u32, vertexBegin: u32) -> u32 {
+  return max(min(lineOffsets[lineOffsetsOffset + line + 1u], VERTEX_COUNT), vertexBegin);
 }`;
 
-    // 1. Per-path serial walk: cumulative vertex distances and sample counts.
+    // 1. Vertex distances: a segmented float sum over vertices (lines are segments), as a
+    // block reduce, a one-workgroup carry scan of the block aggregates and a block down-sweep.
+    const vertexBlockCount = getSegmentedScanBlockCount(vertexCount);
+    const vertexAggregates = createTransientView(
+      graph,
+      `${id}-vertex-aggregates`,
+      'uint32',
+      vertexBlockCount * DISTANCE_SCAN_STATE_WORDS
+    );
+    const vertexScanBindings = (aggregatesAccess: 'read' | 'read_write'): WGSLKernelBinding[] => [
+      {name: 'linePositions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
+      {name: 'aggregates', view: vertexAggregates, type: 'u32', access: aggregatesAccess}
+    ];
     nodes.push(
       createFillNode<Parameters>(graph, {
         id: `${id}-truncated-fill`,
@@ -292,17 +355,67 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
         id: `${id}-measure`,
         operation: OPERATION,
         variant: 'measure',
+        bindings: vertexScanBindings('read_write'),
+        invocationCount: vertexBlockCount * SEGMENTED_SCAN_WORKGROUP_SIZE,
+        guardIndex: false,
+        workgroupSize: SEGMENTED_SCAN_WORKGROUP_SIZE,
+        declarations: `${lineConstants}
+${getDistanceScanDeclarations({writesAggregates: true, loadsItems: true})}`,
+        body: getScanBlockBody(`var itemState = getIdentityScanState();
+  if (index < VERTEX_COUNT) {
+    itemState = getVertexScanState(index);
+  }`)
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-measure-carries`,
+        operation: OPERATION,
+        variant: 'measure-carries',
+        bindings: [vertexScanBindings('read_write')[2]],
+        invocationCount: SEGMENTED_SCAN_WORKGROUP_SIZE,
+        guardIndex: false,
+        workgroupSize: SEGMENTED_SCAN_WORKGROUP_SIZE,
+        declarations: `const BLOCK_COUNT: u32 = ${vertexBlockCount}u;
+${getDistanceScanDeclarations({writesAggregates: true, loadsItems: false})}`,
+        body: getScanCarryBody()
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-measure-distances`,
+        operation: OPERATION,
+        variant: 'measure-distances',
         bindings: [
-          {name: 'pathPositions', view: props.pathPositions, type: 'f32', access: 'read'},
-          {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+          ...vertexScanBindings('read'),
+          {name: 'vertexDistances', view: vertexDistances, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: vertexBlockCount * SEGMENTED_SCAN_WORKGROUP_SIZE,
+        guardIndex: false,
+        workgroupSize: SEGMENTED_SCAN_WORKGROUP_SIZE,
+        declarations: `${lineConstants}
+${getDistanceScanDeclarations({writesAggregates: false, loadsItems: true})}`,
+        body: `var itemState = getIdentityScanState();
+  if (index < VERTEX_COUNT) {
+    itemState = getVertexScanState(index);
+  }
+  let prefix = scanWorkgroup(localInvocationIndex, itemState);
+  let result = combineScanStates(loadAggregate(workgroupIndex), prefix);
+  if (index < VERTEX_COUNT) {
+    vertexDistances[vertexDistancesOffset + index] = result.sum;
+  }`
+      }),
+      // Per-line sample counts from each line's last cumulative vertex distance.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-sample-counts`,
+        operation: OPERATION,
+        variant: 'sample-counts',
+        bindings: [
+          {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
           {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
-          {name: 'vertexDistances', view: vertexDistances, type: 'f32', access: 'read_write'},
+          {name: 'vertexDistances', view: vertexDistances, type: 'f32', access: 'read'},
           {name: 'sampleCounts', view: sampleCounts, type: 'u32', access: 'read_write'},
           {name: 'truncated', view: truncated, type: 'atomic<u32>', access: 'read_write'}
         ],
-        invocationCount: pathCount + 1,
-        declarations: pathConstants,
-        body: `if (index >= PATH_COUNT) {
+        invocationCount: lineCount + 1,
+        declarations: lineConstants,
+        body: `if (index >= LINE_COUNT) {
     sampleCounts[sampleCountsOffset + index] = 0u;
     return;
   }
@@ -310,24 +423,11 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
   let vertexEnd = getVertexEnd(index, vertexBegin);
   var count = 0u;
   if (vertexEnd > vertexBegin) {
-    var distance = 0.0;
-    vertexDistances[vertexDistancesOffset + vertexBegin] = 0.0;
-    var previousX = pathPositions[pathPositionsOffset + 2u * vertexBegin];
-    var previousY = pathPositions[pathPositionsOffset + 2u * vertexBegin + 1u];
-    for (var vertex = vertexBegin + 1u; vertex < vertexEnd; vertex++) {
-      let currentX = pathPositions[pathPositionsOffset + 2u * vertex];
-      let currentY = pathPositions[pathPositionsOffset + 2u * vertex + 1u];
-      let deltaX = currentX - previousX;
-      let deltaY = currentY - previousY;
-      distance += sqrt(deltaX * deltaX + deltaY * deltaY);
-      vertexDistances[vertexDistancesOffset + vertex] = distance;
-      previousX = currentX;
-      previousY = currentY;
-    }
+    let distance = vertexDistances[vertexDistancesOffset + vertexEnd - 1u];
     count = 1u;
     if (distance > 0.0) {
       let spacing = params[paramsOffset + 10u];
-      var segments = u32(min(ceil(distance / spacing), f32(MAXIMUM_PER_PATH)));
+      var segments = u32(min(ceil(distance / spacing), f32(MAXIMUM_PER_LINE)));
       if (segments > 0u && f32(segments - 1u) * spacing >= distance) {
         segments -= 1u;
       }
@@ -335,8 +435,8 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
         segments += 1u;
       }
       count = segments + 1u;
-      if (count > MAXIMUM_PER_PATH) {
-        count = MAXIMUM_PER_PATH;
+      if (count > MAXIMUM_PER_LINE) {
+        count = MAXIMUM_PER_LINE;
         atomicMax(&truncated[truncatedOffset], 1u);
       }
     }
@@ -354,10 +454,10 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
       }).getCommandNodes(graph)
     );
 
-    // 3. Per-sample path, distance and position.
+    // 3. Per-sample line, distance and position.
     const locateBindings: WGSLKernelBinding[] = [
-      {name: 'pathPositions', view: props.pathPositions, type: 'f32', access: 'read'},
-      {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'linePositions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
       {name: 'vertexDistances', view: vertexDistances, type: 'f32', access: 'read'},
       {name: 'sampleOffsets', view: sampleOffsets, type: 'u32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
@@ -371,10 +471,10 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
         access: 'read_write'
       });
     }
-    if (output.samplePathIds) {
+    if (output.sampleLineIds) {
       locateBindings.push({
-        name: 'pathIdsOut',
-        view: output.samplePathIds,
+        name: 'lineIdsOut',
+        view: output.sampleLineIds,
         type: 'u32',
         access: 'read_write'
       });
@@ -386,18 +486,18 @@ fn getVertexEnd(path: u32, vertexBegin: u32) -> u32 {
         variant: 'locate',
         bindings: locateBindings,
         invocationCount: sampleCapacity,
-        declarations: `${pathConstants}
+        declarations: `${lineConstants}
 ${GET_NAN_WGSL}`,
-        body: `let total = sampleOffsets[sampleOffsetsOffset + PATH_COUNT];
+        body: `let total = sampleOffsets[sampleOffsetsOffset + LINE_COUNT];
   if (index >= total) {
     positionsOut[positionsOutOffset + 2u * index] = getNaN();
     positionsOut[positionsOutOffset + 2u * index + 1u] = getNaN();
     ${output.sampleDistances ? 'distancesOut[distancesOutOffset + index] = getNaN();' : ''}
-    ${output.samplePathIds ? 'pathIdsOut[pathIdsOutOffset + index] = 0xffffffffu;' : ''}
+    ${output.sampleLineIds ? 'lineIdsOut[lineIdsOutOffset + index] = 0xffffffffu;' : ''}
     return;
   }
   var low = 0u;
-  var high = PATH_COUNT;
+  var high = LINE_COUNT;
   loop {
     if (low >= high) {
       break;
@@ -409,17 +509,17 @@ ${GET_NAN_WGSL}`,
       high = middle;
     }
   }
-  let path = low - 1u;
-  let vertexBegin = getVertexBegin(path);
-  let vertexEnd = getVertexEnd(path, vertexBegin);
-  let firstSample = sampleOffsets[sampleOffsetsOffset + path];
-  let sampleCount = sampleOffsets[sampleOffsetsOffset + path + 1u] - firstSample;
+  let line = low - 1u;
+  let vertexBegin = getVertexBegin(line);
+  let vertexEnd = getVertexEnd(line, vertexBegin);
+  let firstSample = sampleOffsets[sampleOffsetsOffset + line];
+  let sampleCount = sampleOffsets[sampleOffsetsOffset + line + 1u] - firstSample;
   let localSample = index - firstSample;
   let lastVertex = vertexEnd - 1u;
   let length = vertexDistances[vertexDistancesOffset + lastVertex];
   var distance = length;
-  var positionX = pathPositions[pathPositionsOffset + 2u * lastVertex];
-  var positionY = pathPositions[pathPositionsOffset + 2u * lastVertex + 1u];
+  var positionX = linePositions[linePositionsOffset + 2u * lastVertex];
+  var positionY = linePositions[linePositionsOffset + 2u * lastVertex + 1u];
   if (localSample + 1u < sampleCount) {
     distance = min(f32(localSample) * params[paramsOffset + 10u], length);
     var searchLow = vertexBegin + 1u;
@@ -440,10 +540,10 @@ ${GET_NAN_WGSL}`,
       let startDistance = vertexDistances[vertexDistancesOffset + segmentStart];
       let endDistance = vertexDistances[vertexDistancesOffset + segmentStart + 1u];
       let t = (distance - startDistance) / (endDistance - startDistance);
-      let startX = pathPositions[pathPositionsOffset + 2u * segmentStart];
-      let startY = pathPositions[pathPositionsOffset + 2u * segmentStart + 1u];
-      let endX = pathPositions[pathPositionsOffset + 2u * segmentStart + 2u];
-      let endY = pathPositions[pathPositionsOffset + 2u * segmentStart + 3u];
+      let startX = linePositions[linePositionsOffset + 2u * segmentStart];
+      let startY = linePositions[linePositionsOffset + 2u * segmentStart + 1u];
+      let endX = linePositions[linePositionsOffset + 2u * segmentStart + 2u];
+      let endY = linePositions[linePositionsOffset + 2u * segmentStart + 3u];
       positionX = startX + (endX - startX) * t;
       positionY = startY + (endY - startY) * t;
     }
@@ -451,7 +551,7 @@ ${GET_NAN_WGSL}`,
   positionsOut[positionsOutOffset + 2u * index] = positionX;
   positionsOut[positionsOutOffset + 2u * index + 1u] = positionY;
   ${output.sampleDistances ? 'distancesOut[distancesOutOffset + index] = distance;' : ''}
-  ${output.samplePathIds ? 'pathIdsOut[pathIdsOutOffset + index] = path;' : ''}`
+  ${output.sampleLineIds ? 'lineIdsOut[lineIdsOutOffset + index] = line;' : ''}`
       })
     );
 
@@ -475,8 +575,8 @@ ${GET_NAN_WGSL}`,
         bindings: valueBindings,
         invocationCount: sampleCapacity,
         declarations: getRasterSamplingWGSL({
-          width: props.width,
-          height: props.height,
+          width: props.grid.width,
+          height: props.grid.height,
           noDataValue: props.noDataValue,
           hasValidity: Boolean(props.validity)
         }),
@@ -487,112 +587,188 @@ ${GET_NAN_WGSL}`,
       })
     );
 
-    // 5. Per-path serial pass: cumulative gain and loss, summaries.
-    const cumulativeBindings: WGSLKernelBinding[] = [
+    // 5. Cumulative gain and loss and line summaries: a segmented scan over samples whose state
+    // carries gain, loss, minimum and maximum (lines are segments), as block reduce, carry scan
+    // and down-sweep. The down-sweep writes the per-sample columns and, at the last sample of each
+    // line, its totals into a transient table that a per-line kernel copies to the outputs.
+    const sampleBlockCount = getSegmentedScanBlockCount(sampleCapacity);
+    const sampleAggregates = createTransientView(
+      graph,
+      `${id}-sample-aggregates`,
+      'uint32',
+      sampleBlockCount * PROFILE_SCAN_STATE_WORDS
+    );
+    const hasLineSummaries = Boolean(
+      output.lineGains || output.lineLosses || output.lineMinimums || output.lineMaximums
+    );
+    const lineSummaries = hasLineSummaries
+      ? createTransientView(graph, `${id}-line-summaries`, 'float32', 4 * lineCount)
+      : undefined;
+    const profileScanConstants = `const LINE_COUNT: u32 = ${lineCount}u;
+const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;
+${GET_NAN_WGSL}
+${IS_FINITE_VALUE_WGSL}`;
+    const profileScanInputs = (aggregatesAccess: 'read' | 'read_write'): WGSLKernelBinding[] => [
       {name: 'sampleOffsets', view: sampleOffsets, type: 'u32', access: 'read'},
-      {name: 'sampleValues', view: sampleValues, type: 'f32', access: 'read'}
+      {name: 'sampleValues', view: sampleValues, type: 'f32', access: 'read'},
+      {name: 'aggregates', view: sampleAggregates, type: 'u32', access: aggregatesAccess}
     ];
+    const loadSampleState = `var itemState = getIdentityScanState();
+  var line = 0u;
+  let isActive = index < getEmittedSampleCount();
+  if (isActive) {
+    line = findSampleLine(index);
+    itemState = getSampleScanState(index, line);
+  }`;
+    const cumulativeBindings = profileScanInputs('read');
     const cumulativeOutputs = [
       ['cumulativeGainOut', output.sampleCumulativeGain],
       ['cumulativeLossOut', output.sampleCumulativeLoss],
-      ['pathGainOut', output.pathGain],
-      ['pathLossOut', output.pathLoss],
-      ['pathMinimumOut', output.pathMinimum],
-      ['pathMaximumOut', output.pathMaximum]
+      ['lineSummaries', lineSummaries]
     ] as const;
     for (const [name, view] of cumulativeOutputs) {
       if (view) {
         cumulativeBindings.push({name, view, type: 'f32', access: 'read_write'});
       }
     }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-cumulative`,
-        operation: OPERATION,
-        variant: 'cumulative',
-        bindings: cumulativeBindings,
-        invocationCount: pathCount,
-        declarations: `const PATH_COUNT: u32 = ${pathCount}u;
-const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;
-${GET_NAN_WGSL}
-${IS_FINITE_VALUE_WGSL}`,
-        body: `let firstSample = min(sampleOffsets[sampleOffsetsOffset + index], SAMPLE_CAPACITY);
-  let endSample = min(sampleOffsets[sampleOffsetsOffset + index + 1u], SAMPLE_CAPACITY);
-  var gain = 0.0;
-  var loss = 0.0;
-  var minimum = getNaN();
-  var maximum = getNaN();
-  var previous = 0.0;
-  var hasPrevious = false;
-  for (var sample = firstSample; sample < endSample; sample++) {
-    let value = sampleValues[sampleValuesOffset + sample];
-    if (isFiniteValue(value)) {
-      if (hasPrevious) {
-        let delta = value - previous;
-        if (delta > 0.0) {
-          gain += delta;
-        } else if (delta < 0.0) {
-          loss -= delta;
-        }
-        minimum = select(minimum, value, value < minimum);
-        maximum = select(maximum, value, value > maximum);
-      } else {
-        minimum = value;
-        maximum = value;
-      }
-      previous = value;
-      hasPrevious = true;
+    const hasCumulativeConsumer =
+      hasLineSummaries || Boolean(output.sampleCumulativeGain || output.sampleCumulativeLoss);
+    // Nothing reads the scan unless a cumulative column or a line summary is requested.
+    if (hasCumulativeConsumer) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-cumulative-blocks`,
+          operation: OPERATION,
+          variant: 'cumulative-blocks',
+          bindings: profileScanInputs('read_write'),
+          invocationCount: sampleBlockCount * SEGMENTED_SCAN_WORKGROUP_SIZE,
+          guardIndex: false,
+          workgroupSize: SEGMENTED_SCAN_WORKGROUP_SIZE,
+          declarations: `${profileScanConstants}
+${getProfileScanDeclarations({writesAggregates: true, loadsItems: true})}`,
+          body: getScanBlockBody(loadSampleState)
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-cumulative-carries`,
+          operation: OPERATION,
+          variant: 'cumulative-carries',
+          bindings: [profileScanInputs('read_write')[2]],
+          invocationCount: SEGMENTED_SCAN_WORKGROUP_SIZE,
+          guardIndex: false,
+          workgroupSize: SEGMENTED_SCAN_WORKGROUP_SIZE,
+          declarations: `const BLOCK_COUNT: u32 = ${sampleBlockCount}u;
+${getProfileScanDeclarations({writesAggregates: true, loadsItems: false})}`,
+          body: getScanCarryBody()
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-cumulative`,
+          operation: OPERATION,
+          variant: 'cumulative',
+          bindings: cumulativeBindings,
+          invocationCount: sampleBlockCount * SEGMENTED_SCAN_WORKGROUP_SIZE,
+          guardIndex: false,
+          workgroupSize: SEGMENTED_SCAN_WORKGROUP_SIZE,
+          declarations: `${profileScanConstants}
+${getProfileScanDeclarations({writesAggregates: false, loadsItems: true})}`,
+          body: `${loadSampleState}
+  let prefix = scanWorkgroup(localInvocationIndex, itemState);
+  let result = combineScanStates(loadAggregate(workgroupIndex), prefix);
+  if (isActive) {
+    ${output.sampleCumulativeGain ? 'cumulativeGainOut[cumulativeGainOutOffset + index] = result.gain;' : ''}
+    ${output.sampleCumulativeLoss ? 'cumulativeLossOut[cumulativeLossOutOffset + index] = result.loss;' : ''}
+    ${
+      hasLineSummaries
+        ? `// The last emitted sample of a line holds the line totals.
+    if (min(sampleOffsets[sampleOffsetsOffset + line + 1u], SAMPLE_CAPACITY) == index + 1u) {
+      let summaryBase = lineSummariesOffset + 4u * line;
+      lineSummaries[summaryBase] = result.gain;
+      lineSummaries[summaryBase + 1u] = result.loss;
+      lineSummaries[summaryBase + 2u] = select(getNaN(), result.minimum, result.hasValue != 0u);
+      lineSummaries[summaryBase + 3u] = select(getNaN(), result.maximum, result.hasValue != 0u);
+    }`
+        : ''
     }
-    ${output.sampleCumulativeGain ? 'cumulativeGainOut[cumulativeGainOutOffset + sample] = gain;' : ''}
-    ${output.sampleCumulativeLoss ? 'cumulativeLossOut[cumulativeLossOutOffset + sample] = loss;' : ''}
-  }
-  ${output.pathGain ? 'pathGainOut[pathGainOutOffset + index] = gain;' : ''}
-  ${output.pathLoss ? 'pathLossOut[pathLossOutOffset + index] = loss;' : ''}
-  ${output.pathMinimum ? 'pathMinimumOut[pathMinimumOutOffset + index] = minimum;' : ''}
-  ${output.pathMaximum ? 'pathMaximumOut[pathMaximumOutOffset + index] = maximum;' : ''}`
-      })
-    );
+  }`
+        })
+      );
+    }
+    if (lineSummaries) {
+      const summaryBindings: WGSLKernelBinding[] = [
+        {name: 'sampleOffsets', view: sampleOffsets, type: 'u32', access: 'read'},
+        {name: 'lineSummaries', view: lineSummaries, type: 'f32', access: 'read'}
+      ];
+      for (const [name, view] of [
+        ['lineGainsOut', output.lineGains],
+        ['lineLossesOut', output.lineLosses],
+        ['lineMinimumsOut', output.lineMinimums],
+        ['lineMaximumsOut', output.lineMaximums]
+      ] as const) {
+        if (view) {
+          summaryBindings.push({name, view, type: 'f32', access: 'read_write'});
+        }
+      }
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-summaries`,
+          operation: OPERATION,
+          variant: 'summaries',
+          bindings: summaryBindings,
+          invocationCount: lineCount,
+          declarations: `const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;
+${GET_NAN_WGSL}`,
+          // Lines without emitted samples have no table row: gain and loss 0, extrema NaN.
+          body: `let firstSample = min(sampleOffsets[sampleOffsetsOffset + index], SAMPLE_CAPACITY);
+  let endSample = min(sampleOffsets[sampleOffsetsOffset + index + 1u], SAMPLE_CAPACITY);
+  let hasSamples = endSample > firstSample;
+  let summaryBase = lineSummariesOffset + 4u * index;
+  ${output.lineGains ? 'lineGainsOut[lineGainsOutOffset + index] = select(0.0, lineSummaries[summaryBase], hasSamples);' : ''}
+  ${output.lineLosses ? 'lineLossesOut[lineLossesOutOffset + index] = select(0.0, lineSummaries[summaryBase + 1u], hasSamples);' : ''}
+  ${output.lineMinimums ? 'lineMinimumsOut[lineMinimumsOutOffset + index] = select(getNaN(), lineSummaries[summaryBase + 2u], hasSamples);' : ''}
+  ${output.lineMaximums ? 'lineMaximumsOut[lineMaximumsOutOffset + index] = select(getNaN(), lineSummaries[summaryBase + 3u], hasSamples);' : ''}`
+        })
+      );
+    }
 
-    // 6. Per-path offsets and lengths, then the scalar count, overflow and total.
-    if (output.pathSampleOffsets || output.pathLength) {
+    // 6. Per-line offsets and lengths, then the scalar count, overflow and total.
+    if (output.lineSampleOffsets || output.lineLengths) {
       const finishBindings: WGSLKernelBinding[] = [
         {name: 'sampleOffsets', view: sampleOffsets, type: 'u32', access: 'read'},
-        {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+        {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
         {name: 'vertexDistances', view: vertexDistances, type: 'f32', access: 'read'}
       ];
-      if (output.pathSampleOffsets) {
+      if (output.lineSampleOffsets) {
         finishBindings.push({
-          name: 'pathSampleOffsetsOut',
-          view: output.pathSampleOffsets,
+          name: 'lineSampleOffsetsOut',
+          view: output.lineSampleOffsets,
           type: 'u32',
           access: 'read_write'
         });
       }
-      if (output.pathLength) {
+      if (output.lineLengths) {
         finishBindings.push({
-          name: 'pathLengthOut',
-          view: output.pathLength,
+          name: 'lineLengthsOut',
+          view: output.lineLengths,
           type: 'f32',
           access: 'read_write'
         });
       }
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-finish-paths`,
+          id: `${id}-finish-lines`,
           operation: OPERATION,
-          variant: 'finish-paths',
+          variant: 'finish-lines',
           bindings: finishBindings,
-          invocationCount: pathCount + 1,
-          declarations: pathConstants,
-          body: `${output.pathSampleOffsets ? 'pathSampleOffsetsOut[pathSampleOffsetsOutOffset + index] = min(sampleOffsets[sampleOffsetsOffset + index], SAMPLE_CAPACITY);' : ''}
-  if (index < PATH_COUNT) {
+          invocationCount: lineCount + 1,
+          declarations: lineConstants,
+          body: `${output.lineSampleOffsets ? 'lineSampleOffsetsOut[lineSampleOffsetsOutOffset + index] = min(sampleOffsets[sampleOffsetsOffset + index], SAMPLE_CAPACITY);' : ''}
+  if (index < LINE_COUNT) {
     let vertexBegin = getVertexBegin(index);
     let vertexEnd = getVertexEnd(index, vertexBegin);
     var length = 0.0;
     if (vertexEnd > vertexBegin) {
       length = vertexDistances[vertexDistancesOffset + vertexEnd - 1u];
     }
-    ${output.pathLength ? 'pathLengthOut[pathLengthOutOffset + index] = length;' : ''}
+    ${output.lineLengths ? 'lineLengthsOut[lineLengthsOutOffset + index] = length;' : ''}
   }`
         })
       );
@@ -600,13 +776,13 @@ ${IS_FINITE_VALUE_WGSL}`,
     const countBindings: WGSLKernelBinding[] = [
       {name: 'sampleOffsets', view: sampleOffsets, type: 'u32', access: 'read'},
       {name: 'truncated', view: truncated, type: 'u32', access: 'read'},
-      {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
-      {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'}
+      {name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'},
+      {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'}
     ];
-    if (output.requiredCount) {
+    if (output.status.requiredCount) {
       countBindings.push({
         name: 'totalOut',
-        view: output.requiredCount,
+        view: output.status.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -618,12 +794,12 @@ ${IS_FINITE_VALUE_WGSL}`,
         variant: 'finish-counts',
         bindings: countBindings,
         invocationCount: 1,
-        declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+        declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const SAMPLE_CAPACITY: u32 = ${sampleCapacity}u;`,
-        body: `let total = sampleOffsets[sampleOffsetsOffset + PATH_COUNT];
+        body: `let total = sampleOffsets[sampleOffsetsOffset + LINE_COUNT];
   countOut[countOutOffset] = min(total, SAMPLE_CAPACITY);
   overflowOut[overflowOutOffset] = select(0u, 1u, total > SAMPLE_CAPACITY || truncated[truncatedOffset] != 0u);
-  ${output.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}`
+  ${output.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}`
       })
     );
     return nodes;

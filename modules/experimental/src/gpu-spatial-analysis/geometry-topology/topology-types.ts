@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import type {GPUBoundedResultStatusPort, GPUPolygonGeometryPort} from '../contracts/index';
+import type {
+  GPUBoundedResultStatusPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 
 /** Sentinel written to provenance and ownership slots with no result row. */
 export const GPU_TOPOLOGY_NONE = 0xffffffff;
@@ -36,6 +39,11 @@ export type GPUTopologyPrecisionPolicy = {
 export type GPUTopologyStatusPort = GPUBoundedResultStatusPort & {
   requiredCount: GraphDataView<'uint32'>;
   candidateOverflow: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row count of segment pairs the intersection predicates could not certify. They
+   * are counted (and set `overflow`) whether or not this view is given.
+   */
+  uncertainCount?: GraphDataView<'uint32'>;
 };
 
 /**

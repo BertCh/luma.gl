@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,6 +11,12 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
 import {
   describeGPUSpatialWeights,
@@ -18,6 +25,70 @@ import {
 
 /** Lanes of the per-column standardization workgroup. */
 const STANDARDIZE_LANES = 256;
+
+/**
+ * Number of `uint32` words of the seed-only per-frame parameters shared by `GPUAZPRegions`,
+ * `GPUWardRegions` and `GPUMaxPRegions`: `[seed]`.
+ *
+ * @internal
+ */
+export const REGIONALIZATION_SEED_PARAMETER_LENGTH = 1;
+
+/**
+ * Packs the `[seed]` parameter word of a seeded regionalization contributor.
+ *
+ * @param operation Contributor class name, for the message.
+ * @param seed Tie-order seed, an integer in `[0, 2^32 - 1]`. Defaults to 0.
+ * @internal
+ */
+export function getRegionalizationSeedParameterValues(
+  operation: string,
+  seed: number = 0
+): Uint32Array {
+  validateCapacity(operation, 'seed', seed, 0);
+  return Uint32Array.of(seed);
+}
+
+/**
+ * Largest `weights.neighbors` slot count of the AZP and Ward regionalizations on `device`: the
+ * undirected adjacency they build holds up to two uint32 neighbors (8 bytes) per input slot in one
+ * storage binding, so 16777216 on a default device (128 MiB bindings).
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPURegionalizationMaximumSlotCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 8);
+}
+
+/**
+ * Validates that a regionalization contributor's weights fit `maximum` slots, the value of
+ * {@link getGPURegionalizationMaximumSlotCount} unless the contributor needs fewer.
+ *
+ * @internal
+ */
+export function validateRegionalizationSlotCount(
+  id: string,
+  weights: GPUSpatialWeights,
+  maximum: number
+): void {
+  validateMaximumCount(id, 'weights.neighbors rows', weights.neighbors.length, maximum);
+}
+
+/**
+ * Validates the per-frame `uint32` parameter view of a regionalization contributor.
+ *
+ * @internal
+ */
+export function validateRegionalizationParameters(
+  id: string,
+  parameters: GraphDataView,
+  length: number
+): void {
+  validatePackedView(parameters, ['uint32'], `${id} parameters`);
+  if (parameters.length < length) {
+    throw new Error(`${id} parameters must hold ${length} words`);
+  }
+}
 
 /**
  * Standardizes every column of a row-major attribute table to mean 0 and population standard
@@ -105,7 +176,7 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
  * IDs outside `[0, rowCount)` are replaced by the row itself (a self link is never a candidate),
  * and the caller reports them separately as invalid input from the original weights.
  *
- * When `weights.info?.symmetric === true` the input is returned unchanged and no node is added.
+ * When `weights.information?.symmetric === true` the input is returned unchanged and no node is added.
  *
  * @internal
  */
@@ -114,7 +185,7 @@ export function createSymmetricAdjacency<Parameters>(
   props: {id: string; operation: string; weights: GPUSpatialWeights; rowCount: number}
 ): {weights: GPUSpatialWeights; nodes: GPUCommandNode<Parameters>[]} {
   const {id, operation, weights, rowCount} = props;
-  if (weights.info?.symmetric === true) {
+  if (weights.information?.symmetric === true) {
     return {weights, nodes: []};
   }
   const capacity = weights.neighbors.length;
@@ -159,7 +230,7 @@ const CAPACITY: u32 = ${2 * capacity}u;`;
   const nodes: GPUCommandNode<Parameters>[] = [
     ...new GPUSpatialWeightsTranspose({
       id: `${id}-adjacency-transpose`,
-      // Only the pattern matters: drop info, status and distances.
+      // Only the pattern matters: drop information, status and distances.
       weights: {offsets: weights.offsets, neighbors: weights.neighbors, weights: weights.weights},
       output: {
         offsets: transposeOffsets,
@@ -226,7 +297,7 @@ fn findAdjacencyRow(slot: u32) -> u32 {
     weights: describeGPUSpatialWeights(
       {offsets: adjacencyOffsets, neighbors: adjacencyNeighbors, weights: adjacencyWeights},
       {
-        info: {
+        information: {
           rowCount,
           transform: 'unknown',
           symmetric: true

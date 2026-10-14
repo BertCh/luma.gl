@@ -21,16 +21,15 @@ import {
   type CellKeyLayout,
   type GPUCellFamily
 } from './cell-keys';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
   getCellTableNodes,
   getCellTableViews,
-  GPU_CELL_DEFAULT_SUM_SCALE,
   hasCellKeyHighWord,
   validateCellTable,
-  validateSumScale,
   type GPUCellTable
 } from './cell-table';
+import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
 
 const OPERATION = 'GPUCellRollup';
 
@@ -153,7 +152,7 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
         },
         {
           name: 'childCount',
-          view: props.source.count,
+          view: props.source.status.count,
           type: 'u32',
           access: 'read'
         },
@@ -193,7 +192,7 @@ ${CELL_KEY_WGSL}`,
         source: {kind: 'cells', table: props.source},
         sumScale: this.sumScale,
         output: props.output,
-        overflowSources: [props.source.overflow],
+        overflowSources: [props.source.status.overflow],
         extraCounts: props.extraCounts
       })
     ];

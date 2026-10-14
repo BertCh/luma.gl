@@ -9,17 +9,23 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
-import {getWGSLFloatLiteral, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {
-  createRasterExtremaPyramidNodes,
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
+import {
   getGPURasterExtremaPyramidLayout,
-  getRasterExtremaPyramidWGSL,
-  validateRasterExtremaPyramidOutput,
   type GPURasterExtremaPyramidLayout,
   type GPURasterExtremaPyramidOutput
 } from '../../gpu-raster/raster-pyramid/index';
-import {getTerrainElevationNodes} from '../terrain-analysis/terrain-analysis-utils';
+import {
+  createRasterExtremaPyramidNodes,
+  getRasterExtremaPyramidWGSL,
+  validateRasterExtremaPyramidOutput
+} from '../../gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid';
+import {getRasterBufferBandNodes, validateRasterGrid} from '../../gpu-raster/raster-band-utils';
 import {
   GPU_POINT_HORIZON_EARTH_RADIUS,
   POINT_HORIZON_PROJECTION_TAGS,
@@ -301,7 +307,7 @@ export type GPUPointHorizonModelOptions = {
    * Optional prebuilt min-max pyramid to read instead of building one inside this contributor.
    * Requires the `'pyramid'` traversal (the default). Pass `GPURasterExtremaPyramid.output` of a
    * pyramid created with `combined` over the same elevation, `footprint: 'bilinear'` and the same
-   * `width x height` (otherwise the constructor throws), added to the same graph before this
+   * grid size (otherwise the constructor throws), added to the same graph before this
    * contributor or run in an earlier graph. One pyramid then serves every consumer and is rebuilt
    * only when the elevation changes. Results are bit-identical to a self-built pyramid and to
    * `'march'`.
@@ -317,7 +323,11 @@ export type GPUPointHorizonModelOptions = {
   maximumDistance: number;
   /** First sample distance in meters. Defaults to 20. */
   minimumDistance?: number;
-  /** Nominal ground meters per pixel for the step rule (required). */
+  /**
+   * Nominal ground meters per pixel for the step rule (required). Topology: it sizes the distance
+   * lattice, so it is not read from the grid; for `'web-mercator'` the true pixel size varies with
+   * latitude.
+   */
   cellSize: number;
   /** See {@link GPUPointHorizonDistanceLatticeOptions}. */
   stepFactor?: number;
@@ -335,6 +345,7 @@ export type GPUPointHorizonModelOptions = {
 
 /** Validated, defaulted model. @internal */
 export type ResolvedPointHorizonModel = {
+  grid: GPURasterMetadata;
   width: number;
   height: number;
   projection: GPUPointHorizonProjection;
@@ -362,16 +373,17 @@ const PYRAMID_FIRST_BLOCK_SIZE = 4;
  */
 export function resolvePointHorizonModel(
   id: string,
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   options: GPUPointHorizonModelOptions
 ): ResolvedPointHorizonModel {
+  const {width, height} = grid;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 2 || height < 2) {
     throw new Error(`${id} dimensions must be integers of at least 2`);
   }
   if (width * height > 0xffffffff) {
     throw new Error(`${id} dimensions must be positive integers`);
   }
+  validateRasterGrid(id, grid);
   const projection = options.projection ?? 'planar';
   if (projection !== 'planar' && projection !== 'web-mercator') {
     throw new Error(`${id} projection must be planar or web-mercator`);
@@ -414,6 +426,7 @@ export function resolvePointHorizonModel(
     throw new Error(`${id} ${(error as Error).message}`);
   }
   return {
+    grid,
     width,
     height,
     projection,
@@ -426,9 +439,9 @@ export function resolvePointHorizonModel(
     lattice,
     segments: projection === 'web-mercator' ? getGPUPointHorizonSegments(lattice, options) : null,
     layout: options.pyramid
-      ? validateRasterExtremaPyramidOutput(id, options.pyramid, width, height)
+      ? validateRasterExtremaPyramidOutput(id, options.pyramid, grid)
       : traversal === 'pyramid'
-        ? getGPURasterExtremaPyramidLayout(width, height, {
+        ? getGPURasterExtremaPyramidLayout(grid, {
             firstBlockSize: PYRAMID_FIRST_BLOCK_SIZE,
             footprint: 'bilinear'
           })
@@ -550,8 +563,9 @@ const ASIN_COEFFICIENTS = [
  * Bit-stability. The pyramid and march kernels are compiled separately and must agree bit for bit,
  * so every per-ray quantity (series, breakpoints, eye) is built from pinned operations
  * (`pinMad`, `opaque`): a pinned product cannot be fused into the following add nor re-associated.
+ * Needs a `settings` f32 binding (word 4 is the runtime zero). @internal
  */
-const PRECISION_WGSL = /* wgsl */ `
+export const PRECISION_WGSL = /* wgsl */ `
 const PI: f32 = 3.14159265358979323846;
 const HALF_PI: f32 = 1.57079632679489661923;
 const QUARTER_PI: f32 = 0.78539816339744830962;
@@ -700,7 +714,8 @@ fn asinS(z: f32) -> f32 {
  * Generates the WGSL march shared by the profile and visibility kernels: lattice helpers, eye and
  * position helpers, the exact bilinear sample, `marchRay`, and (for `'pyramid'`) the exact skip.
  *
- * The caller's kernel must bind `elevationValues` (f32), `elevationValidity` (u32), `settings`
+ * The caller's kernel must bind `elevationValues` (f32, canonical: NaN exactly where a pixel is
+ * invalid, which is the only validity test the march makes), `settings`
  * (f32, slots `[curvature, cellX | worldPixelSize, cellY | mercatorTop, maximumDistance, ZERO]`)
  * and, for the pyramid, `pyramid` (f32, combined maxima then minima), using the usual
  * `${name}Offset` constants.
@@ -1109,10 +1124,62 @@ fn marchRay(eye: EyeState, sinA: f32, cosA: f32, q: f32, useQ: bool) -> RayResul
 `;
 }
 
+/** Elements between chunk start words: 256 bytes, so every chunk binds at element offset 0. */
+const POINT_HORIZON_CHUNK_STRIDE = 64;
+
+/**
+ * Graph-owned first item of every dispatch chunk, written once per encoding: chunk `c` starts at
+ * item `c * chunkSize`, stored at element `c * 64`. Each chunk kernel binds its one-word view as
+ * `chunkStart`, so every chunk shares one WGSL source and one pipeline (library rule 12); every
+ * chunk dispatches `chunkSize` invocations and skips items at or past `itemCount`.
+ *
+ * @internal
+ */
+export function createPointHorizonChunkStarts<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; operation: string; itemCount: number; maximumChunkSize: number}
+): {
+  chunkCount: number;
+  chunkSize: number;
+  writeNode: GPUCommandNode<Parameters>;
+  getChunkStart: (chunk: number) => WGSLKernelBinding;
+} {
+  const chunkSize = Math.min(props.maximumChunkSize, Math.max(props.itemCount, 1));
+  const chunkCount = Math.max(Math.ceil(props.itemCount / chunkSize), 1);
+  const words = createTransientView(
+    graph,
+    `${props.id}-chunk-words`,
+    'uint32',
+    chunkCount * POINT_HORIZON_CHUNK_STRIDE
+  );
+  const writeNode = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-chunks`,
+    operation: props.operation,
+    variant: 'chunk-starts',
+    bindings: [{name: 'chunkWords', view: words, type: 'u32', access: 'read_write'}],
+    invocationCount: chunkCount,
+    body: `chunkWords[chunkWordsOffset + index * ${POINT_HORIZON_CHUNK_STRIDE}u] = index * ${chunkSize}u;`
+  });
+  const getChunkStart = (chunk: number): WGSLKernelBinding => ({
+    name: 'chunkStart',
+    view: graph.createDataView(words.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: words.byteOffset + chunk * POINT_HORIZON_CHUNK_STRIDE * 4
+    }),
+    type: 'u32',
+    access: 'read'
+  });
+  return {chunkCount, chunkSize, writeNode, getChunkStart};
+}
+
 /** Canonical elevation, optional combined pyramid, their nodes and kernel bindings. @internal */
 export type PointHorizonSource<Parameters> = {
   nodes: GPUCommandNode<Parameters>[];
-  /** Read-only bindings `elevationValues`, `elevationValidity` and, for `'pyramid'`, `pyramid`. */
+  /**
+   * Read-only bindings `elevationValues` and, for `'pyramid'`, `pyramid`. Validity is not bound:
+   * the march tests the canonical NaN, so a validity binding would only cost a storage slot.
+   */
   bindings: WGSLKernelBinding[];
 };
 
@@ -1128,13 +1195,12 @@ export function createPointHorizonSource<Parameters>(
   model: ResolvedPointHorizonModel,
   terrain: GPURasterBand
 ): PointHorizonSource<Parameters> {
-  const source = getTerrainElevationNodes(graph, id, terrain, model.width, model.height, true);
+  const source = getRasterBufferBandNodes(graph, id, terrain, model.grid, true);
   const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
   const values = source.band.storage.values as GraphDataView<'float32'>;
   const validity = source.band.validity as GraphDataView<'uint32'>;
   const bindings: WGSLKernelBinding[] = [
-    {name: 'elevationValues', view: values, type: 'f32', access: 'read'},
-    {name: 'elevationValidity', view: validity, type: 'u32', access: 'read'}
+    {name: 'elevationValues', view: values, type: 'f32', access: 'read'}
   ];
   if (model.layout && model.sharedPyramid) {
     bindings.push({

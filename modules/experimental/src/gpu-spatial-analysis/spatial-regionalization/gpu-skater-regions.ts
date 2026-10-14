@@ -2,19 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {createWGSLDispatchGate, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -27,14 +30,55 @@ const OPERATION = 'GPUSkaterRegions';
 /** Largest supported attribute column count. */
 export const GPU_SKATER_MAXIMUM_COLUMNS = 16;
 
+/**
+ * Largest `weights.neighbors` slot count (and row count) times `2 + columnCount` of
+ * {@link GPUSkaterRegions} on `device`: the arc and region statistics tables hold `2 + columnCount`
+ * float32 values per slot or row in one storage binding, so 33554432 on a default device (128 MiB
+ * bindings). At 16 columns that is 1,864,135 slots.
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPUSkaterMaximumStatisticCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
 /** Number of `uint32` words {@link GPUSkaterRegionsProps.parameters} must hold. */
-export const GPU_SKATER_PARAMETER_LENGTH = 2;
+export const GPU_SKATER_REGIONS_PARAMETER_LENGTH = 2;
 
 /** Index of the target region count in the parameter words. */
-export const GPU_SKATER_PARAMETER_REGION_COUNT = 0;
-
+const PARAMETER_REGION_COUNT = 0;
 /** Index of the minimum region size in the parameter words. */
-export const GPU_SKATER_PARAMETER_MINIMUM_SIZE = 1;
+const PARAMETER_MINIMUM_REGION_SIZE = 1;
+
+/**
+ * Per-frame settings of {@link GPUSkaterRegions}, packed by
+ * {@link getGPUSkaterRegionsParameterValues}.
+ */
+export type GPUSkaterRegionsSettings = {
+  /**
+   * Target region count, clamped to `maximumRegionCount` on the GPU. A value at or below the
+   * number of forest trees cuts nothing.
+   */
+  regionCount: number;
+  /** Minimum region size in rows. Defaults to 1. */
+  minimumRegionSize?: number;
+};
+
+/**
+ * Packs {@link GPUSkaterRegionsSettings} into the {@link GPU_SKATER_REGIONS_PARAMETER_LENGTH}
+ * `uint32` words of {@link GPUSkaterRegionsProps.parameters}.
+ */
+export function getGPUSkaterRegionsParameterValues(
+  settings: GPUSkaterRegionsSettings
+): Uint32Array {
+  const minimumRegionSize = settings.minimumRegionSize ?? 1;
+  validateCapacity('GPUSkaterRegions', 'regionCount', settings.regionCount);
+  validateCapacity('GPUSkaterRegions', 'minimumRegionSize', minimumRegionSize);
+  const values = new Uint32Array(GPU_SKATER_REGIONS_PARAMETER_LENGTH);
+  values[PARAMETER_REGION_COUNT] = settings.regionCount;
+  values[PARAMETER_MINIMUM_REGION_SIZE] = minimumRegionSize;
+  return values;
+}
 
 /** Value of an unused `cutEdges` entry. */
 export const GPU_SKATER_NO_CUT = 0xffffffff;
@@ -49,7 +93,9 @@ const STATE_MINIMUM_SIZE = 5;
 const STATE_OLD_REGION = 6;
 /** Row at the child end of the applied cut. */
 const STATE_CHILD = 7;
-const STATE_LOG = 8;
+/** Greedy step cursor: the reset-best kernel of step `s` sets it to `s + 1`. */
+const STATE_STEP = 8;
+const STATE_LOG = 9;
 
 /**
  * Properties for {@link GPUSkaterRegions}.
@@ -61,7 +107,10 @@ const STATE_LOG = 8;
 export type GPUSkaterRegionsProps = {
   /** Prefix for generated node IDs. Defaults to `'skater-regions'`. */
   id?: string;
-  /** The weights the spanning forest was built over. */
+  /**
+   * The weights the spanning forest was built over. Both the slot count and the row count, times
+   * `2 + columnCount`, are at most {@link getGPUSkaterMaximumStatisticCount}.
+   */
   weights: GPUSpatialWeights;
   /**
    * `GPUSpatialWeightsMinimumSpanningTree` `treeEdgeFlags`: one flag per slot, set on the
@@ -86,14 +135,19 @@ export type GPUSkaterRegionsProps = {
    */
   maximumRegionCount: number;
   /**
-   * Per-frame `uint32` words: `[0]` target region count (clamped to `maximumRegionCount`; a
-   * value at or below the number of forest trees cuts nothing) and `[1]` minimum region size in
-   * rows (at least 1). Write it with a `GPUParameterBuffer`.
+   * Per-frame `uint32` words ({@link GPU_SKATER_REGIONS_PARAMETER_LENGTH}): the target region
+   * count and minimum region size, written with {@link getGPUSkaterRegionsParameterValues}.
    */
   parameters: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUSkaterRegionsOutput;
+};
+
+/** Caller-owned outputs of {@link GPUSkaterRegions}. */
+export type GPUSkaterRegionsOutput = {
   /**
-   * Caller-owned region label per row (`rows` entries): the smallest-depth row of the region,
-   * which is the row nearest its tree's root, so labels are row indices.
+   * Region label per row (`rows` entries): the smallest-depth row of the region, which is the
+   * row nearest its tree's root, so labels are row indices.
    */
   labels: GraphDataView<'uint32'>;
   /** Optional one-row count of regions after the greedy steps (trees plus cuts). */
@@ -103,7 +157,10 @@ export type GPUSkaterRegionsProps = {
    * each applied cut in order, or `GPU_SKATER_NO_CUT` for steps that did not apply.
    */
   cutEdges?: GraphDataView<'uint32'>;
-  /** Optional per-step SSD reduction of each applied cut (`maximumRegionCount - 1` entries). */
+  /**
+   * Optional per-step reduction of the within-region sum of squares of each applied cut
+   * (`maximumRegionCount - 1` entries).
+   */
   cutGains?: GraphDataView<'float32'>;
 };
 
@@ -115,7 +172,7 @@ export type GPUSkaterRegionsProps = {
  * computing the SSD reduction `SSD(region) - SSD(side A) - SSD(side B)` from the side's size,
  * attribute sums and sum of squares, and applies the best candidate whose both sides keep at
  * least `minimumRegionSize` rows. Cuts apply while the region count is below the target region
- * count, so a slider on `parameters[0]` re-runs the same compiled steps. Region `k` of the greedy
+ * count, so a region-count slider re-runs the same compiled steps. Region `k` of the greedy
  * sequence is a prefix of the sequence for `k + 1`, as in SKATER.
  *
  * **Tree statistics.** An Euler tour of the initial forest is list-ranked once; the rank orders the
@@ -154,55 +211,48 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
     const columnCount = props.columnCount ?? 1;
-    if (
-      !Number.isSafeInteger(columnCount) ||
-      columnCount < 1 ||
-      columnCount > GPU_SKATER_MAXIMUM_COLUMNS
-    ) {
-      throw new Error(`${id} columnCount must be an integer in [1, ${GPU_SKATER_MAXIMUM_COLUMNS}]`);
-    }
-    if (!Number.isSafeInteger(props.maximumRegionCount) || props.maximumRegionCount < 2) {
-      throw new Error(`${id} maximumRegionCount must be an integer of at least 2`);
-    }
+    const {output} = props;
+    validateCapacity(id, 'columnCount', columnCount, 1, GPU_SKATER_MAXIMUM_COLUMNS);
+    validateCapacity(id, 'maximumRegionCount', props.maximumRegionCount, 2);
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal rows * columnCount`);
     }
-    validatePackedUint32View(props.treeEdgeFlags, `${id} treeEdgeFlags`);
+    validatePackedView(props.treeEdgeFlags, ['uint32'], `${id} treeEdgeFlags`);
     if (props.treeEdgeFlags.length !== props.weights.neighbors.length) {
       throw new Error(`${id} treeEdgeFlags length must equal the weights slot capacity`);
     }
-    validatePackedUint32View(props.componentLabels, `${id} componentLabels`);
+    validatePackedView(props.componentLabels, ['uint32'], `${id} componentLabels`);
     if (props.componentLabels.length !== rows) {
       throw new Error(`${id} componentLabels length must equal the weights row count`);
     }
-    validatePackedUint32View(props.parameters, `${id} parameters`);
-    if (props.parameters.length < GPU_SKATER_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters must hold ${GPU_SKATER_PARAMETER_LENGTH} words`);
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    if (props.parameters.length < GPU_SKATER_REGIONS_PARAMETER_LENGTH) {
+      throw new Error(`${id} parameters must hold ${GPU_SKATER_REGIONS_PARAMETER_LENGTH} words`);
     }
-    validatePackedUint32View(props.labels, `${id} labels`);
-    if (props.labels.length !== rows) {
-      throw new Error(`${id} labels length must equal the weights row count`);
+    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    if (output.labels.length !== rows) {
+      throw new Error(`${id} output.labels length must equal the weights row count`);
     }
-    if (props.regionCount) {
-      validatePackedUint32View(props.regionCount, `${id} regionCount`);
+    if (output.regionCount) {
+      validatePackedView(output.regionCount, ['uint32'], `${id} output.regionCount`);
     }
     const stepCount = props.maximumRegionCount - 1;
-    if (props.cutEdges) {
-      validatePackedUint32View(props.cutEdges, `${id} cutEdges`);
-      if (props.cutEdges.length < stepCount) {
-        throw new Error(`${id} cutEdges must hold maximumRegionCount - 1 entries`);
+    if (output.cutEdges) {
+      validatePackedView(output.cutEdges, ['uint32'], `${id} output.cutEdges`);
+      if (output.cutEdges.length < stepCount) {
+        throw new Error(`${id} output.cutEdges must hold maximumRegionCount - 1 entries`);
       }
     }
-    if (props.cutGains) {
-      validatePackedView(props.cutGains, ['float32'], `${id} cutGains`);
-      if (props.cutGains.length < stepCount) {
-        throw new Error(`${id} cutGains must hold maximumRegionCount - 1 entries`);
+    if (output.cutGains) {
+      validatePackedView(output.cutGains, ['float32'], `${id} output.cutGains`);
+      if (output.cutGains.length < stepCount) {
+        throw new Error(`${id} output.cutGains must hold maximumRegionCount - 1 entries`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.labels, props.regionCount, props.cutEdges, props.cutGains],
+      [output.labels, output.regionCount, output.cutEdges, output.cutGains],
       [
         props.values,
         props.parameters,
@@ -219,22 +269,36 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, values, labels} = props;
+    const {weights, values, output} = props;
+    const {labels} = output;
     validateGraphViewsBelongToGraph(id, graph, [
       values,
       props.treeEdgeFlags,
       props.componentLabels,
       props.parameters,
       labels,
-      props.regionCount,
-      props.cutEdges,
-      props.cutGains,
+      output.regionCount,
+      output.cutEdges,
+      output.cutGains,
       weights.offsets,
       weights.neighbors
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
     const columnCount = props.columnCount ?? 1;
+    const maximumStatisticCount = getGPUSkaterMaximumStatisticCount(graph.device);
+    validateMaximumCount(
+      id,
+      'weights.neighbors rows x (2 + columnCount)',
+      capacity * (2 + columnCount),
+      maximumStatisticCount
+    );
+    validateMaximumCount(
+      id,
+      'weights rows x (2 + columnCount)',
+      rows * (2 + columnCount),
+      maximumStatisticCount
+    );
     const stepCount = props.maximumRegionCount - 1;
     const statsStride = 2 + columnCount;
     const stateLength = STATE_LOG + 2 * stepCount;
@@ -261,6 +325,15 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
       rows * statsStride
     );
     const state = createTransientView(graph, `${id}-state`, 'uint32', stateLength);
+    // Indirect dispatch triples of the gated per-step kernels (rule 13): slot 0 for the per-arc
+    // kernels, slot 1 for the per-row relabel. The one-thread apply kernel zeroes them when a step
+    // finds no cut and the deactivate kernel when the target region count is reached, so the
+    // remaining steps launch only their one-thread kernels.
+    const stepGate = createWGSLDispatchGate(graph, {
+      id: `${id}-step-dispatch`,
+      operation: OPERATION,
+      shapes: [[capacity], [rows]]
+    });
 
     const csr = [
       {name: 'offsets', view: weights.offsets, type: 'u32' as const, access: 'read' as const},
@@ -279,6 +352,7 @@ const STATE_TARGET: u32 = ${STATE_TARGET}u;
 const STATE_MINIMUM_SIZE: u32 = ${STATE_MINIMUM_SIZE}u;
 const STATE_OLD_REGION: u32 = ${STATE_OLD_REGION}u;
 const STATE_CHILD: u32 = ${STATE_CHILD}u;
+const STATE_STEP: u32 = ${STATE_STEP}u;
 const STATE_LOG: u32 = ${STATE_LOG}u;
 const SLOT_MASK: u32 = 0x3fffffffu;
 ${REGIONALIZATION_NONE_WGSL}`;
@@ -444,15 +518,19 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
         variant: 'init-state',
         bindings: [
           {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
-          {name: 'state', view: state, type: 'u32', access: 'read_write'}
+          {name: 'state', view: state, type: 'u32', access: 'read_write'},
+          stepGate.binding
         ],
         invocationCount: stateLength,
         declarations,
-        body: `var word = 0u;
+        body: `if (index == 0u) {
+    ${stepGate.armWGSL}
+  }
+  var word = 0u;
   if (index == STATE_TARGET) {
-    word = min(parameters[parametersOffset + ${GPU_SKATER_PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS);
+    word = min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS);
   } else if (index == STATE_MINIMUM_SIZE) {
-    word = max(parameters[parametersOffset + ${GPU_SKATER_PARAMETER_MINIMUM_SIZE}u], 1u);
+    word = max(parameters[parametersOffset + ${PARAMETER_MINIMUM_REGION_SIZE}u], 1u);
   } else if (index >= STATE_LOG && ((index - STATE_LOG) % 2u) == 0u) {
     word = NONE;
   }
@@ -643,6 +721,7 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           id: `${stepId}-candidates`,
           operation: OPERATION,
           variant: 'candidates',
+          ...stepGate.getGate(0),
           bindings: [
             {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
             {name: 'arcFlags', view: arcFlags, type: 'u32', access: 'read'},
@@ -696,12 +775,14 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           declarations,
           body: `state[stateOffset + STATE_BEST_KEY] = 0u;
   state[stateOffset + STATE_BEST_EDGE] = NONE;
-  state[stateOffset + STATE_APPLIED] = 0u;`
+  state[stateOffset + STATE_APPLIED] = 0u;
+  state[stateOffset + STATE_STEP] = state[stateOffset + STATE_STEP] + 1u;`
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${stepId}-best-gain`,
           operation: OPERATION,
           variant: 'best-gain',
+          ...stepGate.getGate(0),
           bindings: [
             {name: 'gainKey', view: gainKey, type: 'u32', access: 'read'},
             {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'}
@@ -717,6 +798,7 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           id: `${stepId}-best-edge`,
           operation: OPERATION,
           variant: 'best-edge',
+          ...stepGate.getGate(0),
           bindings: [
             {name: 'gainKey', view: gainKey, type: 'u32', access: 'read'},
             {name: 'twin', view: twin, type: 'u32', access: 'read'},
@@ -741,12 +823,15 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
             {name: 'arcStats', view: arcStats, type: 'f32', access: 'read'},
             {name: 'labels', view: labels, type: 'u32', access: 'read'},
             {name: 'regionStats', view: regionStats, type: 'f32', access: 'read_write'},
-            {name: 'state', view: state, type: 'u32', access: 'read_write'}
+            {name: 'state', view: state, type: 'u32', access: 'read_write'},
+            stepGate.binding
           ],
           invocationCount: 1,
           declarations: infoDeclarations,
+          // Ungated (it writes the gate). No cut: this and every later step changes nothing.
           body: `let edge = state[stateOffset + STATE_BEST_EDGE];
   if (state[stateOffset + STATE_BEST_KEY] == 0u || edge == NONE) {
+    ${stepGate.disarmWGSL}
     return;
   }
   let other = twin[twinOffset + edge];
@@ -769,8 +854,10 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
   state[stateOffset + STATE_APPLIED] = down + 1u;
   state[stateOffset + STATE_OLD_REGION] = region;
   state[stateOffset + STATE_CHILD] = child;
-  state[stateOffset + STATE_LOG + ${2 * step}u] = min(edge, other);
-  state[stateOffset + STATE_LOG + ${2 * step + 1}u] = state[stateOffset + STATE_BEST_KEY];`
+  // The step index comes from the cursor, so every step shares one pipeline (rule 12).
+  let logSlot = STATE_LOG + 2u * (state[stateOffset + STATE_STEP] - 1u);
+  state[stateOffset + logSlot] = min(edge, other);
+  state[stateOffset + logSlot + 1u] = state[stateOffset + STATE_BEST_KEY];`
         }),
         // Rows of the cut's region that lie below the cut take the child's label. A row is below
         // the cut when its parent arc lies strictly inside the cut arc's tour interval.
@@ -778,6 +865,7 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           id: `${stepId}-relabel`,
           operation: OPERATION,
           variant: 'relabel',
+          ...stepGate.getGate(1),
           bindings: [
             {name: 'rowDownArc', view: rowDownArc, type: 'u32', access: 'read'},
             {name: 'twin', view: twin, type: 'u32', access: 'read'},
@@ -810,6 +898,7 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           id: `${stepId}-update-ancestors`,
           operation: OPERATION,
           variant: 'update-ancestors',
+          ...stepGate.getGate(0),
           bindings: [
             {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
             {name: 'twin', view: twin, type: 'u32', access: 'read'},
@@ -847,11 +936,16 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           bindings: [
             {name: 'twin', view: twin, type: 'u32', access: 'read'},
             {name: 'arcFlags', view: arcFlags, type: 'u32', access: 'read_write'},
-            {name: 'state', view: state, type: 'u32', access: 'read'}
+            {name: 'state', view: state, type: 'u32', access: 'read'},
+            stepGate.binding
           ],
           invocationCount: 1,
           declarations,
-          body: `let applied = state[stateOffset + STATE_APPLIED];
+          // Ungated (it writes the gate): the target region count ends the remaining steps.
+          body: `if (state[stateOffset + STATE_REGION_COUNT] >= state[stateOffset + STATE_TARGET]) {
+    ${stepGate.disarmWGSL}
+  }
+  let applied = state[stateOffset + STATE_APPLIED];
   if (applied == 0u) {
     return;
   }
@@ -866,31 +960,31 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
     // 5. Publish the cut log and region count.
     const publishBindings = [
       {name: 'state', view: state, type: 'u32' as const, access: 'read' as const},
-      ...(props.regionCount
+      ...(output.regionCount
         ? [
             {
               name: 'regionCountOut',
-              view: props.regionCount,
+              view: output.regionCount,
               type: 'u32' as const,
               access: 'read_write' as const
             }
           ]
         : []),
-      ...(props.cutEdges
+      ...(output.cutEdges
         ? [
             {
               name: 'cutEdgesOut',
-              view: props.cutEdges,
+              view: output.cutEdges,
               type: 'u32' as const,
               access: 'read_write' as const
             }
           ]
         : []),
-      ...(props.cutGains
+      ...(output.cutGains
         ? [
             {
               name: 'cutGainsOut',
-              view: props.cutGains,
+              view: output.cutGains,
               type: 'f32' as const,
               access: 'read_write' as const
             }
@@ -907,15 +1001,15 @@ fn getSsd(count: f32, squares: f32, sumSquares: f32) -> f32 {
           invocationCount: Math.max(stepCount, 1),
           declarations,
           body: `${
-            props.regionCount
+            output.regionCount
               ? 'if (index == 0u) { regionCountOut[regionCountOutOffset] = state[stateOffset + STATE_REGION_COUNT]; }'
               : ''
           }
   if (index < STEP_COUNT) {
     let edge = state[stateOffset + STATE_LOG + 2u * index];
     let key = state[stateOffset + STATE_LOG + 2u * index + 1u];
-    ${props.cutEdges ? 'cutEdgesOut[cutEdgesOutOffset + index] = edge;' : ''}
-    ${props.cutGains ? 'cutGainsOut[cutGainsOutOffset + index] = select(0.0, bitcast<f32>(key - 1u), key != 0u);' : ''}
+    ${output.cutEdges ? 'cutEdgesOut[cutEdgesOutOffset + index] = edge;' : ''}
+    ${output.cutGains ? 'cutGainsOut[cutGainsOutOffset + index] = select(0.0, bitcast<f32>(key - 1u), key != 0u);' : ''}
   }`
         })
       );

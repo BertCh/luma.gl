@@ -6,7 +6,6 @@ import {
   createTransientView,
   GPUSort,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,11 +17,13 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../utils/wgsl-common';
-import type {GPUMultipleTestingMethod} from '../contracts/index';
+import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUMultipleTestingAdjustment';
 
@@ -48,6 +49,20 @@ const METHODS: readonly GPUMultipleTestingMethod[] = [
   'benjamini-hochberg',
   'benjamini-yekutieli'
 ];
+
+/** Caller-owned outputs of {@link GPUMultipleTestingAdjustment}. */
+export type GPUMultipleTestingAdjustmentOutput = {
+  /**
+   * Same length as `pValues`, must not alias it. Adjusted p-value in `[0, 1]`
+   * (the definitions of statsmodels `multipletests`: `bonferroni`, `holm`, `fdr_bh`, `fdr_by`), NaN
+   * where not tested. For every method a row is significant at level `alpha` exactly when
+   * `adjustedPValue <= alpha`, so multi-level bins (0.10 / 0.05 / 0.01) are consistent by
+   * construction. Tied p-values receive identical adjusted values.
+   */
+  adjustedPValues: GraphDataView<'float32'>;
+  /** Optional one-row `uint32`: the family size `m` actually used. */
+  testedCount?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUMultipleTestingAdjustment}.
@@ -77,14 +92,6 @@ export type GPUMultipleTestingAdjustmentProps = {
    */
   method: GPUMultipleTestingMethod;
   /**
-   * Caller-owned output, same length as `pValues`, must not alias it. Adjusted p-value in `[0, 1]`
-   * (the definitions of statsmodels `multipletests`: `bonferroni`, `holm`, `fdr_bh`, `fdr_by`), NaN
-   * where not tested. For every method a row is significant at level `alpha` exactly when
-   * `adjustedPValue <= alpha`, so multi-level bins (0.10 / 0.05 / 0.01) are consistent by
-   * construction. Tied p-values receive identical adjusted values.
-   */
-  adjustedPValues: GraphDataView<'float32'>;
-  /**
    * Compile-time, optional non-negative integer below 2^24. The family size used is
    * `m = max(testedRows, minimumFamilySize)`: rows that have no p-value count as `p = 1`. Use it to
    * pin `m` when the tested set can shrink (for example a statistic whose analysis mask follows a
@@ -92,8 +99,8 @@ export type GPUMultipleTestingAdjustmentProps = {
    * tested row count).
    */
   minimumFamilySize?: number;
-  /** Optional caller-owned one-row `uint32` output: the family size `m` actually used. */
-  testedCount?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUMultipleTestingAdjustmentOutput;
 };
 
 /** Validates a method name (throws on an unknown one) and returns it; `undefined` becomes `'none'`. */
@@ -110,9 +117,7 @@ export function resolveGPUMultipleTestingMethod(
 
 function validateMinimumFamilySize(id: string, minimumFamilySize: number | undefined): number {
   const value = minimumFamilySize ?? 0;
-  if (!Number.isInteger(value) || value < 0 || value >= GPU_MULTIPLE_TESTING_MAXIMUM_ROWS) {
-    throw new Error(`${id} minimumFamilySize must be an integer in [0, 2^24)`);
-  }
+  validateCapacity(id, 'minimumFamilySize', value, 0, GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1);
   return value;
 }
 
@@ -224,23 +229,19 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
     resolveGPUMultipleTestingMethod(id, props.method);
     validateMinimumFamilySize(id, props.minimumFamilySize);
     validatePackedView(props.pValues, ['float32'], `${id} pValues`);
-    validatePackedView(props.adjustedPValues, ['float32'], `${id} adjustedPValues`);
+    validatePackedView(props.output.adjustedPValues, ['float32'], `${id} output.adjustedPValues`);
     const rows = props.pValues.length;
-    if (rows < 1 || rows >= GPU_MULTIPLE_TESTING_MAXIMUM_ROWS) {
-      throw new Error(`${id} pValues must hold between 1 and 2^24 - 1 rows`);
-    }
-    if (props.adjustedPValues.length !== rows) {
+    validateCapacity(id, 'pValues length', rows, 1, GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1);
+    if (props.output.adjustedPValues.length !== rows) {
       throw new Error(`${id} adjustedPValues length must equal the pValues length`);
     }
-    if (props.testedCount) {
-      validatePackedUint32View(props.testedCount, `${id} testedCount`);
-      if (props.testedCount.length < 1) {
-        throw new Error(`${id} testedCount must hold one uint32`);
-      }
+    if (props.output.testedCount) {
+      validatePackedUint32View(props.output.testedCount, `${id} output.testedCount`);
+      validateCapacity(id, 'output.testedCount length', props.output.testedCount.length);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.adjustedPValues, props.testedCount],
+      [props.output.adjustedPValues, props.output.testedCount],
       [props.pValues]
     );
   }
@@ -252,8 +253,8 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.pValues,
-      props.adjustedPValues,
-      props.testedCount
+      props.output.adjustedPValues,
+      props.output.testedCount
     ]);
     const method = resolveGPUMultipleTestingMethod(id, props.method);
     const minimumFamilySize = validateMinimumFamilySize(id, props.minimumFamilySize);
@@ -265,7 +266,7 @@ fn isTestedBits(bits: u32) -> bool {
   return bits <= 0x3f800000u || bits == 0x80000000u;
 }`;
 
-    if (method === 'none' && !props.testedCount) {
+    if (method === 'none' && !props.output.testedCount) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-apply`,
@@ -273,7 +274,12 @@ fn isTestedBits(bits: u32) -> bool {
           variant: 'none',
           bindings: [
             {name: 'pValues', view: props.pValues, type: 'f32', access: 'read'},
-            {name: 'adjusted', view: props.adjustedPValues, type: 'f32', access: 'read_write'}
+            {
+              name: 'adjusted',
+              view: props.output.adjustedPValues,
+              type: 'f32',
+              access: 'read_write'
+            }
           ],
           invocationCount: rows,
           declarations: testedWGSL,
@@ -343,10 +349,10 @@ const UNTESTED_KEY: u32 = ${UNTESTED_KEY}u;`,
       {name: 'family', view: family, type: 'u32', access: 'read_write'},
       {name: 'familyScale', view: familyScale, type: 'f32', access: 'read_write'}
     ];
-    if (props.testedCount) {
+    if (props.output.testedCount) {
       familyBindings.push({
         name: 'testedCount',
-        view: props.testedCount,
+        view: props.output.testedCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -378,7 +384,7 @@ fn getHarmonicNumber(m: u32) -> f32 {
   family[familyOffset] = tested;
   family[familyOffset + 1u] = m;
   familyScale[familyScaleOffset] = ${method === 'benjamini-yekutieli' ? 'getHarmonicNumber(m)' : '1.0'};
-  ${props.testedCount ? 'testedCount[testedCountOffset] = m;' : ''}`
+  ${props.output.testedCount ? 'testedCount[testedCountOffset] = m;' : ''}`
       })
     );
 
@@ -391,7 +397,12 @@ fn getHarmonicNumber(m: u32) -> f32 {
           bindings: [
             {name: 'pValues', view: props.pValues, type: 'f32', access: 'read'},
             {name: 'family', view: family, type: 'u32', access: 'read'},
-            {name: 'adjusted', view: props.adjustedPValues, type: 'f32', access: 'read_write'}
+            {
+              name: 'adjusted',
+              view: props.output.adjustedPValues,
+              type: 'f32',
+              access: 'read_write'
+            }
           ],
           invocationCount: rows,
           declarations: testedWGSL,
@@ -534,7 +545,7 @@ fn scanWorkgroup(localIndex: u32) {
           {name: 'family', view: family, type: 'u32', access: 'read'},
           {name: 'scanned', view: scanned, type: 'f32', access: 'read'},
           {name: 'blockTotals', view: blockTotals, type: 'f32', access: 'read'},
-          {name: 'adjusted', view: props.adjustedPValues, type: 'f32', access: 'read_write'}
+          {name: 'adjusted', view: props.output.adjustedPValues, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: `${GET_NAN_WGSL}

@@ -2,11 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../utils/philox-random';
+
+/** Philox key word 1 of the seed jitter and priority stream. @internal */
+export const STREAMLINES_SEED_PURPOSE = PHILOX_PURPOSES.streamlinesJitter.id;
+
+/**
+ * Bit of `output.lines.overflow` set when the pruning rounds did not decide every seed, so the
+ * published lines are an incomplete set (undecided lines are not published). Bit 0 (value 1) keeps
+ * its meaning, a full line or point capacity; the flag is the OR of both, so it reads 0 only for a
+ * complete result. A converged run never sets this bit.
+ */
+export const GPU_STREAMLINES_OVERFLOW_UNCONVERGED = 2;
+
 /** Number of float32 elements in a {@link GPUStreamlines} parameter view. */
 export const GPU_STREAMLINES_PARAMETER_LENGTH = 12;
 
-/** Number of uint32 elements in a {@link GPUStreamlines} word parameter view. */
-export const GPU_STREAMLINES_WORD_PARAMETER_LENGTH = 4;
+/** Number of uint32 elements in a {@link GPUStreamlines} uint32 parameter view. */
+export const GPU_STREAMLINES_UINT32_PARAMETER_LENGTH = 4;
 
 /** Per-frame settings of {@link GPUStreamlines}. */
 export type GPUStreamlinesSettings = {
@@ -68,13 +81,13 @@ export function getGPUStreamlinesParameterValues(
  * @param settings Per-frame settings; reads `seed` and `minimumPoints`.
  * @param target Optional destination of at least 4 elements.
  */
-export function getGPUStreamlinesWordParameterValues(
+export function getGPUStreamlinesUint32ParameterValues(
   settings: Pick<GPUStreamlinesSettings, 'seed' | 'minimumPoints'>,
-  target: Uint32Array = new Uint32Array(GPU_STREAMLINES_WORD_PARAMETER_LENGTH)
+  target: Uint32Array = new Uint32Array(GPU_STREAMLINES_UINT32_PARAMETER_LENGTH)
 ): Uint32Array {
-  if (target.length < GPU_STREAMLINES_WORD_PARAMETER_LENGTH) {
+  if (target.length < GPU_STREAMLINES_UINT32_PARAMETER_LENGTH) {
     throw new Error(
-      `Streamlines word parameter target must hold ${GPU_STREAMLINES_WORD_PARAMETER_LENGTH} elements`
+      `Streamlines uint32 parameter target must hold ${GPU_STREAMLINES_UINT32_PARAMETER_LENGTH} elements`
     );
   }
   const seed = settings.seed ?? 0;

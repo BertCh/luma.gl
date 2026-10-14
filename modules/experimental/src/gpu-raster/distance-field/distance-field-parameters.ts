@@ -3,8 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getRasterLocalOrigin} from '../raster-utils';
+import {validateParameterTarget} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 
-/** Number of float32 values read from `GPUDistanceFieldProps.settings`. */
+/** Number of float32 values read from `GPUDistanceFieldProps.parameters`. */
 export const GPU_DISTANCE_FIELD_PARAMETER_LENGTH = 8;
 
 /** Sentinel for "no seed": unreached cells in allocation and nearest-cell outputs. */
@@ -15,26 +17,14 @@ export const GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION = 32768;
 
 /**
  * CPU description of the per-frame settings packed by {@link getGPUDistanceFieldParameterValues}.
- *
- * Give either `cellSize` (with an optional `origin`) or `bounds` together with `gridSize`.
+ * The grid origin and cell size come from the grid passed next to it.
  */
 export type GPUDistanceFieldSettings = {
-  /**
-   * Ground coordinate of the outer corner of cell `(0, 0)`, the minimum x and y, in the same
-   * absolute frame as `bounds`. Defaults to `[0, 0]`.
-   */
-  origin?: readonly [number, number];
-  /** Positive cell size `[x, y]` in ground units. Unequal sizes give an anisotropic metric. */
-  cellSize?: readonly [number, number];
-  /** Grid domain `[minX, minY, maxX, maxY]`; the cell size is derived from it and `gridSize`. */
-  bounds?: readonly [number, number, number, number];
-  /** `[width, height]` in cells, required with `bounds`. */
-  gridSize?: readonly [number, number];
   /**
    * Cells farther than this ground distance from every seed get distance `+Infinity`, allocation
    * {@link GPU_DISTANCE_FIELD_NONE}, and a `0` in the within-distance mask. Defaults to `Infinity`.
    */
-  maxDistance?: number;
+  maximumDistance?: number;
   /**
    * Float64 point that seed positions are uploaded relative to. The packer subtracts it from the
    * grid origin in float64, so seeds snap to cells from origin-relative float32 values. Defaults
@@ -48,55 +38,52 @@ export type GPUDistanceFieldSettings = {
 
 /**
  * Packs settings into the 8-float layout read by `GPUDistanceField`:
- * `[originX, originY, cellSizeX, cellSizeY, 1 / cellSizeX, 1 / cellSizeY, maxDistance, 0]`, with
- * the origin relative to `localOrigin` (subtracted in float64).
+ * `[originX, originY, cellSizeX, cellSizeY, 1 / stepX, 1 / stepY, maximumDistance, 0]`, with the
+ * origin relative to `localOrigin` (subtracted in float64). The origin is the outer corner of
+ * cell `(0, 0)` and the step is the signed cell step along the columns and rows (`affine[0]`,
+ * `affine[4]`), so north-up grids (negative row step) and north-down grids both snap correctly.
+ * Cell size and origin come from `grid`, which must be axis-aligned.
  *
- * Seed positions map to cells with `floor((position - origin) * inverseCellSize)` in f32, so the
+ * Seed positions map to cells with `floor((position - origin) * inverseStep)` in f32, so the
  * inverse is computed once here instead of dividing on the GPU. Rewriting the values between
  * encodings never recompiles the graph.
  *
- * @param settings Grid placement, cell size, and optional distance limit.
+ * @param settings Optional distance limit and local origin.
+ * @param grid The frame's grid; its width and height must match the contributor's.
  * @param target Optional destination of at least 8 elements.
- * @throws If the cell size is not finite and positive, or `target` is too short.
+ * @throws If the grid is rotated or its cell size is not finite and positive, or `target` is too short.
  */
 export function getGPUDistanceFieldParameterValues(
   settings: GPUDistanceFieldSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_DISTANCE_FIELD_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_DISTANCE_FIELD_PARAMETER_LENGTH) {
-    throw new Error(
-      `Distance field parameter target must hold ${GPU_DISTANCE_FIELD_PARAMETER_LENGTH} elements`
-    );
+  validateParameterTarget(
+    'getGPUDistanceFieldParameterValues',
+    target,
+    GPU_DISTANCE_FIELD_PARAMETER_LENGTH
+  );
+  const [stepX, shearX, originX, shearY, stepY, originY] = grid.affine;
+  if (shearX !== 0 || shearY !== 0) {
+    throw new Error('getGPUDistanceFieldParameterValues needs an axis-aligned grid');
   }
-  let origin = settings.origin ?? [0, 0];
-  let cellSize = settings.cellSize;
-  if (settings.bounds) {
-    const [minX, minY, maxX, maxY] = settings.bounds;
-    const [width, height] = settings.gridSize ?? [0, 0];
-    if (!(width >= 1 && height >= 1)) {
-      throw new Error('Distance field bounds require a positive gridSize');
-    }
-    origin = [minX, minY];
-    cellSize = [(maxX - minX) / width, (maxY - minY) / height];
-  }
-  if (!cellSize) {
-    throw new Error('Distance field settings require cellSize or bounds');
-  }
-  const cellSizeX = Math.fround(cellSize[0]);
-  const cellSizeY = Math.fround(cellSize[1]);
+  const cellSizeX = Math.fround(Math.abs(stepX));
+  const cellSizeY = Math.fround(Math.abs(stepY));
   if (
     !(Number.isFinite(cellSizeX) && cellSizeX > 0 && Number.isFinite(cellSizeY) && cellSizeY > 0)
   ) {
-    throw new Error('Distance field cell size must be finite and positive');
+    throw new Error('getGPUDistanceFieldParameterValues cell size must be finite and positive');
   }
+  // Point pixels are addressed at their centers; the kernels want the outer corner.
+  const cornerShift = grid.pixelInterpretation === 'point' ? -0.5 : 0;
   const [localOriginX, localOriginY] = getRasterLocalOrigin('Distance field', settings.localOrigin);
   target.fill(0, 0, GPU_DISTANCE_FIELD_PARAMETER_LENGTH);
-  target[0] = origin[0] - localOriginX;
-  target[1] = origin[1] - localOriginY;
+  target[0] = originX + stepX * cornerShift - localOriginX;
+  target[1] = originY + stepY * cornerShift - localOriginY;
   target[2] = cellSizeX;
   target[3] = cellSizeY;
-  target[4] = 1 / cellSizeX;
-  target[5] = 1 / cellSizeY;
-  target[6] = settings.maxDistance ?? Infinity;
+  target[4] = 1 / Math.fround(stepX);
+  target[5] = 1 / Math.fround(stepY);
+  target[6] = settings.maximumDistance ?? Infinity;
   return target;
 }

@@ -15,6 +15,11 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
+  GPUCatchmentAccessibility,
+  type GPUCatchmentMethod
+} from '../../gpu-spatial-analysis/catchment-accessibility/index';
+import {GPUNetworkCostWeights} from '../network-cost-weights/index';
+import {
   createAccessibilityColumnGatherNode,
   createAccessibilityRowReduceNode
 } from './network-accessibility-passes';
@@ -32,8 +37,8 @@ export const GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH = 4;
  */
 export type GPUNetworkAccessibilityDecay = 'none' | 'exponential' | 'power';
 
-/** Per-frame scoring parameters of {@link GPUNetworkAccessibility}. */
-export type GPUNetworkAccessibilityParameters = {
+/** Per-frame scoring settings of {@link GPUNetworkAccessibility}. */
+export type GPUNetworkAccessibilitySettings = {
   /**
    * Cost cutoff: only matrix entries with a finite cost `<= threshold` contribute. `Infinity`
    * keeps every reached entry. Must not exceed the `costLimit` the matrix was built with.
@@ -41,9 +46,9 @@ export type GPUNetworkAccessibilityParameters = {
   threshold: number;
   /** Decay applied to the `gravity` and two-step floating catchment outputs. Defaults to `'none'`. */
   decay?: GPUNetworkAccessibilityDecay;
-  /** Decay rate. Defaults to 0. */
+  /** Decay rate, finite and non-negative. Defaults to 0. */
   beta?: number;
-  /** Power-decay floor so zero costs stay finite. Must be positive. Defaults to 1. */
+  /** Power-decay floor so zero costs stay finite. Must be positive and finite. Defaults to 1. */
   minimumCost?: number;
 };
 
@@ -54,33 +59,54 @@ const DECAY_CODES: Record<GPUNetworkAccessibilityDecay, number> = {
 };
 
 /**
- * Encodes per-frame scoring parameters as the four `float32` words read by
+ * Packs per-frame scoring settings into the four `float32` words read by
  * {@link GPUNetworkAccessibility}: threshold, decay code, beta, minimum cost.
+ *
+ * @throws If `threshold` is NaN, `beta` is negative or not finite, or `minimumCost` is not a
+ * positive finite number (`max(0, minimumCost) ^ -beta` would be infinite).
  */
-export function encodeGPUNetworkAccessibilityParameters(
-  parameters: GPUNetworkAccessibilityParameters
+export function getGPUNetworkAccessibilityParameterValues(
+  settings: GPUNetworkAccessibilitySettings
 ): Float32Array {
+  const beta = settings.beta ?? 0;
+  const minimumCost = settings.minimumCost ?? 1;
+  if (Number.isNaN(settings.threshold)) {
+    throw new Error('GPUNetworkAccessibility threshold must not be NaN');
+  }
+  if (!Number.isFinite(beta) || beta < 0) {
+    throw new Error('GPUNetworkAccessibility beta must be a non-negative finite number');
+  }
+  if (!Number.isFinite(minimumCost) || !(minimumCost > 0)) {
+    throw new Error('GPUNetworkAccessibility minimumCost must be a positive finite number');
+  }
   return Float32Array.from([
-    parameters.threshold,
-    DECAY_CODES[parameters.decay ?? 'none'],
-    parameters.beta ?? 0,
-    parameters.minimumCost ?? 1
+    settings.threshold,
+    DECAY_CODES[settings.decay ?? 'none'],
+    beta,
+    minimumCost
   ]);
 }
 
 /**
- * Two-step floating catchment area (2SFCA) inputs and outputs of {@link GPUNetworkAccessibility}.
+ * Floating catchment area (2SFCA or 3SFCA) inputs and outputs of {@link GPUNetworkAccessibility}.
  * Only for `orientation: 'opportunity-rows'`, where rows are facilities and `opportunityWeights`
  * holds their supply.
  */
 export type GPUNetworkAccessibilityCatchment = {
+  /**
+   * `'2sfca'` (default) or `'3sfca'`, the method of `GPUCatchmentAccessibility`, which runs on the
+   * decayed matrix entries within the threshold.
+   */
+  method?: GPUCatchmentMethod;
   /** Demand (for example population) per column node. */
   demand: GraphDataView<'float32'>;
-  /** Per-node accessibility `A_i = sum_j R_j f(c_ij)` over facilities within the threshold. */
+  /**
+   * Per-node accessibility. 2SFCA: `A_i = sum_j R_j f(c_ij)` over facilities within the threshold.
+   */
   output: GraphDataView<'float32'>;
   /**
-   * Optional per-facility supply-to-demand ratio `R_j = S_j / sum_i P_i f(c_ij)`, 0 when no demand
-   * is in its catchment.
+   * Optional per-facility supply-to-demand ratio, 2SFCA `R_j = S_j / sum_i P_i f(c_ij)`, 0 when no
+   * demand is in its catchment.
    */
   ratios?: GraphDataView<'float32'>;
 };
@@ -113,21 +139,28 @@ export type GPUNetworkAccessibilityProps = {
   opportunityWeights: GraphDataView<'float32'>;
   /**
    * Per-frame parameters: `GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH` `float32` words written with
-   * {@link encodeGPUNetworkAccessibilityParameters}.
+   * {@link getGPUNetworkAccessibilityParameterValues}.
    */
   parameters: GraphDataView<'float32'>;
   /** Optional cumulative opportunities within the threshold, per origin. */
   cumulative?: GraphDataView<'float32'>;
   /** Optional gravity accessibility `sum_j O_j f(c_ij)` within the threshold, per origin. */
   gravity?: GraphDataView<'float32'>;
-  /** Optional two-step floating catchment area. */
+  /**
+   * Optional floating catchment area. It is a composition: two `GPUNetworkCostWeights` turn the
+   * matrix into facility weights and their transpose, and `GPUCatchmentAccessibility` scores them.
+   * Each weights holds `rowCount * nodeCount` transient slots (the worst case, so it never
+   * overflows); for large matrices build sparser weights yourself and run those two contributors.
+   */
   catchment?: GPUNetworkAccessibilityCatchment;
 };
 
 /**
  * Scores per-origin accessibility from a retained network cost matrix: cumulative opportunities
  * within a per-frame cost threshold, gravity accessibility with negative-exponential or power decay,
- * and the two-step floating catchment area (2SFCA, with the decay applied inside each catchment).
+ * and the two- or three-step floating catchment area (2SFCA or 3SFCA, with the decay applied inside
+ * each catchment). The catchment is not a separate kernel: it composes `GPUNetworkCostWeights` and
+ * `GPUCatchmentAccessibility`, the one floating catchment implementation.
  *
  * The contributor only reads the matrix, so changing the threshold, decay, or beta re-encodes a few
  * linear passes and never re-runs a shortest-path search: build the matrix with
@@ -195,6 +228,10 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
       }
     }
     if (catchment) {
+      const method = catchment.method ?? '2sfca';
+      if (method !== '2sfca' && method !== '3sfca') {
+        throw new Error(`${id} catchment.method must be '2sfca' or '3sfca'`);
+      }
       if (!isOpportunityRows) {
         throw new Error(`${id} catchment requires orientation 'opportunity-rows'`);
       }
@@ -220,8 +257,9 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns one `scores` node when `cumulative` or `gravity` is requested, and two catchment nodes
-   * (`catchment-ratios`, `catchment-scores`) for 2SFCA.
+   * Returns one `scores` node when `cumulative` or `gravity` is requested, then for a catchment the
+   * nodes of the facility weights (`catchment-facility-weights-*`), the demand weights
+   * (`catchment-demand-weights-*`) and `GPUCatchmentAccessibility` (`catchment-*`).
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -265,32 +303,43 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
       );
     }
     if (catchment) {
-      const ratios =
-        catchment.ratios ??
-        createTransientView(graph, `${id}-catchment-ratios`, 'float32', rowCount);
+      // The parameter words [threshold, decay, beta, minimumCost] are exactly the
+      // GPUNetworkCostWeights layout [costLimit, decay, beta, minimumCost] with the same decay codes,
+      // so one view drives both weights.
+      const [facilityWeights, demandWeights] = (['rows', 'columns'] as const).map(orientation => {
+        const weightsId = `${id}-catchment-${orientation === 'rows' ? 'facility' : 'demand'}-weights`;
+        const weightsRowCount = orientation === 'rows' ? rowCount : nodeCount;
+        const capacity = rowCount * nodeCount;
+        const costWeights = new GPUNetworkCostWeights({
+          id: weightsId,
+          costs: props.costs,
+          rowCount,
+          orientation,
+          parameters: props.parameters,
+          output: {
+            offsets: createTransientView(
+              graph,
+              `${weightsId}-csr-offsets`,
+              'uint32',
+              weightsRowCount + 1
+            ),
+            neighbors: createTransientView(graph, `${weightsId}-csr-neighbors`, 'uint32', capacity),
+            weights: createTransientView(graph, `${weightsId}-csr-weights`, 'float32', capacity)
+          }
+        });
+        nodes.push(...costWeights.getCommandNodes(graph));
+        return costWeights.outputWeights;
+      });
       nodes.push(
-        createAccessibilityRowReduceNode<Parameters>(graph, {
-          id: `${id}-catchment-ratios`,
-          operation: OPERATION,
-          variant: 'catchment-ratios',
-          rowCount,
-          columnCount: nodeCount,
-          costs: props.costs,
-          columnWeights: catchment.demand,
-          parameters: props.parameters,
-          rowNumerators: props.opportunityWeights,
-          ratios
-        }),
-        createAccessibilityColumnGatherNode<Parameters>(graph, {
-          id: `${id}-catchment-scores`,
-          operation: OPERATION,
-          rowCount,
-          columnCount: nodeCount,
-          costs: props.costs,
-          rowWeights: ratios,
-          parameters: props.parameters,
-          gravity: catchment.output
-        })
+        ...new GPUCatchmentAccessibility({
+          id: `${id}-catchment`,
+          method: catchment.method ?? '2sfca',
+          supply: props.opportunityWeights,
+          demand: catchment.demand,
+          facilityWeights,
+          demandWeights,
+          output: {accessibility: catchment.output, ratios: catchment.ratios}
+        }).getCommandNodes(graph)
       );
     }
     return nodes;

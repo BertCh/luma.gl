@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,7 +14,8 @@ import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createPairStatisticsClearNode,
@@ -24,7 +24,8 @@ import {
   getPairStatisticsSortedPointsNodes,
   getPairStatisticsTotalSumNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
-  validatePairStatisticsInputs
+  validatePairStatisticsInputs,
+  validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {
   GPU_CLARK_EVANS_LENGTH,
@@ -36,7 +37,7 @@ import {
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUPointPatternIndices';
 
@@ -141,12 +142,38 @@ fn getChiSquarePValue(x: f32, degreesOfFreedom: f32, alternative: u32) -> f32 {
 /** Id written to `nearestNeighborIds` when a row has no nearest neighbor. */
 export const GPU_NO_NEAREST_NEIGHBOR = 0xffffffff;
 
+/** Caller-owned output views of {@link GPUPointPatternIndices}. */
+export type GPUPointPatternIndicesOutput = {
+  /**
+   * Optional caller-owned distance to the nearest included neighbor, one row per input row. Quiet
+   * NaN for excluded rows and when fewer than two rows are included.
+   */
+  nearestNeighborDistances?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned row index of the nearest included neighbor (smallest row index among
+   * ties), one row per input row. `GPU_NO_NEAREST_NEIGHBOR` when there is none.
+   */
+  nearestNeighborIds?: GraphDataView<'uint32'>;
+  /**
+   * Optional caller-owned Clark-Evans summary `[n, observedMeanDistance, expectedMeanDistance,
+   * ratio, standardError, zScore, pValue]` (`GPU_CLARK_EVANS_LENGTH` rows).
+   */
+  clarkEvans?: GraphDataView<'float32'>;
+  /** Optional caller-owned quadrat counts, `columns * rows` rows, row-major (`row * columns + column`). */
+  quadratCounts?: GraphDataView<'uint32'>;
+  /**
+   * Optional caller-owned quadrat summary `[quadratCount, mean, variance, varianceToMeanRatio,
+   * chiSquare, degreesOfFreedom, pValue]` (`GPU_QUADRAT_STATISTICS_LENGTH` rows).
+   */
+  quadratStatistics?: GraphDataView<'float32'>;
+};
+
 /**
  * Properties for {@link GPUPointPatternIndices}. At least one output is required.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask` and `parameters`
  * (window bounds and search-cell hint). Compile-time: the row count, `gridSize`, `quadratGrid` and
- * which outputs are present.
+ * which `output` views are present.
  */
 export type GPUPointPatternIndicesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'point-pattern-indices'`. */
@@ -175,31 +202,11 @@ export type GPUPointPatternIndicesProps = {
   mask?: GraphDataView<'uint32'>;
   /**
    * Compile-time `[columns, rows]` of the quadrat tiling of the per-frame bounds. Required with
-   * `quadratCounts` or `quadratStatistics`; `columns * rows` is at most 65536.
+   * `output.quadratCounts` or `output.quadratStatistics`; `columns * rows` is at most 65536.
    */
   quadratGrid?: readonly [number, number];
-  /**
-   * Optional caller-owned distance to the nearest included neighbor, one row per input row. Quiet
-   * NaN for excluded rows and when fewer than two rows are included.
-   */
-  nearestNeighborDistances?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned row index of the nearest included neighbor (smallest row index among
-   * ties), one row per input row. `GPU_NO_NEAREST_NEIGHBOR` when there is none.
-   */
-  nearestNeighborIds?: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned Clark-Evans summary `[n, observedMeanDistance, expectedMeanDistance,
-   * ratio, standardError, zScore, pValue]` (`GPU_CLARK_EVANS_LENGTH` rows).
-   */
-  clarkEvans?: GraphDataView<'float32'>;
-  /** Optional caller-owned quadrat counts, `columns * rows` rows, row-major (`row * columns + column`). */
-  quadratCounts?: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned quadrat summary `[quadratCount, mean, variance, varianceToMeanRatio,
-   * chiSquare, degreesOfFreedom, pValue]` (`GPU_QUADRAT_STATISTICS_LENGTH` rows).
-   */
-  quadratStatistics?: GraphDataView<'float32'>;
+  /** Caller-owned output views. At least one is required. */
+  output: GPUPointPatternIndicesOutput;
 };
 
 /**
@@ -259,36 +266,37 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    const {output} = props;
     const rows = validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH
     });
     const wantsNearest =
-      props.nearestNeighborDistances || props.nearestNeighborIds || props.clarkEvans;
-    const wantsQuadrats = props.quadratCounts || props.quadratStatistics;
+      output.nearestNeighborDistances || output.nearestNeighborIds || output.clarkEvans;
+    const wantsQuadrats = output.quadratCounts || output.quadratStatistics;
     if (!wantsNearest && !wantsQuadrats) {
-      throw new Error(`${id} needs at least one output`);
+      throw new Error(`${id} output needs at least one view`);
     }
-    if (props.nearestNeighborDistances) {
+    if (output.nearestNeighborDistances) {
       validatePackedView(
-        props.nearestNeighborDistances,
+        output.nearestNeighborDistances,
         ['float32'],
-        `${id} nearestNeighborDistances`
+        `${id} output.nearestNeighborDistances`
       );
-      if (props.nearestNeighborDistances.length !== rows) {
-        throw new Error(`${id} nearestNeighborDistances length must equal positions length`);
+      if (output.nearestNeighborDistances.length !== rows) {
+        throw new Error(`${id} output.nearestNeighborDistances length must equal positions length`);
       }
     }
-    if (props.nearestNeighborIds) {
-      validatePackedUint32View(props.nearestNeighborIds, `${id} nearestNeighborIds`);
-      if (props.nearestNeighborIds.length !== rows) {
-        throw new Error(`${id} nearestNeighborIds length must equal positions length`);
+    if (output.nearestNeighborIds) {
+      validatePackedUint32View(output.nearestNeighborIds, `${id} output.nearestNeighborIds`);
+      if (output.nearestNeighborIds.length !== rows) {
+        throw new Error(`${id} output.nearestNeighborIds length must equal positions length`);
       }
     }
-    if (props.clarkEvans) {
-      validatePackedView(props.clarkEvans, ['float32'], `${id} clarkEvans`);
-      if (props.clarkEvans.length < GPU_CLARK_EVANS_LENGTH) {
-        throw new Error(`${id} clarkEvans must hold ${GPU_CLARK_EVANS_LENGTH} rows`);
+    if (output.clarkEvans) {
+      validatePackedView(output.clarkEvans, ['float32'], `${id} output.clarkEvans`);
+      if (output.clarkEvans.length < GPU_CLARK_EVANS_LENGTH) {
+        throw new Error(`${id} output.clarkEvans must hold ${GPU_CLARK_EVANS_LENGTH} rows`);
       }
     }
     if (wantsQuadrats) {
@@ -305,31 +313,31 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
           `${id} quadratGrid must be two positive integers with columns * rows <= ${GPU_QUADRAT_MAXIMUM_COUNT}`
         );
       }
-      if (props.quadratCounts) {
-        validatePackedUint32View(props.quadratCounts, `${id} quadratCounts`);
-        if (props.quadratCounts.length !== quadratGrid[0] * quadratGrid[1]) {
-          throw new Error(`${id} quadratCounts must hold columns * rows rows`);
+      if (output.quadratCounts) {
+        validatePackedUint32View(output.quadratCounts, `${id} output.quadratCounts`);
+        if (output.quadratCounts.length !== quadratGrid[0] * quadratGrid[1]) {
+          throw new Error(`${id} output.quadratCounts must hold columns * rows rows`);
         }
       }
-      if (props.quadratStatistics) {
-        validatePackedView(props.quadratStatistics, ['float32'], `${id} quadratStatistics`);
-        if (props.quadratStatistics.length < GPU_QUADRAT_STATISTICS_LENGTH) {
+      if (output.quadratStatistics) {
+        validatePackedView(output.quadratStatistics, ['float32'], `${id} output.quadratStatistics`);
+        if (output.quadratStatistics.length < GPU_QUADRAT_STATISTICS_LENGTH) {
           throw new Error(
-            `${id} quadratStatistics must hold ${GPU_QUADRAT_STATISTICS_LENGTH} rows`
+            `${id} output.quadratStatistics must hold ${GPU_QUADRAT_STATISTICS_LENGTH} rows`
           );
         }
       }
     } else if (props.quadratGrid) {
-      throw new Error(`${id} quadratGrid needs quadratCounts or quadratStatistics`);
+      throw new Error(`${id} quadratGrid needs output.quadratCounts or output.quadratStatistics`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.nearestNeighborDistances,
-        props.nearestNeighborIds,
-        props.clarkEvans,
-        props.quadratCounts,
-        props.quadratStatistics
+        output.nearestNeighborDistances,
+        output.nearestNeighborIds,
+        output.clarkEvans,
+        output.quadratCounts,
+        output.quadratStatistics
       ],
       [props.positions, props.parameters, props.mask]
     );
@@ -340,16 +348,17 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize} = props;
+    const {positions, parameters, gridSize, output} = props;
+    validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
       props.mask,
-      props.nearestNeighborDistances,
-      props.nearestNeighborIds,
-      props.clarkEvans,
-      props.quadratCounts,
-      props.quadratStatistics
+      output.nearestNeighborDistances,
+      output.nearestNeighborIds,
+      output.clarkEvans,
+      output.quadratCounts,
+      output.quadratStatistics
     ]);
     const rows = positions.length;
     const cellCount = gridSize[0] * gridSize[1];
@@ -364,12 +373,13 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
     const nodes = inputs.nodes;
     const sharedWGSL = getPairStatisticsSharedWGSL(gridSize);
 
-    if (props.nearestNeighborDistances || props.nearestNeighborIds || props.clarkEvans) {
+    if (output.nearestNeighborDistances || output.nearestNeighborIds || output.clarkEvans) {
       const distances =
-        props.nearestNeighborDistances ??
+        output.nearestNeighborDistances ??
         createTransientView(graph, `${id}-nearest-distances`, 'float32', rows);
       const ids =
-        props.nearestNeighborIds ?? createTransientView(graph, `${id}-nearest-ids`, 'uint32', rows);
+        output.nearestNeighborIds ??
+        createTransientView(graph, `${id}-nearest-ids`, 'uint32', rows);
       const sortedPoints = getPairStatisticsSortedPointsNodes<Parameters>(graph, {
         id,
         operation: OPERATION,
@@ -496,7 +506,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
         })
       );
 
-      if (props.clarkEvans) {
+      if (output.clarkEvans) {
         const terms = createTransientView(graph, `${id}-nearest-terms`, 'float32', rows);
         const total = createTransientView(graph, `${id}-nearest-total`, 'float32', 1);
         nodes.push(
@@ -527,7 +537,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
               {name: 'total', view: total, type: 'f32', access: 'read'},
               {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
               {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-              {name: 'clarkEvans', view: props.clarkEvans, type: 'f32', access: 'read_write'}
+              {name: 'clarkEvans', view: output.clarkEvans, type: 'f32', access: 'read_write'}
             ],
             invocationCount: 1,
             declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
@@ -574,11 +584,11 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
       }
     }
 
-    if (props.quadratCounts || props.quadratStatistics) {
+    if (output.quadratCounts || output.quadratStatistics) {
       const [quadratColumns, quadratRows] = props.quadratGrid!;
       const quadratCount = quadratColumns * quadratRows;
       const counts =
-        props.quadratCounts ??
+        output.quadratCounts ??
         createTransientView(graph, `${id}-quadrat-counts`, 'uint32', quadratCount);
       nodes.push(
         createPairStatisticsClearNode<Parameters>(graph, `${id}-quadrat-clear`, OPERATION, counts),
@@ -613,7 +623,7 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
   }`
         })
       );
-      if (props.quadratStatistics) {
+      if (output.quadratStatistics) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-quadrat-statistics`,
@@ -625,7 +635,7 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
               {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
               {
                 name: 'quadratStatistics',
-                view: props.quadratStatistics,
+                view: output.quadratStatistics,
                 type: 'f32',
                 access: 'read_write'
               }

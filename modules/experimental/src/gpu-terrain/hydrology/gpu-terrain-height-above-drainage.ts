@@ -8,7 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {validateRasterIterations} from '../../gpu-raster/cost-distance/raster-relaxation';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
@@ -17,17 +17,17 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 import {
   createTerrainFlowPointerNodes,
   getTerrainFlowTracingWGSL,
   validateTerrainTracingCellView,
-  validateTerrainTracingConvergedView
+  validateTerrainTracingStatus
 } from './terrain-flow-tracing';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {GPU_TERRAIN_FLOW_STREAM_UNRESOLVED} from './gpu-terrain-flow';
@@ -39,14 +39,45 @@ export const GPU_TERRAIN_DRAINAGE_NONE = 0xffffffff;
 
 /**
  * Value of `drainageCells` for cells whose D8 path meets a `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED`
- * stream word before a stream cell: the drainage cell is unknown, and HAND is NaN.
+ * stream word or a `GPU_TERRAIN_FLOW_UNRESOLVED` direction before a stream cell, or whose pointer
+ * jumping stopped at `maximumIterations` before reaching its fixpoint: the drainage cell is unknown, and
+ * HAND is NaN. A converged run on resolved inputs never writes it.
  */
 export const GPU_TERRAIN_DRAINAGE_UNRESOLVED = 0xfffffffe;
+
+/** One-row status words of {@link GPUTerrainHeightAboveDrainage}. */
+export type GPUTerrainHeightAboveDrainageStatus = {
+  /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
+  converged?: GraphDataView<'uint32'>;
+  /** One row: gated pointer-jumping rounds executed. Presence is compile-time. */
+  iterationCount?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUTerrainHeightAboveDrainage}; at least one view is required. */
+export type GPUTerrainHeightAboveDrainageOutput = {
+  /**
+   * Elevation of a cell minus the elevation of the stream cell its D8 path reaches first, in float32
+   * elevation units. 0 on stream cells. NaN for invalid cells, cells whose path ends without
+   * reaching a stream, cells whose path first meets an unresolved stream word, and cells whose
+   * elevation or drainage elevation is not finite, and cells whose drainage cell is
+   * `GPU_TERRAIN_DRAINAGE_UNRESOLVED`. Presence is compile-time.
+   */
+  heightAboveDrainage?: GraphDataView<'float32'>;
+  /**
+   * Cell index of the stream cell each cell drains to (the cell itself for stream cells),
+   * `GPU_TERRAIN_DRAINAGE_UNRESOLVED` when the path first meets an unresolved stream word or
+   * direction, or pointer jumping did not converge, or `GPU_TERRAIN_DRAINAGE_NONE`. Presence is
+   * compile-time.
+   */
+  drainageCells?: GraphDataView<'uint32'>;
+  /** One-row status words. */
+  status?: GPUTerrainHeightAboveDrainageStatus;
+};
 
 /**
  * Properties for {@link GPUTerrainHeightAboveDrainage}.
  *
- * Compile-time: `width`, `height`, `maxIterations`, the elevation format and calibration, and which
+ * Compile-time: `grid` size, `maximumIterations`, the elevation format and calibration, and which
  * optional outputs are provided. Per-frame: the contents of `elevation`, `flowDirections` and
  * `streams`. The contributor works on D8 receiver indices only, so it has no cell-size model: the result
  * is a vertical difference in elevation units, independent of `uniform`, `web-mercator` or
@@ -57,10 +88,8 @@ export const GPU_TERRAIN_DRAINAGE_UNRESOLVED = 0xfffffffe;
 export type GPUTerrainHeightAboveDrainageProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-height-above-drainage'`. Compile-time. */
   id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
    * Routing surface whose heights are differenced: normally `GPUTerrainFlow.filledElevation`, or
    * the raw DEM. Validity, nodata, scale and offset are honored; cells without a finite calibrated
@@ -69,9 +98,11 @@ export type GPUTerrainHeightAboveDrainageProps = {
   elevation: GPURasterBand;
   /**
    * ESRI D8 codes, one per cell: 1 east, 2 south-east, 4 south, 8 south-west, 16 west, 32
-   * north-west, 64 north, 128 north-east; 0 terminal; `0xffffffff` invalid. Any other code, and
-   * any code pointing outside the grid, is treated as terminal. Typically
-   * `GPUTerrainFlow.flowDirections`; grids from TauDEM or Whitebox work too. Per-frame.
+   * north-west, 64 north, 128 north-east; 0 terminal; `0xffffffff` invalid;
+   * `GPU_TERRAIN_FLOW_UNRESOLVED` (0xfffffffe) unknown, which makes cells whose path meets it
+   * before a stream cell unresolved. Any other code, and any code pointing outside the grid, is
+   * treated as terminal. Typically `GPUTerrainFlow.flowDirections`; grids from TauDEM or Whitebox
+   * work too. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
   /**
@@ -80,26 +111,13 @@ export type GPUTerrainHeightAboveDrainageProps = {
    * unknown stream status. Per-frame.
    */
   streams: GraphDataView<'uint32'>;
-  /**
-   * Elevation of a cell minus the elevation of the stream cell its D8 path reaches first, in float32
-   * elevation units. 0 on stream cells. NaN for invalid cells, cells whose path ends without
-   * reaching a stream, cells whose path first meets an unresolved stream word, and cells whose
-   * elevation or drainage elevation is not finite. Presence is compile-time.
-   */
-  heightAboveDrainage?: GraphDataView<'float32'>;
-  /**
-   * Cell index of the stream cell each cell drains to (the cell itself for stream cells),
-   * `GPU_TERRAIN_DRAINAGE_UNRESOLVED` when the path first meets an unresolved stream word, or
-   * `GPU_TERRAIN_DRAINAGE_NONE`. Presence is compile-time.
-   */
-  drainageCells?: GraphDataView<'uint32'>;
-  /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
-  converged?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainHeightAboveDrainageOutput;
   /**
    * Maximum gated pointer-jumping rounds in `[1, 1024]`. Defaults to 32: paths of up to 2^32 cells
    * need at most 32 doubling rounds. Compile-time.
    */
-  maxIterations?: number;
+  maximumIterations?: number;
 };
 
 /**
@@ -115,7 +133,8 @@ export type GPUTerrainHeightAboveDrainageProps = {
  *
  * The drainage path is the D8 path. TauDEM's D-infinity `DistDown` variant (vertical drop along the
  * D-infinity path) is not implemented. The output is a vertical difference in elevation units, not
- * a path length. Receiver cycles, possible only in caller-supplied directions, leave `converged` at 0.
+ * a path length. Receiver cycles, possible only in caller-supplied directions, leave `output.status.converged` at 0
+ * and the affected cells at `GPU_TERRAIN_DRAINAGE_UNRESOLVED`.
  *
  * Compose it with {@link GPUTerrainFlow}: pass its `filledElevation` (or the raw DEM),
  * `flowDirections` and `streams`. It is a separate contributor so grids from other tools can be used.
@@ -130,24 +149,31 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-height-above-drainage';
     this.props = props;
     const {id} = this;
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
-    validateRasterIterations(id, 'maxIterations', props.maxIterations ?? 32);
-    if (!props.heightAboveDrainage && !props.drainageCells) {
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
+    validateRasterIterations(id, 'maximumIterations', props.maximumIterations ?? 32);
+    if (!output.heightAboveDrainage && !output.drainageCells) {
       throw new Error(`${id} requires at least one output`);
     }
     validateTerrainTracingCellView(id, 'flowDirections', props.flowDirections, 'uint32', cellCount);
     validateTerrainTracingCellView(id, 'streams', props.streams, 'uint32', cellCount);
-    if (props.heightAboveDrainage) {
+    if (output.heightAboveDrainage) {
       validateTerrainTracingCellView(
         id,
-        'heightAboveDrainage',
-        props.heightAboveDrainage,
+        'output.heightAboveDrainage',
+        output.heightAboveDrainage,
         'float32',
         cellCount
       );
     }
-    if (props.drainageCells) {
-      validateTerrainTracingCellView(id, 'drainageCells', props.drainageCells, 'uint32', cellCount);
+    if (output.drainageCells) {
+      validateTerrainTracingCellView(
+        id,
+        'output.drainageCells',
+        output.drainageCells,
+        'uint32',
+        cellCount
+      );
     }
     if (
       props.elevation.storage.kind === 'buffer' &&
@@ -155,14 +181,19 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} elevation must contain one value per cell`);
     }
-    validateTerrainTracingConvergedView(id, props.converged);
-    const outputs = [props.heightAboveDrainage, props.drainageCells, props.converged];
+    validateTerrainTracingStatus(id, output.status);
+    const outputs = [
+      output.heightAboveDrainage,
+      output.drainageCells,
+      output.status?.converged,
+      output.status?.iterationCount
+    ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [
-      ...getTerrainBandViews(props.elevation),
+      ...getRasterBandViews(props.elevation),
       props.flowDirections,
       props.streams
     ]);
-    validateTerrainBuffersDistinct(id, outputs, []);
+    validateRasterBuffersDistinct(id, outputs, []);
   }
 
   /** Returns canonicalization, pointer-jumping and HAND nodes. */
@@ -170,25 +201,28 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.flowDirections,
       props.streams,
-      props.heightAboveDrainage,
-      props.drainageCells,
-      props.converged
+      output.heightAboveDrainage,
+      output.drainageCells,
+      output.status?.converged,
+      output.status?.iterationCount
     ]);
     const cellCount = width * height;
     const nodes: GPUCommandNode<Parameters>[] = [];
     let elevation: GraphDataView<'float32'> | undefined;
-    if (props.heightAboveDrainage) {
-      const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    if (output.heightAboveDrainage) {
+      const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
       nodes.push(...source.nodes);
       elevation = source.band.storage.values as GraphDataView<'float32'>;
     }
-    const pointer =
-      props.drainageCells ?? createTransientView(graph, `${id}-pointer`, 'uint32', cellCount);
+    // The pointer stays untouched by the final kernel, which reads other cells' pointers to check
+    // that each path reached its fixpoint, so drainage cells are written to their own view.
+    const pointer = createTransientView(graph, `${id}-pointer`, 'uint32', cellCount);
     nodes.push(
       ...createTerrainFlowPointerNodes(graph, {
         id,
@@ -196,26 +230,33 @@ export class GPUTerrainHeightAboveDrainage implements GPUCommandNodeProducer {
         operation: OPERATION,
         width,
         height,
-        maxIterations: props.maxIterations ?? 32,
+        maxIterations: props.maximumIterations ?? 32,
         flowDirections: props.flowDirections,
         pointer,
         stops: {kind: 'streams', streams: props.streams},
-        converged: props.converged
+        converged: output.status?.converged,
+        iterationCount: output.status?.iterationCount
       })
     );
     const bindings: WGSLKernelBinding[] = [
       {name: 'flowDirections', view: props.flowDirections, type: 'u32', access: 'read'},
       {name: 'streams', view: props.streams, type: 'u32', access: 'read'},
-      {name: 'pointer', view: pointer, type: 'u32', access: 'read_write'}
+      {name: 'pointer', view: pointer, type: 'u32', access: 'read'}
     ];
-    if (elevation && props.heightAboveDrainage) {
+    if (output.drainageCells) {
+      bindings.push({
+        name: 'drainageOut',
+        view: output.drainageCells,
+        type: 'u32',
+        access: 'read_write'
+      });
+    }
+    if (elevation && output.heightAboveDrainage) {
       bindings.push(
         {name: 'elevation', view: elevation, type: 'f32', access: 'read'},
-        {name: 'heightOut', view: props.heightAboveDrainage, type: 'f32', access: 'read_write'}
+        {name: 'heightOut', view: output.heightAboveDrainage, type: 'f32', access: 'read_write'}
       );
     }
-    // Each thread reads and rewrites only its own pointer word, so publishing drainage cells in
-    // place over the pointer buffer is safe.
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-height`,
@@ -229,12 +270,20 @@ ${IS_FINITE_VALUE_WGSL}`,
         body: `let reached = pointer[pointerOffset + index];
   var drainage = NO_CELL;
   if (flowDirections[flowDirectionsOffset + index] != NO_CELL &&
-      flowDirections[flowDirectionsOffset + reached] != NO_CELL &&
-      streams[streamsOffset + reached] != 0u) {
-    // An unresolved stream word stops the path too: the first stream may be that cell or lie
-    // further down, so the drainage cell is unknown rather than wrong.
-    drainage = select(reached, ${GPU_TERRAIN_DRAINAGE_UNRESOLVED}u,
-      streams[streamsOffset + reached] == ${GPU_TERRAIN_FLOW_STREAM_UNRESOLVED}u);
+      flowDirections[flowDirectionsOffset + reached] != NO_CELL) {
+    if (pointer[pointerOffset + reached] != reached) {
+      // Pointer jumping stopped early: 'reached' is an intermediate cell, not the first stream.
+      drainage = ${GPU_TERRAIN_DRAINAGE_UNRESOLVED}u;
+    } else if (streams[streamsOffset + reached] != 0u) {
+      // An unresolved stream word stops the path too: the first stream may be that cell or lie
+      // further down, so the drainage cell is unknown rather than wrong.
+      drainage = select(reached, ${GPU_TERRAIN_DRAINAGE_UNRESOLVED}u,
+        streams[streamsOffset + reached] == ${GPU_TERRAIN_FLOW_STREAM_UNRESOLVED}u);
+    } else if (flowDirections[flowDirectionsOffset + reached] == UNRESOLVED_DIRECTION ||
+        flowDirections[flowDirectionsOffset + index] == UNRESOLVED_DIRECTION) {
+      // The path ends on a cell whose direction is unknown, not on an outlet or a sink.
+      drainage = ${GPU_TERRAIN_DRAINAGE_UNRESOLVED}u;
+    }
   }
   ${
     elevation
@@ -249,7 +298,7 @@ ${IS_FINITE_VALUE_WGSL}`,
   heightOut[heightOutOffset + index] = result;`
       : ''
   }
-  pointer[pointerOffset + index] = drainage;`
+  ${output.drainageCells ? 'drainageOut[drainageOutOffset + index] = drainage;' : ''}`
       })
     );
     return nodes;

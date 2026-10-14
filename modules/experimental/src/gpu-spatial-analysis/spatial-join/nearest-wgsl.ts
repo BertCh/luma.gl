@@ -4,7 +4,7 @@
 
 import type {NearestSide} from './nearest-types';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 import {SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
 
 /** Slots of the per-query header in the traversal result buffer: count, flags, bound bits. @internal */
@@ -245,6 +245,7 @@ function forEachEdge(side: NearestSide, feature: string, a: string, b: string, b
  *
  * Bindings read by the accessors: points `${p}Positions`; segments `${p}Starts`, `${p}Ends`; lines
  * `${p}Positions`, `${p}LineOffsets`; polygons `${p}Positions`, `${p}FeatureRings`, `${p}RingOffsets`.
+ * With `packedRingOffsetsBase`, polygon ring offsets share the `${p}FeatureRings` binding.
  *
  * @internal
  */
@@ -270,8 +271,12 @@ export function getNearestSideWGSL(side: NearestSide): string {
   } else if (kind === 'polygons') {
     ringStart = `${p}FeatureRings[${p}FeatureRingsOffset + f * 2u]`;
     ringEnd = `${p}FeatureRings[${p}FeatureRingsOffset + f * 2u + 1u]`;
-    vertexStart = `${p}RingOffsets[${p}RingOffsetsOffset + r]`;
-    vertexEnd = `min(${p}RingOffsets[${p}RingOffsetsOffset + r + 1u], ${P}_VERTEX_COUNT)`;
+    const ringOffsets =
+      side.packedRingOffsetsBase === undefined
+        ? `${p}RingOffsets[${p}RingOffsetsOffset`
+        : `${p}FeatureRings[${p}FeatureRingsOffset + ${side.packedRingOffsetsBase}u`;
+    vertexStart = `${ringOffsets} + r]`;
+    vertexEnd = `min(${ringOffsets} + r + 1u], ${P}_VERTEX_COUNT)`;
   }
   const contains =
     kind === 'polygons'
@@ -385,8 +390,24 @@ export type NearestTraversalOptions = {
   internalNodeCount: number;
   /** Maximum traversal stack depth. */
   stackSize: number;
-  /** Row of the first query of this dispatch. */
+  /** Row of the first query of this dispatch. Unused when `scratchChunk` is set. */
   chunkFirstRow: number;
+  /**
+   * Set when the `topk` scratch holds only one chunk of this dispatch's queries. The chunk's first
+   * query (relative to the dispatch) is then read from `topk[CURSOR_WORD]`, a GPU word, and the
+   * dispatch's first row and query count are pipeline overrides (`CHUNK_FIRST_ROW`,
+   * `CHUNK_QUERY_COUNT`), so no chunk index reaches the WGSL text. `cursorWord` is the
+   * `topk` element that holds the cursor.
+   */
+  scratchChunk?: {cursorWord: number};
+  /**
+   * Set when the kernel binds `queryOrder` (a permutation of the dispatch's query rows, see
+   * `getHilbertQueryOrderNodes`). Invocation `index` (or scratch position `cursor + index`) then
+   * handles query `queryOrder[position]`. Without `scratchChunk` the `topk` row of a query stays
+   * its own row, so the clear and column kernels do not change; with it, the scratch row is the
+   * position, and the column kernels map it back through the same order.
+   */
+  queryOrder?: boolean;
   /** Query geometry kind, for the usable-ring minimum. */
   queryKind: NearestSide['kind'];
   /**
@@ -461,7 +482,13 @@ const STRIDE: u32 = ${stride}u;
 const FEATURE_COUNT: u32 = ${options.featureCount}u;
 const INTERNAL_NODE_COUNT: u32 = ${options.internalNodeCount}u;
 const STACK_SIZE: u32 = ${options.stackSize}u;
-const CHUNK_FIRST_ROW: u32 = ${options.chunkFirstRow}u;
+${
+  options.scratchChunk
+    ? `override CHUNK_FIRST_ROW: u32;
+override CHUNK_QUERY_COUNT: u32;
+const CURSOR_WORD: u32 = ${options.scratchChunk.cursorWord}u;`
+    : `const CHUNK_FIRST_ROW: u32 = ${options.chunkFirstRow}u;`
+}
 const BOUND_SLACK: f32 = 1.000001;
 ${options.greatCircle ? NEAREST_BOX_LOWER_ANGLE_WGSL : ''}
 // ${options.greatCircle ? 'Central-angle lower bound' : 'Squared distance'} from the query box to a node box, or FLOAT32_MAXIMUM for an empty node.
@@ -477,15 +504,35 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
   return dot(gap, gap);`
   }
 }`;
-  const body = `let row = CHUNK_FIRST_ROW + index;
-  let header = topkOffset + row * STRIDE;
+  // `localQuery` is the query's index inside this dispatch's query side, `row` its global row, and
+  // `header` its slot in the (possibly chunked) `topk` scratch.
+  const body = `${
+    options.scratchChunk
+      ? options.queryOrder
+        ? `let position = topk[topkOffset + CURSOR_WORD] + index;
+  if (position >= CHUNK_QUERY_COUNT) { return; }
+  let localQuery = queryOrder[queryOrderOffset + position];
+  let row = CHUNK_FIRST_ROW + localQuery;
+  let header = topkOffset + index * STRIDE;`
+        : `let localQuery = topk[topkOffset + CURSOR_WORD] + index;
+  if (localQuery >= CHUNK_QUERY_COUNT) { return; }
+  let row = CHUNK_FIRST_ROW + localQuery;
+  let header = topkOffset + index * STRIDE;`
+      : options.queryOrder
+        ? `let localQuery = queryOrder[queryOrderOffset + index];
+  let row = CHUNK_FIRST_ROW + localQuery;
+  let header = topkOffset + row * STRIDE;`
+        : `let localQuery = index;
+  let row = CHUNK_FIRST_ROW + index;
+  let header = topkOffset + row * STRIDE;`
+  }
   var bound = bitcast<f32>(topk[header + 2u]);
   topk[header] = 0u;
   topk[header + 1u] = 0u;
   if (!(bound >= 0.0)) { return; }
   var queryMinimum = vec2f(FLOAT32_MAXIMUM);
   var queryMaximum = vec2f(-FLOAT32_MAXIMUM);
-  for (var qRing = qRingStart(index); qRing < qRingEnd(index); qRing++) {
+  for (var qRing = qRingStart(localQuery); qRing < qRingEnd(localQuery); qRing++) {
     let vertexStart = qRingVertexStart(qRing);
     let vertexEnd = qRingVertexEnd(qRing);
     if (vertexEnd <= vertexStart || vertexEnd - vertexStart < ${getMinimumRingVertices(options.queryKind)}u) { continue; }
@@ -554,7 +601,7 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
     ${options.filter.onAttribute ? 'if (nodeData[queryFilter + 1u] != nodeData[featureFilter + 1u]) { continue; }' : ''}`
         : ''
     }
-    let candidate = pairResult(index, featureRow).distanceSq;
+    let candidate = pairResult(localQuery, featureRow).distanceSq;
     if (!(candidate < FLOAT32_MAXIMUM) || candidate > bound) { continue; }
     // Find the slot of (candidate, featureRow) in the ordered list.
     var position = count;

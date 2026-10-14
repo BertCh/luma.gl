@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -16,22 +15,25 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogram';
 import {
   getPairStatisticsInputNodes,
   getPairStatisticsSharedWGSL,
   PAIR_STATISTICS_FLOAT_WGSL,
-  validatePairStatisticsInputs
+  validatePairStatisticsInputs,
+  validatePairStatisticsRowCount
 } from './pair-statistics-grid';
-import {GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH} from './ripley-distance-parameters';
+import {GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH} from './ripley-distance-parameters';
 
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPURipleyDistanceFunctions';
 
@@ -50,11 +52,40 @@ const MAXIMUM_REFERENCE_COUNT = 2 ** 24;
 const CHANNEL_COUNT = 8;
 
 /**
+ * Reference locations per workgroup of the F pass. Each workgroup sums into one shared `u32` per
+ * accumulator: at most 64 counts or 64 Hanisch amounts of at most `2^24` (2^30 in all), so the
+ * workgroup partial cannot wrap and needs no high word.
+ */
+const REFERENCE_WORKGROUP_SIZE = 64;
+
+/** Caller-owned output views of {@link GPURipleyDistanceFunctions}. */
+export type GPURipleyDistanceFunctionsOutput = {
+  /**
+   * Caller-owned nearest-neighbor distance function `G(r)`, `radiusCount` rows: the fraction of
+   * events whose nearest other event is within `r`. Quiet NaN where undefined.
+   */
+  g?: GraphDataView<'float32'>;
+  /**
+   * Caller-owned empty-space function `F(r)`, `radiusCount` rows: the fraction of reference
+   * locations whose nearest event is within `r`. Quiet NaN where undefined.
+   */
+  f?: GraphDataView<'float32'>;
+  /**
+   * Caller-owned `J(r) = (1 - G(r)) / (1 - F(r))`, `radiusCount` rows. Below 1 means clustering,
+   * above 1 regularity, 1 under complete spatial randomness. NaN where `G`, `F` or `1 - F` are not
+   * usable.
+   */
+  j?: GraphDataView<'float32'>;
+  /** Optional caller-owned radii, `radiusCount` rows. */
+  radii?: GraphDataView<'float32'>;
+};
+
+/**
  * Properties for {@link GPURipleyDistanceFunctions}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask` and `parameters`
  * (window bounds, maximum distance, edge-correction mode: none, border, Kaplan-Meier, Hanisch). Compile-time: the row count,
- * `gridSize`, `referenceGrid`, `radiusCount` and which optional outputs are present.
+ * `gridSize`, `referenceGrid`, `radiusCount` and which optional `output` views are present.
  */
 export type GPURipleyDistanceFunctionsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley-distance-functions'`. */
@@ -69,8 +100,8 @@ export type GPURipleyDistanceFunctionsProps = {
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
-   * Per-frame parameters: packed float32 view of at least `GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH`
-   * elements written with `getGPURipleyDistanceParameterValues`.
+   * Per-frame parameters: packed float32 view of at least `GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH`
+   * elements written with `getGPURipleyDistanceFunctionsParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
   /**
@@ -91,24 +122,8 @@ export type GPURipleyDistanceFunctionsProps = {
   radiusCount: number;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned nearest-neighbor distance function `G(r)`, `radiusCount` rows: the fraction of
-   * events whose nearest other event is within `r`. Quiet NaN where undefined.
-   */
-  g?: GraphDataView<'float32'>;
-  /**
-   * Caller-owned empty-space function `F(r)`, `radiusCount` rows: the fraction of reference
-   * locations whose nearest event is within `r`. Quiet NaN where undefined.
-   */
-  f?: GraphDataView<'float32'>;
-  /**
-   * Caller-owned `J(r) = (1 - G(r)) / (1 - F(r))`, `radiusCount` rows. Below 1 means clustering,
-   * above 1 regularity, 1 under complete spatial randomness. NaN where `G`, `F` or `1 - F` are not
-   * usable.
-   */
-  j?: GraphDataView<'float32'>;
-  /** Optional caller-owned radii, `radiusCount` rows. */
-  radii?: GraphDataView<'float32'>;
+  /** Caller-owned output views. At least one of `g`, `f` or `j` is required. */
+  output: GPURipleyDistanceFunctionsOutput;
 };
 
 /**
@@ -147,12 +162,13 @@ export type GPURipleyDistanceFunctionsProps = {
  *   are quiet NaN.
  *
  * Determinism and precision: G sums exact 64-bit integers in workgroup-local accumulators, F sums
- * exact integers with global `atomicAdd`s, and both finish with the same prefix sums in a fixed
+ * exact integers in workgroup-local accumulators and adds each workgroup's partials once, and both finish with the same prefix sums in a fixed
  * order, so results are bitwise reproducible and match an oracle to f32 rounding of the final
  * divisions, except for distances that land within f32 rounding of a radius.
  *
  * Cost: G is one pass over the 3x3 neighbor cells of every event (as `GPURipley`); F is one such
- * pass per reference location, with global atomics on `radiusCount` bins.
+ * pass per reference location, with workgroup-local atomics and one global add per bin and
+ * workgroup.
  */
 export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -169,12 +185,10 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
-      parameterLength: GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH
+      parameterLength: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH
     });
-    const {radiusCount, referenceGrid} = props;
-    if (!Number.isInteger(radiusCount) || radiusCount < 1 || radiusCount > MAXIMUM_RADIUS_COUNT) {
-      throw new Error(`${id} radiusCount must be an integer in [1, ${MAXIMUM_RADIUS_COUNT}]`);
-    }
+    const {radiusCount, referenceGrid, output} = props;
+    validateCapacity(id, 'radiusCount', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
     validatePairHistogramShape(id, radiusCount, CHANNEL_COUNT);
     if (
       referenceGrid.length !== 2 ||
@@ -188,14 +202,14 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
         `${id} referenceGrid must be two positive integers with a product of at most ${MAXIMUM_REFERENCE_COUNT}`
       );
     }
-    if (!props.g && !props.f && !props.j) {
-      throw new Error(`${id} needs at least one of g, f or j`);
+    if (!output.g && !output.f && !output.j) {
+      throw new Error(`${id} output needs at least one of g, f or j`);
     }
     for (const [name, view] of [
-      ['g', props.g],
-      ['f', props.f],
-      ['j', props.j],
-      ['radii', props.radii]
+      ['output.g', output.g],
+      ['output.f', output.f],
+      ['output.j', output.j],
+      ['output.radii', output.radii]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -206,7 +220,7 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.g, props.f, props.j, props.radii],
+      [output.g, output.f, output.j, output.radii],
       [props.positions, props.parameters, props.mask]
     );
   }
@@ -216,15 +230,16 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize, radiusCount, referenceGrid} = props;
+    const {positions, parameters, gridSize, radiusCount, referenceGrid, output} = props;
+    validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
       props.mask,
-      props.g,
-      props.f,
-      props.j,
-      props.radii
+      output.g,
+      output.f,
+      output.j,
+      output.radii
     ]);
     const referenceCount = referenceGrid[0] * referenceGrid[1];
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
@@ -336,22 +351,28 @@ fn getCensorSlot(distance: f32, step: f32) -> u32 {
           }
         ],
         invocationCount: referenceCount,
+        workgroupSize: REFERENCE_WORKGROUP_SIZE,
+        guardIndex: false,
         declarations: `${getPairStatisticsSharedWGSL(gridSize)}
 ${observationWGSL}
 const REFERENCE_COLUMNS: u32 = ${referenceGrid[0]}u;
 const REFERENCE_ROWS: u32 = ${referenceGrid[1]}u;
 const CHANNELS: u32 = ${CHANNEL_COUNT}u;
 
-// Exact unsigned 64-bit sums: low and high words per accumulator, carry from the atomicAdd result.
+const ACCUMULATOR_COUNT: u32 = ${(radiusCount + 1) * CHANNEL_COUNT}u;
+var<workgroup> localReferences: array<atomic<u32>, ${(radiusCount + 1) * CHANNEL_COUNT}>;
+
+// Workgroup partial sums (they fit 32 bits, see REFERENCE_WORKGROUP_SIZE).
 fn addReference(slot: u32, channel: u32, amount: u32) {
-  let word = (referenceAccumulatorsOffset + slot * CHANNELS + channel) * 2u;
-  let previous = atomicAdd(&referenceAccumulators[word], amount);
-  if (previous > 0xffffffffu - amount) {
-    atomicAdd(&referenceAccumulators[word + 1u], 1u);
-  }
+  atomicAdd(&localReferences[slot * CHANNELS + channel], amount);
 }`,
-        body: `let lattice = readLattice();
-  if (lattice.valid) {
+        // No early return: every invocation of a workgroup must reach the barriers.
+        body: `for (var word = localInvocationIndex; word < ACCUMULATOR_COUNT; word += ${REFERENCE_WORKGROUP_SIZE}u) {
+    atomicStore(&localReferences[word], 0u);
+  }
+  workgroupBarrier();
+  let lattice = readLattice();
+  if (index < INVOCATION_COUNT && lattice.valid) {
     let referenceColumn = index % REFERENCE_COLUMNS;
     let referenceRow = index / REFERENCE_COLUMNS;
     let x = lattice.minimumX + (f32(referenceColumn) + 0.5) * (lattice.maximumX - lattice.minimumX) / f32(REFERENCE_COLUMNS);
@@ -401,6 +422,18 @@ fn addReference(slot: u32, channel: u32, amount: u32) {
         addReference(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));
       }
     }
+  }
+  workgroupBarrier();
+  // One global 64-bit add per nonzero accumulator and workgroup: exact, so order-independent.
+  for (var word = localInvocationIndex; word < ACCUMULATOR_COUNT; word += ${REFERENCE_WORKGROUP_SIZE}u) {
+    let amount = atomicLoad(&localReferences[word]);
+    if (amount != 0u) {
+      let globalWord = referenceAccumulatorsOffset + word * 2u;
+      let previous = atomicAdd(&referenceAccumulators[globalWord], amount);
+      if (previous > 0xffffffffu - amount) {
+        atomicAdd(&referenceAccumulators[globalWord + 1u], 1u);
+      }
+    }
   }`
       })
     );
@@ -412,10 +445,10 @@ fn addReference(slot: u32, channel: u32, amount: u32) {
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'}
     ];
     for (const [name, view] of [
-      ['g', props.g],
-      ['f', props.f],
-      ['j', props.j],
-      ['radii', props.radii]
+      ['g', output.g],
+      ['f', output.f],
+      ['j', output.j],
+      ['radii', output.radii]
     ] as const) {
       if (view) {
         finishBindings.push({name, view, type: 'f32', access: 'read_write'});
@@ -540,15 +573,15 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
       fValue = getHanisch(true, index);
     }
   }
-  ${props.g ? 'g[gOffset + index] = gValue;' : ''}
-  ${props.f ? 'f[fOffset + index] = fValue;' : ''}
+  ${output.g ? 'g[gOffset + index] = gValue;' : ''}
+  ${output.f ? 'f[fOffset + index] = fValue;' : ''}
   ${
-    props.j
+    output.j
       ? `let survival = 1.0 - fValue;
   j[jOffset + index] = select(nan, (1.0 - gValue) / survival, isFiniteFloat(gValue) && isFiniteFloat(fValue) && survival > 0.0);`
       : ''
   }
-  ${props.radii ? 'radii[radiiOffset + index] = maximumDistance * f32(index + 1u) / f32(RADIUS_COUNT);' : ''}`
+  ${output.radii ? 'radii[radiiOffset + index] = maximumDistance * f32(index + 1u) / f32(RADIUS_COUNT);' : ''}`
       })
     );
     return nodes;

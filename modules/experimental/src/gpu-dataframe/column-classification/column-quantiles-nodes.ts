@@ -12,15 +12,16 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH} from './column-quantiles-parameters';
+import {ORDER_STATISTIC_WGSL} from './order-statistic-wgsl';
 
 /** Caller-owned outputs of the column quantile nodes. */
 export type GPUColumnQuantilesOutput = {
   /** `quantileCount` rows; NaN when no valid rows exist or the probability is NaN or outside `[0, 1]`. */
   quantiles: GraphDataView<'float32'>;
-  /** One row: rows that are unmasked and not NaN. */
+  /** One row: rows that are unmasked and finite (NaN and +-Infinity are missing). */
   validCount: GraphDataView<'uint32'>;
-  /** `values.length` rows: 1 when the row is valid and inside the filter bounds, else 0. */
-  filterMask?: GraphDataView<'uint32'>;
+  /** `values.length` rows: 1 when the row is valid (finite, unmasked) and inside the filter bounds, else 0. */
+  outputMask?: GraphDataView<'uint32'>;
   /** Two rows: `[filterLowerValue, filterUpperValue]`; NaN when no valid rows exist. */
   filterBounds?: GraphDataView<'float32'>;
 };
@@ -60,6 +61,10 @@ const MAXIMUM_HISTOGRAM_WORKGROUPS = 256;
 /**
  * Builds the radix-select nodes shared by `GPUColumnQuantiles` and `GPUClassBreaks`.
  *
+ * The sample and interpolation follow the shared order-statistic policy of
+ * `ORDER_STATISTIC_WGSL`: finite unmasked values only, `-0` equal to `+0`, NaN for a probability
+ * outside `[0, 1]`.
+ *
  * Targets are the order-statistic ranks needed: two per probability (the lower and upper
  * neighbor, equal for lower/higher/nearest) plus two for the percentile filter. Four passes of
  * 8-bit digits run MSB first. In each pass one histogram kernel counts the digits of rows whose
@@ -88,11 +93,11 @@ export function getColumnQuantileNodes<Parameters>(
     gate?.view,
     output.quantiles,
     output.validCount,
-    output.filterMask,
+    output.outputMask,
     output.filterBounds
   ]);
   const rows = values.length;
-  const hasFilter = Boolean(output.filterMask || output.filterBounds);
+  const hasFilter = Boolean(output.outputMask || output.filterBounds);
   const targetCount = 2 * quantileCount + (hasFilter ? 2 : 0);
   const histogram = createTransientView(
     graph,
@@ -132,12 +137,13 @@ const STATE_ACTIVE_PREFIX: u32 = ${3 * targetCount}u;
 const STATE_ACTIVE_COUNT: u32 = ${4 * targetCount}u;
 const STATE_VALID_COUNT: u32 = ${4 * targetCount + 1}u;
 ${COLUMN_ORDERED_KEY_WGSL}
+${ORDER_STATISTIC_WGSL}
+
+fn isMissingValue(value: f32) -> bool {
+  return (bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u;
+}
 `;
   const rankDeclarations = /* wgsl */ `
-fn isValidProbability(p: f32) -> bool {
-  return p >= 0.0 && p <= 1.0;
-}
-
 // Round half to even; the fraction h - floor(h) is exact in f32.
 fn roundHalfEven(h: f32) -> f32 {
   let whole = floor(h);
@@ -183,7 +189,7 @@ fn getTargetRank(targetIndex: u32, validCount: u32) -> u32 {
   }
   if (targetIndex < 2u * QUANTILE_COUNT) {
     let p = params[paramsOffset + HEADER_LENGTH + targetIndex / 2u];
-    if (!isValidProbability(p)) {
+    if (!isOrderStatisticProbability(p)) {
       return 0u;
     }
     let ranks = getQuantileRanks(validCount, p);
@@ -265,11 +271,11 @@ var<workgroup> localHistogram: array<atomic<u32>, ${localBinCount}>;`,
     let activeCount = ${pass === 0 ? '1u' : 'state[stateOffset + STATE_ACTIVE_COUNT]'};
     for (var row = index; row < ROW_COUNT; row = row + INVOCATION_COUNT) {
       let value = values[valuesOffset + row];
-      if (isNanBits(value)) {
+      if (isMissingValue(value)) {
         continue;
       }
       ${mask ? 'if (rowMask[rowMaskOffset + row] == 0u) {\n        continue;\n      }' : ''}
-      let key = getOrderedKey(value);
+      let key = getOrderStatisticKey(value);
       ${slotSource}
       let digit = (key >> ${shift}u) & 255u;
       if (slot < LOCAL_SLOT_COUNT) {
@@ -418,21 +424,18 @@ ${rankDeclarations}`,
   if (index < QUANTILE_COUNT) {
     var result = getNaN();
     let p = params[paramsOffset + HEADER_LENGTH + index];
-    if (validCount > 0u && isValidProbability(p)) {
+    if (validCount > 0u && isOrderStatisticProbability(p)) {
       let first = decodeOrderedKey(state[stateOffset + STATE_PREFIX + 2u * index]);
       let second = decodeOrderedKey(state[stateOffset + STATE_PREFIX + 2u * index + 1u]);
       result = first;
       let code = u32(params[paramsOffset]);
-      if (first != second) {
-        if (code == 3u) {
-          let h = getQuantileHeight(validCount, p);
-          let fraction = h - floor(h);
-          if (fraction != 0.0) {
-            result = first + (second - first) * fraction;
-          }
-        } else if (code == 4u) {
-          result = (first + second) * 0.5;
-        }
+      // validCount is below 2^24, so this is a runtime zero that blocks multiply-add fusion.
+      let zero = validCount >> 31u;
+      if (code == 3u) {
+        let h = getQuantileHeight(validCount, p);
+        result = interpolateOrderStatistic(first, second, h - floor(h), zero);
+      } else if (code == 4u) {
+        result = getOrderStatisticMidpoint(first, second, zero);
       }
     }
     quantilesOut[quantilesOutOffset + index] = result;
@@ -451,7 +454,7 @@ ${rankDeclarations}`,
     })
   );
 
-  if (output.filterMask) {
+  if (output.outputMask) {
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-filter-mask`,
@@ -461,7 +464,7 @@ ${rankDeclarations}`,
           read('values', values, 'f32'),
           ...(mask ? [read('rowMask', mask, 'u32')] : []),
           read('state', state, 'u32'),
-          write('filterMaskOut', output.filterMask, 'u32'),
+          write('filterMaskOut', output.outputMask, 'u32'),
           ...gateBindings
         ],
         invocationCount: rows,
@@ -471,9 +474,9 @@ ${rankDeclarations}`,
   }
   var inside = 0u;
   let value = values[valuesOffset + index];
-  if (state[stateOffset + STATE_VALID_COUNT] > 0u && !isNanBits(value)) {
+  if (state[stateOffset + STATE_VALID_COUNT] > 0u && !isMissingValue(value)) {
     ${mask ? 'if (rowMask[rowMaskOffset + index] != 0u) {' : '{'}
-      let key = getOrderedKey(value);
+      let key = getOrderStatisticKey(value);
       let lowerKey = state[stateOffset + STATE_PREFIX + 2u * QUANTILE_COUNT];
       let upperKey = state[stateOffset + STATE_PREFIX + 2u * QUANTILE_COUNT + 1u];
       inside = select(0u, 1u, key >= lowerKey && key <= upperKey);

@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,10 +17,12 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createPatchKeysNode,
+  createPatchUnresolvedNodes,
   getPatchLabelViews,
   getPatchRunSegmentsBody,
   getPatchSegmentCount,
@@ -41,7 +41,7 @@ const NO_ROW = '0xffffffffu';
 export type GPURasterPatchMetricsOutput = {
   /** Pixel count of each patch (area in pixels). 0 marks an unused row. */
   pixelCounts?: GraphDataView<'uint32'>;
-  /** Pixel count times the absolute affine determinant, in CRS units squared. */
+  /** Pixel count times the absolute determinant of the grid affine, in CRS units squared. */
   areas?: GraphDataView<'float32'>;
   /**
    * Number of exposed pixel faces: faces whose 4-neighbor holds another label, background, an
@@ -67,18 +67,12 @@ export type GPURasterPatchMetricsOutput = {
 /**
  * Properties for {@link GPURasterPatchMetrics}.
  *
- * Per-frame: the contents of the label views. Compile-time: dimensions, `affine`,
+ * Per-frame: the contents of the label views. Compile-time: the `grid` size and affine,
  * `countRasterBorder`, the output capacity and which columns are present.
  */
 export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
   /** Prefix for generated node and transient IDs. Defaults to `'raster-patch-metrics'`. */
   id?: string;
-  /**
-   * Pixel-to-world matrix `[a, b, c, d, e, f]` with `x = a * column + b * row + c` and
-   * `y = d * column + e * row + f`, as `GPURasterMetadata.affine`. Defaults to the identity, which
-   * reports pixel units.
-   */
-  affine?: readonly [number, number, number, number, number, number];
   /** Whether faces on the raster edge count as perimeter. Default `true`. */
   countRasterBorder?: boolean;
   /** Caller-owned per-patch output columns. */
@@ -94,6 +88,11 @@ export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
  * what it lacks, perimeter and extent, and repeats the pixel count and area so one node set is
  * enough for shape ratios. Labels are the output of `GPURasterDenseComponents`; labels above the
  * output capacity are ignored.
+ *
+ * Unfinished labels are not reported as "no patches": when the `converged` guard reads 0 or the
+ * `overflow` guard is nonzero, every provided `uint32` column is filled with
+ * {@link GPU_RASTER_PATCH_UNRESOLVED} and every `float32` column with NaN (an extra gated pass, so
+ * a finished run pays one tiny dispatch). A finished run never produces either value.
  *
  * Counts, extents and perimeter faces are integer atomics, so results are exact and
  * deterministic; `perimeters` and `areas` are single f32 products of exact integers.
@@ -123,7 +122,7 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
       if (name === 'areas' || name === 'perimeters') {
         validatePackedView(view, ['float32'], `${id} output.${name}`);
       } else {
-        validatePackedUint32View(view as GraphDataView<'uint32'>, `${id} output.${name}`);
+        validatePackedView(view as GraphDataView<'uint32'>, ['uint32'], `${id} output.${name}`);
       }
       if (view.length !== this.patchCapacity) {
         throw new Error(`${id} output columns must have identical lengths`);
@@ -131,11 +130,6 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
     }
     if (this.patchCapacity < 1) {
       throw new Error(`${id} output columns must hold at least one patch row`);
-    }
-    if (props.affine) {
-      if (props.affine.length !== 6 || props.affine.some(value => !Number.isFinite(value))) {
-        throw new Error(`${id} affine must hold six finite numbers`);
-      }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -149,12 +143,13 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, patchCapacity} = this;
-    const {output, width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       ...getPatchLabelViews(props),
       ...(Object.values(output).filter(view => view !== undefined) as GraphDataView[])
     ]);
-    const [a, b, , d, e] = props.affine ?? [1, 0, 0, 0, 1, 0];
+    const [a, b, , d, e] = props.grid.affine;
     const columnStep = Math.hypot(a, d);
     const rowStep = Math.hypot(b, e);
     const pixelArea = Math.abs(a * e - b * d);
@@ -379,6 +374,20 @@ fn isExposed(column: u32, row: u32, dx: i32, dy: i32, key: u32) -> bool {
         })
       );
     }
+    nodes.push(
+      ...createPatchUnresolvedNodes(
+        graph,
+        id,
+        OPERATION,
+        props,
+        (Object.entries(output) as [string, GraphDataView<'uint32'> | GraphDataView<'float32'>][])
+          .filter(([, column]) => column !== undefined)
+          .map(([name, column]) => ({
+            view: column,
+            type: name === 'areas' || name === 'perimeters' ? ('f32' as const) : ('u32' as const)
+          }))
+      )
+    );
     return nodes;
   }
 }

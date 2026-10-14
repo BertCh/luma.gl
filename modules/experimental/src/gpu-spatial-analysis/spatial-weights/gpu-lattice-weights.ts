@@ -2,25 +2,36 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUContributorCapacityPlan} from '../../analysis-core/contracts/capacity-planning';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   describeGPUSpatialWeights,
+  getGPUSpatialWeightsCapacityPlan,
+  getGPUSpatialWeightsStatusViews,
+  getGPUSpatialWeightsViews,
   type GPUSpatialWeights,
-  validateGPUSpatialWeights
+  type GPUSpatialWeightsCapacityPlan,
+  type GPUSpatialWeightsOutput,
+  validateGPUSpatialWeightsOutput
 } from './spatial-weights';
+
+/** uint32 transients per cell: neighbor counts and their exclusive scan. */
+const CELL_WORDS = 2;
 
 const OPERATION = 'GPULatticeWeights';
 
@@ -51,20 +62,21 @@ export type GPULatticeWeightsProps = {
   radius?: number;
   /** Optional per-cell selection (`width * height` rows): zero removes the cell as a row and as a neighbor. */
   mask?: GraphDataView<'uint32'>;
-  /** Cell width and height used for `weights.distances`. Defaults to `[1, 1]`. */
+  /** Cell width and height used for `output.distances`. Defaults to `[1, 1]`. */
   cellSize?: readonly [number, number];
   /**
    * Caller-owned output CSR with `width * height + 1` offsets. Binary weights (1); `distances`
-   * (optional) hold the Euclidean distance between cell centers.
+   * (optional) hold the Euclidean distance between cell centers. `status.overflow` (required) is
+   * 1 when the neighbors did not fit the capacity; `status.requiredCount` (optional) receives the
+   * exact unclamped neighbor total.
    */
-  weights: GPUSpatialWeights;
-  /** Caller-owned one-row flag: 1 when the neighbors did not fit the capacity, else 0. */
-  overflow: GraphDataView<'uint32'>;
-  /**
-   * Optional caller-owned one-row exact unclamped total neighbor count: the `requiredCount` of
-   * `outputWeights.status`.
-   */
-  totalNeighbors?: GraphDataView<'uint32'>;
+  output: GPUSpatialWeightsOutput;
+};
+
+/** Slot stage of the lattice grow loop. */
+export type GPULatticeWeightsCapacityPlan = GPUContributorCapacityPlan & {
+  /** Caller-owned CSR slots of the next allocation. */
+  slots: GPUSpatialWeightsCapacityPlan;
 };
 
 /**
@@ -76,12 +88,13 @@ export type GPULatticeWeightsProps = {
  * Masked cells have empty rows and never appear as neighbors. Weights are binary; distances are
  * `sqrt((dx * cellWidth)^2 + (dy * cellHeight)^2)`. Capacity handling matches
  * {@link GPUNeighborSearch}: offsets are clamped, slots past the capacity are dropped and
- * `overflow` is set. Output is deterministic and matches the CPU result exactly (distances within
- * f32 rounding).
+ * `output.status.overflow` is set. Output is deterministic and matches the CPU result exactly
+ * (distances within f32 rounding).
  *
- * Capacity grow loop: pass `totalNeighbors`, read it and `overflow` after a frame and, when
- * `overflow` is 1, reallocate the slot views with `getGPUSpatialWeightsCapacity` and rebuild.
- * {@link GPULatticeWeights.outputWeights} is `weights` with `info` (`transform: 'binary'`,
+ * Capacity grow loop: pass `output.status.requiredCount`, read it and `overflow` after a frame
+ * and, when `overflow` is 1, reallocate the slot views with
+ * `getCapacityPlan({requiredCount}).slots.capacity` slots and rebuild.
+ * {@link GPULatticeWeights.outputWeights} is `output` with `information` (`transform: 'binary'`,
  * `symmetric: true`, provenance with criterion and order = radius) and `status` attached.
  */
 export class GPULatticeWeights implements GPUCommandNodeProducer {
@@ -89,7 +102,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULatticeWeightsProps;
-  /** The output CSR with `info` and `status` attached, for consumers. */
+  /** The output CSR with `information` and `status` attached, for consumers. */
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPULatticeWeightsProps) {
@@ -99,23 +112,11 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     if (props.criterion !== 'rook' && props.criterion !== 'queen') {
       throw new Error(`${id} criterion must be 'rook' or 'queen'`);
     }
-    for (const [name, value] of [
-      ['width', props.width],
-      ['height', props.height]
-    ] as const) {
-      if (!Number.isInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    if (props.width * props.height >= 2 ** 31) {
-      throw new Error(`${id} width * height must be below 2^31`);
-    }
+    validateCapacity(id, 'width', props.width);
+    validateCapacity(id, 'height', props.height);
+    validateCapacity(id, 'width * height', props.width * props.height, 1, 2 ** 31 - 1);
     const radius = props.radius ?? 1;
-    if (!Number.isInteger(radius) || radius < 1 || radius > GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS) {
-      throw new Error(
-        `${id} radius must be an integer in [1, ${GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS}]`
-      );
-    }
+    validateCapacity(id, 'radius', radius, 1, GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS);
     if (
       props.cellSize &&
       !(
@@ -127,49 +128,53 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     }
     const rows = props.width * props.height;
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal width * height`);
       }
     }
-    if (validateGPUSpatialWeights(id, props.weights) !== rows) {
-      throw new Error(`${id} weights.offsets length must equal width * height + 1`);
+    if (validateGPUSpatialWeightsOutput(id, props.output) !== rows) {
+      throw new Error(`${id} output rows must equal width * height`);
     }
-    validatePackedUint32View(props.overflow, `${id} overflow`);
-    if (props.overflow.length < 1) {
-      throw new Error(`${id} overflow must hold one uint32`);
-    }
-    if (props.totalNeighbors) {
-      validatePackedUint32View(props.totalNeighbors, `${id} totalNeighbors`);
-      if (props.totalNeighbors.length < 1) {
-        throw new Error(`${id} totalNeighbors must hold one uint32`);
-      }
-    }
-    this.outputWeights = describeGPUSpatialWeights(props.weights, {
-      info: {
+    this.outputWeights = describeGPUSpatialWeights(props.output, {
+      information: {
         rowCount: rows,
         transform: 'binary',
         symmetric: true,
         hasSelfWeights: false,
         provenance: {source: OPERATION, criterion: props.criterion, order: radius}
       },
-      status: {
-        overflow: props.overflow,
-        requiredCount: props.totalNeighbors
-      }
+      status: props.output.status
     });
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.weights.offsets,
-        props.weights.neighbors,
-        props.weights.weights,
-        props.weights.distances,
-        props.overflow,
-        props.totalNeighbors
+        ...getGPUSpatialWeightsViews(props.output),
+        ...getGPUSpatialWeightsStatusViews(props.output)
       ],
       [props.mask]
     );
+  }
+
+  /**
+   * Plans the next slot allocation of the grow loop from the read-back `requiredCount` (or, without
+   * one, the current capacity). `estimatedPeakTransientBytes` counts the per-cell transients this
+   * contributor declares; the device-dependent gpgpu scan scratch is not included.
+   */
+  getCapacityPlan(observation: {requiredCount?: number} = {}): GPULatticeWeightsCapacityPlan {
+    const rows = this.props.width * this.props.height;
+    const slots = getGPUSpatialWeightsCapacityPlan({
+      rowCount: rows,
+      capacity: this.props.output.neighbors.length,
+      requiredCount: observation.requiredCount,
+      distances: Boolean(this.props.output.distances)
+    });
+    return {
+      slots,
+      estimatedWorkItems: rows + slots.capacity,
+      estimatedOutputBytes: slots.estimatedOutputBytes,
+      estimatedPeakTransientBytes: CELL_WORDS * rows * Uint32Array.BYTES_PER_ELEMENT
+    };
   }
 
   /** Returns the lattice nodes in dependency order. */
@@ -177,20 +182,19 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, weights, mask} = props;
+    const {width, height, mask} = props;
+    const weights = props.output;
+    const {overflow, requiredCount} = weights.status;
     validateGraphViewsBelongToGraph(id, graph, [
       mask,
-      weights.offsets,
-      weights.neighbors,
-      weights.weights,
-      weights.distances,
-      props.overflow,
-      props.totalNeighbors
+      ...getGPUSpatialWeightsViews(weights),
+      ...getGPUSpatialWeightsStatusViews(weights)
     ]);
     const rows = width * height;
     const capacity = weights.neighbors.length;
     const radius = props.radius ?? 1;
     const [cellWidth, cellHeight] = props.cellSize ?? [1, 1];
+    // CELL_WORDS views per cell.
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rows);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rows);
     const maskBinding = mask
@@ -226,6 +230,7 @@ const CELL_HEIGHT: f32 = ${getWGSLFloatLiteral(cellHeight)};`;
       }
     }
   }`;
+    const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-counts`,
@@ -247,20 +252,28 @@ const CELL_HEIGHT: f32 = ${getWGSLFloatLiteral(cellHeight)};`;
         output: starts,
         mode: 'exclusive'
       }).getCommandNodes(graph),
+      ...createSaturatedScanTotalNodes<Parameters>(graph, {
+        id: id,
+        operation: OPERATION,
+        counts: counts,
+        offsets: starts,
+        rowCount: rows,
+        total: scanTotal
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-offsets`,
         operation: OPERATION,
         variant: 'offsets',
         bindings: [
-          {name: 'counts', view: counts, type: 'u32', access: 'read'},
+          {name: 'scanTotal', view: scanTotal, type: 'u32', access: 'read'},
           {name: 'starts', view: starts, type: 'u32', access: 'read'},
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
-          ...(props.totalNeighbors
+          {name: 'overflow', view: overflow, type: 'u32', access: 'read_write'},
+          ...(requiredCount
             ? [
                 {
-                  name: 'totalNeighbors',
-                  view: props.totalNeighbors,
+                  name: 'requiredCount',
+                  view: requiredCount,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -273,10 +286,10 @@ const CAPACITY: u32 = ${capacity}u;`,
         body: `if (index < ROWS) {
     offsets[offsetsOffset + index] = min(starts[startsOffset + index], CAPACITY);
   } else {
-    let total = starts[startsOffset + ROWS - 1u] + counts[countsOffset + ROWS - 1u];
+    let total = scanTotal[scanTotalOffset];
     offsets[offsetsOffset + ROWS] = min(total, CAPACITY);
     overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.totalNeighbors ? 'totalNeighbors[totalNeighborsOffset] = total;' : ''}
+    ${requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {

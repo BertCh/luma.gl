@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUNetworkLineGraph} from './gpu-network-line-graph';
-export type {GPUNetworkLineGraphProps} from './gpu-network-line-graph';
+export {
+  GPUNetworkLineGraph,
+  getGPUNetworkLineGraphMaximumEdgeCount,
+  getGPUNetworkLineGraphMaximumGeodesicEdgeCount
+} from './gpu-network-line-graph';
+export type {GPUNetworkLineGraphOutput, GPUNetworkLineGraphProps} from './gpu-network-line-graph';
 export {
   getGPUNetworkLineGraphParameterValues,
   GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {defineGPUSpatialParameterSchema} from '../contracts/index';
+import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/index';
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
 
 /** Number of float32 elements in a spatial-autocorrelation parameter buffer. */
 export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH = 8;
@@ -98,12 +99,14 @@ export type GPUSpatialAutocorrelationFixedMoments = {
 };
 
 /**
- * CPU description of the per-frame parameters of `GPUHotSpotAnalysis` and `GPULocalMoran`.
+ * CPU settings packed into the per-frame `parameters` of `GPUHotSpotAnalysis`, `GPULocalMoran` and
+ * `GPULocalGeary` by {@link getGPUSpatialAutocorrelationParameterValues}, and described by their
+ * `getInferenceMetadata(settings)`.
  *
  * Neighborhoods and weight values come from the `weights` prop, not from the parameters. Every
  * field can change between encodings without rebuilding or recompiling the graph.
  */
-export type GPUSpatialAutocorrelationParameters = {
+export type GPUSpatialAutocorrelationSettings = {
   /**
    * Two-sided significance level of `GPULocalMoran` quadrants, in `(0, 1)`, applied to the
    * adjusted p-value when `multipleTesting` is set. Defaults to `0.05`. `GPUHotSpotAnalysis`
@@ -115,33 +118,31 @@ export type GPUSpatialAutocorrelationParameters = {
 };
 
 /**
- * Packs spatial-autocorrelation parameters into the 8-element float32 layout read by
- * `GPUHotSpotAnalysis` and `GPULocalMoran`.
+ * Packs spatial-autocorrelation settings into the 8-element float32 layout read by
+ * `GPUHotSpotAnalysis`, `GPULocalMoran` and `GPULocalGeary`.
  *
  * Layout: `[significanceLevel, useFixedMoments, fixedCount, fixedMean, fixedVariance, 0, 0, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If `significanceLevel` is not finite or outside `(0, 1)`, fixed moments are invalid, or
  * `target` is too short.
  */
 export function getGPUSpatialAutocorrelationParameterValues(
-  parameters: GPUSpatialAutocorrelationParameters = {},
+  settings: GPUSpatialAutocorrelationSettings = {},
   target: Float32Array = new Float32Array(GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH) {
-    throw new Error(
-      `Spatial autocorrelation target must hold ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} elements`
-    );
-  }
-  const significanceLevel = parameters.significanceLevel ?? 0.05;
-  if (!Number.isFinite(significanceLevel)) {
-    throw new Error('Spatial autocorrelation significanceLevel must be finite');
-  }
-  if (significanceLevel <= 0 || significanceLevel >= 1) {
+  validateCapacity(
+    'getGPUSpatialAutocorrelationParameterValues',
+    'target length',
+    target.length,
+    GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  );
+  const significanceLevel = settings.significanceLevel ?? 0.05;
+  if (!(significanceLevel > 0 && significanceLevel < 1)) {
     throw new Error('Spatial autocorrelation significanceLevel must be in (0, 1)');
   }
-  const fixedMoments = parameters.fixedMoments;
+  const fixedMoments = settings.fixedMoments;
   if (fixedMoments) {
     if (
       !Number.isFinite(fixedMoments.count) ||
@@ -150,9 +151,7 @@ export function getGPUSpatialAutocorrelationParameterValues(
       fixedMoments.count < 2 ||
       fixedMoments.variance <= 0
     ) {
-      throw new Error(
-        'Spatial autocorrelation fixedMoments need a finite count >= 2, mean and positive variance'
-      );
+      throw new Error('Spatial autocorrelation fixedMoments are invalid');
     }
   }
   target.set([

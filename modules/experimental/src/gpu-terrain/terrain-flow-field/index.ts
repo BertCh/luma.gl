@@ -8,6 +8,7 @@ export {
   getGPUTerrainFlowFieldParameterValues
 } from './gpu-terrain-flow-field';
 export type {
+  GPUTerrainFlowFieldOutput,
   GPUTerrainFlowFieldProps,
   GPUTerrainFlowFieldSettings
 } from './gpu-terrain-flow-field';

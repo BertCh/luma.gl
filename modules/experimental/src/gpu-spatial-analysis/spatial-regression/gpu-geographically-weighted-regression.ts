@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,21 +11,25 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUSphereRadius,
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {createGridIndexNodes} from './gwr-grid-index';
+import {createGoldenSectionSearchNodes} from './gwr-golden-section-nodes';
 import {getGWRFitWGSL} from './gwr-fit-wgsl';
 import {getStudentTWGSL} from './gwr-student-t';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_ADAPTIVE_BANDWIDTH_FACTOR,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION,
@@ -38,9 +39,12 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_SEARCH_ITERATIONS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   getGPUGeographicallyWeightedRegressionParameterLength
@@ -115,11 +119,14 @@ export type GPUGeographicallyWeightedRegressionOutput = {
    * Optional AICc of each caller-ladder candidate (NaN for invalid or unused candidates),
    * `maximumBandwidthCount` values. The AICc of a candidate with singular rows is taken over its
    * non-singular rows, see `bandwidthSingularRowCounts`. Refined candidates are in `candidateTable`.
+   * With `bandwidthSearch: 'golden-section'` these are the first `maximumBandwidthCount` rows of the
+   * candidate table, in evaluation order (NaN beyond the evaluations that ran).
    */
   bandwidthScores?: GraphDataView<'float32'>;
   /**
    * Optional number of singular included rows of each caller-ladder candidate,
-   * `maximumBandwidthCount` values (0 for unused slots).
+   * `maximumBandwidthCount` values (0 for unused slots). With `'golden-section'` the first
+   * `maximumBandwidthCount` rows of the candidate table, in evaluation order.
    */
   bandwidthSingularRowCounts?: GraphDataView<'uint32'>;
   /**
@@ -127,14 +134,26 @@ export type GPUGeographicallyWeightedRegressionOutput = {
    * `maximumBandwidthCount` candidates of `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE`
    * float32 fields each (value, AICc, singular rows, RSS, trace, observations, included rows; NaN
    * for unused slots). Length `(1 + refinementPassCount) * maximumBandwidthCount * stride`.
+   *
+   * With `bandwidthSearch: 'golden-section'` the table has one row per evaluation, in evaluation
+   * order: rows 0 and 1 are the two interior points of the first iteration (`b`, then `d`), row
+   * `1 + i` is the single point evaluated for iteration `i + 1` (`i >= 1`); rows of iterations that
+   * never ran are NaN. Length `(maximumSearchIterations + 1) * stride`.
    */
   candidateTable?: GraphDataView<'float32'>;
   /**
    * Optional `[selected candidate index, selected ladder value]`. The index counts the caller
    * ladder first (`0 .. maximumBandwidthCount - 1`); refined candidates follow, pass by pass
-   * (`maximumBandwidthCount + c` is candidate `c` of the first refinement pass).
+   * (`maximumBandwidthCount + c` is candidate `c` of the first refinement pass). With
+   * `bandwidthSearch: 'golden-section'` the index is the `candidateTable` row of the selection.
    */
   selectedBandwidth?: GraphDataView<'float32'>;
+  /**
+   * Optional state of the golden-section search after the last iteration, see
+   * `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE` (12 float32 values). Only with
+   * `bandwidthSearch: 'golden-section'`.
+   */
+  searchState?: GraphDataView<'float32'>;
   /** Optional global summary, see `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY`. */
   summary?: GraphDataView<'float32'>;
 };
@@ -143,9 +162,10 @@ export type GPUGeographicallyWeightedRegressionOutput = {
  * Properties for {@link GPUGeographicallyWeightedRegression}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `predictors`, `response`,
- * `mask` and `parameters` (kernel, bandwidth mode, ladder, significance level). Compile-time: the
- * row count, `predictorCount`, `maximumBandwidthCount`, `maximumNeighborCount`, `spatialContext`,
- * `refinement`, and which optional views are present.
+ * `mask` and `parameters` (kernel, bandwidth mode, ladder or search bounds, significance level).
+ * Compile-time: the row count, `predictorCount`, `maximumBandwidthCount`, `maximumNeighborCount`,
+ * `spatialContext`, `refinement`, `bandwidthSearch`, `maximumSearchIterations`, `gaussianCutoff`,
+ * and which optional views are present.
  */
 export type GPUGeographicallyWeightedRegressionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geographically-weighted-regression'`. */
@@ -194,11 +214,44 @@ export type GPUGeographicallyWeightedRegressionProps = {
    */
   refinement?: boolean | number;
   /**
+   * Bandwidth search strategy. Compile-time. `'ladder'` (default) evaluates the caller ladder and
+   * refines around its best candidate (`refinement`), unchanged. `'golden-section'` is mgwr's
+   * `Sel_BW(...).search('golden_section')` as a fixed-depth loop on the GPU: the first two
+   * `bandwidths` values of the parameters are the search bounds `[minimum, maximum]` (0 or less
+   * takes mgwr's default for that bound, so `[0, 0]` is mgwr's default search; a single value is a
+   * fixed bandwidth), each of up to `maximumSearchIterations` iterations evaluates one new
+   * candidate with the same kernels, and the loop disarms itself when it converges. The ladder
+   * `refinement` is ignored. Needs `maximumBandwidthCount >= 2` (the parameter capacity) and
+   * `maximumNeighborCount >= 2`.
+   */
+  bandwidthSearch?: 'ladder' | 'golden-section';
+  /**
+   * Number of golden-section iterations built into the graph, 1 to 64. Compile-time. Default 30:
+   * each iteration shrinks the bracket by 0.618, so 30 iterations reach `0.618^30 = 5e-7` of the
+   * initial range, below the f32 resolution of any bandwidth, and an adaptive integer range
+   * (at most 128 wide) collapses in about 10. Iterations after convergence launch nothing.
+   * Used only with `bandwidthSearch: 'golden-section'`.
+   */
+  maximumSearchIterations?: number;
+  /**
+   * Gaussian truncation in bandwidth multiples. Compile-time. Weights of rows farther than
+   * `gaussianCutoff * h` are exactly 0 (fixed and adaptive), so the Gaussian kernel can use the grid
+   * index like bisquare and costs `O(n * neighbours)` instead of `O(n^2)`. Omitted (default) is the
+   * exact unbounded Gaussian. The omitted weight of a row is at most `exp(-gaussianCutoff^2 / 2)`
+   * (the Gaussian at the cutoff) of the self weight: 1.1e-2 at 3, 3.4e-4 at 4, 3.7e-6 at 5, 1.5e-8
+   * at 6. For a locally uniform density the omitted share of the weight sum is that value and of
+   * the weighted second moment `(1 + gaussianCutoff^2 / 2)` times it, which sets the relative effect on
+   * the local sums. `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_RECOMMENDED_GAUSSIAN_CUTOFF` (5) keeps
+   * that below float32 accumulation error. Ignored by the bisquare kernel.
+   */
+  gaussianCutoff?: number;
+  /**
    * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the included rows, or `false`
    * for none. Compile-time. Defaults to a square grid of about 8 rows per cell (at most 1024 per
    * axis) when there are at least 1024 rows, otherwise none. The domain is the extent of the
    * included rows, recomputed every encoding. The index is used by bisquare kernels (fixed or
-   * adaptive bandwidths) and by the adaptive k-th neighbour search; Gaussian weights scan every row. Aim for a few
+   * adaptive bandwidths), by Gaussian kernels with a `gaussianCutoff`, and by the adaptive k-th
+   * neighbour search; exact Gaussian weights scan every row. Aim for a few
    * cells across the typical bandwidth. Planar contexts only.
    */
   indexGridSize?: readonly [number, number] | false;
@@ -252,6 +305,32 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * search, which starts from its own bounds (adaptive `[40 + 2 p, n]`), the search range is the
  * caller's ladder range. A ladder of one value is a fixed, unselected bandwidth (no refinement).
  *
+ * Golden-section search (`bandwidthSearch: 'golden-section'`). mgwr's `Sel_BW` golden section as a
+ * fixed-depth gated loop, `O(maximumSearchIterations)` candidate evaluations instead of a ladder of
+ * `maximumBandwidthCount` per pass. Bounds `[a, c]`: the first two `bandwidths` values of the
+ * parameters when positive, else mgwr's defaults computed on the GPU from the included rows:
+ * adaptive `a = 40 + 2 (predictorCount + 1)` and `c = n` capped at `maximumNeighborCount` (mgwr's
+ * `c = n` cannot be evaluated beyond the neighbour list; for `n <= maximumNeighborCount` it is
+ * identical); fixed `a = min_dist / 2` and `c = 2 max_dist`, with `min_dist` the smallest positive
+ * distance from a row to another row and `max_dist` the largest pairwise distance. `max_dist` is
+ * exact when no grid index is built (one extra scan per row, `O(n^2)` like one candidate); with a
+ * grid it is the largest distance from any row to a corner of the grid extent, an upper bound that
+ * costs at most one or two extra iterations. Interior points are mgwr's
+ * `b = a + 0.38197 |c - a|` and `d = c - 0.38197 |c - a|`, rounded to integers for adaptive
+ * bandwidths (round half to even, as numpy). Iteration 1 evaluates `b` and `d`; every later
+ * iteration compares the two scores (`score_b <= score_d` keeps the lower interval, ties and
+ * invalid scores resolved as documented below), shrinks the bracket, and evaluates the one new
+ * interior point, the other being reused. The search stops when `|score_b - score_d|` is not above
+ * the tolerance `max(1e-6, 4e-6 max(|score_b|, |score_d|))` (mgwr's `1e-6` with a float32 noise
+ * floor, see `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_RELATIVE_TOLERANCE`) or after
+ * `maximumSearchIterations` iterations, and the selected bandwidth is the winner of the last
+ * comparison, as mgwr returns it (a candidate with fewer singular rows beats one with more, then
+ * the lower AICc; an invalid score loses to a valid one; two invalid scores stop the search). The
+ * iteration index lives in the GPU cursor word of the ladder buffer and the loop is gated by an
+ * indirect dispatch triple that the iteration kernel zeroes on convergence, so N and N + 1
+ * iterations compile the same pipelines and converged iterations cost nothing. No read-back.
+ *
+
  * Local inference. With `standardErrors`, `tValues` or `significant` requested, the fit also
  * accumulates `X'W^2X` and reports mgwr's `bse` and `tvalues`. The summary carries `ENP = tr(S)`,
  * `sigma2 = RSS / (n - tr(S))` (mgwr `sigma2_v1`), the log-likelihood, the Da Silva-Fotheringham
@@ -279,9 +358,10 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * nearest distance by walking grid cells in rings around the location and stopping once the k
  * nearest are inside the visited block, `O(k)` per location instead of a scan of every row (any
  * kernel, adaptive). Invocations take the included rows in grid-cell order, so one workgroup fits
- * neighboring locations and shares their cells. Gaussian kernels (unbounded, no cutoff is assumed)
- * still scan every row per candidate in `O(n^2)`; a grid-enabled instance accepts them but the
- * caller must keep `n` practical. The grid path sums rows in cell order (ascending row ID inside
+ * neighboring locations and shares their cells. Gaussian kernels are unbounded: without
+ * `gaussianCutoff` they scan every row per candidate in `O(n^2)` (a grid-enabled instance accepts
+ * them but the caller must keep `n` practical); with a cutoff they visit only the cells within
+ * `gaussianCutoff * h` like bisquare. The grid path sums rows in cell order (ascending row ID inside
  * each cell) instead of row order, so results differ from the scan only by float rounding (about
  * 1e-5 in coefficients); sums stay in a fixed order and no float atomics are used, so results are
  * bitwise reproducible on one adapter. Candidate RSS and trace are reduced by 256-row tiles merged
@@ -310,89 +390,114 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
   readonly indexGridSize: readonly [number, number] | null;
   /** Resolved coordinate space and metric (planar native when none was given). */
   readonly spatialContext: GPUSpatialContext;
-  /** Refinement passes after the caller ladder (0 when refinement is off). */
+  /** Refinement passes after the caller ladder (0 when refinement is off or searching). */
   readonly refinementPassCount: number;
+  /** Resolved `bandwidthSearch`. */
+  readonly bandwidthSearch: 'ladder' | 'golden-section';
+  /** Golden-section iterations built into the graph (0 for the ladder search). */
+  readonly maximumSearchIterations: number;
+  /** Resolved `gaussianCutoff`, or null for the exact Gaussian. */
+  readonly gaussianCutoff: number | null;
+  /**
+   * Candidates evaluated together by one pass: `maximumBandwidthCount` for the ladder search, 2 for
+   * the golden-section search (its first iteration evaluates both interior points).
+   */
+  readonly candidateWidth: number;
+  /** Rows of the candidate table. */
+  readonly candidateTableRowCount: number;
 
   constructor(props: GPUGeographicallyWeightedRegressionProps) {
     this.id = props.id ?? 'geographically-weighted-regression';
     this.props = props;
     const id = this.id;
     const {predictorCount, output} = props;
-    if (
-      !Number.isInteger(predictorCount) ||
-      predictorCount < 1 ||
-      predictorCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT
-    ) {
-      throw new Error(
-        `${id} predictorCount must be an integer in [1, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'predictorCount',
+      predictorCount,
+      1,
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT
+    );
     this.coefficientCount = predictorCount + 1;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    if (
-      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
-      this.spatialContext.metric !== 'great-circle'
-    ) {
-      throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
-    }
     this.maximumBandwidthCount =
       props.maximumBandwidthCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH;
-    if (
-      !Number.isInteger(this.maximumBandwidthCount) ||
-      this.maximumBandwidthCount < 1 ||
-      this.maximumBandwidthCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH
-    ) {
-      throw new Error(
-        `${id} maximumBandwidthCount must be an integer in [1, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumBandwidthCount',
+      this.maximumBandwidthCount,
+      1,
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH
+    );
     this.maximumNeighborCount =
       props.maximumNeighborCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT;
-    if (
-      !Number.isInteger(this.maximumNeighborCount) ||
-      this.maximumNeighborCount < 1 ||
-      this.maximumNeighborCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT
-    ) {
-      throw new Error(
-        `${id} maximumNeighborCount must be an integer in [1, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumNeighborCount',
+      this.maximumNeighborCount,
+      1,
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT
+    );
     const refinement = props.refinement ?? true;
     if (typeof refinement === 'number') {
-      if (
-        !Number.isInteger(refinement) ||
-        refinement < 0 ||
-        refinement > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT
-      ) {
-        throw new Error(
-          `${id} refinement must be a boolean or an integer in [0, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT}]`
-        );
+      validateCapacity(
+        id,
+        'refinement',
+        refinement,
+        0,
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT
+      );
+    }
+    const bandwidthSearch = props.bandwidthSearch ?? 'ladder';
+    if (bandwidthSearch !== 'ladder' && bandwidthSearch !== 'golden-section') {
+      throw new Error(`${id} bandwidthSearch must be 'ladder' or 'golden-section'`);
+    }
+    this.bandwidthSearch = bandwidthSearch;
+    const isGoldenSection = bandwidthSearch === 'golden-section';
+    if (isGoldenSection) {
+      // The bounds are the first two values of the parameter ladder, and the k-th neighbour list
+      // must reach k = 2 for the nearest-neighbour distance of the default fixed bounds.
+      if (this.maximumBandwidthCount < 2) {
+        throw new Error(`${id} golden-section search needs maximumBandwidthCount >= 2`);
+      }
+      if (this.maximumNeighborCount < 2) {
+        throw new Error(`${id} golden-section search needs maximumNeighborCount >= 2`);
       }
     }
+    this.maximumSearchIterations = isGoldenSection
+      ? (props.maximumSearchIterations ??
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS)
+      : 0;
+    if (isGoldenSection) {
+      validateCapacity(
+        id,
+        'maximumSearchIterations',
+        this.maximumSearchIterations,
+        1,
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_SEARCH_ITERATIONS
+      );
+    }
+    const {gaussianCutoff} = props;
+    if (gaussianCutoff !== undefined && !(Number.isFinite(gaussianCutoff) && gaussianCutoff > 0)) {
+      throw new Error(`${id} gaussianCutoff must be a positive finite number`);
+    }
+    this.gaussianCutoff = gaussianCutoff ?? null;
     this.refinementPassCount =
-      this.maximumBandwidthCount < 2
+      this.maximumBandwidthCount < 2 || isGoldenSection
         ? 0
         : refinement === true
           ? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT
           : refinement === false
             ? 0
             : refinement;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['predictors', props.predictors],
-      ['response', props.response],
-      ['mask', props.mask],
-      ['parameters', props.parameters],
-      ...Object.entries(output)
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    this.candidateWidth = isGoldenSection ? 2 : this.maximumBandwidthCount;
+    this.candidateTableRowCount = isGoldenSection
+      ? this.maximumSearchIterations + 1
+      : (1 + this.refinementPassCount) * this.maximumBandwidthCount;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.rowCount = props.positions.length;
     if (this.rowCount < 1) {
@@ -440,11 +545,11 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     if (
       this.indexGridSize &&
       (this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT ||
-        this.rowCount * this.maximumBandwidthCount * 8 > MAXIMUM_SCRATCH_BYTES)
+        this.rowCount * this.candidateWidth * 8 > MAXIMUM_SCRATCH_BYTES)
     ) {
       throw new Error(
         `${id} supports at most ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT} rows ` +
-          `and rows * maximumBandwidthCount * 8 <= ${MAXIMUM_SCRATCH_BYTES} with a grid index`
+          `and rows * ${isGoldenSection ? '2' : 'maximumBandwidthCount'} * 8 <= ${MAXIMUM_SCRATCH_BYTES} with a grid index`
       );
     }
     if (this.getRowStateWordCount() * 4 > MAXIMUM_SCRATCH_BYTES) {
@@ -461,7 +566,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       throw new Error(`${id} response length must equal the row count`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -474,9 +579,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       throw new Error(`${id} parameters must hold ${parameterLength} float32 values`);
     }
     const tableLength =
-      (1 + this.refinementPassCount) *
-      this.maximumBandwidthCount *
-      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE;
+      this.candidateTableRowCount * GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE;
     const lengths: [keyof GPUGeographicallyWeightedRegressionOutput, number][] = [
       ['coefficients', this.rowCount * this.coefficientCount],
       ['standardErrors', this.rowCount * this.coefficientCount],
@@ -492,8 +595,12 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       ['bandwidthSingularRowCounts', this.maximumBandwidthCount],
       ['candidateTable', tableLength],
       ['selectedBandwidth', 2],
+      ['searchState', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH],
       ['summary', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH]
     ];
+    if (output.searchState && !isGoldenSection) {
+      throw new Error(`${id} output.searchState needs bandwidthSearch 'golden-section'`);
+    }
     const uint32Outputs = new Set(['localStatus', 'significant', 'bandwidthSingularRowCounts']);
     for (const [name, length] of lengths) {
       const view = output[name];
@@ -504,7 +611,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
         continue;
       }
       if (uint32Outputs.has(name)) {
-        validatePackedUint32View(view as GraphDataView<'uint32'>, `${id} output.${name}`);
+        validatePackedView(view as GraphDataView<'uint32'>, ['uint32'], `${id} output.${name}`);
       } else {
         validatePackedView(view, ['float32'], `${id} output.${name}`);
       }
@@ -562,8 +669,13 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       maximumBandwidthCount,
       maximumNeighborCount,
       indexGridSize,
-      refinementPassCount
+      refinementPassCount,
+      maximumSearchIterations,
+      candidateWidth,
+      candidateTableRowCount,
+      gaussianCutoff
     } = this;
+    const isGoldenSection = this.bandwidthSearch === 'golden-section';
     const {output, predictorCount, positions, predictors, response, parameters} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
@@ -573,7 +685,9 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       parameters,
       ...Object.values(output)
     ]);
-    const passCount = 1 + refinementPassCount;
+    // Candidate passes: the caller ladder and each refinement, or one per golden-section iteration
+    // (iteration i evaluates the candidate its predecessor scheduled; the last one evaluates none).
+    const passCount = isGoldenSection ? maximumSearchIterations : 1 + refinementPassCount;
     const tileCount = Math.ceil(rowCount / TILE_ROWS);
     const hasInference = this.hasInference();
     const hasTValues = this.hasTValues();
@@ -592,23 +706,32 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     const candidateScratch = transient(
       'candidate-scratch',
       'float32',
-      rowCount * maximumBandwidthCount * 2
+      rowCount * candidateWidth * 2
     );
     const tileCandidates = transient(
       'tile-candidates',
       'float32',
-      tileCount * maximumBandwidthCount * TILE_CANDIDATE_STRIDE
+      tileCount * candidateWidth * TILE_CANDIDATE_STRIDE
     );
     const tableStride = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE;
     const candidateTable =
       output.candidateTable ??
-      transient('candidate-table', 'float32', passCount * maximumBandwidthCount * tableStride);
-    const refinedParameters =
-      refinementPassCount > 0
-        ? transient('refined-parameters', 'float32', refinementPassCount * parameterLength)
-        : null;
+      transient('candidate-table', 'float32', candidateTableRowCount * tableStride);
+    // Rule 12: every candidate pass reads its ladder from one buffer, `[passCursor, ladder 0,
+    // ladder 1, ...]`, where ladder 0 is a copy of the caller ladder and the refinement nodes write
+    // the others. The pass index lives in the GPU cursor word (an exact small integer in f32), never
+    // in WGSL text, so every pass shares one pipeline per kernel.
+    const ladders = transient('ladders', 'float32', 1 + passCount * parameterLength);
     const tileStatistics = transient('tile-statistics', 'float32', tileCount * 3);
     const selection = output.selectedBandwidth ?? transient('selected-bandwidth', 'float32', 2);
+    const searchState = isGoldenSection
+      ? (output.searchState ??
+        transient(
+          'search-state',
+          'float32',
+          GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH
+        ))
+      : null;
     const summary =
       output.summary ??
       transient('summary', 'float32', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH);
@@ -647,8 +770,8 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     const common = `const ROW_COUNT: u32 = ${rowCount}u;
 const PREDICTOR_COUNT: u32 = ${predictorCount}u;
 const P: u32 = ${P}u;
-const LADDER: u32 = ${maximumBandwidthCount}u;
-const PASSES: u32 = ${passCount}u;
+const LADDER: u32 = ${candidateWidth}u;
+const TABLE_ROWS: u32 = ${candidateTableRowCount}u;
 const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighborCount}u;
 const TILE_ROWS: u32 = ${TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
@@ -687,10 +810,10 @@ ${GWR_COMMON_WGSL}`;
   let focal = getFocalRow(index);`
       : 'let focal = index;';
     // Settings of a candidate pass come from that pass's parameter block.
-    const getPassDeclarations = (parametersBase: number) => `${common}
-const PARAMETERS_BASE: u32 = ${parametersBase}u;
+    const passDeclarations = `${common}
 fn getParameter(slot: u32) -> f32 {
-  return params[paramsOffset + PARAMETERS_BASE + slot];
+  let passCursor = u32(params[paramsOffset]);
+  return params[paramsOffset + 1u + passCursor * PARAMETER_LENGTH + slot];
 }
 fn getIsBisquare() -> bool {
   return getParameter(0u) > 0.5;
@@ -701,15 +824,14 @@ fn getIsAdaptive() -> bool {
 fn getCandidateCount() -> u32 {
   return min(u32(max(getParameter(2u), 0.0)), LADDER);
 }`;
-    const candidateDeclarations = (
-      parametersBase: number
-    ) => `${getPassDeclarations(parametersBase)}
+    const candidateDeclarations = `${passDeclarations}
 ${getGWRFitWGSL({
   coefficientCount: P,
   indexGridSize,
   hasConditionNumber: false,
   hasVariance: false,
-  sphereRadius
+  sphereRadius,
+  gaussianCutoff
 })}
 // Largest requested k among valid adaptive candidates, clamped to [1, MAXIMUM_NEIGHBORS].
 fn getMaximumK(candidateCount: u32) -> u32 {
@@ -735,7 +857,8 @@ ${getGWRFitWGSL({
   indexGridSize,
   hasConditionNumber: Boolean(output.localConditionNumber),
   hasVariance: hasInference,
-  sphereRadius
+  sphereRadius,
+  gaussianCutoff
 })}`;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -795,24 +918,72 @@ ${getGWRFitWGSL({
       );
     }
 
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-ladder-init`,
+        operation: OPERATION,
+        variant: 'ladder-init',
+        bindings: [read('params', parameters, 'f32'), write('ladders', ladders, 'f32')],
+        invocationCount: 1,
+        declarations: common,
+        body: `ladders[laddersOffset] = 0.0;
+  for (var slot = 0u; slot < PARAMETER_LENGTH; slot++) {
+    ladders[laddersOffset + 1u + slot] = params[paramsOffset + slot];
+  }`
+      })
+    );
+    const candidateBindings: WGSLKernelBinding[] = [
+      read('positions', positions, 'f32'),
+      read('predictors', predictors, 'f32'),
+      read('response', response, 'f32'),
+      read('rowValid', rowValid, 'u32'),
+      read('params', ladders, 'f32'),
+      ...gridBindings
+    ];
+    const search =
+      isGoldenSection && searchState
+        ? createGoldenSectionSearchNodes<Parameters>(graph, {
+            id,
+            operation: OPERATION,
+            rowCount,
+            tileRows: TILE_ROWS,
+            tileCount,
+            candidateWidth,
+            maximumIterations: maximumSearchIterations,
+            tableRowCount: candidateTableRowCount,
+            common,
+            candidateDeclarations,
+            focalRowWGSL,
+            hasGrid: Boolean(indexGridSize),
+            candidateBindings,
+            rowValid,
+            ladders,
+            parameters,
+            candidateScratch,
+            tileCandidates,
+            candidateTable,
+            searchState
+          })
+        : null;
+    if (search) {
+      nodes.push(...search.setupNodes);
+    }
     for (let pass = 0; pass < passCount; pass++) {
-      const suffix = pass === 0 ? '' : `-refine-${pass}`;
-      const passParameters = pass === 0 ? parameters : refinedParameters!;
-      const parametersBase = pass === 0 ? 0 : (pass - 1) * parameterLength;
-      if (pass > 0) {
+      const suffix = pass === 0 ? '' : isGoldenSection ? `-search-${pass}` : `-refine-${pass}`;
+      // Golden-section passes after the first run only while the search is armed (rule 13).
+      const gated = search && pass > 0 ? search.gate : null;
+      if (search && pass > 0) {
+        nodes.push(search.createIterationNode(pass));
+      } else if (pass > 0) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-refine-${pass}-ladder`,
             operation: OPERATION,
-            variant: `refine-ladder-${pass}`,
-            bindings: [
-              read('params', parameters, 'f32'),
-              write('refined', refinedParameters!, 'f32'),
-              read('table', candidateTable, 'f32')
-            ],
+            variant: 'refine-ladder',
+            bindings: [write('ladders', ladders, 'f32'), read('table', candidateTable, 'f32')],
             invocationCount: 1,
             declarations: `${common}
-${getRefineLadderWGSL(pass, parametersBase)}`,
+${REFINE_LADDER_WGSL}`,
             body: 'refineLadder();'
           })
         );
@@ -821,18 +992,11 @@ ${getRefineLadderWGSL(pass, parametersBase)}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}${suffix}-candidates`,
           operation: OPERATION,
-          variant: pass === 0 ? 'candidates' : `candidates-${pass}`,
-          bindings: [
-            read('positions', positions, 'f32'),
-            read('predictors', predictors, 'f32'),
-            read('response', response, 'f32'),
-            read('rowValid', rowValid, 'u32'),
-            read('params', passParameters, 'f32'),
-            ...gridBindings,
-            write('candidateScratch', candidateScratch, 'f32')
-          ],
+          variant: 'candidates',
+          ...gated?.getGate(0),
+          bindings: [...candidateBindings, write('candidateScratch', candidateScratch, 'f32')],
           invocationCount: rowCount,
-          declarations: candidateDeclarations(parametersBase),
+          declarations: candidateDeclarations,
           body: `${focalRowWGSL}
   let candidateCount = getCandidateCount();
   if (candidateCount == 0u || rowValid[rowValidOffset + focal] == 0u) {
@@ -870,12 +1034,13 @@ ${getRefineLadderWGSL(pass, parametersBase)}`,
           id: `${id}${suffix}-tile-candidates`,
           operation: OPERATION,
           variant: 'tile-candidates',
+          ...gated?.getGate(1),
           bindings: [
             read('candidateScratch', candidateScratch, 'f32'),
             read('rowValid', rowValid, 'u32'),
             write('tileCandidates', tileCandidates, 'f32')
           ],
-          invocationCount: tileCount * maximumBandwidthCount,
+          invocationCount: tileCount * candidateWidth,
           declarations: common,
           body: `let tile = index / LADDER;
   let candidate = index % LADDER;
@@ -915,22 +1080,33 @@ ${getRefineLadderWGSL(pass, parametersBase)}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}${suffix}-select`,
           operation: OPERATION,
-          variant: pass === 0 ? 'select' : `select-${pass}`,
+          variant: 'select',
+          ...gated?.getGate(2),
           bindings: [
             read('tileCandidates', tileCandidates, 'f32'),
-            read('params', passParameters, 'f32'),
+            read('params', ladders, 'f32'),
             write('table', candidateTable, 'f32')
           ],
-          invocationCount: maximumBandwidthCount,
-          declarations: getPassDeclarations(parametersBase),
+          invocationCount: candidateWidth,
+          declarations: passDeclarations,
           body: `let candidate = index;
-  let base = tableOffset + (${pass}u * LADDER + candidate) * TABLE_STRIDE;
+  let passCursor = u32(params[paramsOffset]);
   let nan = getNaN();
+  ${
+    isGoldenSection
+      ? `// One table row per evaluation, in order: pass 0 fills rows 0 and 1, pass p the row p + 1.
+  // Rows of unused candidates keep the NaN fill of the search initialization.
+  if (candidate >= getCandidateCount()) {
+    return;
+  }
+  let base = tableOffset + select(passCursor + 1u, candidate, passCursor == 0u) * TABLE_STRIDE;`
+      : `let base = tableOffset + (passCursor * LADDER + candidate) * TABLE_STRIDE;
   if (candidate >= getCandidateCount()) {
     for (var field = 0u; field < TABLE_STRIDE; field++) {
       table[base + field] = nan;
     }
     return;
+  }`
   }
   var residualSum = 0.0;
   var traceSum = 0.0;
@@ -966,6 +1142,10 @@ ${getRefineLadderWGSL(pass, parametersBase)}`,
         })
       );
     }
+    if (search) {
+      // The comparison of the last iteration schedules no candidate.
+      nodes.push(search.createIterationNode(passCount));
+    }
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -977,11 +1157,13 @@ ${getRefineLadderWGSL(pass, parametersBase)}`,
           read('table', candidateTable, 'f32'),
           write('rowValid', rowValid, 'u32'),
           write('selection', selection, 'f32'),
-          write('summary', summary, 'f32')
+          write('summary', summary, 'f32'),
+          ...(searchState ? [read('state', searchState, 'f32')] : [])
         ],
         invocationCount: 1,
         declarations: `${common}
 ${getStudentTWGSL()}
+${searchState ? GPU_SEARCH_STATE_WGSL : ''}
 const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL};`,
         body: `let nan = getNaN();
   // Fewest singular rows first, then the smallest AICc; ties go to the lowest index.
@@ -989,7 +1171,7 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   var bestIndex = 0u;
   var bestSingular = 0.0;
   var bestScore = 0.0;
-  for (var candidate = 0u; candidate < PASSES * LADDER; candidate++) {
+  for (var candidate = 0u; candidate < TABLE_ROWS; candidate++) {
     let base = tableOffset + candidate * TABLE_STRIDE;
     let score = table[base + 1u];
     if (!isFiniteBits(score)) {
@@ -1002,6 +1184,22 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
       bestSingular = singular;
       bestScore = score;
     }
+  }
+  ${
+    searchState
+      ? `// Golden section returns the winner of its last comparison (mgwr), when it is valid.
+  let optimumRow = state[stateOffset + STATE_OPTIMUM_ROW];
+  if (optimumRow >= 0.0) {
+    let optimumBase = tableOffset + u32(optimumRow) * TABLE_STRIDE;
+    let optimumScore = table[optimumBase + 1u];
+    if (isFiniteBits(optimumScore)) {
+      hasBest = true;
+      bestIndex = u32(optimumRow);
+      bestSingular = table[optimumBase + 2u];
+      bestScore = optimumScore;
+    }
+  }`
+      : ''
   }
   let base = tableOffset + bestIndex * TABLE_STRIDE;
   let selectedValue = table[base];
@@ -1244,9 +1442,15 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
           bindings: present,
           invocationCount: maximumBandwidthCount,
           declarations: common,
-          body: `let base = tableOffset + index * TABLE_STRIDE;
-  ${output.bandwidthScores ? 'scores[scoresOffset + index] = table[base + 1u];' : ''}
-  ${output.bandwidthSingularRowCounts ? 'let singular = table[base + 2u];\n  singularRowCounts[singularRowCountsOffset + index] = select(0u, u32(singular), singular >= 0.0 && singular < 4.0e9);' : ''}`
+          body: `${
+            isGoldenSection
+              ? `// The golden-section table can hold fewer rows than the ladder capacity.
+  let isRow = index < TABLE_ROWS;
+  let base = tableOffset + min(index, TABLE_ROWS - 1u) * TABLE_STRIDE;`
+              : 'let base = tableOffset + index * TABLE_STRIDE;'
+          }
+  ${output.bandwidthScores ? `scores[scoresOffset + index] = ${isGoldenSection ? 'select(getNaN(), table[base + 1u], isRow)' : 'table[base + 1u]'};` : ''}
+  ${output.bandwidthSingularRowCounts ? `let singular = table[base + 2u];\n  singularRowCounts[singularRowCountsOffset + index] = select(0u, u32(singular), ${isGoldenSection ? 'isRow && ' : ''}singular >= 0.0 && singular < 4.0e9);` : ''}`
         })
       );
     }
@@ -1322,6 +1526,11 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   }
 }
 
+/** State word indices of the golden-section search, for the kernels that read the state. */
+const GPU_SEARCH_STATE_WGSL = Object.entries(GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE)
+  .map(([name, slot]) => `const STATE_${name}: u32 = ${slot}u;`)
+  .join('\n');
+
 const GWR_COMMON_WGSL = /* wgsl */ `
 ${GET_NAN_WGSL}
 
@@ -1329,9 +1538,10 @@ ${IS_FINITE_BITS_WGSL}
 `;
 
 /**
- * WGSL of one ladder-refinement node: `refineLadder()` reads the candidate table of every earlier
- * pass and writes the ladder of pass `pass` into block `pass - 1` of the refined parameters
- * (same layout as the caller parameters).
+ * WGSL of the ladder-refinement node (one source for every pass): `refineLadder()` advances the
+ * pass cursor in word 0 of `ladders`, reads the candidate table of every earlier pass and writes
+ * the ladder of the new pass into block `passCursor` of `ladders` (same layout as the caller
+ * parameters, which block 0 copies).
  *
  * The best candidate is the one with the fewest singular rows, then the smallest AICc (ties to the
  * first evaluated). Its bracket is the nearest evaluated ladder values below and above it (all
@@ -1341,16 +1551,19 @@ ${IS_FINITE_BITS_WGSL}
  * Fixed: `LADDER` equally spaced values strictly inside the bracket (none when the bracket is
  * narrower than 1e-5 relative).
  */
-function getRefineLadderWGSL(pass: number, parametersBase: number): string {
-  return /* wgsl */ `
+const REFINE_LADDER_WGSL = /* wgsl */ `
 fn refineLadder() {
   let nan = getNaN();
-  let isAdaptive = params[paramsOffset + 1u] > 0.5;
+  // Advance the GPU pass cursor: this node writes the ladder of pass passCursor.
+  let passCursor = u32(ladders[laddersOffset]) + 1u;
+  ladders[laddersOffset] = f32(passCursor);
+  let callerBase = laddersOffset + 1u;
+  let isAdaptive = ladders[callerBase + 1u] > 0.5;
   var hasBest = false;
   var bestValue = 0.0;
   var bestSingular = 0.0;
   var bestScore = 0.0;
-  for (var candidate = 0u; candidate < ${pass}u * LADDER; candidate++) {
+  for (var candidate = 0u; candidate < passCursor * LADDER; candidate++) {
     let base = tableOffset + candidate * TABLE_STRIDE;
     let score = table[base + 1u];
     if (!isFiniteBits(score)) {
@@ -1370,7 +1583,7 @@ fn refineLadder() {
   }
   var lower = -SENTINEL;
   var upper = SENTINEL;
-  for (var candidate = 0u; candidate < ${pass}u * LADDER; candidate++) {
+  for (var candidate = 0u; candidate < passCursor * LADDER; candidate++) {
     var value = table[tableOffset + candidate * TABLE_STRIDE];
     if (!isFiniteBits(value)) {
       continue;
@@ -1390,13 +1603,13 @@ fn refineLadder() {
   if (upper >= SENTINEL) {
     upper = bestValue;
   }
-  let base = ${parametersBase}u;
+  let base = callerBase + passCursor * PARAMETER_LENGTH;
   for (var slot = 0u; slot < PARAMETER_LENGTH; slot++) {
-    refined[refinedOffset + base + slot] = 0.0;
+    ladders[base + slot] = 0.0;
   }
-  refined[refinedOffset + base] = params[paramsOffset];
-  refined[refinedOffset + base + 1u] = params[paramsOffset + 1u];
-  refined[refinedOffset + base + 3u] = params[paramsOffset + 3u];
+  ladders[base] = ladders[callerBase];
+  ladders[base + 1u] = ladders[callerBase + 1u];
+  ladders[base + 3u] = ladders[callerBase + 3u];
   var count = 0u;
   if (hasBest) {
     if (isAdaptive) {
@@ -1415,7 +1628,7 @@ fn refineLadder() {
           if (isInside && value >= bestValue) {
             value = value + 1.0;
           }
-          refined[refinedOffset + base + HEADER + slot] = value;
+          ladders[base + HEADER + slot] = value;
         }
       }
     } else {
@@ -1424,12 +1637,11 @@ fn refineLadder() {
       if (span > 1.0e-5 * max(abs(upper), 1.0e-30)) {
         count = LADDER;
         for (var slot = 0u; slot < LADDER; slot++) {
-          refined[refinedOffset + base + HEADER + slot] = low + span * f32(slot + 1u) / f32(LADDER + 1u);
+          ladders[base + HEADER + slot] = low + span * f32(slot + 1u) / f32(LADDER + 1u);
         }
       }
     }
   }
-  refined[refinedOffset + base + 2u] = f32(count);
+  ladders[base + 2u] = f32(count);
 }
 `;
-}

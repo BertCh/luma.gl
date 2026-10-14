@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  getRasterExtremaPyramidWGSL,
-  type GPURasterExtremaPyramidLayout
-} from '../../gpu-raster/raster-pyramid/index';
-import {TERRAIN_WGSL_HELPERS} from './terrain-analysis-utils';
+import {type GPURasterExtremaPyramidLayout} from '../../gpu-raster/raster-pyramid/index';
+import {getRasterExtremaPyramidWGSL} from '../../gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid';
+import {RASTER_WGSL_HELPERS} from '../../gpu-raster/raster-band-utils';
 
 /** Marching strategy of the sight-line contributors. */
 export type GPUTerrainSightLineTraversal = 'march' | 'pyramid';
@@ -215,7 +213,7 @@ const NO_DATA: u32 = 3u;
 const MARGINAL: u32 = 4u;
 const MAXIMUM_FLOAT: f32 = 3.4028234663852886e38;
 const SKIP_EPSILON: f32 = ${TERRAIN_SIGHT_LINE_SKIP_EPSILON};
-${TERRAIN_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}
 ${pyramid}
 fn isValidPixel(column: u32, row: u32) -> bool {
   return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;

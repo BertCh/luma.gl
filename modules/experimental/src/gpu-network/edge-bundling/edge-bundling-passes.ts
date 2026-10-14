@@ -52,7 +52,7 @@ export type EdgeBundlingConstants = {
   geographic: boolean;
 };
 
-function getConstantsWGSL(constants: EdgeBundlingConstants, includeIteration?: number): string {
+function getConstantsWGSL(constants: EdgeBundlingConstants): string {
   return /* wgsl */ `
 const EDGE_COUNT: u32 = ${constants.edgeCount}u;
 const VERTEX_COUNT: u32 = ${constants.vertexCount}u;
@@ -67,8 +67,7 @@ const DEAD_COORDINATE: f32 = ${getWGSLFloatLiteral(EDGE_BUNDLING_DEAD_COORDINATE
 const DEAD_LIMIT: f32 = ${getWGSLFloatLiteral(EDGE_BUNDLING_DEAD_LIMIT)};
 const LENGTH_EPSILON: f32 = ${getWGSLFloatLiteral(EDGE_BUNDLING_LENGTH_EPSILON)};
 const GRADIENT_MINIMUM: f32 = ${getWGSLFloatLiteral(EDGE_BUNDLING_GRADIENT_QUANTA)} * FIXED_POINT_INVERSE;
-const RADIUS_EPSILON: f32 = ${getWGSLFloatLiteral(EDGE_BUNDLING_RADIUS_EPSILON)};
-${includeIteration === undefined ? '' : `const ITERATION: u32 = ${includeIteration}u;`}`;
+const RADIUS_EPSILON: f32 = ${getWGSLFloatLiteral(EDGE_BUNDLING_RADIUS_EPSILON)};`;
 }
 
 /**
@@ -107,17 +106,45 @@ fn readStepScale() -> f32 { return ${parameters.length > 4 ? `max(${readFloat(4)
   return readers;
 }
 
-/** WGSL for the per-iteration radius, which needs the `ITERATION` constant. */
+/**
+ * Words between the iteration slots of the iteration-info buffer: 64 words is the 256-byte
+ * storage binding alignment, so each iteration binds its slot at element offset 0 and every
+ * iteration compiles to the same WGSL (library rule 12). @internal
+ */
+export const EDGE_BUNDLING_ITERATION_SLOT_WORDS = 64;
+
+/**
+ * WGSL for the per-iteration radius. The iteration index is word 0 of the bound `iterationInfo`
+ * slot, never a WGSL constant.
+ */
 function getIterationRadiusWGSL(): string {
   return /* wgsl */ `
 fn getIterationRadius() -> f32 {
+  let iteration = iterationInfo[iterationInfoOffset];
   var radius = readInitialRadius();
   let lambda = readLambda();
-  for (var round = 0u; round < ITERATION; round++) {
+  for (var round = 0u; round < iteration; round++) {
     radius = radius * lambda;
   }
   return radius;
 }`;
+}
+
+/** Writes the index of every iteration into word 0 of its iteration-info slot. @internal */
+export function createEdgeBundlingIterationInfoNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; iterationInfo: GraphDataView<'uint32'>; iterationCount: number}
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'iteration-info',
+    bindings: [
+      {name: 'iterationInfo', view: props.iterationInfo, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.iterationCount,
+    body: `iterationInfo[iterationInfoOffset + index * ${EDGE_BUNDLING_ITERATION_SLOT_WORDS}u] = index;`
+  });
 }
 
 function getEdgeHelpersWGSL(hasMask: boolean): string {
@@ -492,7 +519,8 @@ export function createEdgeBundlingSplatNode<Parameters>(
   props: {
     id: string;
     constants: EdgeBundlingConstants;
-    iteration: number;
+    /** The iteration's slot of the iteration-info buffer (one word: the iteration index). */
+    iterationInfo: GraphDataView<'uint32'>;
     parameters?: EdgeBundlingParameterView;
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
@@ -501,6 +529,7 @@ export function createEdgeBundlingSplatNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
   const bindings: WGSLKernelBinding[] = [
+    {name: 'iterationInfo', view: props.iterationInfo, type: 'u32', access: 'read'},
     {name: 'work', view: props.work, type: 'f32', access: 'read'},
     {
       name: 'density',
@@ -523,7 +552,7 @@ export function createEdgeBundlingSplatNode<Parameters>(
     variant: 'splat',
     bindings,
     invocationCount: constants.edgeCount * constants.pointsPerEdge,
-    declarations: `${getConstantsWGSL(constants, props.iteration)}
+    declarations: `${getConstantsWGSL(constants)}
 ${getParameterReadersWGSL(props.parameters)}
 ${getIterationRadiusWGSL()}`,
     body: `let radius = getIterationRadius();
@@ -571,7 +600,8 @@ export function createEdgeBundlingUpdateNode<Parameters>(
   props: {
     id: string;
     constants: EdgeBundlingConstants;
-    iteration: number;
+    /** The iteration's slot of the iteration-info buffer (one word: the iteration index). */
+    iterationInfo: GraphDataView<'uint32'>;
     parameters?: EdgeBundlingParameterView;
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
@@ -580,6 +610,7 @@ export function createEdgeBundlingUpdateNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
   const bindings: WGSLKernelBinding[] = [
+    {name: 'iterationInfo', view: props.iterationInfo, type: 'u32', access: 'read'},
     {name: 'work', view: props.work, type: 'f32', access: 'read_write'},
     {name: 'density', view: props.density, type: 'u32', access: 'read'}
   ];
@@ -598,7 +629,7 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     bindings,
     invocationCount: constants.edgeCount,
     workgroupSize: 64,
-    declarations: `${getConstantsWGSL(constants, props.iteration)}
+    declarations: `${getConstantsWGSL(constants)}
 ${getParameterReadersWGSL(props.parameters)}
 ${getIterationRadiusWGSL()}
 fn readDensity(x: i32, y: i32) -> f32 {

@@ -20,7 +20,7 @@ import {
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
 import {
-  RASTER_GATE_INTERVAL,
+  createRasterGateSlotTable,
   createRasterIterationGroupGateNode,
   createRasterIterationResetNode,
   createRasterIterationState,
@@ -28,10 +28,11 @@ import {
 } from '../cost-distance/raster-relaxation';
 import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling';
 import {PHILOX_WGSL} from '../../utils/philox-random';
-import {STREAMLINES_SEED_PURPOSE} from './streamlines-cpu';
 import {
+  STREAMLINES_SEED_PURPOSE,
+  GPU_STREAMLINES_OVERFLOW_UNCONVERGED,
   GPU_STREAMLINES_PARAMETER_LENGTH,
-  GPU_STREAMLINES_WORD_PARAMETER_LENGTH
+  GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
 } from './streamlines-parameters';
 
 const OPERATION = 'GPUStreamlines';
@@ -44,43 +45,56 @@ const REJECTED = 2;
 export type GPUStreamlinesOutput = {
   /**
    * Published lines in ascending seed index: `ids` holds the seed index of each line, `count` the
-   * number of published lines, `overflow` is 1 when accepted lines were dropped because the line or
-   * point capacity was full, and `requiredCount` the number of accepted lines before capacity.
+   * number of published lines, `overflow` is a bit set (0 only for a complete result): bit 0
+   * (value 1) when accepted lines were dropped because the line or point capacity was full, and
+   * {@link GPU_STREAMLINES_OVERFLOW_UNCONVERGED} (value 2) when `maximumIterations` rounds did not decide
+   * every seed so undecided lines are missing, and `requiredCount` the number of accepted lines
+   * before capacity.
    */
   lines: GPUCompactOutput;
   /**
-   * CSR offsets into `points`, `lines.ids.length + 1` rows: line `i` is
-   * `points[pathOffsets[i] .. pathOffsets[i + 1])`. Rows past `count + 1` are not written.
+   * CSR offsets into `positions`, `lines.ids.length + 1` rows: line `i` is
+   * `positions[lineOffsets[i] .. lineOffsets[i + 1])`. Rows past `count + 1` are not written.
    */
-  pathOffsets: GraphDataView<'uint32'>;
+  lineOffsets: GraphDataView<'uint32'>;
   /**
    * Polyline points, capacity rows, ordered backward end, seed, forward end per line. Rows past
-   * `pointCount` are not written.
+   * `positionCount` are not written.
    */
-  points: GraphDataView<'float32x2'>;
-  /** One-row number of published points, `pathOffsets[count]`. */
-  pointCount: GraphDataView<'uint32'>;
-  /** One-row flag: 1 when `roundCount` rounds did not decide every seed (undecided seeds are dropped). */
-  unconverged?: GraphDataView<'uint32'>;
+  positions: GraphDataView<'float32x2'>;
+  /** One-row number of published positions, `lineOffsets[count]`. */
+  positionCount: GraphDataView<'uint32'>;
+  /** Optional one-row status words. */
+  status?: GPUStreamlinesStatus;
   /**
-   * Optional diagnostic outputs exposing the traced lines before pruning. `points` has
+   * Optional diagnostic outputs exposing the traced lines before pruning. `positions` has
    * `seedCount * (2L + 1)` rows (slot `s * (2L + 1) + L + k` is step `k`, negative backward; the seed
    * point is NaN for an invalid seed; untraced slots are NaN) and `spans` has `seedCount * 4` rows
    * `[backwardSteps, forwardSteps, keptBackward, keptForward]` (the kept counts are final for
    * accepted lines only).
    */
   candidates?: {
-    points: GraphDataView<'float32x2'>;
+    positions: GraphDataView<'float32x2'>;
     spans: GraphDataView<'uint32'>;
   };
+};
+
+/** One-row status words of {@link GPUStreamlines}. */
+export type GPUStreamlinesStatus = {
+  /**
+   * One-row flag: 1 when `maximumIterations` rounds did not decide every seed (undecided seeds are
+   * dropped). The same condition always sets {@link GPU_STREAMLINES_OVERFLOW_UNCONVERGED} in
+   * `lines.overflow`, so this output is optional.
+   */
+  iterationLimitReached?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUStreamlines}.
  *
  * Per-frame (no recompile): the contents of `parameters` (field and grid extents, step length,
- * minimum speed), `wordParameters` (seed, minimum points) and `velocities`. Topology: field, grid
- * and seed lattice sizes, `stepsPerDirection`, `roundCount`, output capacities.
+ * minimum speed), `uint32Parameters` (seed, minimum points) and `velocities`. Topology: field, grid
+ * and seed lattice sizes, `stepsPerDirection`, `maximumIterations`, output capacities.
  */
 export type GPUStreamlinesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'streamlines'`. */
@@ -102,11 +116,11 @@ export type GPUStreamlinesProps = {
   /** Integration steps in each direction `L`. Compile-time. */
   stepsPerDirection: number;
   /** GPU-gated pruning rounds. Compile-time. Defaults to 32. */
-  roundCount?: number;
+  maximumIterations?: number;
   /** Per-frame float32 parameters from `getGPUStreamlinesParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Per-frame uint32 parameters from `getGPUStreamlinesWordParameterValues`. */
-  wordParameters: GraphDataView<'uint32'>;
+  /** Per-frame uint32 parameters from `getGPUStreamlinesUint32ParameterValues`. */
+  uint32Parameters: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPUStreamlinesOutput;
 };
@@ -124,7 +138,7 @@ export type GPUStreamlinesProps = {
  * 2. Prune: the result equals this greedy pass in descending key: a line whose seed cell is
  *    occupied is rejected; each direction is cut before its first point in an occupied cell; the
  *    line is accepted when it keeps `minimumPoints` points, and its kept points occupy their cells.
- *    The occupancy grid cell is the separation distance. On the GPU, each of `roundCount` rounds
+ *    The occupancy grid cell is the separation distance. On the GPU, each of `maximumIterations` rounds
  *    clears a grid and runs two nodes. Claim: occupancy only grows, so an undecided line can keep
  *    at most the points before its first occupied cell in each direction; a line whose seed cell
  *    is occupied or whose remaining span is shorter than `minimumPoints` is rejected at once, and
@@ -134,7 +148,8 @@ export type GPUStreamlinesProps = {
  *    lower-key lines cannot have been accepted into them, so this reproduces the greedy pass. Two
  *    lines accepted in the same round touch disjoint cells, so marking accepted cells with plain
  *    stores is race-free. The highest undecided line is always decided, so every round makes
- *    progress; lines still undecided after `roundCount` rounds are dropped and `unconverged` set.
+ *    progress; lines still undecided after `maximumIterations` rounds are dropped and `lines.overflow` gets
+ *    {@link GPU_STREAMLINES_OVERFLOW_UNCONVERGED} (and `status.iterationLimitReached` is set).
  * 3. Publish: prefix scans place the accepted lines in ascending seed order as CSR polylines,
  *    bounded by the line and point capacities.
  *
@@ -148,7 +163,7 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
   /** Number of seeds. */
   readonly seedCount: number;
   /** Number of pruning rounds. */
-  readonly roundCount: number;
+  readonly maximumIterations: number;
   /** Validated properties. */
   readonly props: Readonly<GPUStreamlinesProps>;
 
@@ -173,9 +188,9 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
     if (!Number.isInteger(props.stepsPerDirection) || props.stepsPerDirection < 1) {
       throw new Error(`${id} stepsPerDirection must be a positive integer`);
     }
-    const roundCount = props.roundCount ?? 32;
-    if (!Number.isInteger(roundCount) || roundCount < 1) {
-      throw new Error(`${id} roundCount must be a positive integer`);
+    const maximumIterations = props.maximumIterations ?? 32;
+    if (!Number.isInteger(maximumIterations) || maximumIterations < 1) {
+      throw new Error(`${id} maximumIterations must be a positive integer`);
     }
     validatePackedView(props.velocities, ['float32x2'], `${id} velocities`);
     if (props.velocities.length !== props.fieldWidth * props.fieldHeight) {
@@ -187,10 +202,10 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
         `${id} parameters must contain ${GPU_STREAMLINES_PARAMETER_LENGTH} float32 rows`
       );
     }
-    validatePackedUint32View(props.wordParameters, `${id} wordParameters`);
-    if (props.wordParameters.length < GPU_STREAMLINES_WORD_PARAMETER_LENGTH) {
+    validatePackedUint32View(props.uint32Parameters, `${id} uint32Parameters`);
+    if (props.uint32Parameters.length < GPU_STREAMLINES_UINT32_PARAMETER_LENGTH) {
       throw new Error(
-        `${id} wordParameters must contain ${GPU_STREAMLINES_WORD_PARAMETER_LENGTH} uint32 rows`
+        `${id} uint32Parameters must contain ${GPU_STREAMLINES_UINT32_PARAMETER_LENGTH} uint32 rows`
       );
     }
     const {output} = props;
@@ -198,17 +213,17 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
     if (output.lines.ids.length < 1) {
       throw new Error(`${id} output.lines.ids must hold at least one line`);
     }
-    validatePackedUint32View(output.pathOffsets, `${id} output.pathOffsets`);
-    if (output.pathOffsets.length !== output.lines.ids.length + 1) {
-      throw new Error(`${id} output.pathOffsets must have lines.ids.length + 1 rows`);
+    validatePackedUint32View(output.lineOffsets, `${id} output.lineOffsets`);
+    if (output.lineOffsets.length !== output.lines.ids.length + 1) {
+      throw new Error(`${id} output.lineOffsets must have lines.ids.length + 1 rows`);
     }
-    validatePackedView(output.points, ['float32x2'], `${id} output.points`);
-    if (output.points.length < 1) {
-      throw new Error(`${id} output.points must hold at least one point`);
+    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    if (output.positions.length < 1) {
+      throw new Error(`${id} output.positions must hold at least one point`);
     }
     for (const [name, view] of [
-      ['pointCount', output.pointCount],
-      ['unconverged', output.unconverged]
+      ['positionCount', output.positionCount],
+      ['status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} output.${name}`);
@@ -218,10 +233,10 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
       }
     }
     if (output.candidates) {
-      validatePackedView(output.candidates.points, ['float32x2'], `${id} candidates.points`);
+      validatePackedView(output.candidates.positions, ['float32x2'], `${id} candidates.positions`);
       validatePackedUint32View(output.candidates.spans, `${id} candidates.spans`);
       if (
-        output.candidates.points.length !== seedCount * (2 * props.stepsPerDirection + 1) ||
+        output.candidates.positions.length !== seedCount * (2 * props.stepsPerDirection + 1) ||
         output.candidates.spans.length !== seedCount * 4
       ) {
         throw new Error(
@@ -233,21 +248,21 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
       id,
       [
         output.lines.ids,
-        output.lines.count,
-        output.lines.overflow,
-        output.lines.requiredCount,
-        output.pathOffsets,
-        output.points,
-        output.pointCount,
-        output.unconverged,
-        output.candidates?.points,
+        output.lines.status.count,
+        output.lines.status.overflow,
+        output.lines.status.requiredCount,
+        output.lineOffsets,
+        output.positions,
+        output.positionCount,
+        output.status?.iterationLimitReached,
+        output.candidates?.positions,
         output.candidates?.spans
       ],
-      [props.velocities, props.parameters, props.wordParameters]
+      [props.velocities, props.parameters, props.uint32Parameters]
     );
     this.id = id;
     this.seedCount = seedCount;
-    this.roundCount = roundCount;
+    this.maximumIterations = maximumIterations;
     this.props = props;
   }
 
@@ -255,30 +270,30 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, seedCount, roundCount} = this;
+    const {id, props, seedCount, maximumIterations} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.velocities,
       props.parameters,
-      props.wordParameters,
+      props.uint32Parameters,
       output.lines.ids,
-      output.lines.count,
-      output.lines.overflow,
-      output.lines.requiredCount,
-      output.pathOffsets,
-      output.points,
-      output.pointCount,
-      output.unconverged,
-      output.candidates?.points,
+      output.lines.status.count,
+      output.lines.status.overflow,
+      output.lines.status.requiredCount,
+      output.lineOffsets,
+      output.positions,
+      output.positionCount,
+      output.status?.iterationLimitReached,
+      output.candidates?.positions,
       output.candidates?.spans
     ]);
     const length = props.stepsPerDirection;
     const stride = 2 * length + 1;
     const gridCellCount = props.gridWidth * props.gridHeight;
     const lineCapacity = output.lines.ids.length;
-    const pointCapacity = output.points.length;
+    const pointCapacity = output.positions.length;
     const candidates =
-      output.candidates?.points ??
+      output.candidates?.positions ??
       createTransientView(graph, `${id}-candidates`, 'float32x2', seedCount * stride);
     const spans =
       output.candidates?.spans ??
@@ -340,7 +355,7 @@ fn readCandidate(slot: u32) -> vec2<f32> {
           },
           {
             name: 'words',
-            view: props.wordParameters,
+            view: props.uint32Parameters,
             type: 'u32',
             access: 'read'
           },
@@ -455,10 +470,19 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
         state: iteration
       })
     );
+    // One gate per round: the decide kernel already uses all 8 storage bindings, so it cannot bind
+    // a gate slot word, and with a group of one every round records its change in bit 0. The gate
+    // is a one-thread kernel next to three seed-wide dispatches per round.
+    const gateSlots = createRasterGateSlotTable<Parameters>(graph, {
+      id: `${id}-round-gate`,
+      operation: OPERATION,
+      contributorId: id,
+      groupSize: 1
+    });
+    nodes.push(gateSlots.writeNode);
     // The gated dispatch has one thread per seed, so the grid clear strides over the grid.
     const clearStride = Math.ceil(seedCount / 256) * 256;
-    for (let round = 0; round < roundCount; round++) {
-      const groupOffset = round % RASTER_GATE_INTERVAL;
+    for (let round = 0; round < maximumIterations; round++) {
       const claimGate = getRasterIterationCondition<Parameters>(
         iteration,
         `${id}-round-${round}-claim`
@@ -507,7 +531,7 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
             },
             {
               name: 'words',
-              view: props.wordParameters,
+              view: props.uint32Parameters,
               type: 'u32',
               access: 'read'
             },
@@ -624,24 +648,21 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
   // already has, and no line decided in this dispatch touches them, so the claimed span is the
   // greedy trim.
   status[statusOffset + index] = ${ACCEPTED}u;
-  atomicOr(&iterationStatus[iterationStatusOffset], ${1 << groupOffset}u);
+  atomicOr(&iterationStatus[iterationStatusOffset], 1u);
   for (var slot = first; slot <= last; slot = slot + 1u) {
     accepted[acceptedOffset + getGridCell(readCandidate(slot))] = index + 1u;
   }`
         })
       );
-      const isGroupEnd = groupOffset === RASTER_GATE_INTERVAL - 1 || round === roundCount - 1;
-      if (isGroupEnd) {
-        nodes.push(
-          createRasterIterationGroupGateNode<Parameters>(graph, {
-            id: `${id}-round-gate-${round - groupOffset}`,
-            operation: OPERATION,
-            state: iteration,
-            maxIterations: roundCount,
-            groupSize: groupOffset + 1
-          })
-        );
-      }
+      nodes.push(
+        createRasterIterationGroupGateNode<Parameters>(graph, {
+          id: `${id}-round-gate-${round}`,
+          operation: OPERATION,
+          state: iteration,
+          maxIterations: maximumIterations,
+          groupSize: gateSlots.getSlot(1)
+        })
+      );
     }
 
     // 3. Point counts, line flags and the convergence flag.
@@ -741,7 +762,7 @@ fn getFittingRank(index: u32) -> u32 {
           },
           {
             name: 'points',
-            view: output.points,
+            view: output.positions,
             type: 'f32',
             access: 'read_write'
           }
@@ -789,7 +810,7 @@ ${fitsDeclaration}`,
           },
           {
             name: 'pathOffsets',
-            view: output.pathOffsets,
+            view: output.lineOffsets,
             type: 'u32',
             access: 'read_write'
           },
@@ -820,45 +841,45 @@ ${fitsDeclaration}`,
       {name: 'state', view: state, type: 'u32', access: 'read'},
       {
         name: 'pathOffsets',
-        view: output.pathOffsets,
+        view: output.lineOffsets,
         type: 'u32',
         access: 'read_write'
       },
       {
         name: 'countOut',
-        view: output.lines.count,
+        view: output.lines.status.count,
         type: 'u32',
         access: 'read_write'
       },
       {
         name: 'overflowOut',
-        view: output.lines.overflow,
+        view: output.lines.status.overflow,
         type: 'u32',
         access: 'read_write'
       },
       {
         name: 'pointCountOut',
-        view: output.pointCount,
+        view: output.positionCount,
         type: 'u32',
         access: 'read_write'
       }
     ] as const;
     const optionalBindings = [
-      ...(output.lines.requiredCount
+      ...(output.lines.status.requiredCount
         ? [
             {
               name: 'totalOut',
-              view: output.lines.requiredCount,
+              view: output.lines.status.requiredCount,
               type: 'u32',
               access: 'read_write'
             } as const
           ]
         : []),
-      ...(output.unconverged
+      ...(output.status?.iterationLimitReached
         ? [
             {
               name: 'unconvergedOut',
-              view: output.unconverged,
+              view: output.status?.iterationLimitReached,
               type: 'u32',
               access: 'read_write'
             } as const
@@ -877,10 +898,10 @@ ${fitsDeclaration}`,
   let count = state[stateOffset];
   pathOffsets[pathOffsetsOffset] = 0u;
   countOut[countOutOffset] = count;
-  overflowOut[overflowOutOffset] = select(0u, 1u, count < total);
+  overflowOut[overflowOutOffset] = select(0u, 1u, count < total) | select(0u, ${GPU_STREAMLINES_OVERFLOW_UNCONVERGED}u, state[stateOffset + 1u] != 0u);
   pointCountOut[pointCountOutOffset] = select(0u, pathOffsets[pathOffsetsOffset + count], count > 0u);
-  ${output.lines.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-  ${output.unconverged ? 'unconvergedOut[unconvergedOutOffset] = state[stateOffset + 1u];' : ''}`
+  ${output.lines.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
+  ${output.status?.iterationLimitReached ? 'unconvergedOut[unconvergedOutOffset] = state[stateOffset + 1u];' : ''}`
       })
     );
     return nodes;

@@ -3,21 +3,22 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getColumnProfileNodes, type ColumnProfileColumn} from './column-profile-kernels';
 import {
   getGPUColumnProfileParameterLength,
+  getGPUColumnProfileMaximumCategoryTotal,
   GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT,
   GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT,
   GPU_COLUMN_PROFILE_STATISTIC_COUNT
@@ -30,8 +31,6 @@ const MAXIMUM_ROW_COUNT = 2 ** 24;
 const MAXIMUM_HISTOGRAM_BIN_COUNT = 2 ** 20;
 const DEFAULT_HYPERLOGLOG_PRECISION = 12;
 const DEFAULT_TOP_CATEGORY_COUNT = 10;
-/** Largest total number of category count slots across category columns. */
-const MAXIMUM_CATEGORY_TOTAL = 2 ** 26;
 
 /** One column of a {@link GPUColumnProfile}. */
 export type GPUColumnProfileColumn =
@@ -45,7 +44,11 @@ export type GPUColumnProfileColumn =
       /** Packed dictionary codes. `0xffffffff` is a null; codes `>= categoryCount` overflow. */
       values: GraphDataView<'uint32'>;
       kind: 'category';
-      /** Number of dictionary entries, compile-time. Codes below it are counted exactly. */
+      /**
+       * Number of dictionary entries, compile-time. Codes below it are counted exactly. The sum over
+       * all category columns is at most {@link getGPUColumnProfileMaximumCategoryTotal} (33554432 on a
+       * default device).
+       */
       categoryCount: number;
     };
 
@@ -63,7 +66,7 @@ export type GPUColumnProfileOutput = {
   counts?: GraphDataView<'uint32'>;
   /**
    * `histogramBinCount` `uint32` per column. Numeric columns: equal-width bins of the per-frame
-   * domain, last bin includes `hi`, values outside the domain are not counted. Category columns:
+   * domain, last bin includes the domain maximum, values outside the domain are not counted. Category columns:
    * the row count of code `j` in bin `j` for `j < min(histogramBinCount, categoryCount)`, else 0.
    */
   histograms?: GraphDataView<'uint32'>;
@@ -94,7 +97,7 @@ export type GPUColumnProfileProps = {
   /** Optional packed `uint32` row mask applied to every column; zero skips the row. */
   mask?: GraphDataView<'uint32'>;
   /**
-   * Optional per-frame histogram domains, float32, `[lo, hi]` per column, written with
+   * Optional per-frame histogram domains, float32, `[minimum, maximum]` per column, written with
    * `getGPUColumnProfileParameterValues`. NaN means automatic. Omitted means automatic.
    */
   parameters?: GraphDataView<'float32'>;
@@ -162,47 +165,19 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
     const id = this.id;
     const {output} = props;
     const columnCount = props.columns.length;
-    if (columnCount < 1 || columnCount > GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT) {
-      throw new Error(
-        `${id} needs between 1 and ${GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT} columns`
-      );
-    }
+    validateCapacity(id, 'column count', columnCount, 1, GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT);
     const {histogramBinCount} = props;
-    if (
-      !Number.isInteger(histogramBinCount) ||
-      histogramBinCount < 1 ||
-      histogramBinCount > MAXIMUM_HISTOGRAM_BIN_COUNT
-    ) {
-      throw new Error(
-        `${id} histogramBinCount must be an integer in [1, ${MAXIMUM_HISTOGRAM_BIN_COUNT}]`
-      );
-    }
+    validateCapacity(id, 'histogramBinCount', histogramBinCount, 1, MAXIMUM_HISTOGRAM_BIN_COUNT);
     this.hyperLogLogPrecision = props.hyperLogLogPrecision ?? DEFAULT_HYPERLOGLOG_PRECISION;
-    if (
-      !Number.isInteger(this.hyperLogLogPrecision) ||
-      this.hyperLogLogPrecision < 4 ||
-      this.hyperLogLogPrecision > 16
-    ) {
-      throw new Error(`${id} hyperLogLogPrecision must be an integer in [4, 16]`);
-    }
+    validateCapacity(id, 'hyperLogLogPrecision', this.hyperLogLogPrecision, 4, 16);
     this.topCategoryCount = props.topCategoryCount ?? DEFAULT_TOP_CATEGORY_COUNT;
-    if (
-      !Number.isInteger(this.topCategoryCount) ||
-      this.topCategoryCount < 1 ||
-      this.topCategoryCount > GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT
-    ) {
-      throw new Error(
-        `${id} topCategoryCount must be an integer in [1, ${GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT}]`
-      );
-    }
-    for (const [name, view] of [
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'topCategoryCount',
+      this.topCategoryCount,
+      1,
+      GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT
+    );
     const rowCount = props.columns[0].values.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -214,21 +189,12 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
     let categoryBase = 0;
     this.columns = props.columns.map((column, columnIndex) => {
       const name = `columns[${columnIndex}]`;
-      if ((column.values as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
       if (column.values.length !== rowCount) {
         throw new Error(`${id} ${name} length must equal columns[0] length`);
       }
       if (column.kind === 'category') {
-        validatePackedUint32View(column.values, `${id} ${name}.values`);
-        if (
-          !Number.isInteger(column.categoryCount) ||
-          column.categoryCount < 1 ||
-          column.categoryCount > MAXIMUM_ROW_COUNT
-        ) {
-          throw new Error(`${id} ${name}.categoryCount must be an integer in [1, 2^24]`);
-        }
+        validatePackedView(column.values, ['uint32'], `${id} ${name}.values`);
+        validateCapacity(id, `${name}.categoryCount`, column.categoryCount, 1, MAXIMUM_ROW_COUNT);
         const base = categoryBase;
         categoryBase += column.categoryCount;
         return {
@@ -244,13 +210,8 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       validatePackedView(column.values, ['float32'], `${id} ${name}.values`);
       return {kind: 'numeric' as const, values: column.values, categoryCount: 0, categoryBase: 0};
     });
-    if (categoryBase > MAXIMUM_CATEGORY_TOTAL) {
-      throw new Error(
-        `${id} category columns may declare at most ${MAXIMUM_CATEGORY_TOTAL} categories in total`
-      );
-    }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rowCount) {
         throw new Error(`${id} mask length must equal the column length`);
       }
@@ -285,7 +246,7 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       ['topCategoryCounts', output.topCategoryCounts, columnCount * this.topCategoryCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         requireLength(name, view, length);
       }
     }
@@ -327,6 +288,12 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       output.topCategories,
       output.topCategoryCounts
     ]);
+    validateMaximumCount(
+      id,
+      'category columns categoryCount total',
+      this.columns.reduce((total, column) => total + column.categoryCount, 0),
+      getGPUColumnProfileMaximumCategoryTotal(graph.device)
+    );
     return getColumnProfileNodes(graph, {
       id,
       operation: OPERATION,

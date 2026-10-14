@@ -6,21 +6,20 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getBoundsReductionNodes} from './bounds-reduction';
@@ -66,7 +65,7 @@ export type GPUHilbertKeysOutput = {
 /**
  * Properties for {@link GPUHilbertKeys}.
  *
- * Per-frame (no recompile): the contents of `points` or `minima`/`maxima` and `bounds`.
+ * Per-frame (no recompile): the contents of `positions` or `minima`/`maxima` and `bounds`.
  * Compile-time: `order`, the item count and which outputs are present.
  */
 export type GPUHilbertKeysProps = {
@@ -80,8 +79,8 @@ export type GPUHilbertKeysProps = {
   spatialContext?: GPUSpatialContext;
   /** Curve order (bits per axis, 1 to {@link GPU_HILBERT_MAXIMUM_ORDER}). Defaults to 16. */
   order?: number;
-  /** Points to key. Provide this or `minima` and `maxima`. */
-  points?: GraphDataView<'float32x2'>;
+  /** Point positions to key. Provide this or `minima` and `maxima`. */
+  positions?: GraphDataView<'float32x2'>;
   /** Feature box minima; keys are of the box centers. Requires `maxima`. */
   minima?: GraphDataView<'float32x2'>;
   /** Feature box maxima with the same length as `minima`. */
@@ -104,8 +103,8 @@ export type GPUHilbertKeysProps = {
  * Definition. The bounds are divided into `2^order x 2^order` cells; an item falls into cell
  * `(floor(u * 2^order), floor(v * 2^order))` clamped to the grid, where `(u, v)` are its
  * normalized coordinates, and its key is the position of that cell on the Hilbert curve (the
- * classic `xy2d` rotation algorithm: the curve starts in the lower-left cell, first moves along
- * +y and ends in the lower-right cell). Consecutive keys are edge-adjacent cells, which makes the order
+ * classic `xy2d` rotation algorithm: the curve starts in the lower-left cell and ends in the
+ * lower-right cell; it first moves along +y for odd orders and along +x for even orders). Consecutive keys are edge-adjacent cells, which makes the order
  * better at keeping neighbours together than the Morton (Z) order.
  *
  * Keys are integer exact (u32 arithmetic) once the cell is chosen. The cell comes from f32
@@ -144,28 +143,17 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     this.order = props.order ?? GPU_HILBERT_MAXIMUM_ORDER;
-    if (
-      !Number.isSafeInteger(this.order) ||
-      this.order < 1 ||
-      this.order > GPU_HILBERT_MAXIMUM_ORDER
-    ) {
-      throw new Error(`${id} order must be an integer in [1, ${GPU_HILBERT_MAXIMUM_ORDER}]`);
-    }
-    for (const [name, view] of Object.entries({...props, ...props.output})) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
-    const {points, minima, maxima, bounds} = props;
-    if (points) {
+    validateCapacity(id, 'order', this.order, 1, GPU_HILBERT_MAXIMUM_ORDER);
+    const {positions, minima, maxima, bounds} = props;
+    if (positions) {
       if (minima || maxima) {
-        throw new Error(`${id} takes points or minima and maxima, not both`);
+        throw new Error(`${id} takes positions or minima and maxima, not both`);
       }
-      validatePackedView(points, ['float32x2'], `${id} points`);
-      this.itemCount = points.length;
+      validatePackedView(positions, ['float32x2'], `${id} positions`);
+      this.itemCount = positions.length;
     } else {
       if (!minima || !maxima) {
-        throw new Error(`${id} needs points, or minima and maxima`);
+        throw new Error(`${id} needs positions, or minima and maxima`);
       }
       validatePackedView(minima, ['float32x2'], `${id} minima`);
       validatePackedView(maxima, ['float32x2'], `${id} maxima`);
@@ -190,7 +178,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       ['sortedKeys', sortedKeys]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== this.itemCount) {
           throw new Error(`${id} output.${name} must have one row per item`);
         }
@@ -202,7 +190,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [keys, sortedRows, sortedKeys],
-      [points, minima, maxima, bounds]
+      [positions, minima, maxima, bounds]
     );
   }
 
@@ -211,10 +199,10 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, order, itemCount} = this;
-    const {points, minima, maxima} = props;
+    const {positions, minima, maxima} = props;
     const {keys, sortedRows, sortedKeys} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
-      points,
+      positions,
       minima,
       maxima,
       props.bounds,
@@ -223,8 +211,8 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       sortedKeys
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
-    const itemBindings: WGSLKernelBinding[] = points
-      ? [{name: 'points', view: points, type: 'f32', access: 'read'}]
+    const itemBindings: WGSLKernelBinding[] = positions
+      ? [{name: 'positions', view: positions, type: 'f32', access: 'read'}]
       : [
           {name: 'minima', view: minima!, type: 'f32', access: 'read'},
           {name: 'maxima', view: maxima!, type: 'f32', access: 'read'}
@@ -234,8 +222,8 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
 // avoid overflow near FLT_MAX).
 fn readItem(row: u32) -> vec4f {
 ${
-  points
-    ? `  let point = vec2f(points[pointsOffset + row * 2u], points[pointsOffset + row * 2u + 1u]);
+  positions
+    ? `  let point = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
   let valid = isFiniteValue(point.x) && isFiniteValue(point.y);
   return vec4f(point, select(0.0, 1.0, valid), 0.0);`
     : `  let minimum = vec2f(minima[minimaOffset + row * 2u], minima[minimaOffset + row * 2u + 1u]);
@@ -254,7 +242,7 @@ ${
         ...getBoundsReductionNodes<Parameters>(graph, {
           id,
           operation: OPERATION,
-          variant: points ? 'bounds-points' : 'bounds-boxes',
+          variant: positions ? 'bounds-points' : 'bounds-boxes',
           bindings: itemBindings,
           declarations,
           itemCount,
@@ -270,7 +258,7 @@ ${
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-keys`,
         operation: OPERATION,
-        variant: `${points ? 'points' : 'boxes'}-order-${order}${rows ? '-rows' : ''}`,
+        variant: `${positions ? 'points' : 'boxes'}-order-${order}${rows ? '-rows' : ''}`,
         bindings: [
           ...itemBindings,
           {name: 'bounds', view: bounds, type: 'f32', access: 'read'},

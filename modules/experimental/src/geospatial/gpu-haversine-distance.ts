@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import {type GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer
+} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUFloat32Positions, GPUFloat64Positions, GPUScalarRows} from './types';
 import {
   GEOSPATIAL_WORKGROUP_SIZE,
@@ -21,7 +25,8 @@ import {
   validateRowView,
   validateSeparateBuffers
 } from './geospatial-utils';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../gpu-spatial-analysis/contracts/earth';
+import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../analysis-core/contracts/earth';
 
 /** Output length units of {@link GPUHaversineDistance}. */
 export type GPUHaversineDistanceUnits = 'meters' | 'kilometers';
@@ -31,13 +36,13 @@ type GPUHaversineDistanceBaseProps = {
   id?: string;
   /** Caller-owned f32 distance rows. */
   output: GPUScalarRows;
-  /** Units of `output` and of `radius`. Defaults to `'meters'`. */
+  /** Units of `output` and of `sphereRadius`. Defaults to `'meters'`. */
   units?: GPUHaversineDistanceUnits;
   /**
    * Sphere radius in `units`. Defaults to the IUGG mean Earth radius
    * `GPU_EARTH_MEAN_RADIUS_METERS` (6371008.8 m, or 6371.0088 km).
    */
-  radius?: number;
+  sphereRadius?: number;
 };
 
 /** Properties for pairwise great-circle distance over aligned coordinate rows. */
@@ -65,15 +70,15 @@ export type GPUHaversineDistanceProps = GPUHaversineDistanceBaseProps &
  * each coordinate delta through a correctly rounded raw-binary64 subtraction before f32
  * trigonometry.
  */
-export class GPUHaversineDistance {
+export class GPUHaversineDistance implements GPUCommandNodeProducer {
   readonly id: string;
   readonly left: GPUFloat32Positions | GPUFloat64Positions;
   readonly right: GPUFloat32Positions | GPUFloat64Positions;
   readonly output: GPUScalarRows;
-  /** Units of `output` and `radius`. */
+  /** Units of `output` and `sphereRadius`. */
   readonly units: GPUHaversineDistanceUnits;
   /** Sphere radius in `units`. */
-  readonly radius: number;
+  readonly sphereRadius: number;
 
   /** Creates a distance contributor without compiling or submitting GPU work. */
   constructor(props: GPUHaversineDistanceProps) {
@@ -85,8 +90,8 @@ export class GPUHaversineDistance {
     if (this.units !== 'meters' && this.units !== 'kilometers') {
       throw new Error(`${this.id} units must be meters or kilometers`);
     }
-    this.radius =
-      props.radius ??
+    this.sphereRadius =
+      props.sphereRadius ??
       (this.units === 'meters'
         ? GPU_EARTH_MEAN_RADIUS_METERS
         : GPU_EARTH_MEAN_RADIUS_METERS / 1000);
@@ -99,13 +104,21 @@ export class GPUHaversineDistance {
     validateMatchingRows(this.left, this.right, `${this.id} position inputs`);
     validateMatchingRows(this.left, this.output, `${this.id} input and output`);
     validateSeparateBuffers(this.output, [this.left, this.right], this.id);
-    if (!Number.isFinite(Math.fround(this.radius)) || Math.fround(this.radius) <= 0) {
-      throw new Error(`${this.id} radius must be positive and representable as float32`);
+    if (!Number.isFinite(Math.fround(this.sphereRadius)) || Math.fround(this.sphereRadius) <= 0) {
+      throw new Error(`${this.id} sphereRadius must be a positive float32`);
     }
   }
 
-  /** Adds one distance node per non-empty input chunk to the target graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns one distance node per non-empty input chunk, for `graph.add(contributor)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    // The shared geospatial pass helper schedules through `graph.addComputePass`, so the
+    // adapter collects its nodes instead of adding them.
+    return captureGraphCommandNodes(graph, () => this.addNodes(graph));
+  }
+
+  private addNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertGraphOwnership(graph, [this.left, this.right, this.output], this.id);
     const leftChunks = getRowChunks(this.left);
     const rightChunks = getRowChunks(this.right);
@@ -149,7 +162,7 @@ ${precise ? RAW_POINT_WGSL : ''}
 const ELEMENT_COUNT: u32 = ${left.length}u;
 const OUTPUT_OFFSET: u32 = ${outputOffset}u;
 const DEGREES_TO_RADIANS: f32 = ${getFloat32Literal(Math.PI / 180)};
-const RADIUS: f32 = ${getFloat32Literal(this.radius)};
+const RADIUS: f32 = ${getFloat32Literal(this.sphereRadius)};
 const SMALL_ANGLE_THRESHOLD: f32 = 0.0001;
 ${leftSource.declaration}
 ${rightSource.declaration}

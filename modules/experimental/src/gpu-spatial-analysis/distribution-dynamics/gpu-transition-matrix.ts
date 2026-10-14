@@ -4,7 +4,6 @@
 
 import {
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -12,8 +11,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPUTransitionDiagnostics,
@@ -26,6 +27,8 @@ const MAXIMUM_CLASS_COUNT = 64;
 const MAXIMUM_PRIVATE_CELLS = 2048;
 /** Transitions counted per invocation of the privatised kernel, to amortise the tile flush. */
 const PRIVATE_ITEMS_PER_INVOCATION = 16;
+/** Workgroup size of the cooperative count kernel; also its tile stride. */
+const COUNT_WORKGROUP_SIZE = 256;
 
 /** Caller-owned outputs of {@link GPUTransitionMatrix}. */
 export type GPUTransitionMatrixOutput = GPUTransitionDiagnosticsOutput & {
@@ -52,34 +55,33 @@ export type GPUTransitionMatrixOutput = GPUTransitionDiagnosticsOutput & {
 /**
  * Properties for {@link GPUTransitionMatrix}.
  *
- * Topology (new graph): `rows`, `periods`, `periodLag`, `classCount`, `conditionCount` and which
- * optional views exist. Per-frame: the contents of `classes`, `conditionClasses` and `mask`.
+ * Topology (new graph): the row count, `periodCount`, `periodLag`, `classCount`, `conditionCount`
+ * and which optional views exist. Per-frame: the contents of `classes`, `conditionClasses` and `mask`.
  */
 export type GPUTransitionMatrixProps = {
   /** Prefix for generated node IDs. Defaults to `'transition-matrix'`. */
   id?: string;
   /**
-   * Class per row and period, period-major: period `t` of row `i` is at `t * rows + i`. Length
-   * `rows * periods`. Values at or above `classCount` (such as `0xffffffff`) are not counted.
+   * Class per row and period, period-major: period `t` of row `i` is at `t * rowCount + i`.
+   * Length `rowCount * periodCount`; the row (location) count is derived from it. Values at or
+   * above `classCount` (such as `0xffffffff`) are not counted.
    */
   classes: GraphDataView<'uint32'>;
-  /** Number of rows (locations) per period. */
-  rows: number;
   /** Number of periods, at least `periodLag + 1`. */
-  periods: number;
+  periodCount: number;
   /** Number of classes `K`, 1 to 64. */
   classCount: number;
   /** Periods between the two ends of a transition. Defaults to 1. */
   periodLag?: number;
   /**
    * Optional class used to condition the counts, same layout as `classes`: the transition from
-   * period `t` is counted in the slice of `conditionClasses[t * rows + i]`. Values at or above
+   * period `t` is counted in the slice of `conditionClasses[t * rowCount + i]`. Values at or above
    * `conditionCount` are not counted.
    */
   conditionClasses?: GraphDataView<'uint32'>;
   /** Number of condition classes `C`. Defaults to 1 (and must be 1 without `conditionClasses`). */
   conditionCount?: number;
-  /** Optional row selection (`rows` entries): zero rows are skipped in every period. */
+  /** Optional row selection (`rowCount` entries): zero rows are skipped in every period. */
   mask?: GraphDataView<'uint32'>;
   /**
    * Compile-time. A `(condition, from)` state with fewer transitions than this is counted in
@@ -120,6 +122,8 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
   readonly conditionCount: number;
   /** Resolved period lag. */
   readonly periodLag: number;
+  /** Rows (locations) per period, `classes.length / periodCount`. */
+  readonly rowCount: number;
 
   constructor(props: GPUTransitionMatrixProps) {
     const id = props.id ?? 'transition-matrix';
@@ -127,56 +131,47 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
     this.props = props;
     this.periodLag = props.periodLag ?? 1;
     this.conditionCount = props.conditionCount ?? 1;
-    const {rows, periods, classCount, output} = props;
-    if (!Number.isInteger(rows) || rows < 1) {
-      throw new Error(`${id} rows must be a positive integer`);
-    }
-    if (!Number.isInteger(this.periodLag) || this.periodLag < 1) {
-      throw new Error(`${id} periodLag must be a positive integer`);
-    }
-    if (!Number.isInteger(periods) || periods < this.periodLag + 1) {
-      throw new Error(`${id} periods must be an integer of at least periodLag + 1`);
-    }
-    if (!Number.isInteger(classCount) || classCount < 1 || classCount > MAXIMUM_CLASS_COUNT) {
-      throw new Error(`${id} classCount must be an integer in [1, ${MAXIMUM_CLASS_COUNT}]`);
-    }
-    if (!Number.isInteger(this.conditionCount) || this.conditionCount < 1) {
-      throw new Error(`${id} conditionCount must be a positive integer`);
-    }
+    const {periodCount, classCount, output} = props;
+    validateCapacity(id, 'periodLag', this.periodLag);
+    validateCapacity(id, 'periodCount', periodCount, this.periodLag + 1);
+    validateCapacity(id, 'classCount', classCount, 1, MAXIMUM_CLASS_COUNT);
+    validateCapacity(id, 'conditionCount', this.conditionCount);
     if (!props.conditionClasses && this.conditionCount !== 1) {
       throw new Error(`${id} conditionCount needs conditionClasses`);
     }
     validatePackedUint32View(props.classes, `${id} classes`);
-    if (props.classes.length !== rows * periods) {
-      throw new Error(`${id} classes length must equal rows * periods`);
+    const rows = props.classes.length / periodCount;
+    if (!Number.isInteger(rows) || rows < 1) {
+      throw new Error(`${id} classes length must be a multiple of periodCount`);
     }
+    this.rowCount = rows;
     if (props.conditionClasses) {
       validatePackedUint32View(props.conditionClasses, `${id} conditionClasses`);
-      if (props.conditionClasses.length !== rows * periods) {
-        throw new Error(`${id} conditionClasses length must equal rows * periods`);
+      if (props.conditionClasses.length !== rows * periodCount) {
+        throw new Error(`${id} conditionClasses length must equal classes length`);
       }
     }
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
       if (props.mask.length !== rows) {
-        throw new Error(`${id} mask length must equal rows`);
+        throw new Error(`${id} mask length must equal the row count`);
       }
     }
     const cellCount = this.conditionCount * classCount * classCount;
     validatePackedUint32View(output.counts, `${id} output.counts`);
     if (output.counts.length < cellCount) {
-      throw new Error(`${id} output.counts must hold conditionCount * classCount^2 rows`);
+      throw new Error(`${id} output.counts is too short`);
     }
     if (output.probabilities) {
       validatePackedView(output.probabilities, ['float32'], `${id} output.probabilities`);
       if (output.probabilities.length < cellCount) {
-        throw new Error(`${id} output.probabilities must hold conditionCount * classCount^2 rows`);
+        throw new Error(`${id} output.probabilities is too short`);
       }
     }
     if (output.rowTotals) {
       validatePackedUint32View(output.rowTotals, `${id} output.rowTotals`);
       if (output.rowTotals.length < this.conditionCount * classCount) {
-        throw new Error(`${id} output.rowTotals must hold conditionCount * classCount rows`);
+        throw new Error(`${id} output.rowTotals is too short`);
       }
     }
     if (output.ignored) {
@@ -242,8 +237,8 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, conditionCount, periodLag} = this;
-    const {classes, conditionClasses, mask, output, rows, periods, classCount} = props;
+    const {id, props, conditionCount, periodLag, rowCount: rows} = this;
+    const {classes, conditionClasses, mask, output, periodCount: periods, classCount} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       classes,
       conditionClasses,
@@ -308,11 +303,12 @@ const CELLS: u32 = ${cellCount}u;`;
         variant: 'count-private',
         bindings: countBindings,
         invocationCount: Math.ceil(transitions / PRIVATE_ITEMS_PER_INVOCATION),
+        workgroupSize: COUNT_WORKGROUP_SIZE,
         guardIndex: false,
         declarations: `${constants}
 const TRANSITIONS: u32 = ${transitions}u;
 const ITEMS: u32 = ${PRIVATE_ITEMS_PER_INVOCATION}u;
-const TILE_SIZE: u32 = 256u;
+const TILE_SIZE: u32 = ${COUNT_WORKGROUP_SIZE}u;
 // Slot CELLS counts the transitions that are not counted.
 var<workgroup> tile: array<atomic<u32>, ${cellCount + 1}>;`,
         body: `for (var cell = localInvocationIndex; cell <= CELLS; cell += TILE_SIZE) {

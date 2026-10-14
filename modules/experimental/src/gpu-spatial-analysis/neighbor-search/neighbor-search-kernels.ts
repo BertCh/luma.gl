@@ -655,3 +655,213 @@ fn getWrappedLongitudeBound(lowValue: f32, highValue: f32) -> f32 {
   return min(abs(lowEnd - 360.0 * round(lowEnd / 360.0)), abs(highValue - 360.0 * round(highValue / 360.0)));
 }
 `;
+
+/** `u32` words per BVH node in the packed `nodeData` table: minimum xy, maximum xy, leaf row. @internal */
+export const NEIGHBOR_SEARCH_BVH_NODE_WORDS = 5;
+
+/**
+ * Former experimental auto-selection threshold. Retained for source compatibility only;
+ * `searchStructure: 'auto'` now uses the grid because neither measured distribution favored BVH.
+ * @deprecated No longer used for structure selection.
+ */
+export const GPU_NEIGHBOR_SEARCH_BVH_OCCUPANCY_THRESHOLD = 32;
+
+/** Compile-time shape of the BVH the traversal WGSL walks. @internal */
+export type NeighborSearchBVHShape = {
+  /** Number of target rows (leaf rows at or above it are padding). */
+  targetRows: number;
+  /** Number of internal nodes, `leafCapacity - 1`; node `n` has children `2n + 1` and `2n + 2`. */
+  internalNodeCount: number;
+  /** Levels of the complete tree; sizes the traversal stack. */
+  levelCount: number;
+};
+
+/**
+ * Declarations of the BVH traversal WGSL: `getBVHBoxBound` (squared distance from `(x, y)` to a
+ * node box, or -1 for an empty box) and the pruning slack. Requires a `nodeData` binding
+ * (`u32` words, see {@link NEIGHBOR_SEARCH_BVH_NODE_WORDS}), so a kernel needs one storage buffer
+ * for the whole tree.
+ *
+ * A point leaf has a degenerate box, so its bound is exactly the `dx^2 + dy^2` the grid path
+ * computes. Float rounding is monotone, so an ancestor's bound never exceeds the computed
+ * distance of a point inside its box; the slack only absorbs a compiler fusing the multiply-add.
+ *
+ * @internal
+ */
+export function getBVHNeighborSearchDeclarationsWGSL(shape: NeighborSearchBVHShape): string {
+  return /* wgsl */ `
+const BVH_NODE_WORDS: u32 = ${NEIGHBOR_SEARCH_BVH_NODE_WORDS}u;
+const BVH_TARGET_ROWS: u32 = ${shape.targetRows}u;
+const BVH_INTERNAL_NODE_COUNT: u32 = ${shape.internalNodeCount}u;
+const BVH_STACK_SIZE: u32 = ${shape.levelCount + 2}u;
+const BVH_BOUND_SLACK: f32 = 1.000001;
+
+fn getBVHBoxBound(node: u32, x: f32, y: f32) -> f32 {
+  let base = nodeDataOffset + node * BVH_NODE_WORDS;
+  let minimumX = bitcast<f32>(nodeData[base]);
+  let minimumY = bitcast<f32>(nodeData[base + 1u]);
+  let maximumX = bitcast<f32>(nodeData[base + 2u]);
+  let maximumY = bitcast<f32>(nodeData[base + 3u]);
+  if (minimumX > maximumX || minimumY > maximumY) {
+    return -1.0;
+  }
+  let gapX = max(max(minimumX - x, x - maximumX), 0.0);
+  let gapY = max(max(minimumY - y, y - maximumY), 0.0);
+  return gapX * gapX + gapY * gapY;
+}
+`;
+}
+
+/**
+ * WGSL statements that map the invocation to its query row `queryIndex`. A self join walks the
+ * queries in BVH leaf order, which is the Hilbert order of the points, so neighboring threads
+ * search neighboring subtrees; a cross join uses the invocation index. Returns for padding slots.
+ *
+ * @internal
+ */
+export function getBVHThreadToRowWGSL(crossJoin: boolean): string {
+  return crossJoin
+    ? 'let queryIndex = index;'
+    : `let queryIndex = nodeData[nodeDataOffset + (BVH_INTERNAL_NODE_COUNT + index) * BVH_NODE_WORDS + 4u];
+  if (queryIndex >= BVH_TARGET_ROWS) {
+    return;
+  }`;
+}
+
+/**
+ * WGSL statements of the BVH k-nearest search around `(x, y)`: near-first depth-first traversal that pops the
+ * nearer child first and prunes every node whose box bound exceeds the k-th best squared distance
+ * (widened by `BVH_BOUND_SLACK`, with a strict test, so ties at the k-th distance are visited and
+ * resolved by the lowest ID) or the radius limit. Candidates enter the private top-`K` list with
+ * `insertNeighbor`, the `(d^2, id)` order of the grid path, so the selected set is the same.
+ *
+ * Same contract as {@link getNearestNeighborSearchWGSL}: arrays `bestDistances` / `bestIds`, `found`,
+ * `lattice`, `x`, `y`, `queryIndex`, `K`; `selfCondition` filters `neighbor`.
+ *
+ * @internal
+ */
+export function getBVHNearestNeighborSearchWGSL(selfCondition: string): string {
+  return /* wgsl */ `
+  var stackNode: array<u32, BVH_STACK_SIZE>;
+  var stackBound: array<f32, BVH_STACK_SIZE>;
+  var top = 0u;
+  let rootBound = getBVHBoxBound(0u, x, y);
+  if (rootBound >= 0.0) {
+    stackNode[0] = 0u;
+    stackBound[0] = rootBound;
+    top = 1u;
+  }
+  loop {
+    if (top == 0u) {
+      break;
+    }
+    top = top - 1u;
+    let node = stackNode[top];
+    var limited = lattice.bounded;
+    var limit = lattice.radiusSquared * BVH_BOUND_SLACK;
+    if (found == K) {
+      limit = select(bestDistances[K - 1u] * BVH_BOUND_SLACK,
+        min(limit, bestDistances[K - 1u] * BVH_BOUND_SLACK), limited);
+      limited = true;
+    }
+    if (limited && stackBound[top] > limit) {
+      continue;
+    }
+    if (node < BVH_INTERNAL_NODE_COUNT) {
+      let first = node * 2u + 1u;
+      let second = first + 1u;
+      let firstBound = getBVHBoxBound(first, x, y);
+      let secondBound = getBVHBoxBound(second, x, y);
+      let firstUsable = firstBound >= 0.0 && !(limited && firstBound > limit);
+      let secondUsable = secondBound >= 0.0 && !(limited && secondBound > limit);
+      // Push the farther child first so the nearer one is popped first.
+      if (firstUsable && secondUsable) {
+        if (firstBound <= secondBound) {
+          stackNode[top] = second;
+          stackBound[top] = secondBound;
+          stackNode[top + 1u] = first;
+          stackBound[top + 1u] = firstBound;
+        } else {
+          stackNode[top] = first;
+          stackBound[top] = firstBound;
+          stackNode[top + 1u] = second;
+          stackBound[top + 1u] = secondBound;
+        }
+        top = top + 2u;
+      } else if (firstUsable) {
+        stackNode[top] = first;
+        stackBound[top] = firstBound;
+        top = top + 1u;
+      } else if (secondUsable) {
+        stackNode[top] = second;
+        stackBound[top] = secondBound;
+        top = top + 1u;
+      }
+      continue;
+    }
+    let base = nodeDataOffset + node * BVH_NODE_WORDS;
+    let neighbor = nodeData[base + 4u];
+    if (neighbor >= BVH_TARGET_ROWS || !(${selfCondition})) {
+      continue;
+    }
+    let deltaX = bitcast<f32>(nodeData[base]) - x;
+    let deltaY = bitcast<f32>(nodeData[base + 1u]) - y;
+    let distanceSquared = deltaX * deltaX + deltaY * deltaY;
+    if (!lattice.bounded || distanceSquared <= lattice.radiusSquared) {
+      insertNeighbor(&bestDistances, &bestIds, &found, distanceSquared, neighbor);
+    }
+  }`;
+}
+
+/**
+ * WGSL statements that visit every valid target within the radius of `(x, y)` through the BVH,
+ * running `action` with `neighbor` and `distanceSquared` in scope, like
+ * {@link getRadiusNeighborLoopWGSL}. The visiting order is fixed but not by ID; callers sort.
+ * Requires locals `lattice`, `x`, `y`, `queryIndex`.
+ *
+ * @internal
+ */
+export function getBVHRadiusNeighborLoopWGSL(action: string): string {
+  return /* wgsl */ `
+  var stackNode: array<u32, BVH_STACK_SIZE>;
+  var top = 0u;
+  let limit = lattice.radiusSquared * BVH_BOUND_SLACK;
+  let rootBound = getBVHBoxBound(0u, x, y);
+  if (rootBound >= 0.0 && rootBound <= limit) {
+    stackNode[0] = 0u;
+    top = 1u;
+  }
+  loop {
+    if (top == 0u) {
+      break;
+    }
+    top = top - 1u;
+    let node = stackNode[top];
+    if (node < BVH_INTERNAL_NODE_COUNT) {
+      let first = node * 2u + 1u;
+      let second = first + 1u;
+      let firstBound = getBVHBoxBound(first, x, y);
+      let secondBound = getBVHBoxBound(second, x, y);
+      if (firstBound >= 0.0 && firstBound <= limit) {
+        stackNode[top] = first;
+        top = top + 1u;
+      }
+      if (secondBound >= 0.0 && secondBound <= limit) {
+        stackNode[top] = second;
+        top = top + 1u;
+      }
+      continue;
+    }
+    let base = nodeDataOffset + node * BVH_NODE_WORDS;
+    let neighbor = nodeData[base + 4u];
+    if (neighbor >= BVH_TARGET_ROWS) {
+      continue;
+    }
+    let deltaX = bitcast<f32>(nodeData[base]) - x;
+    let deltaY = bitcast<f32>(nodeData[base + 1u]) - y;
+    let distanceSquared = deltaX * deltaX + deltaY * deltaY;
+    if (distanceSquared <= lattice.radiusSquared) {
+      ${action}
+    }
+  }`;
+}

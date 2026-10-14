@@ -2,22 +2,29 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUCompaction,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {validateGPUStatusPort, type GPUBoundedResultStatusPort} from '../contracts/status';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {
+  validateGPUStatusPort,
+  type GPUBoundedResultStatusPort
+} from '../../analysis-core/contracts/status';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 
 /** Compact, clipped Voronoi edge segments derived from Delaunay triangle adjacency. */
 export type GPUVoronoiDiagramOutput = {
@@ -82,7 +89,7 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
     const {id} = this;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.triangles, ['uint32x3'], `${id} triangles`);
-    validatePackedUint32View(props.triangleCount, `${id} triangleCount`);
+    validatePackedView(props.triangleCount, ['uint32'], `${id} triangleCount`);
     if (props.triangleCount.length < 1) {
       throw new Error(`${id} triangleCount must contain one row`);
     }

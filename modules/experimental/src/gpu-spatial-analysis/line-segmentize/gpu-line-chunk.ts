@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,25 +12,27 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
-import {createPathPrefixNode} from './line-segmentize-kernels';
+import {
+  getGPUGreatCircleRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {createLinePrefixNode} from './line-segmentize-kernels';
 import {
   createPieceCountNode,
   createPieceEmitNode,
   createPiecePublishNode,
   createPieceRangeNode,
-  createPieceSourcePathsNode,
+  createPieceSourceLineIndicesNode,
   LINE_PIECE_STRIDE,
   type LinePieceMode
 } from './line-chunk-kernels';
-import {
-  resolveLineSpatialContext,
-  type GPULineCoordinateSystem,
-  type GPULinePathOutput
-} from './line-segmentize-types';
-import {getLinePathOutputViews, validateLinePathOutput} from './line-path-output';
+import {type GPULineCoordinateSystem, type GPULineGeometryOutput} from './line-segmentize-types';
+import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
 
 const OPERATION = 'GPULineChunk';
 
@@ -41,12 +40,12 @@ const OPERATION = 'GPULineChunk';
 export const GPU_LINE_CHUNK_PARAMETER_LENGTH = 4;
 
 /** CPU description of the per-frame parameters of `GPULineChunk`. */
-export type GPULineChunkParameters = {
+export type GPULineChunkSettings = {
   /** `'chunk'` mode: piece length in position (or sphere-radius) units. */
   chunkLength?: number;
-  /** `'substring'` mode: start distance from each path's first vertex, clamped to the path. */
+  /** `'substring'` mode: start distance from each line's first vertex, clamped to the line. */
   startMeasure?: number;
-  /** `'substring'` mode: end distance, clamped to the path. A start past the end gives an empty path. */
+  /** `'substring'` mode: end distance, clamped to the line. A start past the end gives an empty line. */
   endMeasure?: number;
 };
 
@@ -54,23 +53,23 @@ export type GPULineChunkParameters = {
  * Packs `GPULineChunk` parameters into the 4-element float32 layout
  * `[chunkLength, startMeasure, endMeasure, 0]`.
  *
- * @param parameters Parameters to encode. Missing values are 0 (`endMeasure` defaults to the
- * largest f32, the whole path).
+ * @param settings Settings to encode. Missing values are 0 (`endMeasure` defaults to the
+ * largest f32, the whole line).
  * @param target Optional destination of at least 4 elements.
  * @throws If a value is NaN, the chunk length is negative, or `target` is too short.
  */
 export function getGPULineChunkParameterValues(
-  parameters: GPULineChunkParameters,
+  settings: GPULineChunkSettings,
   target: Float32Array = new Float32Array(GPU_LINE_CHUNK_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LINE_CHUNK_PARAMETER_LENGTH) {
     throw new Error(`Line chunk target must hold ${GPU_LINE_CHUNK_PARAMETER_LENGTH} elements`);
   }
-  const chunkLength = parameters.chunkLength ?? 0;
-  const startMeasure = parameters.startMeasure ?? 0;
-  const endMeasure = Math.min(parameters.endMeasure ?? 3.4e38, 3.4e38);
+  const chunkLength = settings.chunkLength ?? 0;
+  const startMeasure = settings.startMeasure ?? 0;
+  const endMeasure = Math.min(settings.endMeasure ?? 3.4e38, 3.4e38);
   if ([chunkLength, startMeasure, endMeasure].some(Number.isNaN) || chunkLength < 0) {
-    throw new Error('Line chunk parameters must be numbers and chunkLength non-negative');
+    throw new Error('Line chunk settings must be numbers and chunkLength non-negative');
   }
   target.set([chunkLength, Math.max(startMeasure, -3.4e38), endMeasure, 0]);
   return target;
@@ -80,19 +79,19 @@ export function getGPULineChunkParameterValues(
  * Properties for {@link GPULineChunk}.
  *
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Compile-time:
- * view lengths, the path count, `mode`, `spatialContext`, the vertex and path
+ * view lengths, the line count, `mode`, `spatialContext`, the vertex and line
  * capacities, and which optional outputs are present.
  */
 export type GPULineChunkProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-chunk'`. */
   id?: string;
-  /** Packed positions sorted by path (longitude/latitude degrees for a great-circle `spatialContext`). */
+  /** Packed positions sorted by line (longitude/latitude degrees for a great-circle `spatialContext`). */
   positions: GraphDataView<'float32x2'>;
-  /** `pathCount + 1` monotonic row offsets. */
-  pathOffsets: GraphDataView<'uint32'>;
+  /** `lineCount + 1` monotonic row offsets. */
+  lineOffsets: GraphDataView<'uint32'>;
   /**
-   * `'chunk'` splits every path into pieces of `chunkLength` (turf `lineChunk`); `'substring'`
-   * extracts the `[startMeasure, endMeasure]` part of every path (turf `lineSliceAlong`, PostGIS
+   * `'chunk'` splits every line into pieces of `chunkLength` (turf `lineChunk`); `'substring'`
+   * extracts the `[startMeasure, endMeasure]` part of every line (turf `lineSliceAlong`, PostGIS
    * `ST_LineSubstring` by distance).
    */
   mode: LinePieceMode;
@@ -108,28 +107,28 @@ export type GPULineChunkProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Output pieces. In `'chunk'` mode the path capacity is `output.pathOffsets.length - 1` and the
-   * piece count is data dependent (`pathCount` and `sourcePaths` report it); in `'substring'` mode
-   * there is exactly one output path per input path.
+   * Output pieces. In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the
+   * piece count is data dependent (`status.lineCount` and `sourceLineIndices` report it); in `'substring'` mode
+   * there is exactly one output line per input line.
    */
-  output: GPULinePathOutput;
+  output: GPULineGeometryOutput;
 };
 
 /**
- * Splits paths into fixed-length chunks, or extracts a measure range from every path, on the GPU.
+ * Splits lines into fixed-length chunks, or extracts a measure range from every line, on the GPU.
  *
- * Measures are cumulative path lengths (planar, or great-circle times the sphere radius, meters by default) from a per-path
- * Neumaier-compensated prefix. Chunk `i` of a path of length `L` covers
- * `[i * chunkLength, min((i + 1) * chunkLength, L)]`; a path gets `ceil(L / chunkLength)` chunks,
- * capped at the path capacity plus one so a tiny chunk length overflows instead of wrapping counts.
+ * Measures are cumulative line lengths (planar, or great-circle times the sphere radius, meters by default) from a per-line
+ * Neumaier-compensated prefix. Chunk `i` of a line of length `L` covers
+ * `[i * chunkLength, min((i + 1) * chunkLength, L)]`; a line gets `ceil(L / chunkLength)` chunks,
+ * capped at the line capacity plus one so a tiny chunk length overflows instead of wrapping counts.
  * Every piece is an interpolated start vertex, the input vertices strictly inside its range, and an
- * interpolated end vertex, so consecutive chunks share their boundary point. Zero-length paths
- * (including single vertices) are copied as one piece; empty paths produce none. A substring whose
- * clamped start is past its clamped end is an empty path; equal measures give two equal vertices.
+ * interpolated end vertex, so consecutive chunks share their boundary point. Zero-length lines
+ * (including single vertices) are copied as one piece; empty lines produce none. A substring whose
+ * clamped start is past its clamped end is an empty line; equal measures give two equal vertices.
  *
- * Composition: piece counts per path, exclusive `GPUScan`, one range kernel per piece slot (binary
+ * Composition: piece counts per line, exclusive `GPUScan`, one range kernel per piece slot (binary
  * searches over measures), vertex counts scan, one emit kernel per piece, and a publish kernel that
- * clamps path offsets and reports overflow of either capacity. Deterministic.
+ * clamps line offsets and reports overflow of either capacity. Deterministic.
  */
 export class GPULineChunk implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -142,26 +141,21 @@ export class GPULineChunk implements GPUCommandNodeProducer {
   readonly coordinateSystem: GPULineCoordinateSystem;
   /** Resolved sphere radius in the context's length unit (1 for planar). */
   readonly radius: number;
-  /** Number of output path slots. */
-  readonly pathCapacity: number;
+  /** Number of output line slots. */
+  readonly lineCapacity: number;
 
   constructor(props: GPULineChunkProps) {
     this.id = props.id ?? 'line-chunk';
     this.props = props;
-    const resolved = resolveLineSpatialContext(this.id, props.spatialContext);
-    this.spatialContext = resolved.spatialContext;
-    this.coordinateSystem = resolved.coordinateSystem;
-    this.radius = resolved.radius;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+    );
+    this.coordinateSystem =
+      this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';
+    this.radius = getGPUGreatCircleRadius(this.spatialContext) ?? 1;
     const {id} = this;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['pathOffsets', props.pathOffsets],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     if (props.mode !== 'chunk' && props.mode !== 'substring') {
       throw new Error(`${id} mode must be 'chunk' or 'substring'`);
     }
@@ -170,72 +164,72 @@ export class GPULineChunk implements GPUCommandNodeProducer {
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-    if (props.pathOffsets.length < 2) {
-      throw new Error(`${id} pathOffsets must contain at least two rows`);
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
     }
-    const pathCount = props.pathOffsets.length - 1;
+    const lineCount = props.lineOffsets.length - 1;
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_CHUNK_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_CHUNK_PARAMETER_LENGTH} float32 values`
       );
     }
-    this.pathCapacity =
-      props.mode === 'chunk' ? Math.max(props.output.pathOffsets.length - 1, 1) : pathCount;
-    validateLinePathOutput(id, props.output, this.pathCapacity);
+    this.lineCapacity =
+      props.mode === 'chunk' ? Math.max(props.output.lineOffsets.length - 1, 1) : lineCount;
+    validateLineGeometryOutput(id, props.output, this.lineCapacity);
     if (
-      pathCount * (this.pathCapacity + 1) > 0xffffffff ||
-      2 * this.pathCapacity + rowCount > 0xffffffff
+      lineCount * (this.lineCapacity + 1) > 0xffffffff ||
+      2 * this.lineCapacity + rowCount > 0xffffffff
     ) {
-      throw new Error(`${id} path count times path capacity must fit in 32 bits`);
+      throw new Error(`${id} line count times line capacity must fit in 32 bits`);
     }
-    validateGraphOutputsDisjointFromInputs(id, getLinePathOutputViews(props.output), [
+    validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
       props.positions,
-      props.pathOffsets,
+      props.lineOffsets,
       props.parameters
     ]);
   }
 
   /**
    * Returns the prefix node, piece count and scan nodes, the range node, the vertex scan nodes,
-   * the emit node, the publish node and an optional source-path node.
+   * the emit node, the publish node and an optional source-line-index node.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, coordinateSystem, pathCapacity} = this;
+    const {props, id, coordinateSystem, lineCapacity} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.pathOffsets,
+      props.lineOffsets,
       props.parameters,
-      ...getLinePathOutputViews(output)
+      ...getLineGeometryOutputViews(output)
     ]);
     const rowCount = props.positions.length;
-    const pathCount = props.pathOffsets.length - 1;
+    const lineCount = props.lineOffsets.length - 1;
     const rowMeasures = createTransientView(graph, `${id}-row-measures`, 'float32', rowCount);
     const rowShifts =
       coordinateSystem === 'spherical'
         ? createTransientView(graph, `${id}-row-shifts`, 'float32', rowCount)
         : undefined;
-    const pieceCounts = createTransientView(graph, `${id}-piece-counts`, 'uint32', pathCount);
-    const pieceStarts = createTransientView(graph, `${id}-piece-starts`, 'uint32', pathCount);
+    const pieceCounts = createTransientView(graph, `${id}-piece-counts`, 'uint32', lineCount);
+    const pieceStarts = createTransientView(graph, `${id}-piece-starts`, 'uint32', lineCount);
     const pieces = createTransientView(
       graph,
       `${id}-pieces`,
       'uint32',
-      pathCapacity * LINE_PIECE_STRIDE
+      lineCapacity * LINE_PIECE_STRIDE
     );
-    const vertexCounts = createTransientView(graph, `${id}-vertex-counts`, 'uint32', pathCapacity);
-    const vertexStarts = createTransientView(graph, `${id}-vertex-starts`, 'uint32', pathCapacity);
+    const vertexCounts = createTransientView(graph, `${id}-vertex-counts`, 'uint32', lineCapacity);
+    const vertexStarts = createTransientView(graph, `${id}-vertex-starts`, 'uint32', lineCapacity);
     const pieceTotal = createTransientView(graph, `${id}-piece-total`, 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [
-      createPathPrefixNode<Parameters>(graph, {
+      createLinePrefixNode<Parameters>(graph, {
         id: `${id}-prefix`,
         operation: OPERATION,
         positions: props.positions,
-        pathOffsets: props.pathOffsets,
+        lineOffsets: props.lineOffsets,
         coordinateSystem,
         radius: this.radius,
         rowMeasures,
@@ -245,11 +239,11 @@ export class GPULineChunk implements GPUCommandNodeProducer {
         id: `${id}-piece-count`,
         operation: OPERATION,
         mode: props.mode,
-        pathOffsets: props.pathOffsets,
+        lineOffsets: props.lineOffsets,
         rowMeasures,
         parameters: props.parameters,
         rowCount,
-        maximumPieces: pathCapacity + 1,
+        maximumPieces: lineCapacity + 1,
         pieceCounts
       }),
       ...new GPUScan({
@@ -261,7 +255,7 @@ export class GPULineChunk implements GPUCommandNodeProducer {
         id: `${id}-piece-range`,
         operation: OPERATION,
         mode: props.mode,
-        pathOffsets: props.pathOffsets,
+        lineOffsets: props.lineOffsets,
         rowMeasures,
         parameters: props.parameters,
         pieceCounts,
@@ -296,20 +290,20 @@ export class GPULineChunk implements GPUCommandNodeProducer {
         pieces,
         vertexStarts,
         capacity: output.positions.length,
-        outputPathOffsets: output.pathOffsets,
-        count: output.count,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount,
-        pathCountOutput: output.pathCount
+        outputLineOffsets: output.lineOffsets,
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
+        lineCountOutput: output.status.lineCount
       })
     ];
-    if (output.sourcePaths) {
+    if (output.sourceLineIndices) {
       nodes.push(
-        createPieceSourcePathsNode<Parameters>(graph, {
-          id: `${id}-source-paths`,
+        createPieceSourceLineIndicesNode<Parameters>(graph, {
+          id: `${id}-source-line-indexs`,
           operation: OPERATION,
           pieces,
-          sourcePaths: output.sourcePaths
+          sourceLineIndices: output.sourceLineIndices
         })
       );
     }

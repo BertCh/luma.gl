@@ -3,36 +3,39 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {
   getRasterGridWGSL,
-  validateRasterCellSizeMode,
-  writeRasterGridSettings,
-  type RasterGridSettings
+  writeRasterGridPrefix
 } from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/index';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateParameterTarget,
+  validateRasterBandBelongsToGraph,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 
 const OPERATION = 'GPUTerrainHydrologicIndices';
 
-/** Number of float32 values read from `GPUTerrainHydrologicIndicesProps.settings`. */
+/** Number of float32 values read from `GPUTerrainHydrologicIndicesProps.parameters`. */
 export const GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH = 8;
 
 /** Default lower bound of `tan(beta)` used by the indices. */
@@ -41,12 +44,12 @@ export const GPU_TERRAIN_HYDROLOGIC_INDICES_DEFAULT_MINIMUM_SLOPE = 0.001;
 /**
  * CPU-side description packed by {@link getGPUTerrainHydrologicIndicesParameterValues}.
  *
- * Cell sizes follow the shared raster grid prefix: with `cellSizeMode` `'uniform'` they are
- * projected meters; with `'web-mercator'` (equatorial meters) or `'geographic'` (degrees) the
- * ground spacing is evaluated per row from `northEdge`/`southEdge` (latitude-dependent cell
- * width), for both the slope and the contour width.
+ * Cell sizes and the latitude band come from the grid passed next to it: with `cellSizeMode`
+ * `'uniform'` the cell size is in projected meters; with `'web-mercator'` (equatorial meters) or
+ * `'geographic'` (degrees) the ground spacing is evaluated per row from the grid's row edges
+ * (latitude-dependent cell width), for both the slope and the contour width.
  */
-export type GPUTerrainHydrologicIndicesSettings = RasterGridSettings & {
+export type GPUTerrainHydrologicIndicesSettings = {
   /**
    * Lower bound applied to `tan(beta)` before the indices are formed, so filled flats do not give
    * an infinite wetness index. Negative or non-finite values act as 0 (no clamp: zero slopes give
@@ -57,18 +60,22 @@ export type GPUTerrainHydrologicIndicesSettings = RasterGridSettings & {
 };
 
 /**
- * Packs `[cellSizeX, cellSizeY, northEdge, southEdge, minimumSlope, 0, 0, 0]`.
+ * Packs `[cellSizeX, cellSizeY, northEdge, southEdge, minimumSlope, 0, 0, 0]`, with the cell size
+ * and the row-edge world y taken from `grid`.
  *
  * @throws If `target` holds fewer than 8 values.
  */
 export function getGPUTerrainHydrologicIndicesParameterValues(
   settings: GPUTerrainHydrologicIndicesSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH) {
-    throw new Error('Terrain hydrologic indices settings target must hold 8 values');
-  }
-  writeRasterGridSettings(target, settings);
+  validateParameterTarget(
+    'getGPUTerrainHydrologicIndicesParameterValues',
+    target,
+    GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH
+  );
+  writeRasterGridPrefix(target, grid);
   target[4] = settings.minimumSlope ?? GPU_TERRAIN_HYDROLOGIC_INDICES_DEFAULT_MINIMUM_SLOPE;
   target[5] = 0;
   target[6] = 0;
@@ -76,20 +83,30 @@ export function getGPUTerrainHydrologicIndicesParameterValues(
   return target;
 }
 
+/** Caller-owned outputs of {@link GPUTerrainHydrologicIndices}; at least one is required. */
+export type GPUTerrainHydrologicIndicesOutput = {
+  /** `tan(beta)` after the `minimumSlope` clamp. Presence is compile-time. */
+  slope?: GraphDataView<'float32'>;
+  /** Specific catchment area `a = A / b` in meters. Presence is compile-time. */
+  specificCatchmentArea?: GraphDataView<'float32'>;
+  /** Topographic wetness index `ln(a / tan(beta))`. Presence is compile-time. */
+  wetnessIndex?: GraphDataView<'float32'>;
+  /** Stream power index `a * tan(beta)` in meters. Presence is compile-time. */
+  streamPowerIndex?: GraphDataView<'float32'>;
+};
+
 /**
  * Properties for {@link GPUTerrainHydrologicIndices}.
  *
- * Compile-time: `width`, `height`, `cellSizeMode`, the elevation format and calibration, and which
- * outputs are provided. Per-frame: the contents of `elevation`, `accumulation`, and `settings`.
+ * Compile-time: `grid` size, `cellSizeMode`, the elevation format and calibration, and which
+ * outputs are provided. Per-frame: the contents of `elevation`, `accumulation`, and `parameters`.
  * Outputs never share a buffer with an input or with each other.
  */
 export type GPUTerrainHydrologicIndicesProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-hydrologic-indices'`. Compile-time. */
   id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
    * Routing surface the slope is measured on, normally the `filledElevation` of
    * `GPUTerrainFlow` (or the raw DEM when it was not filled). Validity, nodata, scale and offset
@@ -102,18 +119,12 @@ export type GPUTerrainHydrologicIndicesProps = {
    * zero gives a wetness index of `-Infinity`.
    */
   accumulation: GraphDataView<'float32'>;
-  /** Settings with at least 8 float32 values, see {@link getGPUTerrainHydrologicIndicesParameterValues}. Per-frame. */
-  settings: GraphDataView<'float32'>;
+  /** Parameters with at least 8 float32 values, see {@link getGPUTerrainHydrologicIndicesParameterValues}. Per-frame. */
+  parameters: GraphDataView<'float32'>;
   /** Cell size interpretation. Defaults to `'uniform'`. Compile-time. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
-  /** `tan(beta)` after the `minimumSlope` clamp. Presence is compile-time. */
-  slope?: GraphDataView<'float32'>;
-  /** Specific catchment area `a = A / b` in meters. Presence is compile-time. */
-  specificCatchmentArea?: GraphDataView<'float32'>;
-  /** Topographic wetness index `ln(a / tan(beta))`. Presence is compile-time. */
-  wetnessIndex?: GraphDataView<'float32'>;
-  /** Stream power index `a * tan(beta)` in meters. Presence is compile-time. */
-  streamPowerIndex?: GraphDataView<'float32'>;
+  cellSizeMode?: GPURasterCellSizeMode;
+  /** Caller-owned outputs. */
+  output: GPUTerrainHydrologicIndicesOutput;
 };
 
 /**
@@ -144,14 +155,18 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-hydrologic-indices';
     this.props = props;
     const {id} = this;
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH);
-    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    const cellCount = validateRasterGrid(id, props.grid);
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     const outputs = this.getOutputs();
     if (outputs.length === 0) {
       throw new Error(`${id} requires at least one output`);
     }
-    for (const [name, view] of [['accumulation', props.accumulation], ...outputs] as const) {
+    for (const [name, view] of [
+      ['accumulation', props.accumulation],
+      ...outputs.map(([outputName, outputView]) => [`output.${outputName}`, outputView] as const)
+    ] as const) {
       validatePackedView(view, ['float32'], `${id} ${name}`);
       if (view.length !== cellCount) {
         throw new Error(`${id} ${name} must contain one value per cell`);
@@ -164,7 +179,7 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       outputs.map(([, view]) => view),
-      [...getTerrainBandViews(props.elevation), props.accumulation, props.settings]
+      [...getRasterBandViews(props.elevation), props.accumulation, props.parameters]
     );
   }
 
@@ -173,20 +188,20 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
+    const {width, height} = props.grid;
     const outputs = this.getOutputs();
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.accumulation,
-      props.settings,
+      props.parameters,
       ...outputs.map(([, view]) => view)
     ]);
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const elevation = source.band.storage.values as GraphDataView<'float32'>;
     const bindings: WGSLKernelBinding[] = [
       {name: 'elevation', view: elevation, type: 'f32', access: 'read'},
       {name: 'accumulation', view: props.accumulation, type: 'f32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
       ...outputs.map(([name, view]) => ({
         name,
         view,
@@ -246,12 +261,12 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
   }
 
   private getOutputs(): [string, GraphDataView<'float32'>][] {
-    const {props} = this;
+    const {output} = this.props;
     const outputs: [string, GraphDataView<'float32'> | undefined][] = [
-      ['slope', props.slope],
-      ['specificCatchmentArea', props.specificCatchmentArea],
-      ['wetnessIndex', props.wetnessIndex],
-      ['streamPowerIndex', props.streamPowerIndex]
+      ['slope', output.slope],
+      ['specificCatchmentArea', output.specificCatchmentArea],
+      ['wetnessIndex', output.wetnessIndex],
+      ['streamPowerIndex', output.streamPowerIndex]
     ];
     return outputs.filter((entry): entry is [string, GraphDataView<'float32'>] =>
       Boolean(entry[1])

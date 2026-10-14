@@ -4,37 +4,45 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../gpu-spatial-analysis/contracts/earth';
+import {
+  GPURasterBufferToTexture,
+  type GPURasterBand,
+  type GPURasterMetadata
+} from '../../gpu-raster/index';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
-  createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
-  validateRasterExtremaPyramidOutput,
   type GPURasterExtremaPyramidLayout,
   type GPURasterExtremaPyramidOutput
 } from '../../gpu-raster/raster-pyramid/index';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from './terrain-analysis-utils';
+  createRasterExtremaPyramidNodes,
+  validateRasterExtremaPyramidOutput
+} from '../../gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateParameterTarget,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
+import {getRasterGridGeoreference} from '../../analysis-core/raster-grid';
 import {getTerrainSightLineWGSL, type GPUTerrainSightLineTraversal} from './terrain-sight-line';
 
 /**
@@ -51,10 +59,13 @@ export const GPU_TERRAIN_VISIBILITY = {
   marginal: 4
 } as const;
 
-/** Number of float32 values read from `GPUTerrainViewshedProps.settings`. */
+/** Number of float32 values read from `GPUTerrainViewshedProps.parameters`. */
 export const GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH = 8;
 
-/** CPU-side description packed by {@link getGPUTerrainViewshedParameterValues}. */
+/**
+ * CPU-side description packed by {@link getGPUTerrainViewshedParameterValues}. The ground cell
+ * size comes from the grid passed next to it.
+ */
 export type GPUTerrainViewshedSettings = {
   /** Observer `[column, row]` in pixel-center index space; fractional values allowed. */
   observer: readonly [number, number];
@@ -63,51 +74,56 @@ export type GPUTerrainViewshedSettings = {
   /** Height added to every target cell. Defaults to 0. */
   targetHeight?: number;
   /** Ground radius in meters; `<= 0` means unlimited. Defaults to 0. */
-  maxDistance?: number;
-  /** `[x, y]` ground meters per pixel. Both must be finite and positive. */
-  cellSize: readonly [number, number];
+  maximumDistance?: number;
   /** Drop coefficient `c` in 1/meters: terrain at distance `d` is lowered by `c * d^2`. Defaults to 0. */
   curvatureCoefficient?: number;
 };
 
 /**
  * Packs viewshed settings into
- * `[observerColumn, observerRow, observerHeight, targetHeight, maxDistance, cellSizeX, cellSizeY, curvatureCoefficient]`.
+ * `[observerColumn, observerRow, observerHeight, targetHeight, maximumDistance, cellSizeX, cellSizeY, curvatureCoefficient]`,
+ * with the cell size from `grid` (meters per pixel along columns and rows).
  *
- * @throws If a cell size is not finite and positive, or `target` is too short.
+ * @throws If a grid cell size is not finite and positive, or `target` is too short.
  */
 export function getGPUTerrainViewshedParameterValues(
   settings: GPUTerrainViewshedSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH) {
-    throw new Error('Terrain viewshed settings target must hold 8 values');
-  }
-  if (!settings.cellSize.every(size => Number.isFinite(size) && size > 0)) {
-    throw new Error('Terrain viewshed cell size must be finite and positive');
+  validateParameterTarget(
+    'getGPUTerrainViewshedParameterValues',
+    target,
+    GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH
+  );
+  const {cellSize} = getRasterGridGeoreference(grid);
+  if (!cellSize.every(size => Number.isFinite(size) && size > 0)) {
+    throw new Error(
+      'getGPUTerrainViewshedParameterValues grid cell size must be finite and positive'
+    );
   }
   target.set([
     settings.observer[0],
     settings.observer[1],
     settings.observerHeight ?? 1.7,
     settings.targetHeight ?? 0,
-    settings.maxDistance ?? 0,
-    settings.cellSize[0],
-    settings.cellSize[1],
+    settings.maximumDistance ?? 0,
+    cellSize[0],
+    cellSize[1],
     settings.curvatureCoefficient ?? 0
   ]);
   return target;
 }
 
-/** Number of float32 values read from `GPUTerrainViewshedProps.tolerance`. */
-export const GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH = 4;
+/** Number of float32 values read from `GPUTerrainViewshedProps.toleranceParameters`. */
+export const GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH = 4;
 
 /**
- * CPU-side description packed by {@link getGPUTerrainVisibilityToleranceParameterValues}.
+ * CPU-side description packed by {@link getGPUTerrainViewshedToleranceParameterValues}.
  *
  * All distances are projected metres on the same planar cell-size model as the settings.
  */
-export type GPUTerrainVisibilityToleranceSettings = {
+export type GPUTerrainViewshedToleranceSettings = {
   /**
    * Constant half-width of the tolerance band in metres of sight-line height at the target.
    * mt-image uses 2. Defaults to 0.
@@ -137,13 +153,15 @@ export type GPUTerrainVisibilityToleranceSettings = {
  *
  * @throws If a value is negative or not finite, or `target` is too short.
  */
-export function getGPUTerrainVisibilityToleranceParameterValues(
-  settings: GPUTerrainVisibilityToleranceSettings,
-  target: Float32Array = new Float32Array(GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH)
+export function getGPUTerrainViewshedToleranceParameterValues(
+  settings: GPUTerrainViewshedToleranceSettings,
+  target: Float32Array = new Float32Array(GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH) {
-    throw new Error('Terrain visibility tolerance target must hold 4 values');
-  }
+  validateParameterTarget(
+    'getGPUTerrainViewshedToleranceParameterValues',
+    target,
+    GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH
+  );
   const values = [
     settings.toleranceMeters ?? 0,
     settings.tolerancePerKilometer ?? 0,
@@ -151,7 +169,9 @@ export function getGPUTerrainVisibilityToleranceParameterValues(
     settings.targetIgnoreFraction ?? 0
   ];
   if (!values.every(value => Number.isFinite(value) && value >= 0)) {
-    throw new Error('Terrain visibility tolerance values must be finite and non-negative');
+    throw new Error(
+      'getGPUTerrainViewshedToleranceParameterValues values must be finite and non-negative'
+    );
   }
   target.set(values);
   return target;
@@ -173,14 +193,22 @@ export function getGPUTerrainCurvatureCoefficient(
   return (1 - refractionCoefficient) / (2 * earthRadius);
 }
 
+/** Caller-owned outputs of {@link GPUTerrainViewshed}; at least one is required. */
+export type GPUTerrainViewshedOutput = {
+  /** `GPU_TERRAIN_VISIBILITY` code per pixel. */
+  visibility?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32uint` or `rgba32uint`, channel 0) receiving the codes. */
+  visibilityTexture?: GraphTextureView<'r32uint' | 'rgba32uint'>;
+};
+
 /**
  * Properties for {@link GPUTerrainViewshed}.
  *
- * Topology: grid size, elevation format and calibration, traversal, and which outputs exist.
- * Per-frame: `settings` (observer, heights, radius, cell size, curvature), `tolerance` and
- * elevation contents.
+ * Topology: grid, elevation format and calibration, traversal, and which outputs exist.
+ * Per-frame: `parameters` (observer, heights, radius, grid cell size, curvature),
+ * `toleranceParameters` and elevation contents.
  *
- * Cell-size model: the raster is in projected metres (planar); `settings.cellSize` gives ground
+ * Cell-size model: the raster is in projected metres (planar); the grid cell size gives ground
  * metres per pixel and distances are Euclidean in that plane. Web Mercator rasters must be
  * resampled or given a locally scaled cell size. Earth curvature follows the convention of
  * {@link getGPUTerrainCurvatureCoefficient} (mt-image `k = 0.13`; GDAL `-cc 0.85714` is
@@ -189,18 +217,14 @@ export function getGPUTerrainCurvatureCoefficient(
 export type GPUTerrainViewshedProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-viewshed'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUTerrainViewshedParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Optional `GPU_TERRAIN_VISIBILITY` code per pixel. */
-  visibility?: GraphDataView<'uint32'>;
-  /** Optional storage texture (`r32uint` or `rgba32uint`, channel 0) receiving the codes. */
-  visibilityTexture?: GraphTextureView<'r32uint' | 'rgba32uint'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUTerrainViewshedParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainViewshedOutput;
   /**
    * Compile-time traversal. `'march'` (default) evaluates every sample; `'pyramid'` additionally
    * builds a min-max pyramid of the elevation and skips samples that provably cannot change the
@@ -210,7 +234,7 @@ export type GPUTerrainViewshedProps = {
   /**
    * Optional prebuilt min-max pyramid to read instead of building one inside this contributor.
    * Requires `traversal: 'pyramid'`. Pass `GPURasterExtremaPyramid.output` of a pyramid created with
-   * `combined` over the same elevation, `footprint: 'bilinear'` and the same `width x height`
+   * `combined` over the same elevation, `footprint: 'bilinear'` and the same grid size
    * (otherwise the constructor throws), added to the same graph before this contributor or run in
    * an earlier graph. One pyramid then serves every consumer and is rebuilt only when the
    * elevation changes. Results are bit-identical to a self-built pyramid and to `'march'`.
@@ -218,11 +242,11 @@ export type GPUTerrainViewshedProps = {
   pyramid?: GPURasterExtremaPyramidOutput;
   /**
    * Optional per-frame tolerance band and target-ignore stretch with at least
-   * {@link GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH} float32 values, see
-   * {@link getGPUTerrainVisibilityToleranceParameterValues}. When absent all four are 0 and the
+   * {@link GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH} float32 values, see
+   * {@link getGPUTerrainViewshedToleranceParameterValues}. When absent all four are 0 and the
    * classic rule applies (no `marginal` codes).
    */
-  tolerance?: GraphDataView<'float32'>;
+  toleranceParameters?: GraphDataView<'float32'>;
 };
 
 /**
@@ -232,12 +256,12 @@ export type GPUTerrainViewshedProps = {
  * elevation samples and is hidden if any sample rises above the observer-to-target sight line.
  * Precedence: no data (observer outside the grid or invalid, or target invalid), out of range,
  * then visibility. The cost is O(width * height * max(width, height)) samples for an unlimited
- * radius: crop tiles of 1024^2 and larger around the observer or set `maxDistance` to avoid GPU
+ * radius: crop tiles of 1024^2 and larger around the observer or set `maximumDistance` to avoid GPU
  * watchdog timeouts, or use `traversal: 'pyramid'`.
  *
- * With `tolerance` (mt-image `integrity/viewshed.ts` uses 2 m plus 1 m per km), targets within the
+ * With `toleranceParameters` (mt-image `integrity/viewshed.ts` uses 2 m plus 1 m per km), targets within the
  * band of the sight line get the code `marginal` and the last stretch before the target can be
- * ignored. With neither `traversal: 'pyramid'` nor `tolerance` the generated kernel is the
+ * ignored. With neither `traversal: 'pyramid'` nor `toleranceParameters` the generated kernel is the
  * original one.
  */
 export class GPUTerrainViewshed implements GPUCommandNodeProducer {
@@ -252,24 +276,24 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-viewshed';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
-    if (!props.visibility && !props.visibilityTexture) {
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
+    if (!output.visibility && !output.visibilityTexture) {
       throw new Error(`${id} requires at least one output`);
     }
-    if (props.visibility) {
-      validatePackedUint32View(props.visibility, `${id} visibility`);
-      if (props.visibility.length !== pixelCount) {
-        throw new Error(`${id} visibility must contain one value per pixel`);
+    if (output.visibility) {
+      validatePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
+      if (output.visibility.length !== pixelCount) {
+        throw new Error(`${id} output.visibility must contain one value per pixel`);
       }
     }
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH);
-    validateTerrainTexture(
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH);
+    validateRasterOutputTexture(
       id,
-      'visibilityTexture',
-      props.visibilityTexture,
+      'output.visibilityTexture',
+      output.visibilityTexture,
       ['r32uint', 'rgba32uint'],
-      props.width,
-      props.height
+      props.grid
     );
     if (
       props.traversal !== undefined &&
@@ -278,11 +302,12 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} traversal must be 'march' or 'pyramid'`);
     }
-    if (props.tolerance) {
-      validateTerrainSettings(
+    if (props.toleranceParameters) {
+      validateRasterParameters(
         id,
-        props.tolerance,
-        GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH
+        props.toleranceParameters,
+        GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH,
+        'toleranceParameters'
       );
     }
     if (props.pyramid && props.traversal !== 'pyramid') {
@@ -290,19 +315,19 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     }
     if (props.traversal === 'pyramid') {
       this.pyramidLayout = props.pyramid
-        ? validateRasterExtremaPyramidOutput(id, props.pyramid, props.width, props.height)
-        : getGPURasterExtremaPyramidLayout(props.width, props.height, {
+        ? validateRasterExtremaPyramidOutput(id, props.pyramid, props.grid)
+        : getGPURasterExtremaPyramidLayout(props.grid, {
             firstBlockSize: 4,
             footprint: 'bilinear'
           });
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.visibility],
+      [output.visibility],
       [
-        ...getTerrainBandViews(props.elevation),
-        props.settings,
-        ...(props.tolerance ? [props.tolerance] : [])
+        ...getRasterBandViews(props.elevation),
+        props.parameters,
+        ...(props.toleranceParameters ? [props.toleranceParameters] : [])
       ]
     );
   }
@@ -312,22 +337,23 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, [props.visibilityTexture]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, [output.visibilityTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
       props.pyramid?.combined,
-      props.settings,
-      props.visibility,
-      ...(props.tolerance ? [props.tolerance] : [])
+      props.parameters,
+      output.visibility,
+      ...(props.toleranceParameters ? [props.toleranceParameters] : [])
     ]);
     const pixelCount = width * height;
     // Canonicalization always runs so the viewshed kernel has one float32 plus validity layout.
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const target =
-      props.visibility ?? createTransientView(graph, `${id}-visibility`, 'uint32', pixelCount);
+      output.visibility ?? createTransientView(graph, `${id}-visibility`, 'uint32', pixelCount);
     const validity = source.band.validity as GraphDataView<'uint32'>;
-    if (props.traversal === 'pyramid' || props.tolerance) {
+    if (props.traversal === 'pyramid' || props.toleranceParameters) {
       nodes.push(
         ...this._getSightLineNodes(
           graph,
@@ -350,7 +376,7 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
               access: 'read'
             },
             {name: 'elevationValidity', view: validity, type: 'u32', access: 'read'},
-            {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+            {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
             {name: 'visibilityValues', view: target, type: 'u32', access: 'read_write'}
           ],
           invocationCount: pixelCount,
@@ -360,7 +386,7 @@ const HIDDEN: u32 = ${GPU_TERRAIN_VISIBILITY.hidden}u;
 const VISIBLE: u32 = ${GPU_TERRAIN_VISIBILITY.visible}u;
 const OUT_OF_RANGE: u32 = ${GPU_TERRAIN_VISIBILITY.outOfRange}u;
 const NO_DATA: u32 = ${GPU_TERRAIN_VISIBILITY.noData}u;
-${TERRAIN_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}
 fn isValidPixel(column: u32, row: u32) -> bool {
   return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;
 }
@@ -438,8 +464,8 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
         })
       );
     }
-    if (props.visibilityTexture) {
-      const texture = props.visibilityTexture;
+    if (output.visibilityTexture) {
+      const texture = output.visibilityTexture;
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterBufferToTexture({
@@ -466,7 +492,7 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
     target: GraphDataView<'uint32'>
   ): GPUCommandNode<Parameters>[] {
     const {id, props, pyramidLayout} = this;
-    const {width, height} = props;
+    const {width, height} = props.grid;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const bindings: WGSLKernelBinding[] = [
       {name: 'elevationValues', view: values, type: 'f32', access: 'read'},
@@ -492,9 +518,14 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
       );
       bindings.push({name: 'pyramid', view: combined, type: 'f32', access: 'read'});
     }
-    bindings.push({name: 'settings', view: props.settings, type: 'f32', access: 'read'});
-    if (props.tolerance) {
-      bindings.push({name: 'toleranceBand', view: props.tolerance, type: 'f32', access: 'read'});
+    bindings.push({name: 'settings', view: props.parameters, type: 'f32', access: 'read'});
+    if (props.toleranceParameters) {
+      bindings.push({
+        name: 'toleranceBand',
+        view: props.toleranceParameters,
+        type: 'f32',
+        access: 'read'
+      });
     }
     bindings.push({name: 'visibilityValues', view: target, type: 'u32', access: 'read_write'});
     nodes.push(
@@ -520,7 +551,7 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let cellSize = vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u]);
   let curvature = settings[settingsOffset + 7u];
   ${
-    props.tolerance
+    props.toleranceParameters
       ? `let toleranceValues = vec4<f32>(
     toleranceBand[toleranceBandOffset], toleranceBand[toleranceBandOffset + 1u],
     toleranceBand[toleranceBandOffset + 2u], toleranceBand[toleranceBandOffset + 3u]);`

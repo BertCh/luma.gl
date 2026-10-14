@@ -20,14 +20,19 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/index';
-import {GPUMultipleTestingAdjustment} from '../multiple-testing/index';
+import type {
+  GPUInferenceMetadata,
+  GPUMultipleTestingMethod
+} from '../../analysis-core/contracts/index';
+import {
+  GPUMultipleTestingAdjustment,
+  resolveGPUMultipleTestingMethod
+} from '../multiple-testing/index';
 import {
   getSpatialAutocorrelationConstantsWGSL,
   getSpatialAutocorrelationInputNodes,
   getSpatialWeightsNeighborLoopWGSL,
   resolveSpatialAutocorrelationMinimumNeighbors,
-  resolveSpatialAutocorrelationMultipleTesting,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
@@ -37,12 +42,44 @@ import {
   type GPUIslandPolicy,
   type GPUSpatialWeights
 } from '../spatial-weights/index';
+import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
 import {
+  getGPUSpatialAutocorrelationParameterValues,
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
-  GPU_HOT_SPOT_SIGNIFICANCE_LEVELS
+  GPU_HOT_SPOT_SIGNIFICANCE_LEVELS,
+  type GPUSpatialAutocorrelationSettings
 } from './spatial-autocorrelation-parameters';
 
+/** Storage buffers per stage on a core WebGPU device (`maxStorageBuffersPerShaderStage`). */
+const CORE_STORAGE_BUFFER_LIMIT = 8;
 const OPERATION = 'GPUHotSpotAnalysis';
+
+/** Caller-owned outputs of {@link GPUHotSpotAnalysis}. */
+export type GPUHotSpotAnalysisOutput = {
+  /** Caller-owned Gi* z-score per row; quiet NaN for excluded or undefined rows. */
+  zScores: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned confidence bin per row, `sint32` in `-3..3`: `±3`, `±2`, `±1` for
+   * 99%, 95% and 90% confidence hot (`+`) or cold (`-`) spots, `0` otherwise. Legend contract:
+   * level `L` means the adjusted p-value (the plain p-value for `multipleTesting: 'none'`) is at
+   * most `0.01`, `0.05` or `0.10`, whatever the correction method; the sign is the sign of z.
+   */
+  bins?: GraphDataView<'sint32'>;
+  /** Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN. */
+  pValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned p-value adjusted by `multipleTesting` (equal to `pValues` for `'none'`);
+   * quiet NaN where z is NaN. The test family is every row with a defined z-score, never a viewport.
+   */
+  adjustedPValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned count of active neighbors per row, the row itself not included even when
+   * `selfWeight` is nonzero; 0 for rows outside the analysis.
+   */
+  neighborCounts?: GraphDataView<'uint32'>;
+  /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
+  globalStatistics?: GraphDataView<'float32'>;
+};
 
 /**
  * Properties for {@link GPUHotSpotAnalysis}.
@@ -57,7 +94,7 @@ export type GPUHotSpotAnalysisProps = {
   /**
    * Square self-join spatial weights, one row per observation (for example from
    * `GPUNeighborSearch`, optionally transformed). Used as given, except that when
-   * `weights.info.transform` is `'row'` each row's weights are re-standardized over the neighbors
+   * `weights.information.transform` is `'row'` each row's weights are re-standardized over the neighbors
    * that remain after masking. The caller applies any other transform (binary, kernel). Fewer
    * than 2^24 rows. The focal row's own weight is not read from the matrix (`w_ii = 0` by
    * invariant); see `selfWeight`. A neighbor is a slot with a positive weight that points at
@@ -73,8 +110,11 @@ export type GPUHotSpotAnalysisProps = {
    * standardizing.
    */
   selfWeight?: number;
-  /** Packed analysis values, one per row. Rows with a non-finite value are excluded. */
-  values: GraphDataView<'float32'>;
+  /**
+   * Packed analysis values, one per row, `float32` or `uint32` (for example counts; converted to
+   * f32 by one node, exact below 2^24). Rows with a non-finite value are excluded.
+   */
+  values: GPUFloat32OrUint32Values;
   /**
    * Per-frame parameters: packed float32 view of at least
    * `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` elements written with
@@ -103,29 +143,8 @@ export type GPUHotSpotAnalysisProps = {
    * be an integer of at least 1.
    */
   minimumNeighbors?: number;
-  /** Caller-owned Gi* z-score per row; quiet NaN for excluded or undefined rows. */
-  zScores: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned confidence bin per row, `sint32` in `-3..3`: `±3`, `±2`, `±1` for
-   * 99%, 95% and 90% confidence hot (`+`) or cold (`-`) spots, `0` otherwise. Legend contract:
-   * level `L` means the adjusted p-value (the plain p-value for `multipleTesting: 'none'`) is at
-   * most `0.01`, `0.05` or `0.10`, whatever the correction method; the sign is the sign of z.
-   */
-  bins?: GraphDataView<'sint32'>;
-  /** Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN. */
-  pValues?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned p-value adjusted by `multipleTesting` (equal to `pValues` for `'none'`);
-   * quiet NaN where z is NaN. The test family is every row with a defined z-score, never a viewport.
-   */
-  adjustedPValues?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned count of active neighbors per row, the row itself not included even when
-   * `selfWeight` is nonzero; 0 for rows outside the analysis.
-   */
-  neighborCounts?: GraphDataView<'uint32'>;
-  /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
-  globalStatistics?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUHotSpotAnalysisOutput;
   /**
    * Compile-time. Multiple-testing correction of the two-sided p-values
    * (`GPUMultipleTestingAdjustment`): `'none'` (default; bins use the critical values `1.645,
@@ -134,12 +153,6 @@ export type GPUHotSpotAnalysisProps = {
    * With a correction a row gets level `L` when its adjusted p-value is at most `0.10, 0.05, 0.01`.
    */
   multipleTesting?: GPUMultipleTestingMethod;
-  /**
-   * Compile-time.
-   * @deprecated Use `multipleTesting: 'benjamini-hochberg'`. `true` is that value and `false` is
-   * `'none'`; giving both with different meanings throws.
-   */
-  falseDiscoveryRate?: boolean;
 };
 
 /**
@@ -152,7 +165,7 @@ export type GPUHotSpotAnalysisProps = {
  *   analysis rows (or taken from fixed moments), with a second-pass mean correction.
  * - Weights `w_ij` are the CSR entries of row `i` with a positive weight pointing at analysis rows
  *   other than `i`. They are used as given, or divided by their sum when the weights are
- *   row-standardized (`weights.info.transform === 'row'`), plus the focal weight
+ *   row-standardized (`weights.information.transform === 'row'`), plus the focal weight
  *   `w_ii = selfWeight` (default 1, the star of Gi*). `W_i = sum_j w_ij` and `S1_i = sum_j w_ij^2`.
  * - With `selfWeight > 0` (Gi*): `z_i = sum_j w_ij (x_j - X) / (S * sqrt((n * S1_i - W_i^2) / (n - 1)))`,
  *   the Ord-Getis Gi* z-score for arbitrary weights (esda `G_Local(star=True)` and ArcGIS Hot Spot
@@ -205,35 +218,35 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       id,
       props.minimumNeighbors
     );
-    this.multipleTesting = resolveSpatialAutocorrelationMultipleTesting(
+    this.multipleTesting = resolveGPUMultipleTestingMethod(id, props.multipleTesting);
+    const rows = validateSpatialAutocorrelationInputs({
+      ...props,
       id,
-      props.multipleTesting,
-      props.falseDiscoveryRate
-    );
-    const rows = validateSpatialAutocorrelationInputs({...props, id});
+      globalStatistics: props.output.globalStatistics
+    });
     const selfWeight = props.selfWeight ?? 1;
     if (!Number.isFinite(selfWeight) || selfWeight < 0) {
       throw new Error(`${id} selfWeight must be a finite number >= 0`);
     }
-    validatePackedView(props.zScores, ['float32'], `${id} zScores`);
-    if (props.bins) {
-      validatePackedView(props.bins, ['sint32'], `${id} bins`);
+    validatePackedView(props.output.zScores, ['float32'], `${id} zScores`);
+    if (props.output.bins) {
+      validatePackedView(props.output.bins, ['sint32'], `${id} bins`);
     }
-    if (props.pValues) {
-      validatePackedView(props.pValues, ['float32'], `${id} pValues`);
+    if (props.output.pValues) {
+      validatePackedView(props.output.pValues, ['float32'], `${id} pValues`);
     }
-    if (props.adjustedPValues) {
-      validatePackedView(props.adjustedPValues, ['float32'], `${id} adjustedPValues`);
+    if (props.output.adjustedPValues) {
+      validatePackedView(props.output.adjustedPValues, ['float32'], `${id} adjustedPValues`);
     }
-    if (props.neighborCounts) {
-      validatePackedUint32View(props.neighborCounts, `${id} neighborCounts`);
+    if (props.output.neighborCounts) {
+      validatePackedUint32View(props.output.neighborCounts, `${id} neighborCounts`);
     }
     for (const [name, view] of [
-      ['zScores', props.zScores],
-      ['bins', props.bins],
-      ['pValues', props.pValues],
-      ['adjustedPValues', props.adjustedPValues],
-      ['neighborCounts', props.neighborCounts]
+      ['zScores', props.output.zScores],
+      ['bins', props.output.bins],
+      ['pValues', props.output.pValues],
+      ['adjustedPValues', props.output.adjustedPValues],
+      ['neighborCounts', props.output.neighborCounts]
     ] as const) {
       if (view && view.length !== rows) {
         throw new Error(`${id} ${name} length must equal the weights row count`);
@@ -242,12 +255,12 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.zScores,
-        props.bins,
-        props.pValues,
-        props.adjustedPValues,
-        props.neighborCounts,
-        props.globalStatistics
+        props.output.zScores,
+        props.output.bins,
+        props.output.pValues,
+        props.output.adjustedPValues,
+        props.output.neighborCounts,
+        props.output.globalStatistics
       ],
       [
         props.weights.offsets,
@@ -265,8 +278,13 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
    * Describes how the p-values were produced, for building a legend: two-sided analytic normal
    * p-values, the correction method, and the tested family. Bins use the fixed levels
    * `0.10, 0.05, 0.01`, so no single significance level is reported.
+   *
+   * @param settings The settings packed into `parameters` with
+   * `getGPUSpatialAutocorrelationParameterValues`; validated the same way.
    */
-  getInferenceMetadata(): GPUInferenceMetadata {
+  getInferenceMetadata(settings: GPUSpatialAutocorrelationSettings = {}): GPUInferenceMetadata {
+    // Packing performs the canonical validation of the settings.
+    getGPUSpatialAutocorrelationParameterValues(settings);
     return {
       alternative: 'two-sided',
       permutationCount: 0,
@@ -282,7 +300,8 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, parameters, zScores} = props;
+    const {weights, parameters} = props;
+    const {zScores} = props.output;
     const selfWeight = props.selfWeight ?? 1;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,
@@ -293,15 +312,16 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       parameters,
       props.mask,
       zScores,
-      props.bins,
-      props.pValues,
-      props.adjustedPValues,
-      props.neighborCounts,
-      props.globalStatistics
+      props.output.bins,
+      props.output.pValues,
+      props.output.adjustedPValues,
+      props.output.neighborCounts,
+      props.output.globalStatistics
     ]);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
       ...props,
+      globalStatistics: props.output.globalStatistics,
       id,
       islands: this.islands,
       operation: OPERATION
@@ -316,48 +336,65 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
       {name: 'zScores', view: zScores, type: 'f32', access: 'read_write'}
     ];
-    if (props.neighborCounts) {
+    if (props.output.neighborCounts) {
       neighborBindings.push({
         name: 'neighborCounts',
-        view: props.neighborCounts,
+        view: props.output.neighborCounts,
         type: 'u32',
         access: 'read_write'
       });
     }
     const hasCorrection = this.multipleTesting !== 'none';
-    const wantsClassify = Boolean(props.bins || props.pValues || props.adjustedPValues);
-    const isAdjusting = hasCorrection && Boolean(props.bins || props.adjustedPValues);
+    const wantsClassify = Boolean(
+      props.output.bins || props.output.pValues || props.output.adjustedPValues
+    );
+    const isAdjusting = hasCorrection && Boolean(props.output.bins || props.output.adjustedPValues);
     // Without a correction the bin and p-value are pure functions of the row's z-score, so they
     // are written by the neighbor kernel itself (one pass less over `zScores`). With a correction
     // the neighbor kernel writes the unadjusted p-values, the adjustment runs, and a classify
     // kernel assigns the bins from the adjusted p-values.
-    const fuseClassify = wantsClassify && !isAdjusting;
+    // Fusing is skipped when it would bind more than the 8 storage buffers of a core device
+    // (every optional output with `multipleTesting: 'none'`); a classify pass over `zScores` then
+    // writes the same values.
+    const fusedOutputCount =
+      Number(Boolean(props.output.bins)) +
+      Number(Boolean(props.output.pValues)) +
+      Number(Boolean(props.output.adjustedPValues));
+    const fuseClassify =
+      wantsClassify &&
+      !isAdjusting &&
+      neighborBindings.length + fusedOutputCount <= CORE_STORAGE_BUFFER_LIMIT;
     const unadjustedPValues = isAdjusting
-      ? (props.pValues ?? createTransientView(graph, `${id}-p-values`, 'float32', rows))
+      ? (props.output.pValues ?? createTransientView(graph, `${id}-p-values`, 'float32', rows))
       : undefined;
     const adjustedPValues = isAdjusting
-      ? (props.adjustedPValues ??
+      ? (props.output.adjustedPValues ??
         createTransientView(graph, `${id}-adjusted-p-values`, 'float32', rows))
       : undefined;
     const [critical90, critical95, critical99] =
       GPU_HOT_SPOT_CRITICAL_Z_SCORES.map(getWGSLFloatLiteral);
     const [level90, level95, level99] = GPU_HOT_SPOT_SIGNIFICANCE_LEVELS.map(getWGSLFloatLiteral);
     const fusedOutputBindings: WGSLKernelBinding[] = [];
-    if (props.bins) {
-      fusedOutputBindings.push({name: 'bins', view: props.bins, type: 'i32', access: 'read_write'});
+    if (props.output.bins) {
+      fusedOutputBindings.push({
+        name: 'bins',
+        view: props.output.bins,
+        type: 'i32',
+        access: 'read_write'
+      });
     }
-    if (props.pValues) {
+    if (props.output.pValues) {
       fusedOutputBindings.push({
         name: 'pValues',
-        view: props.pValues,
+        view: props.output.pValues,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.adjustedPValues) {
+    if (props.output.adjustedPValues) {
       fusedOutputBindings.push({
         name: 'adjustedPValues',
-        view: props.adjustedPValues,
+        view: props.output.adjustedPValues,
         type: 'f32',
         access: 'read_write'
       });
@@ -368,12 +405,12 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     let absoluteZ = abs(zScore);
     level = select(select(select(0, 1, absoluteZ >= ${critical90}), 2, absoluteZ >= ${critical95}), 3, absoluteZ >= ${critical99});
   }
-  ${props.bins ? 'bins[binsOffset + index] = select(level, -level, zScore < 0.0);' : ''}
+  ${props.output.bins ? 'bins[binsOffset + index] = select(level, -level, zScore < 0.0);' : ''}
   ${
-    props.pValues || props.adjustedPValues
+    props.output.pValues || props.output.adjustedPValues
       ? `let pValue = select(getQuietNaN(index), getTwoSidedPValue(zScore), finite);
-  ${props.pValues ? 'pValues[pValuesOffset + index] = pValue;' : ''}
-  ${props.adjustedPValues ? 'adjustedPValues[adjustedPValuesOffset + index] = pValue;' : ''}`
+  ${props.output.pValues ? 'pValues[pValuesOffset + index] = pValue;' : ''}
+  ${props.output.adjustedPValues ? 'adjustedPValues[adjustedPValuesOffset + index] = pValue;' : ''}`
       : ''
   }`;
     if (fuseClassify) {
@@ -442,23 +479,40 @@ const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};`,
     }
   }
   zScores[zScoresOffset + index] = zScore;
-  ${props.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
+  ${props.output.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
   ${unadjustedPValues ? 'pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteFloat(zScore));' : ''}
   ${fuseClassify ? classifyWGSL : ''}`
       })
     );
 
+    if (wantsClassify && !isAdjusting && !fuseClassify) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-classify`,
+          operation: OPERATION,
+          variant: 'classify',
+          bindings: [
+            {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
+            ...fusedOutputBindings
+          ],
+          invocationCount: rows,
+          declarations: sharedWGSL,
+          body: `let zScore = zScores[zScoresOffset + index];
+  ${classifyWGSL}`
+        })
+      );
+    }
     if (isAdjusting) {
       nodes.push(
         ...new GPUMultipleTestingAdjustment({
           id: `${id}-multiple-testing`,
           pValues: unadjustedPValues!,
           method: this.multipleTesting,
-          adjustedPValues: adjustedPValues!
+          output: {adjustedPValues: adjustedPValues!}
         }).getCommandNodes(graph)
       );
     }
-    if (!isAdjusting || !props.bins) {
+    if (!isAdjusting || !props.output.bins) {
       return nodes;
     }
     nodes.push(
@@ -469,7 +523,7 @@ const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};`,
         bindings: [
           {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
           {name: 'adjustedPValues', view: adjustedPValues!, type: 'f32', access: 'read'},
-          {name: 'bins', view: props.bins, type: 'i32', access: 'read_write'}
+          {name: 'bins', view: props.output.bins, type: 'i32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,

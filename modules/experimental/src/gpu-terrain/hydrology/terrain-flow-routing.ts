@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -23,11 +28,19 @@ const OPERATION = 'GPUTerrainFlow';
 export type TerrainFlowMultipleRouting = 'd-infinity' | 'mfd-freeman' | 'mfd-quinn';
 
 /**
- * Returns the WGSL that defines `getFlowFraction(cell, direction)`: the fraction of the flow of
- * `cell` that leaves toward its neighbor in D8 `direction`, for the given routing.
+ * Returns the WGSL that defines `getFlowFraction(cell, direction)` and, when `includeCompute` is
+ * set, `computeRouting(cell)`, which writes the cell's two-word routing record into a
+ * `read_write` `routing` binding (kernels that bind it read-only must not declare a writer).
+ * `getFlowFraction(cell, direction)`: the fraction of the flow of
+ * `cell` that leaves toward its neighbor in D8 `direction`, for the given routing, read from that
+ * record.
  *
- * Expects the kernel to bind `surface` (f32), `receivers` (u32) and `settings` (f32) and to
- * include the raster grid WGSL. Fractions of one cell sum to 1 when it has a lower neighbor (or a
+ * Expects the kernel to bind `surface` (f32), `receivers` (u32), `settings` (f32) and `routing`
+ * (u32, two words per cell; `read_write` for `computeRouting`) and to include the raster grid
+ * WGSL. The record is computed once per cell before accumulation: D-infinity stores the steepest
+ * facet and its diagonal fraction, MFD the largest score and the weight total, so a fraction
+ * lookup costs one record read (D-infinity) or one weight (MFD) instead of re-deriving all eight
+ * facets or neighbors of the donor every time. Fractions of one cell sum to 1 when it has a lower neighbor (or a
  * fallback receiver) and to 0 otherwise.
  *
  * Geometry (all ground lengths, evaluated like `getD8Distance`, so `cellSizeMode` is honored):
@@ -45,7 +58,7 @@ export type TerrainFlowMultipleRouting = 'd-infinity' | 'mfd-freeman' | 'mfd-qui
  *
  * @internal
  */
-function getFlowFractionWGSL(routing: TerrainFlowMultipleRouting): string {
+function getFlowFractionWGSL(routing: TerrainFlowMultipleRouting, includeCompute: boolean): string {
   const common = /* wgsl */ `
 // Fraction of 'cell' flow that goes to the neighbor in 'direction' when no lower neighbor exists.
 fn getFallbackFraction(cell: u32, direction: u32) -> f32 {
@@ -63,9 +76,17 @@ fn getFacetDiagonal(facet: u32) -> u32 {
   return select(lower, upper, (facet & 1u) == 1u);
 }
 
-fn getFlowFraction(cell: u32, direction: u32) -> f32 {
+${
+  includeCompute
+    ? `// Writes the cell's D-infinity routing record: [cardinal | diagonal << 4 (8 = no lower facet),
+// diagonal fraction bits], or ROUTING_INVALID for an invalid cell.
+fn computeRouting(cell: u32) {
   let center = surface[surfaceOffset + cell];
-  if (!isFiniteValue(center)) { return 0.0; }
+  if (!isFiniteValue(center)) {
+    routing[routingOffset + 2u * cell] = ROUTING_INVALID;
+    routing[routingOffset + 2u * cell + 1u] = 0u;
+    return;
+  }
   let row = cell / GRID_WIDTH;
   var bestSlope = 0.0;
   var bestCardinal = 8u;
@@ -132,7 +153,20 @@ fn getFlowFraction(cell: u32, direction: u32) -> f32 {
       bestDiagonalFraction = fractionDiagonal;
     }
   }
+  routing[routingOffset + 2u * cell] = bestCardinal | (bestDiagonal << 4u);
+  routing[routingOffset + 2u * cell + 1u] = bitcast<u32>(bestDiagonalFraction);
+}
+
+`
+    : ''
+}
+fn getFlowFraction(cell: u32, direction: u32) -> f32 {
+  let code = routing[routingOffset + 2u * cell];
+  if (code == ROUTING_INVALID) { return 0.0; }
+  let bestCardinal = code & 15u;
   if (bestCardinal == 8u) { return getFallbackFraction(cell, direction); }
+  let bestDiagonal = code >> 4u;
+  let bestDiagonalFraction = bitcast<f32>(routing[routingOffset + 2u * cell + 1u]);
   if (direction == bestDiagonal) { return bestDiagonalFraction; }
   if (direction == bestCardinal) { return 1.0 - bestDiagonalFraction; }
   return 0.0;
@@ -159,9 +193,17 @@ fn getMultipleFlowScore(drop: f32, direction: u32, row: u32) -> f32 {
   }
 }
 
-fn getFlowFraction(cell: u32, direction: u32) -> f32 {
+${
+  includeCompute
+    ? `// Writes the cell's MFD routing record: [largest score bits (-1 = no lower neighbor), weight total
+// bits], or ROUTING_INVALID for an invalid cell.
+fn computeRouting(cell: u32) {
   let center = surface[surfaceOffset + cell];
-  if (!isFiniteValue(center)) { return 0.0; }
+  if (!isFiniteValue(center)) {
+    routing[routingOffset + 2u * cell] = ROUTING_INVALID;
+    routing[routingOffset + 2u * cell + 1u] = 0u;
+    return;
+  }
   let row = cell / GRID_WIDTH;
   var hasLower = false;
   var maximumScore = 0.0;
@@ -174,23 +216,41 @@ fn getFlowFraction(cell: u32, direction: u32) -> f32 {
       maximumScore = max(maximumScore, getMultipleFlowScore(drop, other, row));
     }
   }
-  if (!hasLower) { return getFallbackFraction(cell, direction); }
-  let exponent = getFlowExponent();
-  var total = 0.0;
-  var targetWeight = 0.0;
-  for (var other = 0u; other < 8u; other++) {
-    let neighbor = getD8Neighbor(cell, other);
-    if (neighbor == GRID_NONE) { continue; }
-    let drop = center - surface[surfaceOffset + neighbor];
-    if (isFiniteValue(drop) && drop > 0.0) {
-      let score = getMultipleFlowScore(drop, other, row);
-      let ratio = select(1.0, score / maximumScore, maximumScore > 0.0);
-      let weight = select(0.0, pow(ratio, exponent), ratio > 0.0);
-      total = total + weight;
-      if (other == direction) { targetWeight = weight; }
-    }
+  if (!hasLower) {
+    routing[routingOffset + 2u * cell] = bitcast<u32>(-1.0);
+    routing[routingOffset + 2u * cell + 1u] = 0u;
+    return;
   }
-  return select(0.0, targetWeight / total, total > 0.0);
+  var total = 0.0;
+  for (var other = 0u; other < 8u; other++) {
+    total = total + getMultipleFlowWeight(cell, center, other, maximumScore);
+  }
+  routing[routingOffset + 2u * cell] = bitcast<u32>(maximumScore);
+  routing[routingOffset + 2u * cell + 1u] = bitcast<u32>(total);
+}
+
+`
+    : ''
+}
+// Unnormalized weight of the move from 'cell' toward 'direction'; 0 unless that neighbor is lower.
+fn getMultipleFlowWeight(cell: u32, center: f32, direction: u32, maximumScore: f32) -> f32 {
+  let neighbor = getD8Neighbor(cell, direction);
+  if (neighbor == GRID_NONE) { return 0.0; }
+  let drop = center - surface[surfaceOffset + neighbor];
+  if (!(isFiniteValue(drop) && drop > 0.0)) { return 0.0; }
+  let score = getMultipleFlowScore(drop, direction, cell / GRID_WIDTH);
+  let ratio = select(1.0, score / maximumScore, maximumScore > 0.0);
+  return select(0.0, pow(ratio, getFlowExponent()), ratio > 0.0);
+}
+
+fn getFlowFraction(cell: u32, direction: u32) -> f32 {
+  let code = routing[routingOffset + 2u * cell];
+  if (code == ROUTING_INVALID) { return 0.0; }
+  let maximumScore = bitcast<f32>(code);
+  if (maximumScore < 0.0) { return getFallbackFraction(cell, direction); }
+  let total = bitcast<f32>(routing[routingOffset + 2u * cell + 1u]);
+  let weight = getMultipleFlowWeight(cell, surface[surfaceOffset + cell], direction, maximumScore);
+  return select(0.0, weight / total, total > 0.0);
 }`;
 }
 
@@ -201,9 +261,11 @@ fn getFlowFraction(cell: u32, direction: u32) -> f32 {
  * It is a deterministic pull like the D8 accumulation. The accumulation word holds a float32 bit
  * pattern or the sentinel `0xffffffff` (not yet final). A cell finalizes only when every donor
  * with a positive flow fraction toward it is final; its value is `weight + sum(fraction * donor)`
- * summed in fixed direction order, so the bits never depend on scheduling. Each donor's fraction
- * is recomputed from `surface` (and `receivers` for the no-lower-neighbor fallback) instead of
- * being stored, which needs no per-edge buffer. After finalizing a cell a thread walks downstream
+ * summed in fixed direction order, so the bits never depend on scheduling. A `routing-prepare`
+ * pass first stores each cell's two-word routing record (8 bytes per cell, see
+ * `getFlowFractionWGSL`), so a donor's fraction is a record read instead of a re-derivation of
+ * all eight facets or neighbors of the donor; the fractions, and so the result bits, are those of
+ * the direct evaluation. After finalizing a cell a thread walks downstream
  * through the first receiver it also finalizes (up to {@link TERRAIN_FLOW_MAXIMUM_WALK_LENGTH}
  * steps) to keep the round count low. Cell sizes follow `cellSizeMode`; weights are runoff and
  * optional ground area exactly as in the D8 accumulation.
@@ -235,7 +297,32 @@ export function createTerrainFlowRoutingAccumulationNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const cellCount = props.width * props.height;
   const state = createRasterIterationState(graph, `${props.id}-accumulate`, OPERATION, cellCount);
+  const routing = createTransientView(
+    graph,
+    `${props.id}-routing-records`,
+    'uint32',
+    2 * cellCount
+  );
+  const getRoutingWGSL = (includeCompute: boolean) => `${getRasterGridWGSL(props)}
+const ROUTING_INVALID: u32 = 0xffffffffu;
+${getFlowFractionWGSL(props.routing, includeCompute)}`;
   const nodes: GPUCommandNode<Parameters>[] = [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-routing-prepare`,
+      operation: OPERATION,
+      variant: `routing-prepare-${props.routing}`,
+      bindings: [
+        {name: 'receivers', view: props.receivers, type: 'u32', access: 'read'},
+        {name: 'surface', view: props.surface, type: 'f32', access: 'read'},
+        {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+        {name: 'routing', view: routing, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: cellCount,
+      declarations: getRoutingWGSL(true),
+      body: `_ = receivers[receiversOffset];
+  _ = settings[settingsOffset];
+  computeRouting(index);`
+    }),
     createFillNode<Parameters>(graph, {
       id: `${props.id}-accumulate-init`,
       operation: OPERATION,
@@ -253,16 +340,16 @@ export function createTerrainFlowRoutingAccumulationNodes<Parameters>(
     {name: 'acc', view: props.accumulation, type: 'atomic<u32>', access: 'read_write'},
     {name: 'receivers', view: props.receivers, type: 'u32', access: 'read'},
     {name: 'surface', view: props.surface, type: 'f32', access: 'read'},
-    {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+    {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+    {name: 'routing', view: routing, type: 'u32', access: 'read'}
   ];
   if (props.runoff) {
     bindings.push({name: 'runoff', view: props.runoff, type: 'f32', access: 'read'});
   }
   bindings.push({name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'});
-  const declarations = `${getRasterGridWGSL(props)}
+  const declarations = `${getRoutingWGSL(false)}
 const SENTINEL: u32 = 0xffffffffu;
 const MAX_WALK_LENGTH: u32 = ${TERRAIN_FLOW_MAXIMUM_WALK_LENGTH}u;
-${getFlowFractionWGSL(props.routing)}
 
 fn getWeight(cell: u32) -> f32 {
   var weight: f32 = 1.0;
@@ -325,12 +412,12 @@ fn tryFinalize(cell: u32) -> bool {
       operation: OPERATION,
       state,
       maxIterations: props.maxIterations,
-      createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+      createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
         createWGSLKernelNode<Parameters>(graph, {
           id: nodeId,
           operation: OPERATION,
           variant: `accumulate-round-${props.routing}`,
-          bindings,
+          bindings: [...bindings, slotBinding],
           invocationCount: cellCount,
           declarations,
           body: getBody(markChangedWGSL),

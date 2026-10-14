@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {DrawCommandBufferView} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandGraph, GraphDataView, GraphResourceUse} from '@luma.gl/gpgpu/gpu-core';
 import {GPUScan} from '@luma.gl/gpgpu/gpu-core';
 import {
   createTransientView,
-  getViewBinding,
   getViewElementOffset,
   validatePackedUint32View,
   validatePackedView
@@ -28,6 +27,7 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterMetadata} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 /** One fixed contour value, or one caller-owned GPU scalar updated between graph encodings. */
 export type GPURasterContourLevel = number | GraphDataView<'float32'>;
@@ -404,13 +404,15 @@ function addContourComputePass<Parameters>(
         source: props.source,
         shaderLayout: {bindings: declarations}
       });
+      const bindingViews: Record<string, GraphDataView> = {};
+      for (const binding of props.bindings) {
+        bindingViews[binding.name] = binding.view;
+      }
+      const resolveChangedBindings = createChangedBindingResolver(bindingViews);
       return {
         encode: ({computePass, getBuffer}) => {
-          const resolvedBindings: Record<string, Binding> = {};
-          for (const binding of props.bindings) {
-            resolvedBindings[binding.name] = getViewBinding(binding.view, getBuffer);
-          }
-          computation.setBindings(resolvedBindings);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           computation.dispatch(computePass, props.dispatch[0], props.dispatch[1]);
         },
         destroy: () => computation.destroy()

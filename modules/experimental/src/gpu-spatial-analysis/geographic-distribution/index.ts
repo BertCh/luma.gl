@@ -17,8 +17,8 @@ export {
   GPU_ROSE_STATISTIC_SUMMARY,
   GPU_ROSE_STATISTIC_SUMMARY_STRIDE
 } from './gpu-rose-statistic';
-export type {GPURoseStatisticProps} from './gpu-rose-statistic';
+export type {GPURoseStatisticOutput, GPURoseStatisticProps} from './gpu-rose-statistic';
 export type {
   GPUGeographicDistributionEllipseConvention,
-  GPUGeographicDistributionParameters
+  GPUGeographicDistributionSettings
 } from './geographic-distribution-parameters';

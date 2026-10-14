@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  GraphVectorView,
-  validatePackedView,
-  type GraphDataView,
-  type GPUCommandGraph
-} from '@luma.gl/gpgpu/gpu-core';
+import type {GraphDataView, GraphVectorView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Nodata description shared by raster-algebra contributors. @internal */
@@ -39,6 +38,7 @@ fn isNoDataValue(value: f32) -> bool {
 
 /**
  * Throws unless `view` is a single packed float32 or uint32 view with at least `rowCount` rows.
+ * An absent view passes.
  *
  * @internal
  */
@@ -52,16 +52,13 @@ export function validateRasterAlgebraView(
   if (!view) {
     return;
   }
-  if (view instanceof GraphVectorView) {
-    throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-  }
   validatePackedView(view, [format], `${id} ${name}`);
   if (view.length < rowCount) {
     throw new Error(`${id} ${name} must hold at least ${rowCount} rows`);
   }
 }
 
-/** Throws unless `value` is a positive safe integer not above `maximum`. @internal */
+/** Throws unless `value` is an integer in `[minimum, maximum]`. @internal */
 export function validateRasterAlgebraCount(
   id: string,
   name: string,
@@ -69,9 +66,7 @@ export function validateRasterAlgebraCount(
   minimum: number,
   maximum: number
 ): void {
-  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${id} ${name} must be an integer in [${minimum}, ${maximum}]`);
-  }
+  validateCapacity(id, name, value, minimum, maximum);
 }
 
 /** Throws unless the optional sentinel is finite. @internal */
@@ -108,13 +103,6 @@ export function validateRasterAlgebraGraph<Parameters>(
   views: readonly (GraphDataView | undefined)[]
 ): void {
   validateGraphViewsBelongToGraph(id, graph, views);
-}
-
-/** Throws unless the parameter target holds `length` elements. @internal */
-export function validateParameterTarget(name: string, target: ArrayLike<number>, length: number) {
-  if (target.length < length) {
-    throw new Error(`${name} parameter target must hold ${length} elements`);
-  }
 }
 
 /**

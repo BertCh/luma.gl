@@ -6,7 +6,6 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -26,6 +25,12 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from './permutation-parameters';
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 
 /** Rows reduced by one workgroup in the first level of the deterministic column sums. @internal */
 export const BLOCK_ROWS = 4096;
@@ -56,8 +61,8 @@ export type PermutationInputProps = {
   id: string;
   operation: string;
   weights: GPUSpatialWeights;
-  values: GraphDataView<'float32'>;
-  secondValues?: GraphDataView<'float32'>;
+  values: GPUFloat32OrUint32Values;
+  secondValues?: GPUFloat32OrUint32Values;
   mask?: GraphDataView<'uint32'>;
   parameters: GraphDataView<'uint32'>;
   maximumPermutations: number;
@@ -105,18 +110,15 @@ export type PermutationInputs<Parameters> = {
 export function validatePermutationInputs(props: PermutationInputProps): number {
   const {id} = props;
   const rows = validateGPUSpatialWeights(id, props.weights);
-  if (rows < 2 || rows >= 2 ** 24) {
-    throw new Error(`${id} weights must hold between 2 and 2^24 - 1 rows`);
-  }
-  validatePackedView(props.values, ['float32'], `${id} values`);
-  if (props.values.length !== rows) {
+  validateCapacity(id, 'weights row count', rows, 2, 2 ** 24 - 1);
+  if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
     throw new Error(`${id} values length must equal the weights row count`);
   }
-  if (props.secondValues) {
-    validatePackedView(props.secondValues, ['float32'], `${id} secondValues`);
-    if (props.secondValues.length !== rows) {
-      throw new Error(`${id} secondValues length must equal the weights row count`);
-    }
+  if (
+    props.secondValues &&
+    validateFloat32OrUint32Values(props.secondValues, `${id} secondValues`) !== rows
+  ) {
+    throw new Error(`${id} secondValues length must equal the weights row count`);
   }
   if (props.mask) {
     validatePackedUint32View(props.mask, `${id} mask`);
@@ -125,25 +127,20 @@ export function validatePermutationInputs(props: PermutationInputProps): number 
     }
   }
   if (props.islandCount) {
-    validatePackedUint32View(props.islandCount, `${id} islandCount`);
-    if (props.islandCount.length < 1) {
-      throw new Error(`${id} islandCount must hold one uint32`);
-    }
+    validatePackedUint32View(props.islandCount, `${id} output.islandCount`);
+    validateCapacity(id, 'output.islandCount length', props.islandCount.length);
   }
   if (props.weights.status?.overflow) {
     validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
   }
   validatePackedUint32View(props.parameters, `${id} parameters`);
-  if (props.parameters.length < GPU_PERMUTATION_PARAMETER_LENGTH) {
-    throw new Error(`${id} parameters must hold ${GPU_PERMUTATION_PARAMETER_LENGTH} uint32 values`);
-  }
-  if (
-    !Number.isInteger(props.maximumPermutations) ||
-    props.maximumPermutations < 1 ||
-    props.maximumPermutations > 2 ** 20
-  ) {
-    throw new Error(`${id} maximumPermutations must be an integer in [1, 2^20]`);
-  }
+  validateCapacity(
+    id,
+    'parameters length',
+    props.parameters.length,
+    GPU_PERMUTATION_PARAMETER_LENGTH
+  );
+  validateCapacity(id, 'maximumPermutations', props.maximumPermutations, 1, 2 ** 20);
   return rows;
 }
 
@@ -210,7 +207,13 @@ export function getPermutationInputNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: PermutationInputProps & {centerX: boolean}
 ): PermutationInputs<Parameters> {
-  const {id, operation, weights, values, secondValues, mask} = props;
+  const {id, operation, weights, mask} = props;
+  const valuesInput = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
+  const secondInput = props.secondValues
+    ? createFloat32ValuesNodes(graph, `${id}-second-values`, props.secondValues)
+    : undefined;
+  const values = valuesInput.view;
+  const secondValues = secondInput?.view;
   const keepIslands = (props.islands ?? 'exclude') === 'keep';
   const standardize = isGPUSpatialWeightsRowStandardized(weights);
   const weightsOverflow = weights.status?.overflow;
@@ -249,6 +252,8 @@ ${PERMUTATION_FLOAT_WGSL}`;
     ? [{name: 'secondValues', view: secondValues, type: 'f32', access: 'read'}]
     : [];
   const nodes: GPUCommandNode<Parameters>[] = [
+    ...valuesInput.nodes,
+    ...(secondInput?.nodes ?? []),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-flags`,
       operation,

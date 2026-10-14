@@ -45,7 +45,7 @@ export type {
   GPUGridIndexSize,
   GPUGridIndexSourceIds
 } from '@luma.gl/gpgpu/gpu-core';
-export type {GPUSpatialQueryOutput} from './gpu-spatial-query-types';
+export type {GPUCompactOutput} from '../utils/gpu-contributor-types';
 export {GPUPointSpatialQuery} from './gpu-point-spatial-query';
 export type {
   GPUGridIndexView,

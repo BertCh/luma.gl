@@ -6,6 +6,7 @@ export {GPUFlowAggregation} from './gpu-flow-aggregation';
 export type {
   GPUFlowAggregationActiveGridSize,
   GPUFlowAggregationBounds,
+  GPUFlowAggregationOutput,
   GPUFlowAggregationProps,
   GPUFlowAggregationSumOrder,
   GPUFlowAggregationTimeWindow,

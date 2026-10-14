@@ -11,7 +11,11 @@ const OPERATION = 'GPUSpatialClustering';
 
 /** Views shared by every kernel that walks the cell grid. @internal */
 export type SpatialClusteringGridViews = {
-  positions: GraphDataView<'float32x2'>;
+  /**
+   * Valid points copied into grid-cell order: slot `s` holds the position of row
+   * `sortedRows[s]`, so neighbor scans read consecutive slots (coalesced) instead of scattered rows.
+   */
+  cellPositions: GraphDataView<'float32x2'>;
   parameters: GraphDataView<'float32'>;
   sortedRows: GraphDataView<'uint32'>;
   /** One-row count of valid points: the prefix of `sortedRows` that holds rows. */
@@ -154,9 +158,10 @@ fn getCellRow(lattice: Lattice, y: f32) -> u32 {
 
 /**
  * WGSL statements that visit every valid point within epsilon of `(x, y)` (the point itself
- * included) through the 3x3 cell neighborhood and run `action` with `neighbor` (row index) in
- * scope. Requires bindings `positions`, `sortedRows`, `cellOffsets` and a `lattice`
- * local. `keepGoing` is an extra loop condition that lets the caller stop early.
+ * included) through the 3x3 cell neighborhood and run `action` with `slot` (cell-order slot) and
+ * `neighbor` (row index) in scope. Positions are read from the cell-ordered copy, so the points of
+ * one cell are consecutive words. Requires bindings `cellPositions`, `sortedRows`, `cellOffsets`
+ * and a `lattice` local. `keepGoing` is an extra loop condition that lets the caller stop early.
  */
 function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string {
   return /* wgsl */ `
@@ -172,9 +177,9 @@ function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string
       let start = cellOffsets[cellOffsetsOffset + cell];
       let end = cellOffsets[cellOffsetsOffset + cell + 1u];
       for (var slot = start; slot < end && ${keepGoing}; slot++) {
-        let neighbor = sortedRows[sortedRowsOffset + slot];
-        if (isWithinEpsilon(lattice, x, y, positions[positionsOffset + neighbor * 2u],
-            positions[positionsOffset + neighbor * 2u + 1u])) {
+        if (isWithinEpsilon(lattice, x, y, cellPositions[cellPositionsOffset + slot * 2u],
+            cellPositions[cellPositionsOffset + slot * 2u + 1u])) {
+          let neighbor = sortedRows[sortedRowsOffset + slot];
           ${action}
         }
       }
@@ -185,17 +190,20 @@ function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string
 /**
  * Maps the thread to a point: threads walk the valid points in grid-cell order (the order of
  * `sortedRows`), so neighboring threads search neighboring cells whatever the input order. Defines
- * `point`, the row the thread owns; surplus threads (excluded points) return. Results are written
- * by row, so they do not depend on the mapping.
+ * `point`, the row the thread owns, and its position `x`, `y` from the cell-ordered copy (slot
+ * `index`); surplus threads (excluded points) return. Results are written by row, so they do not
+ * depend on the mapping.
  */
 const THREAD_TO_POINT_WGSL = `if (index >= gridCount[gridCountOffset]) {
     return;
   }
-  let point = sortedRows[sortedRowsOffset + index];`;
+  let point = sortedRows[sortedRowsOffset + index];
+  let x = cellPositions[cellPositionsOffset + index * 2u];
+  let y = cellPositions[cellPositionsOffset + index * 2u + 1u];`;
 
 function getGridBindings(views: SpatialClusteringGridViews): WGSLKernelBinding[] {
   return [
-    {name: 'positions', view: views.positions, type: 'f32', access: 'read'},
+    {name: 'cellPositions', view: views.cellPositions, type: 'f32', access: 'read'},
     {name: 'parameters', view: views.parameters, type: 'f32', access: 'read'},
     {name: 'sortedRows', view: views.sortedRows, type: 'u32', access: 'read'},
     {name: 'cellOffsets', view: views.cellOffsets, type: 'u32', access: 'read'},
@@ -290,6 +298,49 @@ export function createSpatialClusteringGridPositionsNode<Parameters>(
 }
 
 /**
+ * Gathers per-row values into grid-cell order: `cellValues[slot] = values[sortedRows[slot]]` for
+ * every slot below `gridCount` (`componentCount` words per row). Neighbor scans then read the
+ * points of one cell from consecutive words (coalesced) instead of scattered rows. Slots at and
+ * after `gridCount` are never read and are left untouched. The copy is bitwise, so results do not
+ * change. @internal
+ */
+export function createSpatialClusteringCellGatherNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    variant: 'cell-positions' | 'cell-core-flags';
+    values: GraphDataView<'float32x2'> | GraphDataView<'uint32'>;
+    sortedRows: GraphDataView<'uint32'>;
+    gridCount: GraphDataView<'uint32'>;
+    cellValues: GraphDataView<'float32x2'> | GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const isPositions = props.variant === 'cell-positions';
+  const type = isPositions ? 'f32' : 'u32';
+  const copy = isPositions
+    ? `cellValues[cellValuesOffset + index * 2u] = values[valuesOffset + row * 2u];
+  cellValues[cellValuesOffset + index * 2u + 1u] = values[valuesOffset + row * 2u + 1u];`
+    : 'cellValues[cellValuesOffset + index] = values[valuesOffset + row];';
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: props.variant,
+    bindings: [
+      {name: 'values', view: props.values, type, access: 'read'},
+      {name: 'sortedRows', view: props.sortedRows, type: 'u32', access: 'read'},
+      {name: 'gridCount', view: props.gridCount, type: 'u32', access: 'read'},
+      {name: 'cellValues', view: props.cellValues, type, access: 'read_write'}
+    ],
+    invocationCount: props.sortedRows.length,
+    body: `if (index >= gridCount[gridCountOffset]) {
+    return;
+  }
+  let row = sortedRows[sortedRowsOffset + index];
+  ${copy}`
+  });
+}
+
+/**
  * Writes the core flag of every point: valid and at least `minimumPoints` neighbors. With
  * `boxCounts`, a point whose dense box already holds `minimumPoints` points is core without a
  * neighbor scan (every point of a box is within epsilon of every other). @internal
@@ -317,7 +368,7 @@ export function createSpatialClusteringCoreNode<Parameters>(
         ? [{name: 'boxCounts', view: boxCounts, type: 'u32' as const, access: 'read' as const}]
         : [])
     ],
-    invocationCount: props.positions.length,
+    invocationCount: props.cellPositions.length,
     declarations: getSpatialClusteringSharedWGSL(
       props.gridSize[0],
       props.gridSize[1],
@@ -325,8 +376,6 @@ export function createSpatialClusteringCoreNode<Parameters>(
     ),
     body: `${THREAD_TO_POINT_WGSL}
   let lattice = readLattice();
-  let x = positions[positionsOffset + point * 2u];
-  let y = positions[positionsOffset + point * 2u + 1u];
   var isCore = 0u;
   if (isPointValid(lattice, x, y)) {
     ${
@@ -460,7 +509,8 @@ export function createSpatialClusteringUnionNode<Parameters>(
     gridSize: readonly [number, number];
     /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
     geographicRadius?: number;
-    coreFlags: GraphDataView<'uint32'>;
+    /** Core flags in cell order (slot `s` is row `sortedRows[s]`). */
+    cellCoreFlags: GraphDataView<'uint32'>;
     parents: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -470,10 +520,10 @@ export function createSpatialClusteringUnionNode<Parameters>(
     variant: 'union',
     bindings: [
       ...getGridBindings(props),
-      {name: 'coreFlags', view: props.coreFlags, type: 'u32', access: 'read'},
+      {name: 'cellCoreFlags', view: props.cellCoreFlags, type: 'u32', access: 'read'},
       {name: 'parents', view: props.parents, type: 'atomic<u32>', access: 'read_write'}
     ],
-    invocationCount: props.positions.length,
+    invocationCount: props.cellPositions.length,
     declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1], props.geographicRadius)}
 // Path halving: a visited node is a non-root forever, so any ancestor is a valid parent for it.
 fn findRoot(start: u32) -> u32 {
@@ -511,13 +561,11 @@ fn unite(first: u32, second: u32) {
   }
 }`,
     body: `${THREAD_TO_POINT_WGSL}
-  if (coreFlags[coreFlagsOffset + point] == 0u) {
+  if (cellCoreFlags[cellCoreFlagsOffset + index] == 0u) {
     return;
   }
   let lattice = readLattice();
-  let x = positions[positionsOffset + point * 2u];
-  let y = positions[positionsOffset + point * 2u + 1u];
-  ${getNeighborLoopWGSL(`if (neighbor < point && coreFlags[coreFlagsOffset + neighbor] != 0u) {
+  ${getNeighborLoopWGSL(`if (neighbor < point && cellCoreFlags[cellCoreFlagsOffset + slot] != 0u) {
             unite(point, neighbor);
           }`)}`
   });
@@ -571,7 +619,8 @@ export function createSpatialClusteringBorderNode<Parameters>(
     gridSize: readonly [number, number];
     /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
     geographicRadius?: number;
-    coreFlags: GraphDataView<'uint32'>;
+    /** Core flags in cell order (slot `s` is row `sortedRows[s]`). */
+    cellCoreFlags: GraphDataView<'uint32'>;
     rootLabels: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -581,27 +630,25 @@ export function createSpatialClusteringBorderNode<Parameters>(
     variant: 'border',
     bindings: [
       ...getGridBindings(props),
-      {name: 'coreFlags', view: props.coreFlags, type: 'u32', access: 'read'},
+      {name: 'cellCoreFlags', view: props.cellCoreFlags, type: 'u32', access: 'read'},
       {name: 'rootLabels', view: props.rootLabels, type: 'u32', access: 'read_write'}
     ],
-    invocationCount: props.positions.length,
+    invocationCount: props.cellPositions.length,
     declarations: getSpatialClusteringSharedWGSL(
       props.gridSize[0],
       props.gridSize[1],
       props.geographicRadius
     ),
     body: `${THREAD_TO_POINT_WGSL}
-  if (coreFlags[coreFlagsOffset + point] != 0u) {
+  if (cellCoreFlags[cellCoreFlagsOffset + index] != 0u) {
     return;
   }
   let lattice = readLattice();
-  let x = positions[positionsOffset + point * 2u];
-  let y = positions[positionsOffset + point * 2u + 1u];
   if (!isPointValid(lattice, x, y)) {
     return;
   }
   var bestRoot = NOISE;
-  ${getNeighborLoopWGSL(`if (coreFlags[coreFlagsOffset + neighbor] != 0u) {
+  ${getNeighborLoopWGSL(`if (cellCoreFlags[cellCoreFlagsOffset + slot] != 0u) {
             bestRoot = min(bestRoot, rootLabels[rootLabelsOffset + neighbor]);
           }`)}
   rootLabels[rootLabelsOffset + point] = bestRoot;`

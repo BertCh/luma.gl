@@ -3,30 +3,32 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  type TerrainElevationSource
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateParameterTarget,
+  validateRasterParameters,
+  type RasterBufferBandSource
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings,
@@ -34,12 +36,12 @@ import {
   type TerrainGeomorphometryCellSettings
 } from './terrain-geomorphometry-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection
-} from '../terrain-grid-utils';
+  getRasterGroundCellSizeWGSL,
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection,
+  validateRasterCellSizeMode,
+  validateRasterRowDirection
+} from '../../analysis-core/raster-grid';
 
 /**
  * Estimator of the local partial derivatives `p, q, r, s, t`.
@@ -86,7 +88,7 @@ export type GPUTerrainCurvatureKind =
   | 'rotor'
   | 'laplacian';
 
-/** Number of float32 values read from `GPUTerrainCurvatureProps.settings`. */
+/** Number of float32 values read from `GPUTerrainCurvatureProps.parameters`. */
 export const GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH = 12;
 
 /** Maximum number of rings of the multi-radius ring curvature. */
@@ -117,11 +119,10 @@ const CURVATURE_KINDS: readonly GPUTerrainCurvatureKind[] = [
 /**
  * CPU-side description packed by {@link getGPUTerrainCurvatureParameterValues}.
  *
- * Cell-size model: `cellSize` is in projected metres for `cellSizeMode: 'uniform'`, in equatorial
- * Web Mercator metres for `'web-mercator'` (`northEdge`/`southEdge` are normalized Mercator y), and
- * in degrees for `'geographic'` (`northEdge`/`southEdge` are latitude degrees). Both curved modes
- * scale each row to WGS84 ground metres at the latitude of the row centre (see
- * `GPUTerrainCellSizeMode`). Curvatures are in 1/ground-unit (Gaussian in 1/unit^2).
+ * Cell-size model: the cell size and latitude band come from the grid (projected metres for
+ * `cellSizeMode: 'uniform'`, EPSG:3857 metres for `'web-mercator'`, degrees for `'geographic'`).
+ * Both curved modes scale each row to WGS84 ground metres at the latitude of the row centre (see
+ * `GPURasterCellSizeMode`). Curvatures are in 1/ground-unit (Gaussian in 1/unit^2).
  */
 export type GPUTerrainCurvatureSettings = TerrainGeomorphometryCellSettings & {
   /**
@@ -142,23 +143,27 @@ export type GPUTerrainCurvatureSettings = TerrainGeomorphometryCellSettings & {
 
 /**
  * Packs settings into the 12-float layout read by {@link GPUTerrainCurvature}:
- * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge, flatGradient, gain0, gain1, gain2, gain3, 0, 0]`.
+ * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge, flatGradient, gain0, gain1, gain2, gain3, 0, 0]`,
+ * with the cell size and the row-edge world y taken from `grid`.
  *
  * Cell-size model: see {@link GPUTerrainCurvatureSettings}.
  */
 export function getGPUTerrainCurvatureParameterValues(
   settings: GPUTerrainCurvatureSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH) {
-    throw new Error('Terrain curvature settings target must hold 12 values');
-  }
+  validateParameterTarget(
+    'getGPUTerrainCurvatureParameterValues',
+    target,
+    GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH
+  );
   const gains = settings.ringGains ?? DEFAULT_RING_GAINS;
   if (gains.length > MAXIMUM_RING_COUNT) {
     throw new Error('Terrain curvature ringGains must hold at most 4 values');
   }
   target.fill(0, 0, GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH);
-  writeTerrainGeomorphometryCellSettings(settings, target);
+  writeTerrainGeomorphometryCellSettings(settings, grid, target);
   const shared = TERRAIN_GEOMORPHOMETRY_SHARED_PARAMETER_LENGTH;
   target[shared] = settings.flatGradient ?? DEFAULT_FLAT_GRADIENT;
   for (const [index, gain] of gains.entries()) {
@@ -167,29 +172,8 @@ export function getGPUTerrainCurvatureParameterValues(
   return target;
 }
 
-/**
- * Properties for {@link GPUTerrainCurvature}.
- *
- * Cell-size model: `settings.cellSize` and `cellSizeMode` follow
- * {@link GPUTerrainCurvatureSettings} (projected metres `'uniform'`, `'web-mercator'`, or
- * `'geographic'` degrees with latitude-dependent row spacing).
- *
- * Topology: grid size, elevation format, `method`, which outputs exist, `ringRadii`,
- * `ringSquash`, `cellSizeMode`, `rowDirection`, `borderMode`. Per-frame: `settings`, elevation.
- */
-export type GPUTerrainCurvatureProps = {
-  /** Prefix for node and transient IDs. Defaults to `'terrain-curvature'`. */
-  id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
-  /** Elevation band, buffer or texture; scale, offset, nodata and validity are honored. */
-  elevation: GPURasterBand;
-  /** Per-frame settings with at least 12 float32 values, see {@link getGPUTerrainCurvatureParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Partial derivative estimator. Defaults to `'evans-young'`. */
-  method?: GPUTerrainCurvatureMethod;
+/** Caller-owned outputs of {@link GPUTerrainCurvature}; at least one is required. */
+export type GPUTerrainCurvatureOutput = {
   /**
    * Optional float32 outputs, one value per pixel, NaN where invalid. Sign convention: a convex
    * hill gives positive profile, plan, tangential and mean curvature (see
@@ -204,16 +188,42 @@ export type GPUTerrainCurvatureProps = {
    * makes the value invalid regardless of `borderMode`.
    */
   ringCurvature?: GraphDataView<'float32'>;
+  /** Optional per-pixel 1 where every requested output is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUTerrainCurvature}.
+ *
+ * Cell-size model: the grid and `cellSizeMode` follow {@link GPUTerrainCurvatureSettings}
+ * (projected metres `'uniform'`, `'web-mercator'`, or `'geographic'` degrees with
+ * latitude-dependent row spacing).
+ *
+ * Topology: grid size, elevation format, `method`, which outputs exist, `ringRadii`,
+ * `ringSquash`, `cellSizeMode`, `rowDirection`, `borderMode`. Per-frame: `parameters` (including
+ * the grid cell size and latitude band), elevation.
+ */
+export type GPUTerrainCurvatureProps = {
+  /** Prefix for node and transient IDs. Defaults to `'terrain-curvature'`. */
+  id?: string;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
+  /** Elevation band, buffer or texture; scale, offset, nodata and validity are honored. */
+  elevation: GPURasterBand;
+  /** Per-frame parameters with at least 12 float32 values, see {@link getGPUTerrainCurvatureParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Partial derivative estimator. Defaults to `'evans-young'`. */
+  method?: GPUTerrainCurvatureMethod;
+  /** Caller-owned outputs. */
+  output: GPUTerrainCurvatureOutput;
   /** One to four strictly ascending integer ring radii in cells. Defaults to `[2, 8]`. */
   ringRadii?: readonly number[];
   /** `'pade-tanh'` clamps to [-3, 3] and applies `x (27 + x^2) / (27 + 9 x^2)`. Defaults to `'none'`. */
   ringSquash?: 'none' | 'pade-tanh';
-  /** Optional per-pixel 1 where every requested output is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: GPUTerrainRowDirection;
+  rowDirection?: GPURasterRowDirection;
   /** `'clamp'` repeats edge samples; `'nodata'` invalidates windows leaving the raster. Defaults to `'clamp'`. */
   borderMode?: 'clamp' | 'nodata';
 };
@@ -250,43 +260,44 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-curvature';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const pixelCount = validateRasterGrid(id, props.grid);
     const method = props.method ?? 'evans-young';
     if (!['evans-young', 'zevenbergen-thorne', 'florinsky'].includes(method)) {
       throw new Error(`${id} method must be evans-young, zevenbergen-thorne, or florinsky`);
     }
-    const kinds = Object.keys(props.curvatures ?? {});
+    const {output} = props;
+    const kinds = Object.keys(output.curvatures ?? {});
     for (const kind of kinds) {
       if (!CURVATURE_KINDS.includes(kind as GPUTerrainCurvatureKind)) {
         throw new Error(`${id} unknown curvature kind ${kind}`);
       }
     }
     const curvatureViews = kinds
-      .map(kind => props.curvatures?.[kind as GPUTerrainCurvatureKind])
+      .map(kind => output.curvatures?.[kind as GPUTerrainCurvatureKind])
       .filter(view => view !== undefined);
-    if (curvatureViews.length === 0 && !props.ringCurvature && !props.validity) {
+    if (curvatureViews.length === 0 && !output.ringCurvature && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view] of [
-      ...kinds.map(kind => [kind, props.curvatures?.[kind as GPUTerrainCurvatureKind]] as const),
-      ['ringCurvature', props.ringCurvature] as const
+      ...kinds.map(kind => [kind, output.curvatures?.[kind as GPUTerrainCurvatureKind]] as const),
+      ['ringCurvature', output.ringCurvature] as const
     ]) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    if (props.validity) {
-      validatePackedUint32View(props.validity, `${id} validity`);
-      if (props.validity.length !== pixelCount) {
-        throw new Error(`${id} validity must contain one value per pixel`);
+    if (output.outputValidity) {
+      validatePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
+      if (output.outputValidity.length !== pixelCount) {
+        throw new Error(`${id} output.outputValidity must contain one value per pixel`);
       }
     }
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH);
-    validateTerrainCellSizeMode(id, props.cellSizeMode);
-    validateTerrainRowDirection(id, props.rowDirection);
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterRowDirection(id, props.rowDirection);
     if (!['clamp', 'nodata'].includes(props.borderMode ?? 'clamp')) {
       throw new Error(`${id} borderMode must be clamp or nodata`);
     }
@@ -304,13 +315,13 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} ringRadii must be 1 to 4 strictly ascending integers of at least 1`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [...curvatureViews, props.ringCurvature, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      [...curvatureViews, output.ringCurvature, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
     const methodHalo = method === 'florinsky' ? 2 : 1;
-    this.requiredHalo = props.ringCurvature
+    this.requiredHalo = output.ringCurvature
       ? Math.max(methodHalo, radii[radii.length - 1])
       : methodHalo;
   }
@@ -320,30 +331,24 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      ...CURVATURE_KINDS.map(kind => props.curvatures?.[kind]),
-      props.ringCurvature,
-      props.validity
+      props.parameters,
+      ...CURVATURE_KINDS.map(kind => output.curvatures?.[kind]),
+      output.ringCurvature,
+      output.outputValidity
     ]);
-    const source = getTerrainElevationNodes(
-      graph,
-      id,
-      props.elevation,
-      props.width,
-      props.height,
-      true
-    );
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const slots: OutputSlot[] = [];
     for (const curvature of CURVATURE_KINDS) {
-      const view = props.curvatures?.[curvature];
+      const view = output.curvatures?.[curvature];
       if (view) slots.push({kind: 'curvature', curvature, view});
     }
-    if (props.ringCurvature) slots.push({kind: 'ring', view: props.ringCurvature});
-    if (props.validity) slots.push({kind: 'validity', view: props.validity});
+    if (output.ringCurvature) slots.push({kind: 'ring', view: output.ringCurvature});
+    if (output.outputValidity) slots.push({kind: 'validity', view: output.outputValidity});
     const hasWindowOutput = slots.some(slot => slot.kind === 'curvature');
-    const hasRingOutput = Boolean(props.ringCurvature);
+    const hasRingOutput = Boolean(output.ringCurvature);
 
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     for (let start = 0, group = 0; start < slots.length; start += OUTPUTS_PER_KERNEL, group++) {
@@ -482,13 +487,14 @@ function getCurvatureNode<Parameters>(
   options: {
     id: string;
     props: GPUTerrainCurvatureProps;
-    source: TerrainElevationSource<Parameters>;
+    source: RasterBufferBandSource<Parameters>;
     slots: readonly OutputSlot[];
     hasWindowOutput: boolean;
     hasRingOutput: boolean;
   }
 ): GPUCommandNode<Parameters> {
   const {props, source, slots} = options;
+  const {width, height} = props.grid;
   const method = props.method ?? 'evans-young';
   const northSign = (props.rowDirection ?? 'south') === 'south' ? -1 : 1;
   const clamp = (props.borderMode ?? 'clamp') === 'clamp';
@@ -507,7 +513,7 @@ function getCurvatureNode<Parameters>(
       type: 'u32',
       access: 'read'
     },
-    {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+    {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
   ];
   for (const [index, slot] of slots.entries()) {
     bindings.push({
@@ -589,15 +595,15 @@ function getCurvatureNode<Parameters>(
     operation: 'GPUTerrainCurvature',
     variant: `${method}-${props.cellSizeMode ?? 'uniform'}-${props.borderMode ?? 'clamp'}`,
     bindings,
-    invocationCount: props.width * props.height,
-    declarations: `const WIDTH: u32 = ${props.width}u;
-const HEIGHT: u32 = ${props.height}u;
-const WIDTH_SIGNED: i32 = ${props.width};
-const HEIGHT_SIGNED: i32 = ${props.height};
+    invocationCount: width * height,
+    declarations: `const WIDTH: u32 = ${width}u;
+const HEIGHT: u32 = ${height}u;
+const WIDTH_SIGNED: i32 = ${width};
+const HEIGHT_SIGNED: i32 = ${height};
 var<private> windowValid: bool;
 var<private> ringValid: bool;
-${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
+${RASTER_WGSL_HELPERS}
+${getRasterGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 // Elevation of an offset sample minus the centre elevation; flags the window invalid on failure.
 fn readWindowDelta(column: u32, row: u32, dx: i32, dy: i32, centre: f32) -> f32 {
   var sampleColumn = i32(column) + dx;

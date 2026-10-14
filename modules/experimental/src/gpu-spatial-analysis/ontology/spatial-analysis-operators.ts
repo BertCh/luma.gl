@@ -17,6 +17,7 @@ const TEST_ROOT = 'modules/experimental/test/gpu-spatial-analysis';
 type OperatorOverride = Partial<
   Pick<
     GPUSpatialAnalysisOperator,
+    | 'package'
     | 'tags'
     | 'inputs'
     | 'outputs'
@@ -31,7 +32,7 @@ type OperatorOverride = Partial<
   >
 > & {contract?: string; evidence?: GPUSpatialAnalysisOperator['evidence']['status']};
 
-type CompleteOperatorOverride = OperatorOverride & {tests?: string};
+type CompleteOperatorOverride = OperatorOverride & {tests?: string; documentation?: string};
 
 const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
 
@@ -42,6 +43,22 @@ const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
  * the catalogue makes additions reviewable without importing any contributor constructor.
  */
 const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
+  GPUTerrainPeakProminence: {
+    package: '@luma.gl/experimental/gpu-terrain',
+    inputs: ['surface'],
+    outputs: ['surface', 'attributes'],
+    coordinateModels: ['grid'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'exact',
+    deterministic: true,
+    status: [],
+    contract: 'GPUTerrainPeakProminenceOutput',
+    evidence: 'partial',
+    tests: 'modules/experimental/test/gpu-terrain/terrain-features/terrain-peak-prominence.spec.ts',
+    documentation: 'docs/api-reference/experimental/gpu-terrain.md'
+  },
   GPUParameterBuffer: {
     inputs: [],
     outputs: ['parameters'],
@@ -236,18 +253,6 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     evidence: 'proven',
     tests: 'modules/experimental/test/gpu-spatial-analysis/recipes/fleet-dwell-recipe.spec.ts'
   },
-  addDriveTimeCatchmentRecipe: {
-    inputs: ['network', 'points'],
-    outputs: ['regions', 'summary'],
-    coordinateModels: ['planar', 'mixed'],
-    dimensionality: '2d',
-    tags: ['spatial-joins', 'group-and-regional-analysis'],
-    status: ['overflow', 'uncertainCount', 'iterationLimitReached'],
-    contract: 'GPURecipeResult',
-    evidence: 'proven',
-    tests:
-      'modules/experimental/test/gpu-spatial-analysis/recipes/drive-time-catchment-recipe.spec.ts'
-  },
   GPULocalGeary: {
     inputs: ['attributes', 'spatial-weights', 'parameters'],
     outputs: ['attributes'],
@@ -314,7 +319,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     semantics: 'model-based',
     deterministic: true,
     status: ['converged', 'iterationLimitReached', 'invalidCount'],
-    contract: 'GPUOptimizationStatusPort',
+    contract: 'GPUAZPRegionsOutput',
     evidence: 'proven',
     tests:
       'modules/experimental/test/gpu-spatial-analysis/spatial-regionalization/gpu-azp-regions.spec.ts'
@@ -344,7 +349,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     semantics: 'model-based',
     deterministic: true,
     status: ['converged', 'iterationLimitReached', 'invalidCount'],
-    contract: 'GPUOptimizationStatusPort',
+    contract: 'GPUWardRegionsOutput',
     evidence: 'proven',
     tests:
       'modules/experimental/test/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions.spec.ts'
@@ -379,7 +384,7 @@ function makeOperator(
     exportName,
     primaryCapability: capability.id,
     tags: override.tags ?? [],
-    package: '@luma.gl/experimental/gpu-spatial-analysis',
+    package: override.package ?? '@luma.gl/experimental/gpu-spatial-analysis',
     inputs: override.inputs ?? [],
     outputs: override.outputs ?? [],
     dimensionality: override.dimensionality ?? 'unspecified',
@@ -393,7 +398,7 @@ function makeOperator(
     evidence: {
       status: override.evidence ?? 'partial',
       tests: override.tests ?? TEST_ROOT,
-      documentation: DOCUMENTATION,
+      documentation: override.documentation ?? DOCUMENTATION,
       contract: override.contract ?? 'unaudited',
       representativeSourceRows: capabilityEvidence.representativeSourceRows,
       representativeOutputRows: capabilityEvidence.representativeOutputRows,

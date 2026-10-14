@@ -14,7 +14,8 @@ import {
   type GPUComputeCommandNode,
   type GPUCopyCommandNode,
   type GPURenderCommandNode,
-  type GraphDataView
+  type GraphDataView,
+  validatePackedView as validatePackedGraphView
 } from '@luma.gl/gpgpu/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCompactOutput} from './gpu-contributor-types';
@@ -191,20 +192,188 @@ export function validateGraphViewTopology(
   }
 }
 
+/**
+ * Throws unless `view` is one packed, uint32-aligned view of one of `formats`. Like the gpgpu
+ * `validatePackedView` (same arguments), but a chunked `GraphVectorView` is rejected with a short
+ * message instead of being read as one view.
+ *
+ * @param view View to check.
+ * @param formats Accepted formats.
+ * @param name Prop name prefixed with the contributor ID, for the message.
+ */
+export function validatePackedView<Format extends GPUVectorFormat>(
+  view: GraphDataView | GraphVectorView,
+  formats: readonly Format[],
+  name: string
+): asserts view is GraphDataView<Format> {
+  if (view instanceof GraphVectorView) {
+    throw new Error(`${name} must be one packed view`);
+  }
+  validatePackedGraphView(view, formats, name);
+}
+
+/**
+ * Throws unless a capacity or count prop is an integer in `[minimum, maximum]`.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name Prop name, for the message.
+ * @param value Value to check.
+ * @param minimum Smallest accepted value. Defaults to 1.
+ * @param maximum Largest accepted value. Defaults to `2^32 - 1`, the largest uint32 row count.
+ */
+export function validateCapacity(
+  id: string,
+  name: string,
+  value: number,
+  minimum: number = 1,
+  maximum: number = 0xffffffff
+): void {
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${id} ${name} must be an integer in [${minimum}, ${maximum}]`);
+  }
+}
+
+/**
+ * Throws unless a count derived from props (rows of a view, cells of a grid, a product of
+ * capacities) is at most `maximum`. Use it for documented maxima, such as the core-limit maxima of
+ * {@link getCoreBindingElementLimit}; the message names the prop and the limit.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name What is counted, such as `'positions rows'` or `'indexGridSize cells'`.
+ * @param value Count to check.
+ * @param maximum Largest accepted count.
+ */
+export function validateMaximumCount(
+  id: string,
+  name: string,
+  value: number,
+  maximum: number
+): void {
+  if (!(value <= maximum)) {
+    throw new Error(`${id} ${name} must be at most ${maximum}`);
+  }
+}
+
+/**
+ * Default WebGPU `maxStorageBufferBindingSize`, 128 MiB. The documented maxima of the analysis
+ * contributors are sized so that every binding fits at this limit (library rule 16), so they hold
+ * on every device.
+ *
+ * @internal
+ */
+export const GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE = 134217728;
+
+/**
+ * Largest element count `n` whose binding of `(n + extraElementCount) * bytesPerElement` bytes fits
+ * the device's `maxStorageBufferBindingSize`. Contributors derive their documented maxima from it at
+ * declaration (`getCommandNodes(graph)`, with `graph.device`), so a device created with larger
+ * binding limits accepts larger inputs; a default device (128 MiB) gives the core values.
+ *
+ * @param device Device whose limit applies.
+ * @param bytesPerElement Bytes of one element of the largest binding.
+ * @param extraElementCount Elements the binding holds beyond `n`, such as a trailing offset.
+ */
+export function getStorageBindingElementLimit(
+  device: Device,
+  bytesPerElement: number,
+  extraElementCount: number = 0
+): number {
+  // Element sizes and extra counts are constants of the calling contributor's layout.
+  assert(bytesPerElement > 0 && extraElementCount >= 0);
+  return (
+    Math.floor(device.limits.maxStorageBufferBindingSize / bytesPerElement) - extraElementCount
+  );
+}
+
+/**
+ * Largest cell count (`gridSize[0] * gridSize[1]`) of a uniform grid index over points on
+ * `device`: its `cellCount + 1` uint32 cell offsets must fit one storage binding, so `2^25 - 1` on
+ * a default device. Kernel density, inverse distance weighting, kriging, spatial clustering,
+ * neighbor search and trajectory encounters validate their index grid against it.
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPUGridIndexMaximumCellCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4, 1);
+}
+
+/**
+ * Largest element count `n` whose binding of `(n + extraElementCount) * bytesPerElement` bytes fits
+ * {@link GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE}. For example an offsets array of `n + 1` uint32
+ * rows gives `getCoreBindingElementLimit(4, 1)`, `2^25 - 1`.
+ *
+ * @param bytesPerElement Bytes of one element of the largest binding.
+ * @param extraElementCount Elements the binding holds beyond `n`, such as a trailing offset.
+ * @internal
+ */
+export function getCoreBindingElementLimit(
+  bytesPerElement: number,
+  extraElementCount: number = 0
+): number {
+  // Element sizes and extra counts are constants of the calling contributor's layout.
+  assert(bytesPerElement > 0 && extraElementCount >= 0);
+  return Math.floor(GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE / bytesPerElement) - extraElementCount;
+}
+
+/**
+ * Throws unless `extent` is `[minX, minY, maxX, maxY]` with finite entries and `max > min` on both
+ * axes. A reversed or empty extent would mirror or collapse the grid.
+ *
+ * @param id Contributor ID, for the message.
+ * @param extent Extent to check.
+ * @param name Prop name, for the message. Defaults to `'extent'`.
+ */
+export function validateExtent(
+  id: string,
+  extent: readonly number[],
+  name: string = 'extent'
+): void {
+  const [minX, minY, maxX, maxY] = extent;
+  if (extent.length !== 4 || !extent.every(Number.isFinite) || !(maxX > minX) || !(maxY > minY)) {
+    throw new Error(`${id} ${name} must be finite with max > min`);
+  }
+}
+
+/**
+ * Throws unless `value` is a power of two in `[minimum, maximum]`.
+ *
+ * @param id Contributor ID, for the message.
+ * @param name Prop name, for the message.
+ * @param value Value to check.
+ * @param minimum Smallest accepted value. Defaults to 1.
+ * @param maximum Largest accepted value. Defaults to `2^31`, the largest uint32 power of two.
+ */
+export function validatePowerOfTwo(
+  id: string,
+  name: string,
+  value: number,
+  minimum: number = 1,
+  maximum: number = 2 ** 31
+): void {
+  if (
+    !Number.isInteger(value) ||
+    value < minimum ||
+    value > maximum ||
+    getNextPowerOfTwo(value) !== value
+  ) {
+    throw new Error(`${id} ${name} must be a power of two in [${minimum}, ${maximum}]`);
+  }
+}
+
 /** Validates the packed layout and minimum row counts of a {@link GPUCompactOutput}. */
 export function validateCompactOutput(id: string, output: GPUCompactOutput): void {
   validatePackedUint32View(output.ids, `${id} output.ids`);
   for (const [name, scalar] of [
-    ['count', output.count],
-    ['overflow', output.overflow],
-    ['requiredCount', output.requiredCount]
+    ['count', output.status.count],
+    ['overflow', output.status.overflow],
+    ['requiredCount', output.status.requiredCount]
   ] as const) {
     if (!scalar) {
       continue;
     }
-    validatePackedUint32View(scalar, `${id} output.${name}`);
+    validatePackedUint32View(scalar, `${id} output.status.${name}`);
     if (scalar.length < 1) {
-      throw new Error(`${id} output.${name} must contain one uint32 row`);
+      throw new Error(`${id} output.status.${name} must contain one uint32 row`);
     }
   }
 }

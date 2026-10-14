@@ -5,7 +5,6 @@
 import {
   GraphVectorView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -16,11 +15,18 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {resolveGPURegionSpatialContext, type GPURegionShape} from './region-statistics-types';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
+import {
+  resolveGPURegionSpatialContext,
+  type GPURegionMaskOutput,
+  type GPURegionShape
+} from './region-statistics-types';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 
 /** Number of float32 elements in a region screen transform. */
 export const GPU_REGION_SCREEN_TRANSFORM_LENGTH = 20;
@@ -42,10 +48,11 @@ export type GPURegionMaskProps = {
   positions: GPUFloat32Positions;
   /** Rectangle or lasso polygon, optionally in screen space. Shape contents are per-frame. */
   region: GPURegionShape;
-  /** Packed mask with `length == positions.length`. Every row is written with 0 or 1. */
-  outputMask: GraphDataView<'uint32'>;
-  /** One-row flag: 1 when the polygon vertex count exceeds capacity, else 0. Always written. */
-  overflow: GraphDataView<'uint32'>;
+  /**
+   * Caller-owned outputs: `mask` with `length == positions.length`, and `status.overflow`, 1 when
+   * the polygon vertex count exceeds capacity, else 0. Both always written.
+   */
+  output: GPURegionMaskOutput;
 };
 
 /**
@@ -69,17 +76,17 @@ export class GPURegionMask implements GPUCommandNodeProducer {
       props.region.kind
     );
     const {id} = this;
-    const {positions, region, outputMask, overflow} = props;
+    const {positions, region, output} = props;
     for (const chunk of getGraphViewChunks(positions)) {
       validatePackedView(chunk, ['float32x2'], `${id} positions`);
     }
-    validatePackedUint32View(outputMask, `${id} outputMask`);
-    if (outputMask.length !== positions.length) {
-      throw new Error(`${id} outputMask length must equal positions length`);
+    validatePackedUint32View(output.mask, `${id} output.mask`);
+    if (output.mask.length !== positions.length) {
+      throw new Error(`${id} output.mask length must equal positions length`);
     }
-    validatePackedUint32View(overflow, `${id} overflow`);
-    if (overflow.length < 1) {
-      throw new Error(`${id} overflow must contain one uint32 row`);
+    validateGPUStatusPort(`${id} output.status`, output.status);
+    if (!output.status.overflow) {
+      throw new Error(`${id} output.status.overflow is required`);
     }
     if (region.kind === 'rectangle') {
       validatePackedView(region.bounds, ['float32'], `${id} bounds`);
@@ -102,9 +109,13 @@ export class GPURegionMask implements GPUCommandNodeProducer {
         throw new Error(`${id} screenTransform must contain 20 float32 values`);
       }
     }
-    validateGraphOutputsDisjointFromInputs(id, [outputMask, overflow], getRegionInputs(props));
-    if (outputMask.buffer === overflow.buffer) {
-      throw new Error(`${id} outputMask and overflow must use separate buffers`);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [output.mask, output.status.overflow],
+      getRegionInputs(props)
+    );
+    if (output.mask.buffer === output.status.overflow.buffer) {
+      throw new Error(`${id} output.mask and overflow must use separate buffers`);
     }
   }
 
@@ -113,7 +124,9 @@ export class GPURegionMask implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, region, outputMask, overflow} = props;
+    const {positions, region} = props;
+    const outputMask = props.output.mask;
+    const {overflow} = props.output.status;
     validateGraphViewsBelongToGraph(id, graph, [outputMask, overflow, ...getRegionInputs(props)]);
     const isPolygon = region.kind === 'polygon';
     const shape = region.kind === 'rectangle' ? region.bounds : region.vertices;
@@ -169,7 +182,11 @@ fn toRegionSpace(world: vec2f) -> RegionPoint { return RegionPoint(world, true);
 fn readVertex(vertexIndex: u32) -> vec2f {
   return vec2f(shape[shapeOffset + vertexIndex * 2u], shape[shapeOffset + vertexIndex * 2u + 1u]);
 }
-// Even-odd crossing test (PNPOLY, half-open in y).
+${EXACT_ORIENTATION_WGSL}
+// Even-odd crossing test (PNPOLY, half-open in y) with an exact side test: an edge that straddles
+// the point's y is crossed when the point lies strictly left of the upward edge (right of a
+// downward one), decided by the sign of the exact orientation rather than an f32 crossing x.
+// Points on an edge, and edges whose sign cannot be certified, count no crossing.
 fn isInsideRegion(point: vec2f) -> bool {
   let activeCount = min(vertexCount[vertexCountOffset], ${vertexCapacity}u);
   if (activeCount < 3u) { return false; }
@@ -178,8 +195,8 @@ fn isInsideRegion(point: vec2f) -> bool {
   for (var vertexIndex = 0u; vertexIndex < activeCount; vertexIndex++) {
     let current = readVertex(vertexIndex);
     if ((current.y > point.y) != (previous.y > point.y)) {
-      let crossingX = (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x;
-      if (point.x < crossingX) { inside = !inside; }
+      let sign = orientSign(previous, current, point);
+      if (sign != 2 && sign != 0 && (sign > 0) == (current.y > previous.y)) { inside = !inside; }
     }
     previous = current;
   }

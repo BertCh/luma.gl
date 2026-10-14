@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 /** Workgroup size of the per-row reductions. Fixed, so the summation tree is fixed. @internal */
 export const ACCESSIBILITY_ROW_WORKGROUP_SIZE = 256;
@@ -14,11 +15,13 @@ export const ACCESSIBILITY_NONE = 0xffffffff;
 /**
  * WGSL helpers shared by the scoring kernels. `parameters` holds
  * `[threshold, decay, beta, minimumCost]`; `decay` is 0 (none), 1 (negative exponential) or 2
- * (power). A cost contributes only when it is finite and `<= threshold`.
+ * (power). A cost contributes only when it is finite and `<= threshold`; a weight contributes only
+ * when it is finite (NaN or infinite weights are missing values and are skipped, review B-16).
  *
  * @internal
  */
 export const ACCESSIBILITY_DECAY_WGSL = /* wgsl */ `
+${IS_FINITE_BITS_WGSL}
 fn isWithinThreshold(cost: f32, threshold: f32) -> bool {
   // Unreached entries are +Infinity; an infinite threshold must still reject them.
   return (bitcast<u32>(cost) & 0x7f800000u) != 0x7f800000u && cost >= 0.0 && cost <= threshold;
@@ -98,6 +101,9 @@ ${ACCESSIBILITY_DECAY_WGSL}`,
       continue;
     }
     let weight = rowWeights[rowWeightsOffset + row];
+    if (!isFiniteBits(weight)) {
+      continue;
+    }
     cumulativeSum += weight;
     gravitySum += weight * getDecay(cost, decay, beta, minimumCost);
   }
@@ -111,9 +117,7 @@ ${ACCESSIBILITY_DECAY_WGSL}`,
  * workgroup per row: strided per-thread partial sums of `columnWeights[column] * f(cost)` and a
  * fixed binary tree, so the result is bitwise reproducible.
  *
- * Writes the step-weighted sum to `cumulative` and the decayed sum to `gravity`. With
- * `rowNumerators`, writes `ratios[row] = rowNumerators[row] / gravitySum` (0 when the sum is 0)
- * instead: step one of the two-step floating catchment area.
+ * Writes the step-weighted sum to `cumulative` and the decayed sum to `gravity`.
  *
  * @internal
  */
@@ -130,8 +134,6 @@ export function createAccessibilityRowReduceNode<Parameters>(
     parameters: GraphDataView<'float32'>;
     cumulative?: GraphDataView<'float32'>;
     gravity?: GraphDataView<'float32'>;
-    rowNumerators?: GraphDataView<'float32'>;
-    ratios?: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
   const size = ACCESSIBILITY_ROW_WORKGROUP_SIZE;
@@ -161,18 +163,6 @@ export function createAccessibilityRowReduceNode<Parameters>(
       access: 'read_write'
     });
   }
-  const ratios = props.rowNumerators && props.ratios;
-  if (props.rowNumerators && props.ratios) {
-    bindings.push(
-      {
-        name: 'rowNumerators',
-        view: props.rowNumerators,
-        type: 'f32',
-        access: 'read'
-      },
-      {name: 'ratios', view: props.ratios, type: 'f32', access: 'read_write'}
-    );
-  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
@@ -194,8 +184,8 @@ ${ACCESSIBILITY_DECAY_WGSL}`,
   if (isInRange) {
     for (var column = localInvocationIndex; column < COLUMN_COUNT; column += ${size}u) {
       let cost = costs[costsOffset + row * COLUMN_COUNT + column];
-      if (isWithinThreshold(cost, threshold)) {
-        let weight = columnWeights[columnWeightsOffset + column];
+      let weight = columnWeights[columnWeightsOffset + column];
+      if (isWithinThreshold(cost, threshold) && isFiniteBits(weight)) {
         cumulativeSum += weight;
         gravitySum += weight * getDecay(cost, decay, beta, minimumCost);
       }
@@ -214,12 +204,6 @@ ${ACCESSIBILITY_DECAY_WGSL}`,
   if (isInRange && localInvocationIndex == 0u) {
     ${props.cumulative ? 'cumulative[cumulativeOffset + row] = cumulativePartials[0];' : ''}
     ${props.gravity ? 'gravity[gravityOffset + row] = gravityPartials[0];' : ''}
-    ${
-      ratios
-        ? `let denominator = gravityPartials[0];
-    ratios[ratiosOffset + row] = select(0.0, rowNumerators[rowNumeratorsOffset + row] / denominator, denominator > 0.0);`
-        : ''
-    }
   }`
   });
 }

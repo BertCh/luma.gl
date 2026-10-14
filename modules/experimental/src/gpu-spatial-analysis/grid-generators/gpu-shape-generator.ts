@@ -4,17 +4,16 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -26,7 +25,8 @@ import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUShapeGenerator';
 
@@ -55,7 +55,7 @@ export type GPUShapeType = 'circle' | 'sector' | 'ellipse';
 export type GPUShapeCoordinateSystem = 'planar' | 'geodesic';
 
 /** CPU description of the per-frame parameters of {@link GPUShapeGenerator}. */
-export type GPUShapeGeneratorParameters = {
+export type GPUShapeGeneratorSettings = {
   /**
    * Segments (arc intervals) per shape this frame, clamped on the GPU to
    * `[minimum, maximumSegments]` (minimum 3 for circles and ellipses, 1 for sectors).
@@ -66,15 +66,15 @@ export type GPUShapeGeneratorParameters = {
 };
 
 /**
- * Packs {@link GPUShapeGeneratorParameters} into the 2-element float32 layout
+ * Packs {@link GPUShapeGeneratorSettings} into the 2-element float32 layout
  * `[segmentCount, radiusScale]`. Write the result into a `GPUParameterBuffer` between encodings.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 2 elements.
  * @throws If a value is not finite, `segmentCount < 1`, `radiusScale < 0` or `target` is short.
  */
 export function getGPUShapeGeneratorParameterValues(
-  parameters: GPUShapeGeneratorParameters,
+  settings: GPUShapeGeneratorSettings,
   target: Float32Array = new Float32Array(GPU_SHAPE_GENERATOR_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_SHAPE_GENERATOR_PARAMETER_LENGTH) {
@@ -82,9 +82,9 @@ export function getGPUShapeGeneratorParameterValues(
       `Shape generator target must hold ${GPU_SHAPE_GENERATOR_PARAMETER_LENGTH} elements`
     );
   }
-  const {segmentCount, radiusScale = 1} = parameters;
+  const {segmentCount, radiusScale = 1} = settings;
   if (!Number.isFinite(segmentCount) || !Number.isFinite(radiusScale)) {
-    throw new Error('Shape generator parameters must be finite');
+    throw new Error('Shape generator settings must be finite');
   }
   if (segmentCount < 1 || radiusScale < 0) {
     throw new Error('Shape generator segmentCount must be at least 1 and radiusScale >= 0');
@@ -194,9 +194,9 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
   /** Resolved spatial context (planar unless given). */
   readonly spatialContext: GPUSpatialContext;
   /** Kernel model derived from `spatialContext`. */
-  readonly coordinateSystem: GPUShapeCoordinateSystem;
+  private readonly coordinateSystem: GPUShapeCoordinateSystem;
   /** Sphere radius in the context's length unit (1 for planar). */
-  readonly sphereRadius: number;
+  private readonly sphereRadius: number;
   /** Number of features. */
   readonly featureCount: number;
   /** Compile-time maximum segment count. */
@@ -214,12 +214,6 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    if (
-      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
-      this.spatialContext.metric !== 'great-circle'
-    ) {
-      throw new Error(`${id} longitude-latitude centers need the great-circle metric`);
-    }
     this.coordinateSystem =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'geodesic' : 'planar';
     this.sphereRadius =
@@ -233,25 +227,7 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     }
     this.maximumSegments = props.maximumSegments ?? 64;
     const minimum = getGPUShapeMinimumSegments(props.shape);
-    if (
-      !Number.isSafeInteger(this.maximumSegments) ||
-      this.maximumSegments < minimum ||
-      this.maximumSegments > 65536
-    ) {
-      throw new Error(`${id} maximumSegments must be an integer in [${minimum}, 65536]`);
-    }
-    for (const [name, view] of Object.entries({
-      centers: props.centers,
-      radii: props.radii,
-      bearings: props.bearings,
-      rotations: props.rotations,
-      parameters: props.parameters,
-      ...props.output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(id, 'maximumSegments', this.maximumSegments, minimum, 65536);
     validatePackedView(props.centers, ['float32x2'], `${id} centers`);
     this.featureCount = props.centers.length;
     if (this.featureCount < 1) {
@@ -297,12 +273,12 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     if (positions.length < capacity) {
       throw new Error(`${id} output.positions must hold at least ${capacity} rows`);
     }
-    validatePackedUint32View(offsets, `${id} output.offsets`);
+    validatePackedView(offsets, ['uint32'], `${id} output.offsets`);
     if (offsets.length !== this.featureCount + 1) {
       throw new Error(`${id} output.offsets must hold featureCount + 1 rows`);
     }
     if (vertexCount) {
-      validatePackedUint32View(vertexCount, `${id} output.vertexCount`);
+      validatePackedView(vertexCount, ['uint32'], `${id} output.vertexCount`);
       if (vertexCount.length < 1) {
         throw new Error(`${id} output.vertexCount must hold one uint32`);
       }
@@ -467,9 +443,7 @@ fn getEllipsePhase(feature: u32, step: u32, segments: u32, axes: vec2<f32>) -> f
     : ''
 }
 
-fn isFinite32(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}
+${IS_FINITE_BITS_WGSL}
 
 // Point at the given distance (world units, or meters for geodesic) and bearing (radians
 // clockwise from north) from the center.
@@ -530,7 +504,7 @@ ${
   position = getDestination(center, distance, bearing);`
   }`
     : `  var radius = radii[radiiOffset + feature] * radiusScale;
-  if (!isFinite32(radius) || radius < 0.0) { radius = 0.0; }
+  if (!isFiniteBits(radius) || radius < 0.0) { radius = 0.0; }
 ${
   shape === 'sector'
     ? `  var bearing1 = bearings[bearingsOffset + 2u * feature];
@@ -548,7 +522,7 @@ ${
   position = getDestination(center, radius, -ringStep * TWO_PI);`
 }`
 }
-  if (!isFinite32(center.x) || !isFinite32(center.y)) {
+  if (!isFiniteBits(center.x) || !isFiniteBits(center.y)) {
     position = vec2<f32>(bitcast<f32>(NOT_A_NUMBER | (feature & 0u)));
   }
   let base = positionsOutOffset + 2u * (feature * vertices + local);

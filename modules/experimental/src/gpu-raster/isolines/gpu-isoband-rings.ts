@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,18 +13,48 @@ import {
 import {
   GPUSegmentRingAssembly,
   type GPUSegmentRingAssemblyOutput
-} from '../../gpu-spatial-analysis/ring-assembly/index';
+} from '../../analysis-core/ring-assembly/index';
+import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateMaximumCount
+} from '../../utils/gpu-contributor-utils';
+import type {GPURasterMetadata} from '../types';
 import {GPUIsobands} from './gpu-isobands';
+
+/**
+ * Largest `edgeCapacity` of {@link GPUIsobandRings} on `device`: the boundary edge list holds one
+ * `float32x4` (16 bytes) per edge in one storage binding, so 8388608 on a default device (128 MiB
+ * bindings).
+ */
+export function getGPUIsobandRingsMaximumEdgeCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 16);
+}
+
+/**
+ * Largest ring capacity (`output.ringOffsets.length - 1`) of {@link GPUIsobandRings} on `device`:
+ * the ring assembly keeps the bounds of every ring in a transient of four `float32` (16 bytes) per
+ * ring in one storage binding, so 8388608 on a default device (128 MiB bindings).
+ */
+export function getGPUIsobandRingsMaximumRingCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 16);
+}
 
 /**
  * Caller-owned outputs of {@link GPUIsobandRings}: every output of `GPUSegmentRingAssembly`
  * (`ringOffsets`, `positions`, `count`, `overflow`, optional `ringAreas`, `ringIsHole`,
- * `ringShells`, `polygons`, ...) plus the band of each ring and the boundary edge counters.
+ * `ringShells`, `polygons`, ...) plus the band of each ring and the boundary edge status words.
  *
  * `ringGroups` receives the band index of each ring, and holes only attach to shells of their own
  * band. Without `ringGroups` rings are still band-pure.
  */
 export type GPUIsobandRingsOutput = GPUSegmentRingAssemblyOutput & {
+  /** One-row status words of the boundary edge list. */
+  status: GPUSegmentRingAssemblyOutput['status'] & GPUIsobandRingsStatus;
+};
+
+/** One-row status words of {@link GPUIsobandRings}. */
+export type GPUIsobandRingsStatus = {
   /** Optional one-row scalar receiving the number of band boundary edges before ring assembly. */
   edgeCount?: GraphDataView<'uint32'>;
   /**
@@ -40,10 +71,8 @@ export type GPUIsobandRingsOutput = GPUSegmentRingAssemblyOutput & {
 export type GPUIsobandRingsProps = {
   /** Prefix for generated node IDs. Defaults to `'isoband-rings'`. */
   id?: string;
-  /** Raster width in samples, at least 2. */
-  width: number;
-  /** Raster height in samples, at least 2. */
-  height: number;
+  /** Raster grid: its width and height (each at least 2) size the kernels. */
+  grid: GPURasterMetadata;
   /** Packed row-major float32 raster. */
   values: GraphDataView<'float32'>;
   /** Optional row-major `uint32` validity; zero marks a nodata sample. */
@@ -61,7 +90,8 @@ export type GPUIsobandRingsProps = {
   parameters: GraphDataView<'float32'>;
   /**
    * Compile-time capacity of the intermediate band boundary edge list. A ring of `n` vertices
-   * needs `n` edges; budget the total vertex count of every ring of every band.
+   * needs `n` edges; budget the total vertex count of every ring of every band. An integer in
+   * [1, {@link getGPUIsobandRingsMaximumEdgeCapacity}] (8388608 on a default device).
    */
   edgeCapacity: number;
   /**
@@ -72,7 +102,10 @@ export type GPUIsobandRingsProps = {
   vertexTolerance?: number;
   /** Split rings that touch themselves at a vertex, see `GPUSegmentRingAssemblyProps`. Defaults to true. */
   splitTouchingRings?: boolean;
-  /** Caller-owned outputs. */
+  /**
+   * Caller-owned outputs. The ring capacity `output.ringOffsets.length - 1` is at most
+   * {@link getGPUIsobandRingsMaximumRingCapacity} (8388608 on a default device).
+   */
   output: GPUIsobandRingsOutput;
 };
 
@@ -90,7 +123,7 @@ export type GPUIsobandRingsProps = {
  * cells becomes part of a ring.
  *
  * Changing breaks, `breakCount`, the extent or the band window never recompiles the graph. The
- * edge and ring capacities are compile-time; the `overflow` and `edgeOverflow` words say when they
+ * edge and ring capacities are compile-time; the `overflow` and `status.edgeOverflow` words say when they
  * were too small.
  */
 export class GPUIsobandRings implements GPUCommandNodeProducer {
@@ -113,24 +146,41 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
+    validateCapacity(
+      id,
+      'edgeCapacity',
+      props.edgeCapacity,
+      1,
+      getGPUIsobandRingsMaximumEdgeCapacity(graph.device)
+    );
+    // The ring assembly validates its own output views; this only guards the documented maximum
+    // that its transient ring bounds impose.
+    if (output?.ringOffsets) {
+      validateMaximumCount(
+        id,
+        'ring capacity (output.ringOffsets.length - 1)',
+        output.ringOffsets.length - 1,
+        getGPUIsobandRingsMaximumRingCapacity(graph.device)
+      );
+    }
     const edges = createTransientView(graph, `${id}-edges`, 'float32x4', props.edgeCapacity);
     const edgeBands = createTransientView(graph, `${id}-edge-bands`, 'uint32', props.edgeCapacity);
     const edgeCount =
-      output.edgeCount ?? createTransientView(graph, `${id}-edge-count`, 'uint32', 1);
+      output.status.edgeCount ?? createTransientView(graph, `${id}-edge-count`, 'uint32', 1);
     const edgeOverflow =
-      output.edgeOverflow ?? createTransientView(graph, `${id}-edge-overflow`, 'uint32', 1);
+      output.status.edgeOverflow ?? createTransientView(graph, `${id}-edge-overflow`, 'uint32', 1);
     const isobands = new GPUIsobands({
       id: `${id}-isobands`,
-      width: props.width,
-      height: props.height,
+      grid: props.grid,
       values: props.values,
       validity: props.validity,
       noDataValue: props.noDataValue,
       breaks: props.breaks,
       parameters: props.parameters,
-      output: {edges, edgeBands, edgeCount, edgeOverflow}
+      output: {edges, edgeBands, status: {edgeCount, edgeOverflow}}
     });
-    const {edgeCount: _edgeCount, edgeOverflow: _edgeOverflow, ...assemblyOutput} = output;
+    const {edgeCount: _edgeCount, edgeOverflow: _edgeOverflow, ...ringStatus} = output.status;
+    const assemblyOutput = {...output, status: ringStatus};
     const ringAssembly = new GPUSegmentRingAssembly({
       id: `${id}-assembly`,
       endpoints: edges,

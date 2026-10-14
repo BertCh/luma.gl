@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** Float32 parameter elements per column: `[lo, hi]` of the histogram domain. */
+import type {Device} from '@luma.gl/core';
+import {getStorageBindingElementLimit, validateCapacity} from '../../utils/gpu-contributor-utils';
+
+/** Float32 parameter elements per column: `[minimum, maximum]` of the histogram domain. */
 export const GPU_COLUMN_PROFILE_PARAMETERS_PER_COLUMN = 2;
 
 /** Largest compile-time column count. */
@@ -10,6 +13,15 @@ export const GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT = 16;
 
 /** Largest compile-time top-category count. */
 export const GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT = 64;
+
+/**
+ * Largest total of `categoryCount` over the category columns of a {@link GPUColumnProfile} on
+ * `device`: the per-code count table holds one uint32 per category in one storage binding, so
+ * 33554432 on a default device (128 MiB bindings).
+ */
+export function getGPUColumnProfileMaximumCategoryTotal(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
 
 /** Code of a missing value in a category column. */
 export const GPU_COLUMN_PROFILE_NULL_CATEGORY = 0xffffffff;
@@ -50,15 +62,17 @@ export function getGPUColumnProfileParameterLength(columnCount: number): number 
 }
 
 /** Histogram domain of one column. A NaN or missing bound means "automatic". */
-export type GPUColumnProfileDomain = {lo?: number; hi?: number} | readonly [number, number];
+export type GPUColumnProfileDomain =
+  | {minimum?: number; maximum?: number}
+  | readonly [number, number];
 
 /**
  * Packs per-frame histogram domains of `GPUColumnProfile`.
  *
- * Layout (float32): `[lo_0, hi_0, lo_1, hi_1, ...]`, column-major. A NaN (or omitted) `lo` or `hi`
+ * Layout (float32): `[minimum_0, maximum_0, minimum_1, maximum_1, ...]`, column-major. A NaN (or omitted) `minimum` or `maximum`
  * means automatic: the minimum (or maximum) of the finite values counted in the same frame. A
  * domain with a non-finite or inverted pair after resolution gives an all-zero histogram, and
- * `lo == hi` counts the values equal to it in bin 0.
+ * `minimum == maximum` counts the values equal to it in bin 0.
  *
  * @param domains One entry per column, `undefined` for fully automatic.
  * @param columnCount Number of columns. Defaults to `domains.length`.
@@ -69,31 +83,29 @@ export function getGPUColumnProfileParameterValues(
   columnCount: number = domains.length,
   target?: Float32Array
 ): Float32Array {
-  if (!Number.isInteger(columnCount) || columnCount < 1) {
-    throw new Error('Column profile column count must be a positive integer');
-  }
+  validateCapacity('GPUColumnProfile', 'columnCount', columnCount);
   if (domains.length > columnCount) {
-    throw new Error('Column profile domains exceed columnCount');
+    throw new Error('GPUColumnProfile domains exceed columnCount');
   }
   const length = getGPUColumnProfileParameterLength(columnCount);
   const values = target ?? new Float32Array(length);
   if (values.length < length) {
-    throw new Error(`Column profile parameter target must hold ${length} elements`);
+    throw new Error(`GPUColumnProfile parameter target must hold ${length} elements`);
   }
   for (let column = 0; column < columnCount; column++) {
     const domain = domains[column];
-    let lo = NaN;
-    let hi = NaN;
+    let minimum = NaN;
+    let maximum = NaN;
     if (domain) {
       if (Array.isArray(domain)) {
-        [lo, hi] = domain as readonly [number, number];
+        [minimum, maximum] = domain as readonly [number, number];
       } else {
-        lo = (domain as {lo?: number}).lo ?? NaN;
-        hi = (domain as {hi?: number}).hi ?? NaN;
+        minimum = (domain as {minimum?: number}).minimum ?? NaN;
+        maximum = (domain as {maximum?: number}).maximum ?? NaN;
       }
     }
-    values[column * GPU_COLUMN_PROFILE_PARAMETERS_PER_COLUMN] = lo;
-    values[column * GPU_COLUMN_PROFILE_PARAMETERS_PER_COLUMN + 1] = hi;
+    values[column * GPU_COLUMN_PROFILE_PARAMETERS_PER_COLUMN] = minimum;
+    values[column * GPU_COLUMN_PROFILE_PARAMETERS_PER_COLUMN + 1] = maximum;
   }
   return values;
 }

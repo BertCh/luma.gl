@@ -5,7 +5,8 @@
 export {GPUCalendarBuckets} from './gpu-calendar-buckets';
 export type {
   GPUCalendarBucketsOutput,
-  GPUCalendarBucketsProps
+  GPUCalendarBucketsProps,
+  GPUCalendarBucketsTimeZone
 } from './gpu-calendar-buckets';
 export {
   getGPUCalendarBucketsParameterValues,
@@ -14,5 +15,8 @@ export {
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
   GPU_CALENDAR_BUCKETS_MAXIMUM_DAYS,
   GPU_CALENDAR_BUCKETS_MAXIMUM_OFFSET_MINUTES,
+  GPU_CALENDAR_BUCKETS_MAXIMUM_OFFSET_SECONDS,
   GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH
 } from './calendar-buckets-parameters';
+export {getGPUTimeZoneTransitionTable} from './time-zone-transitions';
+export type {GPUTimeZoneTransitionTable} from './time-zone-transitions';

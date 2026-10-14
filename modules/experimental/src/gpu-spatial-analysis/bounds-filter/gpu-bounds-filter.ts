@@ -6,12 +6,10 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUVisibilityWorkflow,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -21,9 +19,11 @@ import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createPublishNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 /** Planar coordinates, or longitude/latitude used as plain coordinates (no metric). */
 const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -45,8 +45,8 @@ export const GPU_BOUNDS_FILTER_PARAMETER_LENGTH = 4;
  */
 export type GPUBoundsFilterMode = 'intersects' | 'within' | 'contains';
 
-/** CPU description of the per-frame box of {@link GPUBoundsFilter}. */
-export type GPUBoundsFilterBox = {
+/** CPU settings of the per-frame box of {@link GPUBoundsFilter}. */
+export type GPUBoundsFilterSettings = {
   /** Left edge. */
   minX: number;
   /** Bottom edge. */
@@ -58,16 +58,16 @@ export type GPUBoundsFilterBox = {
 };
 
 /**
- * Packs a {@link GPUBoundsFilterBox} into the 4-element float32 layout `[minX, minY, maxX, maxY]`.
+ * Packs a {@link GPUBoundsFilterSettings} into the 4-element float32 layout `[minX, minY, maxX, maxY]`.
  * Write the result into a `GPUParameterBuffer` between encodings to move the box without
  * recompiling.
  *
- * @param box Box to encode.
+ * @param settings Box to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If a value is not finite, the box is inverted, or `target` is too short.
  */
 export function getGPUBoundsFilterParameterValues(
-  box: GPUBoundsFilterBox,
+  settings: GPUBoundsFilterSettings,
   target: Float32Array = new Float32Array(GPU_BOUNDS_FILTER_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
@@ -75,7 +75,7 @@ export function getGPUBoundsFilterParameterValues(
       `Bounds filter target must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} elements`
     );
   }
-  const {minX, minY, maxX, maxY} = box;
+  const {minX, minY, maxX, maxY} = settings;
   if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
     throw new Error('Bounds filter box must be finite');
   }
@@ -85,6 +85,12 @@ export function getGPUBoundsFilterParameterValues(
   target.set([minX, minY, maxX, maxY]);
   return target;
 }
+
+/** Caller-owned outputs of {@link GPUBoundsFilter}. */
+export type GPUBoundsFilterOutput = GPUCompactOutput & {
+  /** Optional canonical 0/1 mask of accepted features, one row per feature. */
+  outputMask?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUBoundsFilter}.
@@ -108,13 +114,11 @@ export type GPUBoundsFilterProps = {
    */
   bounds: GraphDataView<'float32x4'>;
   /** Per-frame box: a packed float32 view written with {@link getGPUBoundsFilterParameterValues}. */
-  box: GraphDataView<'float32'>;
+  parameters: GraphDataView<'float32'>;
   /** Relation tested between each feature's bounds and the box. Defaults to `'intersects'`. */
   mode?: GPUBoundsFilterMode;
   /** Caller-owned bounded result of accepted feature rows, ascending. `ids.length` is the capacity. */
-  output: GPUCompactOutput;
-  /** Optional caller-owned canonical 0/1 mask, one row per feature. */
-  mask?: GraphDataView<'uint32'>;
+  output: GPUBoundsFilterOutput;
 };
 
 /**
@@ -160,30 +164,32 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
     if (props.bounds.length < 1) {
       throw new Error(`${id} needs at least one bounds row`);
     }
-    validatePackedView(props.box, ['float32'], `${id} box`);
-    if (props.box.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
-      throw new Error(`${id} box must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} float32 values`);
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    if (props.parameters.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
+      throw new Error(
+        `${id} parameters must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} float32 values`
+      );
     }
     validateCompactOutput(id, props.output);
     if (props.output.ids.length < 1) {
       throw new Error(`${id} output.ids must contain at least one row`);
     }
-    if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
-      if (props.mask.length !== props.bounds.length) {
-        throw new Error(`${id} mask length must equal bounds length`);
+    if (props.output.outputMask) {
+      validatePackedView(props.output.outputMask, ['uint32'], `${id} output.outputMask`);
+      if (props.output.outputMask.length !== props.bounds.length) {
+        throw new Error(`${id} output.outputMask length must equal bounds length`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
         props.output.ids,
-        props.output.count,
-        props.output.overflow,
-        props.output.requiredCount,
-        props.mask
+        props.output.status.count,
+        props.output.status.overflow,
+        props.output.status.requiredCount,
+        props.output.outputMask
       ],
-      [props.bounds, props.box]
+      [props.bounds, props.parameters]
     );
   }
 
@@ -195,15 +201,15 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.bounds,
-      props.box,
-      props.mask,
+      props.parameters,
+      output.outputMask,
       output.ids,
-      output.count,
-      output.overflow,
-      output.requiredCount
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount
     ]);
     const rows = props.bounds.length;
-    const mask = props.mask ?? createTransientView(graph, `${id}-mask`, 'uint32', rows);
+    const mask = output.outputMask ?? createTransientView(graph, `${id}-mask`, 'uint32', rows);
     const comparison = {
       intersects: `fMin.x <= boxMax.x && fMax.x >= boxMin.x && fMin.y <= boxMax.y && fMax.y >= boxMin.y`,
       within: `fMin.x >= boxMin.x && fMax.x <= boxMax.x && fMin.y >= boxMin.y && fMax.y <= boxMax.y`,
@@ -215,14 +221,11 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
         operation: OPERATION,
         bindings: [
           {name: 'bounds', view: props.bounds, type: 'f32', access: 'read'},
-          {name: 'box', view: props.box, type: 'f32', access: 'read'},
+          {name: 'box', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'maskOut', view: mask, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
-        declarations: `// Exponent bits all ones: NaN or infinity. A bit test, because Metal may fold NaN compares.
-fn isFiniteBits(value: f32) -> bool {
-  return ((bitcast<u32>(value) >> 23u) & 0xffu) != 0xffu;
-}`,
+        declarations: IS_FINITE_BITS_WGSL,
         body: `let base = boundsOffset + 4u * index;
   let fMin = vec2<f32>(bounds[base], bounds[base + 1u]);
   let fMax = vec2<f32>(bounds[base + 2u], bounds[base + 3u]);

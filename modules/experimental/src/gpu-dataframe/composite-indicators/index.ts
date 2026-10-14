@@ -29,6 +29,8 @@ export {
   GPU_INEQUALITY_GLOBAL_SUMMARY,
   GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
   GPU_INEQUALITY_MAXIMUM_EPSILON,
+  getGPUInequalityMaximumLorenzKnotTotal,
+  getGPUInequalityMaximumZoneCount,
   GPU_INEQUALITY_PARAMETER_LENGTH
 } from './inequality-parameters';
 export type {GPUInequalitySettings} from './inequality-parameters';

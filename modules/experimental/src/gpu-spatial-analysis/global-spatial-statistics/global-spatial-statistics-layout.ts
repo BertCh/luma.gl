@@ -11,7 +11,7 @@ export type GPUGlobalSpatialStatistic =
   | 'joinCount';
 
 /**
- * Offsets of the blocks in the `results` view of `GPUGlobalSpatialStatistics`. The layout is fixed
+ * Offsets of the blocks in the `output.summary` view of `GPUGlobalSpatialStatistics`. The layout is fixed
  * whatever statistics are requested; blocks of statistics that were not requested hold quiet NaN.
  */
 export const GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT = {
@@ -27,11 +27,11 @@ export const GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT = {
   bivariateMoran: 32,
   /** `GPU_GLOBAL_JOIN_COUNT_FIELD` fields of the join counts. */
   joinCount: 40,
-  /** Number of float32 values in `results`. */
+  /** Number of float32 values in `output.summary`. */
   length: 52
 } as const;
 
-/** Fields of the summary block of `results`. */
+/** Fields of the summary block of `output.summary`. */
 export const GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY = {
   /** Number of included rows `n`. */
   count: 0,
@@ -51,7 +51,7 @@ export const GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY = {
   islandCount: 7
 } as const;
 
-/** Fields of the Moran, Geary, General G and bivariate Moran blocks of `results`. */
+/** Fields of the Moran, Geary, General G and bivariate Moran blocks of `output.summary`. */
 export const GPU_GLOBAL_SPATIAL_STATISTIC_FIELD = {
   /** The statistic. */
   statistic: 0,
@@ -71,7 +71,7 @@ export const GPU_GLOBAL_SPATIAL_STATISTIC_FIELD = {
   pRandomization: 7
 } as const;
 
-/** Fields of the join-count block of `results` (randomization, i.e. nonfree sampling). */
+/** Fields of the join-count block of `output.summary` (randomization, i.e. nonfree sampling). */
 export const GPU_GLOBAL_JOIN_COUNT_FIELD = {
   /** Black-black joins `BB = 1/2 sum_ij b_ij x_i x_j`. */
   blackBlack: 0,

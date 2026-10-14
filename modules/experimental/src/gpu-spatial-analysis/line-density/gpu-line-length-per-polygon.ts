@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import type {GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
+import {getGPUSphereRadius} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  getStorageBindingElementLimit,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {
@@ -25,13 +30,19 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/index';
+} from '../../analysis-core/contracts/index';
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
+import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../../utils/exact-geometry-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
-import {FIND_PATH_WGSL} from '../line-segmentize/line-segmentize-kernels';
-import {GPUSpatialJoinCandidates} from '../spatial-join/spatial-join-candidates';
+import {FIND_LINE_WGSL} from '../line-segmentize/line-segmentize-kernels';
+import {GPUSpatialJoinCandidates} from '../spatial-join/gpu-spatial-join-candidates';
 import {createFeatureRingsNode} from '../spatial-join/spatial-join-geometry';
-import type {GPUSpatialJoinPolygons} from '../spatial-join/spatial-join-types';
+import type {
+  GPULineGeometryFields,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPULineLengthPerPolygon';
 
@@ -48,7 +59,7 @@ export type GPULineLengthPerPolygonOutput = {
    * polygon feature, in position units (planar/native context) or sphere-radius units (longitude-latitude).
    */
   lengths: GraphDataView<'float32'>;
-  /** Optional `sum(length * pathWeight)` per polygon feature. Requires `pathWeights`. */
+  /** Optional `sum(length * lineWeight)` per polygon feature. Requires `lineWeights`. */
   weightedLengths?: GraphDataView<'float32'>;
   /**
    * Optional number of segments with a positive length inside each polygon feature. A segment
@@ -56,24 +67,38 @@ export type GPULineLengthPerPolygonOutput = {
    */
   segmentCounts?: GraphDataView<'uint32'>;
   /**
-   * One-row scalar receiving `1` when any capacity overflowed (candidate pairs, the BVH, or the
-   * per-pair crossing bound), in which case lengths can be low, else `0`.
+   * One-row status scalar: `overflow` receives `1` when any capacity overflowed (candidate pairs,
+   * the BVH, or the per-pair crossing bound), in which case lengths can be low, else `0`.
    */
-  overflow: GraphDataView<'uint32'>;
+  status: GPUOverflowStatusPort;
 };
 
+/**
+ * Largest `positions` row count of {@link GPULineLengthPerPolygon} on `device`: the segment table
+ * holds two `float32x2` vertices (16 bytes) per row in one storage binding, so 8388608 on a default
+ * device (128 MiB bindings).
+ */
+export function getGPULineLengthPerPolygonMaximumPositionCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 16);
+}
+
+/**
+ * Largest `pairCapacity` of {@link GPULineLengthPerPolygon} on `device`: the candidate pair table of
+ * `GPUSpatialJoinCandidates` holds 8 bytes per pair in one storage binding, so 16777216 on a
+ * default device (128 MiB bindings).
+ */
+export function getGPULineLengthPerPolygonMaximumPairCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 8);
+}
+
 /** Properties for {@link GPULineLengthPerPolygon}. */
-export type GPULineLengthPerPolygonProps = {
+export type GPULineLengthPerPolygonProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-length-per-polygon'`. */
   id?: string;
-  /** Packed line vertices sorted by path: planar coordinates, or longitude/latitude degrees. */
-  positions: GraphDataView<'float32x2'>;
-  /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
-  pathOffsets: GraphDataView<'uint32'>;
-  /** Optional per-path value (`pathCount` rows) that multiplies the length for `weightedLengths`. */
-  pathWeights?: GraphDataView<'float32'>;
-  /** Polygon or multipolygon features, in the layout of `GPUSpatialPredicateJoin`. */
-  polygons: GPUSpatialJoinPolygons;
+  /** Optional per-line value (`lineCount` rows) that multiplies the length for `weightedLengths`. */
+  lineWeights?: GraphDataView<'float32'>;
+  /** Polygon or multipolygon features in the four-level layout; rows are features. */
+  polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /**
    * Planar/native (default when omitted) or longitude-latitude with the `'great-circle'` metric
    * (positions in degrees, piece lengths in meters, or in `sphereRadius` units). Replaces the former
@@ -81,28 +106,30 @@ export type GPULineLengthPerPolygonProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Compile-time capacity of (segment, polygon) bounding-box candidate pairs. Default
-   * `max(1024, 8 * positions.length)`.
+   * Compile-time capacity of (segment, polygon) bounding-box candidate pairs, at most
+   * {@link getGPULineLengthPerPolygonMaximumPairCapacity} (16777216 on a default device). Default
+   * `min(max(1024, 8 * positions.length), getGPULineLengthPerPolygonMaximumPairCapacity(device))`.
    */
-  maximumCandidatePairs?: number;
+  pairCapacity?: number;
   /**
-   * Compile-time bound on edge crossings kept per (segment, polygon) pair. Default 64. Extra
-   * crossings are ignored and set `overflow`.
+   * Compile-time bound on edge crossings kept per (segment, polygon) pair, 1 to 1024. Default 64.
+   * Extra crossings are ignored and set `status.overflow`. The crossings live in a private array,
+   * which must stay within the 8,192 B per-function limit of core WebGPU.
    */
-  maximumCrossings?: number;
+  maximumCrossingCount?: number;
   /** Output columns. */
   output: GPULineLengthPerPolygonOutput;
 };
 
 /**
  * Total line length inside each polygon (QGIS "Sum line lengths", PostGIS
- * `sum(ST_Length(ST_Intersection(line, polygon)))` per polygon), optionally weighted by a per-path
+ * `sum(ST_Length(ST_Intersection(line, polygon)))` per polygon), optionally weighted by a per-line
  * value, plus the number of segments that contribute.
  *
- * Every vertex row `i` that is not the last of its path defines one segment. The segments are
+ * Every vertex row `i` that is not the last of its line defines one segment. The segments are
  * joined to the polygons with `GPUSpatialJoinCandidates` (bounding boxes, BVH probe). For each
  * candidate pair the segment is cut at every crossing with a polygon ring edge (at most
- * `maximumCrossings` kept, insertion-sorted by parameter `t`), and every piece between consecutive
+ * `maximumCrossingCount` kept, insertion-sorted by parameter `t`), and every piece between consecutive
  * cuts is kept when its midpoint is inside the feature (even/odd fill over all rings, so holes and
  * multipolygon parts work, as in the spatial-join contributors). Piece lengths are summed per pair,
  * then per polygon by a stable sort and fixed-order segmented sum, so results are bitwise
@@ -112,6 +139,8 @@ export type GPULineLengthPerPolygonProps = {
  * not. Lines are not unioned: overlapping lines count once each, as in QGIS. A longitude-latitude context clips
  * straight in longitude/latitude (as {@link GPULineDensity} does) and measures each piece as the
  * great-circle distance between its endpoints.
+ *
+ * Limits: `positions` has at most {@link getGPULineLengthPerPolygonMaximumPositionCount} rows (8388608 on a default device).
  *
  * Precision: f32 inputs and f32 clip parameters (relative length error about `1e-6` of the
  * segment length; a sliver piece near a boundary can flip its midpoint test).
@@ -130,9 +159,9 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
   /** Resolved sphere radius (`GPU_GEODESIC_MEAN_EARTH_RADIUS` unless the context sets one). */
   readonly radius: number;
   /** Resolved candidate pair capacity. */
-  readonly maximumCandidatePairs: number;
+  readonly pairCapacity: number;
   /** Resolved crossing bound. */
-  readonly maximumCrossings: number;
+  readonly maximumCrossingCount: number;
 
   constructor(props: GPULineLengthPerPolygonProps) {
     this.id = props.id ?? 'line-length-per-polygon';
@@ -149,36 +178,26 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       throw new Error(`${id} longitude-latitude needs the great-circle metric`);
     }
     this.coordinateSystem = spherical ? 'spherical' : 'planar';
-    // An explicit sphereRadius is in result units; the default sphere honours units: 'kilometers'.
     this.radius = spherical
-      ? (this.spatialContext.sphereRadius ??
-        (this.spatialContext.units === 'kilometers'
-          ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
-          : GPU_GEODESIC_MEAN_EARTH_RADIUS))
+      ? getGPUSphereRadius(this.spatialContext)
       : GPU_GEODESIC_MEAN_EARTH_RADIUS;
-    this.maximumCandidatePairs =
-      props.maximumCandidatePairs ?? Math.max(1024, 8 * props.positions.length);
-    this.maximumCrossings = props.maximumCrossings ?? 64;
-    for (const [name, value] of [
-      ['maximumCandidatePairs', this.maximumCandidatePairs],
-      ['maximumCrossings', this.maximumCrossings]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    // The default is clamped to the device limit at declaration, see getCommandNodes.
+    this.pairCapacity = props.pairCapacity ?? Math.max(1024, 8 * props.positions.length);
+    this.maximumCrossingCount = props.maximumCrossingCount ?? 64;
+    validateCapacity(id, 'pairCapacity', this.pairCapacity);
+    validateCapacity(id, 'maximumCrossingCount', this.maximumCrossingCount, 1, 1024);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 2) {
       throw new Error(`${id} needs at least two positions`);
     }
-    validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-    if (props.pathOffsets.length < 2) {
-      throw new Error(`${id} pathOffsets must contain at least two rows`);
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
     }
-    if (props.pathWeights) {
-      validatePackedView(props.pathWeights, ['float32'], `${id} pathWeights`);
-      if (props.pathWeights.length !== props.pathOffsets.length - 1) {
-        throw new Error(`${id} pathWeights must hold one row per path`);
+    if (props.lineWeights) {
+      validatePackedView(props.lineWeights, ['float32'], `${id} lineWeights`);
+      if (props.lineWeights.length !== props.lineOffsets.length - 1) {
+        throw new Error(`${id} lineWeights must hold one row per line`);
       }
     }
     if (props.polygons.kind !== 'polygons') {
@@ -189,21 +208,22 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       ['polygonOffsets', props.polygons.polygonOffsets],
       ['ringOffsets', props.polygons.ringOffsets]
     ] as const) {
-      validatePackedUint32View(view, `${id} polygons.${name}`);
+      validatePackedView(view, ['uint32'], `${id} polygons.${name}`);
     }
     validatePackedView(props.polygons.positions, ['float32x2'], `${id} polygons.positions`);
     this.polygonCount = props.polygons.featureOffsets.length - 1;
     if (this.polygonCount < 1) {
       throw new Error(`${id} polygons must contain at least one feature`);
     }
-    const {lengths, weightedLengths, segmentCounts, overflow} = props.output;
+    const {lengths, weightedLengths, segmentCounts, status} = props.output;
+    const {overflow} = status;
     validatePackedView(lengths, ['float32'], `${id} output.lengths`);
     if (lengths.length !== this.polygonCount) {
       throw new Error(`${id} output.lengths must hold ${this.polygonCount} rows`);
     }
     if (weightedLengths) {
-      if (!props.pathWeights) {
-        throw new Error(`${id} output.weightedLengths requires pathWeights`);
+      if (!props.lineWeights) {
+        throw new Error(`${id} output.weightedLengths requires lineWeights`);
       }
       validatePackedView(weightedLengths, ['float32'], `${id} output.weightedLengths`);
       if (weightedLengths.length !== this.polygonCount) {
@@ -211,22 +231,22 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       }
     }
     if (segmentCounts) {
-      validatePackedUint32View(segmentCounts, `${id} output.segmentCounts`);
+      validatePackedView(segmentCounts, ['uint32'], `${id} output.segmentCounts`);
       if (segmentCounts.length !== this.polygonCount) {
         throw new Error(`${id} output.segmentCounts must hold ${this.polygonCount} rows`);
       }
     }
-    validatePackedUint32View(overflow, `${id} output.overflow`);
+    validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
     if (overflow.length < 1) {
-      throw new Error(`${id} output.overflow must contain one uint32 row`);
+      throw new Error(`${id} output.status.overflow must contain one uint32 row`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [lengths, weightedLengths, segmentCounts, overflow],
       [
         props.positions,
-        props.pathOffsets,
-        props.pathWeights,
+        props.lineOffsets,
+        props.lineWeights,
         props.polygons.positions,
         props.polygons.featureOffsets,
         props.polygons.polygonOffsets,
@@ -239,12 +259,12 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, polygonCount, maximumCandidatePairs, maximumCrossings} = this;
+    const {props, id, polygonCount, maximumCrossingCount} = this;
     const {polygons, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.pathOffsets,
-      props.pathWeights,
+      props.lineOffsets,
+      props.lineWeights,
       polygons.positions,
       polygons.featureOffsets,
       polygons.polygonOffsets,
@@ -252,11 +272,21 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       output.lengths,
       output.weightedLengths,
       output.segmentCounts,
-      output.overflow
+      output.status.overflow
     ]);
+    validateMaximumCount(
+      id,
+      'positions rows',
+      props.positions.length,
+      getGPULineLengthPerPolygonMaximumPositionCount(graph.device)
+    );
+    const maximumPairCapacity = getGPULineLengthPerPolygonMaximumPairCapacity(graph.device);
+    // A default capacity clamps to the device limit; an explicit one above it is refused.
+    const pairCapacity = props.pairCapacity ?? Math.min(this.pairCapacity, maximumPairCapacity);
+    validateCapacity(id, 'pairCapacity', pairCapacity, 1, maximumPairCapacity);
     const spherical = this.coordinateSystem === 'spherical';
     const rowCount = props.positions.length;
-    const pathCount = props.pathOffsets.length - 1;
+    const lineCount = props.lineOffsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     // One two-vertex segment feature per vertex row; non-segments are NaN so they never match.
@@ -280,10 +310,10 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
         variant: 'build-segments',
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-          {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+          {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
           {
-            name: 'pathWeights',
-            view: props.pathWeights ?? output.lengths,
+            name: 'lineWeights',
+            view: props.lineWeights ?? output.lengths,
             type: 'f32',
             access: 'read'
           },
@@ -292,18 +322,18 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
           {name: 'segmentWeights', view: segmentWeights, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rowCount + 1,
-        declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+        declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const ROW_COUNT: u32 = ${rowCount}u;
-const HAS_WEIGHTS: bool = ${props.pathWeights ? 'true' : 'false'};
-${FIND_PATH_WGSL}`,
+const HAS_WEIGHTS: bool = ${props.lineWeights ? 'true' : 'false'};
+${FIND_LINE_WGSL}`,
         body: `segmentOffsets[segmentOffsetsOffset + index] = 2u * index;
   if (index < ROW_COUNT) {
-    let path = findPath(index);
-    var valid = path != NO_PATH;
+    let line = findLine(index);
+    var valid = line != NO_LINE;
     var weight = 1.0;
     if (valid) {
-      valid = index + 1u < min(pathOffsets[pathOffsetsOffset + path + 1u], ROW_COUNT);
-      if (HAS_WEIGHTS) { weight = pathWeights[pathWeightsOffset + path]; }
+      valid = index + 1u < min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT);
+      if (HAS_WEIGHTS) { weight = lineWeights[lineWeightsOffset + line]; }
     }
     var nanBits = 0x7fc00000u;
     let nan = bitcast<f32>(nanBits);
@@ -323,17 +353,19 @@ ${FIND_PATH_WGSL}`,
     );
 
     const pairs = {
-      leftIds: createTransientView(graph, `${id}-pair-left`, 'uint32', maximumCandidatePairs),
-      rightIds: createTransientView(graph, `${id}-pair-right`, 'uint32', maximumCandidatePairs),
-      count: createTransientView(graph, `${id}-pair-count`, 'uint32', 1),
-      overflow: createTransientView(graph, `${id}-pair-overflow`, 'uint32', 1)
+      leftIds: createTransientView(graph, `${id}-pair-left`, 'uint32', pairCapacity),
+      rightIds: createTransientView(graph, `${id}-pair-right`, 'uint32', pairCapacity),
+      status: {
+        count: createTransientView(graph, `${id}-pair-count`, 'uint32', 1),
+        overflow: createTransientView(graph, `${id}-pair-overflow`, 'uint32', 1)
+      }
     };
     nodes.push(
       ...new GPUSpatialJoinCandidates({
         id: `${id}-candidates`,
         left: {kind: 'lines', positions: segmentPositions, lineOffsets: segmentOffsets},
         right: polygons,
-        pairs
+        output: pairs
       }).getCommandNodes(graph)
     );
 
@@ -356,7 +388,7 @@ ${FIND_PATH_WGSL}`,
       graph,
       `${id}-inside-lengths`,
       'float32',
-      maximumCandidatePairs
+      pairCapacity
     );
     nodes.push(
       createFillNode<Parameters>(graph, {
@@ -385,14 +417,16 @@ ${FIND_PATH_WGSL}`,
             access: 'read_write'
           }
         ],
-        invocationCount: maximumCandidatePairs,
+        invocationCount: pairCapacity,
         declarations: `const NO_FEATURE: u32 = 0xffffffffu;
 const VERTEX_COUNT: u32 = ${polygons.positions.length}u;
-const MAXIMUM_CROSSINGS: u32 = ${maximumCrossings}u;
+const MAXIMUM_CROSSINGS: u32 = ${maximumCrossingCount}u;
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};
 const EDGE_TOLERANCE: f32 = 1.0e-6;
 ${spherical ? GEODESIC_WGSL : ''}
 ${IS_NAN_BITS_WGSL}
+${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
 
 fn getVertex(row: u32) -> vec2f {
   return vec2f(polygonPositions[polygonPositionsOffset + 2u * row], polygonPositions[polygonPositionsOffset + 2u * row + 1u]);
@@ -408,24 +442,18 @@ fn getPieceLength(a: vec2f, b: vec2f, t0: f32, t1: f32) -> f32 {
   }
 }
 
-// Even/odd fill over every ring of the feature.
+${getExactRingWindingWGSL('getRingWinding', 'getVertex')}
+// Even/odd fill over every ring of the feature, with the shared exact point-in-ring rule
+// (utils/exact-geometry-wgsl.ts). Called from one site.
 fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
-  var inside = false;
+  let probe = ExactProbe(point, point, point, EXACT_PROBE_POINT);
+  var winding = 0;
   for (var ring = ringStart; ring < ringEnd; ring++) {
     let first = ringOffsets[ringOffsetsOffset + ring];
     let last = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
-    if (last < first + 3u) { continue; }
-    var previous = getVertex(last - 1u);
-    for (var row = first; row < last; row++) {
-      let current = getVertex(row);
-      if ((current.y > point.y) != (previous.y > point.y)) {
-        let crossingX = (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x;
-        if (point.x < crossingX) { inside = !inside; }
-      }
-      previous = current;
-    }
+    winding += getRingWinding(probe, first, last).x;
   }
-  return inside;
+  return (winding & 1) != 0;
 }`,
         body: `var inside = 0.0;
   let segment = leftIds[leftIdsOffset + index];
@@ -437,7 +465,7 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
     let ringStart = featureRings[featureRingsOffset + 2u * feature];
     let ringEnd = featureRings[featureRingsOffset + 2u * feature + 1u];
     if (!isNanBits(a.x) && !isNanBits(a.y) && !isNanBits(b.x) && !isNanBits(b.y) && (delta.x != 0.0 || delta.y != 0.0)) {
-      var crossings = array<f32, ${maximumCrossings}>();
+      var crossings = array<f32, ${maximumCrossingCount}>();
       var crossingCount = 0u;
       var truncated = false;
       for (var ring = ringStart; ring < ringEnd; ring++) {
@@ -493,8 +521,8 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
     // Per-pair keys and contributions. Segment counts (integer atomics, order independent) are
     // only built for the public `segmentCounts` output; the sums find segment sizes by search.
     const counts = output.segmentCounts;
-    const keys = createTransientView(graph, `${id}-keys`, 'uint32', maximumCandidatePairs);
-    const weighted = createTransientView(graph, `${id}-weighted`, 'float32', maximumCandidatePairs);
+    const keys = createTransientView(graph, `${id}-keys`, 'uint32', pairCapacity);
+    const weighted = createTransientView(graph, `${id}-weighted`, 'float32', pairCapacity);
     if (counts) {
       nodes.push(
         createFillNode<Parameters>(graph, {
@@ -529,7 +557,7 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
               ]
             : [])
         ],
-        invocationCount: maximumCandidatePairs,
+        invocationCount: pairCapacity,
         declarations: `const NO_FEATURE: u32 = 0xffffffffu;
 const POLYGON_COUNT: u32 = ${polygonCount}u;`,
         body: `let segment = leftIds[leftIdsOffset + index];
@@ -561,9 +589,9 @@ const POLYGON_COUNT: u32 = ${polygonCount}u;`,
         operation: OPERATION,
         variant: 'publish',
         bindings: [
-          {name: 'pairOverflow', view: pairs.overflow, type: 'u32', access: 'read'},
+          {name: 'pairOverflow', view: pairs.status.overflow, type: 'u32', access: 'read'},
           {name: 'crossingOverflow', view: crossingOverflow, type: 'u32', access: 'read'},
-          {name: 'overflow', view: output.overflow, type: 'u32', access: 'read_write'}
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
         ],
         invocationCount: 1,
         body: `overflow[overflowOffset] = select(0u, 1u, pairOverflow[pairOverflowOffset] != 0u || crossingOverflow[crossingOverflowOffset] != 0u);`

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {defineGPUSpatialParameterSchema} from '../contracts/index';
+import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/index';
 
 /** Number of float32 elements in a {@link GPUNeighborSearch} parameter view. */
 export const GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH = 12;
@@ -80,8 +80,8 @@ export type GPUNeighborSearchWeightKind = keyof typeof GPU_NEIGHBOR_SEARCH_WEIGH
 /** Kernel profile used when `weightKind` is `'kernel'`. */
 export type GPUNeighborSearchKernel = keyof typeof GPU_NEIGHBOR_SEARCH_KERNEL;
 
-/** Per-frame parameters of {@link GPUNeighborSearch}, packed by {@link getGPUNeighborSearchParameterValues}. */
-export type GPUNeighborSearchParameters = {
+/** Per-frame settings of {@link GPUNeighborSearch}, packed by {@link getGPUNeighborSearchParameterValues}. */
+export type GPUNeighborSearchSettings = {
   /**
    * `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and queries outside it (or
    * with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it
@@ -113,36 +113,36 @@ export type GPUNeighborSearchParameters = {
 };
 
 /**
- * The weight transform {@link GPUNeighborSearchParameters} select, for
+ * The weight transform {@link GPUNeighborSearchSettings} select, for
  * `GPUNeighborSearchProps.weightTransform`: `'row'` with `rowStandardize`, else `'binary'`,
  * `'raw'` (inverse distance) or `'kernel'` from `weightKind`.
  */
 export function getGPUNeighborSearchWeightTransform(
-  parameters: Pick<GPUNeighborSearchParameters, 'weightKind' | 'rowStandardize'>
+  settings: Pick<GPUNeighborSearchSettings, 'weightKind' | 'rowStandardize'>
 ): 'binary' | 'raw' | 'kernel' | 'row' {
-  const weightKind = parameters.weightKind ?? 'binary';
+  const weightKind = settings.weightKind ?? 'binary';
   if (!(weightKind in GPU_NEIGHBOR_SEARCH_WEIGHT_KIND)) {
     throw new Error(`GPUNeighborSearch unknown weightKind ${weightKind}`);
   }
-  if (parameters.rowStandardize) {
+  if (settings.rowStandardize) {
     return 'row';
   }
   return weightKind === 'inverseDistance' ? 'raw' : weightKind === 'kernel' ? 'kernel' : 'binary';
 }
 
 /**
- * Packs {@link GPUNeighborSearchParameters} into the float32 layout read by the kernels.
+ * Packs {@link GPUNeighborSearchSettings} into the float32 layout read by the kernels.
  *
  * Layout: `[minX, minY, maxX, maxY, radius, weightKind, power, distanceFloor, kernel,
  * rowStandardize, 0, 0]`.
  */
 export function getGPUNeighborSearchParameterValues(
-  parameters: GPUNeighborSearchParameters
+  settings: GPUNeighborSearchSettings
 ): Float32Array {
   const values = new Float32Array(GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH);
-  const [minimumX, minimumY, maximumX, maximumY] = parameters.bounds;
-  const weightKind = parameters.weightKind ?? 'binary';
-  const kernel = parameters.kernel ?? 'triangular';
+  const [minimumX, minimumY, maximumX, maximumY] = settings.bounds;
+  const weightKind = settings.weightKind ?? 'binary';
+  const kernel = settings.kernel ?? 'triangular';
   if (!(weightKind in GPU_NEIGHBOR_SEARCH_WEIGHT_KIND)) {
     throw new Error(`GPUNeighborSearch unknown weightKind ${weightKind}`);
   }
@@ -153,11 +153,11 @@ export function getGPUNeighborSearchParameterValues(
   values[1] = minimumY;
   values[2] = maximumX;
   values[3] = maximumY;
-  values[4] = parameters.radius ?? Infinity;
+  values[4] = settings.radius ?? Infinity;
   values[5] = GPU_NEIGHBOR_SEARCH_WEIGHT_KIND[weightKind];
-  values[6] = parameters.power ?? 1;
-  values[7] = parameters.distanceFloor ?? 0;
+  values[6] = settings.power ?? 1;
+  values[7] = settings.distanceFloor ?? 0;
   values[8] = GPU_NEIGHBOR_SEARCH_KERNEL[kernel];
-  values[9] = parameters.rowStandardize ? 1 : 0;
+  values[9] = settings.rowStandardize ? 1 : 0;
   return values;
 }

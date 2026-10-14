@@ -6,6 +6,7 @@ export {GPUTerrainRuggedness} from './gpu-terrain-ruggedness';
 export type {
   GPUTerrainRuggednessAlgorithm,
   GPUTerrainRuggednessEdgeMode,
+  GPUTerrainRuggednessOutput,
   GPUTerrainRuggednessProps
 } from './gpu-terrain-ruggedness';
 export {
@@ -14,15 +15,19 @@ export {
   getGPUTerrainVectorRuggednessParameterValues
 } from './gpu-terrain-vector-ruggedness';
 export type {
+  GPUTerrainVectorRuggednessOutput,
   GPUTerrainVectorRuggednessProps,
   GPUTerrainVectorRuggednessSettings
 } from './gpu-terrain-vector-ruggedness';
+export {getGPUTerrainSummedAreaMaximumCellCount} from './terrain-summed-area-table';
 export {
   GPU_TERRAIN_TOPOGRAPHIC_POSITION_DEFAULT_QUANTUM,
   GPU_TERRAIN_TOPOGRAPHIC_POSITION_MAXIMUM_SCALES,
-  GPUTerrainTopographicPosition
+  GPUTerrainTopographicPosition,
+  getGPUTerrainTopographicPositionMaximumPlaneCount
 } from './gpu-terrain-topographic-position';
 export type {
+  GPUTerrainTopographicPositionOutput,
   GPUTerrainTopographicPositionProps,
   GPUTerrainTopographicPositionScale
 } from './gpu-terrain-topographic-position';
@@ -34,6 +39,7 @@ export {
 } from './gpu-terrain-weiss-landforms';
 export type {
   GPUTerrainWeissLandform,
+  GPUTerrainWeissLandformsOutput,
   GPUTerrainWeissLandformsProps,
   GPUTerrainWeissLandformsSettings,
   GPUTerrainWeissStandardization

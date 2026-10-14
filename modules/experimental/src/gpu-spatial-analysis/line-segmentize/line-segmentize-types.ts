@@ -3,12 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {
-  getGPUSphereRadius,
-  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
-  resolveGPUSpatialContext,
-  type GPUSpatialContext
-} from '../contracts/spatial-context';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
 
 /**
  * Kernel-level coordinate interpretation derived from a `spatialContext` (not a user prop):
@@ -23,83 +18,52 @@ export type GPULineCoordinateSystem =
    */
   | 'spherical';
 
-/**
- * Resolves the `spatialContext` of a line operation: planar by default, or longitude/latitude
- * with a `'great-circle'` metric (positions are degrees, lengths are in the context's unit on its
- * sphere radius, meters on the mean Earth radius by default).
- *
- * @internal
- */
-export function resolveLineSpatialContext(
-  id: string,
-  context: GPUSpatialContext | undefined
-): {
-  spatialContext: GPUSpatialContext;
-  coordinateSystem: GPULineCoordinateSystem;
-  radius: number;
-} {
-  const spatialContext = resolveGPUSpatialContext(
-    id,
-    context,
-    GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
-  );
-  const isSpherical = spatialContext.coordinateSpace === 'longitude-latitude';
-  if (isSpherical && spatialContext.metric !== 'great-circle') {
-    throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
-  }
-  return {
-    spatialContext,
-    coordinateSystem: isSpherical ? 'spherical' : 'planar',
-    radius: isSpherical ? getGPUSphereRadius(spatialContext) : 1
-  };
-}
-
-/** Value written to `sourcePaths` / `sourceRows` rows that carry no source. */
+/** Value written to `sourceLineIndices` / `sourceRows` rows that carry no source. */
 export const GPU_LINE_NO_SOURCE = 0xffffffff;
 
 /**
- * Caller-owned, capacity-bounded path output written by the path-emitting contributors
+ * Caller-owned, capacity-bounded line output written by the line-emitting contributors
  * (`GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`).
  *
- * Paths use the toolkit's flat layout: vertex rows in `positions`, path `p` owning rows
- * `[pathOffsets[p], pathOffsets[p + 1])`, which is what deck.gl `PathLayer` binary attributes
+ * Lines use the toolkit's flat layout: vertex rows in `positions`, line `p` owning rows
+ * `[lineOffsets[p], lineOffsets[p + 1])`, which is what deck.gl `PathLayer` binary attributes
  * (`startIndices`) consume. The vertex capacity is `positions.length` (compile time).
  *
- * Every offset is clamped to the capacity, so when `overflow` is 1 the last paths are truncated
- * (possibly to zero vertices) but the layout stays valid. `count` is `min(total, capacity)` and is
+ * Every offset is clamped to the capacity, so when `status.overflow` is 1 the last lines are truncated
+ * (possibly to zero vertices) but the layout stays valid. `status.count` is `min(total, capacity)` and is
  * safe as an indirect draw count. Every word is rewritten on every encoding.
  */
-export type GPULinePathOutput = {
-  /** Output vertices, `capacity` rows. Rows at or past `count` are unspecified. */
+export type GPULineGeometryOutput = {
+  /** Output vertices, `capacity` rows. Rows at or past `status.count` are unspecified. */
   positions: GraphDataView<'float32x2'>;
   /**
-   * Path start offsets, `pathCapacity + 1` rows, clamped to the vertex capacity. For contributors that
-   * emit exactly one path per input path or pair, `pathCapacity` equals the input path count.
+   * Line start offsets, `lineCapacity + 1` rows, clamped to the vertex capacity. For contributors that
+   * emit exactly one line per input line or pair, `lineCapacity` equals the input line count.
    */
-  pathOffsets: GraphDataView<'uint32'>;
-  /** One-row scalar receiving the clamped vertex count. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `1` when the vertex or path capacity overflowed, otherwise `0`. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped vertex count. */
-  requiredCount?: GraphDataView<'uint32'>;
+  lineOffsets: GraphDataView<'uint32'>;
   /**
-   * Optional one-row scalar receiving the clamped number of output paths. Required by contributors
-   * whose path count is data dependent (chunking); otherwise equals the input path count.
+   * One-row status scalars: `count` receives the clamped vertex count, `overflow` receives `1` when
+   * the vertex or line capacity overflowed (otherwise `0`), the optional `requiredCount` receives
+   * the unclamped vertex count, and the optional `lineCount` receives the clamped number of output
+   * lines (required by contributors whose line count is data dependent, such as chunking;
+   * otherwise equal to the input line count).
    */
-  pathCount?: GraphDataView<'uint32'>;
+  status: GPUCardinalityPort &
+    GPUOverflowStatusPort & {
+      lineCount?: GraphDataView<'uint32'>;
+    };
   /**
-   * Optional per-output-path source path (or source pair) row, `pathCapacity` rows,
-   * `GPU_LINE_NO_SOURCE` past `pathCount`.
+   * Optional per-output-line source line (or source pair) row, `lineCapacity` rows,
+   * `GPU_LINE_NO_SOURCE` past `status.lineCount`.
    */
-  sourcePaths?: GraphDataView<'uint32'>;
+  sourceLineIndices?: GraphDataView<'uint32'>;
   /**
    * Optional per-output-vertex source segment row: the input row that starts the segment the
-   * vertex was emitted on (the last vertex of a path maps to the path's last row).
+   * vertex was emitted on (the last vertex of a line maps to the line's last row).
    */
   sourceRows?: GraphDataView<'uint32'>;
   /**
-   * Optional per-output-vertex measure: distance from the start of the source path along the
+   * Optional per-output-vertex measure: distance from the start of the source line along the
    * source geometry (planar units, or sphere-radius units, meters by default, for `'spherical'`).
    */
   measures?: GraphDataView<'float32'>;

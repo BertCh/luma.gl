@@ -11,14 +11,18 @@ export {
 export type {
   GPULocalJoinCountCase,
   GPULocalPermutationStatistic,
+  GPULocalPermutationTestOutput,
   GPULocalPermutationTestProps
 } from './gpu-local-permutation-test';
 export {
   GPUGlobalPermutationTest,
-  GPU_GLOBAL_PERMUTATION_RESULT
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
+  GPU_GLOBAL_PERMUTATION_TEST_MAXIMUM_PAIR_BLOCK_COUNT,
+  getGPUGlobalPermutationBatchSize
 } from './gpu-global-permutation-test';
 export type {
   GPUGlobalPermutationStatistic,
+  GPUGlobalPermutationTestOutput,
   GPUGlobalPermutationTestProps
 } from './gpu-global-permutation-test';
 export {
@@ -26,5 +30,4 @@ export {
   getGPUPermutationParameterValues,
   GPU_PERMUTATION_PARAMETER_LENGTH
 } from './permutation-parameters';
-export type {GPUPermutationParameters} from './permutation-parameters';
-export type {GPUPermutationAlternative} from './permutation-alternative';
+export type {GPUPermutationSettings} from './permutation-parameters';

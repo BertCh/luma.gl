@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -16,10 +13,16 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPULineGeometryFields,
+  GPUPolygonGeometryFields
+} from '../../analysis-core/contracts/index';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -45,13 +48,13 @@ export const GPU_OUTLINE_GEOMETRY_DEFAULT_JOIN_SEGMENTS = 16;
 export type GPUOutlineGeometryType =
   /** Every position is a point; the outline is a disc. */
   | 'points'
-  /** Open paths; the outline is a round-capped stroke. */
+  /** Open lines; the outline is a round-capped stroke. */
   | 'lines'
-  /** Closed rings (the closing edge is implicit); the outline is a round-joined stroke. */
-  | 'rings';
+  /** Polygon rings (the closing edge is implicit); the outline is a round-joined stroke. */
+  | 'polygons';
 
 /** CPU description of the per-frame parameters of {@link GPUOutlineGeometry}. */
-export type GPUOutlineGeometryParameters = {
+export type GPUOutlineGeometrySettings = {
   /**
    * Offset distance, in position units (planar context) or in the context's `units` on its sphere
    * (longitude/latitude context, meters by default). Must be non-negative; `0` draws nothing visible.
@@ -60,16 +63,16 @@ export type GPUOutlineGeometryParameters = {
 };
 
 /**
- * Packs {@link GPUOutlineGeometryParameters} into the 4-element float32 layout
+ * Packs {@link GPUOutlineGeometrySettings} into the 4-element float32 layout
  * `[distance, 0, 0, 0]`. Write the result into a `GPUParameterBuffer` between encodings to change
  * the distance without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If the distance is negative or not finite, or `target` is too short.
  */
 export function getGPUOutlineGeometryParameterValues(
-  parameters: GPUOutlineGeometryParameters,
+  settings: GPUOutlineGeometrySettings,
   target: Float32Array = new Float32Array(GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH) {
@@ -77,10 +80,10 @@ export function getGPUOutlineGeometryParameterValues(
       `Outline geometry target must hold ${GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH} elements`
     );
   }
-  if (!Number.isFinite(parameters.distance) || parameters.distance < 0) {
+  if (!Number.isFinite(settings.distance) || settings.distance < 0) {
     throw new Error('Outline geometry distance must be a non-negative finite number');
   }
-  target.set([parameters.distance, 0, 0, 0]);
+  target.set([settings.distance, 0, 0, 0]);
   return target;
 }
 
@@ -108,19 +111,28 @@ export type GPUOutlineGeometryOutput = {
  * Per-frame (no recompile): the contents of `parameters` (distance) and every input buffer.
  * Compile-time: view lengths, `geometryType`, `spatialContext`, `joinSegments`.
  */
-export type GPUOutlineGeometryProps = {
+export type GPUOutlineGeometryProps = (
+  | {
+      /** Every position is a point. Takes only `positions`. */
+      geometryType: 'points';
+      /** Packed positions: planar coordinates, or longitude/latitude degrees for a sphere context. */
+      positions: GraphDataView<'float32x2'>;
+    }
+  | ({
+      /** Open lines. Takes `positions` and `lineOffsets`. */
+      geometryType: 'lines';
+    } & GPULineGeometryFields)
+  | ({
+      /**
+       * Polygon rings, each stroked as a closed ring. Takes the four-level polygon layout
+       * (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`). The output has one
+       * block of vertices per input vertex, so the ring structure is that of the input.
+       */
+      geometryType: 'polygons';
+    } & GPUPolygonGeometryFields)
+) & {
   /** Prefix for generated node IDs. Defaults to `'outline-geometry'`. */
   id?: string;
-  /** Packed positions: planar coordinates, or longitude/latitude degrees for a sphere context. */
-  positions: GraphDataView<'float32x2'>;
-  /** Input geometry kind. */
-  geometryType: GPUOutlineGeometryType;
-  /**
-   * `pathCount + 1` monotonic row offsets; path (or ring) `p` owns rows
-   * `[pathOffsets[p], pathOffsets[p + 1])`. Required for `'lines'` and `'rings'`, ignored for
-   * `'points'`.
-   */
-  pathOffsets?: GraphDataView<'uint32'>;
   /**
    * Spatial context of `positions` and of the offset `distance`. Omitted means native planar
    * coordinates with distances in position units. `{coordinateSpace: 'longitude-latitude', metric:
@@ -159,7 +171,7 @@ export type GPUOutlineGeometryProps = {
  * Output size is fixed up front: every input vertex owns exactly
  * {@link getGPUOutlineGeometryVerticesPerInput} vertices, so there is no capacity, no overflow flag and no
  * scan. The kernel runs one invocation per input vertex with no atomics and is deterministic. The
- * distance is read per frame. Zero-length segments and missing next vertices (path ends, points)
+ * distance is read per frame. Zero-length segments and missing next vertices (line ends, points)
  * emit a degenerate quad. Triangles are counter-clockwise for a positive distance.
  *
  * Precision: f32 from the f32 positions.
@@ -177,6 +189,8 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
   readonly joinSegments: number;
   /** Output vertices per input vertex. */
   readonly verticesPerInput: number;
+  /** Line offsets or polygon ring offsets as read by the kernel; absent for points. */
+  readonly boundaryOffsets?: GraphDataView<'uint32'>;
 
   constructor(props: GPUOutlineGeometryProps) {
     this.id = props.id ?? 'outline-geometry';
@@ -190,33 +204,32 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
     this.joinSegments = props.joinSegments ?? GPU_OUTLINE_GEOMETRY_DEFAULT_JOIN_SEGMENTS;
     this.verticesPerInput = getGPUOutlineGeometryVerticesPerInput(this.joinSegments);
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      pathOffsets: props.pathOffsets,
-      parameters: props.parameters,
-      outputPositions: props.output.positions
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
+    this.boundaryOffsets =
+      props.geometryType === 'lines'
+        ? props.lineOffsets
+        : props.geometryType === 'polygons'
+          ? props.ringOffsets
+          : undefined;
+    if (!['points', 'lines', 'polygons'].includes(props.geometryType)) {
+      throw new Error(`${id} geometryType must be 'points', 'lines' or 'polygons'`);
     }
-    if (!['points', 'lines', 'rings'].includes(props.geometryType)) {
-      throw new Error(`${id} geometryType must be 'points', 'lines' or 'rings'`);
-    }
-    if (!Number.isInteger(this.joinSegments) || this.joinSegments < 3) {
-      throw new Error(`${id} joinSegments must be an integer of at least 3`);
-    }
+    validateCapacity(id, 'joinSegments', this.joinSegments, 3);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
     if (props.geometryType !== 'points') {
-      if (!props.pathOffsets) {
-        throw new Error(`${id} ${props.geometryType} need pathOffsets`);
+      const offsetsName = props.geometryType === 'lines' ? 'lineOffsets' : 'ringOffsets';
+      if (!this.boundaryOffsets) {
+        throw new Error(`${id} ${offsetsName} is required`);
       }
-      validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-      if (props.pathOffsets.length < 2) {
-        throw new Error(`${id} pathOffsets must contain at least two rows`);
+      validatePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
+      if (this.boundaryOffsets.length < 2) {
+        throw new Error(`${id} ${offsetsName} needs two rows`);
+      }
+      if (props.geometryType === 'polygons') {
+        validatePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
+        validatePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
       }
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -236,7 +249,7 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.positions],
-      [props.positions, props.pathOffsets, props.parameters]
+      [props.positions, this.boundaryOffsets, props.parameters]
     );
   }
 
@@ -247,16 +260,16 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
     const {props, id, joinSegments} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.pathOffsets,
+      this.boundaryOffsets,
       props.parameters,
       props.output.positions
     ]);
-    const hasPaths = props.geometryType !== 'points';
+    const hasLines = props.geometryType !== 'points';
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'}
     ];
-    if (hasPaths && props.pathOffsets) {
-      bindings.push({name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'});
+    if (hasLines && this.boundaryOffsets) {
+      bindings.push({name: 'lineOffsets', view: this.boundaryOffsets, type: 'u32', access: 'read'});
     }
     bindings.push(
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
@@ -271,7 +284,7 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.positions.length,
         declarations: /* wgsl */ `
-const PATH_COUNT: u32 = ${props.pathOffsets ? props.pathOffsets.length - 1 : 0}u;
+const LINE_COUNT: u32 = ${this.boundaryOffsets ? this.boundaryOffsets.length - 1 : 0}u;
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const JOIN_SEGMENTS: u32 = ${joinSegments}u;
 const VERTICES_PER_INPUT: u32 = ${this.verticesPerInput}u;
@@ -314,7 +327,7 @@ fn getDirection(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
   }
   return metric / metricLength;
 }
-${hasPaths ? FIND_PATH_WGSL : ''}`,
+${hasLines ? FIND_LINE_WGSL : ''}`,
         body: /* wgsl */ `let distance = max(parameters[parametersOffset], 0.0);
   let base = index * VERTICES_PER_INPUT;
   let center = getPosition(index);
@@ -331,7 +344,7 @@ ${hasPaths ? FIND_PATH_WGSL : ''}`,
   }
   // Rectangle toward the next vertex, or a degenerate pair of triangles.
   var nextRow = ROW_COUNT;
-  ${hasPaths ? getNextRowSource(props.geometryType) : ''}
+  ${hasLines ? getNextRowSource(props.geometryType) : ''}
   var quad = array<vec2<f32>, 6>(center, center, center, center, center, center);
   if (nextRow < ROW_COUNT) {
     let next = getPosition(nextRow);
@@ -354,26 +367,26 @@ ${hasPaths ? FIND_PATH_WGSL : ''}`,
 }
 
 /**
- * WGSL `findPath(row) -> u32`: upper-bound binary search over the bound `pathOffsets`.
+ * WGSL `findLine(row) -> u32`: upper-bound binary search over the bound `lineOffsets`.
  *
  * @internal
  */
-export const FIND_PATH_WGSL = /* wgsl */ `
-const NO_PATH: u32 = 0xffffffffu;
+export const FIND_LINE_WGSL = /* wgsl */ `
+const NO_LINE: u32 = 0xffffffffu;
 
-fn findPath(row: u32) -> u32 {
+fn findLine(row: u32) -> u32 {
   var low = 0u;
-  var high = PATH_COUNT + 1u;
+  var high = LINE_COUNT + 1u;
   while (low < high) {
     let middle = (low + high) / 2u;
-    if (pathOffsets[pathOffsetsOffset + middle] <= row) {
+    if (lineOffsets[lineOffsetsOffset + middle] <= row) {
       low = middle + 1u;
     } else {
       high = middle;
     }
   }
-  if (low == 0u || low > PATH_COUNT) {
-    return NO_PATH;
+  if (low == 0u || low > LINE_COUNT) {
+    return NO_LINE;
   }
   return low - 1u;
 }
@@ -381,16 +394,16 @@ fn findPath(row: u32) -> u32 {
 
 /** WGSL statements that set `nextRow` for lines or rings. @internal */
 function getNextRowSource(geometryType: GPUOutlineGeometryType): string {
-  return `let path = findPath(index);
-  if (path != NO_PATH) {
-    let pathStart = pathOffsets[pathOffsetsOffset + path];
-    let pathEnd = min(pathOffsets[pathOffsetsOffset + path + 1u], ROW_COUNT);
-    if (index + 1u < pathEnd) {
+  return `let line = findLine(index);
+  if (line != NO_LINE) {
+    let lineStart = lineOffsets[lineOffsetsOffset + line];
+    let lineEnd = min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT);
+    if (index + 1u < lineEnd) {
       nextRow = index + 1u;
     }${
-      geometryType === 'rings'
-        ? ` else if (pathEnd - pathStart >= 2u) {
-      nextRow = pathStart;
+      geometryType === 'polygons'
+        ? ` else if (lineEnd - lineStart >= 2u) {
+      nextRow = lineStart;
     }`
         : ''
     }

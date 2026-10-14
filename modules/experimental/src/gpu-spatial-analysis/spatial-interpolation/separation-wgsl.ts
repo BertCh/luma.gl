@@ -2,20 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
+  getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
-  type GPUSpatialContext,
-  type GPUSpatialContextSupport
-} from '../contracts/index';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
-
-/** Planar or longitude/latitude (great-circle) support of the interpolation operators. */
-const INTERPOLATION_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
-  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
-});
 
 /** Resolved metric of an interpolation operator. @internal */
 export type InterpolationSeparation = {
@@ -36,18 +30,13 @@ export function resolveInterpolationSeparation(
   id: string,
   context: GPUSpatialContext | undefined
 ): InterpolationSeparation {
-  const resolved = resolveGPUSpatialContext(id, context, INTERPOLATION_SPATIAL_CONTEXT_SUPPORT);
+  const resolved = resolveGPUSpatialContext(
+    id,
+    context,
+    GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+  );
   const geographic = resolved.coordinateSpace === 'longitude-latitude';
-  if (geographic && resolved.metric !== 'great-circle') {
-    // Only the sphere is implemented; a rhumb, ellipsoidal or absent metric would silently differ.
-    throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
-  }
-  const sphereRadius =
-    resolved.sphereRadius ??
-    (resolved.units === 'kilometers'
-      ? GPU_EARTH_MEAN_RADIUS_METERS / 1000
-      : GPU_EARTH_MEAN_RADIUS_METERS);
-  return {context: resolved, geographic, sphereRadius};
+  return {context: resolved, geographic, sphereRadius: getGPUSphereRadius(resolved)};
 }
 
 /**

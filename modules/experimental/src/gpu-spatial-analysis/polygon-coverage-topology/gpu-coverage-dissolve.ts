@@ -6,7 +6,6 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -15,18 +14,26 @@ import {
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
   getKeyGroupNodes,
   getKeyPairSortNodes,
   KEY_PAIR_INVALID
 } from '../spatial-weights/key-pair-grouping';
 import {getBoundedKeyPairSortNodes} from '../areal-interpolation/bounded-key-pair-sort';
-import {GPUSegmentRingAssembly, type GPUSegmentRingAssemblyOutput} from '../ring-assembly/index';
+import {
+  GPUSegmentRingAssembly,
+  type GPUSegmentRingAssemblyOutput
+} from '../../analysis-core/ring-assembly/index';
 import {createRingOrientationNode} from './coverage-topology-kernels';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUCoverageDissolve';
 const INVALID = `${KEY_PAIR_INVALID}u`;
@@ -37,21 +44,33 @@ const DEFAULT_SNAPPED_VERTEX_TOLERANCE = 1e-6;
 
 /**
  * Caller-owned outputs of {@link GPUCoverageDissolve}: the outputs of `GPUSegmentRingAssembly`
- * (rings, holes, shells, the GeoArrow `polygons` layout, `count`, `overflow`, ...) plus the number
+ * (rings, holes, shells, the GeoArrow `polygons` layout, `status.count`, `status.overflow`, ...) plus the number
  * of boundary segments. Request `polygons` with `sourceIds` to receive one polygon per
  * connected region together with its label, or `ringGroups` for the label of every ring.
  */
-export type GPUCoverageDissolveOutput = GPUSegmentRingAssemblyOutput & {
-  /**
-   * Optional one-row count of directed boundary segments kept by the dissolve (ring edges whose
-   * neighbor across the edge has a different label, or no neighbor). Useful to size the ring
-   * and vertex capacity.
-   */
-  boundarySegmentCount?: GraphDataView<'uint32'>;
+export type GPUCoverageDissolveOutput = Omit<GPUSegmentRingAssemblyOutput, 'status'> & {
+  /** The ring-assembly status scalars plus the number of boundary segments. */
+  status: GPUSegmentRingAssemblyOutput['status'] & {
+    /**
+     * Optional one-row count of directed boundary segments kept by the dissolve (ring edges whose
+     * neighbor across the edge has a different label, or no neighbor). Useful to size the ring
+     * and vertex capacity.
+     */
+    boundarySegmentCount?: GraphDataView<'uint32'>;
+  };
 };
 
+/** Separates the boundary-segment scalar from the ring-assembly output. */
+function splitDissolveOutput(output: GPUCoverageDissolveOutput): {
+  boundarySegmentCount: GraphDataView<'uint32'> | undefined;
+  ringOutput: GPUSegmentRingAssemblyOutput;
+} {
+  const {boundarySegmentCount, ...status} = output.status;
+  return {boundarySegmentCount, ringOutput: {...output, status}};
+}
+
 /** Properties for {@link GPUCoverageDissolve}. */
-export type GPUCoverageDissolveProps = {
+export type GPUCoverageDissolveProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'coverage-dissolve'`. */
   id?: string;
   /**
@@ -62,19 +81,14 @@ export type GPUCoverageDissolveProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Flattened ring vertices (GeoArrow layout, as `GPUCoverageSimplification`). Planar, finite
-   * coordinates; use tile- or view-local units because the output keeps f32 coordinates.
+   * Layout notes. `positions` are flattened ring vertices, planar and finite (use tile- or
+   * view-local units because the output keeps f32 coordinates). Rows are features; rings close
+   * implicitly. The first ring of each polygon is its shell, the others are holes. Ring winding is
+   * free: orientation is read from the signed area. `ringOffsets`, `polygonOffsets` and
+   * `featureOffsets` each carry a terminal entry.
    */
-  positions: GraphDataView<'float32x2'>;
-  /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly. */
-  ringOffsets: GraphDataView<'uint32'>;
   /**
-   * Polygon-to-ring offsets with a terminal entry. The first ring of each polygon is its shell,
-   * the others are holes. Ring winding is free: orientation is read from the signed area.
-   */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /**
-   * Group label of every polygon, `polygonOffsets.length - 1` rows. Polygons with equal labels
+   * Group label of every feature, `featureOffsets.length - 1` rows. Features with equal labels
    * dissolve into one region (GeoPandas `dissolve(by=...)`). Labels are plain `uint32` values; map
    * strings to dense IDs on the CPU.
    */
@@ -147,15 +161,19 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     }
     validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
     validatePackedUint32View(props.polygonOffsets, `${id} polygonOffsets`);
-    if (props.ringOffsets.length < 2) {
-      throw new Error(`${id} ringOffsets must hold at least two entries`);
-    }
-    if (props.polygonOffsets.length < 2) {
-      throw new Error(`${id} polygonOffsets must hold at least two entries`);
+    validatePackedUint32View(props.featureOffsets, `${id} featureOffsets`);
+    for (const [name, view] of [
+      ['ringOffsets', props.ringOffsets],
+      ['polygonOffsets', props.polygonOffsets],
+      ['featureOffsets', props.featureOffsets]
+    ] as const) {
+      if (view.length < 2) {
+        throw new Error(`${id} ${name} must hold at least two entries`);
+      }
     }
     validatePackedUint32View(props.labels, `${id} labels`);
-    if (props.labels.length !== props.polygonOffsets.length - 1) {
-      throw new Error(`${id} labels length must equal the polygon count`);
+    if (props.labels.length !== props.featureOffsets.length - 1) {
+      throw new Error(`${id} labels length must equal the feature count`);
     }
     if (
       props.snapTolerance !== undefined &&
@@ -166,11 +184,11 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     if (props.vertexTolerance !== undefined && !(props.vertexTolerance > 0)) {
       throw new Error(`${id} vertexTolerance must be positive`);
     }
-    const {boundarySegmentCount, ...ringOutput} = props.output;
+    const {boundarySegmentCount, ringOutput} = splitDissolveOutput(props.output);
     if (boundarySegmentCount) {
-      validatePackedUint32View(boundarySegmentCount, `${id} output.boundarySegmentCount`);
+      validatePackedUint32View(boundarySegmentCount, `${id} output.status.boundarySegmentCount`);
       if (boundarySegmentCount.length < 1) {
-        throw new Error(`${id} output.boundarySegmentCount must hold one uint32`);
+        throw new Error(`${id} output.status.boundarySegmentCount must hold one uint32`);
       }
     }
     validatePackedView(ringOutput.positions, ['float32x2'], `${id} output.positions`);
@@ -188,14 +206,14 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
         ringOutput.polygons?.polygonOffsets,
         ringOutput.polygons?.featureOffsets,
         ringOutput.polygons?.sourceIds,
-        ringOutput.count,
-        ringOutput.overflow,
-        ringOutput.requiredCount,
-        ringOutput.openSegmentCount,
-        ringOutput.touchingSegmentCount,
+        ringOutput.status.count,
+        ringOutput.status.overflow,
+        ringOutput.status.requiredCount,
+        ringOutput.status.openSegmentCount,
+        ringOutput.status.touchingSegmentCount,
         boundarySegmentCount
       ],
-      [props.positions, props.ringOffsets, props.polygonOffsets, props.labels]
+      [props.positions, props.ringOffsets, props.polygonOffsets, props.featureOffsets, props.labels]
     );
   }
 
@@ -204,22 +222,27 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, ringOffsets, polygonOffsets, labels} = props;
-    const {boundarySegmentCount, ...ringOutput} = props.output;
+    const {positions, ringOffsets, polygonOffsets, featureOffsets, labels: featureLabels} = props;
+    const {boundarySegmentCount, ringOutput} = splitDissolveOutput(props.output);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       ringOffsets,
       polygonOffsets,
-      labels,
+      featureOffsets,
+      featureLabels,
       boundarySegmentCount
     ]);
     const vertexCount = positions.length;
     const ringCount = ringOffsets.length - 1;
     const polygonCount = polygonOffsets.length - 1;
+    const featureCount = featureOffsets.length - 1;
     const snapTolerance = props.snapTolerance ?? 0;
     const view = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
 
+    // Label of every polygon (part) from its feature: adjacency is decided per polygon, so parts of
+    // one feature that share an edge still dissolve.
+    const labels = view('polygon-labels', polygonCount);
     const ringFlip = view('ring-flip', ringCount);
     const vertexHigh = view('vertex-high', vertexCount);
     const vertexLow = view('vertex-low', vertexCount);
@@ -227,6 +250,29 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     const vertexNext = view('vertex-next', vertexCount);
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-polygon-labels`,
+        operation: OPERATION,
+        variant: 'polygon-labels',
+        bindings: [
+          {name: 'featureOffsets', view: featureOffsets, type: 'u32', access: 'read'},
+          {name: 'featureLabels', view: featureLabels, type: 'u32', access: 'read'},
+          {name: 'polygonLabels', view: labels, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: polygonCount,
+        declarations: `const FEATURE_COUNT: u32 = ${featureCount}u;`,
+        body: `var feature = 0u;
+  var high = FEATURE_COUNT;
+  while (feature + 1u < high) {
+    let middle = (feature + high) / 2u;
+    if (featureOffsets[featureOffsetsOffset + middle] <= index) {
+      feature = middle;
+    } else {
+      high = middle;
+    }
+  }
+  polygonLabels[polygonLabelsOffset + index] = featureLabels[featureLabelsOffset + feature];`
+      }),
       createRingOrientationNode<Parameters>(graph, {
         id: `${id}-ring-orientation`,
         operation: OPERATION,

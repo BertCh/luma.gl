@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUVisibilityWorkflow,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,16 +12,21 @@ import {
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  createWGSLActiveCountDispatch,
   createWGSLKernelNode,
   createPublishNode,
+  type WGSLActiveCountDispatch,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
+import {createTemporalReductionRangeNode} from './temporal-reduction-sorted-range';
 import {
   GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
   GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH
@@ -40,6 +42,8 @@ const OPERATION = 'GPUTemporalReduction';
 /** Largest slot count reduced in workgroup-private tables (5 words per slot). */
 const PRIVATIZED_SLOT_LIMIT = 256;
 const NO_SLOT = '0xffffffffu';
+/** Workgroup size of the row kernels that an indirect range dispatch gates. */
+const SORTED_WORKGROUP_SIZE = 256;
 /** Largest slot count; `0xffffffff` is the internal "no slot" sentinel. */
 const MAXIMUM_SLOT_COUNT = 0xfffffffe;
 /**
@@ -53,9 +57,9 @@ export type GPUTemporalReductionOutput = {
   /** Rows reduced into each slot. Zero for an empty slot. */
   counts: GraphDataView<'uint32'>;
   /** Minimum value per slot; NaN for an empty slot. */
-  min: GraphDataView<'float32'>;
+  minimums: GraphDataView<'float32'>;
   /** Maximum value per slot; NaN for an empty slot. */
-  max: GraphDataView<'float32'>;
+  maximums: GraphDataView<'float32'>;
   /** Value at the earliest timestamp per slot (lowest row on ties); NaN for an empty slot. */
   first: GraphDataView<'float32'>;
   /** Value at the latest timestamp per slot (lowest row on ties); NaN for an empty slot. */
@@ -100,6 +104,16 @@ export type GPUTemporalReductionProps = {
   bucketCount: number;
   /** Caller-owned dense outputs, each at least `cellCount * bucketCount` rows. */
   output: GPUTemporalReductionOutput;
+  /**
+   * Compile-time, default false. Declares that `timestamps` is non-decreasing in row order and has
+   * no NaN. The rows that fall in `[origin, origin + bucketCount * width)` are then one contiguous
+   * range found by two binary searches in a small kernel, and the classify, extreme and tie kernels
+   * are dispatched indirectly over just that range (the first row comes from a GPU word), so a
+   * scrub costs O(range) instead of O(rows). Results are bit-identical to the unsorted path on
+   * sorted input. Costs one extra `uint32` scratch column of `rows` entries. The order is not
+   * checked; unsorted input silently reduces the wrong rows.
+   */
+  sorted?: boolean;
 };
 
 /**
@@ -127,6 +141,12 @@ export type GPUTemporalReductionProps = {
  *
  * The compact list of occupied slots comes from `GPUVisibilityWorkflow`, so it is ascending and
  * stable. Inputs must be single packed views (chunked vectors are not supported).
+ *
+ * With `sorted: true` the per-row work is limited to the contiguous range of rows whose time falls
+ * in `[origin, origin + bucketCount * width)`: a row belongs to it exactly when its bucket
+ * assignment above is in range, which for sorted times is a prefix test (`d < 0`, or an exact
+ * signed comparison with the origin in word mode) and a suffix test (`d >= fround(bucketCount *
+ * width)`, or an exact word quotient `>= bucketCount`).
  */
 export class GPUTemporalReduction implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -141,39 +161,22 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {cellCount, bucketCount, output} = props;
-    for (const [name, count] of [
-      ['cellCount', cellCount],
-      ['bucketCount', bucketCount]
-    ] as const) {
-      if (!Number.isInteger(count) || count < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    validateCapacity(id, 'cellCount', cellCount);
+    validateCapacity(id, 'bucketCount', bucketCount);
     this.slotCount = cellCount * bucketCount;
     if (this.slotCount > MAXIMUM_SLOT_COUNT) {
       throw new Error(`${id} cellCount * bucketCount must not exceed ${MAXIMUM_SLOT_COUNT}`);
-    }
-    for (const [name, view] of [
-      ['cellIds', props.cellIds],
-      ['timestamps', props.timestamps],
-      ['values', props.values],
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
     }
     const rows = props.values.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     const isWordMode = props.timestamps.format === 'uint32x2';
-    validatePackedUint32View(props.cellIds, `${id} cellIds`);
+    validatePackedView(props.cellIds, ['uint32'], `${id} cellIds`);
     validatePackedView(props.timestamps, [isWordMode ? 'uint32x2' : 'float32'], `${id} timestamps`);
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     for (const [name, view] of [
       ['cellIds', props.cellIds],
@@ -204,11 +207,11 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         );
       }
     }
-    validatePackedUint32View(output.counts, `${id} output.counts`);
-    for (const name of ['min', 'max', 'first', 'last'] as const) {
+    validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+    for (const name of ['minimums', 'maximums', 'first', 'last'] as const) {
       validatePackedView(output[name], ['float32'], `${id} output.${name}`);
     }
-    for (const name of ['counts', 'min', 'max', 'first', 'last'] as const) {
+    for (const name of ['counts', 'minimums', 'maximums', 'first', 'last'] as const) {
       if (output[name].length < this.slotCount) {
         throw new Error(`${id} output.${name} must hold cellCount * bucketCount rows`);
       }
@@ -218,14 +221,14 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       id,
       [
         output.counts,
-        output.min,
-        output.max,
+        output.minimums,
+        output.maximums,
         output.first,
         output.last,
         output.occupiedSlots.ids,
-        output.occupiedSlots.count,
-        output.occupiedSlots.overflow,
-        output.occupiedSlots.requiredCount
+        output.occupiedSlots.status.count,
+        output.occupiedSlots.status.overflow,
+        output.occupiedSlots.status.requiredCount
       ],
       [props.cellIds, props.timestamps, props.values, props.mask, props.parameters]
     );
@@ -244,21 +247,27 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       props.mask,
       props.parameters,
       output.counts,
-      output.min,
-      output.max,
+      output.minimums,
+      output.maximums,
       output.first,
       output.last,
       output.occupiedSlots.ids,
-      output.occupiedSlots.count,
-      output.occupiedSlots.overflow,
-      output.occupiedSlots.requiredCount
+      output.occupiedSlots.status.count,
+      output.occupiedSlots.status.overflow,
+      output.occupiedSlots.status.requiredCount
     ]);
     const rows = props.values.length;
     const isWordMode = props.timestamps.format === 'uint32x2';
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
-    const rowSlots = u32('row-slots', rows);
+    const sorted = props.sorted === true;
+    // Sorted mode keeps the range header `[firstRow, rowCount]` in the first two words of
+    // `rowSlots`, which saves a storage binding in kernels that already bind eight. The per-row
+    // entries then start at word 2 and hold range-relative rows.
+    const rowSlotsBase = sorted ? '2u + ' : '';
+    const rowSlots = u32('row-slots', rows + (sorted ? 2 : 0));
     const rowTimeKeys = u32('row-time-keys', rows);
+    const rowValueKeys = sorted ? u32('row-value-keys', rows) : undefined;
     const minKeys = u32('min-keys', slotCount);
     const maxKeys = u32('max-keys', slotCount);
     const firstTimeKeys = u32('first-time-keys', slotCount);
@@ -267,6 +276,9 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
     const lastRows = u32('last-rows', slotCount);
     const occupied = u32('occupied', slotCount);
     const {counts} = output;
+    const valueKeyExpression = rowValueKeys
+      ? 'rowValueKeys[rowValueKeysOffset + index]'
+      : 'getOrderedKey(values[valuesOffset + index])';
     const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
@@ -279,6 +291,29 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       type: 'u32' | 'f32' | 'atomic<u32>' = 'u32'
     ): WGSLKernelBinding => ({name, view, type, access: 'read_write'});
     const nodes: GPUCommandNode<Parameters>[] = [];
+    // Gates the per-row kernels on the GPU-resident range: ceil(rowCount / 256) workgroups of the
+    // static bounded layout. All gated kernels use the 256-wide workgroup of the dispatch.
+    let rowDispatch: WGSLActiveCountDispatch<Parameters> | undefined;
+    if (sorted) {
+      nodes.push(
+        createTemporalReductionRangeNode<Parameters>(graph, {
+          id: `${id}-range-search`,
+          timestamps: props.timestamps,
+          parameters: props.parameters,
+          rowSlots,
+          bucketCount
+        })
+      );
+      rowDispatch = createWGSLActiveCountDispatch(graph, {
+        id: `${id}-range-dispatch`,
+        operation: OPERATION,
+        count: rowSlots,
+        countRow: 1,
+        maximumItemCount: rows,
+        workgroupSize: SORTED_WORKGROUP_SIZE
+      });
+      nodes.push(rowDispatch.updateNode);
+    }
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -317,25 +352,42 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
           ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
           read('params', props.parameters, isWordMode ? 'u32' : 'f32'),
           write('rowSlots', rowSlots),
-          write('rowTimeKeys', rowTimeKeys)
+          write('rowTimeKeys', rowTimeKeys),
+          ...(rowValueKeys ? [write('rowValueKeys', rowValueKeys)] : [])
         ],
         invocationCount: rows,
+        ...(sorted
+          ? {workgroupSize: SORTED_WORKGROUP_SIZE, condition: rowDispatch!.condition}
+          : {}),
         declarations: `const CELL_COUNT: u32 = ${cellCount}u;
 const BUCKET_COUNT: u32 = ${bucketCount}u;
 ${ORDERED_KEY_WGSL}
 ${isWordMode ? TIME_WORDS_WGSL : ''}`,
-        body: `rowSlots[rowSlotsOffset + index] = ${NO_SLOT};
-  let cell = cellIds[cellIdsOffset + index];
-  let value = values[valuesOffset + index];
+        body: `${
+          sorted
+            ? `let rangeFirstRow = rowSlots[rowSlotsOffset];
+  let rangeRowCount = rowSlots[rowSlotsOffset + 1u];
+  rowSlots[rowSlotsOffset + 2u + index] = ${NO_SLOT};
+  if (index >= rangeRowCount) {
+    return;
+  }
+  let row = rangeFirstRow + index;`
+            : `rowSlots[rowSlotsOffset + index] = ${NO_SLOT};
+  let row = index;`
+        }
+  let cell = cellIds[cellIdsOffset + row];
+  let value = values[valuesOffset + row];
   if (cell >= CELL_COUNT || isNanBits(value)) {
     return;
   }
-  ${props.mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
+  ${props.mask ? 'if (rowMask[rowMaskOffset + row] == 0u) {\n    return;\n  }' : ''}
   var bucket: u32;
   var timeKey: u32;
   ${isWordMode ? WORD_BUCKET_BODY : FLOAT_BUCKET_BODY}
-  rowSlots[rowSlotsOffset + index] = cell * BUCKET_COUNT + bucket;
-  rowTimeKeys[rowTimeKeysOffset + index] = timeKey;`
+  rowSlots[rowSlotsOffset + ${rowSlotsBase}index] = cell * BUCKET_COUNT + bucket;
+  rowTimeKeys[rowTimeKeysOffset + index] = timeKey;${
+    rowValueKeys ? '\n  rowValueKeys[rowValueKeysOffset + index] = getOrderedKey(value);' : ''
+  }`
       })
     );
 
@@ -347,7 +399,9 @@ ${isWordMode ? TIME_WORDS_WGSL : ''}`,
         bindings: [
           read('rowSlots', rowSlots, 'u32'),
           read('rowTimeKeys', rowTimeKeys, 'u32'),
-          read('values', props.values, 'f32'),
+          rowValueKeys
+            ? read('rowValueKeys', rowValueKeys, 'u32')
+            : read('values', props.values, 'f32'),
           write('counts', counts, 'atomic<u32>'),
           write('minKeys', minKeys, 'atomic<u32>'),
           write('maxKeys', maxKeys, 'atomic<u32>'),
@@ -355,6 +409,7 @@ ${isWordMode ? TIME_WORDS_WGSL : ''}`,
           write('lastTimeKeys', lastTimeKeys, 'atomic<u32>')
         ],
         invocationCount: rows,
+        ...(sorted ? {condition: rowDispatch!.condition} : {}),
         // With few slots every row contends on the same handful of counters, so each workgroup
         // reduces into workgroup-private tables and flushes once per occupied slot. Integer add,
         // min and max are associative, so the result is unchanged.
@@ -378,9 +433,9 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
   }
   workgroupBarrier();
   if (index < INVOCATION_COUNT) {
-    let slot = rowSlots[rowSlotsOffset + index];
+    let slot = rowSlots[rowSlotsOffset + ${rowSlotsBase}index];
     if (slot != ${NO_SLOT}) {
-      let valueKey = getOrderedKey(values[valuesOffset + index]);
+      let valueKey = ${valueKeyExpression};
       let timeKey = rowTimeKeys[rowTimeKeysOffset + index];
       atomicAdd(&localCounts[slot], 1u);
       atomicMin(&localMinimums[slot], valueKey);
@@ -403,11 +458,12 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
             }
           : {
               declarations: ORDERED_KEY_WGSL,
-              body: `let slot = rowSlots[rowSlotsOffset + index];
+              ...(sorted ? {workgroupSize: SORTED_WORKGROUP_SIZE} : {}),
+              body: `let slot = rowSlots[rowSlotsOffset + ${rowSlotsBase}index];
   if (slot == ${NO_SLOT}) {
     return;
   }
-  let valueKey = getOrderedKey(values[valuesOffset + index]);
+  let valueKey = ${valueKeyExpression};
   let timeKey = rowTimeKeys[rowTimeKeysOffset + index];
   atomicAdd(&counts[countsOffset + slot], 1u);
   atomicMin(&minKeys[minKeysOffset + slot], valueKey);
@@ -432,16 +488,20 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
           write('lastRows', lastRows, 'atomic<u32>')
         ],
         invocationCount: rows,
-        body: `let slot = rowSlots[rowSlotsOffset + index];
+        ...(sorted
+          ? {workgroupSize: SORTED_WORKGROUP_SIZE, condition: rowDispatch!.condition}
+          : {}),
+        body: `let slot = rowSlots[rowSlotsOffset + ${rowSlotsBase}index];
   if (slot == ${NO_SLOT}) {
     return;
   }
   let timeKey = rowTimeKeys[rowTimeKeysOffset + index];
+  ${sorted ? 'let row = rowSlots[rowSlotsOffset] + index;' : 'let row = index;'}
   if (timeKey == firstTimeKeys[firstTimeKeysOffset + slot]) {
-    atomicMin(&firstRows[firstRowsOffset + slot], index);
+    atomicMin(&firstRows[firstRowsOffset + slot], row);
   }
   if (timeKey == lastTimeKeys[lastTimeKeysOffset + slot]) {
-    atomicMin(&lastRows[lastRowsOffset + slot], index);
+    atomicMin(&lastRows[lastRowsOffset + slot], row);
   }`
       })
     );
@@ -480,8 +540,8 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
           read('minKeys', minKeys, 'u32'),
           read('maxKeys', maxKeys, 'u32'),
           read('counts', counts, 'u32'),
-          write('minOut', output.min, 'f32'),
-          write('maxOut', output.max, 'f32')
+          write('minOut', output.minimums, 'f32'),
+          write('maxOut', output.maximums, 'f32')
         ],
         invocationCount: slotCount,
         declarations: ORDERED_KEY_WGSL,
@@ -530,7 +590,7 @@ ${GET_ORDERED_KEY_WGSL}
 ${DECODE_ORDERED_KEY_WGSL}
 `;
 
-const FLOAT_BUCKET_BODY = /* wgsl */ `let time = timestamps[timestampsOffset + index];
+const FLOAT_BUCKET_BODY = /* wgsl */ `let time = timestamps[timestampsOffset + row];
   let origin = params[paramsOffset];
   let width = params[paramsOffset + 1u];
   if (isNanBits(time) || isNanBits(origin) || isNanBits(width)) {
@@ -561,7 +621,7 @@ const WORD_BUCKET_BODY = /* wgsl */ `let origin = vec2<u32>(params[paramsOffset]
   if (width == 0u) {
     return;
   }
-  let time = vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]);
+  let time = vec2<u32>(timestamps[timestampsOffset + 2u * row], timestamps[timestampsOffset + 2u * row + 1u]);
   // Exact signed order first: the sign of a wrapped difference is wrong when |time - origin| >=
   // 2^63. Past the check, time - origin is a non-negative value below 2^64 (unsigned words).
   if (timeWordsCompare(time, origin) < 0i) {

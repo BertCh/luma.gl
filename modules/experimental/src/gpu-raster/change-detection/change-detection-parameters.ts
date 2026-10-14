@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateParameterTarget} from '../raster-band-utils';
+
 /** Number of float32 elements in a change-detection parameter view. */
 export const GPU_CHANGE_DETECTION_PARAMETER_LENGTH = 5;
 
-/** Per-frame parameters of {@link GPUChangeDetection}. */
-export type GPUChangeDetectionParameters = {
+/** Per-frame settings of {@link GPUChangeDetection}, packed by {@link getGPUChangeDetectionParameterValues}. */
+export type GPUChangeDetectionSettings = {
   /** Slice index of the "before" slice for two-slice comparisons. Out of range makes them NaN. */
   beforeSlice: number;
   /** Slice index of the "after" slice for two-slice comparisons. Out of range makes them NaN. */
@@ -28,22 +30,22 @@ export type GPUChangeDetectionParameters = {
  * Layout (float32): `[beforeSlice, afterSlice, epsilon, alpha, splitSlice]`. Slice indices are
  * small integers and are exact in float32.
  *
- * @param parameters Values to pack.
+ * @param settings Values to pack.
  * @param target Optional destination of at least 5 elements.
  */
 export function getGPUChangeDetectionParameterValues(
-  parameters: GPUChangeDetectionParameters,
+  settings: GPUChangeDetectionSettings,
   target: Float32Array = new Float32Array(GPU_CHANGE_DETECTION_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_CHANGE_DETECTION_PARAMETER_LENGTH) {
-    throw new Error(
-      `Change detection parameter target must hold ${GPU_CHANGE_DETECTION_PARAMETER_LENGTH} elements`
-    );
-  }
-  target[0] = parameters.beforeSlice;
-  target[1] = parameters.afterSlice;
-  target[2] = parameters.epsilon ?? 1e-6;
-  target[3] = parameters.alpha ?? 0.05;
-  target[4] = parameters.splitSlice ?? 1;
+  validateParameterTarget(
+    'getGPUChangeDetectionParameterValues',
+    target,
+    GPU_CHANGE_DETECTION_PARAMETER_LENGTH
+  );
+  target[0] = settings.beforeSlice;
+  target[1] = settings.afterSlice;
+  target[2] = settings.epsilon ?? 1e-6;
+  target[3] = settings.alpha ?? 0.05;
+  target[4] = settings.splitSlice ?? 1;
   return target;
 }

@@ -5,19 +5,22 @@
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validatePackedView,
+  validateGPUStorageBindingByteLength,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createEdgeBundlingBoxNode,
   createEdgeBundlingBoxResetNode,
@@ -27,13 +30,15 @@ import {
   EDGE_BUNDLING_GATE_WORDS_PER_ITERATION,
   createEdgeBundlingIndicesNode,
   createEdgeBundlingInitializeNode,
+  createEdgeBundlingIterationInfoNode,
   createEdgeBundlingSplatNode,
   createEdgeBundlingUpdateNode,
+  EDGE_BUNDLING_ITERATION_SLOT_WORDS,
   type EdgeBundlingConstants,
   type EdgeBundlingParameterView
 } from './edge-bundling-passes';
 
-/** Largest accepted compile-time `iterations`. */
+/** Largest accepted compile-time `maximumIterations`. */
 export const GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS = 64;
 /** Largest accepted compile-time `pointsPerEdge`. */
 export const GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE = 64;
@@ -48,7 +53,7 @@ export const GPU_EDGE_BUNDLING_WORK_BOX_PADDING = 0.05;
 /** Defaults for compile-time props and for per-frame parameters omitted by the caller. */
 export const GPU_EDGE_BUNDLING_DEFAULTS = {
   pointsPerEdge: 16,
-  iterations: 15,
+  maximumIterations: 15,
   densityResolution: 256,
   /** Initial kernel radius as a fraction of the square work box side. */
   kernelRadius: 0.03,
@@ -88,9 +93,9 @@ export function getGPUEdgeBundlingFixedPointExponent(pointCount: number): number
   return exponent;
 }
 
-/** Per-frame bundling parameters, all optional. Omitted values take the defaults. */
-export type GPUEdgeBundlingParameterValues = {
-  /** Iterations to run, clamped to the compiled `iterations`. Default: the compiled maximum. */
+/** Per-frame bundling settings of one {@link GPUEdgeBundling}, all optional. Omitted values take the defaults. */
+export type GPUEdgeBundlingSettings = {
+  /** Iterations to run, clamped to the compiled `maximumIterations`. Default: the compiled maximum. */
   activeIterations?: number;
   /** Initial kernel radius as a fraction of the work box side. Default 0.03. */
   kernelRadius?: number;
@@ -109,24 +114,24 @@ export type GPUEdgeBundlingParameterValues = {
  * patterns of radius, lambda, smoothing and step scale. For `'float32'` every word is a float.
  * Write the result with `GPUParameterBuffer.write`.
  */
-export function createGPUEdgeBundlingParameterValues(
-  values: GPUEdgeBundlingParameterValues,
+export function getGPUEdgeBundlingParameterValues(
+  settings: GPUEdgeBundlingSettings,
   format: 'uint32'
 ): Uint32Array;
-export function createGPUEdgeBundlingParameterValues(
-  values: GPUEdgeBundlingParameterValues,
+export function getGPUEdgeBundlingParameterValues(
+  settings: GPUEdgeBundlingSettings,
   format: 'float32'
 ): Float32Array;
-export function createGPUEdgeBundlingParameterValues(
-  values: GPUEdgeBundlingParameterValues,
+export function getGPUEdgeBundlingParameterValues(
+  settings: GPUEdgeBundlingSettings,
   format: 'uint32' | 'float32'
 ): Uint32Array | Float32Array {
   const floats = Float32Array.of(
-    values.activeIterations ?? GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
-    values.kernelRadius ?? GPU_EDGE_BUNDLING_DEFAULTS.kernelRadius,
-    values.lambda ?? GPU_EDGE_BUNDLING_DEFAULTS.lambda,
-    values.smoothing ?? GPU_EDGE_BUNDLING_DEFAULTS.smoothing,
-    values.stepScale ?? GPU_EDGE_BUNDLING_DEFAULTS.stepScale
+    settings.activeIterations ?? GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
+    settings.kernelRadius ?? GPU_EDGE_BUNDLING_DEFAULTS.kernelRadius,
+    settings.lambda ?? GPU_EDGE_BUNDLING_DEFAULTS.lambda,
+    settings.smoothing ?? GPU_EDGE_BUNDLING_DEFAULTS.smoothing,
+    settings.stepScale ?? GPU_EDGE_BUNDLING_DEFAULTS.stepScale
   );
   if (format === 'float32') {
     return floats;
@@ -134,7 +139,7 @@ export function createGPUEdgeBundlingParameterValues(
   const words = new Uint32Array(floats.buffer.slice(0));
   words[0] = Math.max(
     0,
-    Math.floor(values.activeIterations ?? GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS)
+    Math.floor(settings.activeIterations ?? GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS)
   );
   return words;
 }
@@ -142,28 +147,28 @@ export function createGPUEdgeBundlingParameterValues(
 /**
  * Properties for {@link GPUEdgeBundling}.
  *
- * Compile-time: edge and vertex counts, `pointsPerEdge`, `iterations`, `densityResolution`, and
- * which optional views exist. Per-frame: the contents of `positions`, endpoints, `edgeMask` and
+ * Compile-time: edge and node counts, `pointsPerEdge`, `maximumIterations`, `densityResolution`, and
+ * which optional views exist. Per-frame: the contents of `nodePositions`, endpoints, `edgeMask` and
  * `parameters`.
  */
 export type GPUEdgeBundlingProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'edge-bundling'`. */
   id?: string;
-  /** Vertex positions, one `float32x2` row per vertex, for example a layout's output. */
-  positions: GraphDataView<'float32x2'>;
-  /** Source vertex per edge. Its length defines the edge count. Out-of-range makes the edge dead. */
-  sourceVertices: GraphDataView<'uint32'>;
-  /** Target vertex per edge, same length as `sourceVertices`. Out-of-range makes the edge dead. */
-  targetVertices: GraphDataView<'uint32'>;
+  /** Node positions, one `float32x2` row per node, for example a layout's output. */
+  nodePositions: GraphDataView<'float32x2'>;
+  /** Source node per edge. Its length defines the edge count. Out-of-range makes the edge dead. */
+  sourceNodes: GraphDataView<'uint32'>;
+  /** Target node per edge, same length as `sourceNodes`. Out-of-range makes the edge dead. */
+  targetNodes: GraphDataView<'uint32'>;
   /**
    * Optional per-edge liveness, nonzero is live. Dead edges (masked, out-of-range, or with
    * non-finite endpoint positions) do not splat or affect the work box, and every point of their
-   * output path equals the source vertex position (or `(0, 0)` when the source is out of range),
+   * output path equals the source node position (or `(0, 0)` when the source is out of range),
    * so a fixed draw layout keeps working.
    */
   edgeMask?: GraphDataView<'uint32'>;
   /**
-   * Compile-time coordinates of `positions`. Omitted means planar. With
+   * Compile-time coordinates of `nodePositions`. Omitted means planar. With
    * `coordinateSpace: 'longitude-latitude'`, positions are `[longitude, latitude]` degrees and the
    * work box scales longitude by the cosine of the mid-latitude of the live endpoints (computed on
    * the GPU every encoding, clamped to at least 0.01), so kernel radius, advection and density are
@@ -172,34 +177,36 @@ export type GPUEdgeBundlingProps = {
    * metric is not used; data spanning the antimeridian is not supported.
    */
   spatialContext?: GPUSpatialContext;
-  /**
-   * Compile-time. Same as a longitude/latitude `spatialContext` when true. Must agree with
-   * `spatialContext` when both are given. Default false (planar coordinates).
-   *
-   * @deprecated Use `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}`.
-   */
-  geographic?: boolean;
   /** Compile-time control points per edge, 2 to 64. Defaults to 16. */
   pointsPerEdge?: number;
-  /** Compile-time maximum iteration count, 1 to 64. Defaults to 15. */
-  iterations?: number;
+  /**
+   * Compile-time maximum iteration count, 1 to 64. Defaults to 15. The per-frame `parameters` can
+   * run fewer iterations.
+   */
+  maximumIterations?: number;
   /** Compile-time density grid resolution per axis, at least 8. Defaults to 256. */
   densityResolution?: number;
   /**
    * Optional per-frame parameters with at least 4 rows (5 to include `stepScale`):
    * `[activeIterations, kernelRadius, lambda, smoothing, stepScale]`. A `uint32` view holds the
    * count as an integer and the rest as float bit patterns; a `float32` view holds all as floats.
-   * See {@link createGPUEdgeBundlingParameterValues}. Changing them never recompiles.
+   * See {@link getGPUEdgeBundlingParameterValues}. Changing them never recompiles.
    */
   parameters?: EdgeBundlingParameterView;
+  /** Caller-owned outputs. */
+  output: GPUEdgeBundlingOutput;
+};
+
+/** GPU-written output of {@link GPUEdgeBundling}. */
+export type GPUEdgeBundlingOutput = {
   /**
    * Output polylines, `edgeCount * pointsPerEdge` rows, edge-major (edge `e` point `i` at row
-   * `e * pointsPerEdge + i`), in the caller's coordinates. Endpoints equal the vertex positions
+   * `e * pointsPerEdge + i`), in the caller's coordinates. Endpoints equal the node positions
    * exactly.
    */
   paths: GraphDataView<'float32x2'>;
   /** Optional `edgeCount + 1` rows holding `e * pointsPerEdge`, for PathLayer binary attributes. */
-  startIndices?: GraphDataView<'uint32'>;
+  lineOffsets?: GraphDataView<'uint32'>;
   /**
    * Optional 4-word `drawIndirect` record `[pointsPerEdge, edgeCount, 0, 0]` (vertexCount,
    * instanceCount, firstVertex, firstInstance). Draw an instanced line strip where the vertex
@@ -237,7 +244,7 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   /** Resolved compile-time control points per edge. */
   readonly pointsPerEdge: number;
   /** Resolved compile-time maximum iterations. */
-  readonly iterations: number;
+  readonly maximumIterations: number;
   /** Resolved compile-time density resolution. */
   readonly densityResolution: number;
   /** Number of edges. */
@@ -246,43 +253,34 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   readonly fixedPointExponent: number;
   /** Resolved spatial context. */
   readonly spatialContext: GPUSpatialContext;
-  /** True when positions are longitude/latitude degrees (degree-aware work box). */
-  readonly geographic: boolean;
 
   constructor(props: GPUEdgeBundlingProps) {
     this.id = props.id ?? 'edge-bundling';
     this.props = props;
     this.pointsPerEdge = props.pointsPerEdge ?? GPU_EDGE_BUNDLING_DEFAULTS.pointsPerEdge;
-    this.iterations = props.iterations ?? GPU_EDGE_BUNDLING_DEFAULTS.iterations;
+    this.maximumIterations =
+      props.maximumIterations ?? GPU_EDGE_BUNDLING_DEFAULTS.maximumIterations;
     this.densityResolution =
       props.densityResolution ?? GPU_EDGE_BUNDLING_DEFAULTS.densityResolution;
-    this.edgeCount = props.sourceVertices.length;
-    const {id, pointsPerEdge, iterations, densityResolution, edgeCount} = this;
+    this.edgeCount = props.sourceNodes.length;
+    const {id, pointsPerEdge, maximumIterations, densityResolution, edgeCount} = this;
+    const {output} = props;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
       EDGE_BUNDLING_SPATIAL_CONTEXT_SUPPORT
     );
-    const isLongitudeLatitude = this.spatialContext.coordinateSpace === 'longitude-latitude';
-    if (
-      props.spatialContext &&
-      props.geographic !== undefined &&
-      props.geographic !== isLongitudeLatitude
-    ) {
-      throw new Error(`${id} geographic contradicts spatialContext`);
-    }
-    this.geographic = isLongitudeLatitude || Boolean(props.geographic);
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedView(props.paths, ['float32x2'], `${id} paths`);
+    validatePackedView(props.nodePositions, ['float32x2'], `${id} nodePositions`);
+    validatePackedView(output.paths, ['float32x2'], `${id} output.paths`);
     for (const [name, view] of [
-      ['sourceVertices', props.sourceVertices],
-      ['targetVertices', props.targetVertices],
+      ['sourceNodes', props.sourceNodes],
+      ['targetNodes', props.targetNodes],
       ['edgeMask', props.edgeMask],
-      ['startIndices', props.startIndices],
-      ['drawRecord', props.drawRecord]
+      ['output.lineOffsets', output.lineOffsets],
+      ['output.drawRecord', output.drawRecord]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (props.parameters) {
@@ -294,59 +292,50 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
     if (edgeCount < 1) {
       throw new Error(`${id} must have at least one edge`);
     }
-    if (props.positions.length < 1) {
-      throw new Error(`${id} positions must contain at least one vertex`);
+    if (props.nodePositions.length < 1) {
+      throw new Error(`${id} nodePositions must contain at least one node`);
     }
-    if (props.targetVertices.length !== edgeCount) {
-      throw new Error(`${id} targetVertices length must equal sourceVertices length`);
+    if (props.targetNodes.length !== edgeCount) {
+      throw new Error(`${id} targetNodes length must equal sourceNodes length`);
     }
     if (props.edgeMask && props.edgeMask.length !== edgeCount) {
       throw new Error(`${id} edgeMask length must equal the edge count`);
     }
-    if (
-      !Number.isSafeInteger(pointsPerEdge) ||
-      pointsPerEdge < 2 ||
-      pointsPerEdge > GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE
-    ) {
-      throw new Error(
-        `${id} pointsPerEdge must be an integer in [2, ${GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE}]`
-      );
+    validateCapacity(
+      id,
+      'pointsPerEdge',
+      pointsPerEdge,
+      2,
+      GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE
+    );
+    validateCapacity(
+      id,
+      'maximumIterations',
+      maximumIterations,
+      1,
+      GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS
+    );
+    validateCapacity(id, 'densityResolution', densityResolution, MINIMUM_DENSITY_RESOLUTION);
+    if (output.paths.length !== edgeCount * pointsPerEdge) {
+      throw new Error(`${id} output.paths length must equal edgeCount * pointsPerEdge`);
     }
-    if (
-      !Number.isSafeInteger(iterations) ||
-      iterations < 1 ||
-      iterations > GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS
-    ) {
-      throw new Error(
-        `${id} iterations must be an integer in [1, ${GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS}]`
-      );
+    if (output.lineOffsets && output.lineOffsets.length !== edgeCount + 1) {
+      throw new Error(`${id} output.lineOffsets length must equal edgeCount + 1`);
     }
-    if (
-      !Number.isSafeInteger(densityResolution) ||
-      densityResolution < MINIMUM_DENSITY_RESOLUTION
-    ) {
-      throw new Error(`${id} densityResolution must be an integer of at least 8`);
-    }
-    if (props.paths.length !== edgeCount * pointsPerEdge) {
-      throw new Error(`${id} paths length must equal edgeCount * pointsPerEdge`);
-    }
-    if (props.startIndices && props.startIndices.length !== edgeCount + 1) {
-      throw new Error(`${id} startIndices length must equal edgeCount + 1`);
-    }
-    if (props.drawRecord && props.drawRecord.length !== 4) {
-      throw new Error(`${id} drawRecord must contain exactly four rows`);
+    if (output.drawRecord && output.drawRecord.length !== 4) {
+      throw new Error(`${id} output.drawRecord must contain exactly four rows`);
     }
     this.fixedPointExponent = getGPUEdgeBundlingFixedPointExponent(edgeCount * pointsPerEdge);
     if (this.fixedPointExponent < MINIMUM_FIXED_POINT_EXPONENT) {
       throw new Error(`${id} edgeCount * pointsPerEdge is too large for 32-bit density`);
     }
-    const outputs = [props.paths, props.startIndices, props.drawRecord]
+    const outputs = [output.paths, output.lineOffsets, output.drawRecord]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
     const inputs = [
-      props.positions,
-      props.sourceVertices,
-      props.targetVertices,
+      props.nodePositions,
+      props.sourceNodes,
+      props.targetNodes,
       props.edgeMask,
       props.parameters
     ]
@@ -361,23 +350,26 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns box reset and accumulate, initialize, an iteration gate (only with `parameters`),
-   * three nodes per iteration, finalize, and an optional indices node: `6 + 3 * iterations` nodes
-   * at most. With `parameters`, iterations beyond `activeIterations` dispatch no work.
+   * Returns box reset and accumulate, initialize, iteration info, an iteration gate (only with
+   * `parameters`), three nodes per iteration, finalize, and an optional indices node:
+   * `7 + 3 * maximumIterations` nodes at most. With `parameters`, iterations beyond `activeIterations`
+   * dispatch no work. Every iteration reads its index from its iteration-info slot, so all
+   * iterations share one splat and one update pipeline.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, iterations, pointsPerEdge, densityResolution, edgeCount} = this;
+    const {id, props, maximumIterations, pointsPerEdge, densityResolution, edgeCount} = this;
+    const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.sourceVertices,
-      props.targetVertices,
+      props.nodePositions,
+      props.sourceNodes,
+      props.targetNodes,
       props.edgeMask,
       props.parameters,
-      props.paths,
-      props.startIndices,
-      props.drawRecord
+      output.paths,
+      output.lineOffsets,
+      output.drawRecord
     ]);
     const densityByteLength = densityResolution * densityResolution * Uint32Array.BYTES_PER_ELEMENT;
     if (densityByteLength > graph.device.limits.maxStorageBufferBindingSize) {
@@ -385,18 +377,18 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
     }
     const constants: EdgeBundlingConstants = {
       edgeCount,
-      vertexCount: props.positions.length,
+      vertexCount: props.nodePositions.length,
       pointsPerEdge,
       densityResolution,
       fixedPointExponent: this.fixedPointExponent,
-      iterationCount: iterations,
+      iterationCount: maximumIterations,
       boxPadding: GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
-      geographic: this.geographic
+      geographic: this.spatialContext.coordinateSpace === 'longitude-latitude'
     };
     const inputs = {
-      positions: props.positions,
-      sources: props.sourceVertices,
-      targets: props.targetVertices,
+      positions: props.nodePositions,
+      sources: props.sourceNodes,
+      targets: props.targetNodes,
       mask: props.edgeMask
     };
     const boxKeys = createTransientView(graph, `${id}-box`, 'uint32', 4);
@@ -406,7 +398,20 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       'uint32',
       densityResolution * densityResolution
     );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'work',
+      edgeCount * pointsPerEdge * 8,
+      'lower pointsPerEdge or split the edges'
+    );
     const work = createTransientView(graph, `${id}-work`, 'float32x2', edgeCount * pointsPerEdge);
+    const iterationInfo = createTransientView(
+      graph,
+      `${id}-iteration-info`,
+      'uint32',
+      maximumIterations * EDGE_BUNDLING_ITERATION_SLOT_WORDS
+    );
     // With per-frame parameters, one gate node writes every iteration's indirect dispatch so
     // iterations beyond `activeIterations` dispatch nothing. Without them all iterations run.
     const gate = props.parameters
@@ -414,7 +419,7 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
           graph,
           `${id}-gate`,
           'uint32',
-          iterations * EDGE_BUNDLING_GATE_WORDS_PER_ITERATION,
+          maximumIterations * EDGE_BUNDLING_GATE_WORDS_PER_ITERATION,
           Buffer.STORAGE | Buffer.INDIRECT
         )
       : undefined;
@@ -437,6 +442,13 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
         work
       })
     ];
+    nodes.push(
+      createEdgeBundlingIterationInfoNode<Parameters>(graph, {
+        id: `${id}-iteration-info`,
+        iterationInfo,
+        iterationCount: maximumIterations
+      })
+    );
     if (gate && props.parameters) {
       nodes.push(
         createEdgeBundlingGateNode<Parameters>(graph, {
@@ -447,10 +459,14 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
         })
       );
     }
-    for (let iteration = 0; iteration < iterations; iteration++) {
+    for (let iteration = 0; iteration < maximumIterations; iteration++) {
       const iterationProps = {
         constants,
-        iteration,
+        iterationInfo: graph.createDataView(iterationInfo.buffer, {
+          format: 'uint32',
+          length: 1,
+          byteOffset: iterationInfo.byteOffset + 4 * iteration * EDGE_BUNDLING_ITERATION_SLOT_WORDS
+        }),
         parameters: props.parameters,
         work,
         density,
@@ -479,16 +495,16 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
         inputs,
         boxKeys,
         work,
-        paths: props.paths
+        paths: output.paths
       })
     );
-    if (props.startIndices || props.drawRecord) {
+    if (output.lineOffsets || output.drawRecord) {
       nodes.push(
         createEdgeBundlingIndicesNode<Parameters>(graph, {
           id: `${id}-indices`,
           constants,
-          startIndices: props.startIndices,
-          drawRecord: props.drawRecord
+          startIndices: output.lineOffsets,
+          drawRecord: output.drawRecord
         })
       );
     }

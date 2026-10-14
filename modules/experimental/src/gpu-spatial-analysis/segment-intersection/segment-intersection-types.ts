@@ -4,10 +4,11 @@
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import type {
-  GPUSpatialJoinLines,
-  GPUSpatialJoinPairs,
-  GPUSpatialJoinPolygons
-} from '../spatial-join/index';
+  GPUCompactPairPort,
+  GPULineGeometryPort,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 
 /**
  * Values written to `kinds` by `GPUSegmentIntersection`. Slot `0` never appears in the output.
@@ -53,7 +54,9 @@ export const GPU_SEGMENT_NONE = 0xffffffff;
  * zero-length segment (equal consecutive vertices) or a segment with a non-finite coordinate is
  * skipped and never intersects anything.
  */
-export type GPUSegmentGeometry = GPUSpatialJoinLines | GPUSpatialJoinPolygons;
+export type GPUSegmentGeometry =
+  | GPUPackedGeometryPort<GPULineGeometryPort>
+  | GPUPackedGeometryPort<GPUPolygonGeometryPort>;
 
 /**
  * Optional per-pair columns and scalars of `GPUSegmentIntersection`, all aligned with
@@ -76,5 +79,22 @@ export type GPUSegmentIntersectionColumns = {
   rightRings?: GraphDataView<'uint32'>;
 };
 
-/** Output pair list; see {@link GPUSpatialJoinPairs}. Row IDs are segment IDs. */
-export type GPUSegmentIntersectionPairs = GPUSpatialJoinPairs;
+/** Output pair list; see {@link GPUCompactPairPort}. Row IDs are segment IDs. */
+export type GPUSegmentIntersectionPairs = GPUCompactPairPort;
+
+/**
+ * Caller-owned outputs of `GPUSegmentIntersection`: the sorted pair list, the optional per-pair
+ * columns and the status. Slots `[0, pairs.count)` of every column are valid.
+ */
+export type GPUSegmentIntersectionOutput = GPUSegmentIntersectionColumns & {
+  /** Sorted `(left, right)` segment pairs; see {@link GPUSegmentIntersectionPairs}. */
+  pairs: GPUSegmentIntersectionPairs;
+  /** Optional status scalars. */
+  status?: {
+    /**
+     * Optional one-row count of pairs within the capacity that were classified `uncertain`. Those
+     * pairs are listed in the output with the `uncertain` kind; none are silently dropped.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
+  };
+};

@@ -26,7 +26,7 @@ export type GPUSpatialCorrelogramVarianceAssumption = 'normality' | 'randomizati
  *
  * Every field can change between encodings without rebuilding or recompiling the graph.
  */
-export type GPUSpatialCorrelogramParameters = {
+export type GPUSpatialCorrelogramSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate
    * or value, are excluded. The extent also sizes the neighbor-search lattice.
@@ -42,32 +42,28 @@ export type GPUSpatialCorrelogramParameters = {
  * Packs `GPUSpatialCorrelogram` parameters into the 8-element float32 layout
  * `[minX, minY, maxX, maxY, maximumDistance, randomization (0 or 1), 0, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param@param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, the variance
  * assumption is unknown, or `target` is too short.
  */
 export function getGPUSpatialCorrelogramParameterValues(
-  parameters: GPUSpatialCorrelogramParameters,
+  settings: GPUSpatialCorrelogramSettings,
   target: Float32Array = new Float32Array(GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH) {
     throw new Error(
-      `Spatial correlogram target must hold ${GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH} elements`
+      `GPUSpatialCorrelogram target must hold ${GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH} elements`
     );
   }
-  validatePairStatisticsBounds(
-    'Spatial correlogram',
-    parameters.bounds,
-    parameters.maximumDistance
-  );
-  const assumption = parameters.varianceAssumption ?? 'randomization';
+  validatePairStatisticsBounds('GPUSpatialCorrelogram', settings.bounds, settings.maximumDistance);
+  const assumption = settings.varianceAssumption ?? 'randomization';
   if (assumption !== 'normality' && assumption !== 'randomization') {
-    throw new Error('Spatial correlogram varianceAssumption must be normality or randomization');
+    throw new Error('GPUSpatialCorrelogram varianceAssumption must be normality or randomization');
   }
   target.set([
-    ...parameters.bounds,
-    parameters.maximumDistance,
+    ...settings.bounds,
+    settings.maximumDistance,
     assumption === 'randomization' ? 1 : 0,
     0,
     0

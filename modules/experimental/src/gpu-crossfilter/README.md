@@ -119,6 +119,11 @@ boundaries. Source-aligned masks and compacted visibility outputs use matching
 topology; no input rows are concatenated, copied to the CPU, or implicitly
 repacked.
 
+For large tables, `skipUnchangedDimensions: true` re-runs only the nodes that depend on a changed
+selection (call `filter.invalidate()` after rewriting source buffers), and `histogramCubes: true` with
+`filter.activateView(id)` serves linked histograms from Falcon-style cubes in `O(bins)` per brush. Both are
+opt-in; see the API reference for their assumptions and caveats.
+
 Call `filter.destroy()` when the controller is no longer needed to release
 resources it owns. Imported source vectors, caller-owned outputs, command
 submission, and any optional readback remain under application control.

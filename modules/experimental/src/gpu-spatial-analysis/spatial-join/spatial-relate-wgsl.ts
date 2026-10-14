@@ -5,6 +5,7 @@
 import {
   forEachEdge,
   getMinimumRingVertices,
+  getPieceInsideWGSL,
   getSideWGSL,
   getSpatialPredicateCommonWGSL,
   type SpatialPredicateSide
@@ -146,11 +147,16 @@ fn ${p}RelatePieceCode(a: vec2f, b: vec2f, f: u32, t0: f32, t1: f32) -> u32 { re
   }
   const classify =
     side.kind === 'polygons'
-      ? `let location = ${p}RelateLocate(a + (b - a) * tm, f);
-  if (location == 0u) { return 0u; }
-  return select(1u, 2u, location == 1u);`
+      ? `return select(0u, 2u, ${p}RelatePieceInside(a, b, f, tm));`
       : 'return 0u;';
+  const pieceInside =
+    side.kind === 'polygons'
+      ? getPieceInsideWGSL(`${p}RelatePieceInside`, `${p}RelateLocate`, (yLow, yHigh, body) =>
+          forEachSlabCandidateEdge(side, 'f', 'c', 'd', yLow, yHigh, body, withSlabIndex)
+        )
+      : '';
   return `${box}
+${pieceInside}
 // Next parameter after t in (0, 1] where segment a-b crosses or starts to overlap an edge.
 fn ${p}RelateNextBreak(a: vec2f, b: vec2f, f: u32, t: f32) -> f32 {
   var best = 1.0;
@@ -521,8 +527,9 @@ fn ${p}SlabLocate(q: vec2f, f: u32) -> u32 {
  * The matrix is derived from structure, not sampling: vertex locations, edge crossings and
  * collinear overlaps, and edge pieces between crossings located against the other geometry. Every
  * orientation sign is exact (shared `orientSign`), so the uncertain bit is set only for input with
- * no sign (non-finite coordinates, product exponents spanning more than 200 bits). Piece
- * midpoints and break parameters are still computed in f32.
+ * no sign (non-finite coordinates, product exponents spanning more than 200 bits). A piece is
+ * located from an exactly located endpoint and the exact crossings between it and the piece, not
+ * from its rounded midpoint; only the break parameters that order crossings along an edge are f32.
  *
  * @internal
  */

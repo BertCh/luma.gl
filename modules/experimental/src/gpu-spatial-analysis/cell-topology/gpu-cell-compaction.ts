@@ -3,12 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {dggs} from '@luma.gl/shadertools';
+import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,7 +16,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   CELL_KEY_WGSL,
@@ -26,14 +26,12 @@ import {
   type GPUCellFamily
 } from '../cell-aggregation/cell-keys';
 import {getCellTableNodes, hasCellKeyHighWord} from '../cell-aggregation/cell-table';
+import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
 
 const OPERATION = 'GPUCellCompaction';
 
 /** Default deepest ancestor-to-descendant expansion of one `uncompact` input cell. */
 export const GPU_CELL_UNCOMPACT_DEFAULT_MAXIMUM_DEPTH = 8;
-
-/** Word order of the input cell keys. */
-export type GPUCellCompactionWordOrder = 'little-endian' | 'high-low';
 
 /**
  * Merges complete sets of sibling cells into their parent, recursively (H3 `compactCells`, CARTO
@@ -67,20 +65,23 @@ export type GPUCellUncompactOperation = {
 
 /** Caller-owned, capacity-bounded output of {@link GPUCellCompaction}. */
 export type GPUCellCompactionOutput = {
-  /** Output cell keys as little-endian `(low, high)` words; rows past `count` are zero. */
+  /** Output cell keys as little-endian `(low, high)` words; rows past `status.count` are zero. */
   cells: GraphDataView<'uint32x2'>;
-  /** One-row scalar receiving `min(requiredCount, cells.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when more cells exist than `cells.length`, otherwise 0. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of output cells. */
-  requiredCount?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row scalar receiving the number of input rows (within `count`) that were
-   * dropped: invalid keys, masked rows, other resolutions (`compact`), cells below the target
-   * resolution or deeper than `maximumDepth` (`uncompact`).
-   */
-  droppedCount?: GraphDataView<'uint32'>;
+  /** Count, completeness and diagnostic scalars. */
+  status: {
+    /** One-row scalar receiving `min(requiredCount, cells.length)`. */
+    count: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped number of output cells. */
+    requiredCount?: GraphDataView<'uint32'>;
+    /** One-row scalar receiving 1 when more cells exist than `cells.length`, otherwise 0. */
+    overflow: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row scalar receiving the number of input rows (within `count`) that were
+     * dropped: invalid keys, masked rows, other resolutions (`compact`), cells below the target
+     * resolution or deeper than `maximumDepth` (`uncompact`).
+     */
+    droppedCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /** Properties for {@link GPUCellCompaction}. */
@@ -94,7 +95,7 @@ export type GPUCellCompactionProps = {
   /** Input cell keys, two `uint32` words per row. */
   cells: GraphDataView<'uint32x2'>;
   /** Word order of `cells`. Defaults to `'little-endian'` (`(low, high)`, Arrow layout). */
-  wordOrder?: GPUCellCompactionWordOrder;
+  wordOrder?: GPUCellWordOrder;
   /** Optional per-row mask; zero drops the row. */
   mask?: GraphDataView<'uint32'>;
   /** Optional one-row scalar: only the first `count` rows of `cells` are read. */
@@ -117,7 +118,7 @@ function getH3SubtreeSizes(): {hexagon: number[]; pentagon: number[]} {
 }
 
 /** WGSL helpers shared by both operations. */
-function getFamilyWGSL(family: GPUCellFamily, wordOrder: GPUCellCompactionWordOrder): string {
+function getFamilyWGSL(family: GPUCellFamily, wordOrder: GPUCellWordOrder): string {
   const sizes = getH3SubtreeSizes();
   const toArray = (name: string, values: number[]) =>
     `const ${name} = array<u32, ${values.length}>(${values.map(value => `${value}u`).join(', ')});`;
@@ -175,7 +176,7 @@ fn getDescendantCount(compact: vec2u, resolution: u32, depth: u32) -> u32 {
  * keys, so every level is checked in one pass; the result equals iterated sibling merging. The
  * output is in ascending canonical key order, which is ascending resolution first (the
  * resolution sits above the cell path in the key), then ascending path. Rows of another
- * resolution, invalid keys and masked rows are dropped and counted in `output.droppedCount`.
+ * resolution, invalid keys and masked rows are dropped and counted in `output.status.droppedCount`.
  *
  * `uncompact`: every valid input cell at or above `operation.resolution` (and within
  * `maximumDepth`) produces all of its descendants there (4^d Quadbin, 7^d H3 hexagon,
@@ -183,11 +184,11 @@ fn getDescendantCount(compact: vec2u, resolution: u32, depth: u32) -> u32 {
  * scan, and a per-output-slot binary search of the offsets. Descendants of one input cell come in
  * ascending key order and cells in input row order, so the output is globally ascending when the
  * input rows are in ascending path order (for example all at one resolution and sorted).
- * Duplicate or overlapping input cells produce duplicate output cells. The total count is a `u32`
- * and wraps beyond 2^32 cells.
+ * Duplicate or overlapping input cells produce duplicate output cells. A total reaching 2^32
+ * saturates `output.status.requiredCount` to `0xffffffff` and sets `output.status.overflow`.
  *
- * Both outputs are capacity bounded: `count` is clamped, the first `count` cells in the order above
- * are kept, `overflow` is written on the GPU, and rows past `count` are zero. Integer arithmetic
+ * Both outputs are capacity bounded: `status.count` is clamped, the first `status.count` cells in the order above
+ * are kept, `output.status.overflow` is written on the GPU, and rows past `status.count` are zero. Integer arithmetic
  * only, so results are identical on every device.
  *
  * Consumes cell keys and flags only, so it takes no `spatialContext`.
@@ -231,22 +232,22 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       throw new Error(`${id} cells must hold at least one row`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== props.cells.length) {
         throw new Error(`${id} mask must have the same length as cells`);
       }
     }
     for (const [name, view] of [
       ['count', props.count],
-      ['output.count', output.count],
-      ['output.overflow', output.overflow],
-      ['output.requiredCount', output.requiredCount],
-      ['output.droppedCount', output.droppedCount]
+      ['output.status.count', output.status.count],
+      ['output.status.overflow', output.status.overflow],
+      ['output.status.requiredCount', output.status.requiredCount],
+      ['output.status.droppedCount', output.status.droppedCount]
     ] as const) {
       if (!view) {
         continue;
       }
-      validatePackedUint32View(view, `${id} ${name}`);
+      validatePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} must contain one uint32 row`);
       }
@@ -257,15 +258,21 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.cells, output.count, output.overflow, output.requiredCount, output.droppedCount],
+      [
+        output.cells,
+        output.status.count,
+        output.status.overflow,
+        output.status.requiredCount,
+        output.status.droppedCount
+      ],
       [props.cells, props.mask, props.count]
     );
     const outputs = [
       output.cells,
-      output.count,
-      output.overflow,
-      output.requiredCount,
-      output.droppedCount
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount,
+      output.status.droppedCount
     ].filter(Boolean) as GraphDataView[];
     if (new Set(outputs).size !== outputs.length) {
       throw new Error(`${id} output views must be distinct`);
@@ -282,10 +289,10 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       props.mask,
       props.count,
       props.output.cells,
-      props.output.count,
-      props.output.overflow,
-      props.output.requiredCount,
-      props.output.droppedCount
+      props.output.status.count,
+      props.output.status.overflow,
+      props.output.status.requiredCount,
+      props.output.status.droppedCount
     ]);
     return props.operation.type === 'compact'
       ? this.getCompactNodes(graph, props.operation)
@@ -331,12 +338,12 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     const input = this.getInputBindings();
     const familyWGSL = getFamilyWGSL(props.family, props.wordOrder ?? 'little-endian');
 
-    if (output.droppedCount) {
+    if (output.status.droppedCount) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-clear-dropped`,
           operation: OPERATION,
-          view: output.droppedCount,
+          view: output.status.droppedCount,
           type: 'u32',
           value: '0u',
           componentCount: 1
@@ -362,11 +369,11 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
           ...(rowIds
             ? [{name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'} as const]
             : []),
-          ...(output.droppedCount
+          ...(output.status.droppedCount
             ? [
                 {
                   name: 'droppedCount',
-                  view: output.droppedCount,
+                  view: output.status.droppedCount,
                   type: 'atomic<u32>',
                   access: 'read_write'
                 } as const
@@ -382,7 +389,7 @@ ${familyWGSL}`,
     if (${input.maskWGSL} && isValidKey(key) && getKeyResolution(key) == RESOLUTION) {
       compact = cellGetCompactKey(key, ${layout.lowBit}u, ${layout.width}u);
     } else {
-      ${output.droppedCount ? 'atomicAdd(&droppedCount[droppedCountOffset], 1u);' : ''}
+      ${output.status.droppedCount ? 'atomicAdd(&droppedCount[droppedCountOffset], 1u);' : ''}
     }
   }
   keyLow[keyLowOffset + index] = compact.y;
@@ -408,8 +415,7 @@ ${familyWGSL}`,
         output: {
           cells: uniqueView,
           counts: u32('unique-counts'),
-          count: uniqueCount,
-          overflow: u32('unique-overflow', 1)
+          status: {count: uniqueCount, overflow: u32('unique-overflow', 1)}
         }
       })
     );
@@ -574,13 +580,13 @@ ${familyWGSL}`,
           {name: 'orderedIds', view: orderedIds, type: 'u32', access: 'read'},
           {name: 'emitted', view: emitted, type: 'u32', access: 'read'},
           {name: 'cellsOut', view: output.cells, type: 'u32', access: 'read_write'},
-          {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
-          {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'},
-          ...(output.requiredCount
+          {name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'},
+          {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...(output.status.requiredCount
             ? [
                 {
                   name: 'totalOut',
-                  view: output.requiredCount,
+                  view: output.status.requiredCount,
                   type: 'u32',
                   access: 'read_write'
                 } as const
@@ -594,7 +600,7 @@ ${familyWGSL}`,
   if (index == 0u) {
     countOut[countOutOffset] = count;
     overflowOut[overflowOutOffset] = select(0u, 1u, totalCells > CAPACITY);
-    ${output.requiredCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
+    ${output.status.requiredCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
   }
   var low = 0u;
   var high = 0u;
@@ -632,12 +638,12 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
   return cellGetCompactKey(key, lowBit, 52u - lowBit);
 }`;
 
-    if (output.droppedCount) {
+    if (output.status.droppedCount) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-clear-dropped`,
           operation: OPERATION,
-          view: output.droppedCount,
+          view: output.status.droppedCount,
           type: 'u32',
           value: '0u',
           componentCount: 1
@@ -655,11 +661,11 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
         bindings: [
           ...input.bindings,
           {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
-          ...(output.droppedCount
+          ...(output.status.droppedCount
             ? [
                 {
                   name: 'droppedCount',
-                  view: output.droppedCount,
+                  view: output.status.droppedCount,
                   type: 'atomic<u32>',
                   access: 'read_write'
                 } as const
@@ -680,7 +686,7 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
       }
     }
     if (!keep) {
-      ${output.droppedCount ? 'atomicAdd(&droppedCount[droppedCountOffset], 1u);' : ''}
+      ${output.status.droppedCount ? 'atomicAdd(&droppedCount[droppedCountOffset], 1u);' : ''}
     }
   }
   counts[countsOffset + index] = descendants;`
@@ -698,6 +704,18 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
       }).getCommandNodes(graph)
     );
 
+    const scanTotal = u32('scan-total', 1);
+    nodes.push(
+      ...createSaturatedScanTotalNodes<Parameters>(graph, {
+        id: id,
+        operation: OPERATION,
+        counts: counts,
+        offsets: offsets,
+        rowCount: rows,
+        total: scanTotal
+      })
+    );
+
     // 3. One invocation per output slot finds its source row and unranks the descendant.
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -706,16 +724,16 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
         variant: 'uncompact-expand',
         bindings: [
           {name: 'cells', view: props.cells, type: 'u32', access: 'read'},
-          {name: 'counts', view: counts, type: 'u32', access: 'read'},
+          {name: 'scanTotal', view: scanTotal, type: 'u32', access: 'read'},
           {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
           {name: 'cellsOut', view: output.cells, type: 'u32', access: 'read_write'},
-          {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
-          {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'},
-          ...(output.requiredCount
+          {name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'},
+          {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...(output.status.requiredCount
             ? [
                 {
                   name: 'totalOut',
-                  view: output.requiredCount,
+                  view: output.status.requiredCount,
                   type: 'u32',
                   access: 'read_write'
                 } as const
@@ -756,12 +774,12 @@ fn getDescendant(compact: vec2u, resolution: u32, depth: u32, rankIn: u32) -> ve
   return cellShiftLeft(compact, 3u * depth) | digits;`
   }
 }`,
-        body: `let totalCells = offsets[offsetsOffset + ROW_COUNT - 1u] + counts[countsOffset + ROW_COUNT - 1u];
+        body: `let totalCells = scanTotal[scanTotalOffset];
   let count = min(totalCells, CAPACITY);
   if (index == 0u) {
     countOut[countOutOffset] = count;
     overflowOut[overflowOutOffset] = select(0u, 1u, totalCells > CAPACITY);
-    ${output.requiredCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
+    ${output.status.requiredCount ? 'totalOut[totalOutOffset] = totalCells;' : ''}
   }
   var result = vec2u(0u);
   if (index < count) {

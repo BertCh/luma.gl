@@ -26,13 +26,15 @@ import {
 import {DECODE_ORDERED_KEY_WGSL, GET_NAN_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUWeightedOverlay';
+/** Workgroup size of the range-reducing score kernel; its WGSL tree reduction depends on it. */
+const SCORE_WORKGROUP_SIZE = 256;
 
 /** Caller-owned outputs of {@link GPUWeightedOverlay}. `score` is required. */
 export type GPUWeightedOverlayOutput = {
   /** Weighted score per cell; NaN for nodata or restricted cells. */
   score: GraphDataView<'float32'>;
   /** Optional `1` where `score` is defined, else `0`. */
-  validity?: GraphDataView<'uint32'>;
+  outputValidity?: GraphDataView<'uint32'>;
   /** Optional two rows `[minimum, maximum]` of the defined scores; NaN when none is defined. */
   scoreRange?: GraphDataView<'float32'>;
 };
@@ -76,7 +78,7 @@ export type GPUWeightedOverlayProps = {
 /**
  * Weighted overlay (suitability analysis) of up to 16 float32 rasters.
  *
- * Each layer value is remapped, either linearly from `[inputMin, inputMax]` to `[0, 1]` (clamped,
+ * Each layer value is remapped, either linearly from `[inputMinimum, inputMaximum]` to `[0, 1]` (clamped,
  * optionally inverted) or through a per-layer break table to a class value, then
  * `score = sum(weight[i] * remap[i](value[i]))` is accumulated in f32 in fixed layer order, so the
  * result is deterministic. A NaN class value marks a restricted class (ArcGIS "Restricted"): the
@@ -143,11 +145,17 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       throw new Error(`${id} needs output.score`);
     }
     validateRasterAlgebraView(id, 'output.score', output.score, 'float32', cellCount);
-    validateRasterAlgebraView(id, 'output.validity', output.validity, 'uint32', cellCount);
+    validateRasterAlgebraView(
+      id,
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      cellCount
+    );
     validateRasterAlgebraView(id, 'output.scoreRange', output.scoreRange, 'float32', 2);
     validateRasterAlgebraAliasing(
       id,
-      [output.score, output.validity, output.scoreRange],
+      [output.score, output.outputValidity, output.scoreRange],
       [props.stack, props.parameters, props.remapBreaks, props.remapValues]
     );
   }
@@ -164,7 +172,7 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       props.remapBreaks,
       props.remapValues,
       output.score,
-      output.validity,
+      output.outputValidity,
       output.scoreRange
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -196,10 +204,10 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
       );
     }
     bindings.push({name: 'scoreOut', view: output.score, type: 'f32', access: 'read_write'});
-    if (output.validity) {
+    if (output.outputValidity) {
       bindings.push({
         name: 'validityOut',
-        view: output.validity,
+        view: output.outputValidity,
         type: 'u32',
         access: 'read_write'
       });
@@ -221,13 +229,15 @@ export class GPUWeightedOverlay implements GPUCommandNodeProducer {
         invocationCount: cellCount,
         // The range reduction needs workgroup barriers, so every invocation runs the body.
         guardIndex: !rangeKeys,
+        // The range tree reduction below assumes this size.
+        workgroupSize: rangeKeys ? SCORE_WORKGROUP_SIZE : undefined,
         declarations: `const LAYER_COUNT: u32 = ${layerCount}u;
 const CELL_COUNT: u32 = ${cellCount}u;
 const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
 ${
   rangeKeys
-    ? `var<workgroup> tileMinimum: array<u32, 256>;
-var<workgroup> tileMaximum: array<u32, 256>;`
+    ? `var<workgroup> tileMinimum: array<u32, ${SCORE_WORKGROUP_SIZE}>;
+var<workgroup> tileMaximum: array<u32, ${SCORE_WORKGROUP_SIZE}>;`
     : ''
 }
 ${getRasterAlgebraValueWGSL(props.noDataValue)}
@@ -252,11 +262,11 @@ ${GET_ORDERED_KEY_WGSL}`,
     }
     var remapped = 0.0;
     if (params[base + 1u] == 0.0) {
-      let inputMin = params[base + 2u];
+      let inputMinimum = params[base + 2u];
       if (params[base + 7u] != 0.0) {
-        remapped = select(0.0, 1.0, value >= inputMin);
+        remapped = select(0.0, 1.0, value >= inputMinimum);
       } else {
-        remapped = clamp((value - inputMin) * params[base + 3u], 0.0, 1.0);
+        remapped = clamp((value - inputMinimum) * params[base + 3u], 0.0, 1.0);
       }
       if (params[base + 4u] != 0.0) {
         remapped = 1.0 - remapped;
@@ -288,7 +298,7 @@ ${GET_ORDERED_KEY_WGSL}`,
   score = select(getNaN(), score, isDefined && !isNaNValue(score));
   let isScoreDefined = !isNaNValue(score);
   scoreOut[scoreOutOffset + index] = score;
-  ${output.validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isScoreDefined);' : ''}
+  ${output.outputValidity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isScoreDefined);' : ''}
   ${
     rangeKeys
       ? `if (isScoreDefined) {
@@ -301,7 +311,7 @@ ${GET_ORDERED_KEY_WGSL}`,
   tileMinimum[localInvocationIndex] = minimumKey;
   tileMaximum[localInvocationIndex] = maximumKey;
   workgroupBarrier();
-  for (var stride = 128u; stride > 0u; stride = stride >> 1u) {
+  for (var stride = ${SCORE_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride >> 1u) {
     if (localInvocationIndex < stride) {
       tileMinimum[localInvocationIndex] = min(tileMinimum[localInvocationIndex], tileMinimum[localInvocationIndex + stride]);
       tileMaximum[localInvocationIndex] = max(tileMaximum[localInvocationIndex], tileMaximum[localInvocationIndex + stride]);

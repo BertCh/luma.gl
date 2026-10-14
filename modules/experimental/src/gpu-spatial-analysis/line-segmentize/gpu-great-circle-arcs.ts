@@ -5,43 +5,43 @@
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   getGPUSphereRadius,
   GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createArcCountNode,
   createArcEmitNode,
-  createIdentitySourcePathsNode,
-  createPathOffsetsPublishNode
+  createIdentitySourceLineIndicesNode,
+  createLineOffsetsPublishNode
 } from './line-segmentize-kernels';
 import {GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} from './line-segmentize-parameters';
-import type {GPULinePathOutput} from './line-segmentize-types';
-import {getLinePathOutputViews, validateLinePathOutput} from './line-path-output';
+import type {GPULineGeometryOutput} from './line-segmentize-types';
+import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
 
 const OPERATION = 'GPUGreatCircleArcs';
 
 /** Default compile-time cap on segments per arc. */
-export const GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENTS = 256;
+export const GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENT_COUNT = 256;
 
 /**
  * Properties for {@link GPUGreatCircleArcs}.
  *
  * Per-frame (no recompile): the contents of `parameters` (resolution) and of `sources` and
- * `targets`. Compile-time: the pair count, `spatialContext`, `maximumSegments`, the output capacity, and
+ * `targets`. Compile-time: the pair count, `spatialContext`, `maximumSegmentCount`, the output capacity, and
  * which optional outputs are present.
  */
 export type GPUGreatCircleArcsProps = {
@@ -58,30 +58,30 @@ export type GPUGreatCircleArcsProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Compile-time cap on segments per arc. Default 256. `pairCount * (maximumSegments + 1)` must
+   * Compile-time cap on segments per arc. Default 256. `pairCount * (maximumSegmentCount + 1)` must
    * fit in 32 bits.
    */
-  maximumSegments?: number;
+  maximumSegmentCount?: number;
   /**
    * Per-frame packed float32 view of at least {@link GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} elements
    * written with `getGPUGreatCircleArcsParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /** Arc paths, one output path per pair (`pathOffsets` has `pairCount + 1` rows). */
-  output: GPULinePathOutput;
+  /** Arc lines, one output line per pair (`lineOffsets` has `pairCount + 1` rows). */
+  output: GPULineGeometryOutput;
 };
 
 /**
  * Tessellates great-circle arcs between many origin/destination pairs on the GPU (turf
  * `greatCircle`, the CPU step behind flow maps drawn with `PathLayer`).
  *
- * Pair `i` becomes one path of `segments + 1` vertices, where
- * `segments = clamp(max(ceil(distance / maximumSegmentLength), minimumSegments), 1, maximumSegments)`
+ * Pair `i` becomes one line of `segments + 1` vertices, where
+ * `segments = clamp(max(ceil(distance / maximumSegmentLength), minimumSegments), 1, maximumSegmentCount)`
  * and `distance` is the haversine distance times the sphere radius. Interior vertices are slerped evenly in
  * angle; the first vertex is the source and the last is the target exactly.
  *
  * Antimeridian: longitudes are unwrapped to stay continuous from the source (for example a
- * Tokyo to San Francisco arc runs from 139.7 to 237.6), never split into two paths. Feed the
+ * Tokyo to San Francisco arc runs from 139.7 to 237.6), never split into two lines. Feed the
  * result to `PathLayer` with `wrapLongitude: true`, or use it directly in a globe view.
  *
  * Limits: a pair less than about 1e-3 rad from antipodal has no unique great circle; its arc is
@@ -98,7 +98,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
   /** Resolved sphere radius in the context's length unit. */
   readonly radius: number;
   /** Resolved compile-time segment cap. */
-  readonly maximumSegments: number;
+  readonly maximumSegmentCount: number;
 
   constructor(props: GPUGreatCircleArcsProps) {
     this.id = props.id ?? 'great-circle-arcs';
@@ -109,17 +109,9 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
       {coordinateSpaces: ['longitude-latitude'], metrics: ['great-circle']}
     );
     this.radius = getGPUSphereRadius(this.spatialContext);
-    this.maximumSegments = props.maximumSegments ?? GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENTS;
+    this.maximumSegmentCount =
+      props.maximumSegmentCount ?? GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENT_COUNT;
     const {id} = this;
-    for (const [name, view] of [
-      ['sources', props.sources],
-      ['targets', props.targets],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.sources, ['float32x2'], `${id} sources`);
     validatePackedView(props.targets, ['float32x2'], `${id} targets`);
     const pairCount = props.sources.length;
@@ -129,30 +121,29 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
     if (props.targets.length !== pairCount) {
       throw new Error(`${id} targets length must equal sources length`);
     }
-    if (
-      !Number.isSafeInteger(this.maximumSegments) ||
-      this.maximumSegments < 1 ||
-      pairCount * (this.maximumSegments + 1) > 0xffffffff
-    ) {
-      throw new Error(
-        `${id} maximumSegments must be a positive integer with pairCount * (maximumSegments + 1) < 2^32`
-      );
-    }
+    // pairCount * (maximumSegmentCount + 1) must fit in 32 bits.
+    validateCapacity(
+      id,
+      'maximumSegmentCount',
+      this.maximumSegmentCount,
+      1,
+      Math.floor(0xffffffff / pairCount) - 1
+    );
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH) {
       throw new Error(
         `${id} parameters must hold ${GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} float32 values`
       );
     }
-    validateLinePathOutput(id, props.output, pairCount);
-    validateGraphOutputsDisjointFromInputs(id, getLinePathOutputViews(props.output), [
+    validateLineGeometryOutput(id, props.output, pairCount);
+    validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
       props.sources,
       props.targets,
       props.parameters
     ]);
   }
 
-  /** Returns the count node, the scan nodes, the emit node, the publish node and an optional source-path node. */
+  /** Returns the count node, the scan nodes, the emit node, the publish node and an optional source-line-index node. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -162,7 +153,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
       props.sources,
       props.targets,
       props.parameters,
-      ...getLinePathOutputViews(output)
+      ...getLineGeometryOutputViews(output)
     ]);
     const pairCount = props.sources.length;
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', pairCount);
@@ -175,7 +166,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
         targets: props.targets,
         parameters: props.parameters,
         radius,
-        maximumSegments: this.maximumSegments,
+        maximumSegmentCount: this.maximumSegmentCount,
         counts
       }),
       ...new GPUScan({
@@ -196,27 +187,27 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
         outputSourceRows: output.sourceRows,
         outputMeasures: output.measures
       }),
-      createPathOffsetsPublishNode<Parameters>(graph, {
+      createLineOffsetsPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        pathCount: pairCount,
+        lineCount: pairCount,
         rowCount: pairCount,
         counts,
         starts,
-        outputPathOffsets: output.pathOffsets,
+        outputLineOffsets: output.lineOffsets,
         capacity: output.positions.length,
-        count: output.count,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount,
-        pathCountOutput: output.pathCount
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
+        lineCountOutput: output.status.lineCount
       })
     ];
-    if (output.sourcePaths) {
+    if (output.sourceLineIndices) {
       nodes.push(
-        createIdentitySourcePathsNode<Parameters>(graph, {
-          id: `${id}-source-paths`,
+        createIdentitySourceLineIndicesNode<Parameters>(graph, {
+          id: `${id}-source-line-indexs`,
           operation: OPERATION,
-          sourcePaths: output.sourcePaths
+          sourceLineIndices: output.sourceLineIndices
         })
       );
     }

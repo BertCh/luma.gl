@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,10 +13,15 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {validateGPUStatusPort, type GPUIterationStatusPort} from '../contracts/index';
+import {
+  validateGPUStatusPort,
+  type GPUIterationStatusPort
+} from '../../analysis-core/contracts/index';
 import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from './incomplete-gamma-wgsl';
 
 const OPERATION = 'GPUTransitionDiagnostics';
@@ -152,25 +156,17 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
     this.minimumTransitions =
       props.minimumTransitions ?? GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS;
     const {classCount, output} = props;
-    if (!Number.isInteger(classCount) || classCount < 1 || classCount > MAXIMUM_CLASS_COUNT) {
-      throw new Error(`${id} classCount must be an integer in [1, ${MAXIMUM_CLASS_COUNT}]`);
-    }
-    if (!Number.isInteger(this.conditionCount) || this.conditionCount < 1) {
-      throw new Error(`${id} conditionCount must be a positive integer`);
-    }
-    if (!Number.isInteger(this.minimumTransitions) || this.minimumTransitions < 1) {
-      throw new Error(`${id} minimumTransitions must be a positive integer`);
-    }
+    validateCapacity(id, 'classCount', classCount, 1, MAXIMUM_CLASS_COUNT);
+    validateCapacity(id, 'conditionCount', this.conditionCount);
+    validateCapacity(id, 'minimumTransitions', this.minimumTransitions);
     validatePackedUint32View(props.counts, `${id} counts`);
     if (props.counts.length < this.conditionCount * classCount * classCount) {
-      throw new Error(`${id} counts must hold conditionCount * classCount^2 rows`);
+      throw new Error(`${id} counts is too short`);
     }
     if (output.homogeneity) {
       validatePackedView(output.homogeneity, ['float32'], `${id} output.homogeneity`);
       if (output.homogeneity.length < GPU_TRANSITION_HOMOGENEITY_LENGTH) {
-        throw new Error(
-          `${id} output.homogeneity must hold ${GPU_TRANSITION_HOMOGENEITY_LENGTH} rows`
-        );
+        throw new Error(`${id} output.homogeneity is too short`);
       }
       if (this.conditionCount < 2) {
         // A homogeneity test compares at least two conditional matrices.
@@ -180,15 +176,13 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
     if (output.steadyStates) {
       validatePackedView(output.steadyStates, ['float32'], `${id} output.steadyStates`);
       if (output.steadyStates.length < this.chainCount * classCount) {
-        throw new Error(`${id} output.steadyStates must hold chains * classCount rows`);
+        throw new Error(`${id} output.steadyStates is too short`);
       }
     }
     if (output.stateSparsity) {
       validatePackedUint32View(output.stateSparsity, `${id} output.stateSparsity`);
       if (output.stateSparsity.length < GPU_TRANSITION_STATE_SPARSITY_LENGTH) {
-        throw new Error(
-          `${id} output.stateSparsity must hold ${GPU_TRANSITION_STATE_SPARSITY_LENGTH} rows`
-        );
+        throw new Error(`${id} output.stateSparsity is too short`);
       }
     }
     if (output.status) {

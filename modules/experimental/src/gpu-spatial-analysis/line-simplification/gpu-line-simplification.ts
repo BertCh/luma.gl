@@ -3,22 +3,27 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
   GPUCompaction,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
+import type {GPULineGeometryFields} from '../../analysis-core/contracts/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createRasterIterationFinalizeNode,
@@ -43,16 +48,24 @@ import {
   createVisvalingamUnresolvedNode,
   type VisvalingamScratch
 } from './visvalingam-kernels';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
-import {
-  getTrajectoryGeodesicRadius,
-  resolveTrajectorySpatialContext
-} from '../trajectory-analysis/trajectory-spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPULineSimplification';
 
-/** Default compile-time cap on Douglas-Peucker rounds. */
-export const GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ROUNDS = 64;
+/** Splits `output` into the row selection (present when `ids` is given) and the status bag. */
+function getOutputParts(props: GPULineSimplificationProps): {
+  selection: GPULineSimplificationSelectionOutput | undefined;
+  status: GPULineSimplificationStatus | undefined;
+} {
+  const {output} = props;
+  return {
+    selection: output?.ids ? (output as GPULineSimplificationSelectionOutput) : undefined,
+    status: output?.status
+  };
+}
+
+/** Default compile-time cap on Douglas-Peucker iterations. */
+export const GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ITERATIONS = 64;
 
 /**
  * Default `finishSpanLimit`: Douglas-Peucker intervals with at most this many interior rows are
@@ -63,11 +76,11 @@ export const GPU_LINE_SIMPLIFICATION_DEFAULT_FINISH_SPAN_LIMIT = 32;
 /** Largest accepted `finishSpanLimit`. */
 export const GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT = 128;
 
-/** Largest accepted compile-time round cap. */
-export const GPU_LINE_SIMPLIFICATION_MAXIMUM_ROUNDS = 1024;
+/** Largest accepted compile-time iteration cap. */
+export const GPU_LINE_SIMPLIFICATION_MAXIMUM_ITERATIONS = 1024;
 
-/** Default compile-time cap on Visvalingam-Whyatt rounds (`method: 'visvalingam'`). */
-export const GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_ROUNDS = 256;
+/** Default compile-time cap on Visvalingam-Whyatt iterations (`method: 'visvalingam'`). */
+export const GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_MAXIMUM_ITERATIONS = 256;
 
 /** Default `neighborhoodRadius` of `method: 'visvalingam'`. */
 export const GPU_LINE_SIMPLIFICATION_DEFAULT_NEIGHBORHOOD_RADIUS = 3;
@@ -84,42 +97,49 @@ export type GPULineSimplificationMethod = 'douglas-peucker' | 'visvalingam';
 
 /** Optional scalar diagnostics of the importance pass. */
 export type GPULineSimplificationStatus = {
-  /** One-row scalar: `1` when every row was decided within `maximumRounds`, otherwise `0`. */
+  /** One-row scalar: `1` when every row was decided within `maximumIterations`, otherwise `0`. */
   converged?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving the number of rounds that ran. */
-  roundCount?: GraphDataView<'uint32'>;
+  /** One-row scalar receiving the number of iterations (importance rounds) that ran. */
+  iterationCount?: GraphDataView<'uint32'>;
 };
 
 /**
  * Per-frame selection outputs of {@link GPULineSimplification}, all written from the current
- * tolerance in `parameters`.
+ * tolerance in `parameters`. The kept rows are the {@link GPUCompactOutput} fields: `ids` lists them
+ * in ascending order (line order, then row order), `count` is clamped to `ids.length` so it can
+ * drive an indirect draw, and `overflow` is 1 when more rows were kept.
  */
-export type GPULineSimplificationSelection = {
-  /**
-   * Kept rows in ascending order (line order, then row order). `count` is clamped to
-   * `ids.length`, so it can drive an indirect draw; `overflow` is 1 when more rows were kept.
-   */
-  output: GPUCompactOutput;
-  /** Optional per-row `1`/`0` keep mask, one row per position. */
-  keepMask?: GraphDataView<'uint32'>;
+export type GPULineSimplificationSelectionOutput = GPUCompactOutput & {
+  /** Optional per-row `1`/`0` mask of the kept rows, one row per position. */
+  outputMask?: GraphDataView<'uint32'>;
   /** Optional kept-row count of each line, `lineCount` rows. Not clamped by the capacity. */
   lineCounts?: GraphDataView<'uint32'>;
   /**
-   * Optional position of each line's first kept row inside `output.ids`, `lineCount` rows. A line
-   * with `lineStarts + lineCounts > output.ids.length` is truncated by the capacity.
+   * Optional position of each line's first kept row inside `ids`, `lineCount` rows. A line
+   * with `lineStarts + lineCounts > ids.length` is truncated by the capacity.
    */
   lineStarts?: GraphDataView<'uint32'>;
 };
 
 /**
+ * Caller-owned outputs of {@link GPULineSimplification}. Give the selection fields (`ids`,
+ * `count`, `overflow`, ...) to select the kept rows at the current tolerance, and `status` to
+ * report the importance pass; at least one of them is needed unless `importance` is computed.
+ */
+export type GPULineSimplificationOutput = {
+  /** Optional convergence diagnostics; only with `computeImportance`. */
+  status?: GPULineSimplificationStatus;
+} & (GPULineSimplificationSelectionOutput | {ids?: undefined});
+
+/**
  * Properties for {@link GPULineSimplification}.
  *
  * Per-frame (no recompile): the contents of `parameters` (the tolerance) and of every input
- * buffer. Compile-time (needs a new graph): view lengths, the line count (`trackOffsets.length - 1`),
- * `metric`, `maximumRounds`, `computeImportance`, the output capacity, and which optional views are
+ * buffer. Compile-time (needs a new graph): view lengths, the line count (`lineOffsets.length - 1`),
+ * `metric`, `maximumIterations`, `computeImportance`, the output capacity, and which optional views are
  * present.
  */
-export type GPULineSimplificationProps = {
+export type GPULineSimplificationProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-simplification'`. */
   id?: string;
   /**
@@ -139,17 +159,10 @@ export type GPULineSimplificationProps = {
    * holds for planar contexts only.
    */
   spatialContext?: GPUSpatialContext;
-  /**
-   * Packed planar positions, one row per vertex, sorted by line (track) and then vertex order. Use
-   * tile- or view-local coordinates: distances are f32.
-   */
-  positions: GraphDataView<'float32x2'>;
-  /**
-   * `lineCount + 1` monotonic row offsets; line `l` owns rows `[trackOffsets[l], trackOffsets[l + 1])`,
-   * the same layout as `GPUTrajectoryMetrics`. Rows outside `[trackOffsets[0], trackOffsets[lineCount])`
-   * get importance 0 and are never kept.
-   */
-  trackOffsets: GraphDataView<'uint32'>;
+  // `positions` (one row per vertex, sorted by line and then vertex order; use tile- or
+  // view-local coordinates since distances are f32) and `lineOffsets` come from
+  // `GPULineGeometryFields`. Rows outside `[lineOffsets[0], lineOffsets[lineCount])` get
+  // importance 0 and are never kept.
   /**
    * Packed float32 times aligned with `positions`. Required for `metric: 'time-ratio'`, ignored
    * otherwise.
@@ -187,31 +200,30 @@ export type GPULineSimplificationProps = {
    */
   computeImportance?: boolean;
   /**
-   * Compile-time cap on level-synchronous rounds, in `[1, 1024]`. Default 64 (256 for
+   * Compile-time cap on level-synchronous iterations (rounds), in `[1, 1024]`. Default 64 (256 for
    * `method: 'visvalingam'`). A balanced split
    * tree needs about `log2(n)` rounds; adversarial shapes (spirals) need up to `n - 2`. Each round
    * adds five nodes, and rounds after convergence are skipped on the GPU.
    */
-  maximumRounds?: number;
+  maximumIterations?: number;
   /**
    * Douglas-Peucker only. An open interval with at most this many interior rows is solved
    * completely by one lane (explicit-stack recursion, same distances, ties and importance as the
    * level rounds) instead of one split level per round, which removes the long tail of rounds
-   * that a few small intervals otherwise need and so also lowers `roundCount`. In `[0, 128]`,
+   * that a few small intervals otherwise need and so also lowers `iterationCount`. In `[0, 128]`,
    * default {@link GPU_LINE_SIMPLIFICATION_DEFAULT_FINISH_SPAN_LIMIT}; `0` runs rounds only.
-   * Converged importance is identical for every value; only the round count and what a
-   * `maximumRounds` cap leaves undecided change. Compile-time.
+   * Converged importance is identical for every value; only the iteration count and what a
+   * `maximumIterations` cap leaves undecided change. Compile-time.
    */
   finishSpanLimit?: number;
-  /** Optional convergence diagnostics; only with `computeImportance`. */
-  status?: GPULineSimplificationStatus;
   /**
    * Per-frame packed float32 view of at least {@link GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH}
-   * elements written with `getGPULineSimplificationParameterValues`. Required with `selection`.
+   * elements written with `getGPULineSimplificationParameterValues`. Required when `output`
+   * selects rows.
    */
   parameters?: GraphDataView<'float32'>;
-  /** Optional per-frame selection at the current tolerance. */
-  selection?: GPULineSimplificationSelection;
+  /** Optional selection at the current tolerance and importance diagnostics. */
+  output?: GPULineSimplificationOutput;
 };
 
 /**
@@ -227,7 +239,7 @@ export type GPULineSimplificationProps = {
  * importance of the split that created the interval, so importance never increases from parent to
  * child. An interval whose largest distance is 0 is decided at once with importance 0. Rounds are
  * GPU gated: after each round a one-thread gate stops the indirect dispatch when no row remains
- * undecided (converged) or `maximumRounds` ran. Rows left undecided by the cap get the importance
+ * undecided (converged) or `maximumIterations` ran. Rows left undecided by the cap get the importance
  * of their interval's split, which is at least their true importance.
  *
  * **Selection.** A row is kept when `importance > tolerance` (line endpoints always). The
@@ -284,8 +296,8 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   readonly neighborhoodRadius: number;
   /** Distance metric. */
   readonly metric: GPULineSimplificationMetric;
-  /** Compile-time round cap. */
-  readonly maximumRounds: number;
+  /** Compile-time iteration cap. */
+  readonly maximumIterations: number;
   /** Largest open interval solved whole by one lane (Douglas-Peucker). */
   readonly finishSpanLimit: number;
   /** Whether the importance rounds are part of this contributor. */
@@ -293,43 +305,34 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
 
   constructor(props: GPULineSimplificationProps) {
     this.id = props.id ?? 'line-simplification';
-    this.spatialContext = resolveTrajectorySpatialContext(this.id, props.spatialContext);
-    this.sphereRadius = getTrajectoryGeodesicRadius(this.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
+    this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     this.props = props;
     this.metric = props.metric ?? 'segment';
     this.method = props.method ?? 'douglas-peucker';
     this.neighborhoodRadius =
       props.neighborhoodRadius ?? GPU_LINE_SIMPLIFICATION_DEFAULT_NEIGHBORHOOD_RADIUS;
-    this.maximumRounds =
-      props.maximumRounds ??
+    this.maximumIterations =
+      props.maximumIterations ??
       (this.method === 'visvalingam'
-        ? GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_ROUNDS
-        : GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ROUNDS);
+        ? GPU_LINE_SIMPLIFICATION_DEFAULT_VISVALINGAM_MAXIMUM_ITERATIONS
+        : GPU_LINE_SIMPLIFICATION_DEFAULT_MAXIMUM_ITERATIONS);
     this.computeImportance = props.computeImportance ?? true;
     this.finishSpanLimit =
       props.finishSpanLimit ?? GPU_LINE_SIMPLIFICATION_DEFAULT_FINISH_SPAN_LIMIT;
-    if (
-      !Number.isSafeInteger(this.finishSpanLimit) ||
-      this.finishSpanLimit < 0 ||
-      this.finishSpanLimit > GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT
-    ) {
-      throw new Error(
-        `${this.id} finishSpanLimit must be an integer in [0, ${GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT}]`
-      );
-    }
-    const {id, metric, maximumRounds, method, neighborhoodRadius} = this;
-    const {selection, status} = props;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['trackOffsets', props.trackOffsets],
-      ['timestamps', props.timestamps],
-      ['importance', props.importance],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      this.id,
+      'finishSpanLimit',
+      this.finishSpanLimit,
+      0,
+      GPU_LINE_SIMPLIFICATION_MAXIMUM_FINISH_SPAN_LIMIT
+    );
+    const {id, metric, maximumIterations, method, neighborhoodRadius} = this;
+    const {selection, status} = getOutputParts(props);
     if (method !== 'douglas-peucker' && method !== 'visvalingam') {
       throw new Error(`${id} method must be 'douglas-peucker' or 'visvalingam'`);
     }
@@ -342,38 +345,34 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       if (metric !== 'segment') {
         throw new Error(`${id} method 'visvalingam' does not support metric '${metric}'`);
       }
-      if (
-        !Number.isSafeInteger(neighborhoodRadius) ||
-        neighborhoodRadius < 1 ||
-        neighborhoodRadius > GPU_LINE_SIMPLIFICATION_MAXIMUM_NEIGHBORHOOD_RADIUS
-      ) {
-        throw new Error(
-          `${id} neighborhoodRadius must be an integer in [1, ${GPU_LINE_SIMPLIFICATION_MAXIMUM_NEIGHBORHOOD_RADIUS}]`
-        );
-      }
+      validateCapacity(
+        id,
+        'neighborhoodRadius',
+        neighborhoodRadius,
+        1,
+        GPU_LINE_SIMPLIFICATION_MAXIMUM_NEIGHBORHOOD_RADIUS
+      );
     }
     if (metric !== 'segment' && metric !== 'time-ratio') {
       throw new Error(`${id} metric must be 'segment' or 'time-ratio'`);
     }
-    if (
-      !Number.isSafeInteger(maximumRounds) ||
-      maximumRounds < 1 ||
-      maximumRounds > GPU_LINE_SIMPLIFICATION_MAXIMUM_ROUNDS
-    ) {
-      throw new Error(
-        `${id} maximumRounds must be an integer in [1, ${GPU_LINE_SIMPLIFICATION_MAXIMUM_ROUNDS}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumIterations',
+      maximumIterations,
+      1,
+      GPU_LINE_SIMPLIFICATION_MAXIMUM_ITERATIONS
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedUint32View(props.trackOffsets, `${id} trackOffsets`);
-    if (props.trackOffsets.length < 2) {
-      throw new Error(`${id} trackOffsets must contain at least two rows`);
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
     }
-    const lineCount = props.trackOffsets.length - 1;
+    const lineCount = props.lineOffsets.length - 1;
     validatePackedView(props.importance, ['float32'], `${id} importance`);
     if (props.importance.length !== rowCount) {
       throw new Error(`${id} importance length must equal positions length`);
@@ -387,23 +386,23 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         throw new Error(`${id} timestamps length must equal positions length`);
       }
     }
-    if (status && !this.computeImportance) {
-      throw new Error(`${id} status requires computeImportance`);
+    if ((status?.converged || status?.iterationCount) && !this.computeImportance) {
+      throw new Error(`${id} output.status.converged and iterationCount require computeImportance`);
     }
     for (const [name, scalar] of [
       ['converged', status?.converged],
-      ['roundCount', status?.roundCount]
+      ['iterationCount', status?.iterationCount]
     ] as const) {
       if (scalar) {
-        validatePackedUint32View(scalar, `${id} status.${name}`);
+        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
-          throw new Error(`${id} status.${name} must contain one uint32 row`);
+          throw new Error(`${id} output.status.${name} needs one row`);
         }
       }
     }
     if (selection) {
       if (!props.parameters) {
-        throw new Error(`${id} parameters are required with selection`);
+        throw new Error(`${id} parameters are required to select rows`);
       }
       validatePackedView(props.parameters, ['float32'], `${id} parameters`);
       if (props.parameters.length < GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH) {
@@ -411,11 +410,11 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           `${id} parameters must hold ${GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} float32 values`
         );
       }
-      validateCompactOutput(id, selection.output);
-      if (selection.keepMask) {
-        validatePackedUint32View(selection.keepMask, `${id} selection.keepMask`);
-        if (selection.keepMask.length !== rowCount) {
-          throw new Error(`${id} selection.keepMask length must equal positions length`);
+      validateCompactOutput(id, selection);
+      if (selection.outputMask) {
+        validatePackedView(selection.outputMask, ['uint32'], `${id} output.outputMask`);
+        if (selection.outputMask.length !== rowCount) {
+          throw new Error(`${id} output.outputMask length must equal positions length`);
         }
       }
       for (const [name, view] of [
@@ -423,17 +422,17 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         ['lineStarts', selection.lineStarts]
       ] as const) {
         if (view) {
-          validatePackedUint32View(view, `${id} selection.${name}`);
+          validatePackedView(view, ['uint32'], `${id} output.${name}`);
           if (view.length !== lineCount) {
-            throw new Error(`${id} selection.${name} length must equal the line count`);
+            throw new Error(`${id} output.${name} length must equal the line count`);
           }
         }
       }
     }
     if (!this.computeImportance && !selection) {
-      throw new Error(`${id} requires computeImportance or selection`);
+      throw new Error(`${id} requires computeImportance or selected output`);
     }
-    const inputs = [props.positions, props.trackOffsets, props.timestamps, props.parameters];
+    const inputs = [props.positions, props.lineOffsets, props.timestamps, props.parameters];
     if (!this.computeImportance) {
       inputs.push(props.importance);
     }
@@ -442,12 +441,12 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       [
         this.computeImportance ? props.importance : undefined,
         status?.converged,
-        status?.roundCount,
-        selection?.output.ids,
-        selection?.output.count,
-        selection?.output.overflow,
-        selection?.output.requiredCount,
-        selection?.keepMask,
+        status?.iterationCount,
+        selection?.ids,
+        selection?.status.count,
+        selection?.status.overflow,
+        selection?.status.requiredCount,
+        selection?.outputMask,
         selection?.lineCounts,
         selection?.lineStarts
       ],
@@ -456,7 +455,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns, when computing importance, the init node, `maximumRounds` gated rounds of reset,
+   * Returns, when computing importance, the init node, `maximumIterations` gated rounds of reset,
    * distance, argmax, split, and gate nodes, an unresolved-row node and an optional status node;
    * then, with `selection`, the mask, compaction, publish, and optional per-line range nodes.
    */
@@ -464,20 +463,20 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {selection, status} = props;
+    const {selection, status} = getOutputParts(props);
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.trackOffsets,
+      props.lineOffsets,
       props.timestamps,
       props.importance,
       props.parameters,
       status?.converged,
-      status?.roundCount,
-      selection?.output.ids,
-      selection?.output.count,
-      selection?.output.overflow,
-      selection?.output.requiredCount,
-      selection?.keepMask,
+      status?.iterationCount,
+      selection?.ids,
+      selection?.status.count,
+      selection?.status.overflow,
+      selection?.status.requiredCount,
+      selection?.outputMask,
       selection?.lineCounts,
       selection?.lineStarts
     ]);
@@ -494,7 +493,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   private _getVisvalingamNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): GPUCommandNode<Parameters>[] {
-    const {props, id, maximumRounds} = this;
+    const {props, id, maximumIterations} = this;
     const rowCount = props.positions.length;
     const scratch: VisvalingamScratch = {
       previousRows: createTransientView(graph, `${id}-previous-rows`, 'uint32', rowCount),
@@ -512,12 +511,12 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       }),
       createVisvalingamInitNode<Parameters>(graph, {
         id: `${id}-init`,
-        trackOffsets: props.trackOffsets,
+        lineOffsets: props.lineOffsets,
         scratch,
         importance: props.importance
       })
     ];
-    for (let round = 0; round < maximumRounds; round++) {
+    for (let round = 0; round < maximumIterations; round++) {
       const roundId = `${id}-round-${round}`;
       nodes.push(
         ...createVisvalingamRoundNodes<Parameters>(graph, {
@@ -533,7 +532,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           id: `${roundId}-gate`,
           operation: OPERATION,
           state,
-          maxIterations: maximumRounds
+          maxIterations: maximumIterations
         })
       );
     }
@@ -544,14 +543,15 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         importance: props.importance
       })
     );
-    if (props.status?.converged || props.status?.roundCount) {
+    const status = props.output?.status;
+    if (status?.converged || status?.iterationCount) {
       nodes.push(
         createRasterIterationFinalizeNode<Parameters>(graph, {
           id: `${id}-status`,
           operation: OPERATION,
           state,
-          converged: props.status.converged,
-          iterationCount: props.status.roundCount
+          converged: status.converged,
+          iterationCount: status.iterationCount
         })
       );
     }
@@ -564,7 +564,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
     if (this.method === 'visvalingam') {
       return this._getVisvalingamNodes(graph);
     }
-    const {props, id, maximumRounds} = this;
+    const {props, id, maximumIterations} = this;
     const rowCount = props.positions.length;
     const scratch: LineImportanceScratch = {
       leftAnchors: createTransientView(graph, `${id}-left-anchors`, 'uint32', rowCount),
@@ -582,12 +582,12 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       }),
       createLineImportanceInitNode<Parameters>(graph, {
         id: `${id}-init`,
-        trackOffsets: props.trackOffsets,
+        lineOffsets: props.lineOffsets,
         scratch,
         importance: props.importance
       })
     ];
-    for (let round = 0; round < maximumRounds; round++) {
+    for (let round = 0; round < maximumIterations; round++) {
       const roundId = `${id}-round-${round}`;
       nodes.push(
         ...createLineImportanceRoundNodes<Parameters>(graph, {
@@ -606,7 +606,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           id: `${roundId}-gate`,
           operation: OPERATION,
           state,
-          maxIterations: maximumRounds
+          maxIterations: maximumIterations
         })
       );
     }
@@ -617,14 +617,15 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         importance: props.importance
       })
     );
-    if (props.status?.converged || props.status?.roundCount) {
+    const status = props.output?.status;
+    if (status?.converged || status?.iterationCount) {
       nodes.push(
         createRasterIterationFinalizeNode<Parameters>(graph, {
           id: `${id}-status`,
           operation: OPERATION,
           state,
-          converged: props.status.converged,
-          iterationCount: props.status.roundCount
+          converged: status.converged,
+          iterationCount: status.iterationCount
         })
       );
     }
@@ -633,29 +634,29 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
 
   private _getSelectionNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    selection: GPULineSimplificationSelection,
+    selection: GPULineSimplificationSelectionOutput,
     parameters: GraphDataView<'float32'>
   ): GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const rowCount = props.positions.length;
-    const keepMask =
-      selection.keepMask ?? createTransientView(graph, `${id}-keep-mask`, 'uint32', rowCount);
+    const outputMask =
+      selection.outputMask ?? createTransientView(graph, `${id}-keep-mask`, 'uint32', rowCount);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rowCount);
     const compactRows = createTransientView(graph, `${id}-compact-rows`, 'uint32', rowCount);
     const requiredCount = createTransientView(graph, `${id}-kept-total`, 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [
       createLineKeepMaskNode<Parameters>(graph, {
         id: `${id}-keep-mask`,
-        trackOffsets: props.trackOffsets,
+        lineOffsets: props.lineOffsets,
         importance: props.importance,
         parameters,
-        keepMask,
+        outputMask,
         rowIds
       }),
       ...new GPUCompaction({
         id: `${id}-compaction`,
         input: rowIds,
-        flags: keepMask,
+        flags: outputMask,
         output: compactRows,
         count: requiredCount
       }).getCommandNodes(graph),
@@ -664,14 +665,14 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount,
         compactIds: compactRows,
-        output: selection.output
+        output: selection
       })
     ];
     if (selection.lineCounts || selection.lineStarts) {
       nodes.push(
         createLineKeptRangesNode<Parameters>(graph, {
           id: `${id}-line-ranges`,
-          trackOffsets: props.trackOffsets,
+          lineOffsets: props.lineOffsets,
           compactRows,
           requiredCount,
           lineCounts: selection.lineCounts,

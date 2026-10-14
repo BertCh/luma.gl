@@ -6,18 +6,32 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {Device} from '@luma.gl/core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {GPULineSplit, GPU_LINE_SPLIT_SELF_CONTACT} from '../line-split/index';
-import type {GPULineGeometryPort} from '../contracts/index';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView,
+  validatePowerOfTwo
+} from '../../utils/gpu-contributor-utils';
+import {
+  GPULineSplit,
+  getGPULineSplitMaximumPieceBound,
+  GPU_LINE_SPLIT_SELF_CONTACT
+} from '../line-split/index';
+import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
+import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 import {GPU_TOPOLOGY_NONE, type GPUNodedSegmentPort} from './topology-types';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPULineNoding';
 
@@ -33,28 +47,67 @@ export type GPULineNodingProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Arbitrary finite planar linework. */
-  lines: Omit<GPULineGeometryPort, 'positions' | 'sourceIds'> & {
-    positions: GraphDataView<'float32x2'>;
+  lines: GPUPackedGeometryPort<GPULineGeometryPort> & {
+    /** Optional source feature ID per line, written to `output.sourceFeatureIds`. */
     sourceIds?: GraphDataView<'uint32'>;
   };
-  /** Capacity of the exact segment-intersection event list. */
+  /**
+   * Capacity of the exact segment-intersection event list. The line count plus four times this
+   * capacity is at most {@link getGPULineSplitMaximumPieceBound} (4194304 on a default
+   * device), and `lines.positions` has at most {@link getGPUSegmentIntersectionMaximumVertexCount}
+   * rows.
+   */
   intersectionCapacity: number;
-  /** Caller-owned atomic noded segments and provenance. */
+  /**
+   * Caller-owned atomic noded segments and provenance. `output.status.uncertainCount` is the
+   * optional uncertain-predicate counter.
+   */
   output: GPUNodedSegmentPort;
-  /** Optional uncertain-predicate counter. */
-  uncertainCount?: GraphDataView<'uint32'>;
   spatialSort?: boolean;
   leafCapacity?: number;
 };
+
+/**
+ * Throws unless a noding of `vertexCount` vertices on `lineCount` lines with `intersectionCapacity`
+ * pairs fits the internal line split: the segment table holds at most
+ * {@link getGPUSegmentIntersectionMaximumVertexCount} vertices and the piece table at most
+ * {@link getGPULineSplitMaximumPieceBound} bounded pieces (`lines + 4 * intersectionCapacity`).
+ * Used by every contributor that nodes lines, under its own ID.
+ *
+ * @internal
+ */
+export function validateLineNodingBounds(
+  id: string,
+  device: Device,
+  vertexCount: number,
+  lineCount: number,
+  intersectionCapacity: number
+): void {
+  validateMaximumCount(
+    id,
+    'lines.positions rows',
+    vertexCount,
+    getGPUSegmentIntersectionMaximumVertexCount(device)
+  );
+  validateMaximumCount(
+    id,
+    'lines + 4 x intersectionCapacity',
+    lineCount + 4 * intersectionCapacity,
+    getGPULineSplitMaximumPieceBound(device)
+  );
+}
 
 /**
  * Nodes arbitrary finite planar linework and emits one atomic row for every segment between
  * consecutive noded vertices. Crossings, touches and both ends of collinear overlaps reuse the
  * exact-or-uncertain predicates of `GPUSegmentIntersection` through `GPULineSplit`.
  *
- * `requiredCount` is exact when `candidateOverflow` is zero. A candidate overflow marks both
- * `candidateOverflow` and final `overflow`; callers must grow `intersectionCapacity` and rerun
- * before treating the requirement or geometry as complete.
+ * `requiredCount` is exact when `candidateOverflow` is zero. A candidate overflow (the
+ * intersection pair list exceeded `intersectionCapacity`) marks both `candidateOverflow` and final
+ * `overflow`; callers must grow `intersectionCapacity` and rerun before treating the requirement or
+ * geometry as complete. `overflow` alone (with `candidateOverflow` clear and `requiredCount` within
+ * capacity) means the input had segment pairs the exact predicates could not certify, or
+ * non-finite vertices: no capacity fixes that.
  */
 export class GPULineNoding implements GPUCommandNodeProducer {
   readonly id: string;
@@ -76,8 +129,10 @@ export class GPULineNoding implements GPUCommandNodeProducer {
     if (lines.lineOffsets.length < 2 || lines.positions.length < 1) {
       throw new Error(`${id} lines require at least one line and one vertex`);
     }
-    if (!Number.isSafeInteger(props.intersectionCapacity) || props.intersectionCapacity < 1) {
-      throw new Error(`${id} intersectionCapacity must be a positive integer`);
+    validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
+    // Delegates are built later, in getCommandNodes: check forwarded options now, under this id.
+    if (props.leafCapacity !== undefined) {
+      validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
     const capacity = output.endpoints.length;
     validatePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
@@ -128,9 +183,15 @@ export class GPULineNoding implements GPUCommandNodeProducer {
       output.sourceEdgeIds,
       output.sourceStartParameters,
       output.sourceEndParameters,
-      ...Object.values(output.status),
-      props.uncertainCount
+      ...Object.values(output.status)
     ]);
+    validateLineNodingBounds(
+      id,
+      graph.device,
+      lines.positions.length,
+      lines.lineOffsets.length - 1,
+      props.intersectionCapacity
+    );
     const pairCapacity = props.intersectionCapacity;
     const lineCount = lines.lineOffsets.length - 1;
     const pieceCapacity = lineCount + pairCapacity * 4;
@@ -148,6 +209,8 @@ export class GPULineNoding implements GPUCommandNodeProducer {
     const pieceVertexCount = transient('piece-vertex-count', 'uint32', 1);
     const pieceRequiredVertexCount = transient('piece-required-vertex-count', 'uint32', 1);
     const pieceSourceEdges = transient('piece-source-edges', 'uint32', pieceVertexCapacity);
+    // Incomplete split output: piece capacity, uncertain pairs or non-finite vertices.
+    const splitIncomplete = transient('split-incomplete', 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [];
     nodes.push(
       ...new GPULineSplit({
@@ -156,18 +219,21 @@ export class GPULineNoding implements GPUCommandNodeProducer {
         intersectionCapacity: pairCapacity,
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
-        uncertainCount: props.uncertainCount,
-        pieces: {
-          geometry: {kind: 'lines', positions: piecePositions, lineOffsets: pieceOffsets},
-          sourceIds: pieceSources,
-          status: {
-            count: pieceCount,
-            requiredCount: pieceRequiredCount,
-            overflow: output.status.candidateOverflow
-          },
-          vertexCount: pieceVertexCount,
-          requiredVertexCount: pieceRequiredVertexCount,
-          vertexSourceEdges: pieceSourceEdges
+        output: {
+          status: {uncertainCount: output.status.uncertainCount},
+          pieces: {
+            geometry: {kind: 'lines', positions: piecePositions, lineOffsets: pieceOffsets},
+            sourceIds: pieceSources,
+            status: {
+              count: pieceCount,
+              requiredCount: pieceRequiredCount,
+              overflow: splitIncomplete,
+              candidateOverflow: output.status.candidateOverflow,
+              vertexCount: pieceVertexCount,
+              requiredVertexCount: pieceRequiredVertexCount
+            },
+            vertexSourceEdges: pieceSourceEdges
+          }
         }
       }).getCommandNodes(graph)
     );
@@ -454,6 +520,7 @@ fn piecePoint(vertex: u32) -> vec2f {
             type: 'u32',
             access: 'read'
           },
+          {name: 'splitIncomplete', view: splitIncomplete, type: 'u32', access: 'read'},
           {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
           {
             name: 'requiredCount',
@@ -469,7 +536,8 @@ fn piecePoint(vertex: u32) -> vec2f {
   let candidateIncomplete = candidateOverflow[candidateOverflowOffset];
   requiredCount[requiredCountOffset] = required;
   count[countOffset] = min(required, OUTPUT_CAPACITY);
-  overflow[overflowOffset] = select(0u, 1u, required > OUTPUT_CAPACITY || candidateIncomplete != 0u);`
+  overflow[overflowOffset] = select(0u, 1u,
+    required > OUTPUT_CAPACITY || candidateIncomplete != 0u || splitIncomplete[splitIncompleteOffset] != 0u);`
       })
     );
     return nodes;

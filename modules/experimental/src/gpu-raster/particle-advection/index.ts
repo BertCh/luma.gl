@@ -4,21 +4,17 @@
 
 export {GPUParticleAdvection} from './gpu-particle-advection';
 export type {
+  GPUParticleAdvectionOutput,
   GPUParticleAdvectionProps,
   GPUParticleAdvectionTrails
 } from './gpu-particle-advection';
 export {
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
 } from './particle-advection-parameters';
 export type {
   GPUParticleAdvectionSettings,
-  GPUParticleAdvectionWordSettings
+  GPUParticleAdvectionUint32Settings
 } from './particle-advection-parameters';
-export {
-  advanceParticlesOnCPU,
-  createParticleAdvectionCPUState
-} from './particle-advection-cpu';
-export type {ParticleAdvectionCPUState} from './particle-advection-cpu';

@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedView,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,12 +15,17 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUOrdinaryLeastSquares} from './gpu-ordinary-least-squares';
-import {GPUSpatialWeightsTraces} from './gpu-spatial-weights-traces';
+import {
+  GPUSpatialWeightsTraces,
+  validateGPUSpatialWeightsTracesParameters
+} from './gpu-spatial-weights-traces';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
 import type {GPUSpatialWeightsTracesMode} from './spatial-weights-traces-parameters';
 import {
@@ -46,8 +48,8 @@ import {
   getCholeskyWGSL,
   getSymmetricEigenvalueRangeWGSL
 } from './spatial-regression-solve';
-import type {GPUSolverStatusPort} from '../contracts/index';
-import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../contracts/model-result';
+import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {ERFC_VALUE_WGSL, GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialErrorGM';
@@ -68,7 +70,10 @@ const LAMBDA_BISECTION_STEPS = 40;
 const TRACE_POWER_COUNT = 2;
 
 /** Caller-owned outputs of {@link GPUSpatialErrorGM}. */
-export type GPUSpatialErrorGMOutput = GPUSolverStatusPort & {
+export type GPUSpatialErrorGMOutput = {
+  /** One-row solver `code` (0 on success; see the class documentation for failure codes). */
+  status: Pick<GPUSolverStatusPort, 'code'>;
+
   /**
    * `(predictorCount + 2) * 4` float32 values: one row per coefficient in spreg order (intercept,
    * one per predictor, then the spatial error parameter `lambda` last), each row holding the
@@ -121,8 +126,12 @@ export type GPUSpatialErrorGMProps = {
   traceMode?: GPUSpatialWeightsTracesMode;
   /** Hutchinson probe count of the stochastic traces. Defaults to 64. */
   traceProbeCount?: number;
-  /** Philox seed of the stochastic traces. Defaults to 0. */
-  traceSeed?: number;
+  /**
+   * Optional per-frame uint32 view of `GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH` words written
+   * with `getGPUSpatialWeightsTracesParameterValues({seed})`: the Philox seed of the stochastic
+   * traces, read on the GPU. Omitted means seed 0.
+   */
+  traceParameters?: GraphDataView<'uint32'>;
   /**
    * Rows reduced by one invocation of the accumulation passes. Defaults to
    * `max(64, ceil(rows / 4096))`.
@@ -203,28 +212,19 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const {predictorCount, output} = props;
-    if (
-      !Number.isInteger(predictorCount) ||
-      predictorCount < 1 ||
-      predictorCount > GPU_SPATIAL_ERROR_GM_MAXIMUM_PREDICTOR_COUNT
-    ) {
-      throw new Error(
-        `${id} predictorCount must be an integer in [1, ${GPU_SPATIAL_ERROR_GM_MAXIMUM_PREDICTOR_COUNT}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'predictorCount',
+      predictorCount,
+      1,
+      GPU_SPATIAL_ERROR_GM_MAXIMUM_PREDICTOR_COUNT
+    );
     const estimator = props.estimator ?? GPU_SPATIAL_ERROR_GM_DEFAULT_ESTIMATOR;
     if (estimator !== 'homoskedastic' && estimator !== 'kelejian-prucha') {
       throw new Error(`${id} estimator must be 'homoskedastic' or 'kelejian-prucha'`);
     }
     this.estimator = estimator;
-    for (const [name, view] of [
-      ['predictors', props.predictors],
-      ['response', props.response]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateGPUSpatialWeightsTracesParameters(id, 'traceParameters', props.traceParameters);
     const rows = validateGPUSpatialWeights(id, props.weights);
     validatePackedView(props.predictors, ['float32'], `${id} predictors`);
     validatePackedView(props.response, ['float32'], `${id} response`);
@@ -244,9 +244,9 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
         `${id} output.summary must hold ${GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedUint32View(output.status, `${id} output.status`);
-    if (output.status.length < 1) {
-      throw new Error(`${id} output.status must hold one uint32 row`);
+    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    if (output.status.code.length < 1) {
+      throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     if (output.residuals) {
       validatePackedView(output.residuals, ['float32'], `${id} output.residuals`);
@@ -255,9 +255,7 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       }
     }
     if (props.tileRowCount !== undefined) {
-      if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
-        throw new Error(`${id} tileRowCount must be a positive integer`);
-      }
+      validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
     this.tileRowCount =
@@ -266,7 +264,7 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
     this.tileCount = Math.ceil(rows / this.tileRowCount);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.table, output.summary, output.status, output.residuals],
+      [output.table, output.summary, output.status.code, output.residuals],
       [
         props.predictors,
         props.response,
@@ -297,7 +295,7 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       weights.weights,
       output.table,
       output.summary,
-      output.status,
+      output.status.code,
       output.residuals
     ]);
     const q = k + 1;
@@ -323,7 +321,7 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
         standardErrors: transient('ols-standard-errors', q),
         tStatistics: transient('ols-t-statistics', q),
         summary: transient('ols-summary', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
-        status: olsStatus,
+        status: {code: olsStatus},
         residuals: olsResiduals
       }
     }).getCommandNodes(graph);
@@ -584,14 +582,14 @@ ${finiteDeclarations}`,
           maximumPower: TRACE_POWER_COUNT,
           mode: props.traceMode,
           probeCount: props.traceProbeCount,
-          seed: props.traceSeed,
+          parameters: props.traceParameters,
           includeGramTraces: true,
           output: {
             powerTraces: tracePowerTraces,
             powerSums: transient('trace-power-sums', TRACE_POWER_COUNT),
             gramTraces: traceGram,
             infinityNorm: traceNorm,
-            approximation: traceApproximation
+            status: {approximation: traceApproximation}
           }
         }).getCommandNodes(graph)
       );
@@ -802,7 +800,7 @@ ${getLambdaScanWGSL()}`,
           {name: 'olsStatus', view: olsStatus, type: 'u32', access: 'read'},
           f32('tableOut', output.table, 'read_write'),
           f32('summaryOut', output.summary, 'read_write'),
-          {name: 'statusOut', view: output.status, type: 'u32', access: 'read_write'}
+          {name: 'statusOut', view: output.status.code, type: 'u32', access: 'read_write'}
         ],
         1,
         `${solveDeclarations}

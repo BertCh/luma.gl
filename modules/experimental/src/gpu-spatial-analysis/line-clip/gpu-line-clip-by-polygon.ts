@@ -5,22 +5,37 @@
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {Device} from '@luma.gl/core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
-import {GPUSegmentIntersection} from '../segment-intersection/index';
+import {
+  getGPUSegmentIntersectionMaximumVertexCount,
+  GPUSegmentIntersection
+} from '../segment-intersection/index';
 import {GPUPointInPolygonJoin, GPU_SPATIAL_JOIN_NO_FEATURE} from '../spatial-join/index';
-import type {GPUSpatialJoinLines, GPUSpatialJoinPolygons} from '../spatial-join/index';
 import type {GPULineSplitPieces} from '../line-split/index';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPULineGeometryPort,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPULineClipByPolygon';
 
@@ -34,6 +49,22 @@ const SUB_PIECE_STRIDE = 8;
 const FLAG_BOUNDARY = 1;
 const FLAG_KEPT = 2;
 const FLAG_VALID = 4;
+
+/** Caller-owned outputs of {@link GPULineClipByPolygon}. */
+export type GPULineClipByPolygonOutput = {
+  /** Output pieces, in the layout of {@link GPULineSplitPieces}. */
+  pieces: GPULineSplitPieces;
+  /** Optional status scalars. */
+  status?: {
+    /**
+     * Optional one-row count of segment pairs whose intersection could not be certified plus
+     * sub-piece midpoints whose containment could not be certified. A nonzero value means the
+     * result may be incomplete: uncertain crossings are ignored and uncertain midpoints count as
+     * outside.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
+  };
+};
 
 /**
  * Properties for {@link GPULineClipByPolygon}.
@@ -52,13 +83,13 @@ export type GPULineClipByPolygonProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Linestrings to clip. */
-  lines: GPUSpatialJoinLines;
+  lines: GPUPackedGeometryPort<GPULineGeometryPort>;
   /**
    * Clip polygons. Several features (and several polygons per feature) act as their union, as
    * GeoPandas `clip` dissolves its mask. Containment uses even/odd fill per feature, so features
-   * must be valid; see {@link GPUSpatialJoinPolygons}.
+   * must be valid; see {@link GPUPackedGeometryPort<GPUPolygonGeometryPort>}.
    */
-  polygons: GPUSpatialJoinPolygons;
+  polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /**
    * Compile-time. `'inside'` (default) keeps the parts of every line that lie inside the polygons
    * or on their boundary (GeoPandas `clip(lines, polygons)`, Shapely `intersection`). `'outside'`
@@ -69,7 +100,10 @@ export type GPULineClipByPolygonProps = {
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list, which holds one row per
    * (line segment, polygon segment) intersection. When it overflows, pieces are produced from the
-   * sorted prefix of pairs and `pieces.status.overflow` is set.
+   * sorted prefix of pairs and `pieces.status.overflow` is set. `lines.positions` rows plus twice
+   * this capacity is at most {@link getGPULineClipByPolygonMaximumSubPieceBound} (4194304 on a
+   * default device); each geometry has at most {@link getGPUSegmentIntersectionMaximumVertexCount}
+   * vertex rows.
    */
   intersectionCapacity: number;
   /**
@@ -77,19 +111,22 @@ export type GPULineClipByPolygonProps = {
    * `GPUPointInPolygonJoin`. Overflow sets `pieces.status.overflow`.
    */
   candidateCapacity: number;
-  /** Output pieces, in the layout of {@link GPULineSplitPieces}. */
-  pieces: GPULineSplitPieces;
+  /** Output pieces and status. */
+  output: GPULineClipByPolygonOutput;
   /** Passed to `GPUSegmentIntersection`. */
   spatialSort?: boolean;
   /** Passed to `GPUSegmentIntersection` (the BVH over polygon segments). */
   leafCapacity?: number;
-  /**
-   * Optional one-row count of segment pairs whose intersection could not be certified plus
-   * sub-piece midpoints whose containment could not be certified. A nonzero value means the
-   * result may be incomplete: uncertain crossings are ignored and uncertain midpoints count as outside.
-   */
-  uncertainCount?: GraphDataView<'uint32'>;
 };
+
+/**
+ * Largest sub-piece bound of a line clip on `device`: `lines.positions rows + 2 *
+ * intersectionCapacity`. The sub-piece table holds 8 `u32` words, 32 bytes, per bounded sub-piece
+ * in one storage binding, so 4194304 on a default device (128 MiB bindings).
+ */
+export function getGPULineClipByPolygonMaximumSubPieceBound(device: Device): number {
+  return getStorageBindingElementLimit(device, 32);
+}
 
 /**
  * Clips linestrings to polygons: GeoPandas `clip(lines, polygons)` and Shapely
@@ -138,7 +175,8 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
-    const {lines, polygons, pieces} = props;
+    const {lines, polygons} = props;
+    const {pieces} = props.output;
     if (lines.kind !== 'lines') {
       throw new Error(`${id} lines must be linestring geometry`);
     }
@@ -146,14 +184,14 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       throw new Error(`${id} polygons must be polygon geometry`);
     }
     validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
-    validatePackedUint32View(lines.lineOffsets, `${id} lines.lineOffsets`);
+    validatePackedView(lines.lineOffsets, ['uint32'], `${id} lines.lineOffsets`);
     validatePackedView(polygons.positions, ['float32x2'], `${id} polygons.positions`);
     for (const [name, view] of [
       ['featureOffsets', polygons.featureOffsets],
       ['polygonOffsets', polygons.polygonOffsets],
       ['ringOffsets', polygons.ringOffsets]
     ] as const) {
-      validatePackedUint32View(view, `${id} polygons.${name}`);
+      validatePackedView(view, ['uint32'], `${id} polygons.${name}`);
       if (view.length < 1) {
         throw new Error(`${id} polygons.${name} requires a terminal entry`);
       }
@@ -161,8 +199,8 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     if (lines.lineOffsets.length < 2) {
       throw new Error(`${id} lines.lineOffsets requires at least one line and a terminal entry`);
     }
-    if (lines.positions.length < 1 || lines.positions.length >= 0x80000000) {
-      throw new Error(`${id} lines.positions must hold between 1 and 2^31 - 1 vertices`);
+    if (lines.positions.length < 1) {
+      throw new Error(`${id} lines.positions must hold at least one vertex`);
     }
     if (polygons.positions.length < 1) {
       throw new Error(`${id} polygons.positions must hold at least one vertex`);
@@ -170,42 +208,42 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     if (props.mode !== undefined && props.mode !== 'inside' && props.mode !== 'outside') {
       throw new Error(`${id} mode must be 'inside' or 'outside'`);
     }
-    for (const [name, value] of [
-      ['intersectionCapacity', props.intersectionCapacity],
-      ['candidateCapacity', props.candidateCapacity]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
+    validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
     this.keepInside = props.mode !== 'outside';
     this.vertexCount = lines.positions.length;
     this.lineCount = lines.lineOffsets.length - 1;
-    validatePackedUint32View(pieces.sourceIds, `${id} pieces.sourceIds`);
-    validatePackedUint32View(pieces.geometry.lineOffsets, `${id} pieces.geometry.lineOffsets`);
-    validatePackedView(pieces.geometry.positions, ['float32x2'], `${id} pieces.geometry.positions`);
+    validatePackedView(pieces.sourceIds, ['uint32'], `${id} output.pieces.sourceIds`);
+    validatePackedView(
+      pieces.geometry.lineOffsets,
+      ['uint32'],
+      `${id} output.pieces.geometry.lineOffsets`
+    );
+    validatePackedView(
+      pieces.geometry.positions,
+      ['float32x2'],
+      `${id} output.pieces.geometry.positions`
+    );
     this.pieceCapacity = pieces.sourceIds.length;
     this.vertexCapacity = pieces.geometry.positions.length;
     if (this.pieceCapacity < 1 || pieces.geometry.lineOffsets.length !== this.pieceCapacity + 1) {
-      throw new Error(
-        `${id} pieces.geometry.lineOffsets length must be pieces.sourceIds.length + 1`
-      );
+      throw new Error(`${id} output.pieces lineOffsets needs sourceIds.length + 1 rows`);
     }
     if (this.vertexCapacity < 1) {
-      throw new Error(`${id} pieces.geometry.positions must be non-empty`);
+      throw new Error(`${id} output.pieces.geometry.positions must be non-empty`);
     }
     for (const [name, view] of [
       ['count', pieces.status.count],
-      ['vertexCount', pieces.vertexCount],
+      ['vertexCount', pieces.status.vertexCount],
       ['overflow', pieces.status.overflow],
       ['requiredCount', pieces.status.requiredCount],
-      ['requiredVertexCount', pieces.requiredVertexCount],
-      ['uncertainCount', props.uncertainCount]
+      ['requiredVertexCount', pieces.status.requiredVertexCount],
+      ['uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
-          throw new Error(`${id} ${name} must contain one uint32 row`);
+          throw new Error(`${id} output.${name} needs one row`);
         }
       }
     }
@@ -216,7 +254,8 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, vertexCount, lineCount, pieceCapacity, vertexCapacity, keepInside} = this;
-    const {lines, polygons, pieces} = props;
+    const {lines, polygons} = props;
+    const {pieces} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       lines.positions,
       lines.lineOffsets,
@@ -228,12 +267,30 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
       pieces.geometry.lineOffsets,
       pieces.geometry.positions,
       pieces.status.count,
-      pieces.vertexCount,
+      pieces.status.vertexCount,
       pieces.status.overflow,
       pieces.status.requiredCount,
-      pieces.requiredVertexCount,
-      props.uncertainCount
+      pieces.status.requiredVertexCount,
+      props.output.status?.uncertainCount
     ]);
+    // Both geometries feed the segment tables of the internal segment intersection.
+    for (const [name, positions] of [
+      ['lines.positions rows', props.lines.positions],
+      ['polygons.positions rows', props.polygons.positions]
+    ] as const) {
+      validateMaximumCount(
+        id,
+        name,
+        positions.length,
+        getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+      );
+    }
+    validateMaximumCount(
+      id,
+      'lines.positions rows + 2 x intersectionCapacity',
+      props.lines.positions.length + 2 * props.intersectionCapacity,
+      getGPULineClipByPolygonMaximumSubPieceBound(graph.device)
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     const pairCapacity = props.intersectionCapacity;
     const eventCount = pairCapacity * 2;
@@ -260,16 +317,17 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
         right: polygons,
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
-        pairs: {
-          leftIds: pairLeft,
-          rightIds: pairRight,
-          count: pairCount,
-          overflow: pairOverflow
-        },
-        uncertainCount: segmentUncertain,
-        kinds,
-        points,
-        endPoints
+        output: {
+          pairs: {
+            leftIds: pairLeft,
+            rightIds: pairRight,
+            status: {count: pairCount, overflow: pairOverflow}
+          },
+          status: {uncertainCount: segmentUncertain},
+          kinds,
+          points,
+          endPoints
+        }
       }).getCommandNodes(graph)
     );
 
@@ -661,16 +719,20 @@ fn pointOfRank(base: u32, rank: u32) -> vec2f {
     nodes.push(
       ...new GPUPointInPolygonJoin({
         id: `${id}-containment`,
-        points: subMidpoints,
-        polygonPositions: polygons.positions,
-        featureOffsets: polygons.featureOffsets,
-        polygonOffsets: polygons.polygonOffsets,
-        ringOffsets: polygons.ringOffsets,
+        points: {kind: 'points', positions: subMidpoints},
+        polygons: {
+          kind: 'polygons',
+          positions: polygons.positions,
+          featureOffsets: polygons.featureOffsets,
+          polygonOffsets: polygons.polygonOffsets,
+          ringOffsets: polygons.ringOffsets
+        },
         candidateCapacity: props.candidateCapacity,
-        includeBoundary: true,
-        pointFeatureIds: subFeatures,
-        overflow: containmentOverflow,
-        uncertainCount: containmentUncertain
+        boundaryRule: 'closed',
+        output: {
+          pointFeatureIds: subFeatures,
+          status: {overflow: containmentOverflow, uncertainCount: containmentUncertain}
+        }
       }).getCommandNodes(graph)
     );
 
@@ -878,11 +940,11 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
     ];
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
       ['count', pieces.status.count, 0],
-      ['vertexCount', pieces.vertexCount, 1],
+      ['vertexCount', pieces.status.vertexCount, 1],
       ['requiredCount', pieces.status.requiredCount, 2],
-      ['requiredVertexCount', pieces.requiredVertexCount, 3],
+      ['requiredVertexCount', pieces.status.requiredVertexCount, 3],
       ['overflow', pieces.status.overflow, 4],
-      ['uncertainCount', props.uncertainCount, 5]
+      ['uncertainCount', props.output.status?.uncertainCount, 5]
     ];
     for (const [name, view] of scalars) {
       if (view) {

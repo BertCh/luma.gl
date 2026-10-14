@@ -3,10 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {
-  createRasterExtremaPyramidNodes,
   getGPURasterExtremaPyramidLayout,
-  getRasterExtremaPyramidWGSL,
-  validateRasterExtremaPyramidOutput,
   GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MAXIMUM,
   GPU_RASTER_EXTREMA_PYRAMID_EMPTY_MINIMUM,
   GPURasterExtremaPyramid
@@ -17,5 +14,6 @@ export type {
   GPURasterExtremaPyramidLayoutOptions,
   GPURasterExtremaPyramidLevel,
   GPURasterExtremaPyramidOutput,
-  GPURasterExtremaPyramidProps
+  GPURasterExtremaPyramidProps,
+  GPURasterExtremaPyramidViews
 } from './gpu-raster-extrema-pyramid';

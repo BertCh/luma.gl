@@ -6,19 +6,36 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {Device} from '@luma.gl/core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+import {
+  validateCapacity,
+  getStorageBindingElementLimit,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
-import type {GPUGeneratedGeometryPort, GPULineGeometryPort} from '../contracts/index';
-import {GPUSegmentIntersection} from '../segment-intersection/index';
-import type {GPUSpatialJoinLines} from '../spatial-join/index';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  getGPUSegmentIntersectionMaximumVertexCount,
+  GPUSegmentIntersection
+} from '../segment-intersection/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUBoundedResultStatusPort,
+  GPUGeneratedGeometryPort,
+  GPULineGeometryPort,
+  GPUPackedGeometryPort
+} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPULineSplit';
 
@@ -34,6 +51,16 @@ export const GPU_LINE_SPLIT_SELF_CONTACT = 0x80000000;
 /** Number of `u32` words per piece-table row. */
 const PIECE_STRIDE = 8;
 
+/**
+ * Largest piece bound of a line split on `device`: `lines + 4 * intersectionCapacity`. The piece
+ * table holds 8 `u32` words, 32 bytes, per bounded piece in one storage binding, so 4194304 on a
+ * default device (128 MiB bindings). Contributors that node lines through a line split (line
+ * noding, polygonize, make valid, polygon overlay) validate the same bound under their own ID.
+ */
+export function getGPULineSplitMaximumPieceBound(device: Device): number {
+  return getStorageBindingElementLimit(device, PIECE_STRIDE * 4);
+}
+
 /** Number of `u32` words per compacted split-table row: slot, phase, point x bits, point y bits. */
 const SPLIT_STRIDE = 4;
 
@@ -46,10 +73,13 @@ export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> &
     positions: GraphDataView<'float32x2'>;
   };
   sourceIds: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the number of vertices written. */
-  vertexCount?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of vertices. */
-  requiredVertexCount?: GraphDataView<'uint32'>;
+  /** Bounded-result status plus the vertex counts of the written pieces. */
+  status: GPUBoundedResultStatusPort & {
+    /** Optional one-row scalar receiving the number of vertices written. */
+    vertexCount?: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped number of vertices. */
+    requiredVertexCount?: GraphDataView<'uint32'>;
+  };
   /**
    * Optional per-vertex source edge, aligned with `geometry.positions`. For every written vertex
    * that is not the last of its piece, the low 31 bits hold the input edge (the index of its first
@@ -61,6 +91,20 @@ export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> &
    * list overflowed. Omitting it adds no work.
    */
   vertexSourceEdges?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPULineSplit}. */
+export type GPULineSplitOutput = {
+  /** Output pieces. */
+  pieces: GPULineSplitPieces;
+  /** Optional status scalars. */
+  status?: {
+    /**
+     * Optional one-row count of segment pairs the intersection predicates could not certify. They
+     * are counted (and set `pieces.status.overflow`) whether or not this view is given.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -80,21 +124,22 @@ export type GPULineSplitProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Linestrings to split at their mutual and self intersections. */
-  lines: GPUSpatialJoinLines;
+  lines: GPUPackedGeometryPort<GPULineGeometryPort>;
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list. Splitting needs at most four
    * transient rows per pair. When the intersection overflows, pieces are produced from the sorted
-   * prefix of pairs and `pieces.status.candidateOverflow` is set.
+   * prefix of pairs and `pieces.status.candidateOverflow` is set. The line count plus four times
+   * this capacity is at most {@link getGPULineSplitMaximumPieceBound} (4194304 on a default
+   * device), and `lines.positions` has at most
+   * {@link getGPUSegmentIntersectionMaximumVertexCount} rows.
    */
   intersectionCapacity: number;
-  /** Output pieces. */
-  pieces: GPULineSplitPieces;
+  /** Caller-owned outputs. */
+  output: GPULineSplitOutput;
   /** Passed to `GPUSegmentIntersection`. */
   spatialSort?: boolean;
   /** Passed to `GPUSegmentIntersection`. */
   leafCapacity?: number;
-  /** Optional one-row count of segment pairs the intersection predicates could not certify. */
-  uncertainCount?: GraphDataView<'uint32'>;
 };
 
 function getBitCount(value: number): number {
@@ -116,7 +161,11 @@ function getBitCount(value: number): number {
  * two vertices yields no piece; an unsplit line yields one piece equal to the input. Overlapping
  * collinear spans split at both ends of the shared span. Pieces whose end would exceed the vertex
  * capacity are dropped as a suffix and `pieces.status.overflow` is set. Candidate and final
- * output incompleteness are reported independently.
+ * output incompleteness are reported independently. `pieces.status.overflow` is also set when the
+ * output is incomplete for a reason capacity cannot fix: a segment pair whose intersection the
+ * exact predicates could not certify (no split is made for it; see `uncertainCount`), or a
+ * non-finite input vertex. `requiredCount` within capacity together with `overflow` set means
+ * uncertain or non-finite input.
  *
  * Intersection points of proper crossings are rounded to f32 once per pair, so both lines receive
  * the identical point. Nothing is read back.
@@ -142,7 +191,8 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
-    const {lines, pieces} = props;
+    const {lines} = props;
+    const {pieces} = props.output;
     if (lines.kind !== 'lines') {
       throw new Error(`${id} lines must be linestring geometry`);
     }
@@ -151,12 +201,10 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     if (lines.lineOffsets.length < 2) {
       throw new Error(`${id} lines.lineOffsets requires at least one line and a terminal entry`);
     }
-    if (lines.positions.length < 1 || lines.positions.length >= 0x80000000) {
-      throw new Error(`${id} lines.positions must hold between 1 and 2^31 - 1 vertices`);
+    if (lines.positions.length < 1) {
+      throw new Error(`${id} lines.positions must hold at least one vertex`);
     }
-    if (!Number.isSafeInteger(props.intersectionCapacity) || props.intersectionCapacity < 1) {
-      throw new Error(`${id} intersectionCapacity must be a positive integer`);
-    }
+    validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     if (pieces.geometry.kind !== 'lines') {
       throw new Error(`${id} pieces.geometry must be linestring geometry`);
     }
@@ -185,12 +233,12 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['count', pieces.status.count],
-      ['vertexCount', pieces.vertexCount],
+      ['vertexCount', pieces.status.vertexCount],
       ['overflow', pieces.status.overflow],
       ['candidateOverflow', pieces.status.candidateOverflow],
       ['requiredCount', pieces.status.requiredCount],
-      ['requiredVertexCount', pieces.requiredVertexCount],
-      ['uncertainCount', props.uncertainCount]
+      ['requiredVertexCount', pieces.status.requiredVertexCount],
+      ['status.uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -206,7 +254,8 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, vertexCount, lineCount, pieceCapacity, vertexCapacity} = this;
-    const {lines, pieces} = props;
+    const {lines} = props;
+    const {pieces} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       lines.positions,
       lines.lineOffsets,
@@ -214,14 +263,26 @@ export class GPULineSplit implements GPUCommandNodeProducer {
       pieces.geometry.lineOffsets,
       pieces.geometry.positions,
       pieces.status.count,
-      pieces.vertexCount,
+      pieces.status.vertexCount,
       pieces.status.overflow,
       pieces.status.candidateOverflow,
       pieces.status.requiredCount,
-      pieces.requiredVertexCount,
+      pieces.status.requiredVertexCount,
       pieces.vertexSourceEdges,
-      props.uncertainCount
+      props.output.status?.uncertainCount
     ]);
+    validateMaximumCount(
+      id,
+      'lines.positions rows',
+      lines.positions.length,
+      getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+    );
+    validateMaximumCount(
+      id,
+      'lines + 4 x intersectionCapacity',
+      lineCount + 4 * props.intersectionCapacity,
+      getGPULineSplitMaximumPieceBound(graph.device)
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     const pairCapacity = props.intersectionCapacity;
     const eventCount = pairCapacity * 4;
@@ -237,6 +298,36 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     const pairRight = T('pair-right', 'uint32', pairCapacity);
     const pairCount = T('pair-count', 'uint32', 1);
     const pairOverflow = T('pair-overflow', 'uint32', 1);
+    // Uncertain pairs make no split, so they are always counted and reach the canonical status.
+    const uncertainCount = props.output.status?.uncertainCount ?? T('uncertain-count', 'uint32', 1);
+    const nonFiniteFlag = T('non-finite-flag', 'uint32', 1);
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-clear-non-finite`,
+        operation: OPERATION,
+        variant: 'clear-non-finite',
+        bindings: [{name: 'flag', view: nonFiniteFlag, type: 'u32', access: 'read_write'}],
+        invocationCount: 1,
+        body: 'flag[flagOffset] = 0u;'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-flag-non-finite`,
+        operation: OPERATION,
+        variant: 'flag-non-finite',
+        bindings: [
+          {name: 'positions', view: lines.positions, type: 'f32', access: 'read'},
+          {name: 'flag', view: nonFiniteFlag, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        invocationCount: vertexCount,
+        declarations: `const VERTEX_COUNT: u32 = ${vertexCount}u;
+${IS_FINITE_BITS_WGSL}`,
+        // Only non-finite rows touch the flag, so the atomic is not a hot address for valid data.
+        body: `if (index >= VERTEX_COUNT) { return; }
+  if (!isFiniteBits(positions[positionsOffset + index * 2u]) || !isFiniteBits(positions[positionsOffset + index * 2u + 1u])) {
+    atomicOr(&flag[flagOffset], 1u);
+  }`
+      })
+    );
     const kinds = T('kinds', 'uint32', pairCapacity);
     const points = T('points', 'float32x2', pairCapacity);
     const endPoints = T('end-points', 'float32x2', pairCapacity);
@@ -246,16 +337,17 @@ export class GPULineSplit implements GPUCommandNodeProducer {
         left: lines,
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
-        pairs: {
-          leftIds: pairLeft,
-          rightIds: pairRight,
-          count: pairCount,
-          overflow: pairOverflow
-        },
-        uncertainCount: props.uncertainCount,
-        kinds,
-        points,
-        endPoints
+        output: {
+          pairs: {
+            leftIds: pairLeft,
+            rightIds: pairRight,
+            status: {count: pairCount, overflow: pairOverflow}
+          },
+          status: {uncertainCount},
+          kinds,
+          points,
+          endPoints
+        }
       }).getCommandNodes(graph)
     );
 
@@ -751,14 +843,30 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
     );
 
     // 7. Scalars.
+    // Fold the uncertain-pair count into the non-finite flag so the scalar kernel stays within
+    // eight storage bindings.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-incomplete`,
+        operation: OPERATION,
+        variant: 'incomplete',
+        bindings: [
+          {name: 'uncertainPairs', view: uncertainCount, type: 'u32', access: 'read'},
+          {name: 'incomplete', view: nonFiniteFlag, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        body: `if (uncertainPairs[uncertainPairsOffset] != 0u) { incomplete[incompleteOffset] = 1u; }`
+      })
+    );
     const scalarBindings: WGSLKernelBinding[] = [
-      {name: 'state', view: state, type: 'u32', access: 'read'}
+      {name: 'state', view: state, type: 'u32', access: 'read'},
+      {name: 'incomplete', view: nonFiniteFlag, type: 'u32', access: 'read'}
     ];
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
       ['count', pieces.status.count, 0],
-      ['vertexCount', pieces.vertexCount, 1],
+      ['vertexCount', pieces.status.vertexCount, 1],
       ['requiredCount', pieces.status.requiredCount, 2],
-      ['requiredVertexCount', pieces.requiredVertexCount, 3],
+      ['requiredVertexCount', pieces.status.requiredVertexCount, 3],
       ['overflow', pieces.status.overflow, 4],
       ['candidateOverflow', pieces.status.candidateOverflow, 5]
     ];
@@ -776,7 +884,11 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
         invocationCount: 1,
         body: scalars
           .filter(([, view]) => view)
-          .map(([name, , word]) => `${name}[${name}Offset] = state[stateOffset + ${word}u];`)
+          .map(([name, , word]) =>
+            name === 'overflow'
+              ? `overflow[overflowOffset] = select(0u, 1u, state[stateOffset + ${word}u] != 0u || incomplete[incompleteOffset] != 0u);`
+              : `${name}[${name}Offset] = state[stateOffset + ${word}u];`
+          )
           .join('\n  ')
       })
     );

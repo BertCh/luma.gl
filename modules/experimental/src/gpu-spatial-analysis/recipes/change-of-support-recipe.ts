@@ -4,6 +4,13 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUPolygonRasterization} from '../../gpu-raster/polygon-rasterization/index';
+import type {GPURasterMetadata} from '../../gpu-raster/index';
+import type {
+  GPUPackedGeometryPort,
+  GPURecipeStatusPort,
+  GPUStatusScalar,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 import {GPUArealInterpolation} from '../areal-interpolation/index';
 import type {
   GPUArealCategories,
@@ -14,9 +21,9 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {GPUSpatialLag} from '../spatial-weights/index';
-import type {GPUSpatialWeights} from '../spatial-weights/index';
+import type {GPUSpatialWeights, GPUSpatialWeightsOutput} from '../spatial-weights/index';
 import {
   assertRecipe,
   createTransientSpatialWeights,
@@ -33,16 +40,11 @@ const SUPPORT: GPUSpatialContextSupport = Object.freeze({
   metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
 });
 
-/** One zone system as polygon features (GeoArrow layout of `GPUPolygonRasterization`). */
-export type GPUChangeOfSupportZones = {
-  /** Flattened polygon vertices. */
-  polygonPositions: GraphDataView<'float32x2'>;
-  /** Feature-to-polygon offsets, `zoneCount + 1` entries. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets. */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Ring-to-vertex offsets. */
-  ringOffsets: GraphDataView<'uint32'>;
+/**
+ * One zone system as polygon features in the four-level `GPUPolygonGeometryPort` layout (one
+ * packed `positions` view), one zone per feature. `sourceIds` are not read: zones are feature rows.
+ */
+export type GPUChangeOfSupportZones = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
   /** Capacity of the rasterizer's scanline crossing list. */
   crossingCapacity: number;
 };
@@ -54,14 +56,21 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
     extensiveWeights?: Partial<GPUSpatialWeights>;
     intensiveWeightValues?: GraphDataView<'float32'>;
     areas?: GraphDataView<'float32'>;
-    overflow?: GraphDataView<'uint32'>;
-    requiredCount?: GraphDataView<'uint32'>;
-    rasterOverflow?: [GraphDataView<'uint32'>, GraphDataView<'uint32'>];
+    /** Mirrors `result.status`. */
+    status?: {
+      overflow?: GPUStatusScalar;
+      requiredCount?: GPUStatusScalar;
+      invalidCount?: GPUStatusScalar;
+      rasterOverflow?: [GPUStatusScalar, GPUStatusScalar];
+      /** One-row unclamped crossing counts of the source and target rasterizations. */
+      rasterRequiredCount?: [GPUStatusScalar, GPUStatusScalar];
+    };
     extensiveValues?: GraphDataView<'float32'>;
     intensiveValues?: GraphDataView<'float32'>;
+    /** `targetCount * categories.categoryCount` category shares; required with `categories`. */
+    categoryShares?: GraphDataView<'float32'>;
     sourceAreas?: GraphDataView<'float32'>;
     sourceTransferredFractions?: GraphDataView<'float32'>;
-    invalidCount?: GraphDataView<'uint32'>;
   },
   {
     sourceZones?: GraphDataView<'uint32'>;
@@ -70,26 +79,27 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'change-of-support-recipe'`. */
   id?: string;
-  /** Common raster columns. */
-  width: number;
-  /** Common raster rows. */
-  height: number;
+  /** Common raster grid of both rasterizations (axis-aligned). */
+  grid: GPURasterMetadata;
   /**
    * Coordinate space of the raster and the polygons. Omitted means native planar (cell counts are
    * areas). `longitude-latitude` (metric `'none'` or `'great-circle'`) declares a longitude/latitude
-   * raster whose `extent` is in degrees: areas become spherical cell areas in square meters, so
+   * raster whose `parameters` are in degrees: areas become spherical cell areas in square meters, so
    * the weights are ground-area shares. The polygon rasterization stage itself only tests cell
    * centers in the coordinates as given (straight edges in degrees; split polygons at the
    * antimeridian). The resolved context is returned as `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
-  /** `getGPUPolygonRasterizationExtentValues` view: origin and cell size of the raster. */
-  extent: GraphDataView<'float32'>;
+  /**
+   * `getGPUPolygonRasterizationParameterValues(grid)` view: per-frame origin and cell size of the
+   * raster (degrees on a longitude/latitude raster).
+   */
+  parameters: GraphDataView<'float32'>;
   /** Source zone system. */
   source: GPUChangeOfSupportZones;
   /** Target zone system. */
   target: GPUChangeOfSupportZones;
-  /** Optional dasymetric raster (`width * height`): area becomes a sum of these weights. */
+  /** Optional dasymetric raster (`grid.width * grid.height`): area becomes a sum of these weights. */
   cellWeights?: GraphDataView<'float32'>;
   /**
    * Normalization of the areas, for both kinds or per kind. Defaults to extensive `'zone'` and
@@ -104,7 +114,7 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
   /** Capacity of the (target, source) overlap pair list. */
   pairCapacity: number;
   /**
-   * Source values, `sourceCount * columnCount` rows row-major. With neither `extensiveValues`
+   * Source values, `sourceZoneCount * columnCount` rows row-major. With neither `extensiveValues`
    * nor `intensiveValues` given, no lag nodes are added and only the weights are produced.
    */
   sourceValues?: GraphDataView<'float32'>;
@@ -118,20 +128,15 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
 export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
   /** Resolved coordinate context of the raster. */
   spatialContext: GPUSpatialContext;
-  sourceCount: number;
-  targetCount: number;
+  sourceZoneCount: number;
+  targetZoneCount: number;
   sourceZones: GraphDataView<'uint32'>;
   targetZones: GraphDataView<'uint32'>;
   /** Extensive weights `a_st / A_s`: rows are targets, neighbors are sources. */
-  extensiveWeights: GPUSpatialWeights;
+  extensiveWeights: GPUSpatialWeightsOutput;
   /** Intensive weights `a_st / B_t` on the same pattern. */
   intensiveWeights: GPUSpatialWeights;
   areas: GraphDataView<'float32'>;
-  /** One-row flag: 1 when the overlap pair list overflowed `pairCapacity`. */
-  overflow: GraphDataView<'uint32'>;
-  /** One-row flags of the source and target rasterizations (1: crossing list overflowed). */
-  rasterOverflow: [GraphDataView<'uint32'>, GraphDataView<'uint32'>];
-  totalPairs: GraphDataView<'uint32'>;
   /** Raster area of every source (cells, or square meters on a longitude/latitude raster). */
   sourceAreas: GraphDataView<'float32'>;
   /**
@@ -139,10 +144,26 @@ export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
    * mass with the default denominator), NaN for sources without raster area.
    */
   sourceTransferredFractions: GraphDataView<'float32'>;
-  /** One-row count of sources with no raster area: their mass is lost. */
-  invalidCount: GraphDataView<'uint32'>;
   extensiveValues?: GraphDataView<'float32'>;
   intensiveValues?: GraphDataView<'float32'>;
+  /** Present with `categories`: `targetZoneCount * categoryCount` category shares. */
+  categoryShares?: GraphDataView<'float32'>;
+  /** Status words next to the per-stage `stages`. */
+  status: {
+    /** One-row flag: 1 when the overlap pair list overflowed `pairCapacity`. */
+    overflow: GPUStatusScalar;
+    /** One-row unclamped distinct pair count, for sizing `pairCapacity` (stage `areal-interpolation`). */
+    requiredCount: GPUStatusScalar;
+    /** One-row count of sources with no raster area: their mass is lost. */
+    invalidCount: GPUStatusScalar;
+    /** One-row flags of the source and target rasterizations (1: crossing list overflowed). */
+    rasterOverflow: [GPUStatusScalar, GPUStatusScalar];
+    /**
+     * One-row unclamped crossing counts of the source and target rasterizations, for sizing
+     * `crossingCapacity` (reported as `requiredCount` of the rasterization stages).
+     */
+    rasterRequiredCount: [GPUStatusScalar, GPUStatusScalar];
+  } & GPURecipeStatusPort;
 };
 
 /**
@@ -151,12 +172,13 @@ export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
  * Chain: `GPUPolygonRasterization` (source and target to one raster) -> `GPUArealInterpolation`
  * (overlap areas, extensive and intensive weights) -> `GPUSpatialLag` over each weights set (the
  * lag treats the target-by-source weights as a cross matrix). Rasterization overflow flags are
- * reported separately in `rasterOverflow`.
+ * reported separately in `status.rasterOverflow` and `status.rasterRequiredCount` (stages `source-rasterization` and
+ * `target-rasterization`).
  *
  * Accuracy is bounded by the raster resolution (cell centers decide membership). Mass that a
  * source loses (it lies partly outside the target system, or it is smaller than a cell) is
  * reported per source in `sourceTransferredFractions` and `sourceAreas`, and sources with no
- * raster area are counted in `invalidCount` (stage `areal-interpolation`), unless
+ * raster area are counted in `status.invalidCount` (stage `areal-interpolation`), unless
  * `sourceAnchorCells` rescues them. Default change: intensive weights now use the `'overlap'`
  * denominator, so a target only partly covered by sources is the mean of what covers it.
  *
@@ -170,7 +192,8 @@ export function addChangeOfSupportRecipe<Parameters>(
   const id = props.id ?? 'change-of-support-recipe';
   const spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
   const geographic = spatialContext.coordinateSpace === 'longitude-latitude';
-  const cellCount = props.width * props.height;
+  const {grid} = props;
+  const cellCount = grid.width * grid.height;
   const sourceCount = props.source.featureOffsets.length - 1;
   const targetCount = props.target.featureOffsets.length - 1;
   assertRecipe(ID, sourceCount >= 1 && targetCount >= 1, 'needs source and target zones');
@@ -179,15 +202,37 @@ export function addChangeOfSupportRecipe<Parameters>(
   const scratch = props.scratch ?? {};
   const builder = new RecipeBuilder(graph);
 
-  const rasterOverflow: [GraphDataView<'uint32'>, GraphDataView<'uint32'>] = [
+  const rasterOverflow: [GPUStatusScalar, GPUStatusScalar] = [
     getOrCreateView(
       graph,
       `${id}-source-raster-overflow`,
       'uint32',
       1,
-      outputs.rasterOverflow?.[0]
+      outputs.status?.rasterOverflow?.[0]
     ),
-    getOrCreateView(graph, `${id}-target-raster-overflow`, 'uint32', 1, outputs.rasterOverflow?.[1])
+    getOrCreateView(
+      graph,
+      `${id}-target-raster-overflow`,
+      'uint32',
+      1,
+      outputs.status?.rasterOverflow?.[1]
+    )
+  ];
+  const rasterRequiredCount: [GPUStatusScalar, GPUStatusScalar] = [
+    getOrCreateView(
+      graph,
+      `${id}-source-raster-required-count`,
+      'uint32',
+      1,
+      outputs.status?.rasterRequiredCount?.[0]
+    ),
+    getOrCreateView(
+      graph,
+      `${id}-target-raster-required-count`,
+      'uint32',
+      1,
+      outputs.status?.rasterRequiredCount?.[1]
+    )
   ];
   const zones = [props.source, props.target].map((system, index) => {
     const name = index === 0 ? 'source' : 'target';
@@ -201,27 +246,36 @@ export function addChangeOfSupportRecipe<Parameters>(
     builder.add(
       new GPUPolygonRasterization({
         id: `${id}-${name}-raster`,
-        width: props.width,
-        height: props.height,
-        extent: props.extent,
-        polygonPositions: system.polygonPositions,
+        grid,
+        parameters: props.parameters,
+        positions: system.positions,
         featureOffsets: system.featureOffsets,
         polygonOffsets: system.polygonOffsets,
         ringOffsets: system.ringOffsets,
         crossingCapacity: system.crossingCapacity,
-        zones: raster,
-        overflow: rasterOverflow[index]
+        output: {
+          zones: raster,
+          status: {overflow: rasterOverflow[index], crossingCount: rasterRequiredCount[index]}
+        }
       })
     );
     return raster;
   });
 
+  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, outputs.status?.overflow);
+  const requiredCount = getOrCreateView(
+    graph,
+    `${id}-required-count`,
+    'uint32',
+    1,
+    outputs.status?.requiredCount
+  );
   const extensiveWeights = createTransientSpatialWeights(
     graph,
     `${id}-extensive`,
     targetCount,
     props.pairCapacity,
-    outputs.extensiveWeights
+    {...outputs.extensiveWeights, status: {overflow, requiredCount}}
   );
   const intensiveValues = getOrCreateView(
     graph,
@@ -231,14 +285,6 @@ export function addChangeOfSupportRecipe<Parameters>(
     outputs.intensiveWeightValues
   );
   const areas = getOrCreateView(graph, `${id}-areas`, 'float32', props.pairCapacity, outputs.areas);
-  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, outputs.overflow);
-  const totalPairs = getOrCreateView(
-    graph,
-    `${id}-required-count`,
-    'uint32',
-    1,
-    outputs.requiredCount
-  );
   const sourceAreas = getOrCreateView(
     graph,
     `${id}-source-areas`,
@@ -258,30 +304,41 @@ export function addChangeOfSupportRecipe<Parameters>(
     `${id}-invalid-count`,
     'uint32',
     1,
-    outputs.invalidCount
+    outputs.status?.invalidCount
   );
+  const categoryShares = props.categories
+    ? getOrCreateView(
+        graph,
+        `${id}-category-shares`,
+        'float32',
+        targetCount * props.categories.categoryCount,
+        outputs.categoryShares
+      )
+    : undefined;
   builder.add(
     new GPUArealInterpolation({
       id: `${id}-areal`,
       spatialContext,
-      ...(geographic ? {extent: props.extent, width: props.width} : {}),
+      grid,
+      ...(geographic ? {parameters: props.parameters} : {}),
       sourceAnchorCells: props.sourceAnchorCells,
-      sourceAreas,
-      sourceTransferredFractions,
-      invalidCount,
       sourceZones: zones[0],
       targetZones: zones[1],
-      sourceCount,
-      targetCount,
+      sourceZoneCount: sourceCount,
+      targetZoneCount: targetCount,
       cellWeights: props.cellWeights,
       denominator: props.denominator,
       mode: 'extensive',
-      weights: extensiveWeights,
-      alternateWeights: intensiveValues,
-      areas,
-      overflow,
-      totalPairs,
-      categories: props.categories
+      categories: props.categories,
+      output: {
+        weights: extensiveWeights,
+        status: {overflow, requiredPairCount: requiredCount, invalidCount},
+        alternateWeights: intensiveValues,
+        areas,
+        sourceAreas,
+        sourceTransferredFractions,
+        categoryShares
+      }
     })
   );
   const intensiveWeights: GPUSpatialWeights = {...extensiveWeights, weights: intensiveValues};
@@ -289,35 +346,43 @@ export function addChangeOfSupportRecipe<Parameters>(
   const result: GPUChangeOfSupportRecipeResult = {
     contributors: builder.contributors,
     spatialContext,
-    sourceCount,
-    targetCount,
+    sourceZoneCount: sourceCount,
+    targetZoneCount: targetCount,
     sourceZones: zones[0],
     targetZones: zones[1],
     extensiveWeights,
     intensiveWeights,
     areas,
-    overflow,
-    totalPairs,
     sourceAreas,
     sourceTransferredFractions,
-    invalidCount,
-    rasterOverflow,
     outputs: {
       extensiveWeights,
       intensiveWeights,
       areas,
       sourceAreas,
       sourceTransferredFractions,
-      invalidCount
+      ...(categoryShares ? {categoryShares} : {})
     },
+    ...(categoryShares ? {categoryShares} : {}),
     intermediates: {sourceZones: zones[0], targetZones: zones[1]},
     status: {
+      overflow,
+      requiredCount,
+      invalidCount,
+      rasterOverflow,
+      rasterRequiredCount,
       stages: [
-        {stage: 'source-rasterization', status: {overflow: rasterOverflow[0]}},
-        {stage: 'target-rasterization', status: {overflow: rasterOverflow[1]}},
+        {
+          stage: 'source-rasterization',
+          status: {overflow: rasterOverflow[0], requiredCount: rasterRequiredCount[0]}
+        },
+        {
+          stage: 'target-rasterization',
+          status: {overflow: rasterOverflow[1], requiredCount: rasterRequiredCount[1]}
+        },
         {
           stage: 'areal-interpolation',
-          status: {overflow, requiredCount: totalPairs, invalidCount}
+          status: {overflow, requiredCount, invalidCount}
         }
       ]
     }
@@ -336,7 +401,6 @@ export function addChangeOfSupportRecipe<Parameters>(
         new GPUSpatialLag({
           id: `${id}-${kind}-lag`,
           weights: kind === 'extensive' ? extensiveWeights : intensiveWeights,
-          sourceCount,
           columnCount,
           values: props.sourceValues,
           output

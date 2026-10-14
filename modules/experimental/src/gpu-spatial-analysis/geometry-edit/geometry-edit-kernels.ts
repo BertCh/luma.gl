@@ -2,9 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import type {
+  GPUCommandGraph,
+  GPUCommandGraphNodeCondition,
+  GPUCommandNode,
+  GraphBufferUse,
+  GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createWGSLDispatchGate,
+  createWGSLKernelNode,
+  type WGSLDispatchGate,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 
 /**
  * WGSL source of `readPoint(row)`, reading `positions` (a `float32x2` view bound as
@@ -200,8 +212,12 @@ export type AffineTransformNodeProps = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
+  /** Vertex offsets per ring (line, or multi-point feature). */
   ringOffsets?: GraphDataView<'uint32'>;
-  featureRingOffsets?: GraphDataView<'uint32'>;
+  /** Feature-to-ring offsets (or, with `polygonOffsets`, feature-to-polygon offsets). */
+  featureOffsets?: GraphDataView<'uint32'>;
+  /** Polygon-to-ring offsets. */
+  polygonOffsets?: GraphDataView<'uint32'>;
   /** Global per-frame parameters; mutually exclusive with `featureTransforms`. */
   parameters?: GraphDataView<'float32'>;
   /** `6 * featureCount` rows of `[a, b, d, e, xoff, yoff]`. */
@@ -230,10 +246,18 @@ export function createAffineTransformNode<Parameters>(
   if (props.ringOffsets) {
     bindings.push({name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'});
   }
-  if (props.featureRingOffsets) {
+  if (props.featureOffsets) {
     bindings.push({
-      name: 'featureRingOffsets',
-      view: props.featureRingOffsets,
+      name: 'featureOffsets',
+      view: props.featureOffsets,
+      type: 'u32',
+      access: 'read'
+    });
+  }
+  if (props.polygonOffsets) {
+    bindings.push({
+      name: 'polygonOffsets',
+      view: props.polygonOffsets,
       type: 'u32',
       access: 'read'
     });
@@ -261,9 +285,16 @@ export function createAffineTransformNode<Parameters>(
     type: 'f32',
     access: 'read_write'
   });
+  // Vertex -> ring -> (polygon ->) feature.
   const featureLookup = hasRings
     ? `let ring = findRing(index);
-  ${props.featureRingOffsets ? 'featureIndex = min(findFeature(ring), FEATURE_COUNT - 1u);' : 'featureIndex = min(ring, FEATURE_COUNT - 1u);'}`
+  ${
+    props.polygonOffsets
+      ? 'featureIndex = min(findFeature(findPolygon(ring)), FEATURE_COUNT - 1u);'
+      : props.featureOffsets
+        ? 'featureIndex = min(findFeature(ring), FEATURE_COUNT - 1u);'
+        : 'featureIndex = min(ring, FEATURE_COUNT - 1u);'
+  }`
     : '';
   const transform = props.featureTransforms
     ? `let base = 6u * featureIndex + featureTransformsOffset;
@@ -320,9 +351,15 @@ ${getUpperBoundSource('findRing', 'ringOffsets', 'RING_COUNT')}`
     : ''
 }
 ${
-  props.featureRingOffsets
-    ? `const FEATURE_RING_COUNT: u32 = ${props.featureRingOffsets.length - 1}u;
-${getUpperBoundSource('findFeature', 'featureRingOffsets', 'FEATURE_RING_COUNT')}`
+  props.polygonOffsets
+    ? `const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
+${getUpperBoundSource('findPolygon', 'polygonOffsets', 'POLYGON_COUNT')}`
+    : ''
+}
+${
+  props.featureOffsets
+    ? `const FEATURE_OFFSET_COUNT: u32 = ${props.featureOffsets.length - 1}u;
+${getUpperBoundSource('findFeature', 'featureOffsets', 'FEATURE_OFFSET_COUNT')}`
     : ''
 }
 ${READ_POINT_SOURCE}`,
@@ -337,7 +374,7 @@ ${READ_POINT_SOURCE}`,
 }
 
 /** Properties for {@link createCleanupFlagNode}. @internal */
-export type CleanupFlagNodeProps = {
+export type CleanupFlagNodeProps<Parameters = unknown> = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
@@ -348,6 +385,10 @@ export type CleanupFlagNodeProps = {
   keepFlags: GraphDataView<'uint32'>;
   /** One-row counter of collapsed rings; cleared beforehand. */
   collapsedCount: GraphDataView<'uint32'>;
+  /** Optional gate, for the sequential pass of a {@link createCleanupRepeatGate} slot. */
+  condition?: GPUCommandGraphNodeCondition<Parameters>;
+  /** Declared uses of the gate buffer. */
+  extraResources?: readonly GraphBufferUse[];
 };
 
 /** WGSL `snapPoint` helper shared by the cleanup kernels. @internal */
@@ -366,6 +407,26 @@ fn readSnappedPoint(row: u32, gridSize: f32) -> vec2<f32> {
   );
 }
 `;
+
+/**
+ * WGSL `isWithinTolerance`: inclusive Euclidean test for `tolerance > 0`, otherwise exact
+ * equality of the finite operands (so a NaN or infinite coordinate is never a repeat, and
+ * `-0` equals `+0`). The tolerance-0 vertex-parallel pass calls it with `0.0` so both passes share
+ * one definition. @internal
+ */
+const WITHIN_TOLERANCE_SOURCE = /* wgsl */ `
+${IS_FINITE_BITS_WGSL}
+fn isWithinTolerance(first: vec2<f32>, second: vec2<f32>, tolerance: f32) -> bool {
+  // Test operands before subtraction: Metal can fold (a - b) == 0 into a == b,
+  // which would incorrectly remove repeated infinities in the constant-tolerance path.
+  if (!isFiniteBits(first.x) || !isFiniteBits(first.y) ||
+      !isFiniteBits(second.x) || !isFiniteBits(second.y)) { return false; }
+  let delta = first - second;
+  if (tolerance > 0.0) {
+    return dot(delta, delta) <= tolerance * tolerance;
+  }
+  return delta.x == 0.0 && delta.y == 0.0;
+}`;
 
 /** Properties for {@link createCleanupPointsNode}. @internal */
 export type CleanupPointsNodeProps = {
@@ -438,7 +499,7 @@ ${SNAP_SOURCE}`,
  */
 export function createCleanupFlagNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: CleanupFlagNodeProps
+  props: CleanupFlagNodeProps<Parameters>
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -457,15 +518,12 @@ export function createCleanupFlagNode<Parameters>(
       }
     ],
     invocationCount: props.ringOffsets.length - 1,
+    condition: props.condition,
+    extraResources: props.extraResources,
     declarations: `const VERTEX_COUNT: u32 = ${props.positions.length}u;
 const IS_POLYGON: bool = ${props.isPolygon ? 'true' : 'false'};
 ${SNAP_SOURCE}
-fn isWithinTolerance(delta: vec2<f32>, tolerance: f32) -> bool {
-  if (tolerance > 0.0) {
-    return dot(delta, delta) <= tolerance * tolerance;
-  }
-  return delta.x == 0.0 && delta.y == 0.0;
-}`,
+${WITHIN_TOLERANCE_SOURCE}`,
     body: /* wgsl */ `
   let gridSize = parameters[parametersOffset];
   let tolerance = max(parameters[parametersOffset + 1u], 0.0);
@@ -487,7 +545,7 @@ fn isWithinTolerance(delta: vec2<f32>, tolerance: f32) -> bool {
   var lastKeptPoint = readSnappedPoint(start, gridSize);
   for (var row = start + 1u; row + 1u < end; row++) {
     let point = readSnappedPoint(row, gridSize);
-    if (isWithinTolerance(point - lastKeptPoint, tolerance)) {
+    if (isWithinTolerance(point, lastKeptPoint, tolerance)) {
       keepFlags[keepFlagsOffset + row] = 0u;
     } else {
       keepFlags[keepFlagsOffset + row] = 1u;
@@ -500,7 +558,7 @@ fn isWithinTolerance(delta: vec2<f32>, tolerance: f32) -> bool {
   keepFlags[keepFlagsOffset + finalRow] = 1u;
   keptCount++;
   if (lastKept != start &&
-      isWithinTolerance(readSnappedPoint(finalRow, gridSize) - lastKeptPoint, tolerance)) {
+      isWithinTolerance(readSnappedPoint(finalRow, gridSize), lastKeptPoint, tolerance)) {
     keepFlags[keepFlagsOffset + lastKept] = 0u;
     keptCount--;
   }
@@ -621,6 +679,305 @@ const RING_OFFSET_COUNT: u32 = ${props.ringOffsets.length}u;`,
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
     ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
+  }`
+  });
+}
+
+/** Indirect dispatch slots of {@link createCleanupRepeatGate}. @internal */
+const REPEAT_GATE_SLOT_SEQUENTIAL = 0;
+const REPEAT_GATE_SLOT_FLAG = 1;
+const REPEAT_GATE_SLOT_RESOLVE = 2;
+const REPEAT_GATE_SLOT_APPLY = 3;
+
+/**
+ * Vertices per invocation of the tolerance-0 flag pass. Each invocation walks a short chunk and
+ * issues one atomic per ring segment instead of one per vertex, so a very long ring costs one
+ * atomic per `CLEANUP_REPEAT_CHUNK` vertices. @internal
+ */
+export const CLEANUP_REPEAT_CHUNK = 32;
+
+/** `uint32` words per ring of the tolerance-0 ring state: kept interior count, last, resolution. */
+export const CLEANUP_RING_STATE_WORDS = 3;
+
+/** Ring resolution word value of a ring emptied because too few vertices survived. @internal */
+const RING_COLLAPSED = '0xffffffffu';
+
+/**
+ * Creates the indirect dispatch gate that selects, on the GPU and per frame, between the
+ * sequential per-ring flag pass (`tolerance > 0`) and the tolerance-0 vertex-parallel passes
+ * (slots for flag, resolve and apply). The gate is written by {@link createCleanupRepeatGateNode}.
+ *
+ * @internal
+ */
+export function createCleanupRepeatGate<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; operation: string; vertexCount: number; ringCount: number}
+): WGSLDispatchGate<Parameters> {
+  return createWGSLDispatchGate(graph, {
+    id: props.id,
+    operation: props.operation,
+    shapes: [
+      [props.ringCount],
+      [Math.ceil(props.vertexCount / CLEANUP_REPEAT_CHUNK)],
+      [props.ringCount],
+      [props.vertexCount]
+    ]
+  });
+}
+
+/** Returns the gate condition and resources of one pass of {@link createCleanupRepeatGate}. @internal */
+export function getCleanupRepeatGate<Parameters>(
+  gate: WGSLDispatchGate<Parameters>,
+  pass: 'sequential' | 'flag' | 'resolve' | 'apply',
+  nodeId: string
+): {condition: GPUCommandGraphNodeCondition<Parameters>; extraResources: GraphBufferUse[]} {
+  const slot = {
+    sequential: REPEAT_GATE_SLOT_SEQUENTIAL,
+    flag: REPEAT_GATE_SLOT_FLAG,
+    resolve: REPEAT_GATE_SLOT_RESOLVE,
+    apply: REPEAT_GATE_SLOT_APPLY
+  }[pass];
+  const {condition, extraResources} = gate.getGate(slot);
+  return {condition: {...condition, id: `${nodeId}-gate`}, extraResources};
+}
+
+/**
+ * Builds the one-thread node that arms either the sequential pass or the three tolerance-0
+ * passes. The choice mirrors the sequential kernel: `max(tolerance, 0) > 0` selects sequential,
+ * so a zero (or NaN) tolerance takes the exact-repeat path.
+ *
+ * @internal
+ */
+export function createCleanupRepeatGateNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    parameters: GraphDataView<'float32'>;
+    gate: WGSLDispatchGate<Parameters>;
+  }
+): GPUCommandNode<Parameters> {
+  const disarm = (slot: number) => `dispatch[dispatchOffset + ${3 * slot}u] = 0u;`;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'cleanup-repeat-gate',
+    bindings: [
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      props.gate.binding
+    ],
+    invocationCount: 1,
+    body: /* wgsl */ `
+  ${props.gate.armWGSL}
+  if (max(parameters[parametersOffset + 1u], 0.0) > 0.0) {
+    ${disarm(REPEAT_GATE_SLOT_FLAG)}
+    ${disarm(REPEAT_GATE_SLOT_RESOLVE)}
+    ${disarm(REPEAT_GATE_SLOT_APPLY)}
+  } else {
+    ${disarm(REPEAT_GATE_SLOT_SEQUENTIAL)}
+  }`
+  });
+}
+
+/** Properties shared by the tolerance-0 passes. @internal */
+type CleanupRepeatNodeProps<Parameters> = {
+  id: string;
+  operation: string;
+  positions: GraphDataView<'float32x2'>;
+  ringOffsets: GraphDataView<'uint32'>;
+  parameters: GraphDataView<'float32'>;
+  /** Cleared per-ring state, {@link CLEANUP_RING_STATE_WORDS} `uint32` words per ring. */
+  ringState: GraphDataView<'uint32'>;
+  condition: GPUCommandGraphNodeCondition<Parameters>;
+  extraResources: readonly GraphBufferUse[];
+};
+
+/**
+ * Builds the tolerance-0 flag pass. Vertex `i` of a ring of at least two vertices is kept when it
+ * is the first or last vertex, or when its snapped position differs from the snapped position of
+ * vertex `i - 1` (the exact-repeat test of the sequential pass, which compares against the last
+ * kept vertex: a dropped vertex equals that vertex, so comparing with the previous vertex is
+ * equivalent). Each invocation handles {@link CLEANUP_REPEAT_CHUNK} consecutive vertices, so work
+ * per invocation is constant, and folds the kept interior vertices of each ring segment into the
+ * ring's count and last index in `ringState` with one atomic pair per segment, for
+ * {@link createCleanupRepeatResolveNode}. Rings below two vertices, and every ring when
+ * repeated-point removal is off, keep all vertices; vertices outside every ring stay unflagged.
+ *
+ * @internal
+ */
+export function createCleanupRepeatFlagNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: CleanupRepeatNodeProps<Parameters> & {keepFlags: GraphDataView<'uint32'>}
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'cleanup-repeat-flags',
+    bindings: [
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      {name: 'keepFlags', view: props.keepFlags, type: 'u32', access: 'read_write'},
+      {name: 'ringState', view: props.ringState, type: 'atomic<u32>', access: 'read_write'}
+    ],
+    invocationCount: Math.ceil(props.positions.length / CLEANUP_REPEAT_CHUNK),
+    condition: props.condition,
+    extraResources: props.extraResources,
+    declarations: `const VERTEX_COUNT: u32 = ${props.positions.length}u;
+const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const CHUNK: u32 = ${CLEANUP_REPEAT_CHUNK}u;
+${SNAP_SOURCE}
+${WITHIN_TOLERANCE_SOURCE}
+${getUpperBoundSource('findRing', 'ringOffsets', 'RING_COUNT')}`,
+    body: /* wgsl */ `
+  let chunkEnd = min((index + 1u) * CHUNK, min(ringOffsets[ringOffsetsOffset + RING_COUNT], VERTEX_COUNT));
+  var row = max(index * CHUNK, ringOffsets[ringOffsetsOffset]);
+  let removeRepeated = parameters[parametersOffset + 2u] != 0.0;
+  let gridSize = parameters[parametersOffset];
+  while (row < chunkEnd) {
+    let ring = findRing(row);
+    let start = ringOffsets[ringOffsetsOffset + ring];
+    let end = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
+    if (row < start || row >= end) {
+      row++;
+      continue;
+    }
+    let segmentEnd = min(end, chunkEnd);
+    let plain = !removeRepeated || end - start < 2u;
+    var count = 0u;
+    var last = 0u;
+    for (; row < segmentEnd; row++) {
+      if (plain || row == start || row + 1u == end) {
+        keepFlags[keepFlagsOffset + row] = 1u;
+        continue;
+      }
+      if (isWithinTolerance(readSnappedPoint(row, gridSize), readSnappedPoint(row - 1u, gridSize), 0.0)) {
+        keepFlags[keepFlagsOffset + row] = 0u;
+      } else {
+        keepFlags[keepFlagsOffset + row] = 1u;
+        count++;
+        last = row - start;
+      }
+    }
+    if (count > 0u) {
+      let stateBase = ringStateOffset + ${CLEANUP_RING_STATE_WORDS}u * ring;
+      atomicAdd(&ringState[stateBase], count);
+      atomicMax(&ringState[stateBase + 1u], last);
+    }
+  }`
+  });
+}
+
+/**
+ * Builds the tolerance-0 per-ring resolve pass (constant work per ring). It applies the two ring
+ * rules of the sequential pass: the last kept interior vertex is replaced by the final vertex
+ * when the final vertex repeats it (never when that vertex is the first one), and a polygon ring
+ * left with fewer than 3 vertices is emptied and counted. The outcome is written to the ring's
+ * resolution word: 0 for no change, the ring-relative index of the replaced vertex, or
+ * `0xffffffff` for a collapsed ring.
+ *
+ * @internal
+ */
+export function createCleanupRepeatResolveNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: CleanupRepeatNodeProps<Parameters> & {
+    isPolygon: boolean;
+    collapsedCount: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'cleanup-repeat-resolve',
+    bindings: [
+      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+      {name: 'ringState', view: props.ringState, type: 'u32', access: 'read_write'},
+      {
+        name: 'collapsedCount',
+        view: props.collapsedCount,
+        type: 'atomic<u32>',
+        access: 'read_write'
+      }
+    ],
+    invocationCount: props.ringOffsets.length - 1,
+    condition: props.condition,
+    extraResources: props.extraResources,
+    declarations: `const VERTEX_COUNT: u32 = ${props.positions.length}u;
+const IS_POLYGON: bool = ${props.isPolygon ? 'true' : 'false'};
+${SNAP_SOURCE}
+${WITHIN_TOLERANCE_SOURCE}`,
+    body: /* wgsl */ `
+  let start = ringOffsets[ringOffsetsOffset + index];
+  let end = min(ringOffsets[ringOffsetsOffset + index + 1u], VERTEX_COUNT);
+  if (end <= start || end - start < 2u || parameters[parametersOffset + 2u] == 0.0) {
+    return;
+  }
+  let stateBase = ringStateOffset + ${CLEANUP_RING_STATE_WORDS}u * index;
+  // First and final vertex plus the kept interior vertices.
+  var keptCount = 2u + ringState[stateBase];
+  let lastKept = ringState[stateBase + 1u];
+  var replaced = 0u;
+  if (lastKept != 0u) {
+    let gridSize = parameters[parametersOffset];
+    if (isWithinTolerance(readSnappedPoint(end - 1u, gridSize), readSnappedPoint(end - 2u, gridSize), 0.0)) {
+      replaced = lastKept;
+      keptCount--;
+    }
+  }
+  if (IS_POLYGON && keptCount < 3u) {
+    ringState[stateBase + 2u] = ${RING_COLLAPSED};
+    atomicAdd(&collapsedCount[collapsedCountOffset], 1u);
+  } else {
+    ringState[stateBase + 2u] = replaced;
+  }`
+  });
+}
+
+/**
+ * Builds the tolerance-0 per-vertex apply pass: clears the flag of the replaced vertex of a ring
+ * and of every vertex of a collapsed ring, using the resolution words of
+ * {@link createCleanupRepeatResolveNode}.
+ *
+ * @internal
+ */
+export function createCleanupRepeatApplyNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: Omit<CleanupRepeatNodeProps<Parameters>, 'positions' | 'parameters'> & {
+    positionCount: number;
+    keepFlags: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: 'cleanup-repeat-apply',
+    bindings: [
+      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+      {name: 'ringState', view: props.ringState, type: 'u32', access: 'read'},
+      {name: 'keepFlags', view: props.keepFlags, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.positionCount,
+    condition: props.condition,
+    extraResources: props.extraResources,
+    declarations: `const VERTEX_COUNT: u32 = ${props.positionCount}u;
+const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+${getUpperBoundSource('findRing', 'ringOffsets', 'RING_COUNT')}`,
+    body: /* wgsl */ `
+  let first = ringOffsets[ringOffsetsOffset];
+  if (index < first || index >= min(ringOffsets[ringOffsetsOffset + RING_COUNT], VERTEX_COUNT)) {
+    return;
+  }
+  let ring = findRing(index);
+  let start = ringOffsets[ringOffsetsOffset + ring];
+  let end = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
+  if (index < start || index >= end) {
+    return;
+  }
+  let resolution = ringState[ringStateOffset + ${CLEANUP_RING_STATE_WORDS}u * ring + 2u];
+  if (resolution == ${RING_COLLAPSED} || (resolution != 0u && index - start == resolution)) {
+    keepFlags[keepFlagsOffset + index] = 0u;
   }`
   });
 }

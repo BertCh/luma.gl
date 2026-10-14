@@ -9,31 +9,22 @@ export type {
 } from './gpu-line-integral-convolution';
 export {
   getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionWordParameterValues,
+  getGPULineIntegralConvolutionUint32ParameterValues,
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
-  GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH
+  GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH
 } from './line-integral-convolution-parameters';
 export type {GPULineIntegralConvolutionSettings} from './line-integral-convolution-parameters';
-export {convolveLineIntegralOnCPU} from './line-integral-convolution-cpu';
-export type {LineIntegralConvolutionCPUResult} from './line-integral-convolution-cpu';
 export {GPUStreamlines} from './gpu-streamlines';
 export type {
   GPUStreamlinesOutput,
-  GPUStreamlinesProps
+  GPUStreamlinesProps,
+  GPUStreamlinesStatus
 } from './gpu-streamlines';
 export {
   getGPUStreamlinesParameterValues,
-  getGPUStreamlinesWordParameterValues,
+  getGPUStreamlinesUint32ParameterValues,
+  GPU_STREAMLINES_OVERFLOW_UNCONVERGED,
   GPU_STREAMLINES_PARAMETER_LENGTH,
-  GPU_STREAMLINES_WORD_PARAMETER_LENGTH
+  GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
 } from './streamlines-parameters';
 export type {GPUStreamlinesSettings} from './streamlines-parameters';
-export {
-  generateStreamlinesOnCPU,
-  traceStreamlineCandidatesOnCPU
-} from './streamlines-cpu';
-export type {
-  StreamlineCandidates,
-  StreamlinesCPUConfig,
-  StreamlinesCPUResult
-} from './streamlines-cpu';

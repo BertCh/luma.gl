@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration, Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import {Buffer} from '@luma.gl/core';
 import type {
   GPUCommandGraph,
+  GPUCommandGraphNodeCondition,
   GraphBufferUsage,
   GraphDataView,
   GraphResourceUse
@@ -14,7 +16,6 @@ import {GPUScan} from '@luma.gl/gpgpu/gpu-core';
 import {GPUSort} from '@luma.gl/gpgpu/gpu-core';
 import {
   createTransientView,
-  getViewBinding,
   getViewElementOffset,
   validatePackedView
 } from '@luma.gl/gpgpu/gpu-core';
@@ -33,7 +34,17 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterMetadata} from './types';
+import {validateMaximumCount} from '../utils/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver, createWGSLKernelNode} from '../utils/wgsl-kernel-nodes';
+import {
+  createFixedPointScaleNodes,
+  createFixedPointClearNode,
+  createFixedPointDecodeNode,
+  FIXED_POINT_WGSL,
+  getFixedPointAtomicAddWGSL,
+  getFixedPointHeadroomBits
+} from '../utils/fixed-point-accumulator';
 
 /** One disjoint, already-labeled tile with local mergeable measurements and global destinations. */
 export type GPURasterCrossTile = {
@@ -103,12 +114,32 @@ type CrossTileScratch = {
   parents: GraphDataView<'uint32'>;
   rootFlags: GraphDataView<'uint32'>;
   rootOffsets: GraphDataView<'uint32'>;
+  /**
+   * Indirect dispatches of the union iterations, four words per slot: slot `k` for seam `k`, the
+   * last slot for compression. The convergence pass zeroes them once nothing changed, so the
+   * remaining unrolled iterations dispatch no work (library rule 13).
+   */
+  iterationDispatch: GraphDataView<'uint32'>;
 };
 
 const MAXIMUM_CROSS_TILE_ITERATIONS = 64;
-const MAXIMUM_SORT_CANDIDATE_COUNT = 0x80000000;
 const MAXIMUM_PARENT_DEPTH = 32;
 const LINEAR_WORKGROUP_SIZE = 256;
+
+/**
+ * Largest total tile region capacity (the sum of every tile's `measurements.pixelCounts.length`),
+ * largest per-tile capacity and largest global `output.pixelCounts.length` of
+ * {@link GPURasterCrossTileComponents} on `device`: the sort, grouping and merge passes dispatch
+ * one invocation per candidate or region row in 256-invocation workgroups, limited to
+ * `maxComputeWorkgroupsPerDimension` workgroups and 12 bytes per fixed-point sum per binding,
+ * so 11184810 on a default device (128 MiB bindings).
+ */
+export function getGPURasterCrossTileComponentsMaximumCapacity(device: Device): number {
+  return Math.min(
+    device.limits.maxComputeWorkgroupsPerDimension * 256,
+    Math.floor(device.limits.maxStorageBufferBindingSize / 12)
+  );
+}
 
 /**
  * Reconciles bounded tile-local regions into globally ordered, seam-aware connected components.
@@ -118,7 +149,7 @@ const LINEAR_WORKGROUP_SIZE = 256;
  * roots regardless of tile arrival order. Four-connectivity links touching edges; eight-connectivity
  * additionally links shifted edge diagonals and four-tile corner junctions. A bounded union budget,
  * explicit upstream status, caller-owned dense outputs, saturating unsigned populations, and merged
- * calibrated intensity/moment partials remain entirely inside the caller's command graph.
+ * calibrated intensity/moment partials use deterministic shared 96-bit fixed-point sums, entirely inside the caller's command graph.
  */
 export class GPURasterCrossTileComponents {
   readonly id: string;
@@ -157,7 +188,7 @@ export class GPURasterCrossTileComponents {
     let candidateCount = 0;
     this.plannedTiles = sortedTiles.map((tile, index) => {
       validateTileMetadata(tile, this.metadata, `${this.id} tile ${index}`);
-      const regionCount = validateMeasurementOutputs(tile.measurements, `${this.id} tile ${index}`);
+      const regionCount = validateMeasurementOutputs(this.id, tile.measurements, `tile ${index}`);
       if (regionCount === 0) {
         throw new Error(`${this.id} tile region capacity must contain at least one candidate`);
       }
@@ -202,11 +233,6 @@ export class GPURasterCrossTileComponents {
         height
       };
       candidateCount += regionCount;
-      if (candidateCount > MAXIMUM_SORT_CANDIDATE_COUNT) {
-        throw new Error(
-          `${this.id} total local region capacity exceeds the bounded uint32 GPU sort`
-        );
-      }
       return plan;
     });
     this.candidateCount = candidateCount;
@@ -224,7 +250,7 @@ export class GPURasterCrossTileComponents {
       throw new Error(`${this.id} maximum iterations must be an integer from one through 64`);
     }
 
-    const globalCapacity = validateMeasurementOutputs(this.output, `${this.id} global`);
+    const globalCapacity = validateMeasurementOutputs(this.id, this.output, 'global');
     this.capacity = props.capacity ?? globalCapacity;
     if (
       !Number.isSafeInteger(this.capacity) ||
@@ -289,6 +315,27 @@ export class GPURasterCrossTileComponents {
     ) {
       throw new Error(`${this.id} sorting and grouping exceed device workgroup limits`);
     }
+    const maximumCapacity = getGPURasterCrossTileComponentsMaximumCapacity(graph.device);
+    for (const plan of this.plannedTiles) {
+      validateMaximumCount(
+        this.id,
+        `tile ${plan.index} measurement capacity`,
+        plan.candidateCount,
+        maximumCapacity
+      );
+    }
+    validateMaximumCount(
+      this.id,
+      'global measurement capacity',
+      this.output.pixelCounts.length,
+      maximumCapacity
+    );
+    validateMaximumCount(
+      this.id,
+      'total tile region capacity',
+      this.candidateCount,
+      maximumCapacity
+    );
     assertLinearDispatchFits(graph, this.candidateCount, this.id);
     if (this.output.pixelCounts.length > 0) {
       assertLinearDispatchFits(graph, this.output.pixelCounts.length, `${this.id} global regions`);
@@ -338,6 +385,13 @@ export class GPURasterCrossTileComponents {
         `${this.id}-root-offsets`,
         'uint32',
         this.candidateCount
+      ),
+      iterationDispatch: createTransientView(
+        graph,
+        `${this.id}-iteration-dispatch`,
+        'uint32',
+        4 * (this.seams.length + 1),
+        Buffer.STORAGE | Buffer.INDIRECT
       )
     };
     for (const view of Object.values(scratch)) {
@@ -359,6 +413,7 @@ export class GPURasterCrossTileComponents {
       })
     );
     this.addRankInitialization(graph, scratch);
+    this.addIterationDispatchInitialization(graph, scratch);
     for (let iteration = 0; iteration < this.maximumIterations; iteration++) {
       for (const seam of this.seams) this.addSeamPass(graph, scratch, seam, iteration);
       this.addCompressionPass(graph, scratch, iteration);
@@ -378,6 +433,7 @@ export class GPURasterCrossTileComponents {
     if (this.output.pixelCounts.length > 0) {
       this.addOutputInitialization(graph);
       for (const tile of this.plannedTiles) this.addTileMeasurements(graph, scratch, tile);
+      this.addDeterministicSums(graph, scratch);
       this.addIntensityFinalization(graph);
       this.addGeometryFinalization(graph);
     }
@@ -606,8 +662,44 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
       id,
       bindings,
       locations => makeSeamShader(this, scratch, seam, locations),
-      [Math.ceil(seam.length / LINEAR_WORKGROUP_SIZE), 1]
+      [Math.ceil(seam.length / LINEAR_WORKGROUP_SIZE), 1],
+      getIterationCondition(id, scratch, this.seams.indexOf(seam))
     );
+  }
+
+  /** Arms every iteration dispatch slot at its full size before the first iteration. */
+  private addIterationDispatchInitialization<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    scratch: CrossTileScratch
+  ): void {
+    const slotSizes = this.getIterationSlotSizes();
+    addCrossTilePass(
+      graph,
+      `${this.id}-iteration-dispatch-reset`,
+      [{name: 'iterationDispatch', view: scratch.iterationDispatch, usage: 'storage-write'}],
+      locations => /* wgsl */ `
+${declareBinding(locations, 'iterationDispatch', scratch.iterationDispatch, 'write')}
+const SLOT_SIZES = array<u32, ${slotSizes.length}>(${slotSizes.map(size => `${size}u`).join(', ')});
+@compute @workgroup_size(1)
+fn main() {
+  for (var slot = 0u; slot < ${slotSizes.length}u; slot++) {
+    let base = ${getViewElementOffset(scratch.iterationDispatch)}u + 4u * slot;
+    iterationDispatch[base] = SLOT_SIZES[slot];
+    iterationDispatch[base + 1u] = 1u;
+    iterationDispatch[base + 2u] = 1u;
+    iterationDispatch[base + 3u] = 0u;
+  }
+}`,
+      [1, 1]
+    );
+  }
+
+  /** Workgroup counts of the gated iteration passes: one per seam, then compression. */
+  private getIterationSlotSizes(): number[] {
+    return [
+      ...this.seams.map(seam => Math.ceil(seam.length / LINEAR_WORKGROUP_SIZE)),
+      Math.ceil(this.candidateCount / LINEAR_WORKGROUP_SIZE)
+    ];
   }
 
   private addCompressionPass<Parameters>(
@@ -636,7 +728,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let previous = atomicMin(&parentValues[index], root);
   if (previous > root) { atomicOr(&changeValues[${getViewElementOffset(scratch.changed)}u], 1u); }
 }`,
-      [Math.ceil(this.candidateCount / LINEAR_WORKGROUP_SIZE), 1]
+      [Math.ceil(this.candidateCount / LINEAR_WORKGROUP_SIZE), 1],
+      getIterationCondition(`${this.id}-compress-${iteration}`, scratch, this.seams.length)
     );
   }
 
@@ -651,18 +744,27 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
       [
         {name: 'changeValues', view: scratch.changed, usage: 'storage-read-write'},
         {name: 'readyValues', view: scratch.ready, usage: 'storage-read'},
-        {name: 'globalConvergence', view: this.converged, usage: 'storage-write'}
+        {name: 'globalConvergence', view: this.converged, usage: 'storage-write'},
+        {name: 'iterationDispatch', view: scratch.iterationDispatch, usage: 'storage-read-write'}
       ],
       locations => /* wgsl */ `
 ${declareBinding(locations, 'changeValues', scratch.changed, 'atomic')}
 ${declareBinding(locations, 'readyValues', scratch.ready, 'read')}
 ${declareBinding(locations, 'globalConvergence', this.converged, 'write')}
+${declareBinding(locations, 'iterationDispatch', scratch.iterationDispatch, 'write')}
 @compute @workgroup_size(1)
 fn main() {
   let changed = atomicLoad(&changeValues[${getViewElementOffset(scratch.changed)}u]);
   let ready = readyValues[${getViewElementOffset(scratch.ready)}u] != 0u;
-  globalConvergence[${getViewElementOffset(this.converged)}u] = select(0u, 1u, ready && changed == 0u);
+  let converged = ready && changed == 0u;
+  globalConvergence[${getViewElementOffset(this.converged)}u] = select(0u, 1u, converged);
   atomicStore(&changeValues[${getViewElementOffset(scratch.changed)}u], 0u);
+  // A converged union is a fixpoint: later iterations would change nothing, so skip their work.
+  if (converged) {
+    for (var slot = 0u; slot < ${this.seams.length + 1}u; slot++) {
+      iterationDispatch[${getViewElementOffset(scratch.iterationDispatch)}u + 4u * slot] = 0u;
+    }
+  }
 }`,
       [1, 1]
     );
@@ -849,11 +951,8 @@ fn main(@builtin(global_invocation_id) globalId:vec3<u32>){
   ): void {
     this.addPopulationMerge(graph, scratch, plan, 'pixel');
     this.addPopulationMerge(graph, scratch, plan, 'intensity');
-    this.addFloatingMerge(graph, scratch, plan, 'sum');
     this.addFloatingMerge(graph, scratch, plan, 'minimum');
     this.addFloatingMerge(graph, scratch, plan, 'maximum');
-    this.addFloatingMerge(graph, scratch, plan, 'column');
-    this.addFloatingMerge(graph, scratch, plan, 'row');
   }
 
   private addPopulationMerge<Parameters>(
@@ -913,38 +1012,15 @@ fn main(@builtin(global_invocation_id) globalId:vec3<u32>){
     graph: GPUCommandGraph<Parameters>,
     scratch: CrossTileScratch,
     plan: PlannedTile,
-    kind: 'sum' | 'minimum' | 'maximum' | 'column' | 'row'
+    kind: 'minimum' | 'maximum'
   ): void {
     const source =
-      kind === 'sum'
-        ? plan.tile.measurements.intensitySums
-        : kind === 'minimum'
-          ? plan.tile.measurements.intensityMinimums
-          : kind === 'maximum'
-            ? plan.tile.measurements.intensityMaximums
-            : kind === 'column'
-              ? plan.tile.measurements.columnSums
-              : plan.tile.measurements.rowSums;
-    const counts =
-      kind === 'column' || kind === 'row'
-        ? plan.tile.measurements.pixelCounts
-        : plan.tile.measurements.intensityCounts;
+      kind === 'minimum'
+        ? plan.tile.measurements.intensityMinimums
+        : plan.tile.measurements.intensityMaximums;
+    const counts = plan.tile.measurements.intensityCounts;
     const output =
-      kind === 'sum'
-        ? this.output.intensitySums
-        : kind === 'minimum'
-          ? this.output.intensityMinimums
-          : kind === 'maximum'
-            ? this.output.intensityMaximums
-            : kind === 'column'
-              ? this.output.columnSums
-              : this.output.rowSums;
-    const shifted =
-      kind === 'column'
-        ? ` + f32(count) * ${getRasterFloatLiteral(plan.tile.pixelBounds[0])}`
-        : kind === 'row'
-          ? ` + f32(count) * ${getRasterFloatLiteral(plan.tile.pixelBounds[1])}`
-          : '';
+      kind === 'minimum' ? this.output.intensityMinimums : this.output.intensityMaximums;
     addCrossTilePass(
       graph,
       `${this.id}-tile-${plan.index}-merge-${kind}`,
@@ -969,10 +1045,6 @@ ${declareBinding(locations, 'globalValues', output, 'atomic')}
 ${declareBinding(locations, 'globalOverflow', this.overflow, 'atomic')}
 ${globalGroupFunction(scratch, plan, this.capacity)}
 fn encodeOrdered(value:f32)->u32{let bits=bitcast<u32>(value);return select(bits^0x80000000u,~bits,(bits&0x80000000u)!=0u);}
-fn addFloat(index:u32,value:f32){
- var previous=atomicLoad(&globalValues[${getViewElementOffset(output)}u+index]);
- loop{let next=bitcast<u32>(bitcast<f32>(previous)+value);let result=atomicCompareExchangeWeak(&globalValues[${getViewElementOffset(output)}u+index],previous,next);if(result.exchanged){break;}previous=result.old_value;}
-}
 ${IS_FINITE_VALUE_WGSL}
 @compute @workgroup_size(${LINEAR_WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId:vec3<u32>){
@@ -980,12 +1052,140 @@ fn main(@builtin(global_invocation_id) globalId:vec3<u32>){
  let group=globalGroup(globalId.x);
  let count=localCounts[${getViewElementOffset(counts)}u+globalId.x];
  if(group==0xffffffffu||count==0u){return;}
- let value=localValues[${getViewElementOffset(source)}u+globalId.x]${shifted};
+ let value=localValues[${getViewElementOffset(source)}u+globalId.x];
  if(!isFiniteValue(value)){atomicOr(&globalOverflow[${getViewElementOffset(this.overflow)}u],1u);return;}
- ${kind === 'minimum' ? `atomicMin(&globalValues[${getViewElementOffset(output)}u+group],encodeOrdered(value));` : kind === 'maximum' ? `atomicMax(&globalValues[${getViewElementOffset(output)}u+group],encodeOrdered(value));` : 'addFloat(group,value);'}
+ ${kind === 'minimum' ? `atomicMin(&globalValues[${getViewElementOffset(output)}u+group],encodeOrdered(value));` : `atomicMax(&globalValues[${getViewElementOffset(output)}u+group],encodeOrdered(value));`}
 }`,
       [Math.ceil(plan.candidateCount / LINEAR_WORKGROUP_SIZE), 1]
     );
+  }
+
+  private addDeterministicSums<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    scratch: CrossTileScratch
+  ): void {
+    const operation = 'GPURasterCrossTileComponents';
+    const groups = createTransientView(
+      graph,
+      `${this.id}-sum-groups`,
+      'uint32',
+      this.candidateCount
+    );
+    for (const plan of this.plannedTiles) {
+      const bindings: CrossTileBinding[] = [
+        {name: 'candidateRanks', view: scratch.candidateRanks, usage: 'storage-read'},
+        {name: 'parentValues', view: scratch.parents, usage: 'storage-read'},
+        {name: 'rootFlags', view: scratch.rootFlags, usage: 'storage-read'},
+        {name: 'rootOffsets', view: scratch.rootOffsets, usage: 'storage-read'},
+        {name: 'groups', view: groups, usage: 'storage-write'}
+      ];
+      addCrossTilePass(
+        graph,
+        `${this.id}-tile-${plan.index}-sum-groups`,
+        bindings,
+        locations => `
+${bindings.map(binding => declareBinding(locations, binding.name, binding.view, binding.name === 'groups' ? 'write' : 'read')).join('\n')}
+${globalGroupFunction(scratch, plan, this.capacity)}
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) globalId:vec3<u32>) {
+  if (globalId.x < ${plan.candidateCount}u) { groups[${getViewElementOffset(groups) + plan.candidateOffset}u + globalId.x] = globalGroup(globalId.x); }
+}`,
+        [Math.ceil(plan.candidateCount / 256), 1]
+      );
+    }
+    for (const kind of ['sum', 'column', 'row'] as const) {
+      const id = `${this.id}-fixed-${kind}`;
+      const terms = createTransientView(graph, `${id}-terms`, 'float32', this.candidateCount);
+      const words = createTransientView(
+        graph,
+        `${id}-words`,
+        'uint32',
+        this.output.pixelCounts.length * 3
+      );
+      assertRasterStorageBindingFits(graph.device, words, id);
+      const scale = createTransientView(graph, `${id}-scale`, 'uint32', 1);
+      for (const plan of this.plannedTiles) {
+        const source =
+          kind === 'sum'
+            ? plan.tile.measurements.intensitySums
+            : kind === 'column'
+              ? plan.tile.measurements.columnSums
+              : plan.tile.measurements.rowSums;
+        const counts =
+          kind === 'sum'
+            ? plan.tile.measurements.intensityCounts
+            : plan.tile.measurements.pixelCounts;
+        const shift =
+          kind === 'sum'
+            ? ''
+            : ` + f32(count) * ${getRasterFloatLiteral(plan.tile.pixelBounds[kind === 'column' ? 0 : 1])}`;
+        graph.add(
+          createWGSLKernelNode(graph, {
+            id: `${id}-tile-${plan.index}-terms`,
+            operation,
+            bindings: [
+              {name: 'source', view: source, type: 'f32', access: 'read'},
+              {name: 'counts', view: counts, type: 'u32', access: 'read'},
+              {name: 'groups', view: groups, type: 'u32', access: 'read'},
+              {name: 'terms', view: terms, type: 'f32', access: 'read_write'},
+              {name: 'overflow', view: this.overflow, type: 'atomic<u32>', access: 'read_write'}
+            ],
+            invocationCount: plan.candidateCount,
+            declarations: IS_FINITE_VALUE_WGSL,
+            body: `let termIndex = ${plan.candidateOffset}u + index;
+            let count = counts[countsOffset + index];
+            var value = 0.0;
+            if (count != 0u && groups[groupsOffset + termIndex] != 0xffffffffu) {
+              value = source[sourceOffset + index]${shift};
+              if (!isFiniteValue(value)) { atomicOr(&overflow[overflowOffset], 1u); value = 0.0; }
+            }
+            terms[termsOffset + termIndex] = value;`
+          })
+        );
+      }
+      for (const node of createFixedPointScaleNodes(graph, {
+        id: `${id}-scale`,
+        operation,
+        values: terms,
+        scale
+      }))
+        graph.add(node);
+      graph.add(createFixedPointClearNode(graph, {id: `${id}-clear`, operation, words}));
+      graph.add(
+        createWGSLKernelNode(graph, {
+          id: `${id}-accumulate`,
+          operation,
+          bindings: [
+            {name: 'terms', view: terms, type: 'f32', access: 'read'},
+            {name: 'groups', view: groups, type: 'u32', access: 'read'},
+            {name: 'scale', view: scale, type: 'u32', access: 'read'},
+            {name: 'words', view: words, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: this.candidateCount,
+          declarations: `${FIXED_POINT_WGSL}\n${getFixedPointAtomicAddWGSL('words')}`,
+          body: `let group = groups[groupsOffset + index];
+          if (group != 0xffffffffu) {
+            let unit = getFixedPointUnitExponent(scale[scaleOffset], ${getFixedPointHeadroomBits(this.candidateCount)}u);
+            addFixedPointToWords(group, quantizeFixedPoint(terms[termsOffset + index], unit));
+          }`
+        })
+      );
+      graph.add(
+        createFixedPointDecodeNode(graph, {
+          id: `${id}-decode`,
+          operation,
+          words,
+          scale,
+          maximumTermCount: this.candidateCount,
+          output:
+            kind === 'sum'
+              ? this.output.intensitySums
+              : kind === 'column'
+                ? this.output.columnSums
+                : this.output.rowSums
+        })
+      );
+    }
   }
 
   private addIntensityFinalization<Parameters>(graph: GPUCommandGraph<Parameters>): void {
@@ -1112,13 +1312,14 @@ function getMeasurementViews(output: GPURasterRegionMeasurementOutputs): GraphDa
 }
 
 function validateMeasurementOutputs(
+  id: string,
   output: GPURasterRegionMeasurementOutputs,
   label: string
 ): number {
   const views = getMeasurementViews(output);
   const count = output.pixelCounts.length;
   if (!Number.isSafeInteger(count) || count > MAXIMUM_RASTER_PIXEL_COUNT) {
-    throw new Error(`${label} measurement capacity must fit in uint32`);
+    throw new Error(`${id} ${label} measurement capacity must fit in uint32`);
   }
   for (const [index, view] of views.entries()) {
     validatePackedView(
@@ -1393,12 +1594,28 @@ function assertLinearDispatchFits<Parameters>(
   }
 }
 
+/** Indirect GPU condition of one gated iteration pass reading dispatch slot `slot`. */
+function getIterationCondition<Parameters>(
+  id: string,
+  scratch: CrossTileScratch,
+  slot: number
+): GPUCommandGraphNodeCondition<Parameters> {
+  return {
+    id: `${id}-gate`,
+    source: 'gpu',
+    mode: 'indirect',
+    buffer: scratch.iterationDispatch.buffer,
+    byteOffset: scratch.iterationDispatch.byteOffset + 16 * slot
+  };
+}
+
 function addCrossTilePass<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   bindings: readonly CrossTileBinding[],
   makeShader: (locations: ReadonlyMap<string, number>) => string,
-  dispatch: readonly [number, number]
+  dispatch: readonly [number, number],
+  condition?: GPUCommandGraphNodeCondition<Parameters>
 ): void {
   if (bindings.length > graph.device.limits.maxStorageBuffersPerShaderStage) {
     throw new Error(`${id} exceeds the device storage binding count`);
@@ -1423,19 +1640,22 @@ function addCrossTilePass<Parameters>(
   graph.addComputePass({
     id,
     resources,
+    ...(condition ? {condition} : {}),
     compile: ({device}) => {
       const computation = new Computation(device, {
         id,
         source: makeShader(locations),
         shaderLayout: {bindings: declarations}
       });
+      const bindingViews: Record<string, GraphDataView> = {};
+      for (const binding of bindings) {
+        bindingViews[binding.name] = binding.view;
+      }
+      const resolveChangedBindings = createChangedBindingResolver(bindingViews);
       return {
         encode: ({computePass, getBuffer}) => {
-          const resolved: Record<string, Binding> = {};
-          for (const binding of bindings) {
-            resolved[binding.name] = getViewBinding(binding.view, getBuffer);
-          }
-          computation.setBindings(resolved);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           computation.dispatch(computePass, dispatch[0], dispatch[1]);
         },
         destroy: () => computation.destroy()

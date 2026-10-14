@@ -3,8 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,9 +15,17 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPUBoundedResultStatusPort} from '../../analysis-core/contracts/index';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {isGPUSpatialWeightsRowStandardized} from '../spatial-weights/spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
@@ -32,7 +38,7 @@ export const GPU_NEIGHBORHOOD_SUMMARY_MAXIMUM_NEIGHBORS = 64;
 /** `modes` value of a row with no members. */
 export const GPU_NEIGHBORHOOD_SUMMARY_NO_MODE = 0xffffffff;
 
-/** A numeric statistic of {@link GPUNeighborhoodSummary}; one `output` column each. */
+/** A numeric statistic of {@link GPUNeighborhoodSummary}; one `output.table` column each. */
 export type GPUNeighborhoodSummaryStatistic =
   | 'count'
   | 'weightSum'
@@ -66,9 +72,12 @@ export type GPUNeighborhoodSummaryProps = {
   id?: string;
   /** Square spatial weights whose neighbor IDs index the value rows. */
   weights: GPUSpatialWeights;
-  /** Numeric values, one per row. Required when `statistics` is not empty. */
-  values?: GraphDataView<'float32'>;
-  /** Categorical uint32 column, one per row. Required when `modes` or `entropy` is given. */
+  /**
+   * Numeric values, one per row, `float32` or `uint32` (counts are converted to f32 by one node,
+   * exact below 2^24). Required when `statistics` is not empty.
+   */
+  values?: GPUFloat32OrUint32Values;
+  /** Categorical uint32 column, one per row. Required with `output.modes` or `output.entropy`. */
   categories?: GraphDataView<'uint32'>;
   /** Optional row selection: nonzero includes the row as a focus and as a neighbor. */
   mask?: GraphDataView<'uint32'>;
@@ -79,25 +88,35 @@ export type GPUNeighborhoodSummaryProps = {
   includeFocal?: boolean;
   /** Weight of the focal member when `includeFocal` is set. Finite and non-negative; defaults to 1. */
   focalWeight?: number;
-  /** Numeric statistics to write, in `output` column order. No duplicates. Compile-time. */
+  /** Numeric statistics to write, in `output.table` column order. No duplicates. Compile-time. */
   statistics?: readonly GPUNeighborhoodSummaryStatistic[];
   /**
-   * Caller-owned row-major table of `rows * statistics.length` float32 values; row `i` column `c`
-   * holds `statistics[c]` at index `i * statistics.length + c`.
-   */
-  output?: GraphDataView<'float32'>;
-  /**
-   * Compile-time capacity of the median buffer, in `[1, 64]`. Members beyond it set `overflow`
-   * and the row's median is quiet NaN. It also sizes the private member cache of the categorical
-   * `modes` and `entropy` (larger rows stay exact but take a slower scan). Defaults to 32.
+   * Compile-time capacity of the median buffer, in `[1, 64]`. Members beyond it set
+   * `output.status.overflow` and the row's median is quiet NaN. It also sizes the private member
+   * cache of the categorical `modes` and `entropy` (larger rows stay exact but take a slower
+   * scan). Defaults to 32.
    */
   maximumNeighbors?: number;
-  /** Caller-owned one-row flag: 1 when a row with the median requested exceeded `maximumNeighbors`. */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional caller-owned weighted mode category per row, `GPU_NEIGHBORHOOD_SUMMARY_NO_MODE` if empty. */
+  /** Caller-owned outputs; at least one of `table`, `modes` and `entropy`. */
+  output: GPUNeighborhoodSummaryOutput;
+};
+
+/** Caller-owned outputs of {@link GPUNeighborhoodSummary}. */
+export type GPUNeighborhoodSummaryOutput = {
+  /**
+   * Row-major table of `rows * statistics.length` float32 values; row `i` column `c` holds
+   * `statistics[c]` at index `i * statistics.length + c`. Required when `statistics` is not empty.
+   */
+  table?: GraphDataView<'float32'>;
+  /** Weighted mode category per row, `GPU_NEIGHBORHOOD_SUMMARY_NO_MODE` if empty. */
   modes?: GraphDataView<'uint32'>;
-  /** Optional caller-owned Shannon entropy (natural log) of the weighted category shares per row. */
+  /** Shannon entropy (natural log) of the weighted category shares per row. */
   entropy?: GraphDataView<'float32'>;
+  /**
+   * `overflow`: one-row flag, 1 when a row with the median requested exceeded
+   * `maximumNeighbors`. Required with `'median'`.
+   */
+  status?: Pick<GPUBoundedResultStatusPort, 'overflow'>;
 };
 
 /**
@@ -111,7 +130,7 @@ export type GPUNeighborhoodSummaryProps = {
  * slots are therefore not members: `count`, `min`, `max`, `median` and the categorical outputs
  * ignore them. This deliberately differs from libpysal `lag_spatial` and momepy, which count
  * every listed neighbor including zero-weight ones (identical when no zero weights are listed).
- * When `weights.info.transform === 'row'` the slot weights are re-standardized over the active
+ * When `weights.information.transform === 'row'` the slot weights are re-standardized over the active
  * members (`w_s / sum of active slot weights`, the focal weight is unchanged), so `sum` (the lag)
  * stays a weighted average when neighbors are masked or non-finite instead of shrinking toward 0.
  * When `weights.status.overflow` is nonzero the weights are truncated and every output is NaN
@@ -124,7 +143,7 @@ export type GPUNeighborhoodSummaryProps = {
  * - `standardDeviation` is the weighted population deviation `sqrt(sum w_s (x_s - mean)^2 / W)`,
  *   computed in a second pass about the mean (NaN when `W = 0`).
  * - `median` is the unweighted median (mean of the two middle values for even `k`) for `k` up to
- *   `maximumNeighbors`; larger rows are not summarized and set `overflow`.
+ *   `maximumNeighbors`; larger rows are not summarized and set `output.status.overflow`.
  * - `modes` is the category with the largest weighted frequency `sum_{s: c_s = c} w_s`; ties go
  *   to the lowest category. `entropy` is `-sum p_c ln p_c` with `p_c = f_c / W` over the categories
  *   in first-occurrence order (0 for one category, NaN when `W = 0`). Category cost is `O(k^2)` per
@@ -156,73 +175,75 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
     if (new Set(statistics).size !== statistics.length) {
       throw new Error(`${id} statistics must not repeat`);
     }
-    const categorical = Boolean(props.modes || props.entropy);
+    const {output} = props;
+    const categorical = Boolean(output.modes || output.entropy);
     if (statistics.length === 0 && !categorical) {
       throw new Error(`${id} requests no statistic`);
     }
     if (statistics.length > 0) {
-      if (!props.values || !props.output) {
-        throw new Error(`${id} statistics require values and output`);
+      if (!props.values || !output.table) {
+        throw new Error(`${id} statistics require values and output.table`);
       }
-      validatePackedView(props.values, ['float32'], `${id} values`);
-      validatePackedView(props.output, ['float32'], `${id} output`);
-      if (props.values.length !== rows) {
-        throw new Error(`${id} values length must equal the weights row count`);
+      if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
+        throw new Error(`${id} values needs one row per weights row`);
       }
-      if (props.output.length !== rows * statistics.length) {
-        throw new Error(`${id} output length must equal rows * statistics.length`);
+      validatePackedView(output.table, ['float32'], `${id} output.table`);
+      if (output.table.length !== rows * statistics.length) {
+        throw new Error(`${id} output.table needs rows * statistics.length values`);
       }
-    } else if (props.output || props.values) {
-      throw new Error(`${id} values and output require statistics`);
+    } else if (output.table || props.values) {
+      throw new Error(`${id} values and output.table require statistics`);
     }
+    const overflow = output.status?.overflow;
     if (statistics.includes('median')) {
-      if (!props.overflow) {
-        throw new Error(`${id} median requires overflow`);
+      if (!overflow) {
+        throw new Error(`${id} median requires output.status.overflow`);
       }
-      validatePackedUint32View(props.overflow, `${id} overflow`);
-      if (props.overflow.length < 1) {
-        throw new Error(`${id} overflow must hold one uint32`);
+      validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+      if (overflow.length < 1) {
+        throw new Error(`${id} output.status.overflow needs one row`);
       }
     }
-    const maximumNeighbors = props.maximumNeighbors ?? 32;
-    if (
-      !Number.isInteger(maximumNeighbors) ||
-      maximumNeighbors < 1 ||
-      maximumNeighbors > GPU_NEIGHBORHOOD_SUMMARY_MAXIMUM_NEIGHBORS
-    ) {
-      throw new Error(
-        `${id} maximumNeighbors must be an integer in [1, ${GPU_NEIGHBORHOOD_SUMMARY_MAXIMUM_NEIGHBORS}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumNeighbors',
+      props.maximumNeighbors ?? 32,
+      1,
+      GPU_NEIGHBORHOOD_SUMMARY_MAXIMUM_NEIGHBORS
+    );
     if (categorical) {
       if (!props.categories) {
         throw new Error(`${id} modes and entropy require categories`);
       }
-      validatePackedUint32View(props.categories, `${id} categories`);
+      validatePackedView(props.categories, ['uint32'], `${id} categories`);
       if (props.categories.length !== rows) {
-        throw new Error(`${id} categories length must equal the weights row count`);
+        throw new Error(`${id} categories needs one row per weights row`);
       }
     }
-    if (props.modes) {
-      validatePackedUint32View(props.modes, `${id} modes`);
-      if (props.modes.length !== rows) {
-        throw new Error(`${id} modes length must equal the weights row count`);
+    if (output.modes) {
+      validatePackedView(output.modes, ['uint32'], `${id} output.modes`);
+      if (output.modes.length !== rows) {
+        throw new Error(`${id} output.modes needs one row per weights row`);
       }
     }
-    if (props.entropy) {
-      validatePackedView(props.entropy, ['float32'], `${id} entropy`);
-      if (props.entropy.length !== rows) {
-        throw new Error(`${id} entropy length must equal the weights row count`);
+    if (output.entropy) {
+      validatePackedView(output.entropy, ['float32'], `${id} output.entropy`);
+      if (output.entropy.length !== rows) {
+        throw new Error(`${id} output.entropy needs one row per weights row`);
       }
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
-        throw new Error(`${id} mask length must equal the weights row count`);
+        throw new Error(`${id} mask needs one row per weights row`);
       }
     }
     if (props.weights.status?.overflow) {
-      validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
+      validatePackedView(
+        props.weights.status.overflow,
+        ['uint32'],
+        `${id} weights.status.overflow`
+      );
     }
     const focalWeight = props.focalWeight ?? 1;
     if (!Number.isFinite(focalWeight) || focalWeight < 0) {
@@ -230,7 +251,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.output, props.overflow, props.modes, props.entropy],
+      [output.table, overflow, output.modes, output.entropy],
       [
         props.weights.offsets,
         props.weights.neighbors,
@@ -248,7 +269,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, mask} = props;
+    const {weights, mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,
       weights.neighbors,
@@ -257,10 +278,10 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
       props.values,
       props.categories,
       mask,
-      props.output,
-      props.overflow,
-      props.modes,
-      props.entropy
+      output.table,
+      output.status?.overflow,
+      output.modes,
+      output.entropy
     ]);
     const rows = weights.offsets.length - 1;
     const statistics = props.statistics ?? [];
@@ -320,7 +341,11 @@ fn getRowScale(row: u32, begin: u32, visits: u32) -> f32 {
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     if (statistics.length > 0) {
-      const {values, output} = props;
+      // uint32 values (counts) are converted to f32 once; float32 values are used as given.
+      const conversion = createFloat32ValuesNodes(graph, `${id}-values`, props.values!);
+      nodes.push(...conversion.nodes);
+      const values = conversion.view;
+      const table = output.table!;
       const columns = statistics.length;
       const wants = (statistic: GPUNeighborhoodSummaryStatistic) => statistics.includes(statistic);
       const needsMean = wants('mean') || wants('standardDeviation');
@@ -328,11 +353,11 @@ fn getRowScale(row: u32, begin: u32, visits: u32) -> f32 {
         {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
         {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
         {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
-        {name: 'values', view: values!, type: 'f32', access: 'read'},
+        {name: 'values', view: values, type: 'f32', access: 'read'},
         ...(mask
           ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
           : []),
-        {name: 'output', view: output!, type: 'f32', access: 'read_write'},
+        {name: 'output', view: table, type: 'f32', access: 'read_write'},
         ...(truncation
           ? [{name: 'truncation', view: truncation, type: 'u32' as const, access: 'read' as const}]
           : [])
@@ -340,7 +365,7 @@ fn getRowScale(row: u32, begin: u32, visits: u32) -> f32 {
       if (wants('median')) {
         bindings.push({
           name: 'overflow',
-          view: props.overflow!,
+          view: output.status!.overflow!,
           type: 'atomic<u32>',
           access: 'read_write'
         });
@@ -348,7 +373,7 @@ fn getRowScale(row: u32, begin: u32, visits: u32) -> f32 {
           createFillNode<Parameters>(graph, {
             id: `${id}-overflow-clear`,
             operation: OPERATION,
-            view: props.overflow!,
+            view: output.status!.overflow!,
             type: 'u32',
             value: '0u',
             componentCount: 1
@@ -480,7 +505,7 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
       );
     }
 
-    if (props.modes || props.entropy) {
+    if (output.modes || output.entropy) {
       const bindings: WGSLKernelBinding[] = [
         {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
         {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
@@ -489,21 +514,21 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
         ...(mask
           ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
           : []),
-        ...(props.modes
+        ...(output.modes
           ? [
               {
                 name: 'modes',
-                view: props.modes,
+                view: output.modes,
                 type: 'u32' as const,
                 access: 'read_write' as const
               }
             ]
           : []),
-        ...(props.entropy
+        ...(output.entropy
           ? [
               {
                 name: 'entropy',
-                view: props.entropy,
+                view: output.entropy,
                 type: 'f32' as const,
                 access: 'read_write' as const
               }
@@ -517,7 +542,7 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-categorical`,
           operation: OPERATION,
-          variant: `categorical${props.modes ? '-mode' : ''}${props.entropy ? '-entropy' : ''}`,
+          variant: `categorical${output.modes ? '-mode' : ''}${output.entropy ? '-entropy' : ''}`,
           bindings,
           invocationCount: rows,
           declarations: `${constants}
@@ -526,16 +551,16 @@ const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighbors}u;
 ${getMemberWGSL(() => 'true')}`,
           body: `let nan = getQuietNaN(index);
   if (!(${maskedWGSL('index')})) {
-    ${props.modes ? 'modes[modesOffset + index] = NO_MODE;' : ''}
-    ${props.entropy ? 'entropy[entropyOffset + index] = nan;' : ''}
+    ${output.modes ? 'modes[modesOffset + index] = NO_MODE;' : ''}
+    ${output.entropy ? 'entropy[entropyOffset + index] = nan;' : ''}
     return;
   }
   ${
     truncation
       ? `// Truncated weights: no statistic from them is trustworthy.
   if (truncation[truncationOffset] != 0u) {
-    ${props.modes ? 'modes[modesOffset + index] = NO_MODE;' : ''}
-    ${props.entropy ? 'entropy[entropyOffset + index] = nan;' : ''}
+    ${output.modes ? 'modes[modesOffset + index] = NO_MODE;' : ''}
+    ${output.entropy ? 'entropy[entropyOffset + index] = nan;' : ''}
     return;
   }`
       : ''
@@ -624,8 +649,8 @@ ${getMemberWGSL(() => 'true')}`,
       }
     }
   }
-  ${props.modes ? 'modes[modesOffset + index] = bestCategory;' : ''}
-  ${props.entropy ? 'entropy[entropyOffset + index] = select(nan, entropyTotal, weightSum > 0.0);' : ''}`
+  ${output.modes ? 'modes[modesOffset + index] = bestCategory;' : ''}
+  ${output.entropy ? 'entropy[entropyOffset + index] = select(nan, entropyTotal, weightSum > 0.0);' : ''}`
         })
       );
     }

@@ -2,38 +2,47 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUGroupAggregation,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
-import type {GPURasterBand} from '../index';
+import type {GPURasterBand, GPURasterMetadata} from '../types';
 import {
   createFillNode,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters
+} from '../raster-band-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
-import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../gpu-spatial-analysis/contracts/earth';
+import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {
   getSphericalCellAreaWGSL,
   getSphericalRasterCellArea
-} from '../../gpu-spatial-analysis/areal-interpolation/spherical-cell-area';
-import {RASTER_GRID_SETTINGS_LENGTH} from '../cost-distance/raster-grid-utils';
+} from '../../analysis-core/spherical-cell-area';
+import {
+  RASTER_GRID_PARAMETER_LENGTH,
+  writeRasterGridPrefix
+} from '../cost-distance/raster-grid-utils';
 
 /**
  * Cell weighting of {@link GPURasterZonalStatistics}, following the `cellSizeMode` vocabulary of the
@@ -43,6 +52,51 @@ import {RASTER_GRID_SETTINGS_LENGTH} from '../cost-distance/raster-grid-utils';
  *   meters on the WGS84 authalic sphere, `R^2 dLon (sin(top) - sin(bottom))`.
  */
 export type GPURasterZonalStatisticsCellSizeMode = 'uniform' | 'geographic';
+
+/** Number of float32 values read from `GPURasterZonalStatisticsProps.parameters`. */
+export const GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH = RASTER_GRID_PARAMETER_LENGTH;
+
+/**
+ * Packs the grid words read by {@link GPURasterZonalStatistics} with `cellSizeMode:
+ * 'geographic'`: `[cellSizeX, cellSizeY, northEdge, southEdge]` in degrees, with the cell size and
+ * the row-edge latitudes taken from `grid`. There are no other settings.
+ *
+ * @param grid The frame's grid; its width and height must match the contributor's.
+ * @param target Optional destination of at least 4 elements.
+ */
+export function getGPURasterZonalStatisticsParameterValues(
+  grid: GPURasterMetadata,
+  target: Float32Array = new Float32Array(GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH)
+): Float32Array {
+  validateParameterTarget(
+    'getGPURasterZonalStatisticsParameterValues',
+    target,
+    GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH
+  );
+  writeRasterGridPrefix(target, grid);
+  return target;
+}
+
+/**
+ * Largest `zoneCapacity` of {@link GPURasterZonalStatistics} on `device` when no sorted sums run:
+ * each output column holds 4 bytes per zone in one storage binding, so 33554432 on a default
+ * device (128 MiB bindings).
+ */
+export function getGPURasterZonalStatisticsMaximumZoneCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
+/**
+ * Largest `zoneCapacity` of {@link GPURasterZonalStatistics} on `device` when `sumOrder` is
+ * `'sorted'` and a sum, mean, variance, standard deviation or weight sum is requested (or
+ * `cellSizeMode` is `'geographic'`): the sorted reduction sums each zone with one 256-invocation
+ * workgroup, and the total invocation count must fit a uint32 (`floor((2^32 - 1) / 256)`); the
+ * `zoneCapacity + 1` uint32 segment offsets must also fit one storage binding. 16777215 on a
+ * default device (128 MiB bindings).
+ */
+export function getGPURasterZonalStatisticsMaximumSortedZoneCapacity(device: Device): number {
+  return Math.min(Math.floor(0xffffffff / 256), getStorageBindingElementLimit(device, 4, 1));
+}
 
 /** Zone ID that marks a cell as belonging to no zone. Default value of `ignoredZone`. */
 export const GPU_RASTER_ZONAL_STATISTICS_NO_ZONE = 0xffffffff;
@@ -65,6 +119,17 @@ export type GPURasterZonalStatisticsOutput = {
   minimums?: GraphDataView<'float32'>;
   /** Per zone: maximum valid calibrated value (NaN for zones without valid values). */
   maximums?: GraphDataView<'float32'>;
+  /** Optional one-row status words, rewritten on every encoding. */
+  status?: GPURasterZonalStatisticsStatus;
+};
+
+/** One-row status words of {@link GPURasterZonalStatistics}. */
+export type GPURasterZonalStatisticsStatus = {
+  /**
+   * One-row flag: 1 when any cell has a zone ID at or above `zoneCapacity` that is not
+   * `ignoredZone`, otherwise 0. Presence is compile-time.
+   */
+  overflow?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -107,20 +172,18 @@ export type GPURasterZonalStatisticsSumOrder = 'atomic' | 'sorted';
 /**
  * Properties for {@link GPURasterZonalStatistics}.
  *
- * Compile-time: `width`, `height`, `zoneCapacity`, `ignoredZone`, the band format, calibration and
+ * Compile-time: `grid` size, `zoneCapacity`, `ignoredZone`, the band format, calibration and
  * storage kind, which output columns and `overflow` exist, and every view length. Per-frame: the
  * contents of `zones` and `values` (and its validity), which callers rewrite between encodings.
  */
 export type GPURasterZonalStatisticsProps = {
   /** Prefix for node and transient IDs. Defaults to `'raster-zonal-statistics'`. Compile-time. */
   id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
    * Packed row-major zone ID per cell, for example rasterized administrative areas. Length is
-   * `width * height`. Length is compile-time, contents are per-frame.
+   * `grid.width * grid.height`. Length is compile-time, contents are per-frame.
    */
   zones: GraphDataView<'uint32'>;
   /**
@@ -130,7 +193,10 @@ export type GPURasterZonalStatisticsProps = {
   values: GPURasterBand;
   /**
    * Number of dense zones. Zone IDs in `[0, zoneCapacity)` aggregate. Every output column must
-   * have exactly this length. Compile-time.
+   * have exactly this length. Compile-time. An integer in
+   * [1, {@link getGPURasterZonalStatisticsMaximumZoneCapacity}] (33554432 on a default device), or
+   * at most {@link getGPURasterZonalStatisticsMaximumSortedZoneCapacity} (16777215) when sorted
+   * sums run.
    */
   zoneCapacity: number;
   /**
@@ -145,14 +211,15 @@ export type GPURasterZonalStatisticsProps = {
    */
   cellSizeMode?: GPURasterZonalStatisticsCellSizeMode;
   /**
-   * Grid settings for `cellSizeMode: 'geographic'` (required then, rejected otherwise):
+   * Grid words for `cellSizeMode: 'geographic'` (required then, rejected otherwise), see
+   * {@link getGPURasterZonalStatisticsParameterValues}:
    * `[cellSizeX, cellSizeY, northEdge, southEdge]` in degrees, the shared raster grid prefix of
    * `GPUCostDistance`. `cellSizeX` is the cell width in longitude; `northEdge` and `southEdge` are the
    * outer latitudes of the first and last rows, so row `r` spans `(southEdge - northEdge) / height`
    * degrees of latitude from `northEdge + r * (southEdge - northEdge) / height`. `cellSizeY` is not
    * read. Contents are per-frame.
    */
-  settings?: GraphDataView<'float32'>;
+  parameters?: GraphDataView<'float32'>;
   /**
    * Accumulation order for `sums` and `means`. Defaults to `'sorted'`. Compile-time.
    * `'sorted'` makes them bitwise reproducible and avoids same-address atomic contention, at the
@@ -162,11 +229,6 @@ export type GPURasterZonalStatisticsProps = {
   sumOrder?: GPURasterZonalStatisticsSumOrder;
   /** Per-zone result columns, rewritten on every encoding. Which columns exist is compile-time. */
   output: GPURasterZonalStatisticsOutput & GPURasterZonalStatisticsMomentOutput;
-  /**
-   * Optional one-row flag rewritten on every encoding: 1 when any cell has a zone ID at or above
-   * `zoneCapacity` that is not `ignoredZone`, otherwise 0. Presence is compile-time.
-   */
-  overflow?: GraphDataView<'uint32'>;
 };
 
 const COLUMN_OPERATIONS = [
@@ -199,7 +261,7 @@ export function getRasterZonalCellArea(
 
 /**
  * WGSL `fn getCellWeight(cell: u32) -> f32`: the spherical area of a geographic cell from the
- * `settings` binding, through `getCellArea` of the shared spherical cell-area pattern (which reads
+ * `settings` binding (the `parameters` view), through `getCellArea` of the shared spherical cell-area pattern (which reads
  * `[originLongitude, originLatitude, cellWidth, cellHeight]` from `extent`). Non-finite or
  * non-positive areas weigh 0. Needs `isFiniteValue`.
  */
@@ -220,12 +282,27 @@ fn getCellWeight(cell: u32) -> f32 {
 }
 
 /**
+ * Whether the encoding runs the sorted per-zone sums: `sumOrder` is `'sorted'` and a column needs a
+ * sum (moments, geographic weights, sums or means).
+ */
+function hasSortedSums(
+  sumOrder: GPURasterZonalStatisticsSumOrder,
+  props: GPURasterZonalStatisticsProps
+): boolean {
+  const {output} = props;
+  const momentPath =
+    props.cellSizeMode === 'geographic' ||
+    Boolean(output?.variances || output?.standardDeviations || output?.weightSums);
+  return sumOrder === 'sorted' && (momentPath || Boolean(output?.sums || output?.means));
+}
+
+/**
  * Computes per-zone count, sum, mean, minimum, and maximum of a raster band, where zones are a
  * pre-rasterized grid of dense zone IDs.
  *
  * Cell weights: with the default `cellSizeMode: 'uniform'` every cell weighs one, the right model
  * for planar or projected rasters. Longitude/latitude rasters, whose cells shrink with
- * `cos(latitude)`, set `cellSizeMode: 'geographic'` and `settings`: `sums` become `sum(a * v)`,
+ * `cos(latitude)`, set `cellSizeMode: 'geographic'` and `parameters`: `sums` become `sum(a * v)`,
  * `means` `sum(a * v) / sum(a)` and `variances` reliability-weighted, with `a` the cell area in
  * square meters on the authalic sphere. Counts, minimums and maximums are never weighted.
  *
@@ -274,8 +351,8 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     if (this.sumOrder !== 'atomic' && this.sumOrder !== 'sorted') {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
-    validatePackedUint32View(props.zones, `${id} zones`);
+    const cellCount = validateRasterGrid(id, props.grid);
+    validatePackedView(props.zones, ['uint32'], `${id} zones`);
     if (props.zones.length !== cellCount) {
       throw new Error(`${id} zones must contain one value per cell`);
     }
@@ -295,16 +372,14 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} cellSizeMode must be uniform or geographic`);
     }
     if (cellSizeMode === 'geographic') {
-      if (!props.settings) {
-        throw new Error(`${id} geographic cells need settings`);
+      if (!props.parameters) {
+        throw new Error(`${id} geographic cells need parameters`);
       }
-      validatePackedView(props.settings, ['float32'], `${id} settings`);
-      if (props.settings.length < RASTER_GRID_SETTINGS_LENGTH) {
-        throw new Error(`${id} settings must contain ${RASTER_GRID_SETTINGS_LENGTH} float32 rows`);
-      }
-    } else if (props.settings) {
-      throw new Error(`${id} settings need cellSizeMode geographic`);
+      validateRasterParameters(id, props.parameters, GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH);
+    } else if (props.parameters) {
+      throw new Error(`${id} parameters need cellSizeMode geographic`);
     }
+    const {output} = props;
     const columns = [
       ...COLUMN_OPERATIONS.filter(([name]) => props.output[name]),
       ...MOMENT_COLUMNS.filter(name => props.output[name])
@@ -318,37 +393,38 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
         continue;
       }
       if (operation === 'count') {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
       } else {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
       }
       if (view.length !== props.zoneCapacity) {
-        throw new Error(`${id} ${name} must contain zoneCapacity rows`);
+        throw new Error(`${id} output.${name} must contain zoneCapacity rows`);
       }
     }
     for (const name of MOMENT_COLUMNS) {
       const view = props.output[name];
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== props.zoneCapacity) {
-          throw new Error(`${id} ${name} must contain zoneCapacity rows`);
+          throw new Error(`${id} output.${name} must contain zoneCapacity rows`);
         }
       }
     }
-    if (props.overflow) {
-      validatePackedUint32View(props.overflow, `${id} overflow`);
-      if (props.overflow.length !== 1) {
-        throw new Error(`${id} overflow must contain one uint32 row`);
+    const overflow = output.status?.overflow;
+    if (overflow) {
+      validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+      if (overflow.length !== 1) {
+        throw new Error(`${id} output.status.overflow must contain one uint32 row`);
       }
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
       [
         ...COLUMN_OPERATIONS.map(([name]) => props.output[name]),
         ...MOMENT_COLUMNS.map(name => props.output[name]),
-        props.overflow
+        overflow
       ],
-      [props.zones, props.settings, ...getTerrainBandViews(props.values)]
+      [props.zones, props.parameters, ...getRasterBandViews(props.values)]
     );
   }
 
@@ -357,16 +433,28 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, zones, zoneCapacity, output, overflow} = props;
+    const {zones, zoneCapacity, output} = props;
+    const overflow = output.status?.overflow;
+    const {width, height} = props.grid;
     const ignoredZone = props.ignoredZone ?? GPU_RASTER_ZONAL_STATISTICS_NO_ZONE;
-    validateTerrainBandBelongsToGraph(id, graph, props.values, []);
+    validateRasterBandBelongsToGraph(id, graph, props.values, []);
     validateGraphViewsBelongToGraph(id, graph, [
       zones,
       overflow,
-      props.settings,
+      props.parameters,
       ...COLUMN_OPERATIONS.map(([name]) => output[name]),
       ...MOMENT_COLUMNS.map(name => output[name])
     ]);
+    // The sorted sums add one 256-invocation workgroup per zone, which lowers the maximum.
+    validateCapacity(
+      id,
+      'zoneCapacity',
+      zoneCapacity,
+      1,
+      hasSortedSums(this.sumOrder, props)
+        ? getGPURasterZonalStatisticsMaximumSortedZoneCapacity(graph.device)
+        : getGPURasterZonalStatisticsMaximumZoneCapacity(graph.device)
+    );
     const cellCount = width * height;
     const weighted = props.cellSizeMode === 'geographic';
     const needsVariance = Boolean(output.variances || output.standardDeviations);
@@ -375,8 +463,7 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     const momentPath = weighted || needsVariance || Boolean(output.weightSums);
     const needsMeans = Boolean(output.means) || needsVariance;
     const needsWeightSums = Boolean(output.weightSums) || (weighted && needsMeans);
-    const sortedSums =
-      this.sumOrder === 'sorted' && (momentPath || Boolean(output.sums || output.means));
+    const sortedSums = hasSortedSums(this.sumOrder, props);
     const needsValueCounts =
       Boolean(output.valueCounts) ||
       (sortedSums && Boolean(output.means)) ||
@@ -408,13 +495,12 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     let canonicalValues: GraphDataView<'float32'> | undefined;
     let canonicalValidity: GraphDataView<'uint32'> | undefined;
     if (needsValueColumn) {
-      const source = getTerrainElevationNodes(
+      const source = getRasterBufferBandNodes(
         graph,
         `${id}-values`,
         props.values,
-        width,
-        height,
-        true
+        props.grid,
+        'reuse-canonical'
       );
       nodes.push(...source.nodes);
       canonicalValues = (source.band.storage as {values: GraphDataView<'float32'>}).values;
@@ -452,8 +538,21 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
         : undefined;
     // The fused pass also raises the overflow flag, so the mask kernel only does when it is absent.
     const maskOverflow = fused ? undefined : overflow;
-    if (zoneMask || valueMask || sortRows || contributions || maskOverflow) {
-      const needsValues = Boolean(valueMask || sortRows || contributions);
+    // The mask pass binds zones plus every per-cell output it writes. All of them together can
+    // reach 10 storage buffers; above the core limit of 8 the zone-only outputs (zone mask, sort
+    // rows, overflow flag) get their own pass, which reads only the zones.
+    type MaskPart = {
+      zoneMask?: GraphDataView<'uint32'>;
+      valueMask?: GraphDataView<'uint32'>;
+      sortRows?: GraphDataView<'uint32'>;
+      contributions?: GraphDataView<'float32'>;
+      weightContributions?: GraphDataView<'float32'>;
+      maskOverflow?: GraphDataView<'uint32'>;
+      /** Whether the pass binds and reads the canonical values and validity. */
+      needsValues: boolean;
+    };
+    const addMaskNode = (nodeId: string, part: MaskPart) => {
+      const {needsValues} = part;
       const bindings: WGSLKernelBinding[] = [
         {name: 'zones', view: zones, type: 'u32', access: 'read'}
       ];
@@ -473,60 +572,60 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
           }
         );
       }
-      if (valueMask) {
+      if (part.valueMask) {
         bindings.push({
           name: 'valueMask',
-          view: valueMask,
+          view: part.valueMask,
           type: 'u32',
           access: 'read_write'
         });
       }
-      if (zoneMask) {
+      if (part.zoneMask) {
         bindings.push({
           name: 'zoneMask',
-          view: zoneMask,
+          view: part.zoneMask,
           type: 'u32',
           access: 'read_write'
         });
       }
-      if (sortRows) {
+      if (part.sortRows) {
         bindings.push({
           name: 'sortRows',
-          view: sortRows,
+          view: part.sortRows,
           type: 'u32',
           access: 'read_write'
         });
       }
-      if (contributions) {
+      if (part.contributions) {
         bindings.push({
           name: 'contributions',
-          view: contributions,
+          view: part.contributions,
           type: 'f32',
           access: 'read_write'
         });
       }
-      if (weightContributions) {
+      if (part.weightContributions) {
         bindings.push({
           name: 'weightContributions',
-          view: weightContributions,
+          view: part.weightContributions,
           type: 'f32',
           access: 'read_write'
         });
       }
-      if (weighted && contributions) {
-        bindings.push({name: 'settings', view: props.settings!, type: 'f32', access: 'read'});
+      if (weighted && part.contributions) {
+        bindings.push({name: 'settings', view: props.parameters!, type: 'f32', access: 'read'});
       }
-      if (maskOverflow) {
+      if (part.maskOverflow) {
         bindings.push({
           name: 'overflowFlag',
-          view: maskOverflow,
+          view: part.maskOverflow,
           type: 'atomic<u32>',
           access: 'read_write'
         });
       }
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-mask`,
+          id: nodeId,
           operation: 'GPURasterZonalStatistics',
           variant: 'mask',
           bindings,
@@ -534,20 +633,20 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
           declarations: `const CAPACITY: u32 = ${zoneCapacity}u;
 const IGNORED: u32 = ${ignoredZone}u;
 ${IS_FINITE_VALUE_WGSL}
-${weighted && contributions ? getCellWeightWGSL(width, height) : ''}`,
+${weighted && part.contributions ? getCellWeightWGSL(width, height) : ''}`,
           body: `let zone = zones[zonesOffset + index];
   let inZone = zone < CAPACITY && zone != IGNORED;
-  ${zoneMask ? 'zoneMask[zoneMaskOffset + index] = select(0u, 1u, inZone);' : ''}
+  ${part.zoneMask ? 'zoneMask[zoneMaskOffset + index] = select(0u, 1u, inZone);' : ''}
   ${
     needsValues
       ? `let value = values[valuesOffset + index];
   let isValid = inZone && validity[validityOffset + index] != 0u && isFiniteValue(value);`
       : ''
   }
-  ${valueMask ? 'valueMask[valueMaskOffset + index] = select(0u, 1u, isValid);' : ''}
-  ${sortRows ? 'sortRows[sortRowsOffset + index] = select(CAPACITY, zone, inZone);' : ''}
+  ${part.valueMask ? 'valueMask[valueMaskOffset + index] = select(0u, 1u, isValid);' : ''}
+  ${part.sortRows ? 'sortRows[sortRowsOffset + index] = select(CAPACITY, zone, inZone);' : ''}
   ${
-    contributions
+    part.contributions
       ? weighted
         ? `let weight = getCellWeight(index);
   contributions[contributionsOffset + index] = select(0.0, weight * value, isValid);`
@@ -555,13 +654,35 @@ ${weighted && contributions ? getCellWeightWGSL(width, height) : ''}`,
       : ''
   }
   ${
-    weightContributions
+    part.weightContributions
       ? `weightContributions[weightContributionsOffset + index] = select(0.0, ${weighted ? 'weight' : '1.0'}, isValid);`
       : ''
   }
-  ${maskOverflow ? 'if (zone >= CAPACITY && zone != IGNORED) {\n    atomicStore(&overflowFlag[overflowFlagOffset], 1u);\n  }' : ''}`
+  ${part.maskOverflow ? 'if (zone >= CAPACITY && zone != IGNORED) {\n    atomicStore(&overflowFlag[overflowFlagOffset], 1u);\n  }' : ''}`
         })
       );
+    };
+    const maskPart: MaskPart = {
+      zoneMask,
+      valueMask,
+      sortRows,
+      contributions,
+      weightContributions,
+      maskOverflow,
+      needsValues: Boolean(valueMask || sortRows || contributions)
+    };
+    const maskBindingCount =
+      1 +
+      (maskPart.needsValues ? 2 : 0) +
+      [zoneMask, valueMask, sortRows, contributions, weightContributions, maskOverflow].filter(
+        Boolean
+      ).length +
+      (weighted && contributions ? 1 : 0);
+    if (maskBindingCount > 8) {
+      addMaskNode(`${id}-mask-zones`, {zoneMask, sortRows, maskOverflow, needsValues: false});
+      addMaskNode(`${id}-mask`, {valueMask, contributions, weightContributions, needsValues: true});
+    } else if (zoneMask || valueMask || sortRows || contributions || maskOverflow) {
+      addMaskNode(`${id}-mask`, maskPart);
     }
 
     // Sorted sums find segment sizes by binary search, so cell counts are only built on request;
@@ -684,7 +805,8 @@ ${weighted && contributions ? getCellWeightWGSL(width, height) : ''}`,
     }
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, zones, zoneCapacity, output} = props;
+    const {zones, zoneCapacity, output} = props;
+    const {width, height} = props.grid;
     const ignoredZone = props.ignoredZone ?? GPU_RASTER_ZONAL_STATISTICS_NO_ZONE;
     const {weighted, sortedSums} = plan;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -765,7 +887,7 @@ ${weighted && contributions ? getCellWeightWGSL(width, height) : ''}`,
     if (weightSquares) {
       deviationBindings.push(
         {name: 'weightSquares', view: weightSquares, type: 'f32', access: 'read_write'},
-        {name: 'settings', view: props.settings!, type: 'f32', access: 'read'}
+        {name: 'settings', view: props.parameters!, type: 'f32', access: 'read'}
       );
     }
     nodes.push(
@@ -1005,6 +1127,7 @@ function getFusedStatisticsNodes<Parameters>(
       bindings,
       invocationCount: Math.ceil(cellCount / cellsPerThread),
       guardIndex: false,
+      workgroupSize: FUSED_WORKGROUP_SIZE,
       declarations: `const CAPACITY: u32 = ${zoneCapacity}u;
 const IGNORED: u32 = ${props.ignoredZone}u;
 const CELL_COUNT: u32 = ${cellCount}u;

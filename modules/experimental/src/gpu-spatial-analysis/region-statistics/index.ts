@@ -22,6 +22,7 @@ export {
 } from './region-statistics-types';
 export type {
   GPURegionHistogramProps,
+  GPURegionMaskOutput,
   GPURegionMaskSelection,
   GPURegionPickSelection,
   GPURegionPolygon,
@@ -30,5 +31,6 @@ export type {
   GPURegionSelection,
   GPURegionShape,
   GPURegionStatisticsGridIndex,
+  GPURegionStatisticsOutput,
   GPURegionStatisticsResult
 } from './region-statistics-types';

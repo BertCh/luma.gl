@@ -2,14 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUArealInterpolation} from './gpu-areal-interpolation';
+export {
+  getGPUArealInterpolationMaximumCellCount,
+  GPU_AREAL_INTERPOLATION_MAXIMUM_WEIGHTED_PAIR_COUNT,
+  GPUArealInterpolation
+} from './gpu-areal-interpolation';
 export type {
   GPUArealCategories,
   GPUArealInterpolationDenominator,
   GPUArealInterpolationDenominators,
   GPUArealInterpolationKind,
+  GPUArealInterpolationOutput,
   GPUArealInterpolationProps
 } from './gpu-areal-interpolation';
 export {GPUPycnophylactic, GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS} from './gpu-pycnophylactic';
-export type {GPUPycnophylacticKernel, GPUPycnophylacticProps} from './gpu-pycnophylactic';
-export {getSphericalRasterCellArea} from './spherical-cell-area';
+export type {
+  GPUPycnophylacticKernel,
+  GPUPycnophylacticOutput,
+  GPUPycnophylacticProps
+} from './gpu-pycnophylactic';
+export {getSphericalRasterCellArea} from '../../analysis-core/spherical-cell-area';

@@ -9,7 +9,11 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
+import {
+  GPURasterBufferToTexture,
+  type GPURasterBand,
+  type GPURasterMetadata
+} from '../../gpu-raster/index';
 import type {WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -17,41 +21,46 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES} from './gpu-solar-shadow-mask';
 import {
   createTerrainHorizonSweepNode,
   getTerrainSweepLineGeometry,
-  TERRAIN_SWEEP_MAX_EXTENT
+  TERRAIN_SWEEP_GRID_SLOTS,
+  TERRAIN_SWEEP_MAXIMUM_EXTENT
 } from './terrain-horizon-sweep';
-import {validateTerrainIlluminationView} from './terrain-illumination-utils';
 import {
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection
-} from '../terrain-grid-utils';
+  validateTerrainIlluminationCellSize,
+  validateTerrainIlluminationView
+} from './terrain-illumination-utils';
+import {
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection,
+  validateRasterCellSizeMode,
+  validateRasterRowDirection,
+  writeRasterGridParameterValues
+} from '../../analysis-core/raster-grid';
 
-/** Number of float32 values read from `GPUTerrainCastShadowProps.settings`. */
+/** Number of float32 values read from `GPUTerrainCastShadowProps.parameters`. */
 export const GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH = 16;
 
 /**
  * CPU-side description packed by {@link getGPUTerrainCastShadowParameterValues}.
  *
- * Cell-size model: `cellSize` is interpreted by the contributor's `cellSizeMode` as projected metres
- * (`uniform`), equatorial Web Mercator metres or degrees with latitude-dependent spacing
- * (`web-mercator`, `geographic`, using `northEdge` and `southEdge`).
+ * Cell-size model: the cell size and row edges of the grid passed next to it are interpreted by the
+ * contributor's `cellSizeMode` as projected metres (`uniform`), equatorial Web Mercator metres or
+ * degrees with latitude-dependent spacing (`web-mercator`, `geographic`).
  */
 export type GPUTerrainCastShadowSettings = {
-  /** `[x, y]` cell size: meters (uniform), equatorial Web Mercator meters, or degrees (geographic). */
-  cellSize: readonly [number, number];
   /** Direction of the sun, degrees clockwise from north. See `getSolarPosition`. */
   azimuthDegrees: number;
   /** Elevation of the sun center above the astronomical horizon in degrees. */
@@ -65,10 +74,6 @@ export type GPUTerrainCastShadowSettings = {
   zFactor?: number;
   /** Earth curvature and refraction drop in 1/meters, see `GPUTerrainHorizonSettings`. Defaults to 0. */
   curvatureCoefficient?: number;
-  /** Top edge of row 0: normalized Web Mercator y in `[0, 1]` or latitude degrees. Defaults to 0. */
-  northEdge?: number;
-  /** Bottom edge of the last row, same units as `northEdge`. Defaults to 0. */
-  southEdge?: number;
   /** Ground search radius in meters; `<= 0` is unlimited. Defaults to 0. */
   maximumDistance?: number;
 };
@@ -77,50 +82,30 @@ export type GPUTerrainCastShadowSettings = {
  * Packs settings into the 16-float layout read by {@link GPUTerrainCastShadow}:
  * `[cellX, cellY, zFactor, curvature, northEdge, southEdge, maximumDistance, azimuthDegrees,
  * altitudeDegrees, angularRadiusDegrees, xMajor (0/1), slopeFixed, travelSign, stepPixelLength,
- * groundEast, groundSouth]`.
+ * groundEast, groundSouth]`, with the cell size and the row-edge world y taken from `grid`.
  *
  * The sun's ground direction `(sin(azimuth), -cos(azimuth))` (east, south) is stored in the last two
  * slots, and its digital line family for square cells and south-advancing rows is computed here on
  * the CPU in float64, so changing the sun never recompiles the graph. The values do not depend on
- * the grid: the contributor mirrors the line for its `rowDirection: 'north'` and, on anisotropic
- * ground cells (non-square `cellSize`, `'web-mercator'`, `'geographic'`), converts the ground
+ * the grid extent: the contributor mirrors the line for its `rowDirection: 'north'` and, on anisotropic
+ * ground cells (non-square grid cells, `'web-mercator'`, `'geographic'`), converts the ground
  * direction to a pixel slope with its own `cellSizeMode` and the ground cell of row `height / 2`.
  * The contributor is the only source of both modes, so settings and contributor cannot disagree.
  *
- * @throws If a cell size is not finite and positive, the angular radius is negative or not finite,
- * the azimuth is not finite, or `target` is too short.
+ * @throws If the grid cell size is not finite and positive, the angular radius is negative or not
+ * finite, the azimuth is not finite, or `target` is too short.
  */
 export function getGPUTerrainCastShadowParameterValues(
   settings: GPUTerrainCastShadowSettings,
-  target?: Float32Array
-): Float32Array;
-/**
- * @deprecated The row direction comes from the contributor's `rowDirection`; this argument is
- * validated and otherwise ignored. Call `getGPUTerrainCastShadowParameterValues(settings, target)`.
- */
-export function getGPUTerrainCastShadowParameterValues(
-  settings: GPUTerrainCastShadowSettings,
-  rowDirection: GPUTerrainRowDirection,
-  target?: Float32Array
-): Float32Array;
-export function getGPUTerrainCastShadowParameterValues(
-  settings: GPUTerrainCastShadowSettings,
-  targetOrRowDirection?: Float32Array | GPUTerrainRowDirection,
-  legacyTarget?: Float32Array
+  grid: GPURasterMetadata,
+  target: Float32Array = new Float32Array(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH)
 ): Float32Array {
-  let target = legacyTarget;
-  if (typeof targetOrRowDirection === 'string') {
-    validateTerrainRowDirection('Terrain cast shadow', targetOrRowDirection);
-  } else {
-    target = targetOrRowDirection;
-  }
-  target ??= new Float32Array(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH);
-  if (target.length < GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH) {
-    throw new Error('Terrain cast shadow settings target must hold 16 values');
-  }
-  if (!settings.cellSize.every(size => Number.isFinite(size) && size > 0)) {
-    throw new Error('Terrain cast shadow cell size must be finite and positive');
-  }
+  validateTerrainIlluminationCellSize('getGPUTerrainCastShadowParameterValues', grid);
+  validateParameterTarget(
+    'getGPUTerrainCastShadowParameterValues',
+    target,
+    GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH
+  );
   const angularRadius = settings.angularRadiusDegrees ?? GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES;
   if (!Number.isFinite(angularRadius) || angularRadius < 0) {
     throw new Error('Terrain cast shadow angular radius must be finite and non-negative');
@@ -135,12 +120,12 @@ export function getGPUTerrainCastShadowParameterValues(
   // The line geometry does not depend on the grid extent, only the line count does.
   const geometry = getTerrainSweepLineGeometry(groundDirection, 1, 1);
   target.set([
-    settings.cellSize[0],
-    settings.cellSize[1],
+    0,
+    0,
     settings.zFactor ?? 1,
     settings.curvatureCoefficient ?? 0,
-    settings.northEdge ?? 0,
-    settings.southEdge ?? 0,
+    0,
+    0,
     settings.maximumDistance ?? 0,
     settings.azimuthDegrees,
     settings.altitudeDegrees,
@@ -152,28 +137,41 @@ export function getGPUTerrainCastShadowParameterValues(
     groundDirection[0],
     groundDirection[1]
   ]);
+  writeRasterGridParameterValues(target, grid, TERRAIN_SWEEP_GRID_SLOTS);
   return target;
 }
+
+/** Caller-owned outputs of {@link GPUTerrainCastShadow}; at least one is required. */
+export type GPUTerrainCastShadowOutput = {
+  /** Fraction of the solar disk above the local horizon per pixel, in `[0, 1]`. */
+  sunVisibility?: GraphDataView<'float32'>;
+  /** Horizon angle in degrees along the sun azimuth. */
+  horizonAngle?: GraphDataView<'float32'>;
+  /** Per-pixel 1 where the center elevation is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunVisibility`. */
+  sunVisibilityTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
 
 /**
  * Properties for {@link GPUTerrainCastShadow}.
  *
  * Topology: grid size, elevation format and calibration, `maximumRadius`, `cellSizeMode`,
- * `rowDirection`, and which outputs exist. Per-frame: `settings` (sun, disk radius, cell size, z
- * factor, curvature, maximum distance) and elevation contents. Cell-size model: see
- * {@link GPUTerrainCastShadowSettings}.
+ * `rowDirection`, and which outputs exist. Per-frame: `parameters` (sun, disk radius, grid cell
+ * size and latitude band, z factor, curvature, maximum distance) and elevation contents.
+ * Cell-size model: see {@link GPUTerrainCastShadowSettings}.
  */
 export type GPUTerrainCastShadowProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-cast-shadow'`. */
   id?: string;
-  /** Grid width in pixels, at most 32767. */
-  width: number;
-  /** Grid height in pixels, at most 32767. */
-  height: number;
+  /** Raster grid: its width and height size the kernels, each at most 32767. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with 16 float32 values, see {@link getGPUTerrainCastShadowParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with 16 float32 values, see {@link getGPUTerrainCastShadowParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainCastShadowOutput;
   /**
    * Search radius in pixels along the sun line (counted as `k * hypot(1, slope)`), a positive
    * integer. Also the required tile halo. Defaults to the tile diagonal, `ceil(hypot(width,
@@ -181,17 +179,9 @@ export type GPUTerrainCastShadowProps = {
    */
   maximumRadius?: number;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: GPUTerrainRowDirection;
-  /** Optional fraction of the solar disk above the local horizon, in `[0, 1]`. */
-  sunVisibility?: GraphDataView<'float32'>;
-  /** Optional horizon angle in degrees along the sun azimuth. */
-  horizonAngle?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunVisibility`. */
-  sunVisibilityTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  rowDirection?: GPURasterRowDirection;
 };
 
 /**
@@ -206,7 +196,7 @@ export type GPUTerrainCastShadowProps = {
  * a hard step when the radius is 0, and 0 when the whole disk is below the astronomical horizon.
  *
  * Sun position, disk radius, cell size, z factor, curvature, and maximum distance are per-frame
- * settings; the line family is packed by the CPU settings packer, so animating time of day never
+ * parameters; the line family is packed by the CPU settings packer, so animating time of day never
  * recompiles. On anisotropic ground cells the kernel converts the packed ground direction with
  * this contributor's `cellSizeMode` (see {@link getGPUTerrainCastShadowParameterValues}), so the
  * sun follows its ground azimuth with no mode in the settings. The line count depends on the azimuth and is unknown at compile time, so
@@ -232,48 +222,64 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-cast-shadow';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
-    if (props.width > TERRAIN_SWEEP_MAX_EXTENT || props.height > TERRAIN_SWEEP_MAX_EXTENT) {
-      throw new Error(`${id} width and height must not exceed ${TERRAIN_SWEEP_MAX_EXTENT}`);
+    const {output} = props;
+    const {width, height} = props.grid;
+    const pixelCount = validateRasterGrid(id, props.grid);
+    if (width > TERRAIN_SWEEP_MAXIMUM_EXTENT || height > TERRAIN_SWEEP_MAXIMUM_EXTENT) {
+      throw new Error(
+        `${id} grid width and height must not exceed ${TERRAIN_SWEEP_MAXIMUM_EXTENT}`
+      );
     }
-    const maximumRadius = props.maximumRadius ?? Math.ceil(Math.hypot(props.width, props.height));
+    const maximumRadius = props.maximumRadius ?? Math.ceil(Math.hypot(width, height));
     if (!Number.isSafeInteger(maximumRadius) || maximumRadius < 1) {
       throw new Error(`${id} maximumRadius must be a positive integer`);
     }
     this.maximumRadius = maximumRadius;
     this.requiredHalo = maximumRadius;
     if (
-      !props.sunVisibility &&
-      !props.horizonAngle &&
-      !props.validity &&
-      !props.sunVisibilityTexture
+      !output.sunVisibility &&
+      !output.horizonAngle &&
+      !output.outputValidity &&
+      !output.sunVisibilityTexture
     ) {
       throw new Error(`${id} requires at least one output`);
     }
     validateTerrainIlluminationView(
       id,
-      'sunVisibility',
-      props.sunVisibility,
+      'output.sunVisibility',
+      output.sunVisibility,
       'float32',
       pixelCount
     );
-    validateTerrainIlluminationView(id, 'horizonAngle', props.horizonAngle, 'float32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH);
-    validateTerrainTexture(
+    validateTerrainIlluminationView(
       id,
-      'sunVisibilityTexture',
-      props.sunVisibilityTexture,
-      ['r32float', 'rgba32float'],
-      props.width,
-      props.height
+      'output.horizonAngle',
+      output.horizonAngle,
+      'float32',
+      pixelCount
     );
-    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateTerrainRowDirection(id, props.rowDirection ?? 'south');
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(
       id,
-      [props.sunVisibility, props.horizonAngle, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH);
+    validateRasterOutputTexture(
+      id,
+      'output.sunVisibilityTexture',
+      output.sunVisibilityTexture,
+      ['r32float', 'rgba32float'],
+      props.grid
+    );
+    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterRowDirection(id, props.rowDirection ?? 'south');
+    validateRasterBuffersDistinct(
+      id,
+      [output.sunVisibility, output.horizonAngle, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -282,20 +288,21 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, [props.sunVisibilityTexture]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, [output.sunVisibilityTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      props.sunVisibility,
-      props.horizonAngle,
-      props.validity
+      props.parameters,
+      output.sunVisibility,
+      output.horizonAngle,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const visibilityTarget =
-      props.sunVisibility ??
-      (props.sunVisibilityTexture
+      output.sunVisibility ??
+      (output.sunVisibilityTexture
         ? createTransientView(graph, `${id}-sun-visibility`, 'float32', pixelCount)
         : undefined);
     const outputBindings: WGSLKernelBinding[] = [];
@@ -307,18 +314,18 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
-    if (props.horizonAngle) {
+    if (output.horizonAngle) {
       outputBindings.push({
         name: 'horizonValues',
-        view: props.horizonAngle,
+        view: output.horizonAngle,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.validity) {
+    if (output.outputValidity) {
       outputBindings.push({
         name: 'validityValues',
-        view: props.validity,
+        view: output.outputValidity,
         type: 'u32',
         access: 'read_write'
       });
@@ -338,8 +345,7 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
         cellSizeMode: props.cellSizeMode ?? 'uniform',
         zFactorSign: 1,
         elevationValues: source.band.storage.values as GraphDataView<'float32'>,
-        elevationValidity: source.band.validity as GraphDataView<'uint32'>,
-        settings: props.settings,
+        settings: props.parameters,
         hull: createTransientView(graph, `${id}-hull`, 'uint32', pixelCount),
         outputBindings,
         outputWGSL: `let isValid = isFiniteValue(horizonAngle);
@@ -356,12 +362,12 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
         }
       }
       ${visibilityTarget ? 'visibilityValues[visibilityValuesOffset + pixel] = select(invalidValue, visibility, isValid);' : ''}
-      ${props.horizonAngle ? 'horizonValues[horizonValuesOffset + pixel] = horizonAngle;' : ''}
-      ${props.validity ? 'validityValues[validityValuesOffset + pixel] = select(0u, 1u, isValid);' : ''}`
+      ${output.horizonAngle ? 'horizonValues[horizonValuesOffset + pixel] = horizonAngle;' : ''}
+      ${output.outputValidity ? 'validityValues[validityValuesOffset + pixel] = select(0u, 1u, isValid);' : ''}`
       })
     );
-    if (props.sunVisibilityTexture && visibilityTarget) {
-      const texture = props.sunVisibilityTexture;
+    if (output.sunVisibilityTexture && visibilityTarget) {
+      const texture = output.sunVisibilityTexture;
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterBufferToTexture({

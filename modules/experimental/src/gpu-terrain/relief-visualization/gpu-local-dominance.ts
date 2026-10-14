@@ -8,29 +8,30 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainIlluminationView
 } from '../terrain-illumination/terrain-illumination-utils';
 import {roundHalfEven} from './relief-visualization-utils';
 
-/** Number of float32 values read from `GPULocalDominanceProps.settings`. */
+/** Number of float32 values read from `GPULocalDominanceProps.parameters`. */
 export const GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH = 4;
 
 /** Largest supported number of sample offsets (`distances * angles`) of one contributor. */
-export const GPU_LOCAL_DOMINANCE_MAX_SHIFT_COUNT = 8192;
+export const GPU_LOCAL_DOMINANCE_MAXIMUM_SHIFT_COUNT = 8192;
 
 /** CPU-side description packed by {@link getGPULocalDominanceParameterValues}. */
 export type GPULocalDominanceSettings = {
@@ -50,9 +51,11 @@ export function getGPULocalDominanceParameterValues(
   settings: GPULocalDominanceSettings = {},
   target: Float32Array = new Float32Array(GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH) {
-    throw new Error('Local dominance settings target must hold 4 values');
-  }
+  validateParameterTarget(
+    'getGPULocalDominanceParameterValues',
+    target,
+    GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH
+  );
   const observerHeight = settings.observerHeight ?? 1.7;
   const verticalExaggeration = settings.verticalExaggeration ?? 1;
   if (!Number.isFinite(observerHeight) || !Number.isFinite(verticalExaggeration)) {
@@ -112,7 +115,7 @@ export type GPULocalDominanceShifts = {
  * single offset by one pixel.
  *
  * @throws If a parameter is not a positive integer, `minimumRadius > maximumRadius`, or the
- * offset count exceeds {@link GPU_LOCAL_DOMINANCE_MAX_SHIFT_COUNT}.
+ * offset count exceeds {@link GPU_LOCAL_DOMINANCE_MAXIMUM_SHIFT_COUNT}.
  */
 export function getGPULocalDominanceShifts(
   geometry: GPULocalDominanceGeometry = {}
@@ -140,9 +143,9 @@ export function getGPULocalDominanceShifts(
   const distanceCount = Math.trunc((maximumRadius - minimumRadius) / radiusIncrement + 1);
   const angleCount = Math.trunc(359 / angularResolution + 1);
   const count = distanceCount * angleCount;
-  if (count > GPU_LOCAL_DOMINANCE_MAX_SHIFT_COUNT) {
+  if (count > GPU_LOCAL_DOMINANCE_MAXIMUM_SHIFT_COUNT) {
     throw new Error(
-      `Local dominance needs ${count} sample offsets, above the limit ${GPU_LOCAL_DOMINANCE_MAX_SHIFT_COUNT}`
+      `Local dominance needs ${count} sample offsets, above the limit ${GPU_LOCAL_DOMINANCE_MAXIMUM_SHIFT_COUNT}`
     );
   }
   const rowShifts = new Int32Array(count);
@@ -174,11 +177,19 @@ export function getGPULocalDominanceShifts(
   };
 }
 
+/** Caller-owned outputs of {@link GPULocalDominance}; at least one is required. */
+export type GPULocalDominanceOutput = {
+  /** Optional local dominance per pixel, NaN where the center is invalid. */
+  dominance?: GraphDataView<'float32'>;
+  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPULocalDominance}.
  *
  * Topology: grid size, elevation format and calibration, the sampling geometry, and which
- * outputs exist. Per-frame: `settings` (observer height, exaggeration) and elevation contents.
+ * outputs exist. Per-frame: `parameters` (observer height, exaggeration) and elevation contents.
  *
  * Cell size model: pixel units. Radii are counted in pixels and the cell size is not used, as in
  * RVT, so the observer height is in elevation units regardless of the ground resolution.
@@ -186,18 +197,14 @@ export function getGPULocalDominanceShifts(
 export type GPULocalDominanceProps = GPULocalDominanceGeometry & {
   /** Prefix for node and transient IDs. Defaults to `'local-dominance'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 4 float32 values, see {@link getGPULocalDominanceParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Optional local dominance per pixel, NaN where the center is invalid. */
-  dominance?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  /** Per-frame parameters with at least 4 float32 values, see {@link getGPULocalDominanceParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPULocalDominanceOutput;
 };
 
 /**
@@ -232,19 +239,32 @@ export class GPULocalDominance implements GPUCommandNodeProducer {
     this.id = props.id ?? 'local-dominance';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     this.shifts = getGPULocalDominanceShifts(props);
     this.requiredHalo = props.maximumRadius ?? 20;
-    if (!props.dominance && !props.validity) {
+    if (!output.dominance && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainIlluminationView(id, 'dominance', props.dominance, 'float32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH);
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(
       id,
-      [props.dominance, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      'output.dominance',
+      output.dominance,
+      'float32',
+      pixelCount
+    );
+    validateTerrainIlluminationView(
+      id,
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH);
+    validateRasterBuffersDistinct(
+      id,
+      [output.dominance, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -253,19 +273,24 @@ export class GPULocalDominance implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, shifts} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.settings, props.dominance, props.validity]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.parameters,
+      output.dominance,
+      output.outputValidity
+    ]);
     const pixelCount = width * height;
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const values = source.band.storage.values as GraphDataView<'float32'>;
     const validity = source.band.validity as GraphDataView<'uint32'>;
     const target =
-      props.dominance ?? createTransientView(graph, `${id}-dominance`, 'float32', pixelCount);
+      output.dominance ?? createTransientView(graph, `${id}-dominance`, 'float32', pixelCount);
     const bindings = [
       {name: 'values', view: values, type: 'f32', access: 'read'},
       {name: 'validity', view: validity, type: 'u32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'dominance', view: target, type: 'f32', access: 'read_write'}
     ] as const;
     const offsets = Array.from(
@@ -281,10 +306,15 @@ export class GPULocalDominance implements GPUCommandNodeProducer {
         id: `${id}-sample`,
         operation: 'GPULocalDominance',
         variant: 'sample',
-        bindings: props.validity
+        bindings: output.outputValidity
           ? [
               ...bindings,
-              {name: 'validityValues', view: props.validity, type: 'u32', access: 'read_write'}
+              {
+                name: 'validityValues',
+                view: output.outputValidity,
+                type: 'u32',
+                access: 'read_write'
+              }
             ]
           : bindings,
         invocationCount: pixelCount,
@@ -318,7 +348,7 @@ const FACTORS = array<f32, ${shifts.count}>(${factors});`,
     value = sum / (observerHeight * NORMALIZATION);
   }
   dominance[dominanceOffset + index] = value;
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
       })
     ];
   }

@@ -107,3 +107,45 @@ fn getEffectiveRadius(requested: f32, cell: vec2<f32>) -> f32 {
 fn getDiscExtent(radius: f32, cellSize: f32) -> i32 {
   return min(i32(floor(radius / cellSize + 0.5)) + 1, MAXIMUM_RADIUS_PIXELS);
 }`;
+
+/**
+ * WGSL for disc rows by offset from the centre. Requires {@link TERRAIN_FEATURES_DISC_WGSL} and
+ * `MAXIMUM_RADIUS_PIXELS: i32`.
+ *
+ * - `isOffsetInDisc(dx, dy, cell, radiusSquared)`: `isInDisc` for the pixel at offset `(dx, dy)`
+ *   from the centre. `f32(column + dx) - f32(column)` equals `f32(dx)` exactly, so the result is
+ *   bit-identical to `isInDisc` on absolute coordinates.
+ * - `getDiscRowHalfWidth(dy, ...)`: largest `dx >= 0` with `(dx, dy)` in the disc, or -1 when row
+ *   `dy` holds no disc pixel.
+ * - `getDiscColumnHalfHeight(...)`: largest `dy >= 0` with `(0, dy)` in the disc.
+ *
+ * Why these are exact: `isInDisc` depends on `(dx, dy)` only through `|dx|` and `|dy|`, and it is
+ * monotone non-increasing in each. `f32(|dx|) * cell.x` is a correctly rounded product of a growing
+ * operand, squaring and adding rounded non-negative values keep the order (rounding is monotone),
+ * and the comparison with `radiusSquared` is monotone. So a row's disc pixels are exactly
+ * `|dx| <= halfWidth`, the widest row is `dy = 0` and the tallest column is `dx = 0`. The `sqrt`
+ * only seeds the search; two loops correct it with the real predicate. The disc never leaves the
+ * `getDiscExtent` box (radius is clamped to the bound), so no pixel beyond `MAXIMUM_RADIUS_PIXELS`
+ * is considered.
+ *
+ * @internal
+ */
+export const TERRAIN_FEATURES_DISC_ROW_WGSL = /* wgsl */ `
+fn isOffsetInDisc(dx: i32, dy: i32, cell: vec2<f32>, radiusSquared: f32) -> bool {
+  return isInDisc(vec2<i32>(dx, dy), vec2<f32>(0.0, 0.0), cell, radiusSquared);
+}
+fn getDiscRowHalfWidth(dy: i32, cell: vec2<f32>, radiusSquared: f32) -> i32 {
+  let scaledY = f32(dy) * cell.y;
+  let remaining = max(radiusSquared - scaledY * scaledY, 0.0);
+  var halfWidth = clamp(i32(floor(sqrt(remaining) / cell.x)), 0, MAXIMUM_RADIUS_PIXELS + 1);
+  while (halfWidth > 0 && !isOffsetInDisc(halfWidth, dy, cell, radiusSquared)) { halfWidth--; }
+  while (halfWidth <= MAXIMUM_RADIUS_PIXELS && isOffsetInDisc(halfWidth + 1, dy, cell, radiusSquared)) { halfWidth++; }
+  if (!isOffsetInDisc(halfWidth, dy, cell, radiusSquared)) { return -1; }
+  return halfWidth;
+}
+fn getDiscColumnHalfHeight(cell: vec2<f32>, radiusSquared: f32) -> i32 {
+  var halfHeight = clamp(i32(floor(sqrt(radiusSquared) / cell.y)), 0, MAXIMUM_RADIUS_PIXELS + 1);
+  while (halfHeight > 0 && !isOffsetInDisc(0, halfHeight, cell, radiusSquared)) { halfHeight--; }
+  while (halfHeight <= MAXIMUM_RADIUS_PIXELS && isOffsetInDisc(0, halfHeight + 1, cell, radiusSquared)) { halfHeight++; }
+  return halfHeight;
+}`;

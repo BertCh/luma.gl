@@ -33,14 +33,14 @@ export type ReachabilityIterationsRecommendationProps = {
 export type ReachabilityIterationsRecommendation = {
   /** Echo of the input `localIterations`. */
   localIterations: number;
-  /** Suggested `maxIterations` (compile-time round count), clamped to [1, 1024]. */
-  maxIterations: number;
+  /** Suggested `maximumIterations` (compile-time round count), clamped to [1, 1024]. */
+  maximumIterations: number;
 };
 
 /** Inputs of {@link adaptReachabilityIterations}. */
 export type ReachabilityIterationsAdaptationProps = {
-  /** The `maxIterations` the last result was computed with. */
-  maxIterations: number;
+  /** The `maximumIterations` the last result was computed with. */
+  maximumIterations: number;
   /** The `iterationCount` output read back from that run. */
   iterationCount: number;
   /** Whether that run reported `converged`. */
@@ -52,7 +52,7 @@ function clampIterations(value: number): number {
 }
 
 /**
- * Suggests a first-guess `maxIterations` from the network size, without a host-side probe.
+ * Suggests a first-guess `maximumIterations` from the network size, without a host-side probe.
  * Rounds needed are about `ceil(hopEccentricity / (0.7 * localIterations)) + 4`. Pure function.
  */
 export function recommendReachabilityIterations(
@@ -70,18 +70,18 @@ export function recommendReachabilityIterations(
     throw new Error('recommendReachabilityIterations hopEccentricity must be non-negative');
   }
   const rounds = Math.ceil(hopEccentricity / (HOPS_PER_ROUND_EFFICIENCY * localIterations));
-  return {localIterations, maxIterations: clampIterations(rounds + ROUND_SLACK)};
+  return {localIterations, maximumIterations: clampIterations(rounds + ROUND_SLACK)};
 }
 
 /**
- * Next `maxIterations` from the previous run's `iterationCount` and `converged` outputs.
+ * Next `maximumIterations` from the previous run's `iterationCount` and `converged` outputs.
  * Not converged: doubles the budget (at most 1024). Converged: shrinks to
  * `ceil(iterationCount * 1.5) + 2` once the budget is at least 4x the rounds used, otherwise keeps
  * it. Pure function; the caller owns the frame-to-frame value and decides when to recompile.
  */
 export function adaptReachabilityIterations(props: ReachabilityIterationsAdaptationProps): number {
-  const {maxIterations, iterationCount, converged} = props;
-  const current = clampIterations(maxIterations);
+  const {maximumIterations, iterationCount, converged} = props;
+  const current = clampIterations(maximumIterations);
   if (!converged) {
     return clampIterations(current * 2);
   }

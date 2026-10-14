@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -18,8 +17,13 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView,
+  validatePowerOfTwo
 } from '../../utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
+import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {createSegmentTableNode} from '../segment-intersection/segment-table';
 import {
@@ -31,7 +35,10 @@ import {GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH} from './coverage-validity-parame
 import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUCoverageValidity';
 /** Vertex count from which `spatialSort` defaults to on, as `GPUSegmentIntersection`. */
@@ -72,12 +79,15 @@ export type GPUCoverageValidityOutput = {
    * fewer than three vertices and of degenerate or non-finite segments are `0`.
    */
   segmentFlags: GraphDataView<'uint32'>;
-  /** Optional invalid segment count per polygon, `polygonOffsets.length - 1` rows. */
-  polygonInvalidCounts?: GraphDataView<'uint32'>;
-  /** Optional one-row total of invalid segments. */
-  invalidSegmentCount?: GraphDataView<'uint32'>;
+  /** Optional invalid segment count per feature, `featureOffsets.length - 1` rows. */
+  featureInvalidCounts?: GraphDataView<'uint32'>;
   /** Optional one-row flag: 1 when no segment is invalid (Shapely `coverage_is_valid`), else 0. */
   isValid?: GraphDataView<'uint32'>;
+  /** Status scalars. */
+  status?: {
+    /** Optional one-row total of invalid segments. */
+    invalidCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -87,7 +97,7 @@ export type GPUCoverageValidityOutput = {
  * as long as lengths stay the same. Compile-time: view lengths, `spatialSort`, `leafCapacity` and
  * which optional outputs are present.
  */
-export type GPUCoverageValidityProps = {
+export type GPUCoverageValidityProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'coverage-validity'`. */
   id?: string;
   /**
@@ -97,15 +107,13 @@ export type GPUCoverageValidityProps = {
    * planar frame first.
    */
   spatialContext?: GPUSpatialContext;
-  /** Flattened ring vertices (GeoArrow layout, as `GPUCoverageSimplification`). Finite coordinates. */
-  positions: GraphDataView<'float32x2'>;
-  /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly. */
-  ringOffsets: GraphDataView<'uint32'>;
   /**
-   * Polygon-to-ring offsets with a terminal entry. The first ring of a polygon is its shell, the
-   * others are holes. Winding is free: orientation is read from the signed area.
+   * Layout notes. `positions` are flattened ring vertices with finite coordinates. Rows are
+   * features; rings close implicitly. The first ring of a polygon is its shell, the others are
+   * holes. Winding is free: orientation is read from the signed area. `ringOffsets`,
+   * `polygonOffsets` and `featureOffsets` each carry a terminal entry. Segments of one feature are
+   * never compared with each other.
    */
-  polygonOffsets: GraphDataView<'uint32'>;
   /**
    * Per-frame packed float32 view of at least {@link GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH}
    * elements written with `getGPUCoverageValidityParameterValues`: the gap width.
@@ -186,16 +194,20 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 1 || props.positions.length >= 2 ** 30) {
-      throw new Error(`${id} positions must hold between 1 and 2^30 - 1 vertices`);
+    if (props.positions.length < 1) {
+      throw new Error(`${id} positions must hold at least one vertex`);
     }
     validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
     validatePackedUint32View(props.polygonOffsets, `${id} polygonOffsets`);
-    if (props.ringOffsets.length < 2) {
-      throw new Error(`${id} ringOffsets must hold at least two entries`);
-    }
-    if (props.polygonOffsets.length < 2) {
-      throw new Error(`${id} polygonOffsets must hold at least two entries`);
+    validatePackedUint32View(props.featureOffsets, `${id} featureOffsets`);
+    for (const [name, view] of [
+      ['ringOffsets', props.ringOffsets],
+      ['polygonOffsets', props.polygonOffsets],
+      ['featureOffsets', props.featureOffsets]
+    ] as const) {
+      if (view.length < 2) {
+        throw new Error(`${id} ${name} must hold at least two entries`);
+      }
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH) {
@@ -205,26 +217,20 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
     }
     this.spatialSort = props.spatialSort ?? props.positions.length >= SPATIAL_SORT_MINIMUM_SLOTS;
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(props.positions.length);
-    if (
-      !Number.isSafeInteger(this.leafCapacity) ||
-      this.leafCapacity < props.positions.length ||
-      (this.leafCapacity & (this.leafCapacity - 1)) !== 0
-    ) {
-      throw new Error(`${id} leafCapacity must be a power of two of at least the vertex count`);
-    }
+    validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity, props.positions.length);
     const {output} = props;
     validatePackedUint32View(output.segmentFlags, `${id} output.segmentFlags`);
     if (output.segmentFlags.length !== props.positions.length) {
       throw new Error(`${id} output.segmentFlags length must equal positions length`);
     }
-    if (output.polygonInvalidCounts) {
-      validatePackedUint32View(output.polygonInvalidCounts, `${id} output.polygonInvalidCounts`);
-      if (output.polygonInvalidCounts.length !== props.polygonOffsets.length - 1) {
-        throw new Error(`${id} output.polygonInvalidCounts length must equal the polygon count`);
+    if (output.featureInvalidCounts) {
+      validatePackedUint32View(output.featureInvalidCounts, `${id} output.featureInvalidCounts`);
+      if (output.featureInvalidCounts.length !== props.featureOffsets.length - 1) {
+        throw new Error(`${id} output.featureInvalidCounts length must equal the feature count`);
       }
     }
     for (const [name, view] of [
-      ['invalidSegmentCount', output.invalidSegmentCount],
+      ['status.invalidCount', output.status?.invalidCount],
       ['isValid', output.isValid]
     ] as const) {
       if (view) {
@@ -238,11 +244,17 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
       id,
       [
         output.segmentFlags,
-        output.polygonInvalidCounts,
-        output.invalidSegmentCount,
+        output.featureInvalidCounts,
+        output.status?.invalidCount,
         output.isValid
       ],
-      [props.positions, props.ringOffsets, props.polygonOffsets, props.parameters]
+      [
+        props.positions,
+        props.ringOffsets,
+        props.polygonOffsets,
+        props.featureOffsets,
+        props.parameters
+      ]
     );
   }
 
@@ -251,25 +263,32 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, ringOffsets, polygonOffsets, parameters, output} = props;
+    const {positions, ringOffsets, polygonOffsets, featureOffsets, parameters, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       ringOffsets,
       polygonOffsets,
+      featureOffsets,
       parameters,
       output.segmentFlags,
-      output.polygonInvalidCounts,
-      output.invalidSegmentCount,
+      output.featureInvalidCounts,
+      output.status?.invalidCount,
       output.isValid
     ]);
+    // The segment table holds one row per vertex.
+    validateMaximumCount(
+      id,
+      'positions rows',
+      props.positions.length,
+      getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+    );
     const vertexCount = positions.length;
     const ringCount = ringOffsets.length - 1;
-    const polygonCount = polygonOffsets.length - 1;
+    const featureCount = featureOffsets.length - 1;
     const view = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
 
     const ringFlip = view('ring-flip', ringCount);
-    const featureOffsets = view('feature-offsets', polygonCount + 1);
     const table = view('segment-table', vertexCount * 8);
     const minima = createTransientView(graph, `${id}-bounds-minima`, 'float32x2', vertexCount);
     const maxima = createTransientView(graph, `${id}-bounds-maxima`, 'float32x2', vertexCount);
@@ -281,16 +300,6 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
         ringOffsets,
         polygonOffsets,
         ringFlip
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-feature-offsets`,
-        operation: OPERATION,
-        variant: 'feature-offsets',
-        bindings: [
-          {name: 'featureOffsets', view: featureOffsets, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: polygonCount + 1,
-        body: 'featureOffsets[featureOffsetsOffset + index] = index;'
       })
     ];
     nodes.push(
@@ -488,12 +497,12 @@ fn windingContribution(other: u32, point: vec2f) -> i32 {
 
     // Counts per polygon and in total, with integer atomics.
     const needsCounts = Boolean(
-      output.polygonInvalidCounts || output.invalidSegmentCount || output.isValid
+      output.featureInvalidCounts || output.status?.invalidCount || output.isValid
     );
     if (needsCounts) {
       const polygonCounts =
-        output.polygonInvalidCounts ?? view('polygon-invalid-counts', polygonCount);
-      const total = output.invalidSegmentCount ?? view('invalid-segment-count', 1);
+        output.featureInvalidCounts ?? view('feature-invalid-counts', featureCount);
+      const total = output.status?.invalidCount ?? view('invalid-count', 1);
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-clear-polygon-counts`,

@@ -8,9 +8,10 @@ export {
   GPU_NETWORK_STATISTICS_WORD,
   GPU_NETWORK_STATISTICS_PARAMETER_LENGTH,
   getGPUNetworkStatisticsLength,
-  encodeGPUNetworkStatisticsParameters,
+  getGPUNetworkStatisticsParameterValues,
   decodeGPUNetworkStatistics,
   type GPUNetworkStatisticsProps,
   type GPUNetworkStatisticsLayout,
-  type GPUNetworkStatisticsResult
+  type GPUNetworkStatisticsResult,
+  type GPUNetworkStatisticsSettings
 } from './gpu-network-statistics';

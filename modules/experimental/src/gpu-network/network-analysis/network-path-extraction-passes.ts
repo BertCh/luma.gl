@@ -12,6 +12,31 @@ const PATH_WGSL_CONSTANTS = /* wgsl */ `
 const INFINITY_BITS: u32 = 0x7f800000u;
 const NONE: u32 = 0xffffffffu;`;
 
+/**
+ * Resets the status words: 0 (no truncated walk) and the convergence of the search that wrote the
+ * predecessors (1 without a `converged` view). @internal
+ */
+export function createPathStatusNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; status: GraphDataView<'uint32'>; converged?: GraphDataView<'uint32'>}
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'status', view: props.status, type: 'u32', access: 'read_write'}
+  ];
+  if (props.converged) {
+    bindings.push({name: 'converged', view: props.converged, type: 'u32', access: 'read'});
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'status',
+    bindings,
+    invocationCount: 2,
+    body: `let isConverged = ${props.converged ? 'converged[convergedOffset] != 0u' : 'true'};
+  status[statusOffset + index] = select(0u, select(0u, 1u, isConverged), index == 1u);`
+  });
+}
+
 /** Measures every target path: length, found flag, cost, and the truncation flag. @internal */
 export function createPathMeasureNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -22,7 +47,7 @@ export function createPathMeasureNode<Parameters>(
     predecessors: GraphDataView<'uint32'>;
     costs: GraphDataView<'float32'>;
     targets: GraphDataView<'uint32'>;
-    targetCount?: GraphDataView<'uint32'>;
+    targetCount?: number | GraphDataView<'uint32'>;
     nodeLengths: GraphDataView<'uint32'>;
     status: GraphDataView<'uint32'>;
     pathFound?: GraphDataView<'uint32'>;
@@ -36,7 +61,7 @@ export function createPathMeasureNode<Parameters>(
     {name: 'nodeLengths', view: props.nodeLengths, type: 'u32', access: 'read_write'},
     {name: 'status', view: props.status, type: 'atomic<u32>', access: 'read_write'}
   ];
-  if (props.targetCount) {
+  if (typeof props.targetCount === 'object') {
     bindings.push({name: 'targetCount', view: props.targetCount, type: 'u32', access: 'read'});
   }
   if (props.pathFound) {
@@ -57,7 +82,13 @@ const MAXIMUM_PATH_LENGTH: u32 = ${props.maxPathLength}u;`,
     body: `var length = 0u;
   var found = false;
   var costBits = INFINITY_BITS;
-  let isActive = ${props.targetCount ? 'index < targetCount[targetCountOffset]' : 'true'};
+  let isActive = ${
+    typeof props.targetCount === 'number'
+      ? `index < ${props.targetCount}u`
+      : props.targetCount
+        ? 'index < targetCount[targetCountOffset]'
+        : 'true'
+  };
   let targetNode = targets[targetsOffset + index];
   if (isActive && targetNode < NODE_COUNT) {
     let targetCost = costs[costsOffset + targetNode];
@@ -83,7 +114,8 @@ const MAXIMUM_PATH_LENGTH: u32 = ${props.maxPathLength}u;`,
         node = predecessor;
         walked++;
       }
-      if (state == 1u) {
+      // A NONE predecessor is a source only when the search converged (status word 1).
+      if (state == 1u && atomicLoad(&status[statusOffset + 1u]) != 0u) {
         found = true;
         length = walked;
         costBits = bitcast<u32>(targetCost);

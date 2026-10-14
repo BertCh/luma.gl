@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {defineGPUSpatialParameterSchema, packGPUSpatialParameterValues} from '../contracts/index';
+import {
+  defineGPUSpatialParameterSchema,
+  packGPUSpatialParameterValues
+} from '../../analysis-core/contracts/index';
 
 /** Number of float32 elements in a trajectory-metrics parameter buffer. */
 export const GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH = 4;
@@ -40,7 +43,7 @@ export const GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA = defineGPUSpatialParameter
  * Both values use the units of the track data: positions per time unit for the speed threshold and
  * time units (the unit of the timestamps) for the minimum duration.
  */
-export type GPUTrajectoryStopParameters = {
+export type GPUTrajectoryMetricsSettings = {
   /**
    * A step between two consecutive samples is slow when its speed is below this value. Must be
    * finite and non-negative. A threshold of 0 only treats zero-distance steps as slow.
@@ -59,12 +62,12 @@ export type GPUTrajectoryStopParameters = {
  * Layout: `[stopSpeedThreshold, stopMinimumDuration, 0, 0]`. Write the result into a
  * `GPUParameterBuffer` between encodings to change the thresholds without recompiling.
  *
- * @param parameters Stop parameters to encode.
+ * @param settings Stop settings to encode.
  * @param target Optional destination of at least 4 elements. A new array is returned when omitted.
  * @throws If a value is not finite, is negative, or `target` is too short.
  */
 export function getGPUTrajectoryMetricsParameterValues(
-  parameters: GPUTrajectoryStopParameters,
+  settings: GPUTrajectoryMetricsSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH) {
@@ -72,6 +75,6 @@ export function getGPUTrajectoryMetricsParameterValues(
       `Trajectory metrics target must hold ${GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} elements`
     );
   }
-  target.set(packGPUSpatialParameterValues(GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA, parameters));
+  target.set(packGPUSpatialParameterValues(GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA, settings));
   return target;
 }

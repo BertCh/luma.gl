@@ -4,7 +4,7 @@
 
 export {
   GPUCoverageSimplification,
-  GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATS_LENGTH
+  GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH
 } from './gpu-coverage-simplification';
 export type {
   GPUCoverageSimplificationOutput,

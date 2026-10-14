@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -20,8 +18,14 @@ import {createSegmentSumNode} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
   type GPUIslandPolicy,
@@ -35,7 +39,7 @@ import {
   GPU_DEFAULT_INFERENCE_ALTERNATIVE,
   type GPUInferenceAlternative,
   type GPUInferenceMetadata
-} from '../contracts/inference';
+} from '../../analysis-core/contracts/inference';
 import {getSlotGroupingNodes} from '../spatial-weights/slot-grouping';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {
@@ -47,6 +51,9 @@ const OPERATION = 'GPUGlobalSpatialStatistics';
 
 /** Rows reduced by one workgroup in the first level of the deterministic column sums. */
 const BLOCK_ROWS = 4096;
+
+/** Lanes of a workgroup that reduces per-row counters before one global atomic per counter. */
+const REDUCTION_WORKGROUP_SIZE = 256;
 
 const STATISTICS: readonly GPUGlobalSpatialStatistic[] = [
   'moran',
@@ -116,10 +123,17 @@ export type GPUGlobalSpatialStatisticsProps = {
   id?: string;
   /** Square spatial weights: neighbor IDs index the same rows as `offsets`. */
   weights: GPUSpatialWeights;
-  /** Analysis values, one per row. Join counts treat nonzero values as black. */
-  values: GraphDataView<'float32'>;
-  /** Second variable `y` of bivariate Moran's I, one per row. Required for `'bivariateMoran'`. */
-  secondValues?: GraphDataView<'float32'>;
+  /**
+   * Analysis values, one per row, `float32` or `uint32` (for example the `uint32` counts of a
+   * points-in-polygons aggregation; converted to f32 by one node, exact below 2^24). Join counts
+   * treat nonzero values as black.
+   */
+  values: GPUFloat32OrUint32Values;
+  /**
+   * Second variable `y` of bivariate Moran's I, one per row, `float32` or `uint32`. Required for
+   * `'bivariateMoran'`.
+   */
+  secondValues?: GPUFloat32OrUint32Values;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
   /** Statistics to report. Compile-time; other result blocks hold quiet NaN. */
@@ -134,20 +148,26 @@ export type GPUGlobalSpatialStatisticsProps = {
    */
   islands?: GPUIslandPolicy;
   /**
-   * Tail of every analytic p-value in `results` (Moran, Geary, General G, bivariate Moran and
+   * Tail of every analytic p-value in `output.summary` (Moran, Geary, General G, bivariate Moran and
    * join counts): `'two-sided'` (default), `'greater'` (upper tail of z, for example positive
-   * autocorrelation of Moran's I) or `'lesser'` (`'less'` is an alias, lower tail of z).
+   * autocorrelation of Moran's I) or `'lesser'` (lower tail of z).
    * `'directed'` and `'folded'` are permutation conventions and throw here. Compile-time.
    */
   alternative?: GPUInferenceAlternative;
+  /** Caller-owned outputs. */
+  output: GPUGlobalSpatialStatisticsOutput;
+};
+
+/** Caller-owned outputs of {@link GPUGlobalSpatialStatistics}. */
+export type GPUGlobalSpatialStatisticsOutput = {
   /**
-   * Caller-owned results, at least `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length` float32 values,
+   * Every statistic block, at least `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length` float32 values,
    * laid out by `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`.
    */
-  results: GraphDataView<'float32'>;
+  summary: GraphDataView<'float32'>;
   /**
-   * Optional caller-owned exact ordered-pair join counts `[BB2, BW2, WW2]` (twice the join counts
-   * for symmetric weights) as uint32.
+   * Optional exact ordered-pair join counts `[BB2, BW2, WW2]` (twice the join counts for
+   * symmetric weights) as uint32.
    */
   joinCounts?: GraphDataView<'uint32'>;
 };
@@ -159,7 +179,7 @@ export type GPUGlobalSpatialStatisticsProps = {
  *
  * Neighbors: a slot is a neighbor when its weight is positive, it points to another analysis row
  * and it is not the row itself (zero-weight slots are not neighbors). Weights are used as given,
- * except when `weights.info.transform === 'row'`: each row is then re-standardized over its
+ * except when `weights.information.transform === 'row'`: each row is then re-standardized over its
  * active neighbors, `w'_ij = w_ij / sum_k w_ik`, everywhere (`S0`, `S1`, `S2`, the reverse
  * weights `w'_ji` and the cross products), so masked, missing and island neighbors drop out and
  * every remaining row still sums to 1 (identical to the input up to rounding without masking).
@@ -200,7 +220,10 @@ export type GPUGlobalSpatialStatisticsProps = {
  *   half-integers.
  *
  * Variances are NaN when `n < 4` (the randomization formulas divide by `n - 3`), `S0 = 0`, or the
- * values are constant; z and p are NaN where the variance is not positive.
+ * values are constant; z and p are NaN where the variance is not positive. Constant values center
+ * to exactly 0, so Moran's I and Geary's C are NaN for them (not a ratio of rounding residues); the
+ * expectations of I and C are NaN below two rows. With no analysis row every statistic is NaN and
+ * the join counts are 0.
  *
  * Precision: `n` is counted in u32 (atomic integer adds), the mean gets a second-pass correction
  * `mean += sum(x - mean) / n`, and deviations are formed from the corrected mean. Row counts must
@@ -219,7 +242,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
   readonly props: GPUGlobalSpatialStatisticsProps;
   /** Resolved island policy. */
   readonly islands: GPUIslandPolicy;
-  /** Resolved tail of the analytic p-values (`'less'` is reported as `'lesser'`). */
+  /** Resolved tail of the analytic p-values . */
   readonly alternative: 'two-sided' | 'greater' | 'lesser';
 
   constructor(props: GPUGlobalSpatialStatisticsProps) {
@@ -233,22 +256,25 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} weights must hold fewer than 2^24 rows`);
     }
     if (props.weights.status?.overflow) {
-      validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
+      validatePackedView(
+        props.weights.status.overflow,
+        ['uint32'],
+        `${id} weights.status.overflow`
+      );
     }
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    if (props.values.length !== rows) {
-      throw new Error(`${id} values length must equal the weights row count`);
+    if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
+      throw new Error(`${id} values needs one row per weights row`);
     }
-    if (props.secondValues) {
-      validatePackedView(props.secondValues, ['float32'], `${id} secondValues`);
-      if (props.secondValues.length !== rows) {
-        throw new Error(`${id} secondValues length must equal the weights row count`);
-      }
+    if (
+      props.secondValues &&
+      validateFloat32OrUint32Values(props.secondValues, `${id} secondValues`) !== rows
+    ) {
+      throw new Error(`${id} secondValues needs one row per weights row`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
-        throw new Error(`${id} mask length must equal the weights row count`);
+        throw new Error(`${id} mask needs one row per weights row`);
       }
     }
     if (props.statistics.length === 0) {
@@ -262,21 +288,22 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
     if (props.statistics.includes('bivariateMoran') && !props.secondValues) {
       throw new Error(`${id} bivariateMoran requires secondValues`);
     }
-    validatePackedView(props.results, ['float32'], `${id} results`);
-    if (props.results.length < GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length) {
+    const {output} = props;
+    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    if (output.summary.length < GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length) {
       throw new Error(
-        `${id} results must hold ${GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length} float32 values`
+        `${id} output.summary needs ${GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length} values`
       );
     }
-    if (props.joinCounts) {
-      validatePackedUint32View(props.joinCounts, `${id} joinCounts`);
-      if (props.joinCounts.length < 3) {
-        throw new Error(`${id} joinCounts must hold 3 uint32 values`);
+    if (output.joinCounts) {
+      validatePackedView(output.joinCounts, ['uint32'], `${id} output.joinCounts`);
+      if (output.joinCounts.length < 3) {
+        throw new Error(`${id} output.joinCounts needs 3 values`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.results, props.joinCounts],
+      [output.summary, output.joinCounts],
       [
         props.weights.offsets,
         props.weights.neighbors,
@@ -290,8 +317,9 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
   }
 
   /**
-   * Describes how the analytic p-values in `results` were produced, enough to build a legend.
-   * Global statistics report p-values, never multiple-testing adjusted ones.
+   * Describes how the analytic p-values in `output.summary` were produced, enough to build a
+   * legend. Global statistics report p-values, never multiple-testing adjusted ones. Takes no
+   * settings: the statistics have no packed per-frame parameters (the tail is compile time).
    */
   getInferenceMetadata(): GPUInferenceMetadata {
     return {
@@ -309,18 +337,25 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, values, secondValues, mask} = props;
+    const {weights, mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,
       weights.neighbors,
       weights.weights,
       weights.status?.overflow,
-      values,
-      secondValues,
+      props.values,
+      props.secondValues,
       mask,
-      props.results,
-      props.joinCounts
+      output.summary,
+      output.joinCounts
     ]);
+    // uint32 values (counts) are converted to f32 once; float32 values are used as given.
+    const valueConversion = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
+    const secondValueConversion = props.secondValues
+      ? createFloat32ValuesNodes(graph, `${id}-second-values`, props.secondValues)
+      : undefined;
+    const values = valueConversion.view;
+    const secondValues = secondValueConversion?.view;
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
     const overflow = weights.status?.overflow;
@@ -334,6 +369,14 @@ ${Object.entries(COLUMN)
   .join('\n')}
 fn getMatrixIndex(column: u32, row: u32) -> u32 {
   return column * ROWS + row;
+}
+// total / count with one remainder correction. WGSL division may be 2.5 ulp off (Metal computes
+// it through a reciprocal), so 24 / 12 can miss 2; the correction makes the quotient correctly
+// rounded in practice, so constant values center to exactly 0 and their statistics are NaN, not
+// the ratio of rounding residues.
+fn getMeanQuotient(total: f32, count: f32) -> f32 {
+  let quotient = total / count;
+  return quotient + fma(-quotient, count, total) / count;
 }
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     // Neighbors are the shared active slots (positive weight, another row, analysis row).
@@ -386,6 +429,8 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     });
     const {sortedSlots} = grouping;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...valueConversion.nodes,
+      ...(secondValueConversion?.nodes ?? []),
       createFillNode<Parameters>(graph, {
         id: `${id}-counters-clear`,
         operation: OPERATION,
@@ -428,8 +473,15 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
           {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
-        declarations: constantsWGSL,
-        body: `let base = baseStates[baseStatesOffset + index] != 0u;
+        workgroupSize: REDUCTION_WORKGROUP_SIZE,
+        guardIndex: false,
+        // Workgroup counters (zero-initialized by WGSL) keep the global counters to one atomic per
+        // workgroup instead of one per row.
+        declarations: `${constantsWGSL}
+var<workgroup> groupIncluded: atomic<u32>;
+var<workgroup> groupNegative: atomic<u32>;`,
+        body: `if (index < ROWS) {
+  let base = baseStates[baseStatesOffset + index] != 0u;
   var hasNeighbor = false;
   if (base) {
     ${getGPUSpatialWeightsNeighborLoopWGSL(
@@ -440,9 +492,9 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
   let island = base && !hasNeighbor;
   let included = base && ${keepIslands ? 'true' : '!island'};
   if (included) {
-    atomicAdd(&counters[countersOffset], 1u);
+    atomicAdd(&groupIncluded, 1u);
     if (matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] < 0.0) {
-      atomicAdd(&counters[countersOffset + 1u], 1u);
+      atomicAdd(&groupNegative, 1u);
     }
   } else {
     // Missing rows and excluded islands leave the sums.
@@ -450,7 +502,13 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] = 0.0;
   }
   matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] = select(0.0, 1.0, included);
-  matrix[matrixOffset + getMatrixIndex(COLUMN_ISLAND, index)] = select(0.0, 1.0, island);`
+  matrix[matrixOffset + getMatrixIndex(COLUMN_ISLAND, index)] = select(0.0, 1.0, island);
+  }
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    atomicAdd(&counters[countersOffset], atomicLoad(&groupIncluded));
+    atomicAdd(&counters[countersOffset + 1u], atomicLoad(&groupNegative));
+  }`
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-a`,
@@ -477,9 +535,9 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
   let x = matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)];
   let y = matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)];
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_X, index)] =
-    select(0.0, x - totalsA[totalsAOffset + 1u] / count, included);
+    select(0.0, x - getMeanQuotient(totalsA[totalsAOffset + 1u], count), included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_Y, index)] =
-    select(0.0, y - totalsA[totalsAOffset + 2u] / count, included);`
+    select(0.0, y - getMeanQuotient(totalsA[totalsAOffset + 2u], count), included);`
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-d`,
@@ -508,8 +566,8 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         body: `let included = matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] != 0.0;
   let count = f32(counters[countersOffset]);
   let x = matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)];
-  let centeredX = matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_X, index)] - totalsD[totalsDOffset] / count;
-  let centeredY = ${secondValues ? 'matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_Y, index)] - totalsD[totalsDOffset + 1u] / count' : '0.0'};
+  let centeredX = matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_X, index)] - getMeanQuotient(totalsD[totalsDOffset], count);
+  let centeredY = ${secondValues ? 'matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_Y, index)] - getMeanQuotient(totalsD[totalsDOffset + 1u], count)' : '0.0'};
   let square = centeredX * centeredX;
   centered[centeredOffset + index * 2u] = select(getQuietNaN(index), centeredX, included);
   centered[centeredOffset + index * 2u + 1u] = select(getQuietNaN(index), centeredY, included);
@@ -610,7 +668,12 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
           {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: rows,
+        workgroupSize: REDUCTION_WORKGROUP_SIZE,
+        guardIndex: false,
         declarations: `${constantsWGSL}
+var<workgroup> groupBlackBlack: atomic<u32>;
+var<workgroup> groupBlackWhite: atomic<u32>;
+var<workgroup> groupWhiteWhite: atomic<u32>;
 fn getRowEnd(row: u32) -> u32 {
   return min(offsets[offsetsOffset + row + 1u], CAPACITY);
 }
@@ -637,7 +700,11 @@ fn findWeight(row: u32, column: u32) -> f32 {
   }
   return -1.0;
 }`,
-        body: `let centeredX = centered[centeredOffset + index * 2u];
+        body: `var blackBlack = 0u;
+  var blackWhite = 0u;
+  var whiteWhite = 0u;
+  if (index < ROWS) {
+  let centeredX = centered[centeredOffset + index * 2u];
   var rowWeight = 0.0;
   var s1 = 0.0;
   var lag = 0.0;
@@ -646,9 +713,6 @@ fn findWeight(row: u32, column: u32) -> f32 {
   var lagY = 0.0;
   var outDegree = 0u;
   var binaryS1 = 0u;
-  var blackBlack = 0u;
-  var blackWhite = 0u;
-  var whiteWhite = 0u;
   let x = values[valuesOffset + index];
   if (isFiniteFloat(centeredX)) {
     let black = x != 0.0;
@@ -676,9 +740,6 @@ fn findWeight(row: u32, column: u32) -> f32 {
         whiteWhite++;
       }`
     )}
-    atomicAdd(&counters[countersOffset + 2u], blackBlack);
-    atomicAdd(&counters[countersOffset + 3u], blackWhite);
-    atomicAdd(&counters[countersOffset + 4u], whiteWhite);
   }
   let included = isFiniteFloat(centeredX);
   matrix[matrixOffset + getMatrixIndex(COLUMN_ROW_WEIGHT, index)] = rowWeight;
@@ -688,7 +749,17 @@ fn findWeight(row: u32, column: u32) -> f32 {
   matrix[matrixOffset + getMatrixIndex(COLUMN_G_CROSS, index)] = select(0.0, x * rawLag, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BIVARIATE_CROSS, index)] = select(0.0, centeredX * lagY, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_OUT_DEGREE, index)] = f32(outDegree);
-  matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_S1, index)] = f32(binaryS1);`
+  matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_S1, index)] = f32(binaryS1);
+  }
+  atomicAdd(&groupBlackBlack, blackBlack);
+  atomicAdd(&groupBlackWhite, blackWhite);
+  atomicAdd(&groupWhiteWhite, whiteWhite);
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    atomicAdd(&counters[countersOffset + 2u], atomicLoad(&groupBlackBlack));
+    atomicAdd(&counters[countersOffset + 3u], atomicLoad(&groupBlackWhite));
+    atomicAdd(&counters[countersOffset + 4u], atomicLoad(&groupWhiteWhite));
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-columns`,
@@ -787,12 +858,12 @@ fn getSquaredDeviation(column: u32, row: u32, count: f32) -> f32 {
           {name: 'totalsC', view: totalsC, type: 'f32', access: 'read'},
           {name: 'totalsD', view: totalsD, type: 'f32', access: 'read'},
           {name: 'counters', view: counters, type: 'u32', access: 'read'},
-          {name: 'results', view: props.results, type: 'f32', access: 'read_write'},
-          ...(props.joinCounts
+          {name: 'results', view: output.summary, type: 'f32', access: 'read_write'},
+          ...(output.joinCounts
             ? [
                 {
                   name: 'joinCounts',
-                  view: props.joinCounts,
+                  view: output.joinCounts,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -833,7 +904,7 @@ fn writeBlock(offset: u32, block: array<f32, 8>, enabled: bool) {
   }
 }
 
-/** Validates the analytic tail and maps the `'less'` alias to `'lesser'`. */
+/** Validates the analytic tail . */
 function resolveAnalyticAlternative(
   id: string,
   alternative: GPUInferenceAlternative | undefined
@@ -844,12 +915,9 @@ function resolveAnalyticAlternative(
     case 'greater':
       return resolved;
     case 'lesser':
-    case 'less':
-      return 'lesser';
+      return resolved;
     default:
-      throw new Error(
-        `${id} analytic inference supports alternative 'two-sided', 'greater' or 'lesser', not '${resolved}'`
-      );
+      throw new Error(`${id} alternative must be 'two-sided', 'greater' or 'lesser'`);
   }
 }
 
@@ -1053,7 +1121,9 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let varianceRandomization = select(getQuietNaN(1u), getFinite(moments.z), valid);
     let zNormality = getZScore(statistic, moments.x, varianceNormality);
     let zRandomization = getZScore(statistic, moments.x, varianceRandomization);
-    writeBlock(${layout.moran}u, array<f32, 8>(statistic, getFinite(moments.x), varianceNormality,
+    // E[I] = -1 / (n - 1) is undefined below two rows (n = 0 would give 1).
+    let expected = select(getQuietNaN(1u), getFinite(moments.x), n >= 2.0);
+    writeBlock(${layout.moran}u, array<f32, 8>(statistic, expected, varianceNormality,
       zNormality, getPValue(zNormality), varianceRandomization, zRandomization,
       getPValue(zRandomization)), ${enabled('moran')});
   }
@@ -1065,7 +1135,8 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let varianceRandomization = select(getQuietNaN(1u), getFinite(moments.y), valid);
     let zNormality = getZScore(statistic, 1.0, varianceNormality);
     let zRandomization = getZScore(statistic, 1.0, varianceRandomization);
-    writeBlock(${layout.geary}u, array<f32, 8>(statistic, 1.0, varianceNormality, zNormality,
+    writeBlock(${layout.geary}u, array<f32, 8>(statistic, select(getQuietNaN(1u), 1.0, n >= 2.0),
+      varianceNormality, zNormality,
       getPValue(zNormality), varianceRandomization, zRandomization, getPValue(zRandomization)),
       ${enabled('geary')});
   }
@@ -1098,7 +1169,7 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let blackWhite2 = counters[countersOffset + 3u];
     let whiteWhite2 = counters[countersOffset + 4u];
     ${
-      props.joinCounts
+      props.output.joinCounts
         ? `joinCounts[joinCountsOffset] = select(0u, blackBlack2, enabled);
     joinCounts[joinCountsOffset + 1u] = select(0u, blackWhite2, enabled);
     joinCounts[joinCountsOffset + 2u] = select(0u, whiteWhite2, enabled);`

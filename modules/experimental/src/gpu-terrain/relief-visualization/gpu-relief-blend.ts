@@ -10,26 +10,28 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import type {GPURasterMetadata} from '../../gpu-raster/index';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainIlluminationView
 } from '../terrain-illumination/terrain-illumination-utils';
 
 /** Largest supported number of blended layers. */
-export const GPU_RELIEF_BLEND_MAX_LAYER_COUNT = 5;
+export const GPU_RELIEF_BLEND_MAXIMUM_LAYER_COUNT = 5;
 
-/** Number of float32 values per layer in the settings buffer. */
+/** Number of float32 values per layer in the parameters buffer. */
 export const GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH = 5;
 
-/** Number of float32 values of a settings buffer holding the maximum layer count. */
+/** Number of float32 values of a parameters buffer holding the maximum layer count. */
 export const GPU_RELIEF_BLEND_PARAMETER_LENGTH =
-  GPU_RELIEF_BLEND_MAX_LAYER_COUNT * GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH;
+  GPU_RELIEF_BLEND_MAXIMUM_LAYER_COUNT * GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH;
 
 /**
  * Blend mode of one layer over the layers below it. Single-band (greyscale) forms of the
@@ -43,7 +45,7 @@ export type GPUReliefBlendMode =
   | 'soft-light'
   | 'luminosity';
 
-/** Numeric code of every {@link GPUReliefBlendMode}, as written into the settings buffer. */
+/** Numeric code of every {@link GPUReliefBlendMode}, as written into the parameters buffer. */
 export const GPU_RELIEF_BLEND_MODE_CODES: Readonly<Record<GPUReliefBlendMode, number>> = {
   normal: 0,
   multiply: 1,
@@ -84,12 +86,14 @@ export function getGPUReliefBlendParameterValues(
   layers: readonly GPUReliefBlendLayerSettings[],
   target: Float32Array = new Float32Array(layers.length * GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH)
 ): Float32Array {
-  if (layers.length < 1 || layers.length > GPU_RELIEF_BLEND_MAX_LAYER_COUNT) {
+  if (layers.length < 1 || layers.length > GPU_RELIEF_BLEND_MAXIMUM_LAYER_COUNT) {
     throw new Error('Relief blend supports 1 to 5 layers');
   }
-  if (target.length < layers.length * GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH) {
-    throw new Error('Relief blend settings target must hold 5 values per layer');
-  }
+  validateParameterTarget(
+    'getGPUReliefBlendParameterValues',
+    target,
+    layers.length * GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH
+  );
   for (const [layer, settings] of layers.entries()) {
     const opacity = settings.opacity ?? 1;
     if (![settings.minimum, settings.maximum, opacity].every(Number.isFinite)) {
@@ -144,34 +148,38 @@ export const GPU_RELIEF_BLEND_VAT_FLAT: readonly GPUReliefBlendLayerSettings[] =
   {minimum: 0.9, maximum: 1, blendMode: 'multiply', opacity: 0.25}
 ]);
 
+/** Caller-owned outputs of {@link GPUReliefBlend}; at least one is required. */
+export type GPUReliefBlendOutput = {
+  /** Optional blended greyscale in `[0, 1]`, NaN where any layer is not finite. */
+  blend?: GraphDataView<'float32'>;
+  /** Optional packed RGBA8 grey (`pack4x8unorm`, red in the low byte, alpha 255; 0 where invalid). */
+  color?: GraphDataView<'uint32'>;
+  /** Optional per-pixel 1 where every layer is finite, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUReliefBlend}.
  *
  * Topology: grid size, the number of layers (`layers.length`) and which outputs exist.
- * Per-frame: `settings` (stretch, inversion, blend mode and opacity per layer) and layer contents.
+ * Per-frame: `parameters` (stretch, inversion, blend mode and opacity per layer) and layer contents.
  *
  * Cell size model: pixel units, cell size not used; layers are already-computed per-pixel values.
  */
 export type GPUReliefBlendProps = {
   /** Prefix for node and transient IDs. Defaults to `'relief-blend'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
    * One to five float32 layers of `width * height` values, ordered BOTTOM to TOP. RVT lists its
    * layers top first, so reverse an RVT list to use it here.
    */
   layers: readonly GraphDataView<'float32'>[];
-  /** Per-frame settings with at least `5 * layers.length` float32 values. */
-  settings: GraphDataView<'float32'>;
-  /** Optional blended greyscale in `[0, 1]`, NaN where any layer is not finite. */
-  blend?: GraphDataView<'float32'>;
-  /** Optional packed RGBA8 grey (`pack4x8unorm`, red in the low byte, alpha 255; 0 where invalid). */
-  color?: GraphDataView<'uint32'>;
-  /** Optional per-pixel 1 where every layer is finite, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  /** Per-frame parameters with at least `5 * layers.length` float32 values, see {@link getGPUReliefBlendParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUReliefBlendOutput;
 };
 
 /**
@@ -206,29 +214,38 @@ export class GPUReliefBlend implements GPUCommandNodeProducer {
     this.id = props.id ?? 'relief-blend';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const layerCount = props.layers.length;
-    if (layerCount < 1 || layerCount > GPU_RELIEF_BLEND_MAX_LAYER_COUNT) {
-      throw new Error(`${id} layers must contain 1 to ${GPU_RELIEF_BLEND_MAX_LAYER_COUNT} views`);
+    if (layerCount < 1 || layerCount > GPU_RELIEF_BLEND_MAXIMUM_LAYER_COUNT) {
+      throw new Error(
+        `${id} layers must contain 1 to ${GPU_RELIEF_BLEND_MAXIMUM_LAYER_COUNT} views`
+      );
     }
     for (const [layer, view] of props.layers.entries()) {
       validateTerrainIlluminationView(id, `layer ${layer}`, view, 'float32', pixelCount);
     }
-    if (!props.blend && !props.color && !props.validity) {
+    if (!output.blend && !output.color && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainIlluminationView(id, 'blend', props.blend, 'float32', pixelCount);
-    validateTerrainIlluminationView(id, 'color', props.color, 'uint32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(
+    validateTerrainIlluminationView(id, 'output.blend', output.blend, 'float32', pixelCount);
+    validateTerrainIlluminationView(id, 'output.color', output.color, 'uint32', pixelCount);
+    validateTerrainIlluminationView(
       id,
-      props.settings,
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(
+      id,
+      props.parameters,
       layerCount * GPU_RELIEF_BLEND_LAYER_PARAMETER_LENGTH
     );
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.blend, props.color, props.validity],
-      [...props.layers, props.settings]
+      [output.blend, output.color, output.outputValidity],
+      [...props.layers, props.parameters]
     );
   }
 
@@ -237,17 +254,18 @@ export class GPUReliefBlend implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const pixelCount = props.width * props.height;
+    const {output} = props;
+    const pixelCount = props.grid.width * props.grid.height;
     validateGraphViewsBelongToGraph(id, graph, [
       ...props.layers,
-      props.settings,
-      props.blend,
-      props.color,
-      props.validity
+      props.parameters,
+      output.blend,
+      output.color,
+      output.outputValidity
     ]);
     const target =
-      props.blend ??
-      (props.color || props.validity
+      output.blend ??
+      (output.color || output.outputValidity
         ? createTransientView(graph, `${id}-blend`, 'float32', pixelCount)
         : undefined);
     const bindings: WGSLKernelBinding[] = [
@@ -259,7 +277,7 @@ export class GPUReliefBlend implements GPUCommandNodeProducer {
           access: 'read'
         })
       ),
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'blend', view: target!, type: 'f32', access: 'read_write'}
     ];
     const statements = props.layers.map((_, layer) => {
@@ -319,17 +337,17 @@ fn renderLayer(foreground: f32, background: f32, base: u32) -> f32 {
   blend[blendOffset + index] = select(getNaN(index), background, allFinite);`
       })
     ];
-    if (props.color || props.validity) {
+    if (output.color || output.outputValidity) {
       const encodeBindings: WGSLKernelBinding[] = [
         {name: 'blend', view: target!, type: 'f32', access: 'read'}
       ];
-      if (props.color) {
-        encodeBindings.push({name: 'color', view: props.color, type: 'u32', access: 'read_write'});
+      if (output.color) {
+        encodeBindings.push({name: 'color', view: output.color, type: 'u32', access: 'read_write'});
       }
-      if (props.validity) {
+      if (output.outputValidity) {
         encodeBindings.push({
           name: 'validityValues',
-          view: props.validity,
+          view: output.outputValidity,
           type: 'u32',
           access: 'read_write'
         });
@@ -345,8 +363,8 @@ fn renderLayer(foreground: f32, background: f32, base: u32) -> f32 {
           body: `let value = blend[blendOffset + index];
   let isValid = isFiniteValue(value);
   let grey = clamp(value, 0.0, 1.0);
-  ${props.color ? 'color[colorOffset + index] = select(0u, pack4x8unorm(vec4<f32>(grey, grey, grey, 1.0)), isValid);' : ''}
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.color ? 'color[colorOffset + index] = select(0u, pack4x8unorm(vec4<f32>(grey, grey, grey, 1.0)), isValid);' : ''}
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
         })
       );
     }

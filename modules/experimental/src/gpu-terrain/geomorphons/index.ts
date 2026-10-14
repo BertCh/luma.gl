@@ -11,6 +11,7 @@ export {
 export type {
   GPUGeomorphonComparison,
   GPUGeomorphonForm,
+  GPUGeomorphonsOutput,
   GPUGeomorphonsProps,
   GPUGeomorphonsSettings
 } from './gpu-geomorphons';

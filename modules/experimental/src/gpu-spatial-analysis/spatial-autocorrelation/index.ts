@@ -3,9 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {GPUHotSpotAnalysis} from './gpu-hot-spot-analysis';
-export type {GPUHotSpotAnalysisProps} from './gpu-hot-spot-analysis';
+export type {GPUHotSpotAnalysisOutput, GPUHotSpotAnalysisProps} from './gpu-hot-spot-analysis';
 export {GPULocalMoran} from './gpu-local-moran';
-export type {GPULocalMoranProps, GPULocalMoranQuadrantGating} from './gpu-local-moran';
+export type {
+  GPULocalMoranOutput,
+  GPULocalMoranProps,
+  GPULocalMoranQuadrantGating
+} from './gpu-local-moran';
 export {
   getGPUSpatialAutocorrelationParameterValues,
   GPU_HOT_SPOT_CRITICAL_Z_SCORES,
@@ -17,7 +21,7 @@ export {
 } from './spatial-autocorrelation-parameters';
 export type {
   GPUSpatialAutocorrelationFixedMoments,
-  GPUSpatialAutocorrelationParameters
+  GPUSpatialAutocorrelationSettings
 } from './spatial-autocorrelation-parameters';
 export {
   getGPUGammaPermutationAdapter,
@@ -32,8 +36,10 @@ export {
   GPUSpatialPearson
 } from './gpu-additional-spatial-statistics';
 export type {
+  GPUEdgeAssociationOutput,
   GPUGammaOperation,
   GPUGammaStatisticProps,
+  GPULocalGearyOutput,
   GPULocalGearyProps,
   GPUSpatialPearsonProps
 } from './gpu-additional-spatial-statistics';
@@ -41,4 +47,7 @@ export {
   GPUAssuncaoReisStandardization,
   GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
 } from './gpu-rate-standardization';
-export type {GPUAssuncaoReisStandardizationProps} from './gpu-rate-standardization';
+export type {
+  GPUAssuncaoReisStandardizationOutput,
+  GPUAssuncaoReisStandardizationProps
+} from './gpu-rate-standardization';

@@ -321,3 +321,16 @@ export function getRasterLocalOrigin(
   }
   return localOrigin;
 }
+
+/**
+ * Throws unless `extent` is `[minX, minY, maxX, maxY]` with finite entries and `max > min` on both
+ * axes. A y-down or zero-size extent would mirror or collapse the packed geometry.
+ *
+ * @internal
+ */
+export function validateRasterExtent(label: string, extent: readonly number[]): void {
+  const [minX, minY, maxX, maxY] = extent;
+  if (extent.length !== 4 || !extent.every(Number.isFinite) || !(maxX > minX) || !(maxY > minY)) {
+    throw new Error(`${label} extent must be finite with maxX > minX and maxY > minY`);
+  }
+}

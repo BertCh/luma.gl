@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -18,16 +22,26 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateMaximumCount,
+  validatePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 
-import type {GPUSpatialContext} from '../../gpu-spatial-analysis/contracts/spatial-context';
+import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
 import {
-  getNetworkGeodesicRadius,
-  getNetworkMetricWGSL,
-  resolveNetworkSpatialContext
-} from '../network-spatial-context';
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology
+} from '../../analysis-core/network-topology';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {getNetworkMetricWGSL} from '../network-spatial-context';
+import {
+  getWorkgroupCounterKernelSource,
+  WORKGROUP_COUNTER_WORKGROUP_SIZE,
+  type WorkgroupCounter
+} from '../network-workgroup-counters';
 
 const OPERATION = 'GPUMapMatching';
 /** Bits of `-1.0f`: an out-of-range node ID and a negative (invalid) edge length. */
@@ -36,14 +50,30 @@ const INVALID_EDGE_WORD = 0xbf800000;
 /** Value written to `matchedEdges` for a point with no candidate edge or no feasible match. */
 export const GPU_MAP_MATCHING_NONE = 0xffffffff;
 
+/**
+ * Largest `topology` edge count of {@link GPUMapMatching} on `device`: the edge table holds 12
+ * bytes per edge in one storage binding, so 11184810 on a default device (128 MiB bindings).
+ */
+export function getGPUMapMatchingMaximumEdgeCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 12);
+}
+
+/**
+ * Largest `entryCapacity` of {@link GPUMapMatching} on `device`: the edge-cell table holds 4 bytes
+ * per entry in one storage binding, so 33554432 on a default device (128 MiB bindings).
+ */
+export function getGPUMapMatchingMaximumEntryCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
 /** Number of `float32` words in the per-frame parameter view of {@link GPUMapMatching}. */
 export const GPU_MAP_MATCHING_PARAMETER_LENGTH = 8;
 
 /**
- * Per-frame parameters of {@link GPUMapMatching}, in the units of the planar coordinates, or in
+ * Per-frame settings of {@link GPUMapMatching}, in the units of the planar coordinates, or in
  * meters with a great-circle `spatialContext`.
  */
-export type GPUMapMatchingParameters = {
+export type GPUMapMatchingSettings = {
   /** GPS noise standard deviation of the Gaussian emission model. Must be positive. */
   sigma: number;
   /** Scale of the exponential transition model, `exp(-|straight - route| / beta)`. Must be positive. */
@@ -54,20 +84,23 @@ export type GPUMapMatchingParameters = {
    * `2 * cellSize` degrees of latitude).
    */
   searchRadius: number;
-  /** A route may be at most `routeFactor * straightDistance + routeSlack` long. Defaults to 3. */
+  /**
+   * A route, including the partial edges at both ends, may be at most
+   * `routeFactor * straightDistance + routeSlack` long; longer routes are infeasible. Defaults to 3.
+   */
   routeFactor?: number;
   /** Additive route allowance, see `routeFactor`. Defaults to 50. */
   routeSlack?: number;
 };
 
-/** Encodes {@link GPUMapMatchingParameters} as the `float32` words read by {@link GPUMapMatching}. */
-export function encodeGPUMapMatchingParameters(parameters: GPUMapMatchingParameters): Float32Array {
+/** Packs {@link GPUMapMatchingSettings} into the `float32` words read by {@link GPUMapMatching}. */
+export function getGPUMapMatchingParameterValues(settings: GPUMapMatchingSettings): Float32Array {
   const words = new Float32Array(GPU_MAP_MATCHING_PARAMETER_LENGTH);
-  words[0] = parameters.sigma;
-  words[1] = parameters.beta;
-  words[2] = parameters.searchRadius;
-  words[3] = parameters.routeFactor ?? 3;
-  words[4] = parameters.routeSlack ?? 50;
+  words[0] = settings.sigma;
+  words[1] = settings.beta;
+  words[2] = settings.searchRadius;
+  words[3] = settings.routeFactor ?? 3;
+  words[4] = settings.routeSlack ?? 50;
   return words;
 }
 
@@ -98,20 +131,47 @@ export type GPUMapMatchingOutput = {
   matchedCount?: GraphDataView<'uint32'>;
   /** Optional one-row count of points flagged in `breaks` (ordinary and budget breaks). */
   breakCount?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row flag: 1 when a bounded table dropped entries, so the result may differ from
-   * the exact model. Either the edge grid dropped entries (an edge spanning more than 16 cells per
-   * axis, or more edge-cell entries than `entryCapacity`), which can hide candidates, or a route
-   * search filled its `routeNodeBudget` table (see `routeOverflow`), which can miss or overestimate
-   * a route.
-   */
-  overflow?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row count of the network nodes the route searches discovered but could not keep
-   * in their `routeNodeBudget` tables, summed over every search and saturating at `0xffffffff`.
-   * 0 means every route search was exact (up to f32 rounding).
-   */
-  routeOverflow?: GraphDataView<'uint32'>;
+  /** Optional GPU-written status words. */
+  status?: {
+    /**
+     * Optional one-row flag: 1 when a bounded table dropped entries, so the result may differ from
+     * the exact model. Either the edge grid dropped entries (an edge spanning more than 16 cells per
+     * axis, or more edge-cell entries than `entryCapacity`), which can hide candidates, or a route
+     * search filled its `routeNodeBudget` table (see `status.routeOverflow`), which can miss or overestimate
+     * a route.
+     */
+    overflow?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row count of the network nodes the route searches discovered but could not keep
+     * in their `routeNodeBudget` tables, summed over every search and saturating at `0xffffffff`.
+     * 0 means every route search was exact (up to f32 rounding).
+     */
+    routeOverflow?: GraphDataView<'uint32'>;
+  };
+};
+
+/**
+ * A precomputed bounded cost table for {@link GPUMapMatchingProps.routeTable}: the output views of
+ * a `GPUNetworkCostTable` built over the same network.
+ */
+export type GPUMapMatchingRouteTable = {
+  /** `nodeCount + 1` row offsets of the table. */
+  offsets: GraphDataView<'uint32'>;
+  /** Target node per entry, ascending within each row. */
+  targets: GraphDataView<'uint32'>;
+  /** Network cost per entry, aligned with `targets`. */
+  costs: GraphDataView<'float32'>;
+  /** One-row cost bound the table was built with: every cost up to it is listed. */
+  costLimit: GraphDataView<'float32'>;
+  /** Optional status words of the table. */
+  status?: {
+    /**
+     * Optional one-row overflow flag of the table (`GPUNetworkCostTable` `output.status.overflow`).
+     * While it is 1 the table is ignored and every route uses the A* search. Omit it only for a
+     * table that cannot overflow.
+     */
+    overflow?: GraphDataView<'uint32'>;
+  };
 };
 
 /** Properties for {@link GPUMapMatching}. */
@@ -119,28 +179,32 @@ export type GPUMapMatchingProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'map-matching'`. */
   id?: string;
   /**
-   * Coordinates of `points` and `nodePositions`. Omitted means native planar coordinates.
+   * Coordinates of `positions` and `topology.nodePositions`. Omitted means native planar coordinates.
    * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
    * every distance (emission, straight-line and route lengths, `sigma`, `beta`, `searchRadius`,
    * `routeSlack`) in great-circle meters; `sphereRadius` defaults to `GPU_EARTH_MEAN_RADIUS_METERS`.
    */
   spatialContext?: GPUSpatialContext;
-  /** GPS points of every track, concatenated in time order. */
-  points: GraphDataView<'float32x2'>;
-  /** Track-to-point offsets with `trackCount + 1` rows. */
+  /** GPS positions of every track, concatenated in time order. */
+  positions: GraphDataView<'float32x2'>;
+  /** Track-to-position offsets with `trackCount + 1` rows. */
   trackOffsets: GraphDataView<'uint32'>;
-  /** Node positions, in the same coordinates as `points`. */
-  nodePositions: GraphDataView<'float32x2'>;
-  /** CSR row offsets with `nodeCount + 1` rows; the CSR row is the edge ID. */
-  offsets: GraphDataView<'uint32'>;
-  /** Edge target node per CSR row. Edges with an out-of-range target are ignored. */
-  edgeTargets: GraphDataView<'uint32'>;
+  /**
+   * Road network. `nodePositions` are in the same coordinates as `positions`; the CSR row is the
+   * edge ID and edge length is measured from the node positions, so `weights` are not read. Edges
+   * with an out-of-range target are ignored.
+   */
+  topology: GPUNetworkAdjacency & {nodePositions: GraphDataView<'float32x2'>};
   /**
    * Per-frame parameters: `GPU_MAP_MATCHING_PARAMETER_LENGTH` `float32` words written with
-   * {@link encodeGPUMapMatchingParameters}.
+   * {@link getGPUMapMatchingParameterValues}.
    */
   parameters: GraphDataView<'float32'>;
-  /** Compile-time candidates kept per point, 1 to 8. Defaults to 4. */
+  /**
+   * Compile-time candidates kept per point, 1 to 8. Defaults to 8. A candidate is a directed edge
+   * row, so the two directions of a two-way road take two slots: the default keeps the 4 nearest
+   * two-way roads (review B-17).
+   */
   candidateCount?: number;
   /**
    * Compile-time edge grid cell size, in coordinate units (degrees on longitude/latitude). Choose
@@ -153,17 +217,38 @@ export type GPUMapMatchingProps = {
    * the antimeridian.
    */
   bounds: {minimum: readonly [number, number]; maximum: readonly [number, number]};
-  /** Compile-time capacity of the edge-cell table. Defaults to `16 * edgeCount + 256`. */
+  /**
+   * Compile-time capacity of the edge-cell table, at most {@link getGPUMapMatchingMaximumEntryCapacity}
+   * (33554432 on a default device). Defaults to `16 * edgeCount + 256`, capped at that maximum;
+   * entries beyond the capacity set `status.overflow`.
+   */
   entryCapacity?: number;
   /**
    * Compile-time size of each route search's node table, 8 to 128. Defaults to 64. When a search
    * discovers more nodes, the table keeps the open nodes with the best A* keys and drops the rest,
-   * so a route can be overestimated or missed; `overflow`, `routeOverflow` and budget breaks
+   * so a route can be overestimated or missed; `status.overflow`, `status.routeOverflow` and budget breaks
    * (`breaks` value 2) report it. A search needs about as many nodes as the street blocks between
    * two samples: on a 100 m street grid, 64 covers samples up to about 800 m apart and 128 up to
    * about 1.1 km.
    */
   routeNodeBudget?: number;
+  /**
+   * Optional precomputed cost table of a static network (UBODT, Yang and Gidofalvi 2018). A route
+   * search whose bound `routeFactor * straight + routeSlack - tail` is within the table's
+   * `costLimit` reads its network costs from the table row of the source edge's target node by
+   * binary search, with no search and no node budget, so it is exact and never counts in
+   * `status.routeOverflow`. Searches with a larger bound, or while the table reports `overflow`,
+   * run the bounded A* search as without a table, so there is no cliff and no extra result flag.
+   *
+   * Build the table with `GPUNetworkCostTable` over the same node numbering, with `weights` equal to
+   * the edge lengths this contributor measures from the node positions (`networkDistance` of the
+   * edge endpoints, in meters with a great-circle `spatialContext`) and `costLimit` at least the
+   * typical bound. Results equal the A*-only results up to f32 rounding of the summed route costs
+   * (the table is the f32 fixpoint of the relaxations, A* sums along its own settle order: a few
+   * `2^-24` relative per hop of the route), and are identical wherever A* was exact. Omitted, the
+   * node list is unchanged.
+   */
+  routeTable?: GPUMapMatchingRouteTable;
   /** Caller-owned output. */
   output: GPUMapMatchingOutput;
 };
@@ -182,7 +267,7 @@ export type GPUMapMatchingProps = {
  * would): the search stops at `routeFactor * straight + routeSlack` and keeps at most
  * `routeNodeBudget` nodes in a private table. A full table keeps the open nodes with the best keys,
  * so the search can still overestimate or miss a route when samples are far apart for the budget;
- * every such search is counted (`overflow`, `routeOverflow`), never silent. The route cost is the
+ * every such search is counted (`status.overflow`, `status.routeOverflow`), never silent. The route cost is the
  * edge length, and every edge row is directed: list both directions of a two-way road (each then
  * takes a candidate slot). CSR rows past `offsets[nodeCount]` are not part of the network.
  *
@@ -228,23 +313,25 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     this.props = props;
     const {id, props: p} = {id: this.id, props};
     const {output} = props;
-    this.spatialContext = resolveNetworkSpatialContext(id, props.spatialContext);
-    validatePackedView(props.points, ['float32x2'], `${id} points`);
-    validatePackedView(props.nodePositions, ['float32x2'], `${id} nodePositions`);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
+    const topologyShape = validateGPUNetworkTopology(id, props.topology, {nodePositions: true});
+    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     for (const [name, view] of [
       ['trackOffsets', props.trackOffsets],
-      ['offsets', props.offsets],
-      ['edgeTargets', props.edgeTargets],
       ['output.matchedEdges', output.matchedEdges],
       ['output.breaks', output.breaks],
       ['output.matchedCount', output.matchedCount],
       ['output.breakCount', output.breakCount],
-      ['output.overflow', output.overflow],
-      ['output.routeOverflow', output.routeOverflow]
+      ['output.status.overflow', output.status?.overflow],
+      ['output.status.routeOverflow', output.status?.routeOverflow]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
@@ -260,34 +347,22 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     if (output.snappedPositions) {
       validatePackedView(output.snappedPositions, ['float32x2'], `${id} output.snappedPositions`);
     }
-    this.pointCount = props.points.length;
+    this.pointCount = props.positions.length;
     this.trackCount = props.trackOffsets.length - 1;
-    this.nodeCount = props.nodePositions.length;
-    this.edgeCount = props.edgeTargets.length;
-    this.candidateCount = props.candidateCount ?? 4;
+    this.nodeCount = topologyShape.nodeCount;
+    this.edgeCount = topologyShape.edgeCount;
+    this.candidateCount = props.candidateCount ?? 8;
     if (this.trackCount < 1) {
       throw new Error(`${id} trackOffsets needs at least one track`);
     }
     if (this.pointCount < 1 || this.edgeCount < 1 || this.nodeCount < 1) {
       throw new Error(`${id} needs at least one point, node and edge`);
     }
-    if (props.offsets.length !== this.nodeCount + 1) {
-      throw new Error(`${id} offsets must contain one more row than nodePositions`);
-    }
     if (props.parameters.length !== GPU_MAP_MATCHING_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must contain ${GPU_MAP_MATCHING_PARAMETER_LENGTH} rows`);
     }
-    if (
-      !Number.isInteger(this.candidateCount) ||
-      this.candidateCount < 1 ||
-      this.candidateCount > 8
-    ) {
-      throw new Error(`${id} candidateCount must be an integer from 1 to 8`);
-    }
-    const budget = props.routeNodeBudget ?? 64;
-    if (!Number.isInteger(budget) || budget < 8 || budget > 128) {
-      throw new Error(`${id} routeNodeBudget must be an integer from 8 to 128`);
-    }
+    validateCapacity(id, 'candidateCount', this.candidateCount, 1, 8);
+    validateCapacity(id, 'routeNodeBudget', props.routeNodeBudget ?? 64, 8, 128);
     if (!(props.cellSize > 0) || !Number.isFinite(props.cellSize)) {
       throw new Error(`${id} cellSize must be positive`);
     }
@@ -301,11 +376,8 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     if (this.gridWidth * this.gridHeight > 1 << 24) {
       throw new Error(`${id} cellSize yields more than 2^24 grid cells; use a larger cellSize`);
     }
-    if (
-      props.entryCapacity !== undefined &&
-      (!Number.isSafeInteger(props.entryCapacity) || props.entryCapacity < 1)
-    ) {
-      throw new Error(`${id} entryCapacity must be a positive integer`);
+    if (props.entryCapacity !== undefined) {
+      validateCapacity(id, 'entryCapacity', props.entryCapacity);
     }
     for (const [name, view, length] of [
       ['matchedEdges', output.matchedEdges, this.pointCount],
@@ -317,14 +389,42 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ['trackLogLikelihoods', output.trackLogLikelihoods, this.trackCount],
       ['matchedCount', output.matchedCount, 1],
       ['breakCount', output.breakCount, 1],
-      ['overflow', output.overflow, 1],
-      ['routeOverflow', output.routeOverflow, 1]
+      ['status.overflow', output.status?.overflow, 1],
+      ['status.routeOverflow', output.status?.routeOverflow, 1]
     ] as const) {
       if (view && view.length !== length) {
         throw new Error(`${id} output.${name} must contain ${length} rows`);
       }
     }
     void p;
+    const {routeTable} = props;
+    if (routeTable) {
+      for (const [name, view] of [
+        ['routeTable.offsets', routeTable.offsets],
+        ['routeTable.targets', routeTable.targets],
+        ['routeTable.status.overflow', routeTable.status?.overflow]
+      ] as const) {
+        if (view) {
+          validatePackedView(view, ['uint32'], `${id} ${name}`);
+        }
+      }
+      validatePackedView(routeTable.costs, ['float32'], `${id} routeTable.costs`);
+      validatePackedView(routeTable.costLimit, ['float32'], `${id} routeTable.costLimit`);
+      if (routeTable.offsets.length !== this.nodeCount + 1) {
+        throw new Error(`${id} routeTable.offsets must contain nodeCount + 1 rows`);
+      }
+      if (routeTable.costs.length !== routeTable.targets.length) {
+        throw new Error(`${id} routeTable.costs length must equal routeTable.targets length`);
+      }
+      for (const [name, view] of [
+        ['costLimit', routeTable.costLimit],
+        ['status.overflow', routeTable.status?.overflow]
+      ] as const) {
+        if (view && view.length !== 1) {
+          throw new Error(`${id} routeTable.${name} must contain exactly one row`);
+        }
+      }
+    }
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
     const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
@@ -344,12 +444,23 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     const {id, props, pointCount, trackCount, nodeCount, edgeCount, candidateCount} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateMaximumCount(
+      id,
+      'topology edges',
+      edgeCount,
+      getGPUMapMatchingMaximumEdgeCount(graph.device)
+    );
+    const maximumEntryCapacity = getGPUMapMatchingMaximumEntryCapacity(graph.device);
+    if (props.entryCapacity !== undefined) {
+      validateCapacity(id, 'entryCapacity', props.entryCapacity, 1, maximumEntryCapacity);
+    }
     const budget = props.routeNodeBudget ?? 64;
     const cellCount = this.gridWidth * this.gridHeight;
-    const entryCapacity = props.entryCapacity ?? 16 * edgeCount + 256;
+    const entryCapacity =
+      props.entryCapacity ?? Math.min(16 * edgeCount + 256, maximumEntryCapacity);
     const [minX, minY] = props.bounds.minimum;
     const maxX = props.bounds.maximum[0];
-    const geodesicRadius = getNetworkGeodesicRadius(this.spatialContext);
+    const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
     const transient = <Format extends 'uint32' | 'float32'>(
       name: string,
       format: Format,
@@ -427,7 +538,76 @@ ${declarations}`,
     const backPointers = transient('back-pointers', 'uint32', pointCount * candidateCount);
     const chosen = transient('chosen', 'uint32', pointCount);
     const breaks = output.breaks ?? transient('breaks', 'uint32', pointCount);
-    const overflow = output.overflow ?? transient('overflow', 'uint32', 1);
+    const overflow = output.status?.overflow ?? transient('overflow', 'uint32', 1);
+
+    // With a route table: `route-bounds` stores, per (point, fromSlot) row, the route bound in
+    // slot 0 and the search allowance after the source edge's tail in the trailing word when the
+    // table can answer the row (allowance within its cost limit, table not overflowed), else -1.
+    // `route-table` then writes the whole row from the table and sets the trailing word to 0, which
+    // the A* `routes` kernel reads as "resolved". Rows with -1 fall through to A*.
+    const getRouteTableNodes = (): GPUCommandNode<Parameters>[] => {
+      const {routeTable} = props;
+      if (!routeTable) {
+        return [];
+      }
+      const tableOverflow = routeTable.status?.overflow;
+      return [
+        kernel(
+          'route-bounds',
+          [
+            read('pointStarts', pointStarts),
+            read('points', props.positions, 'f32'),
+            read('parameters', props.parameters, 'f32'),
+            read('candidates', candidates),
+            read('edgeTable', edgeTable),
+            write('routes', routes, 'f32'),
+            read('tableCostLimit', routeTable.costLimit, 'f32'),
+            ...(tableOverflow ? [read('tableOverflow', tableOverflow)] : [])
+          ],
+          pointCount * candidateCount,
+          `let point = index / K;
+  let fromSlot = index % K;
+  let base = routesOffset + index * ROUTE_STRIDE;
+  routes[base + K] = -1.0;
+  if (point == 0u || pointStarts[pointStartsOffset + point] != 0u) {
+    return;
+  }
+  ${tableOverflow ? 'if (tableOverflow[tableOverflowOffset] != 0u) {\n    return;\n  }' : ''}
+  let previous = point - 1u;
+  let fromEdge = getCandidateEdge(previous, fromSlot);
+  if (fromEdge == NONE) {
+    return;
+  }
+  let straight = networkDistance(readPoint(point), readPoint(previous));
+  let bound = straight * parameters[parametersOffset + 3u] + parameters[parametersOffset + 4u];
+  let tail = (1.0 - getCandidateFraction(previous, fromSlot)) * edgeLength(fromEdge);
+  let remaining = bound - tail;
+  if (!(remaining >= 0.0) || !(remaining <= tableCostLimit[tableCostLimitOffset]) ||
+      edgeTarget(fromEdge) >= NODE_COUNT) {
+    return;
+  }
+  routes[base] = bound;
+  routes[base + K] = remaining;`,
+          `${edgeTableAccess}
+${getAccessDeclarations()}`
+        ),
+        kernel(
+          'route-table',
+          [
+            read('candidates', candidates),
+            read('edgeTable', edgeTable),
+            write('routes', routes, 'f32'),
+            read('tableOffsets', routeTable.offsets),
+            read('tableTargets', routeTable.targets),
+            read('tableCosts', routeTable.costs, 'f32')
+          ],
+          pointCount * candidateCount,
+          getRouteTableBody(),
+          `${edgeTableAccess}
+${getRouteTableDeclarations()}`
+        )
+      ];
+    };
 
     const nodes: GPUCommandNode<Parameters>[] = [];
     // Source node, target node and length of every CSR row; -1 length marks an invalid edge. Every
@@ -445,9 +625,9 @@ ${declarations}`,
       kernel(
         'edge-table',
         [
-          read('adjacency', props.offsets),
-          read('edgeTargets', props.edgeTargets),
-          read('nodePositions', props.nodePositions, 'f32'),
+          read('adjacency', props.topology.offsets),
+          read('edgeTargets', props.topology.neighbors),
+          read('nodePositions', props.topology.nodePositions, 'f32'),
           write('edgeTable', edgeTable)
         ],
         nodeCount,
@@ -499,7 +679,7 @@ ${declarations}`,
         'cell-count',
         [
           read('edgeTable', edgeTable),
-          read('nodePositions', props.nodePositions, 'f32'),
+          read('nodePositions', props.topology.nodePositions, 'f32'),
           write('cellCounts', cellCounts, 'atomic<u32>')
         ],
         edgeCount,
@@ -524,7 +704,7 @@ ${declarations}`,
         'cell-fill',
         [
           read('edgeTable', edgeTable),
-          read('nodePositions', props.nodePositions, 'f32'),
+          read('nodePositions', props.topology.nodePositions, 'f32'),
           read('cellEnds', cellEnds),
           write('cursors', cursors, 'atomic<u32>'),
           write('entries', entries),
@@ -556,8 +736,8 @@ ${declarations}`,
       kernel(
         'candidates',
         [
-          read('points', props.points, 'f32'),
-          read('nodePositions', props.nodePositions, 'f32'),
+          read('points', props.positions, 'f32'),
+          read('nodePositions', props.topology.nodePositions, 'f32'),
           read('edgeTable', edgeTable),
           read('cellEnds', cellEnds),
           read('entries', entries),
@@ -652,27 +832,28 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
     pointStarts[pointStartsOffset + first] = 1u;
   }`
       ),
+      ...getRouteTableNodes(),
       kernel(
         'routes',
         [
           read('pointStarts', pointStarts),
-          read('points', props.points, 'f32'),
-          read('nodePositions', props.nodePositions, 'f32'),
-          read('adjacency', props.offsets),
+          read('points', props.positions, 'f32'),
+          read('nodePositions', props.topology.nodePositions, 'f32'),
+          read('adjacency', props.topology.offsets),
           read('edgeTable', edgeTable),
           read('candidates', candidates),
           read('parameters', props.parameters, 'f32'),
           write('routes', routes, 'f32')
         ],
         pointCount * candidateCount,
-        getRoutesBody(),
+        getRoutesBody(Boolean(props.routeTable)),
         getForwardDeclarations(budget, getHashSize(budget), candidateCount, edgeTableAccess)
       ),
       kernel(
         'forward',
         [
           read('trackOffsets', props.trackOffsets),
-          read('points', props.points, 'f32'),
+          read('points', props.positions, 'f32'),
           read('candidates', candidates),
           read('parameters', props.parameters, 'f32'),
           read('routes', routes, 'f32'),
@@ -700,13 +881,13 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
       )
     );
 
-    // Route-search drops: raise `overflow` and sum the dropped nodes into `routeOverflow`.
-    if (output.routeOverflow) {
+    // Route-search drops: raise `status.overflow` and sum the dropped nodes into `status.routeOverflow`.
+    if (output.status?.routeOverflow) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-clear-route-overflow`,
           operation: OPERATION,
-          view: output.routeOverflow,
+          view: output.status.routeOverflow,
           type: 'u32',
           value: '0u'
         })
@@ -718,8 +899,8 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
         [
           read('routes', routes, 'f32'),
           write('overflow', overflow),
-          ...(output.routeOverflow
-            ? [write('routeOverflow', output.routeOverflow, 'atomic<u32>')]
+          ...(output.status?.routeOverflow
+            ? [write('routeOverflow', output.status.routeOverflow, 'atomic<u32>')]
             : [])
         ],
         pointCount * candidateCount,
@@ -729,7 +910,7 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
   }
   overflow[overflowOffset] = 1u;
   ${
-    output.routeOverflow
+    output.status?.routeOverflow
       ? `// Saturating sum: an add that wraps pins the total at the maximum, and every later add
   // that wraps from there pins it again.
   let previous = atomicAdd(&routeOverflow[routeOverflowOffset], dropped);
@@ -782,11 +963,11 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
         kernel(
           'positions',
           [
-            read('points', props.points, 'f32'),
+            read('points', props.positions, 'f32'),
             read('candidates', candidates),
             read('chosen', chosen),
             read('edgeTable', edgeTable),
-            read('nodePositions', props.nodePositions, 'f32'),
+            read('nodePositions', props.topology.nodePositions, 'f32'),
             write('snappedPositions', output.snappedPositions, 'f32')
           ],
           pointCount,
@@ -817,10 +998,32 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
           })
         );
       }
+      // Summary counts fold per workgroup, one global atomic per count per workgroup (rule 14).
+      const counters: WorkgroupCounter[] = [];
+      const updates: string[] = [];
+      if (output.matchedCount) {
+        updates.push(
+          `if (chosen[chosenOffset + index] != NONE) { addCounter(${counters.length}u, 1u); }`
+        );
+        counters.push({target: 'matchedCount', word: 0});
+      }
+      if (output.breakCount) {
+        updates.push(
+          `if (breaks[breaksOffset + index] != 0u) { addCounter(${counters.length}u, 1u); }`
+        );
+        counters.push({target: 'breakCount', word: 0});
+      }
+      const summarySource = getWorkgroupCounterKernelSource({
+        counters,
+        rowCount: 'POINT_COUNT',
+        rowSource: updates.join('\n  ')
+      });
       nodes.push(
-        kernel(
-          'summary',
-          [
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-summary`,
+          operation: OPERATION,
+          variant: 'summary',
+          bindings: [
             read('chosen', chosen),
             read('breaks', breaks),
             ...(output.matchedCount
@@ -828,18 +1031,13 @@ ${getLongitudeRangeWGSL(geodesicRadius !== undefined, maxX)}`
               : []),
             ...(output.breakCount ? [write('breakCount', output.breakCount, 'atomic<u32>')] : [])
           ],
-          pointCount,
-          `${
-            output.matchedCount
-              ? 'if (chosen[chosenOffset + index] != NONE) { atomicAdd(&matchedCount[matchedCountOffset], 1u); }'
-              : ''
-          }
-  ${
-    output.breakCount
-      ? 'if (breaks[breaksOffset + index] != 0u) { atomicAdd(&breakCount[breakCountOffset], 1u); }'
-      : ''
-  }`
-        )
+          invocationCount: pointCount,
+          workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `${common}
+${summarySource.declarations}`,
+          body: summarySource.body
+        })
       );
     }
     return nodes;
@@ -1175,14 +1373,23 @@ const CANDIDATE_COUNT: u32 = ${candidateCount}u;`;
  * Body of the route kernel: one thread per (point, candidate of the previous point). Writes the
  * route length to every candidate of the point, or -1 when there is none within the bound.
  */
-function getRoutesBody(): string {
+function getRoutesBody(hasRouteTable: boolean): string {
   return `let point = index / K;
   let fromSlot = index % K;
-  for (var to = 0u; to < K; to++) {
+  ${
+    hasRouteTable
+      ? `// A non-negative trailing word marks a row the route table resolved (route-table kernel).
+  if (routes[routesOffset + index * ROUTE_STRIDE + K] >= 0.0) {
+    return;
+  }
+  `
+      : ''
+  }for (var to = 0u; to < K; to++) {
     routes[routesOffset + index * ROUTE_STRIDE + to] = -1.0;
   }
   routes[routesOffset + index * ROUTE_STRIDE + K] = 0.0;
-  if (pointStarts[pointStartsOffset + point] != 0u) {
+  // Point 0 has no predecessor even when it lies before the first track (review B-23).
+  if (point == 0u || pointStarts[pointStartsOffset + point] != 0u) {
     return;
   }
   let previous = point - 1u;
@@ -1223,8 +1430,83 @@ function getRoutesBody(): string {
         route = tail + network + toFraction * edgeLength(toEdge);
       }
     }
+    // The bound covers the whole route, including the partial edge at either end (review B-24).
+    if (route > bound) {
+      route = -1.0;
+    }
     routes[routesOffset + index * ROUTE_STRIDE + to] = route;
   }`;
+}
+
+/** Candidate accessors and the binary search of the `route-table` kernel. */
+function getRouteTableDeclarations(): string {
+  return `fn getCandidateEdge(point: u32, slot: u32) -> u32 {
+  return candidates[candidatesOffset + (point * K + slot) * 3u];
+}
+fn getCandidateFraction(point: u32, slot: u32) -> f32 {
+  return bitcast<f32>(candidates[candidatesOffset + (point * K + slot) * 3u + 1u]);
+}
+// Cost from 'row' to 'targetNode' by binary search of the row's ascending targets, or -1 when the
+// table does not list it (the cost then exceeds the table's cost limit).
+fn findTableCost(row: u32, targetNode: u32) -> f32 {
+  var low = tableOffsets[tableOffsetsOffset + row];
+  let end = tableOffsets[tableOffsetsOffset + row + 1u];
+  var high = end;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (tableTargets[tableTargetsOffset + middle] < targetNode) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  if (low < end && tableTargets[tableTargetsOffset + low] == targetNode) {
+    return tableCosts[tableCostsOffset + low];
+  }
+  return -1.0;
+}`;
+}
+
+/**
+ * Body of the route-table kernel: one thread per (point, candidate of the previous point). Resolves
+ * the rows `route-bounds` marked (trailing word `>= 0`) exactly like the A* route kernel, with the
+ * network cost read from the table, and marks them resolved (trailing word 0).
+ */
+function getRouteTableBody(): string {
+  return `let base = routesOffset + index * ROUTE_STRIDE;
+  let remaining = routes[base + K];
+  if (!(remaining >= 0.0)) {
+    return;
+  }
+  let bound = routes[base];
+  let point = index / K;
+  let fromEdge = getCandidateEdge(point - 1u, index % K);
+  let fromFraction = getCandidateFraction(point - 1u, index % K);
+  let fromLength = edgeLength(fromEdge);
+  let tail = (1.0 - fromFraction) * fromLength;
+  let startNode = edgeTarget(fromEdge);
+  for (var to = 0u; to < K; to++) {
+    let toEdge = getCandidateEdge(point, to);
+    var route = -1.0;
+    if (toEdge != NONE) {
+      let toFraction = getCandidateFraction(point, to);
+      if (toEdge == fromEdge && toFraction >= fromFraction) {
+        route = (toFraction - fromFraction) * fromLength;
+      } else {
+        let network = findTableCost(startNode, edgeSource(toEdge));
+        // The A* search only admits costs within the allowance; the table also lists larger ones.
+        if (network >= 0.0 && network <= remaining) {
+          route = tail + network + toFraction * edgeLength(toEdge);
+        }
+      }
+      // The bound covers the whole route, including the partial edge at either end (review B-24).
+      if (route > bound) {
+        route = -1.0;
+      }
+    }
+    routes[base + to] = route;
+  }
+  routes[base + K] = 0.0;`;
 }
 
 /** Body of the forward Viterbi kernel: one thread per track. */
@@ -1340,12 +1622,15 @@ function getBackwardBody(hasLogLikelihood: boolean): string {
 /** Returns every read-only view of a map-matching contributor. */
 function getInputs(props: GPUMapMatchingProps): (GraphDataView | undefined)[] {
   return [
-    props.points,
+    props.positions,
     props.trackOffsets,
-    props.nodePositions,
-    props.offsets,
-    props.edgeTargets,
-    props.parameters
+    ...getGPUNetworkTopologyViews(props.topology),
+    props.parameters,
+    props.routeTable?.offsets,
+    props.routeTable?.targets,
+    props.routeTable?.costs,
+    props.routeTable?.costLimit,
+    props.routeTable?.status?.overflow
   ];
 }
 
@@ -1362,7 +1647,7 @@ function getOutputs(props: GPUMapMatchingProps): (GraphDataView | undefined)[] {
     output.trackLogLikelihoods,
     output.matchedCount,
     output.breakCount,
-    output.overflow,
-    output.routeOverflow
+    output.status?.overflow,
+    output.status?.routeOverflow
   ];
 }

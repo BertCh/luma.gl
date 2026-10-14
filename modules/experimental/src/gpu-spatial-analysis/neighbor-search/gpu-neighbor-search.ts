@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUGreatCircleRadius} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUGridIndex,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,32 +18,43 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  getGPUGridIndexMaximumCellCount,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
+  getBVHNearestNeighborSearchWGSL,
+  getBVHNeighborSearchDeclarationsWGSL,
+  getBVHRadiusNeighborLoopWGSL,
+  getBVHThreadToRowWGSL,
   getGeodesicNearestNeighborSearchWGSL,
   getGeodesicRadiusNeighborLoopWGSL,
   getInsertNeighborWGSL,
   getNearestNeighborSearchWGSL,
   getNeighborSearchLatticeWGSL,
   getRadiusNeighborLoopWGSL,
+  NEIGHBOR_SEARCH_BVH_NODE_WORDS,
   NEIGHBOR_WEIGHT_WGSL
 } from './neighbor-search-kernels';
+import {getNearestBVHNodes} from '../spatial-join/nearest-nodes';
+import {getNextPowerOfTwo} from '../spatial-join/spatial-join-passes';
 import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from './neighbor-search-parameters';
 import {
   describeGPUSpatialWeights,
   type GPUSpatialWeights,
+  type GPUSpatialWeightsOutput,
   type GPUSpatialWeightsTransformState,
-  validateGPUSpatialWeights
+  validateGPUSpatialWeightsOutput
 } from '../spatial-weights/spatial-weights';
 import {GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON} from '../spatial-weights/gpu-spatial-weights-transform';
 import {
-  GPU_EARTH_MEAN_RADIUS_METERS,
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/index';
+} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUNeighborSearch';
 
@@ -64,15 +74,32 @@ export type GPUNeighborSearchWeightTransform = Extract<
   'binary' | 'raw' | 'kernel' | 'row'
 >;
 
+/**
+ * Search structure of {@link GPUNeighborSearch}: `'grid'` buckets targets into a cell lattice,
+ * `'bvh'` traverses a Hilbert-packed bounding-volume hierarchy over the valid targets, and `'auto'`
+ * uses the grid. The BVH remains an explicit opt-in until a measured workload justifies selection.
+ */
+export type GPUNeighborSearchStructure = 'auto' | 'grid' | 'bvh';
+
 /** Largest supported compile-time `k`. */
 export const GPU_NEIGHBOR_SEARCH_MAXIMUM_K = 32;
+
+/**
+ * Caller-owned outputs of {@link GPUNeighborSearch}: the CSR with its status scalars, plus an
+ * optional unclamped neighbor count per query row.
+ */
+export type GPUNeighborSearchOutput = GPUSpatialWeightsOutput & {
+  /** Optional unclamped neighbor count per query row. */
+  neighborCounts?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUNeighborSearch}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `queryPositions`, `mask`,
  * `queryMask` and `parameters` (bounds, radius, weight function, row standardization).
- * Compile-time: `mode`, `k`, `gridSize`, row counts, capacity and which optional views exist.
+ * Compile-time: `mode`, `k`, `gridSize`, `searchStructure`, row counts, capacity and which optional
+ * views exist.
  */
 export type GPUNeighborSearchProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'neighbor-search'`. */
@@ -111,32 +138,40 @@ export type GPUNeighborSearchProps = {
   parameters: GraphDataView<'float32'>;
   /**
    * Maximum `[columns, rows]` of the cell lattice. Compile-time. Results never depend on it, only
-   * speed. kNN mode spreads exactly this many cells over the bounds.
+   * speed. kNN mode spreads exactly this many cells over the bounds. `columns * rows` is at most
+   * {@link getGPUGridIndexMaximumCellCount} (2^25 - 1 on a default device).
    */
   gridSize: readonly [number, number];
+  /**
+   * Search structure. Compile-time; results (IDs, offsets, distances, weights) never depend on it,
+   * only speed. Default `'auto'`.
+   *
+   * - `'grid'`: the cell lattice only. Fastest on evenly spread points; on clustered points one
+   *   cell holds most targets and each query degrades toward a scan of them.
+   * - `'bvh'`: a Hilbert-packed point BVH only (near-first depth-first traversal with box pruning). Planar positions only; longitude-latitude throws.
+   * - `'auto'`: uses exactly the grid graph, with no BVH allocation, build or occupancy pass.
+   *   The 200k-point clustered and uniform kNN/radius benchmarks all favor the grid; occupancy
+   *   alone did not predict traversal cost. Great-circle search also always uses the grid.
+   *
+   * The `gridSize` shapes the grid path.
+   */
+  searchStructure?: GPUNeighborSearchStructure;
   /** Neighbors per query in kNN mode, an integer in `[1, 32]`. Compile-time. Ignored in radius mode. */
   k?: number;
   /**
    * Caller-owned output CSR: `offsets` has `queryRows + 1` entries; the slot capacity is
    * `neighbors.length`. `distances` is optional. Row `i` lists neighbor target IDs ascending.
+   * `status.overflow` is 1 when the neighbors did not fit the capacity, else 0.
+   * `status.requiredCount` is the optional unclamped total neighbor count. `status.invalidCount` is
+   * the optional count of rows that took part by mask but were dropped because a coordinate is not
+   * finite or lies outside the per-frame `bounds` (or, for great-circle search, has a latitude
+   * beyond +-90). Such rows are silently empty and never a neighbor, so a nonzero count means
+   * `bounds` is too small or the data has missing coordinates. It counts target rows, plus the
+   * query rows of a cross join (`queryPositions`).
    */
-  weights: GPUSpatialWeights;
-  /** Caller-owned one-row flag: 1 when the neighbors did not fit the capacity, else 0. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional caller-owned one-row unclamped total neighbor count. */
-  totalNeighbors?: GraphDataView<'uint32'>;
-  /** Optional caller-owned unclamped neighbor count per query row. */
-  neighborCounts?: GraphDataView<'uint32'>;
+  output: GPUNeighborSearchOutput;
   /**
-   * Optional caller-owned one-row count of rows that took part by mask but were dropped because a
-   * coordinate is not finite or lies outside the per-frame `bounds` (or, for great-circle search,
-   * has a latitude beyond +-90). Such rows are silently empty and never a neighbor, so a nonzero
-   * count means `bounds` is too small or the data has missing coordinates. Counts target rows, plus
-   * the query rows of a cross join (`queryPositions`). It is `outputWeights.status.invalidCount`.
-   */
-  invalidCount?: GraphDataView<'uint32'>;
-  /**
-   * Declares the weight function the per-frame parameters will select, so `outputWeights.info` can
+   * Declares the weight function the per-frame parameters will select, so `outputWeights.information` can
    * say what the weights are. Weight kind and row standardization are per-frame parameters that
    * the node cannot read at construction, so this is metadata the caller keeps true (derive it from
    * the same parameters with `getGPUNeighborSearchWeightTransform`). Omitted means `'unknown'`.
@@ -145,7 +180,7 @@ export type GPUNeighborSearchProps = {
   /**
    * Compile-time row standardization. When given, it is the single source of truth: the weights
    * kernel uses it as a constant and ignores the per-frame `rowStandardize` parameter, and
-   * `outputWeights.info.transform` is `'row'` for `true`, else `weightTransform` (or `'unknown'`).
+   * `outputWeights.information.transform` is `'row'` for `true`, else `weightTransform` (or `'unknown'`).
    * Consumers re-standardize rows over the neighbors left after masking only when the transform is
    * `'row'`, so set this (rather than the per-frame field) for any row-standardized band. Passing
    * `true` with a `weightTransform` other than `'row'`, or `false` with `'row'`, throws. When
@@ -195,18 +230,22 @@ export type GPUNeighborSearchProps = {
  *   `selfWeight` (`getGPUSpatialWeightsKernelValue(kernel, 0)`). A slot whose weight is 0 (for
  *   example a triangular kernel at `d = radius`, or coincident points with inverse distance and no
  *   floor) is NOT a neighbor under the stream-wide definition: consumers skip zero-weight slots.
- * - `outputWeights` is `weights` with `info` (`rowCount`, `transform` from `weightTransform` or
+ * - `outputWeights` is `output` with `information` (`rowCount`, `transform` from `weightTransform` or
  *   `'unknown'`; `'row'` when `rowStandardize: true`, `symmetric` true only for an unmasked-query
  *   planar radius self join with a declared unstandardized transform, else `'unknown'`, `provenance` criterion `'knn'` or `'distance-band'`
- *   with `k`) and `status` (`overflow`, `requiredCount` = `totalNeighbors`, `invalidCount`) attached.
+ *   with `k`) and `status` (`overflow`, `requiredCount`, `invalidCount`) attached.
  *   `'adaptive'` kernel transforms accept it because kNN output has criterion `'knn'`. For PySAL's
  *   `min_threshold_distance` (the smallest band keeping every unit connected), run kNN with `k = 1`
  *   and take the maximum of the returned `distances`.
  * - Capacity: rows are laid out in query order; slots past `neighbors.length` are dropped. Offsets
  *   are clamped to the capacity, so a reader always sees consistent (possibly truncated) rows,
- *   and `overflow` is set. `totalNeighbors` and `neighborCounts` stay unclamped.
+ *   and `status.overflow` is set. `status.requiredCount` and `neighborCounts` stay unclamped.
  *
- * Algorithm: targets are bucketed by `GPUGridIndex` into a per-frame lattice (cells at least
+ * Algorithm: `searchStructure` selects between the grid below and a point BVH (see
+ * {@link GPUNeighborSearchProps.searchStructure}); both produce the identical definition above. The
+ * BVH path builds a Hilbert-packed BVH over the valid targets (invalid targets get empty boxes),
+ * walks it near-first depth-first per query with the same `(d^2, id)` top-k list and radius limit, and then
+ * shares the grid path's scan, offsets, emit and sort-by-ID stages. Grid path: targets are bucketed by `GPUGridIndex` into a per-frame lattice (cells at least
  * `radius` wide in radius mode; `gridSize` cells over the bounds in kNN mode), whose domain is
  * read from a buffer so changing bounds or radius never recompiles. kNN keeps a private sorted
  * top-k list per query and searches expanding cell rings until the k-th distance is strictly
@@ -224,6 +263,11 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** The output CSR with `info` and `status` attached, for consumers. */
   readonly outputWeights: GPUSpatialWeights;
+  /**
+   * Requested search structure: `props.searchStructure` (default `'auto'`), or `'grid'` for
+   * great-circle search. `'auto'` resolves to the grid before allocating either structure.
+   */
+  readonly searchStructure: GPUNeighborSearchStructure;
 
   constructor(props: GPUNeighborSearchProps) {
     const id = props.id ?? 'neighbor-search';
@@ -246,16 +290,21 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     if (props.mode !== 'knn' && props.mode !== 'radius') {
       throw new Error(`${id} mode must be 'knn' or 'radius'`);
     }
+    const searchStructure = props.searchStructure ?? 'auto';
+    if (!['auto', 'grid', 'bvh'].includes(searchStructure)) {
+      throw new Error(`${id} searchStructure must be 'auto', 'grid' or 'bvh'`);
+    }
+    if (searchStructure === 'bvh' && this.spatialContext.coordinateSpace === 'longitude-latitude') {
+      throw new Error(`${id} searchStructure 'bvh' supports planar positions only`);
+    }
+    this.searchStructure =
+      this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'grid' : searchStructure;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const targetRows = props.positions.length;
-    if (targetRows < 1 || targetRows >= 2 ** 31) {
-      throw new Error(`${id} positions must hold between 1 and 2^31 - 1 rows`);
-    }
+    validateCapacity(id, 'positions length', targetRows, 1, 2 ** 31 - 1);
     if (props.queryPositions) {
       validatePackedView(props.queryPositions, ['float32x2'], `${id} queryPositions`);
-      if (props.queryPositions.length < 1 || props.queryPositions.length >= 2 ** 31) {
-        throw new Error(`${id} queryPositions must hold between 1 and 2^31 - 1 rows`);
-      }
+      validateCapacity(id, 'queryPositions length', props.queryPositions.length, 1, 2 ** 31 - 1);
     }
     const queryRows = this.getQueryRows();
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -265,59 +314,45 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       );
     }
     const [columns, rows] = props.gridSize;
-    if (
-      !Number.isInteger(columns) ||
-      !Number.isInteger(rows) ||
-      columns < 1 ||
-      rows < 1 ||
-      columns * rows >= 0xffffffff
-    ) {
-      throw new Error(
-        `${id} gridSize must be two positive integers with columns * rows < 2^32 - 1`
-      );
-    }
+    validateCapacity(id, 'gridSize columns', columns, 1, Number.MAX_SAFE_INTEGER);
+    validateCapacity(id, 'gridSize rows', rows, 1, Number.MAX_SAFE_INTEGER);
     if (props.mode === 'knn') {
-      const k = props.k;
-      if (k === undefined || !Number.isInteger(k) || k < 1 || k > GPU_NEIGHBOR_SEARCH_MAXIMUM_K) {
-        throw new Error(`${id} k must be an integer in [1, ${GPU_NEIGHBOR_SEARCH_MAXIMUM_K}]`);
-      }
+      validateCapacity(id, 'k', props.k ?? Number.NaN, 1, GPU_NEIGHBOR_SEARCH_MAXIMUM_K);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== targetRows) {
         throw new Error(`${id} mask length must equal positions length`);
       }
     }
     if (props.queryMask) {
-      validatePackedUint32View(props.queryMask, `${id} queryMask`);
+      validatePackedView(props.queryMask, ['uint32'], `${id} queryMask`);
       if (props.queryMask.length !== queryRows) {
         throw new Error(`${id} queryMask length must equal the query row count`);
       }
     }
-    const weightRows = validateGPUSpatialWeights(id, props.weights);
+    const {output} = props;
+    const weightRows = validateGPUSpatialWeightsOutput(id, output);
     if (weightRows !== queryRows) {
-      throw new Error(`${id} weights.offsets length must equal the query row count + 1`);
+      throw new Error(`${id} output.offsets length must equal the query row count + 1`);
     }
-    validatePackedUint32View(props.overflow, `${id} overflow`);
-    if (props.overflow.length < 1) {
-      throw new Error(`${id} overflow must hold one uint32`);
-    }
-    if (props.totalNeighbors) {
-      validatePackedUint32View(props.totalNeighbors, `${id} totalNeighbors`);
-      if (props.totalNeighbors.length < 1) {
-        throw new Error(`${id} totalNeighbors must hold one uint32`);
+    const {requiredCount, invalidCount} = output.status;
+    for (const [name, view] of [
+      ['output.status.overflow', output.status.overflow],
+      ['output.status.requiredCount', requiredCount],
+      ['output.status.invalidCount', invalidCount]
+    ] as const) {
+      if (view) {
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        if (view.length < 1) {
+          throw new Error(`${id} ${name} must hold one uint32`);
+        }
       }
     }
-    if (props.neighborCounts) {
-      validatePackedUint32View(props.neighborCounts, `${id} neighborCounts`);
-      if (props.neighborCounts.length !== queryRows) {
-        throw new Error(`${id} neighborCounts length must equal the query row count`);
-      }
-    }
-    if (props.invalidCount) {
-      validatePackedUint32View(props.invalidCount, `${id} invalidCount`);
-      if (props.invalidCount.length < 1) {
-        throw new Error(`${id} invalidCount must hold one uint32`);
+    if (output.neighborCounts) {
+      validatePackedView(output.neighborCounts, ['uint32'], `${id} output.neighborCounts`);
+      if (output.neighborCounts.length !== queryRows) {
+        throw new Error(`${id} output.neighborCounts length must equal the query row count`);
       }
     }
     if (
@@ -341,8 +376,8 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       props.mode === 'radius' &&
       !props.queryPositions &&
       !props.queryMask;
-    this.outputWeights = describeGPUSpatialWeights(props.weights, {
-      info: {
+    this.outputWeights = describeGPUSpatialWeights(output, {
+      information: {
         rowCount: queryRows,
         transform,
         symmetric:
@@ -353,24 +388,19 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
           criterion: props.mode === 'knn' ? 'knn' : 'distance-band',
           k: props.mode === 'knn' ? props.k : undefined
         }
-      },
-      status: {
-        overflow: props.overflow,
-        requiredCount: props.totalNeighbors,
-        invalidCount: props.invalidCount
       }
     });
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.invalidCount,
-        props.weights.offsets,
-        props.weights.neighbors,
-        props.weights.weights,
-        props.weights.distances,
-        props.overflow,
-        props.totalNeighbors,
-        props.neighborCounts
+        invalidCount,
+        output.offsets,
+        output.neighbors,
+        output.weights,
+        output.distances,
+        output.status.overflow,
+        requiredCount,
+        output.neighborCounts
       ],
       [props.positions, props.queryPositions, props.mask, props.queryMask, props.parameters]
     );
@@ -386,7 +416,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, queryPositions, parameters, gridSize, weights, mode} = props;
+    const {positions, queryPositions, parameters, gridSize, output: weights, mode} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       queryPositions,
@@ -397,11 +427,17 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       weights.neighbors,
       weights.weights,
       weights.distances,
-      props.overflow,
-      props.totalNeighbors,
-      props.neighborCounts,
-      props.invalidCount
+      weights.status.overflow,
+      weights.status.requiredCount,
+      weights.status.invalidCount,
+      weights.neighborCounts
     ]);
+    validateMaximumCount(
+      id,
+      'gridSize cells',
+      gridSize[0] * gridSize[1],
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
     const targetRows = positions.length;
     const queryRows = this.getQueryRows();
     const capacity = weights.neighbors.length;
@@ -409,11 +445,8 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     const k = props.k ?? 1;
     const {spatialContext} = this;
     const geodesic = spatialContext.coordinateSpace === 'longitude-latitude';
-    // Sphere radius in the context's length unit; `sphereRadius` is given in meters.
-    const sphereRadius = geodesic
-      ? (spatialContext.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS) /
-        (spatialContext.units === 'kilometers' ? 1000 : 1)
-      : undefined;
+    // Sphere radius in the context's length unit.
+    const sphereRadius = getGPUGreatCircleRadius(spatialContext);
     const latticeWGSL = getNeighborSearchLatticeWGSL(mode, gridSize, sphereRadius);
     const radiusLoop = geodesic ? getGeodesicRadiusNeighborLoopWGSL : getRadiusNeighborLoopWGSL;
     const crossJoin = Boolean(queryPositions);
@@ -433,37 +466,54 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     // target set reuses the target index; otherwise the queries get an index of their own.
     const sharesTargetIndex = !crossJoin && !props.queryMask;
 
-    const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', 4);
+    // Resolve before allocating/building: the measured clustered and uniform workloads favor
+    // the grid. An unused BVH must not add a sort/build to every auto encoding.
+    const useBvh = this.searchStructure === 'bvh';
+    const useGrid = !useBvh;
+    // Grid-only scratch is one element when the grid is not used.
+    const gridSized = (length: number) => (useGrid ? length : 1);
+
+    const gridBounds = createTransientView(graph, `${id}-grid-bounds`, 'float32', gridSized(4));
     const gridPositions = createTransientView(
       graph,
       `${id}-grid-positions`,
       'float32x2',
       targetRows
     );
-    const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount + 1);
-    const sortedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', targetRows);
+    const cellOffsets = createTransientView(
+      graph,
+      `${id}-cell-offsets`,
+      'uint32',
+      gridSized(cellCount + 1)
+    );
+    const sortedRows = createTransientView(
+      graph,
+      `${id}-sorted-rows`,
+      'uint32',
+      gridSized(targetRows)
+    );
     // Target `[x, y, row]` triples (coordinates as float bits) in cell order: the search loops
     // read them sequentially instead of gathering, and one binding carries all three.
     const sortedTargets = createTransientView(
       graph,
       `${id}-sorted-targets`,
       'uint32',
-      targetRows * 3
+      gridSized(targetRows * 3)
     );
     const gridCount = createTransientView(graph, `${id}-grid-count`, 'uint32', 1);
     const gridOverflow = createTransientView(graph, `${id}-grid-overflow`, 'uint32', 1);
     const counts =
-      props.neighborCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', queryRows);
+      weights.neighborCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', queryRows);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', queryRows);
     const distances =
       weights.distances ?? createTransientView(graph, `${id}-distances`, 'float32', capacity);
     const queryOrder = sharesTargetIndex
       ? sortedRows
-      : createTransientView(graph, `${id}-query-order`, 'uint32', queryRows);
+      : createTransientView(graph, `${id}-query-order`, 'uint32', gridSized(queryRows));
     // Valid query `[x, y, row]` triples in cell order; a shared index reuses the target triples.
     const sortedQueries = sharesTargetIndex
       ? sortedTargets
-      : createTransientView(graph, `${id}-sorted-queries`, 'uint32', queryRows * 3);
+      : createTransientView(graph, `${id}-sorted-queries`, 'uint32', gridSized(queryRows * 3));
     const queryCount = sharesTargetIndex
       ? gridCount
       : createTransientView(graph, `${id}-query-count`, 'uint32', 1);
@@ -471,17 +521,19 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [
       // The upstream grid index takes its domain from a buffer, so the per-frame lattice (cells at
       // least `radius` wide in radius mode) becomes bounds extended to COLUMNS x ROWS whole cells.
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-grid-bounds`,
-        operation: OPERATION,
-        variant: 'grid-bounds',
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-          {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: latticeWGSL,
-        body: `let lattice = readLattice();
+      ...(useGrid
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-grid-bounds`,
+              operation: OPERATION,
+              variant: 'grid-bounds',
+              bindings: [
+                {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+                {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read_write'}
+              ],
+              invocationCount: 1,
+              declarations: latticeWGSL,
+              body: `let lattice = readLattice();
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
   gridBounds[gridBoundsOffset] = select(invalid, lattice.minimumX, lattice.valid);
   gridBounds[gridBoundsOffset + 1u] = select(invalid, lattice.minimumY, lattice.valid);
@@ -489,9 +541,12 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
     max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)), lattice.valid);
   gridBounds[gridBoundsOffset + 3u] = select(invalid,
     max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)), lattice.valid);`
-      }),
+            })
+          ]
+        : []),
       // The grid index has no mask and its domain is wider than the valid extent, so excluded
-      // targets become NaN points, which it ignores.
+      // targets become NaN points, which it ignores. The BVH build treats a NaN point as an empty
+      // box, so this one array carries target validity (mask, finite, bounds) into both structures.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-grid-positions`,
         operation: OPERATION,
@@ -516,17 +571,19 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       }),
       // Buckets targets into the lattice: `cellOffsets` and `sortedRows` (target rows by cell, in
       // unspecified order within a cell; every consumer below is order independent or sorts).
-      ...new GPUGridIndex({
-        id: `${id}-grid-index`,
-        positions: gridPositions,
-        gridSize: [gridSize[0], gridSize[1]],
-        bounds: [0, 0, 1, 1],
-        boundsBuffer: gridBounds,
-        cellOffsets,
-        objectIds: sortedRows,
-        count: gridCount,
-        overflow: gridOverflow
-      }).getCommandNodes(graph),
+      ...(useGrid
+        ? new GPUGridIndex({
+            id: `${id}-grid-index`,
+            positions: gridPositions,
+            gridSize: [gridSize[0], gridSize[1]],
+            bounds: [0, 0, 1, 1],
+            boundsBuffer: gridBounds,
+            cellOffsets,
+            objectIds: sortedRows,
+            count: gridCount,
+            overflow: gridOverflow
+          }).getCommandNodes(graph)
+        : []),
       // Query validity, stored in `counts` until the search pass overwrites it with the count.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-query-valid`,
@@ -560,7 +617,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       })
     ];
 
-    if (!sharesTargetIndex) {
+    if (useGrid && !sharesTargetIndex) {
       const queryGridPositions = createTransientView(
         graph,
         `${id}-query-grid-positions`,
@@ -658,28 +715,30 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
   let x = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * 3u]);
   let y = bitcast<f32>(${queryBufferName}[${queryBufferName}Offset + index * 3u + 1u]);`;
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-sorted-targets`,
-        operation: OPERATION,
-        variant: 'sorted-targets',
-        bindings: [
-          {name: 'positions', view: positions, type: 'f32', access: 'read'},
-          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
-          {name: 'gridCount', view: gridCount, type: 'u32', access: 'read'},
-          {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: targetRows,
-        body: `if (index >= gridCount[gridCountOffset]) {
+    if (useGrid) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-sorted-targets`,
+          operation: OPERATION,
+          variant: 'sorted-targets',
+          bindings: [
+            {name: 'positions', view: positions, type: 'f32', access: 'read'},
+            {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+            {name: 'gridCount', view: gridCount, type: 'u32', access: 'read'},
+            {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: targetRows,
+          body: `if (index >= gridCount[gridCountOffset]) {
     return;
   }
   let row = sortedRows[sortedRowsOffset + index];
   sortedTargets[sortedTargetsOffset + index * 3u] = bitcast<u32>(positions[positionsOffset + row * 2u]);
   sortedTargets[sortedTargetsOffset + index * 3u + 1u] = bitcast<u32>(positions[positionsOffset + row * 2u + 1u]);
   sortedTargets[sortedTargetsOffset + index * 3u + 2u] = row;`
-      })
-    );
-    if (!sharesTargetIndex) {
+        })
+      );
+    }
+    if (useGrid && !sharesTargetIndex) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-sorted-queries`,
@@ -708,38 +767,71 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       );
     }
 
+    // BVH over the valid targets (NaN points of `gridPositions` become empty boxes), packed with
+    // the leaf rows into one node table so a search kernel binds the whole tree once.
+    let bvhNodeData: GraphDataView<'uint32'> | undefined;
+    let bvhDeclarations = '';
+    if (useBvh) {
+      const {bvh, nodes: bvhNodes} = getNearestBVHNodes(graph, {
+        id: `${id}-bvh`,
+        operation: OPERATION,
+        features: {kind: 'points', positions: gridPositions},
+        featureCount: targetRows,
+        leafCapacity: Math.max(2, getNextPowerOfTwo(targetRows)),
+        spatialSort: true
+      });
+      nodes.push(...bvhNodes);
+      bvhNodeData = createTransientView(
+        graph,
+        `${id}-bvh-node-data`,
+        'uint32',
+        bvh.nodeCount * NEIGHBOR_SEARCH_BVH_NODE_WORDS
+      );
+      bvhDeclarations = getBVHNeighborSearchDeclarationsWGSL({
+        targetRows,
+        internalNodeCount: bvh.internalNodeCount,
+        levelCount: bvh.levelCount
+      });
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-bvh-node-data`,
+          operation: OPERATION,
+          variant: 'bvh-node-data',
+          bindings: [
+            {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
+            {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
+            {name: 'leafIds', view: bvh.leafIds, type: 'u32', access: 'read'},
+            {name: 'nodeData', view: bvhNodeData, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: bvh.nodeCount,
+          declarations: `const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
+const NO_ROW: u32 = 0xffffffffu;`,
+          body: `let base = nodeDataOffset + index * ${NEIGHBOR_SEARCH_BVH_NODE_WORDS}u;
+  nodeData[base] = bitcast<u32>(nodeMinima[nodeMinimaOffset + index * 2u]);
+  nodeData[base + 1u] = bitcast<u32>(nodeMinima[nodeMinimaOffset + index * 2u + 1u]);
+  nodeData[base + 2u] = bitcast<u32>(nodeMaxima[nodeMaximaOffset + index * 2u]);
+  nodeData[base + 3u] = bitcast<u32>(nodeMaxima[nodeMaximaOffset + index * 2u + 1u]);
+  nodeData[base + 4u] = select(NO_ROW, leafIds[leafIdsOffset + index - INTERNAL_NODE_COUNT], index >= INTERNAL_NODE_COUNT);`
+        })
+      );
+    }
+
+    // BVH kernels bind the tree, the query points and the parameters (and the validity in `counts`).
+    const bvhSearchBindings: WGSLKernelBinding[] = bvhNodeData
+      ? [
+          {name: 'nodeData', view: bvhNodeData, type: 'u32', access: 'read'},
+          {name: queryName, view: queryPositions ?? positions, type: 'f32', access: 'read'},
+          {name: 'parameters', view: parameters, type: 'f32', access: 'read'}
+        ]
+      : [];
+    const bvhThreadToRowWGSL = getBVHThreadToRowWGSL(crossJoin);
+
     let knnIds: GraphDataView<'uint32'> | undefined;
     let knnDistances: GraphDataView<'float32'> | undefined;
     if (mode === 'knn') {
       knnIds = createTransientView(graph, `${id}-knn-ids`, 'uint32', queryRows * k);
       knnDistances = createTransientView(graph, `${id}-knn-distances`, 'float32', queryRows * k);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-knn`,
-          operation: OPERATION,
-          variant: 'knn',
-          bindings: [
-            ...searchBindings,
-            {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
-            {name: 'knnIds', view: knnIds, type: 'u32', access: 'read_write'},
-            {name: 'knnDistances', view: knnDistances, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: queryRows,
-          declarations: `${latticeWGSL}
-${getInsertNeighborWGSL(k)}`,
-          body: `${threadToRowWGSL}
-  var found = 0u;
-  var bestDistances: array<f32, ${k}>;
-  var bestIds: array<u32, ${k}>;
-  if (counts[countsOffset + queryIndex] != 0u) {
-    let lattice = readLattice();
-    ${
-      geodesic
-        ? getGeodesicNearestNeighborSearchWGSL(selfCondition)
-        : getNearestNeighborSearchWGSL(selfCondition)
-    }
-  }
-  // Re-sort the selected neighbors by ID (insertion sort over at most K entries).
+      const knnTailWGSL = `// Re-sort the selected neighbors by ID (insertion sort over at most K entries).
   for (var slot = 1u; slot < found; slot++) {
     let neighborId = bestIds[slot];
     let distanceSquared = bestDistances[slot];
@@ -758,22 +850,76 @@ ${getInsertNeighborWGSL(k)}`,
       geodesic ? 'bestDistances[slot]' : 'sqrt(bestDistances[slot])'
     };
   }
-  counts[countsOffset + queryIndex] = found;`
-        })
-      );
+  counts[countsOffset + queryIndex] = found;`;
+      const knnColumns: WGSLKernelBinding[] = [
+        {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
+        {name: 'knnIds', view: knnIds, type: 'u32', access: 'read_write'},
+        {name: 'knnDistances', view: knnDistances, type: 'f32', access: 'read_write'}
+      ];
+      if (useGrid) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-knn`,
+            operation: OPERATION,
+            variant: 'knn',
+            bindings: [...searchBindings, ...knnColumns],
+            invocationCount: queryRows,
+            declarations: `${latticeWGSL}
+${getInsertNeighborWGSL(k)}`,
+            body: `${threadToRowWGSL}
+  var found = 0u;
+  var bestDistances: array<f32, ${k}>;
+  var bestIds: array<u32, ${k}>;
+  if (counts[countsOffset + queryIndex] != 0u) {
+    let lattice = readLattice();
+    ${
+      geodesic
+        ? getGeodesicNearestNeighborSearchWGSL(selfCondition)
+        : getNearestNeighborSearchWGSL(selfCondition)
+    }
+  }
+  ${knnTailWGSL}`
+          })
+        );
+      }
+      if (useBvh) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-bvh-knn`,
+            operation: OPERATION,
+            variant: 'bvh-knn',
+            bindings: [...bvhSearchBindings, ...knnColumns],
+            invocationCount: queryRows,
+            declarations: `${latticeWGSL}
+${getInsertNeighborWGSL(k)}
+${bvhDeclarations}`,
+            body: `${bvhThreadToRowWGSL}
+  var found = 0u;
+  var bestDistances: array<f32, ${k}>;
+  var bestIds: array<u32, ${k}>;
+  if (counts[countsOffset + queryIndex] != 0u) {
+    let lattice = readLattice();
+    ${readQueryWGSL('queryIndex')}
+    ${getBVHNearestNeighborSearchWGSL(selfCondition)}
+  }
+  ${knnTailWGSL}`
+          })
+        );
+      }
     } else {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-count`,
-          operation: OPERATION,
-          variant: 'radius-count',
-          bindings: [
-            ...searchBindings,
-            {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: queryRows,
-          declarations: latticeWGSL,
-          body: `${threadToRowWGSL}
+      if (useGrid) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-count`,
+            operation: OPERATION,
+            variant: 'radius-count',
+            bindings: [
+              ...searchBindings,
+              {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: queryRows,
+            declarations: latticeWGSL,
+            body: `${threadToRowWGSL}
   var count = 0u;
   if (counts[countsOffset + queryIndex] != 0u) {
     let lattice = readLattice();
@@ -782,8 +928,35 @@ ${getInsertNeighborWGSL(k)}`,
         }`)}
   }
   counts[countsOffset + queryIndex] = count;`
-        })
-      );
+          })
+        );
+      }
+      if (useBvh) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-bvh-count`,
+            operation: OPERATION,
+            variant: 'bvh-radius-count',
+            bindings: [
+              ...bvhSearchBindings,
+              {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: queryRows,
+            declarations: `${latticeWGSL}
+${bvhDeclarations}`,
+            body: `${bvhThreadToRowWGSL}
+  var count = 0u;
+  if (counts[countsOffset + queryIndex] != 0u) {
+    let lattice = readLattice();
+    ${readQueryWGSL('queryIndex')}
+    ${getBVHRadiusNeighborLoopWGSL(`if (${selfCondition}) {
+        count++;
+      }`)}
+  }
+  counts[countsOffset + queryIndex] = count;`
+          })
+        );
+      }
     }
 
     nodes.push(
@@ -801,12 +974,12 @@ ${getInsertNeighborWGSL(k)}`,
           {name: 'counts', view: counts, type: 'u32', access: 'read'},
           {name: 'starts', view: starts, type: 'u32', access: 'read'},
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
-          ...(props.totalNeighbors
+          {name: 'overflow', view: weights.status.overflow, type: 'u32', access: 'read_write'},
+          ...(weights.status.requiredCount
             ? [
                 {
                   name: 'totalNeighbors',
-                  view: props.totalNeighbors,
+                  view: weights.status.requiredCount,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -822,7 +995,7 @@ const CAPACITY: u32 = ${capacity}u;`,
     let total = starts[startsOffset + QUERY_ROWS - 1u] + counts[countsOffset + QUERY_ROWS - 1u];
     offsets[offsetsOffset + QUERY_ROWS] = min(total, CAPACITY);
     overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);
-    ${props.totalNeighbors ? 'totalNeighbors[totalNeighborsOffset] = total;' : ''}
+    ${weights.status.requiredCount ? 'totalNeighbors[totalNeighborsOffset] = total;' : ''}
   }`
       })
     );
@@ -852,20 +1025,47 @@ const CAPACITY: u32 = ${capacity}u;`,
         })
       );
     } else {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-emit`,
-          operation: OPERATION,
-          variant: 'radius-emit',
-          bindings: [
-            ...searchBindings,
-            {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read_write'},
-            {name: 'distances', view: distances, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: queryRows,
-          declarations: latticeWGSL,
-          body: `${threadToRowWGSL}
+      const emitColumns: WGSLKernelBinding[] = [
+        {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+        {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read_write'},
+        {name: 'distances', view: distances, type: 'f32', access: 'read_write'}
+      ];
+      if (useBvh) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-bvh-emit`,
+            operation: OPERATION,
+            variant: 'bvh-radius-emit',
+            bindings: [...bvhSearchBindings, ...emitColumns],
+            invocationCount: queryRows,
+            declarations: `${latticeWGSL}
+${bvhDeclarations}`,
+            body: `${bvhThreadToRowWGSL}
+  let begin = offsets[offsetsOffset + queryIndex];
+  let end = offsets[offsetsOffset + queryIndex + 1u];
+  if (end > begin) {
+    let lattice = readLattice();
+    ${readQueryWGSL('queryIndex')}
+    var next = begin;
+    ${getBVHRadiusNeighborLoopWGSL(`if (${selfCondition} && next < end) {
+        neighbors[neighborsOffset + next] = neighbor;
+        distances[distancesOffset + next] = sqrt(distanceSquared);
+        next++;
+      }`)}
+  }`
+          })
+        );
+      }
+      if (useGrid) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-emit`,
+            operation: OPERATION,
+            variant: 'radius-emit',
+            bindings: [...searchBindings, ...emitColumns],
+            invocationCount: queryRows,
+            declarations: latticeWGSL,
+            body: `${threadToRowWGSL}
   let begin = offsets[offsetsOffset + queryIndex];
   let end = offsets[offsetsOffset + queryIndex + 1u];
   if (end > begin) {
@@ -877,7 +1077,10 @@ const CAPACITY: u32 = ${capacity}u;`,
           next++;
         }`)}
   }`
-        }),
+          })
+        );
+      }
+      nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-sort-rows`,
           operation: OPERATION,
@@ -906,7 +1109,7 @@ const CAPACITY: u32 = ${capacity}u;`,
       );
     }
 
-    if (props.invalidCount) {
+    if (weights.status.invalidCount) {
       // Included rows (mask nonzero) with a non-finite coordinate or outside the bounds, summed
       // with a scan so no atomics are needed. Self joins count targets; cross joins add queries.
       const flagRows = targetRows + (crossJoin ? queryRows : 0);
@@ -976,7 +1179,12 @@ const TARGET_ROWS: u32 = ${targetRows}u;`,
           bindings: [
             {name: 'invalidFlags', view: invalidFlags, type: 'u32', access: 'read'},
             {name: 'invalidStarts', view: invalidStarts, type: 'u32', access: 'read'},
-            {name: 'invalidCount', view: props.invalidCount, type: 'u32', access: 'read_write'}
+            {
+              name: 'invalidCount',
+              view: weights.status.invalidCount,
+              type: 'u32',
+              access: 'read_write'
+            }
           ],
           invocationCount: 1,
           body: `invalidCount[invalidCountOffset] =

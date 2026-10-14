@@ -4,23 +4,22 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../utils/gpu-contributor-types';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import type {Device} from '@luma.gl/core';
 import {
+  getStorageBindingElementLimit,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {
-  GPU_CELL_DEFAULT_SUM_SCALE,
-  validateSumScale
-} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
+import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
 import {readBinding, writeBinding} from './group-statistics-common';
 import {getColumnReductionNodes} from './group-statistics-moments';
 import {getColumnOrderNodes} from './group-statistics-order';
@@ -30,6 +29,24 @@ const OPERATION = 'GPUGroupStatistics';
 
 /** Largest number of value columns one contributor instance reduces. */
 const MAXIMUM_COLUMN_COUNT = 4;
+
+/**
+ * Largest group capacity (`output.keys.length`) of {@link GPUGroupStatistics} on `device`: the
+ * shifted power sums hold four float32 values (16 bytes) per group in one storage binding, so
+ * 8388608 on a default device (128 MiB bindings).
+ */
+export function getGPUGroupStatisticsMaximumGroupCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 16);
+}
+
+/**
+ * Largest `capacity * percentiles.length` of {@link GPUGroupStatistics} on `device`: the per-group
+ * percentile table holds one float32 per group and fraction in one storage binding, so 33554432 on
+ * a default device.
+ */
+export function getGPUGroupStatisticsMaximumPercentileTotal(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
 
 /** Statistics {@link GPUGroupStatistics} can compute per group and value column. */
 export type GPUGroupStatistic =
@@ -51,7 +68,7 @@ export type GPUGroupStatistic =
 /**
  * Caller-owned output views of one value column. Provide exactly the views of the statistics that
  * the column requests (`sum` takes `sums`, `sumValues`, or both). Per-group views hold
- * `output.keys.length` rows in ascending key order; rows past `output.count` hold zero for
+ * `output.keys.length` rows in ascending key order; rows past `output.status.count` hold zero for
  * `counts`, `sums`, `sumValues` and `uniqueCounts`, and NaN for every other float statistic.
  */
 export type GPUGroupStatisticsColumnOutput = {
@@ -105,6 +122,24 @@ export type GPUGroupStatisticsColumn = {
 };
 
 /**
+ * Caller-owned group table of {@link GPUGroupStatistics}. Per-column statistic views live in each
+ * column's {@link GPUGroupStatisticsColumnOutput}. Capacity is `keys.length`, at most
+ * {@link getGPUGroupStatisticsMaximumGroupCount} (8388608 on a default device).
+ */
+export type GPUGroupStatisticsOutput = {
+  /** Distinct keys ascending, same format as the input keys. Empty tail rows hold the all-ones key. */
+  keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
+  /** Valid rows per group (mask set and key valid, regardless of value finiteness). */
+  counts: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `count` receives `min(requiredCount, capacity)`, `overflow` receives 1
+   * when groups were dropped for lack of capacity, and the optional `requiredCount` receives the
+   * unclamped number of groups.
+   */
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
+};
+
+/**
  * Properties for {@link GPUGroupStatistics}.
  *
  * Per-frame (no recompile): the contents of `keys`, `mask`, every `values` column, and the
@@ -128,7 +163,7 @@ export type GPUGroupStatisticsProps = {
    * exactly `keyCount` rows, row `k` describes key `k`, and keys without rows stay in the table
    * with `counts` 0, NaN float statistics (mean, minimum, maximum, variance, standard deviation,
    * skewness, kurtosis, median, percentiles, mode) and 0 sums and unique counts. `output.keys[k]`
-   * is `k`, `output.count` and `output.requiredCount` are `keyCount` and `overflow` is 0. Rows whose
+   * is `k`, `output.status.count` and `output.status.requiredCount` are `keyCount` and `output.status.overflow` is 0. Rows whose
    * key is outside the range (or all-ones) are skipped like masked rows. No key sort of the
    * output is needed, so dense choropleth tables line up with feature rows. Topology.
    * Defaults to the compact table of occupied keys.
@@ -139,7 +174,8 @@ export type GPUGroupStatisticsProps = {
   /** `'sample'` (n - 1, default, as d3 and kepler) or `'population'` (n). Stdev and z-scores follow it. */
   variance?: 'sample' | 'population';
   /**
-   * Per-frame quantile fractions in [0, 1] (clamped), `P` entries. Required when a column requests
+   * Per-frame quantile fractions in [0, 1], `P` entries; a fraction that is NaN or outside
+   * `[0, 1]` gives a NaN percentile (it is not clamped). Required when a column requests
    * `percentiles`. Typically a {@link GPUParameterBuffer} view; rewriting it needs no
    * rebuild.
    */
@@ -147,18 +183,7 @@ export type GPUGroupStatisticsProps = {
   /** Fixed-point scale of the sums and means, a positive float32. Defaults to 65536. */
   sumScale?: number;
   /** Caller-owned group table. Capacity is `output.keys.length`. */
-  output: {
-    /** Distinct keys ascending, same format as `keys`. Empty tail rows hold the all-ones key. */
-    keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
-    /** Valid rows per group (mask set and key valid, regardless of value finiteness). */
-    counts: GraphDataView<'uint32'>;
-    /** One-row scalar receiving `min(requiredCount, capacity)`. */
-    count: GraphDataView<'uint32'>;
-    /** One-row scalar receiving 1 when groups were dropped for lack of capacity. */
-    overflow: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving the unclamped number of groups. */
-    requiredCount?: GraphDataView<'uint32'>;
-  };
+  output: GPUGroupStatisticsOutput;
 };
 
 /** Output field each statistic requires. */
@@ -211,7 +236,8 @@ const FLOAT_OUTPUTS = [
  * 256-thread workgroup per group, strided partial sums plus a fixed binary tree), and the central
  * sums about the true mean come from the shifted sums, so the result is bitwise reproducible.
  * Order statistics re-sort each requested column by value, then by key, so each group's finite
- * values are ascending; quantiles are direct lookups (`lo + (hi - lo) * frac`, numpy `linear`),
+ * values are ascending; quantiles are direct lookups (`lo + (hi - lo) * frac`, numpy `linear`,
+ * the order-statistic policy shared with `GPUColumnQuantiles`: finite values only),
  * modes and unique counts come from run heads, a scan, and integer atomics. Ties resolve to the
  * smallest value. When more groups exist than the capacity, the smallest keys are kept.
  *
@@ -242,28 +268,13 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     if (columns.length > MAXIMUM_COLUMN_COUNT) {
       throw new Error(`${id} supports at most ${MAXIMUM_COLUMN_COUNT} columns`);
     }
-    const singleViews: [string, GraphDataView | undefined][] = [
-      ['keys', keys],
-      ['mask', mask],
-      ['percentiles', props.percentiles],
-      ['output.keys', output.keys],
-      ['output.counts', output.counts],
-      ['output.count', output.count],
-      ['output.overflow', output.overflow],
-      ['output.requiredCount', output.requiredCount]
-    ];
-    for (const [name, view] of singleViews) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view`);
-      }
-    }
     validatePackedView(keys, ['uint32', 'uint32x2'], `${id} keys`);
     const rowCount = keys.length;
     if (rowCount < 1) {
       throw new Error(`${id} keys must hold at least one row`);
     }
     if (mask) {
-      validatePackedUint32View(mask, `${id} mask`);
+      validatePackedView(mask, ['uint32'], `${id} mask`);
       if (mask.length !== rowCount) {
         throw new Error(`${id} mask must have the same length as keys`);
       }
@@ -284,27 +295,24 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     if (capacity < 1) {
       throw new Error(`${id} output.keys must hold at least one row`);
     }
-    validatePackedUint32View(output.counts, `${id} output.counts`);
+    validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
     if (output.counts.length !== capacity) {
       throw new Error(`${id} output.counts must have the same length as output.keys`);
     }
     for (const name of ['count', 'overflow', 'requiredCount'] as const) {
-      const view = output[name];
+      const view = output.status[name];
       if (!view) {
         continue;
       }
-      validatePackedUint32View(view, `${id} output.${name}`);
+      validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
       if (view.length < 1) {
-        throw new Error(`${id} output.${name} must contain one uint32 row`);
+        throw new Error(`${id} output.status.${name} must contain one uint32 row`);
       }
     }
 
     let percentileColumnCount = 0;
     for (const [columnIndex, column] of columns.entries()) {
       const name = `columns[${columnIndex}]`;
-      if ((column.values as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name}.values must be a single packed view`);
-      }
       validatePackedView(column.values, ['float32'], `${id} ${name}.values`);
       if (column.values.length !== rowCount) {
         throw new Error(`${id} ${name}.values must have the same length as keys`);
@@ -339,15 +347,12 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
         if (!requested.has(owner[0])) {
           throw new Error(`${id} ${name} output.${field} requires statistic '${owner[0]}'`);
         }
-        if ((view as unknown) instanceof GraphVectorView) {
-          throw new Error(`${id} ${name} output.${field} must be a single packed view`);
-        }
       }
       const columnOutput = column.output;
       for (const field of ['counts', 'uniqueCounts'] as const) {
         const view = columnOutput[field];
         if (view) {
-          validatePackedUint32View(view, `${id} ${name}.output.${field}`);
+          validatePackedView(view, ['uint32'], `${id} ${name}.output.${field}`);
         }
       }
       if (columnOutput.sums) {
@@ -429,9 +434,9 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     return [
       output.keys,
       output.counts,
-      output.count,
-      output.overflow,
-      output.requiredCount,
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount,
       ...this.props.columns.flatMap(column => Object.values(column.output))
     ];
   }
@@ -442,6 +447,21 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    const capacity = props.output.keys.length;
+    validateMaximumCount(
+      id,
+      'output.keys rows',
+      capacity,
+      getGPUGroupStatisticsMaximumGroupCount(graph.device)
+    );
+    if (props.percentiles) {
+      validateMaximumCount(
+        id,
+        'output.keys rows x percentiles',
+        capacity * props.percentiles.length,
+        getGPUGroupStatisticsMaximumPercentileTotal(graph.device)
+      );
+    }
     const {nodes, structure} = getGroupStructureNodes<Parameters>(graph, {
       id,
       operation: OPERATION,

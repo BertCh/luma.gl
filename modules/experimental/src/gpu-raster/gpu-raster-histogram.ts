@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {GPUCommandGraph, GraphDataView, GraphResourceUse} from '@luma.gl/gpgpu/gpu-core';
-import {createTransientView, getViewBinding, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {GPUHistogram} from '@luma.gl/gpgpu/gpu-core';
 import {GPUReduction} from '@luma.gl/gpgpu/gpu-core';
 import {getRasterDeviceLimits} from './raster-device-limits';
@@ -17,6 +17,7 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterScalarFormat} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 const RASTER_HISTOGRAM_WORKGROUP_SIZE = 256;
 
@@ -218,16 +219,18 @@ export class GPURasterHistogram<Format extends GPURasterScalarFormat = GPURaster
           shaderLayout: {bindings}
         });
 
+        const bindingViews: Record<string, GraphDataView> = {
+          sourceValues: values,
+          resolvedValidity: resolvedValidity
+        };
+        if (this.input.validity) {
+          bindingViews['sourceValidity'] = this.input.validity;
+        }
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews);
         return {
           encode: ({computePass, getBuffer}) => {
-            const resolvedBindings: Record<string, Binding> = {
-              sourceValues: getViewBinding(values, getBuffer),
-              resolvedValidity: getViewBinding(resolvedValidity, getBuffer)
-            };
-            if (this.input.validity) {
-              resolvedBindings['sourceValidity'] = getViewBinding(this.input.validity, getBuffer);
-            }
-            computation.setBindings(resolvedBindings);
+            const changedBindings = resolveChangedBindings(getBuffer);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(
               computePass,
               Math.ceil(values.length / RASTER_HISTOGRAM_WORKGROUP_SIZE)

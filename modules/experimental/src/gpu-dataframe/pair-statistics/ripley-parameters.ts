@@ -7,14 +7,14 @@ import {validatePairStatisticsBounds} from './pair-statistics-parameters';
 /** Number of float32 elements in a `GPURipley` parameter buffer. */
 export const GPU_RIPLEY_PARAMETER_LENGTH = 8;
 
-/** Parameter slot holding the Monte Carlo seed read by `GPURipleyEnvelope` (ignored by `GPURipley`). */
+/**
+ * Parameter slot holding the Monte Carlo seed read by `GPURipleyEnvelope` (ignored by `GPURipley`).
+ * The slot holds the bits of a uint32, not a float32 value.
+ */
 export const GPU_RIPLEY_SEED_SLOT = 6;
 
 /** Number of float32 rows of the `statistics` summary of `GPURipleyEnvelope`. */
 export const GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH = 6;
-
-/** Largest Monte Carlo seed: it travels as an exactly representable float32 integer. */
-export const GPU_RIPLEY_MAXIMUM_SEED = 2 ** 24 - 1;
 
 /**
  * Edge-correction codes stored in the `GPURipley` parameter buffer (slot 5). The GPU switches on
@@ -37,7 +37,7 @@ export type GPURipleyEdgeCorrection = keyof typeof GPU_RIPLEY_EDGE_CORRECTION;
  *
  * Every field can change between encodings without rebuilding or recompiling the graph.
  */
-export type GPURipleyParameters = {
+export type GPURipleySettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` observation window. Rows outside it, or with a non-finite
    * coordinate, are excluded. Its area is the study area of the estimators.
@@ -52,43 +52,48 @@ export type GPURipleyParameters = {
   /** Edge-correction mode. Defaults to `'isotropic'`. */
   edgeCorrection?: GPURipleyEdgeCorrection;
   /**
-   * Monte Carlo seed of `GPURipleyEnvelope`, an integer in `[0, 2^24)`. `GPURipley` ignores it.
-   * Defaults to 0. The same seed reproduces the same simulated patterns exactly.
+   * Monte Carlo seed of `GPURipleyEnvelope`, a uint32. `GPURipley` ignores it. Defaults to 0. The
+   * same seed reproduces the same simulated patterns exactly.
    */
   seed?: number;
 };
 
 /**
  * Packs `GPURipley` parameters into the 8-element float32 layout
- * `[minX, minY, maxX, maxY, maximumDistance, edgeCorrectionCode, seed, 0]`.
+ * `[minX, minY, maxX, maxY, maximumDistance, edgeCorrectionCode, seed, 0]`, where `seed` is
+ * stored as uint32 bits.
  *
- * @param parameters Parameters to encode.
+ * @param@param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, the mode is
- * unknown, `seed` is not an integer in `[0, 2^24)`, or `target` is too short.
+ * unknown, `seed` is not a uint32, or `target` is too short.
  */
 export function getGPURipleyParameterValues(
-  parameters: GPURipleyParameters,
+  settings: GPURipleySettings,
   target: Float32Array = new Float32Array(GPU_RIPLEY_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_RIPLEY_PARAMETER_LENGTH) {
-    throw new Error(`Ripley target must hold ${GPU_RIPLEY_PARAMETER_LENGTH} elements`);
+    throw new Error(`GPURipley target must hold ${GPU_RIPLEY_PARAMETER_LENGTH} elements`);
   }
-  validatePairStatisticsBounds('Ripley', parameters.bounds, parameters.maximumDistance);
-  const edgeCorrection = parameters.edgeCorrection ?? 'isotropic';
+  validatePairStatisticsBounds('GPURipley', settings.bounds, settings.maximumDistance);
+  const edgeCorrection = settings.edgeCorrection ?? 'isotropic';
   if (!Object.prototype.hasOwnProperty.call(GPU_RIPLEY_EDGE_CORRECTION, edgeCorrection)) {
-    throw new Error(`Ripley edgeCorrection must be 'none', 'border' or 'isotropic'`);
+    throw new Error(`GPURipley edgeCorrection must be 'none', 'border' or 'isotropic'`);
   }
-  const seed = parameters.seed ?? 0;
-  if (!Number.isInteger(seed) || seed < 0 || seed > GPU_RIPLEY_MAXIMUM_SEED) {
-    throw new Error(`Ripley seed must be an integer in [0, 2^24)`);
+  const seed = settings.seed ?? 0;
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new Error('GPURipley seed must be a uint32');
   }
   target.set([
-    ...parameters.bounds,
-    parameters.maximumDistance,
+    ...settings.bounds,
+    settings.maximumDistance,
     GPU_RIPLEY_EDGE_CORRECTION[edgeCorrection],
-    seed,
+    0,
     0
   ]);
+  // The seed travels as uint32 bits: a float32 value would cap it at 2^24.
+  new Uint32Array(target.buffer, target.byteOffset, GPU_RIPLEY_PARAMETER_LENGTH)[
+    GPU_RIPLEY_SEED_SLOT
+  ] = seed;
   return target;
 }

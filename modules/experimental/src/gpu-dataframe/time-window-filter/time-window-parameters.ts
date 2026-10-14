@@ -3,16 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /** Number of float32 elements in a time-window parameter buffer. */
-export const GPU_TIME_WINDOW_PARAMETER_LENGTH = 8;
+export const GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH = 8;
 
 /**
- * CPU description of one per-frame time window.
+ * CPU description of one per-frame time window, the settings of {@link GPUTimeWindowFilter}.
  *
  * Times use the same unit and epoch as the row timestamps, for example seconds since an
  * application epoch, or absolute epoch values when timestamps are split with
  * {@link splitTimestamps}.
  */
-export type GPUTimeWindow = {
+export type GPUTimeWindowFilterSettings = {
   /** Inclusive window start. */
   start: number;
   /** Inclusive window end. A window with `end < start` accepts nothing. */
@@ -38,20 +38,22 @@ export type GPUSplitTimestamps = {
  * Start and end are split into high and low float32 parts so absolute epoch times keep sub-ulp
  * precision.
  *
- * @param window Window to encode.
+ * @param settings Time window to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, a fade duration is negative, or `target` is too short.
  */
-export function getGPUTimeWindowParameterValues(
-  window: GPUTimeWindow,
-  target: Float32Array = new Float32Array(GPU_TIME_WINDOW_PARAMETER_LENGTH)
+export function getGPUTimeWindowFilterParameterValues(
+  settings: GPUTimeWindowFilterSettings,
+  target: Float32Array = new Float32Array(GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TIME_WINDOW_PARAMETER_LENGTH) {
-    throw new Error(`Time window target must hold ${GPU_TIME_WINDOW_PARAMETER_LENGTH} elements`);
+  if (target.length < GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH) {
+    throw new Error(
+      `Time window target must hold ${GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} elements`
+    );
   }
-  const startFadeDuration = window.startFadeDuration ?? 0;
-  const endFadeDuration = window.endFadeDuration ?? 0;
-  for (const value of [window.start, window.end, startFadeDuration, endFadeDuration]) {
+  const startFadeDuration = settings.startFadeDuration ?? 0;
+  const endFadeDuration = settings.endFadeDuration ?? 0;
+  for (const value of [settings.start, settings.end, startFadeDuration, endFadeDuration]) {
     if (!Number.isFinite(value)) {
       throw new Error('Time window values must be finite');
     }
@@ -59,8 +61,8 @@ export function getGPUTimeWindowParameterValues(
   if (startFadeDuration < 0 || endFadeDuration < 0) {
     throw new Error('Time window fade durations must be non-negative');
   }
-  const [startHigh, startLow] = splitTime(window.start);
-  const [endHigh, endLow] = splitTime(window.end);
+  const [startHigh, startLow] = splitTime(settings.start);
+  const [endHigh, endLow] = splitTime(settings.end);
   target.set([startHigh, startLow, endHigh, endLow, startFadeDuration, endFadeDuration, 0, 0]);
   return target;
 }

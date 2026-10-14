@@ -12,6 +12,6 @@ export {
 export type {
   GPUShapeDescriptorsConvexityMethod,
   GPUShapeDescriptorsOutput,
-  GPUShapeDescriptorsParameters,
+  GPUShapeDescriptorsSettings,
   GPUShapeDescriptorsProps
 } from './gpu-shape-descriptors';

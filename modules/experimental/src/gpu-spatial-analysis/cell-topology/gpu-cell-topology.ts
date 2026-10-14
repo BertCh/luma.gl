@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -16,7 +13,8 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL, getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
@@ -165,24 +163,13 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     } catch (error) {
       throw new Error(`${id} ${(error as Error).message}`);
     }
-    for (const [name, view] of [
-      ['cells', props.cells],
-      ['mask', props.mask],
-      ['output.cells', props.output.cells],
-      ['output.distances', props.output.distances],
-      ['output.counts', props.output.counts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     const rows = props.cells.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -196,13 +183,13 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
       if (props.operation.type !== 'disk') {
         throw new Error(`${id} output.distances is only available for the disk operation`);
       }
-      validatePackedUint32View(output.distances, `${id} output.distances`);
+      validatePackedView(output.distances, ['uint32'], `${id} output.distances`);
       if (output.distances.length !== rows * this.stride) {
         throw new Error(`${id} output.distances length must equal output.cells length`);
       }
     }
     if (output.counts) {
-      validatePackedUint32View(output.counts, `${id} output.counts`);
+      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
       if (output.counts.length !== rows) {
         throw new Error(`${id} output.counts length must equal the row count`);
       }

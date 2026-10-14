@@ -11,6 +11,7 @@ import {
   getFrontierPushSource,
   getFrontierResetInvocationCount,
   getFrontierResetSource,
+  FRONTIER_CONTROL_TRUNCATED,
   type FrontierPhase,
   type FrontierState
 } from '../network-reachability/network-frontier';
@@ -91,7 +92,7 @@ export function createServiceAreasLabelSeedNode<Parameters>(
     nodeCount: number;
     facilities: GraphDataView<'uint32'>;
     facilityCosts?: GraphDataView<'float32'>;
-    facilityCount?: GraphDataView<'uint32'>;
+    facilityCount?: number | GraphDataView<'uint32'>;
     costs: GraphDataView<'float32'>;
     labels: GraphDataView<'uint32'>;
   }
@@ -102,7 +103,7 @@ export function createServiceAreasLabelSeedNode<Parameters>(
   if (props.facilityCosts) {
     bindings.push({name: 'facilityCosts', view: props.facilityCosts, type: 'f32', access: 'read'});
   }
-  if (props.facilityCount) {
+  if (typeof props.facilityCount === 'object') {
     bindings.push({name: 'facilityCount', view: props.facilityCount, type: 'u32', access: 'read'});
   }
   bindings.push(
@@ -119,7 +120,13 @@ export function createServiceAreasLabelSeedNode<Parameters>(
     invocationCount: props.facilities.length,
     declarations: `${SERVICE_AREAS_WGSL_CONSTANTS}
 const NODE_COUNT: u32 = ${props.nodeCount}u;`,
-    body: `${props.facilityCount ? 'if (index >= facilityCount[facilityCountOffset]) { return; }' : ''}
+    body: `${
+      typeof props.facilityCount === 'number'
+        ? `if (index >= ${props.facilityCount}u) { return; }`
+        : props.facilityCount
+          ? 'if (index >= facilityCount[facilityCountOffset]) { return; }'
+          : ''
+    }
   let node = facilities[facilitiesOffset + index];
   if (node >= NODE_COUNT) { return; }
   let cost = ${props.facilityCosts ? 'facilityCosts[facilityCostsOffset + index]' : '0.0'};
@@ -194,14 +201,13 @@ export function createServiceAreasLabelFrontierSeedNode<Parameters>(
     variant: 'label-frontier-seed',
     bindings: [
       {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
-      ...getFrontierBindings(props.state, false)
+      ...getFrontierBindings(graph, props.state, props.phase, 0)
     ],
     invocationCount: props.nodeCount,
     declarations: `${SERVICE_AREAS_WGSL_CONSTANTS}
 ${getFrontierPushSource(
   props.phase,
   props.nodeCount,
-  0,
   graph.device.limits.maxComputeWorkgroupsPerDimension
 )}`,
     body: `if (labels[labelsOffset + index] != NONE) {
@@ -264,13 +270,18 @@ const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
   });
 }
 
-/** Publishes `converged = reachabilityConverged && labelPhaseConverged`. @internal */
+/**
+ * Publishes `converged = reachabilityConverged && labelPhaseConverged`, and the predecessor level
+ * phase finished when it exists. @internal
+ */
 export function createServiceAreasFinalizeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     state: FrontierState;
     phase: FrontierPhase;
+    /** Predecessor level phase, whose truncation also clears `converged`. */
+    tiePhase?: FrontierPhase;
     reachabilityConverged: GraphDataView<'uint32'>;
     converged: GraphDataView<'uint32'>;
   }
@@ -294,7 +305,12 @@ export function createServiceAreasFinalizeNode<Parameters>(
   converged[convergedOffset] = select(
     0u,
     1u,
-    reachabilityConverged[reachabilityConvergedOffset] != 0u && frontierConverged != 0u
+    reachabilityConverged[reachabilityConvergedOffset] != 0u && frontierConverged != 0u${
+      props.tiePhase
+        ? ` &&
+      control[controlOffset + ${props.tiePhase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u] == 0u`
+        : ''
+    }
   );`
   });
 }

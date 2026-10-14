@@ -24,7 +24,7 @@ export function decodeGPURegionStatistics(
     ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
     : new Uint8Array(data);
   if (bytes.byteLength < GPU_REGION_STATISTICS_HEADER_LENGTH * 4 || bytes.byteLength % 4 !== 0) {
-    throw new Error('Region statistics summaries must be at least 32 bytes and 4-byte aligned');
+    throw new Error('decodeGPURegionStatistics needs >= 32 aligned bytes');
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const getWord = (index: number) => view.getUint32(index * 4, true);

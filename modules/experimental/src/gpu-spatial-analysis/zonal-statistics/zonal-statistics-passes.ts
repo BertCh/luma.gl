@@ -240,7 +240,7 @@ export function createZonalStatisticsAreaNode<Parameters>(
   props: {
     id: string;
     featureCount: number;
-    polygonPositions: GraphDataView<'float32x2'>;
+    positions: GraphDataView<'float32x2'>;
     featureOffsets: GraphDataView<'uint32'>;
     polygonOffsets: GraphDataView<'uint32'>;
     ringOffsets: GraphDataView<'uint32'>;
@@ -252,7 +252,7 @@ export function createZonalStatisticsAreaNode<Parameters>(
     operation: OPERATION,
     variant: 'area',
     bindings: [
-      {name: 'polygonPositions', view: props.polygonPositions, type: 'f32', access: 'read'},
+      {name: 'polygonPositions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'featureOffsets', view: props.featureOffsets, type: 'u32', access: 'read'},
       {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
       {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
@@ -262,7 +262,7 @@ export function createZonalStatisticsAreaNode<Parameters>(
     declarations: `${FINITE_HELPERS}
 const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
-const VERTEX_COUNT: u32 = ${props.polygonPositions.length}u;
+const VERTEX_COUNT: u32 = ${props.positions.length}u;
 
 fn getRingArea(vertexStart: u32, vertexEnd: u32) -> f32 {
   var origin = vec2f(0.0);

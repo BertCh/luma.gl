@@ -22,7 +22,7 @@ export type GPURasterConditionalOutput = {
   /** `condition ? a : b` per cell; NaN where the condition or the chosen operand is nodata. */
   values: GraphDataView<'float32'>;
   /** Optional condition result: `1` true, `0` false or nodata. */
-  mask?: GraphDataView<'uint32'>;
+  outputMask?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -92,10 +92,10 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
       throw new Error(`${id} needs output.values`);
     }
     validateRasterAlgebraView(id, 'output.values', output.values, 'float32', cellCount);
-    validateRasterAlgebraView(id, 'output.mask', output.mask, 'uint32', cellCount);
+    validateRasterAlgebraView(id, 'output.outputMask', output.outputMask, 'uint32', cellCount);
     validateRasterAlgebraAliasing(
       id,
-      [output.values, output.mask],
+      [output.values, output.outputMask],
       [props.mask, props.conditionValues, props.a, props.b, props.parameters]
     );
   }
@@ -113,7 +113,7 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
       props.b,
       props.parameters,
       output.values,
-      output.mask
+      output.outputMask
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
@@ -136,8 +136,8 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
       bindings.push({name: 'bValues', view: props.b, type: 'f32', access: 'read'});
     }
     bindings.push({name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'});
-    if (output.mask) {
-      bindings.push({name: 'maskOut', view: output.mask, type: 'u32', access: 'read_write'});
+    if (output.outputMask) {
+      bindings.push({name: 'maskOut', view: output.outputMask, type: 'u32', access: 'read_write'});
     }
     return [
       createWGSLKernelNode<Parameters>(graph, {
@@ -172,7 +172,7 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
   let chosen = select(bValue, aValue, condition);
   let isDefined = conditionDefined && !isNoDataValue(chosen);
   valuesOut[valuesOutOffset + index] = select(getNaN(), chosen, isDefined);
-  ${output.mask ? 'maskOut[maskOutOffset + index] = select(0u, 1u, conditionDefined && condition);' : ''}`
+  ${output.outputMask ? 'maskOut[maskOutOffset + index] = select(0u, 1u, conditionDefined && condition);' : ''}`
       })
     ];
   }

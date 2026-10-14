@@ -6,7 +6,7 @@ import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_WGS84_FLATTENING,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS
-} from '../contracts/earth';
+} from '../../analysis-core/contracts/earth';
 
 /**
  * Mean Earth radius in meters (IUGG R1), the default sphere radius of the geodesic contributors and of

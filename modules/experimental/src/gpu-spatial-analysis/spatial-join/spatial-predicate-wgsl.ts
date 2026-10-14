@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {SPATIAL_GEODESIC_MAXIMUM_ANGLE, SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
 import {SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
@@ -184,18 +184,96 @@ fn edgeBreaks(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec3f {
   let o3 = orient(c, d, a);
   let o4 = orient(c, d, b);
   if (!((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0))) { return vec3f(0.0); }
-  // t = s3 / (s3 - s4) with the signed areas of a and b against c-d. Algebraically equal to
-  // cross(c - a, cd) / cross(ab, cd), but it cannot divide by a denominator that rounded to zero,
-  // and when the rounded areas keep opposite signs t stays inside [0, 1].
+  let t = crossingParameter(a, b, c, d);
+  if (t > 0.0 && t < 1.0) { return vec3f(1.0, t, 0.0); }
+  return vec3f(0.0);
+}
+// Rounded parameter along a-b of its crossing with c-d, for a and b strictly on opposite sides of
+// c-d: t = s3 / (s3 - s4) with the signed areas of a and b against c-d. Algebraically equal to
+// cross(c - a, cd) / cross(ab, cd), but it cannot divide by a denominator that rounded to zero,
+// and when the rounded areas keep opposite signs t stays inside [0, 1]. edgeBreaks and
+// shiftedLineCrossing share it, so a crossing gets the same f32 value as its break.
+fn crossingParameter(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
   let cd = d - c;
   let s3 = crossProduct(cd, a - c);
   let s4 = crossProduct(cd, b - c);
   let span = s3 - s4;
-  let t = select(0.5, clamp(s3 / span, 0.0, 1.0), span != 0.0 && (s3 * s4) < 0.0);
-  if (t > 0.0 && t < 1.0) { return vec3f(1.0, t, 0.0); }
-  return vec3f(0.0);
+  return select(0.5, clamp(s3 / span, 0.0, 1.0), span != 0.0 && (s3 * s4) < 0.0);
+}
+const NO_SHIFTED_CROSSING: f32 = -2.0;
+// Where the line through a-b, shifted infinitesimally toward its positive side, crosses the edge c-d:
+// NO_SHIFTED_CROSSING when it does not, -1 at or before a, 2 at or beyond b, otherwise the
+// crossingParameter of a crossing strictly inside a-b. A vertex on the line counts as on its
+// negative side, so the shifted line crosses c-d when exactly one endpoint is strictly positive;
+// crossings of all edges then flip the even-odd location exactly, through vertices and collinear
+// runs too. Every decision is an exact orientation sign; only the inside parameter is rounded.
+fn shiftedLineCrossing(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
+  let o1 = orient(a, b, c);
+  let o2 = orient(a, b, d);
+  if ((o1 > 0.0) == (o2 > 0.0)) { return NO_SHIFTED_CROSSING; }
+  // orient(c, d, a + s (b - a)) is linear in s, increasing exactly when c is the positive endpoint.
+  let direction = select(-1.0, 1.0, o1 > 0.0);
+  if (orient(c, d, b) * direction <= 0.0) { return 2.0; }
+  if (orient(c, d, a) * direction >= 0.0) { return -1.0; }
+  return crossingParameter(a, b, c, d);
 }
 `;
+}
+
+/**
+ * Returns WGSL declaring `${name}(a, b, f, tm) -> bool`: whether the point `a + tm (b - a)` of an
+ * open piece of segment a-b (no break of a-b against polygon feature `f` inside the piece, and not
+ * on a collinear boundary edge) lies in the polygon.
+ *
+ * The rounded f32 point itself is not located: next to a boundary edge within a few ulps of the
+ * piece (near-parallel or nearly shared edges) it can round onto the wrong side. Instead an
+ * endpoint off the boundary is located exactly and flipped by every crossing between it and the
+ * piece ({@link getSpatialPredicateCommonWGSL} `shiftedLineCrossing`). When both endpoints are on
+ * the boundary, every crossing of the ray from the piece through b counts, from the exterior at
+ * infinity. Crossing order along a-b comes from the same rounded parameters as the breaks.
+ *
+ * @param locate WGSL name of the exact point location of the side (`0` exterior, `1` interior,
+ *   `2` boundary).
+ * @param forEachCandidateEdge Emits `body` for every edge `c-d` of `f` whose y range may reach
+ *   `[yLow, yHigh]` (WGSL expressions); the body may `continue`.
+ * @internal
+ */
+export function getPieceInsideWGSL(
+  name: string,
+  locate: string,
+  forEachCandidateEdge: (yLow: string, yHigh: string, body: string) => string
+): string {
+  return `fn ${name}(a: vec2f, b: vec2f, f: u32, tm: f32) -> bool {
+  // Reference b counts crossings in (tm, 1], reference a crossings in [0, tm).
+  var reference = ${locate}(b, f);
+  var low = tm;
+  var high = 1.5;
+  var bounded = true;
+  var yLow = min(a.y, b.y);
+  var yHigh = max(a.y, b.y);
+  if (reference == 2u) {
+    reference = ${locate}(a, f);
+    low = -0.5;
+    high = tm;
+    if (reference == 2u) {
+      reference = 0u;
+      low = tm;
+      high = 3.0;
+      bounded = false;
+      yLow = -FLOAT32_MAXIMUM;
+      yHigh = FLOAT32_MAXIMUM;
+    }
+  }
+  var inside = reference == 1u;
+  ${forEachCandidateEdge(
+    'yLow',
+    'yHigh',
+    `if (bounded && boxesDisjoint(a, b, c, d)) { continue; }
+    let crossing = shiftedLineCrossing(a, b, c, d);
+    if (crossing > low && crossing < high) { inside = !inside; }`
+  )}
+  return inside;
+}`;
 }
 
 export function getMinimumRingVertices(kind: SpatialPredicateSide['kind']): number {
@@ -355,13 +433,14 @@ fn ${p}NextBreak(a: vec2f, b: vec2f, f: u32, t: f32) -> f32 {
   )}
   return best;
 }
+${getPieceInsideWGSL(`${p}PieceInside`, `${p}Locate`, (_yLow, _yHigh, body) =>
+  forEachEdge(side, 'f', 'c', 'd', body)
+)}
 // 0: the piece starting at t0 lies outside, 1: on the boundary, 2: strictly inside.
 fn ${p}PieceCode(a: vec2f, b: vec2f, f: u32, t0: f32) -> u32 {
   let tm = 0.5 * (t0 + ${p}NextBreak(a, b, f, t0));
   if (${p}CollinearCovers(a, b, f, tm)) { return 1u; }
-  let location = ${p}Locate(a + (b - a) * tm, f);
-  if (location == 0u) { return 0u; }
-  return select(1u, 2u, location == 1u);
+  return select(0u, 2u, ${p}PieceInside(a, b, f, tm));
 }
 // Bit 0: segment a-b lies in the closed polygon. Bit 1: part of it lies strictly inside.
 fn ${p}SegmentWithin(a: vec2f, b: vec2f, f: u32) -> u32 {

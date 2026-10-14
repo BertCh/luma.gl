@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUSegmentedReduction,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -23,8 +23,10 @@ import {
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {getSortedSegmentOffsetNodes} from '../../utils/sorted-segment-offsets';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GPUGeographicDistribution} from '../geographic-distribution/index';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from '../geographic-distribution/index';
@@ -57,7 +59,7 @@ export type GPUGroupGeometryOutput = {
   /**
    * Original row index of the medoid per group: the included row minimizing the summed Euclidean
    * distance to every included row of the group, lowest row index on ties. A group larger than
-   * `medoidMaximumGroupSize` gets {@link GPU_GROUP_GEOMETRY_NO_MEDOID} and sets `overflow`.
+   * `medoidMaximumGroupSize` gets {@link GPU_GROUP_GEOMETRY_NO_MEDOID} and sets `status.overflow`.
    */
   medoidIndices?: GraphDataView<'uint32'>;
   /**
@@ -67,8 +69,11 @@ export type GPUGroupGeometryOutput = {
   ellipses?: GraphDataView<'float32'>;
   /** Standard distance per group; weighted when `weights` is present. */
   standardDistances?: GraphDataView<'float32'>;
-  /** One row. `1` when some group exceeded `medoidMaximumGroupSize` and has no medoid, else `0`. */
-  overflow?: GraphDataView<'uint32'>;
+  /** Completeness scalars. */
+  status?: {
+    /** One row. `1` when some group exceeded `medoidMaximumGroupSize` and has no medoid, else `0`. */
+    overflow?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -167,16 +172,6 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['labels', props.labels],
-      ['weights', props.weights],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
@@ -185,7 +180,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
-    validatePackedUint32View(props.labels, `${id} labels`);
+    validatePackedView(props.labels, ['uint32'], `${id} labels`);
     if (props.labels.length !== rows) {
       throw new Error(`${id} labels length must equal positions length`);
     }
@@ -202,23 +197,12 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
       );
     }
     this.groupCount = props.groupCount;
-    if (
-      !Number.isInteger(this.groupCount) ||
-      this.groupCount < 1 ||
-      this.groupCount > MAXIMUM_ROWS
-    ) {
-      throw new Error(`${id} groupCount must be a positive integer below 2^24`);
-    }
-    if (
-      props.noiseLabel !== undefined &&
-      (!Number.isInteger(props.noiseLabel) || props.noiseLabel < 0 || props.noiseLabel > 0xffffffff)
-    ) {
-      throw new Error(`${id} noiseLabel must be a uint32`);
+    validateCapacity(id, 'groupCount', this.groupCount, 1, MAXIMUM_ROWS);
+    if (props.noiseLabel !== undefined) {
+      validateCapacity(id, 'noiseLabel', props.noiseLabel, 0);
     }
     this.medoidMaximumGroupSize = props.medoidMaximumGroupSize ?? DEFAULT_MEDOID_MAXIMUM_GROUP_SIZE;
-    if (!Number.isInteger(this.medoidMaximumGroupSize) || this.medoidMaximumGroupSize < 1) {
-      throw new Error(`${id} medoidMaximumGroupSize must be a positive integer`);
-    }
+    validateCapacity(id, 'medoidMaximumGroupSize', this.medoidMaximumGroupSize);
     const groups = this.groupCount;
     const checks = [
       ['counts', output.counts, ['uint32'], groups],
@@ -229,7 +213,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
       ['medoidIndices', output.medoidIndices, ['uint32'], groups],
       ['ellipses', output.ellipses, ['float32'], groups * 3],
       ['standardDistances', output.standardDistances, ['float32'], groups],
-      ['overflow', output.overflow, ['uint32'], 1]
+      ['overflow', output.status?.overflow, ['uint32'], 1]
     ] as const;
     let outputCount = 0;
     for (const [name, view, formats, length] of checks) {
@@ -248,8 +232,8 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     if ((output.weightedCenters || output.weightSums) && !props.weights) {
       throw new Error(`${id} output.weightedCenters and output.weightSums require weights`);
     }
-    if (output.overflow && !output.medoidIndices) {
-      throw new Error(`${id} output.overflow requires output.medoidIndices`);
+    if (output.status?.overflow && !output.medoidIndices) {
+      throw new Error(`${id} output.status.overflow requires output.medoidIndices`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -264,12 +248,14 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, groupCount, medoidMaximumGroupSize} = this;
     const {output, positions, labels, weights, parameters} = props;
+    const {status, ...columns} = output;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       labels,
       weights,
       parameters,
-      ...Object.values(output)
+      ...Object.values(columns),
+      status?.overflow
     ]);
     const rows = positions.length;
     const f32 = (name: string, length: number) =>
@@ -505,12 +491,12 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
           `const MEDOID_MAXIMUM_GROUP_SIZE: u32 = ${medoidMaximumGroupSize}u;`
         )
       );
-      if (output.overflow) {
+      if (output.status?.overflow) {
         nodes.push(
           createFillNode<Parameters>(graph, {
             id: `${id}-zero-overflow`,
             operation: OPERATION,
-            view: output.overflow,
+            view: output.status.overflow,
             type: 'u32',
             value: '0u',
             componentCount: 1
@@ -523,8 +509,8 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
         read('sortedIndices', sortedIndices, 'u32'),
         write('medoids', output.medoidIndices, 'u32')
       ];
-      if (output.overflow) {
-        selectBindings.push(write('overflow', output.overflow, 'atomic<u32>'));
+      if (output.status?.overflow) {
+        selectBindings.push(write('overflow', output.status.overflow, 'atomic<u32>'));
       }
       nodes.push(
         kernel(
@@ -535,7 +521,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   let end = segmentOffsets[segmentOffsetsOffset + index + 1u];
   var best = NO_MEDOID;
   if (end - begin > MEDOID_MAXIMUM_GROUP_SIZE) {
-    ${output.overflow ? 'atomicStore(&overflow[overflowOffset], 1u);' : ''}
+    ${output.status?.overflow ? 'atomicStore(&overflow[overflowOffset], 1u);' : ''}
   } else if (end > begin) {
     var bestCost = costs[costsOffset + begin];
     best = sortedIndices[sortedIndicesOffset + begin];

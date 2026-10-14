@@ -8,12 +8,17 @@ import {
   GPUScan,
   GPUSort,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import type {Device} from '@luma.gl/core';
+import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
 
 /**
@@ -32,6 +37,23 @@ export const PAIR_STATISTICS_SHARED_PARAMETER_LENGTH = 5;
  * @internal
  */
 export const PAIR_STATISTICS_MOMENT_LENGTH = 6;
+
+/**
+ * Largest `positions` row count of every pair-statistics contributor ({@link GPUVariogram},
+ * {@link GPUSpatialCorrelogram}, {@link GPURipley}, {@link GPURipleyEnvelope},
+ * {@link GPUPointPatternIndices}, {@link GPURipleyDistanceFunctions}) on `device`: the cell-sorted
+ * points table holds 12 bytes per row (x, y and row index) in one storage binding, so 11184810 on a
+ * default device (128 MiB bindings). Row counts are also compared as f32, which stays exact below
+ * `2^24`, so the result never exceeds `2^24 - 1`.
+ */
+export function getGPUPairStatisticsMaximumRowCount(device: Device): number {
+  return Math.min(getStorageBindingElementLimit(device, 12), 2 ** 24 - 1);
+}
+
+/** Throws when `rows` exceeds {@link getGPUPairStatisticsMaximumRowCount}. @internal */
+export function validatePairStatisticsRowCount(id: string, device: Device, rows: number): void {
+  validateCapacity(id, 'positions length', rows, 1, getGPUPairStatisticsMaximumRowCount(device));
+}
 
 /** Rows reduced by one workgroup in the first level of the deterministic global sums. */
 const BLOCK_ROWS = 4096;
@@ -87,13 +109,8 @@ export function validatePairStatisticsInputs(
   validatePackedView(props.positions, ['float32x2'], `${id} positions`);
   validatePackedView(props.parameters, ['float32'], `${id} parameters`);
   const rows = props.positions.length;
-  if (rows < 1) {
-    throw new Error(`${id} positions must hold at least one row`);
-  }
-  if (rows >= 2 ** 24) {
-    // Counts are compared and scaled as f32 inside the kernels.
-    throw new Error(`${id} positions must hold fewer than 2^24 rows`);
-  }
+  // The device-dependent maximum is checked at declaration by validatePairStatisticsRowCount.
+  validateCapacity(id, 'positions length', rows, 1, 2 ** 24 - 1);
   if (props.parameters.length < props.parameterLength) {
     throw new Error(`${id} parameters must hold ${props.parameterLength} float32 values`);
   }

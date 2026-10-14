@@ -212,37 +212,65 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
   stats[base + 6u] = select(nan, (1.0 - topCutL) / bottomL, bottomL > 0.0);`;
 }
 
-/** Body of the single-thread global summary kernel that combines zone totals. */
-export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let nan = getNaN();
-  var totalWeight = 0.0;
-  var totalIncome = 0.0;
-  var weightedXLogX = 0.0;
-  var includedCount = 0u;
-  for (var zone = 0u; zone < ZONE_COUNT; zone++) {
+/** Lanes of the cooperative workgroup used by the global summary and pooled-Gini finish kernels. */
+export const INEQUALITY_REDUCTION_LANES = 256;
+
+/** Workgroup memory the global summary kernel needs; append to the kernel's declarations. */
+export const INEQUALITY_GLOBAL_SUMS_DECLARATIONS = /* wgsl */ `
+var<workgroup> laneFirst: array<f32, ${INEQUALITY_REDUCTION_LANES}>;
+var<workgroup> laneSecond: array<f32, ${INEQUALITY_REDUCTION_LANES}>;
+var<workgroup> laneThird: array<f32, ${INEQUALITY_REDUCTION_LANES}>;
+var<workgroup> laneIncluded: array<u32, ${INEQUALITY_REDUCTION_LANES}>;`;
+
+/**
+ * Body of the global summary kernel that combines zone totals. One 256-lane workgroup: pass A
+ * strides the zones (lane l takes zones l, l + 256, ...) and a fixed binary tree combines the lane
+ * partials into the totals, which every lane then reads from workgroup memory; pass B does the same
+ * for the between and within terms. Lane 0 writes the summary rows. Depth is
+ * O(zones / 256 + log2 256) instead of two serial passes over all zones.
+ */
+export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let lane = localInvocationIndex;
+  var laneWeight = 0.0;
+  var laneIncome = 0.0;
+  var laneXLogX = 0.0;
+  var laneCount = 0u;
+  for (var zone = lane; zone < ZONE_COUNT; zone += ${INEQUALITY_REDUCTION_LANES}u) {
     let zoneCount = counts[countsOffset + zone];
     if (zoneCount == 0u) {
       continue;
     }
     let base = statsOffset + zone * STATS_STRIDE;
-    totalWeight = totalWeight + stats[base + 7u];
-    totalIncome = totalIncome + stats[base + 8u];
-    weightedXLogX = weightedXLogX + stats[base + 9u];
-    includedCount = includedCount + zoneCount;
+    laneWeight = laneWeight + stats[base + 7u];
+    laneIncome = laneIncome + stats[base + 8u];
+    laneXLogX = laneXLogX + stats[base + 9u];
+    laneCount = laneCount + zoneCount;
   }
-  summary[summaryOffset + 4u] = f32(includedCount);
-  summary[summaryOffset + 5u] = select(nan, totalIncome / totalWeight, includedCount != 0u);
-  summary[summaryOffset + 6u] = totalWeight;
-  summary[summaryOffset + 7u] = totalIncome;
-  if (!(totalIncome > 0.0)) {
-    summary[summaryOffset] = nan;
-    summary[summaryOffset + 1u] = nan;
-    summary[summaryOffset + 2u] = nan;
-    return;
+  laneFirst[lane] = laneWeight;
+  laneSecond[lane] = laneIncome;
+  laneThird[lane] = laneXLogX;
+  laneIncluded[lane] = laneCount;
+  workgroupBarrier();
+  for (var stride = ${INEQUALITY_REDUCTION_LANES / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) {
+      laneFirst[lane] = laneFirst[lane] + laneFirst[lane + stride];
+      laneSecond[lane] = laneSecond[lane] + laneSecond[lane + stride];
+      laneThird[lane] = laneThird[lane] + laneThird[lane + stride];
+      laneIncluded[lane] = laneIncluded[lane] + laneIncluded[lane + stride];
+    }
+    workgroupBarrier();
   }
-  var between = 0.0;
-  var within = 0.0;
-  for (var zone = 0u; zone < ZONE_COUNT; zone++) {
-    if (counts[countsOffset + zone] == 0u) {
+  // Every lane reads the totals, then all lanes pass a barrier before the arrays are reused.
+  let totalWeight = laneFirst[0];
+  let totalIncome = laneSecond[0];
+  let weightedXLogX = laneThird[0];
+  let includedCount = laneIncluded[0];
+  workgroupBarrier();
+  // Lanes contribute nothing to pass B when the pooled income is not positive.
+  let hasIncome = totalIncome > 0.0;
+  var laneBetween = 0.0;
+  var laneWithin = 0.0;
+  for (var zone = lane; zone < ZONE_COUNT; zone += ${INEQUALITY_REDUCTION_LANES}u) {
+    if (!hasIncome || counts[countsOffset + zone] == 0u) {
       continue;
     }
     let base = statsOffset + zone * STATS_STRIDE;
@@ -252,12 +280,35 @@ export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let nan = getNaN();
     }
     let incomeShare = zoneIncome / totalIncome;
     let populationShare = stats[base + 7u] / totalWeight;
-    between = between + incomeShare * log(incomeShare / populationShare);
-    within = within + incomeShare * stats[base + 2u];
+    laneBetween = laneBetween + incomeShare * log(incomeShare / populationShare);
+    laneWithin = laneWithin + incomeShare * stats[base + 2u];
   }
-  summary[summaryOffset] = weightedXLogX / totalIncome - log(totalIncome / totalWeight);
-  summary[summaryOffset + 1u] = between;
-  summary[summaryOffset + 2u] = within;`;
+  laneFirst[lane] = laneBetween;
+  laneSecond[lane] = laneWithin;
+  workgroupBarrier();
+  for (var stride = ${INEQUALITY_REDUCTION_LANES / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) {
+      laneFirst[lane] = laneFirst[lane] + laneFirst[lane + stride];
+      laneSecond[lane] = laneSecond[lane] + laneSecond[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  if (lane == 0u) {
+    let nan = getNaN();
+    summary[summaryOffset + 4u] = f32(includedCount);
+    summary[summaryOffset + 5u] = select(nan, totalIncome / totalWeight, includedCount != 0u);
+    summary[summaryOffset + 6u] = totalWeight;
+    summary[summaryOffset + 7u] = totalIncome;
+    if (!hasIncome) {
+      summary[summaryOffset] = nan;
+      summary[summaryOffset + 1u] = nan;
+      summary[summaryOffset + 2u] = nan;
+    } else {
+      summary[summaryOffset] = weightedXLogX / totalIncome - log(totalIncome / totalWeight);
+      summary[summaryOffset + 1u] = laneFirst[0];
+      summary[summaryOffset + 2u] = laneSecond[0];
+    }
+  }`;
 
 /** Rows per tile of the tiled pooled-Gini passes. */
 export const INEQUALITY_GINI_TILE_ROWS = 256;
@@ -285,13 +336,51 @@ export function getInequalityGiniTileTotalsBody(weightExpression: string): strin
   tileTotals[tileTotalsOffset + 2u * index + 1u] = tileIncome;`;
 }
 
+/** Workgroup memory the tile prefix kernel needs; append to the kernel's declarations. */
+export const INEQUALITY_GINI_TILE_PREFIX_DECLARATIONS = /* wgsl */ `
+var<workgroup> scanWeight: array<f32, ${INEQUALITY_REDUCTION_LANES}>;
+var<workgroup> scanIncome: array<f32, ${INEQUALITY_REDUCTION_LANES}>;`;
+
 /**
- * Body of the single-thread kernel that turns the tile totals into exclusive tile prefixes and the
- * pooled totals. It walks `ROW_COUNT / GINI_TILE_ROWS` tiles, not rows.
+ * Body of the 256-lane kernel that turns the tile totals into exclusive tile prefixes and the
+ * pooled totals. Lane l owns the contiguous chunk of tiles [l * C, min((l + 1) * C, T)) with
+ * C = ceil(T / 256), sums it in order, and a fixed-order Hillis-Steele scan of the 256 chunk sums
+ * gives each lane its starting offset. Only the owning lane touches its chunk, so the rewrite of
+ * `tileTotals` in place is race free. Depth is O(T / 256 + log2 256), not O(T).
  */
-export const INEQUALITY_GINI_TILE_PREFIX_BODY = /* wgsl */ `var cumulativeWeight = 0.0;
+export const INEQUALITY_GINI_TILE_PREFIX_BODY = /* wgsl */ `let lane = localInvocationIndex;
+  const chunkSize: u32 = (GINI_TILE_COUNT + ${INEQUALITY_REDUCTION_LANES - 1}u) / ${INEQUALITY_REDUCTION_LANES}u;
+  let firstTile = min(lane * chunkSize, GINI_TILE_COUNT);
+  let endTile = min(firstTile + chunkSize, GINI_TILE_COUNT);
+  var chunkWeight = 0.0;
+  var chunkIncome = 0.0;
+  for (var tile = firstTile; tile < endTile; tile++) {
+    chunkWeight = chunkWeight + tileTotals[tileTotalsOffset + 2u * tile];
+    chunkIncome = chunkIncome + tileTotals[tileTotalsOffset + 2u * tile + 1u];
+  }
+  scanWeight[lane] = chunkWeight;
+  scanIncome[lane] = chunkIncome;
+  workgroupBarrier();
+  for (var offset = 1u; offset < ${INEQUALITY_REDUCTION_LANES}u; offset = offset << 1u) {
+    var addWeight = 0.0;
+    var addIncome = 0.0;
+    if (lane >= offset) {
+      addWeight = scanWeight[lane - offset];
+      addIncome = scanIncome[lane - offset];
+    }
+    workgroupBarrier();
+    scanWeight[lane] = scanWeight[lane] + addWeight;
+    scanIncome[lane] = scanIncome[lane] + addIncome;
+    workgroupBarrier();
+  }
+  // The scan is inclusive; this lane starts after the chunks before it.
+  var cumulativeWeight = 0.0;
   var cumulativeIncome = 0.0;
-  for (var tile = 0u; tile < GINI_TILE_COUNT; tile++) {
+  if (lane > 0u) {
+    cumulativeWeight = scanWeight[lane - 1u];
+    cumulativeIncome = scanIncome[lane - 1u];
+  }
+  for (var tile = firstTile; tile < endTile; tile++) {
     let base = tileTotalsOffset + 2u * tile;
     let tileWeight = tileTotals[base];
     let tileIncome = tileTotals[base + 1u];
@@ -300,8 +389,10 @@ export const INEQUALITY_GINI_TILE_PREFIX_BODY = /* wgsl */ `var cumulativeWeight
     cumulativeWeight = cumulativeWeight + tileWeight;
     cumulativeIncome = cumulativeIncome + tileIncome;
   }
-  pooledTotals[pooledTotalsOffset] = cumulativeWeight;
-  pooledTotals[pooledTotalsOffset + 1u] = cumulativeIncome;`;
+  if (lane == ${INEQUALITY_REDUCTION_LANES - 1}u) {
+    pooledTotals[pooledTotalsOffset] = scanWeight[lane];
+    pooledTotals[pooledTotalsOffset + 1u] = scanIncome[lane];
+  }`;
 
 /**
  * Body of the pooled-Gini tile walk (one thread per tile): the trapezoid area of the Lorenz curve
@@ -336,13 +427,32 @@ export function getInequalityGiniTileAreaBody(weightExpression: string): string 
   tileAreas[tileAreasOffset + index] = area;`;
 }
 
-/** Body of the single-thread kernel that sums the tile areas into the pooled Gini. */
-export const INEQUALITY_GINI_FINISH_BODY = /* wgsl */ `if (!(pooledTotals[pooledTotalsOffset + 1u] > 0.0)) {
-    summary[summaryOffset + 3u] = getNaN();
-    return;
+/** Workgroup memory the pooled-Gini finish kernel needs; append to the kernel's declarations. */
+export const INEQUALITY_GINI_FINISH_DECLARATIONS = /* wgsl */ `
+var<workgroup> laneAreas: array<f32, ${INEQUALITY_REDUCTION_LANES}>;`;
+
+/**
+ * Body of the 256-lane kernel that sums the tile areas into the pooled Gini: lanes stride the
+ * tiles, a fixed binary tree combines the partials, and lane 0 writes `1 - area` (or NaN when the
+ * pooled income is not positive; every lane still passes every barrier).
+ */
+export const INEQUALITY_GINI_FINISH_BODY = /* wgsl */ `let lane = localInvocationIndex;
+  var laneArea = 0.0;
+  for (var tile = lane; tile < GINI_TILE_COUNT; tile += ${INEQUALITY_REDUCTION_LANES}u) {
+    laneArea = laneArea + tileAreas[tileAreasOffset + tile];
   }
-  var area = 0.0;
-  for (var tile = 0u; tile < GINI_TILE_COUNT; tile++) {
-    area = area + tileAreas[tileAreasOffset + tile];
+  laneAreas[lane] = laneArea;
+  workgroupBarrier();
+  for (var stride = ${INEQUALITY_REDUCTION_LANES / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) {
+      laneAreas[lane] = laneAreas[lane] + laneAreas[lane + stride];
+    }
+    workgroupBarrier();
   }
-  summary[summaryOffset + 3u] = 1.0 - area;`;
+  if (lane == 0u) {
+    if (!(pooledTotals[pooledTotalsOffset + 1u] > 0.0)) {
+      summary[summaryOffset + 3u] = getNaN();
+    } else {
+      summary[summaryOffset + 3u] = 1.0 - laneAreas[0];
+    }
+  }`;

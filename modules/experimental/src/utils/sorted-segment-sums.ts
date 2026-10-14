@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSegmentedReduction,
   GPUSort,
   type GPUCommandGraph,
+  type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
+  type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
@@ -41,6 +44,16 @@ export function getSegmentTreeSumWGSL(): string {
     }
     workgroupBarrier();
   }`;
+}
+
+/**
+ * Returns the `[invocationCount, workgroupSize]` dispatch shape of the {@link createSegmentSumNode}
+ * kernel, for the slot of a `createWGSLDispatchGate` that gates a segment sum. @internal
+ */
+export function getSegmentSumDispatchShape(
+  segmentCount: number
+): readonly [invocationCount: number, workgroupSize: number] {
+  return [segmentCount * SEGMENT_WORKGROUP_SIZE, SEGMENT_WORKGROUP_SIZE];
 }
 
 /** Returns the number of key bits that hold values in `[0, maximumKey]` (at least one). @internal */
@@ -216,6 +229,13 @@ export function getSortedSegmentSumNodes<Parameters>(
  * dispatch, so the count is not limited, and `end` is clamped to `input.length`. The segment count
  * is always a build-time number here; there is no indirect (GPU-only count) variant.
  *
+ * With a `condition` (library rule 13: the sums of an unrolled loop with a data-dependent exit
+ * skip converged rounds) the node always uses the local kernel, because upstream
+ * `GPUSegmentedReduction` cannot take a node condition. The kernel and the upstream path give
+ * bit-identical results, so the condition never changes values. An indirect condition supplies
+ * the dispatch dimensions of the node, so its triple must hold the layout of
+ * {@link getSegmentSumDispatchShape}.
+ *
  * @internal
  */
 export function createSegmentSumNode<Parameters>(
@@ -232,9 +252,17 @@ export function createSegmentSumNode<Parameters>(
     offsetsWithinInput?: boolean;
     /** Force an implementation; `'auto'` (default) follows the rules above. For tests. */
     implementation?: 'auto' | 'kernel';
+    /** GPU-state gate of the node; forces the local kernel implementation. */
+    condition?: GPUCommandGraphNodeCondition<Parameters>;
+    /** Resources the `condition` reads (for example the `'indirect'` use of its dispatch buffer). */
+    extraResources?: readonly GraphBufferUse[];
   }
 ): GPUCommandNode<Parameters> {
-  if (props.implementation !== 'kernel' && canUseUpstreamSegmentSum(props)) {
+  // The offsets and output views must cover every segment; the kernel and upstream read and
+  // write `segmentCount + 1` offsets and `segmentCount` sums without bounds checks of their own.
+  assert(props.segmentOffsets.length >= props.segmentCount + 1);
+  assert(props.output.length >= props.segmentCount);
+  if (props.implementation !== 'kernel' && !props.condition && canUseUpstreamSegmentSum(props)) {
     const [node] = new GPUSegmentedReduction({
       id: props.id,
       input: props.input,
@@ -282,12 +310,16 @@ function createSegmentSumKernelNode<Parameters>(
     input: GraphDataView<'float32'>;
     segmentOffsets: GraphDataView<'uint32'>;
     output: GraphDataView<'float32'>;
+    condition?: GPUCommandGraphNodeCondition<Parameters>;
+    extraResources?: readonly GraphBufferUse[];
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'segment-sum',
+    condition: props.condition,
+    extraResources: props.extraResources,
     bindings: [
       {name: 'segmentInput', view: props.input, type: 'f32', access: 'read'},
       {name: 'segmentOffsets', view: props.segmentOffsets, type: 'u32', access: 'read'},

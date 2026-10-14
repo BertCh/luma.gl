@@ -12,6 +12,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import type {GPUFloat32Positions} from '../../utils/gpu-contributor-types';
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
 import {GPURegionMask} from './gpu-region-mask';
 import type {
   GPURegionPolygon,
@@ -55,7 +56,7 @@ export function getGridCandidateNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    selection: GPURegionRectangle | GPURegionRadius | GPURegionPolygon;
+    region: GPURegionRectangle | GPURegionRadius | GPURegionPolygon;
     positions: GPUFloat32Positions;
     values?: GraphDataView<'float32'>;
     spatialIndex: GPURegionStatisticsGridIndex;
@@ -63,7 +64,7 @@ export function getGridCandidateNodes<Parameters>(
     regionOverflow: GraphDataView<'uint32'>;
   }
 ): GridCandidates<Parameters> {
-  const {id, selection, spatialIndex, rowCount, regionOverflow} = props;
+  const {id, region: selection, spatialIndex, rowCount, regionOverflow} = props;
   const positions = props.positions as GraphDataView<'float32x2'>;
   const capacity = Math.min(spatialIndex.candidateCapacity, rowCount);
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -334,8 +335,7 @@ const CAPACITY: u32 = ${capacity}u;`,
         id: `${id}-region`,
         positions: candidatePositions,
         region: selection,
-        outputMask: mask,
-        overflow: regionOverflow
+        output: {mask, status: {overflow: regionOverflow}}
       }).getCommandNodes(graph)
     );
   } else {
@@ -422,23 +422,23 @@ const CAPACITY: u32 = ${candidates.capacity}u;`,
 export function validateGridIndexProps(
   id: string,
   props: {
-    selection: {kind: string; screenTransform?: unknown};
+    region: {kind: string; screenTransform?: unknown};
     positions?: unknown;
     values?: unknown;
     sourceIds?: unknown;
     spatialIndex: GPURegionStatisticsGridIndex;
   }
 ): void {
-  const {selection, spatialIndex} = props;
+  const {region: selection, spatialIndex} = props;
   if (
     selection.kind !== 'rectangle' &&
     selection.kind !== 'radius' &&
     selection.kind !== 'polygon'
   ) {
-    throw new Error(`${id} spatialIndex supports rectangle, radius, and polygon selections`);
+    throw new Error(`${id} spatialIndex supports rectangle, radius and polygon regions`);
   }
   if (selection.screenTransform) {
-    throw new Error(`${id} spatialIndex supports only world-space selections (no screenTransform)`);
+    throw new Error(`${id} spatialIndex rejects screenTransform`);
   }
   for (const [name, view] of [
     ['positions', props.positions],
@@ -454,14 +454,10 @@ export function validateGridIndexProps(
   }
   const {index, candidateCapacity} = spatialIndex;
   if (index.cellOffsets instanceof GraphVectorView || index.objectIds instanceof GraphVectorView) {
-    throw new Error(
-      `${id} spatialIndex.index requires packed (non-vector) cellOffsets and objectIds`
-    );
+    throw new Error(`${id} spatialIndex.index requires packed storage`);
   }
   if (index.gridSize.length !== 2 || index.bounds.length !== 4) {
     throw new Error(`${id} spatialIndex.index must be two-dimensional`);
   }
-  if (!Number.isSafeInteger(candidateCapacity) || candidateCapacity < 1) {
-    throw new Error(`${id} spatialIndex.candidateCapacity must be a positive integer`);
-  }
+  validateCapacity(id, 'spatialIndex.candidateCapacity', candidateCapacity);
 }

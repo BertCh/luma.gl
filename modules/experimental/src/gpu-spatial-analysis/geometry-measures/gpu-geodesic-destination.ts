@@ -3,8 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,9 +15,10 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../contracts/index';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {RHUMB_WGSL} from './rhumb-wgsl';
 import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
@@ -30,6 +29,7 @@ import {
 } from './geodesic-kernels';
 import {
   resolveGeodesicSpatialContext,
+  flattenGeodesicOutput,
   validateGeodesicColumns,
   validateGeodesicOptions
 } from './gpu-geodesic-pairs';
@@ -42,15 +42,18 @@ export type GPUGeodesicDestinationOutput = {
   destinations?: GraphDataView<'float32x2'>;
   /** Bearing on arrival, degrees clockwise from north in `(-180, 180]`. */
   finalBearings?: GraphDataView<'float32'>;
-  /** `'wgs84'` only: `1` when Vincenty's direct iteration converged. */
-  converged?: GraphDataView<'uint32'>;
+  /** Per-row status scalars. */
+  status?: {
+    /** `'wgs84'` only: `1` when Vincenty's direct iteration converged. */
+    converged?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
  * Properties for {@link GPUGeodesicDestination}.
  *
  * Per-frame (no recompile): the contents of every input column. Compile-time: the row count,
- * `model`, `radius`, `iterations`, and which outputs are present.
+ * `model`, `radius`, `maximumIterations`, and which outputs are present.
  */
 export type GPUGeodesicDestinationProps = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-destination'`. */
@@ -64,7 +67,7 @@ export type GPUGeodesicDestinationProps = {
   /** Distances in radius units (`'sphere'`, `'rhumb'`) or meters (`'wgs84'`), aligned with `origins`. */
   distances: GraphDataView<'float32'>;
   /** Compile-time Vincenty iteration cap for `'wgs84'`. Default 16. */
-  iterations?: number;
+  maximumIterations?: number;
   /** Per-row outputs; at least one. */
   output: GPUGeodesicDestinationOutput;
 };
@@ -89,7 +92,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
   /** Resolved radius. */
   readonly radius: number;
   /** Resolved Vincenty iteration cap. */
-  readonly iterations: number;
+  readonly maximumIterations: number;
 
   constructor(props: GPUGeodesicDestinationProps) {
     this.id = props.id ?? 'geodesic-destination';
@@ -98,17 +101,14 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
     const metric = resolveGeodesicSpatialContext(this.id, this.spatialContext);
     this.model = metric.model;
     this.radius = metric.radius;
-    this.iterations = props.iterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
-    validateGeodesicOptions(this.id, this.model, this.radius, this.iterations);
+    this.maximumIterations = props.maximumIterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
+    validateGeodesicOptions(this.id, this.model, this.radius, this.maximumIterations);
     const {id} = this;
     for (const [name, view, format] of [
       ['origins', props.origins, 'float32x2'],
       ['bearings', props.bearings, 'float32'],
       ['distances', props.distances, 'float32']
     ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
       validatePackedView(view, [format], `${id} ${name}`);
     }
     const rowCount = props.origins.length;
@@ -120,13 +120,13 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
     validateGeodesicColumns(
       id,
       props.output,
-      {destinations: 'float32x2', finalBearings: 'float32', converged: 'uint32'},
+      {destinations: 'float32x2', finalBearings: 'float32', 'status.converged': 'uint32'},
       rowCount
     );
-    if (props.output.converged && this.model !== 'wgs84') {
-      throw new Error(`${id} output.converged requires model 'wgs84'`);
+    if (props.output.status?.converged && this.model !== 'wgs84') {
+      throw new Error(`${id} output.status.converged requires model 'wgs84'`);
     }
-    validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
+    validateGraphOutputsDisjointFromInputs(id, Object.values(flattenGeodesicOutput(props.output)), [
       props.origins,
       props.bearings,
       props.distances
@@ -143,7 +143,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
       props.origins,
       props.bearings,
       props.distances,
-      ...Object.values(output)
+      ...Object.values(flattenGeodesicOutput(output))
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'origins', view: props.origins, type: 'f32', access: 'read'},
@@ -170,8 +170,13 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
       });
       statements.push('finalBearings[finalBearingsOffset + index] = finalBearing;');
     }
-    if (output.converged) {
-      bindings.push({name: 'converged', view: output.converged, type: 'u32', access: 'read_write'});
+    if (output.status?.converged) {
+      bindings.push({
+        name: 'converged',
+        view: output.status.converged,
+        type: 'u32',
+        access: 'read_write'
+      });
       statements.push('converged[convergedOffset + index] = select(0u, 1u, isConverged);');
     }
     const wgs84 = this.model === 'wgs84';
@@ -184,7 +189,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
-${wgs84 ? getVincentyWGSL(this.iterations) : ''}
+${wgs84 ? getVincentyWGSL(this.maximumIterations) : ''}
 ${SPHERE_PAIR_WGSL}
 ${this.model === 'rhumb' ? RHUMB_WGSL : ''}
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,

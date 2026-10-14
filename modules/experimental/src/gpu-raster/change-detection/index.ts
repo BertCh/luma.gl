@@ -12,4 +12,4 @@ export {
   getGPUChangeDetectionParameterValues,
   GPU_CHANGE_DETECTION_PARAMETER_LENGTH
 } from './change-detection-parameters';
-export type {GPUChangeDetectionParameters} from './change-detection-parameters';
+export type {GPUChangeDetectionSettings} from './change-detection-parameters';

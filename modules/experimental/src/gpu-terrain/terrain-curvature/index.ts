@@ -10,6 +10,7 @@ export {
 export type {
   GPUTerrainCurvatureKind,
   GPUTerrainCurvatureMethod,
+  GPUTerrainCurvatureOutput,
   GPUTerrainCurvatureProps,
   GPUTerrainCurvatureSettings
 } from './gpu-terrain-curvature';

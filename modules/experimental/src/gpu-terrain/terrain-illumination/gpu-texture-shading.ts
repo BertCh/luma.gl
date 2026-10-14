@@ -9,7 +9,11 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
+import {
+  GPURasterBufferToTexture,
+  type GPURasterBand,
+  type GPURasterMetadata
+} from '../../gpu-raster/index';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -21,29 +25,30 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainIlluminationView
 } from './terrain-illumination-utils';
 
 /** Largest supported `GPUTextureShadingProps.levelCount`. */
-export const GPU_TEXTURE_SHADING_MAX_LEVEL_COUNT = 8;
+export const GPU_TEXTURE_SHADING_MAXIMUM_LEVEL_COUNT = 8;
 
 /**
  * Minimum incremental cascade sigma, in pixels of the previous level's grid, for a level to move
  * to a grid decimated by 2.
  */
-export const DOWNSAMPLE_MIN_SIGMA = 4;
+export const DOWNSAMPLE_MINIMUM_SIGMA = 4;
 
-/** Number of float32 values read from `GPUTextureShadingProps.settings`. */
+/** Number of float32 values read from `GPUTextureShadingProps.parameters`. */
 export const GPU_TEXTURE_SHADING_PARAMETER_LENGTH = 12;
 
 /** CPU-side description packed by {@link getGPUTextureShadingParameterValues}. */
@@ -72,14 +77,19 @@ export function getGPUTextureShadingParameterValues(
   settings: GPUTextureShadingSettings = {},
   target: Float32Array = new Float32Array(GPU_TEXTURE_SHADING_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TEXTURE_SHADING_PARAMETER_LENGTH) {
-    throw new Error('Texture shading settings target must hold 12 values');
-  }
+  validateParameterTarget(
+    'getGPUTextureShadingParameterValues',
+    target,
+    GPU_TEXTURE_SHADING_PARAMETER_LENGTH
+  );
   const detail = settings.detail ?? 0.5;
   const weights =
     settings.levelWeights ??
-    Array.from({length: GPU_TEXTURE_SHADING_MAX_LEVEL_COUNT}, (_, level) => 2 ** (-level * detail));
-  if (weights.length > GPU_TEXTURE_SHADING_MAX_LEVEL_COUNT) {
+    Array.from(
+      {length: GPU_TEXTURE_SHADING_MAXIMUM_LEVEL_COUNT},
+      (_, level) => 2 ** (-level * detail)
+    );
+  if (weights.length > GPU_TEXTURE_SHADING_MAXIMUM_LEVEL_COUNT) {
     throw new Error('Texture shading supports at most 8 level weights');
   }
   const gain = settings.gain ?? 1;
@@ -123,30 +133,40 @@ export function getGPUTextureShadingCascadeSigmas(levelCount: number, baseSigma:
 function getLevelScaleLog2(sigmas: readonly number[], downsample: boolean): number[] {
   let scaleLog2 = 0;
   return sigmas.map((sigma, level) => {
-    if (downsample && level > 0 && sigma / 2 ** scaleLog2 >= DOWNSAMPLE_MIN_SIGMA) {
+    if (downsample && level > 0 && sigma / 2 ** scaleLog2 >= DOWNSAMPLE_MINIMUM_SIGMA) {
       scaleLog2++;
     }
     return scaleLog2;
   });
 }
 
+/** Caller-owned outputs of {@link GPUTextureShading}; at least one is required. */
+export type GPUTextureShadingOutput = {
+  /** Texture shade per pixel, in elevation units times `gain`. */
+  textureShade?: GraphDataView<'float32'>;
+  /** Per-pixel 1 where the center elevation is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the texture shade. */
+  textureShadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
+
 /**
  * Properties for {@link GPUTextureShading}.
  *
  * Topology: grid size, elevation format and calibration, `levelCount`, `baseSigma`, and which
- * outputs exist. Per-frame: `settings` (gain and band weights) and elevation contents.
+ * outputs exist. Per-frame: `parameters` (gain and band weights) and elevation contents.
  */
 export type GPUTextureShadingProps = {
   /** Prefix for node and transient IDs. Defaults to `'texture-shading'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 12 float32 values, see {@link getGPUTextureShadingParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 12 float32 values, see {@link getGPUTextureShadingParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUTextureShadingOutput;
   /** Number of band-pass levels, 1 to 8. Defaults to 6. */
   levelCount?: number;
   /** Finest Gaussian sigma in pixels. Defaults to 1. */
@@ -161,7 +181,7 @@ export type GPUTextureShadingProps = {
    */
   hasNodata?: boolean;
   /**
-   * Computes cascade levels whose incremental sigma is at least {@link DOWNSAMPLE_MIN_SIGMA}
+   * Computes cascade levels whose incremental sigma is at least {@link DOWNSAMPLE_MINIMUM_SIGMA}
    * pixels on a 2x decimated grid per level, then upsamples bilinearly where the band is
    * accumulated. Defaults to `true`. Pass `false` for the exact full-resolution cascade.
    *
@@ -170,13 +190,10 @@ export type GPUTextureShadingProps = {
    * bit-identical with, the exact cascade, mostly near borders and nodata hole edges.
    */
   downsampleLevels?: boolean;
-  /** Optional texture shade per pixel, in elevation units times `gain`. */
-  textureShade?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving the texture shade. */
-  textureShadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
 };
+
+/** Evenly spaced pixels tried for the per-grid elevation anchor (review C-14). */
+const ANCHOR_PROBE_COUNT = 64;
 
 /**
  * Leland Brown's texture shading, a fractional Laplacian of order `alpha` (`|f|^alpha` in the
@@ -185,7 +202,7 @@ export type GPUTextureShadingProps = {
  * `G_-1` is the elevation and `G_k` a Gaussian blur with `sigma_k = baseSigma * 2^k`, built as a
  * cascade of separable passes ({@link getGPUTextureShadingCascadeSigmas},
  * {@link getGPUTextureShadingKernel}). The output is `gain * sum_k w_k (G_(k-1) - G_k)` summed in
- * fixed level order, so changing `detail`, weights, or gain is a settings write and never
+ * fixed level order, so changing `detail`, weights, or gain is a parameters write and never
  * recompiles. Nodata uses normalized convolution: value-times-validity and validity channels are
  * blurred together and divided, so holes neither bleed nor bias. Borders replicate the edge pixel.
  * Invalid centers receive NaN and validity 0.
@@ -195,7 +212,7 @@ export type GPUTextureShadingProps = {
  * `GPUReliefShading.textureShade`. Exact full-resolution cost is linear in the summed kernel
  * widths, about `10.4 * baseSigma * 2^levelCount` taps per pixel per channel. With
  * `downsampleLevels` (default), levels with incremental sigma of at least
- * {@link DOWNSAMPLE_MIN_SIGMA} pixels run on grids decimated by 2 per level and the cost of those
+ * {@link DOWNSAMPLE_MINIMUM_SIGMA} pixels run on grids decimated by 2 per level and the cost of those
  * levels becomes nearly constant; the result then differs from the exact cascade by under 1% of
  * the output range. `hasNodata: false` skips the validity channel. `requiredHalo` is the nominal
  * receptive field of the exact cascade; decimated levels add at most a few pixels beyond the
@@ -219,12 +236,13 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
     this.id = props.id ?? 'texture-shading';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const levelCount = props.levelCount ?? 6;
     if (
       !Number.isSafeInteger(levelCount) ||
       levelCount < 1 ||
-      levelCount > GPU_TEXTURE_SHADING_MAX_LEVEL_COUNT
+      levelCount > GPU_TEXTURE_SHADING_MAXIMUM_LEVEL_COUNT
     ) {
       throw new Error(`${id} levelCount must be an integer in [1, 8]`);
     }
@@ -241,24 +259,35 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
       getGPUTextureShadingKernel
     );
     this.requiredHalo = this.kernels.reduce((sum, kernel) => sum + (kernel.length - 1) / 2, 0);
-    if (!props.textureShade && !props.validity && !props.textureShadeTexture) {
+    if (!output.textureShade && !output.outputValidity && !output.textureShadeTexture) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainIlluminationView(id, 'textureShade', props.textureShade, 'float32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_TEXTURE_SHADING_PARAMETER_LENGTH);
-    validateTerrainTexture(
+    validateTerrainIlluminationView(
       id,
-      'textureShadeTexture',
-      props.textureShadeTexture,
-      ['r32float', 'rgba32float'],
-      props.width,
-      props.height
+      'output.textureShade',
+      output.textureShade,
+      'float32',
+      pixelCount
     );
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(
       id,
-      [props.textureShade, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_TEXTURE_SHADING_PARAMETER_LENGTH);
+    validateRasterOutputTexture(
+      id,
+      'output.textureShadeTexture',
+      output.textureShadeTexture,
+      ['r32float', 'rgba32float'],
+      props.grid
+    );
+    validateRasterBuffersDistinct(
+      id,
+      [output.textureShade, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -267,15 +296,16 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, [props.textureShadeTexture]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, [output.textureShadeTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      props.textureShade,
-      props.validity
+      props.parameters,
+      output.textureShade,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const elevationValues = source.band.storage.values as GraphDataView<'float32'>;
     const elevationValidity = source.band.validity as GraphDataView<'uint32'>;
@@ -289,48 +319,78 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
     const levels = [createPair('level-a', pixelCount), createPair('level-b', pixelCount)];
     const scratch = createPair('scratch', pixelCount);
     const accumulator = createTransientView(graph, `${id}-accumulator`, 'float32', pixelCount);
-    // Level 0 reads the canonical elevation directly when no validity channel is needed.
-    let previous: GridPair = {
-      ...(hasNodata ? levels[0] : {numerator: elevationValues}),
-      scaleLog2: 0,
-      width,
-      height
-    };
-    if (hasNodata) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-premultiply`,
-          operation: 'GPUTextureShading',
-          variant: 'premultiply',
-          bindings: [
-            {name: 'elevationValues', view: elevationValues, type: 'f32', access: 'read'},
-            {name: 'elevationValidity', view: elevationValidity, type: 'u32', access: 'read'},
-            {name: 'numerator', view: levels[0].numerator, type: 'f32', access: 'read_write'},
-            {
-              name: 'denominator',
-              view: levels[0].denominator!,
-              type: 'f32',
-              access: 'read_write'
-            }
-          ],
-          invocationCount: pixelCount,
-          body: `let isValid = elevationValidity[elevationValidityOffset + index] != 0u;
-  numerator[numeratorOffset + index] = select(0.0, elevationValues[elevationValuesOffset + index], isValid);
-  denominator[denominatorOffset + index] = select(0.0, 1.0, isValid);`
-        })
-      );
+    // Review C-14: every level works on elevation minus one per-grid anchor. Blurs are normalized,
+    // so blur(z - a) = blur(z) - a and the anchor cancels in every band difference, while f32
+    // rounding now scales with the local relief instead of the absolute elevation (about 1 mm of
+    // noise at 4000 m before).
+    const anchor = createTransientView(graph, `${id}-anchor`, 'float32', 1);
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-anchor`,
+        operation: 'GPUTextureShading',
+        variant: 'anchor',
+        bindings: [
+          {name: 'elevationValues', view: elevationValues, type: 'f32', access: 'read'},
+          {name: 'elevationValidity', view: elevationValidity, type: 'u32', access: 'read'},
+          {name: 'anchor', view: anchor, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        // The first valid pixel of 64 evenly spaced probes; 0 when none is valid (any value works).
+        body: `var value = 0.0;
+  for (var probe = 0u; probe < ${ANCHOR_PROBE_COUNT}u; probe++) {
+    let pixel = (probe * ${Math.floor(pixelCount / ANCHOR_PROBE_COUNT) || 1}u) % ${pixelCount}u;
+    if (elevationValidity[elevationValidityOffset + pixel] != 0u) {
+      value = elevationValues[elevationValuesOffset + pixel];
+      break;
     }
+  }
+  anchor[anchorOffset] = value;`
+      })
+    );
+    let previous: GridPair = {...levels[0], scaleLog2: 0, width, height};
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-premultiply`,
+        operation: 'GPUTextureShading',
+        variant: hasNodata ? 'premultiply' : 'anchor-relative',
+        bindings: [
+          {name: 'elevationValues', view: elevationValues, type: 'f32', access: 'read'},
+          {name: 'elevationValidity', view: elevationValidity, type: 'u32', access: 'read'},
+          {name: 'anchor', view: anchor, type: 'f32', access: 'read'},
+          {name: 'numerator', view: levels[0].numerator, type: 'f32', access: 'read_write'},
+          ...(hasNodata
+            ? [
+                {
+                  name: 'denominator',
+                  view: levels[0].denominator!,
+                  type: 'f32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
+        ],
+        invocationCount: pixelCount,
+        body: `let isValid = elevationValidity[elevationValidityOffset + index] != 0u;
+  let relative = elevationValues[elevationValuesOffset + index] - anchor[anchorOffset];
+  ${
+    hasNodata
+      ? `numerator[numeratorOffset + index] = select(0.0, relative, isValid);
+  denominator[denominatorOffset + index] = select(0.0, 1.0, isValid);`
+      : 'numerator[numeratorOffset + index] = relative;'
+  }`
+      })
+    );
     const sigmas = getGPUTextureShadingCascadeSigmas(this.levelCount, props.baseSigma ?? 1);
     for (let level = 0; level < this.levelCount; level++) {
       const scaleLog2 = this.levelScaleLog2[level];
       let current: GridPair;
       if (scaleLog2 === 0) {
-        const output = levels[(level + 1) % 2];
-        current = {...output, scaleLog2, width, height};
+        const levelOutput = levels[(level + 1) % 2];
+        current = {...levelOutput, scaleLog2, width, height};
         const kernel = this.kernels[level];
         for (const [axis, input, target] of [
           ['horizontal', previous, scratch],
-          ['vertical', scratch, output]
+          ['vertical', scratch, levelOutput]
         ] as const) {
           nodes.push(
             getBlurNode(graph, {
@@ -406,7 +466,7 @@ export class GPUTextureShading implements GPUCommandNodeProducer {
         }
       }
       bindings.push(
-        {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+        {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
         {name: 'accumulator', view: accumulator, type: 'f32', access: 'read_write'}
       );
       nodes.push(
@@ -431,8 +491,8 @@ fn getBlurred(numerator: f32, denominator: f32) -> f32 {
       previous = current;
     }
     const target =
-      props.textureShade ??
-      (props.textureShadeTexture
+      output.textureShade ??
+      (output.textureShadeTexture
         ? createTransientView(graph, `${id}-texture-shade`, 'float32', pixelCount)
         : undefined);
     const bindings: WGSLKernelBinding[] = [
@@ -443,7 +503,7 @@ fn getBlurred(numerator: f32, denominator: f32) -> f32 {
         access: 'read'
       },
       {name: 'accumulator', view: accumulator, type: 'f32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (target) {
       bindings.push({
@@ -453,10 +513,10 @@ fn getBlurred(numerator: f32, denominator: f32) -> f32 {
         access: 'read_write'
       });
     }
-    if (props.validity) {
+    if (output.outputValidity) {
       bindings.push({
         name: 'validityValues',
-        view: props.validity,
+        view: output.outputValidity,
         type: 'u32',
         access: 'read_write'
       });
@@ -472,11 +532,11 @@ fn getBlurred(numerator: f32, denominator: f32) -> f32 {
         body: `let value = settings[settingsOffset] * accumulator[accumulatorOffset + index];
   let isValid = elevationValidity[elevationValidityOffset + index] != 0u && isFiniteValue(value);
   ${target ? 'textureShade[textureShadeOffset + index] = select(getNaN(index), value, isValid);' : ''}
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
       })
     );
-    if (props.textureShadeTexture && target) {
-      const texture = props.textureShadeTexture;
+    if (output.textureShadeTexture && target) {
+      const texture = output.textureShadeTexture;
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterBufferToTexture({

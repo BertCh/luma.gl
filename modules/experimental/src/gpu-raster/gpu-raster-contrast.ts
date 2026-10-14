@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {GPUCommandGraph, GraphDataView, GraphResourceUse} from '@luma.gl/gpgpu/gpu-core';
 import {
   createTransientView,
-  getViewBinding,
   getViewElementOffset,
   validatePackedUint32View,
   validatePackedView
@@ -27,6 +26,7 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 /** A fixed calibrated sample range or a caller-owned, two-row GPU-resident float32 range. */
 export type GPURasterContrastDomain = readonly [number, number] | GraphDataView<'float32'>;
@@ -307,29 +307,28 @@ export class GPURasterContrast {
           source: this.getShaderSource(cumulativeHistogram, histogramSummary),
           shaderLayout: {bindings}
         });
+        const bindingViews: Record<string, GraphDataView> = {
+          inputValues: this.input.storage.values,
+          outputValues: this.output,
+          outputValidity: this.outputValidity
+        };
+        if (this.input.validity) {
+          bindingViews['inputValidity'] = this.input.validity;
+        }
+        if (isRasterContrastDomainView(this.domain)) {
+          bindingViews['domainValues'] = this.domain;
+        }
+        if (cumulativeHistogram) {
+          bindingViews['cumulativeHistogram'] = cumulativeHistogram;
+        }
+        if (histogramSummary) {
+          bindingViews['histogramSummary'] = histogramSummary;
+        }
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews);
         return {
           encode: ({computePass, getBuffer}) => {
-            const resolvedBindings: Record<string, Binding> = {
-              inputValues: getViewBinding(this.input.storage.values, getBuffer),
-              outputValues: getViewBinding(this.output, getBuffer),
-              outputValidity: getViewBinding(this.outputValidity, getBuffer)
-            };
-            if (this.input.validity) {
-              resolvedBindings['inputValidity'] = getViewBinding(this.input.validity, getBuffer);
-            }
-            if (isRasterContrastDomainView(this.domain)) {
-              resolvedBindings['domainValues'] = getViewBinding(this.domain, getBuffer);
-            }
-            if (cumulativeHistogram) {
-              resolvedBindings['cumulativeHistogram'] = getViewBinding(
-                cumulativeHistogram,
-                getBuffer
-              );
-            }
-            if (histogramSummary) {
-              resolvedBindings['histogramSummary'] = getViewBinding(histogramSummary, getBuffer);
-            }
-            computation.setBindings(resolvedBindings);
+            const changedBindings = resolveChangedBindings(getBuffer);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(computePass, horizontalCount, verticalCount);
           },
           destroy: () => computation.destroy()
@@ -386,12 +385,15 @@ fn main() {
             ]
           }
         });
+        const bindingViews: Record<string, GraphDataView> = {
+          cumulativeHistogram: cumulativeHistogram,
+          histogramSummary: histogramSummary
+        };
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews);
         return {
           encode: ({computePass, getBuffer}) => {
-            computation.setBindings({
-              cumulativeHistogram: getViewBinding(cumulativeHistogram, getBuffer),
-              histogramSummary: getViewBinding(histogramSummary, getBuffer)
-            });
+            const changedBindings = resolveChangedBindings(getBuffer);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(computePass, 1);
           },
           destroy: () => computation.destroy()

@@ -7,7 +7,6 @@ import {
   GPUGroupAggregation,
   GraphVectorView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,14 +16,21 @@ import type {GPUFloat32Positions, GPUUint32Rows} from '../../utils/gpu-contribut
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
+  validateCapacity,
   validateGraphViewsBelongToGraph,
-  validateGraphViewTopology
+  validateGraphViewTopology,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  validateGPUStatusPort,
+  type GPUPackedGeometryPort,
+  type GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {GPUPointInPolygonJoin, type GPUPointInPolygonBoundaryRule} from '../spatial-join/index';
 import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
 import {validateDisjointOutputs} from '../spatial-join/spatial-join-passes';
@@ -50,26 +56,17 @@ const SUPPORT: GPUSpatialContextSupport = Object.freeze({
 });
 
 /**
- * Feature membership from polygon features: points are joined to polygons with
- * `GPUPointInPolygonJoin` every encoding. A point belongs to the containing feature with the
+ * Feature membership from polygon features (the four-level `GPUPolygonGeometryPort` layout, one
+ * output row per feature): points are joined to polygons with `GPUPointInPolygonJoin` every
+ * encoding. A point belongs to the containing feature with the
  * smallest row; boundary points follow `boundaryRule` (half-open by default, so a point on a shared
  * edge of a coverage is counted exactly once regardless of row order).
  *
- * Polygon geometry uses the GeoArrow-style layout of `GPUPointInPolygonJoin`; see that contributor for
- * the offset conventions. The polygon buffers' contents are per-frame; everything else here is
- * compile-time topology.
+ * Ring 0 of each polygon is the shell and rings close implicitly. `sourceIds` is not read: every
+ * output is indexed by feature row. The polygon buffers' contents are per-frame; everything else
+ * here is compile-time topology.
  */
-export type GPUZonalStatisticsPolygons = {
-  /** Feature source discriminator. */
-  kind: 'polygons';
-  /** Flattened polygon vertices. Per-frame contents. */
-  polygonPositions: GraphDataView<'float32x2'>;
-  /** Feature-to-polygon offsets with `featureCount + 1` entries, first 0. Per-frame contents. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets with a terminal entry. Ring 0 is the shell. Per-frame contents. */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly. Per-frame contents. */
-  ringOffsets: GraphDataView<'uint32'>;
+export type GPUZonalStatisticsPolygons = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
   /** Maximum `(point, feature)` bounding-box candidates per encoding. Compile-time. */
   candidateCapacity: number;
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. Compile-time. */
@@ -84,11 +81,6 @@ export type GPUZonalStatisticsPolygons = {
    * order); `'open'` counts only strict interiors. Compile-time.
    */
   boundaryRule?: GPUPointInPolygonBoundaryRule;
-  /**
-   * Legacy compile-time shorthand: `true` is `boundaryRule: 'closed'`, `false` is `'open'`. When
-   * neither is given the half-open rule applies.
-   */
-  includeBoundary?: boolean;
 };
 
 /**
@@ -192,7 +184,7 @@ export type GPUZonalStatisticsOutput = {
   featureAreas?: GraphDataView<'float32'>;
   /**
    * `kind: 'polygons'` only: receives the join's per-point feature row (or
-   * `GPU_SPATIAL_JOIN_NO_FEATURE`), with the chunk topology of `points`.
+   * `GPU_SPATIAL_JOIN_NO_FEATURE`), with the chunk topology of `positions`.
    */
   pointFeatureRows?: GPUUint32Rows;
   /**
@@ -206,19 +198,22 @@ export type GPUZonalStatisticsOutput = {
    * graph transient when its own output view is absent. Compile-time.
    */
   extentStatistic?: GPUZonalStatisticsExtentStatistic;
-  /**
-   * One row: 1 when the join overflowed a BVH leaf or candidate capacity, otherwise 0. Always 0
-   * for `kind: 'feature-rows'`.
-   */
-  overflow?: GraphDataView<'uint32'>;
-  /**
-   * One row: the number of (point, feature) candidate pairs whose containment could not be proven
-   * (non-finite input, malformed offsets, or a predicate outside the double-single arithmetic
-   * envelope). Uncertain pairs are never assigned: a point whose only candidates were uncertain
-   * stays unassigned, so a nonzero value means `counts` and the other statistics may be low. Always
-   * 0 for `kind: 'feature-rows'`.
-   */
-  uncertainCount?: GraphDataView<'uint32'>;
+  /** Optional GPU status scalars of the membership join. */
+  status?: {
+    /**
+     * One row: 1 when the join overflowed a BVH leaf or candidate capacity, otherwise 0. Always 0
+     * for `kind: 'feature-rows'`.
+     */
+    overflow?: GraphDataView<'uint32'>;
+    /**
+     * One row: the number of (point, feature) candidate pairs whose containment could not be
+     * proven (non-finite input, malformed offsets, or a predicate outside the double-single
+     * arithmetic envelope). Uncertain pairs are never assigned: a point whose only candidates were
+     * uncertain stays unassigned, so a nonzero value means `counts` and the other statistics may be
+     * low. Always 0 for `kind: 'feature-rows'`.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -244,8 +239,8 @@ export type GPUZonalStatisticsProps = {
    * `GPUGeometryMeasures`) instead. Counts, sums, means, extrema and variances are unaffected.
    */
   spatialContext?: GPUSpatialContext;
-  /** Planar points. Required for `kind: 'polygons'`, ignored for `kind: 'feature-rows'`. */
-  points?: GPUFloat32Positions;
+  /** Point positions. Required for `kind: 'polygons'`, ignored for `kind: 'feature-rows'`. */
+  positions?: GPUFloat32Positions;
   /**
    * Per-point values with the same total length as the points. Required by every value statistic
    * (`valueCounts`, `sums`, `weightSums`, `means`, `minima`, `maxima` and extents of them).
@@ -292,10 +287,17 @@ const OUTPUT_NAMES = [
   ...PER_FEATURE_UINT32_OUTPUTS,
   ...PER_FEATURE_FLOAT_OUTPUTS,
   'pointFeatureRows',
-  'extent',
-  'overflow',
-  'uncertainCount'
+  'extent'
 ] as const;
+
+/** Every caller-owned output view, status scalars included. */
+function getOutputViews(output: GPUZonalStatisticsOutput) {
+  return [
+    ...OUTPUT_NAMES.map(name => output[name]),
+    output.status?.overflow,
+    output.status?.uncertainCount
+  ];
+}
 
 /**
  * Choropleth aggregation: joins points to features and reduces optional per-point values and
@@ -366,13 +368,13 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     }
 
     if (features.kind === 'polygons') {
-      if (!props.points) {
-        throw new Error(`${id} points are required for polygon features`);
+      if (!props.positions) {
+        throw new Error(`${id} positions are required for polygon features`);
       }
-      for (const chunk of getGraphViewChunks(props.points)) {
-        validatePackedView(chunk, ['float32x2'], `${id} points`);
+      for (const chunk of getGraphViewChunks(props.positions)) {
+        validatePackedView(chunk, ['float32x2'], `${id} positions`);
       }
-      validatePackedView(features.polygonPositions, ['float32x2'], `${id} polygonPositions`);
+      validatePackedView(features.positions, ['float32x2'], `${id} features.positions`);
       for (const [name, view] of [
         ['featureOffsets', features.featureOffsets],
         ['polygonOffsets', features.polygonOffsets],
@@ -384,14 +386,12 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         }
       }
       this.featureCount = features.featureOffsets.length - 1;
-      this.pointCount = props.points.length;
+      this.pointCount = props.positions.length;
     } else {
       for (const chunk of getGraphViewChunks(features.pointFeatureRows)) {
         validatePackedUint32View(chunk, `${id} pointFeatureRows`);
       }
-      if (!Number.isSafeInteger(features.featureCount)) {
-        throw new Error(`${id} featureCount must be an integer`);
-      }
+      validateCapacity(id, 'featureCount', features.featureCount, 0);
       if (output.pointFeatureRows) {
         throw new Error(`${id} output.pointFeatureRows requires polygon features`);
       }
@@ -405,7 +405,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} requires at least one feature`);
     }
 
-    if (!OUTPUT_NAMES.some(name => output[name])) {
+    if (!getOutputViews(output).some(Boolean)) {
       throw new Error(`${id} requires at least one output`);
     }
     if (output.extent && !output.extentStatistic) {
@@ -475,17 +475,8 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} output.extent must contain two float32 rows`);
       }
     }
-    if (output.overflow) {
-      validatePackedUint32View(output.overflow, `${id} output.overflow`);
-      if (output.overflow.length < 1) {
-        throw new Error(`${id} output.overflow must contain one uint32 row`);
-      }
-    }
-    if (output.uncertainCount) {
-      validatePackedUint32View(output.uncertainCount, `${id} output.uncertainCount`);
-      if (output.uncertainCount.length < 1) {
-        throw new Error(`${id} output.uncertainCount must contain one uint32 row`);
-      }
+    if (output.status) {
+      validateGPUStatusPort(`${id} output.status`, output.status);
     }
     if (output.pointFeatureRows) {
       for (const chunk of getGraphViewChunks(output.pointFeatureRows)) {
@@ -494,7 +485,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       validateGraphViewTopology(
         id,
         'output.pointFeatureRows',
-        props.points!,
+        props.positions!,
         output.pointFeatureRows
       );
     }
@@ -521,7 +512,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       sorted: this.sumOrder === 'sorted'
     });
     if (this.plan.needValueStatistics && !values) {
-      throw new Error(`${id} value statistics (sums, means, minima, maxima, ...) require values`);
+      throw new Error(`${id} value statistics require values`);
     }
     if (
       features.kind === 'feature-rows' &&
@@ -539,7 +530,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     }
     if (this.plan.needVariances) {
       for (const [name, view] of [
-        ['points', features.kind === 'polygons' ? props.points : undefined],
+        ['positions', features.kind === 'polygons' ? props.positions : undefined],
         ['values', values],
         ['weights', weights],
         [
@@ -557,7 +548,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       const rows =
         features.kind === 'polygons' ? output.pointFeatureRows : features.pointFeatureRows;
       for (const [name, view] of [
-        ['points', features.kind === 'polygons' ? props.points : undefined],
+        ['positions', features.kind === 'polygons' ? props.positions : undefined],
         ['values', values],
         ['weights', weights],
         ['pointFeatureRows', rows]
@@ -571,17 +562,17 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     validateDisjointOutputs(
       id,
       [
-        props.points,
+        props.positions,
         values,
         weights,
         areas,
-        features.kind === 'polygons' ? features.polygonPositions : undefined,
+        features.kind === 'polygons' ? features.positions : undefined,
         features.kind === 'polygons' ? features.featureOffsets : undefined,
         features.kind === 'polygons' ? features.polygonOffsets : undefined,
         features.kind === 'polygons' ? features.ringOffsets : undefined,
         features.kind === 'feature-rows' ? features.pointFeatureRows : undefined
       ],
-      OUTPUT_NAMES.map(name => output[name])
+      getOutputViews(output)
     );
   }
 
@@ -596,16 +587,16 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     const {id, props, featureCount, plan, sumOrder} = this;
     const {features, output, values, weights, areas} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.points,
+      props.positions,
       values,
       weights,
       areas,
-      features.kind === 'polygons' ? features.polygonPositions : undefined,
+      features.kind === 'polygons' ? features.positions : undefined,
       features.kind === 'polygons' ? features.featureOffsets : undefined,
       features.kind === 'polygons' ? features.polygonOffsets : undefined,
       features.kind === 'polygons' ? features.ringOffsets : undefined,
       features.kind === 'feature-rows' ? features.pointFeatureRows : undefined,
-      ...OUTPUT_NAMES.map(name => output[name])
+      ...getOutputViews(output)
     ]);
     const sortedSums = sumOrder === 'sorted' && (plan.needSums || plan.needWeightSums);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -643,25 +634,30 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     if (features.kind === 'polygons') {
       pointFeatureRows =
         output.pointFeatureRows ??
-        createTransientUint32Rows(graph, `${id}-point-feature-rows`, props.points!);
-      const overflow = output.overflow ?? createTransientView(graph, `${id}-overflow`, 'uint32', 1);
+        createTransientUint32Rows(graph, `${id}-point-feature-rows`, props.positions!);
+      const overflow =
+        output.status?.overflow ?? createTransientView(graph, `${id}-overflow`, 'uint32', 1);
       nodes.push(
         ...new GPUPointInPolygonJoin({
           id: `${id}-join`,
           spatialContext: getPointInPolygonContainmentContext(this.spatialContext),
-          points: props.points!,
-          polygonPositions: features.polygonPositions,
-          featureOffsets: features.featureOffsets,
-          polygonOffsets: features.polygonOffsets,
-          ringOffsets: features.ringOffsets,
+          points: {kind: 'points', positions: props.positions!},
+          // No `sourceIds`: the join must write feature rows, which index the outputs.
+          polygons: {
+            kind: 'polygons',
+            positions: features.positions,
+            featureOffsets: features.featureOffsets,
+            polygonOffsets: features.polygonOffsets,
+            ringOffsets: features.ringOffsets
+          },
           candidateCapacity: features.candidateCapacity,
           leafCapacity: features.leafCapacity,
           boundaryRule: features.boundaryRule,
-          includeBoundary: features.includeBoundary,
-          pointFeatureIds: pointFeatureRows,
-          featureCounts: counts,
-          overflow,
-          uncertainCount: output.uncertainCount
+          output: {
+            pointFeatureIds: pointFeatureRows,
+            featureCounts: counts,
+            status: {overflow, uncertainCount: output.status?.uncertainCount}
+          }
         }).getCommandNodes(graph)
       );
     } else {
@@ -675,24 +671,24 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           }).getCommandNodes(graph)
         );
       }
-      if (output.overflow) {
+      if (output.status?.overflow) {
         nodes.push(
           createFillNode<Parameters>(graph, {
             id: `${id}-overflow`,
             operation: OPERATION,
-            view: output.overflow,
+            view: output.status.overflow,
             type: 'u32',
             value: '0u',
             componentCount: 1
           })
         );
       }
-      if (output.uncertainCount) {
+      if (output.status?.uncertainCount) {
         nodes.push(
           createFillNode<Parameters>(graph, {
             id: `${id}-uncertain-count`,
             operation: OPERATION,
-            view: output.uncertainCount,
+            view: output.status.uncertainCount,
             type: 'u32',
             value: '0u',
             componentCount: 1
@@ -737,7 +733,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         createZonalStatisticsAreaNode<Parameters>(graph, {
           id: `${id}-area`,
           featureCount,
-          polygonPositions: features.polygonPositions,
+          positions: features.positions,
           featureOffsets: features.featureOffsets,
           polygonOffsets: features.polygonOffsets,
           ringOffsets: features.ringOffsets,
@@ -945,6 +941,6 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
 function getDefaultZonalSumOrder(props: GPUZonalStatisticsProps): GPUZonalStatisticsSumOrder {
   const {features, output, values, weights} = props;
   const rows = features.kind === 'polygons' ? output.pointFeatureRows : features.pointFeatureRows;
-  const views = [features.kind === 'polygons' ? props.points : undefined, values, weights, rows];
+  const views = [features.kind === 'polygons' ? props.positions : undefined, values, weights, rows];
   return views.some(view => view instanceof GraphVectorView) ? 'atomic' : 'sorted';
 }

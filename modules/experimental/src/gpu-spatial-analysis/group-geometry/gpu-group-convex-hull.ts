@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   GPUReduction,
   GPUScan,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -24,8 +24,10 @@ import {
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {getSortedSegmentOffsetNodes} from '../../utils/sorted-segment-offsets';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GET_QUIET_NAN_SEEDED_WGSL} from '../../utils/wgsl-common';
 
@@ -38,6 +40,17 @@ const LATTICE_KEY_BITS = 30;
 const PREFILTER_MINIMUM_ROWS = 8192;
 /** Sorted rows handled by one prefilter invocation. */
 const PREFILTER_CHUNK_ROWS = 256;
+/** Extreme directions per group: min and max of x, y, x + y and x - y. */
+const EXTREME_DIRECTION_COUNT = 8;
+/** Largest `groupCount` with the extreme-point filter on by default (tables are 16 words per group). */
+const EXTREME_FILTER_DEFAULT_MAXIMUM_GROUPS = 65536;
+/** Groups up to this count accumulate extremes in workgroup memory first (8 words per group). */
+const EXTREME_PRIVATE_GROUP_LIMIT = 256;
+/** Rows folded by one invocation of a workgroup-private extreme kernel. */
+const EXTREME_ROWS_PER_THREAD = 16;
+const EXTREME_WORKGROUP_SIZE = 256;
+/** Bias that keeps `x - y` of lattice points non-negative. */
+const LATTICE_BIAS = 2 ** LATTICE_BITS;
 
 /** Largest `prefilterLevels` of {@link GPUGroupConvexHull}. */
 export const GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS = 4;
@@ -46,7 +59,7 @@ const DEFAULT_PREFILTER_LEVELS = 2;
 
 /** Bit of `overflow` set when a hull has more vertices than `maximumVerticesPerGroup`. */
 export const GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW = 1;
-/** Bit of `overflow` set when the emitted hulls do not fit `totalCapacity`. */
+/** Bit of `overflow` set when the emitted hulls do not fit `vertexCapacity`. */
 export const GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW = 2;
 
 /**
@@ -68,18 +81,21 @@ export type GPUGroupConvexHullOutput = {
   counts: GraphDataView<'uint32'>;
   /** True hull vertex count per group, before any cap (0 for an empty group). */
   sizes?: GraphDataView<'uint32'>;
-  /**
-   * One row, a bit set: {@link GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW} and
-   * {@link GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW}. `0` when every hull was emitted.
-   */
-  overflow: GraphDataView<'uint32'>;
+  /** Completeness scalars. */
+  status: {
+    /**
+     * One row, a bit set: {@link GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW} and
+     * {@link GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW}. `0` when every hull was emitted.
+     */
+    overflow: GraphDataView<'uint32'>;
+  };
 };
 
 /**
  * Properties for {@link GPUGroupConvexHull}.
  *
  * Per-frame (no recompile): the contents of every input buffer. Topology (needs a new graph):
- * view lengths, `groupCount`, `noiseLabel`, `maximumVerticesPerGroup` and `totalCapacity`.
+ * view lengths, `groupCount`, `noiseLabel`, `maximumVerticesPerGroup` and `vertexCapacity`.
  */
 export type GPUGroupConvexHullProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'group-convex-hull'`. */
@@ -102,7 +118,7 @@ export type GPUGroupConvexHullProps = {
   /** Largest hull emitted per group. Larger hulls are dropped and flagged. At least 3. */
   maximumVerticesPerGroup: number;
   /** Capacity of `vertexIndices`: hulls that would overflow it are dropped and flagged. */
-  totalCapacity: number;
+  vertexCapacity: number;
   /**
    * Compile-time number of parallel prefilter levels before the per-group chain, 0 to
    * {@link GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS}. Every level keeps only the hull
@@ -110,6 +126,16 @@ export type GPUGroupConvexHullProps = {
    * rows. Defaults to 0 below 8192 rows and 2 above. The hull is identical for every value.
    */
   prefilterLevels?: number;
+  /**
+   * Compile-time Akl-Toussaint filter before the sorts. Per group it finds the eight extreme
+   * lattice points (min and max of x, y, x + y and x - y) and marks every row strictly inside the
+   * convex octagon they span as discarded, with exact integer orientation tests. Discarded rows
+   * take the excluded-row group key, so they sort last and the prefilter and chain never walk
+   * them. Boundary and collinear points are always kept, so the hull is identical for `true` and
+   * `false`. Defaults to `true` up to 65536 groups (the extreme tables hold 16 words per group),
+   * `false` above, where it throws if forced on.
+   */
+  extremePointFilter?: boolean;
   /** Caller-owned outputs. */
   output: GPUGroupConvexHullOutput;
 };
@@ -138,10 +164,20 @@ export type GPUGroupConvexHullProps = {
  * - Vertices are counter-clockwise, ring not closed, starting at the smallest `(x, y)` vertex.
  * - Output is bounded: see {@link GPUGroupConvexHullOutput}. A hull over
  *   `maximumVerticesPerGroup` is dropped whole. Remaining hulls are admitted in group order until
- *   `totalCapacity` runs out: the first group that does not fit and every later group are dropped
+ *   `vertexCapacity` runs out: the first group that does not fit and every later group are dropped
  *   (never truncated into a wrong polygon), and `sizes` still reports their true sizes.
  *
  * ## Cost
+ *
+ * Before the sorts, `extremePointFilter` (default on) runs the Akl-Toussaint heuristic: per group
+ * it finds the eight extreme lattice points, and every row strictly inside their octagon, tested
+ * exactly, is given the excluded-row key. Interior rows cannot be hull vertices, and boundary or
+ * collinear rows are kept, so the hull is bit for bit the same. `GPUSort` has a fixed length and
+ * its nodes cannot be skipped from the GPU, so the three sorts still cover every row; the saving
+ * is in everything after them. Discarded rows form the last sorted run, which the chunk prefilter
+ * skips whole, so on a blob the prefilter and the chain walk only the few rows outside the octagon.
+ * The chunk prefilter levels stay useful after the filter, for groups whose points are mostly on or
+ * near the hull (annuli, circles, uniform disks), where the octagon removes little.
  *
  * Sorting and orientation are parallel. Inputs of at least 8192 rows first run chunk prefilter
  * levels (`prefilterLevels`, default 2): every 256 consecutive sorted rows of a group get their own
@@ -167,6 +203,8 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   readonly groupCount: number;
   /** Resolved number of parallel prefilter levels. */
   readonly prefilterLevels: number;
+  /** Resolved {@link GPUGroupConvexHullProps.extremePointFilter}. */
+  readonly extremePointFilter: boolean;
 
   constructor(props: GPUGroupConvexHullProps) {
     this.id = props.id ?? 'group-convex-hull';
@@ -174,14 +212,6 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['labels', props.labels]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
@@ -190,49 +220,41 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
-    validatePackedUint32View(props.labels, `${id} labels`);
+    validatePackedView(props.labels, ['uint32'], `${id} labels`);
     if (props.labels.length !== rows) {
       throw new Error(`${id} labels length must equal positions length`);
     }
     this.groupCount = props.groupCount;
-    if (
-      !Number.isInteger(this.groupCount) ||
-      this.groupCount < 1 ||
-      this.groupCount > MAXIMUM_ROWS
-    ) {
-      throw new Error(`${id} groupCount must be a positive integer below 2^24`);
+    validateCapacity(id, 'groupCount', this.groupCount, 1, MAXIMUM_ROWS);
+    if (props.noiseLabel !== undefined) {
+      validateCapacity(id, 'noiseLabel', props.noiseLabel, 0);
     }
-    if (
-      props.noiseLabel !== undefined &&
-      (!Number.isInteger(props.noiseLabel) || props.noiseLabel < 0 || props.noiseLabel > 0xffffffff)
-    ) {
-      throw new Error(`${id} noiseLabel must be a uint32`);
-    }
-    if (!Number.isInteger(props.maximumVerticesPerGroup) || props.maximumVerticesPerGroup < 3) {
-      throw new Error(`${id} maximumVerticesPerGroup must be an integer of at least 3`);
-    }
-    if (!Number.isInteger(props.totalCapacity) || props.totalCapacity < 1) {
-      throw new Error(`${id} totalCapacity must be a positive integer`);
-    }
+    validateCapacity(id, 'maximumVerticesPerGroup', props.maximumVerticesPerGroup, 3);
+    validateCapacity(id, 'vertexCapacity', props.vertexCapacity);
     this.prefilterLevels =
       props.prefilterLevels ?? (rows >= PREFILTER_MINIMUM_ROWS ? DEFAULT_PREFILTER_LEVELS : 0);
-    if (
-      !Number.isInteger(this.prefilterLevels) ||
-      this.prefilterLevels < 0 ||
-      this.prefilterLevels > GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS
-    ) {
+    validateCapacity(
+      id,
+      'prefilterLevels',
+      this.prefilterLevels,
+      0,
+      GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS
+    );
+    this.extremePointFilter =
+      props.extremePointFilter ?? this.groupCount <= EXTREME_FILTER_DEFAULT_MAXIMUM_GROUPS;
+    if (this.extremePointFilter && this.groupCount > EXTREME_FILTER_DEFAULT_MAXIMUM_GROUPS) {
       throw new Error(
-        `${id} prefilterLevels must be an integer in [0, ${GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS}]`
+        `${id} extremePointFilter supports at most ${EXTREME_FILTER_DEFAULT_MAXIMUM_GROUPS} groups`
       );
     }
     const groups = this.groupCount;
     const checks = [
-      ['vertexIndices', output.vertexIndices, ['uint32'], props.totalCapacity],
-      ['vertexPositions', output.vertexPositions, ['float32x2'], props.totalCapacity],
+      ['vertexIndices', output.vertexIndices, ['uint32'], props.vertexCapacity],
+      ['vertexPositions', output.vertexPositions, ['float32x2'], props.vertexCapacity],
       ['offsets', output.offsets, ['uint32'], groups + 1],
       ['counts', output.counts, ['uint32'], groups],
       ['sizes', output.sizes, ['uint32'], groups],
-      ['overflow', output.overflow, ['uint32'], 1]
+      ['overflow', output.status.overflow, ['uint32'], 1]
     ] as const;
     for (const [name, view, formats, length] of checks) {
       if (!view) {
@@ -250,13 +272,22 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns key, lattice, three sort passes, offsets, chain, bound and emit nodes in order. */
+  /**
+   * Returns key, lattice, extreme-point filter, three sort passes, offsets, prefilter, chain, bound
+   * and emit nodes in order.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, groupCount} = this;
-    const {output, positions, labels, maximumVerticesPerGroup, totalCapacity} = props;
-    validateGraphViewsBelongToGraph(id, graph, [positions, labels, ...Object.values(output)]);
+    const {output, positions, labels, maximumVerticesPerGroup, vertexCapacity} = props;
+    const {status, ...columns} = output;
+    validateGraphViewsBelongToGraph(id, graph, [
+      positions,
+      labels,
+      ...Object.values(columns),
+      status.overflow
+    ]);
     const rows = positions.length;
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
@@ -389,6 +420,22 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       )
     );
 
+    // 2b. Akl-Toussaint filter: rows strictly inside their group's extreme octagon get the
+    // excluded-row key, so they sort last and no later stage walks them.
+    let sortGroupKeys = groupKeys;
+    if (this.extremePointFilter) {
+      sortGroupKeys = u32('filtered-group-keys', rows);
+      nodes.push(
+        ...this.getExtremePointFilterNodes(graph, {
+          rows,
+          groupKeys,
+          latticeX,
+          latticeY,
+          filteredGroupKeys: sortGroupKeys
+        })
+      );
+    }
+
     // 3. Stable LSD sort: y, then x, then group.
     const sortedYKeys = u32('sorted-y-keys', rows);
     const permutationY = u32('permutation-y', rows);
@@ -430,7 +477,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
         rows,
         [
           read('permutation', permutationX, 'u32'),
-          read('groupKeys', groupKeys, 'u32'),
+          read('groupKeys', sortGroupKeys, 'u32'),
           write('keys', keysGroup, 'u32')
         ],
         'keys[keysOffset + index] = groupKeys[groupKeysOffset + permutation[permutationOffset + index]];'
@@ -496,9 +543,13 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
       const runStart =
         level === 0
           ? `let key = groupKeys[groupKeysOffset + runBegin];
-    var runEnd = runBegin + 1u;
-    while (runEnd < chunkEnd && groupKeys[groupKeysOffset + runEnd] == key) {
-      runEnd++;
+    // The excluded-row run is last in sorted order: skip it whole instead of walking it.
+    var runEnd = chunkEnd;
+    if (key < GROUP_COUNT) {
+      runEnd = runBegin + 1u;
+      while (runEnd < chunkEnd && groupKeys[groupKeysOffset + runEnd] == key) {
+        runEnd++;
+      }
     }`
           : `let key = findGroup(runBegin);
     let runEnd = min(chunkEnd, groupOffsets[groupOffsetsOffset + key + 1u]);`;
@@ -697,7 +748,7 @@ fn findGroup(row: u32) -> u32 {
       createFillNode<Parameters>(graph, {
         id: `${id}-zero-overflow`,
         operation: OPERATION,
-        view: output.overflow,
+        view: output.status.overflow,
         type: 'u32',
         value: '0u',
         componentCount: 1
@@ -708,7 +759,7 @@ fn findGroup(row: u32) -> u32 {
         [
           read('sizes', trueSizes, 'u32'),
           write('eligible', eligibleSizes, 'u32'),
-          write('overflow', output.overflow, 'atomic<u32>')
+          write('overflow', output.status.overflow, 'atomic<u32>')
         ],
         `let size = sizes[sizesOffset + index];
   let isEligible = size <= ${maximumVerticesPerGroup}u;
@@ -736,7 +787,7 @@ fn findGroup(row: u32) -> u32 {
         view: output.vertexIndices,
         type: 'u32',
         value: '0xffffffffu',
-        componentCount: totalCapacity
+        componentCount: vertexCapacity
       }),
       kernel(
         'emit',
@@ -749,14 +800,14 @@ fn findGroup(row: u32) -> u32 {
           read('permutation', chainPermutation, 'u32'),
           write('vertexIndices', output.vertexIndices, 'u32'),
           write('counts', output.counts, 'u32'),
-          write('overflow', output.overflow, 'atomic<u32>')
+          write('overflow', output.status.overflow, 'atomic<u32>')
         ],
         `let size = eligible[eligibleOffset + index];
   let offset = offsets[offsetsOffset + index];
   let base = segmentOffsets[segmentOffsetsOffset + index] + index;
   var emitted = 0u;
   if (size > 0u) {
-    if (offset + size > ${totalCapacity}u) {
+    if (offset + size > ${vertexCapacity}u) {
       atomicOr(&overflow[overflowOffset], ${GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW}u);
     } else {
       emitted = size;
@@ -772,7 +823,7 @@ fn findGroup(row: u32) -> u32 {
       nodes.push(
         kernel(
           'vertex-positions',
-          totalCapacity,
+          vertexCapacity,
           [
             read('vertexIndices', output.vertexIndices, 'u32'),
             read('positions', positions, 'f32'),
@@ -789,15 +840,246 @@ fn findGroup(row: u32) -> u32 {
     }
     return nodes;
   }
+
+  /**
+   * Akl-Toussaint filter nodes. Two accumulation passes find the eight extreme lattice points of
+   * every group (values first, then a deterministic tie-break on the other coordinate), one
+   * kernel orders them into a counter-clockwise octagon, and the last kernel writes the group key
+   * of every row, or the excluded-row key when the row is strictly inside its octagon.
+   *
+   * Up to `EXTREME_PRIVATE_GROUP_LIMIT` groups, each invocation folds 16 rows into
+   * workgroup-private tables that are flushed once per workgroup (two stages, library rule 14).
+   * Above it the per-row atomics spread over at least 2048 table words.
+   */
+  private getExtremePointFilterNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    views: {
+      rows: number;
+      groupKeys: GraphDataView<'uint32'>;
+      latticeX: GraphDataView<'uint32'>;
+      latticeY: GraphDataView<'uint32'>;
+      filteredGroupKeys: GraphDataView<'uint32'>;
+    }
+  ): GPUCommandNode<Parameters>[] {
+    const {id, groupCount} = this;
+    const {rows, groupKeys, latticeX, latticeY, filteredGroupKeys} = views;
+    const tableLength = groupCount * EXTREME_DIRECTION_COUNT;
+    const values = createTransientView(graph, `${id}-extreme-values`, 'uint32', tableLength);
+    const ties = createTransientView(graph, `${id}-extreme-ties`, 'uint32', tableLength);
+    const octagon = createTransientView(graph, `${id}-octagon`, 'uint32', 2 * tableLength);
+    const binding = (
+      name: string,
+      view: GraphDataView,
+      type: 'u32' | 'atomic<u32>' = 'u32',
+      access: 'read' | 'read_write' = 'read'
+    ): WGSLKernelBinding => ({name, view, type, access});
+    const isPrivate = groupCount <= EXTREME_PRIVATE_GROUP_LIMIT;
+    const declarations = `const GROUP_COUNT: u32 = ${groupCount}u;
+const LATTICE_BIAS: u32 = ${LATTICE_BIAS}u;`;
+    // Every table word is a minimum. Maximum directions store the bitwise complement, so a fill of
+    // 0xffffffff is the identity for all eight and an empty group decodes harmlessly.
+    const createAccumulateNode = (
+      step: 'extreme-values' | 'extreme-ties',
+      table: GraphDataView<'uint32'>,
+      extraBindings: WGSLKernelBinding[],
+      getStatements: (update: (slot: string, value: string) => string) => string
+    ): GPUCommandNode<Parameters> => {
+      const update = (slot: string, value: string) =>
+        isPrivate
+          ? `atomicMin(&localTable[${slot}], ${value});`
+          : `atomicMin(&table[tableOffset + ${slot}], ${value});`;
+      const rowSource = `let group = groupKeys[groupKeysOffset + row];
+    if (group < GROUP_COUNT) {
+      let x = latticeX[latticeXOffset + row];
+      let y = latticeY[latticeYOffset + row];
+      let sum = x + y;
+      let difference = x + LATTICE_BIAS - y;
+      let base = group * ${EXTREME_DIRECTION_COUNT}u;
+      ${getStatements(update)}
+    }`;
+      const bindings = [
+        binding('groupKeys', groupKeys),
+        binding('latticeX', latticeX),
+        binding('latticeY', latticeY),
+        ...extraBindings,
+        binding('table', table, 'atomic<u32>', 'read_write')
+      ];
+      if (!isPrivate) {
+        return createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-${step}`,
+          operation: OPERATION,
+          variant: step,
+          bindings,
+          invocationCount: rows,
+          declarations,
+          body: `let row = index;
+  ${rowSource}`
+        });
+      }
+      const threadCount = Math.ceil(rows / EXTREME_ROWS_PER_THREAD);
+      const stride = Math.ceil(threadCount / EXTREME_WORKGROUP_SIZE) * EXTREME_WORKGROUP_SIZE;
+      return createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-${step}`,
+        operation: OPERATION,
+        variant: step,
+        bindings,
+        invocationCount: threadCount,
+        workgroupSize: EXTREME_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${declarations}
+const TABLE_LENGTH: u32 = ${tableLength}u;
+var<workgroup> localTable: array<atomic<u32>, ${tableLength}>;`,
+        // No early return: every invocation of a workgroup must reach the barriers.
+        body: `for (var slot = localInvocationIndex; slot < TABLE_LENGTH; slot += ${EXTREME_WORKGROUP_SIZE}u) {
+    atomicStore(&localTable[slot], 0xffffffffu);
+  }
+  workgroupBarrier();
+  for (var rowStep = 0u; rowStep < ${EXTREME_ROWS_PER_THREAD}u; rowStep++) {
+    let row = index + rowStep * ${stride}u;
+    if (row < ${rows}u) {
+    ${rowSource}
+    }
+  }
+  workgroupBarrier();
+  for (var slot = localInvocationIndex; slot < TABLE_LENGTH; slot += ${EXTREME_WORKGROUP_SIZE}u) {
+    let value = atomicLoad(&localTable[slot]);
+    if (value != 0xffffffffu) {
+      atomicMin(&table[tableOffset + slot], value);
+    }
+  }`
+      });
+    };
+    const createFill = (name: string, view: GraphDataView<'uint32'>) =>
+      createFillNode<Parameters>(graph, {
+        id: `${id}-fill-${name}`,
+        operation: OPERATION,
+        view,
+        type: 'u32',
+        value: '0xffffffffu',
+        componentCount: tableLength
+      });
+    const extremeReads = `let minX = values[valuesOffset + base];
+      let maxX = ~values[valuesOffset + base + 1u];
+      let minY = values[valuesOffset + base + 2u];
+      let maxY = ~values[valuesOffset + base + 3u];
+      let minSum = values[valuesOffset + base + 4u];
+      let maxSum = ~values[valuesOffset + base + 5u];
+      let minDifference = values[valuesOffset + base + 6u];
+      let maxDifference = ~values[valuesOffset + base + 7u];`;
+    return [
+      createFill('extreme-values', values),
+      createAccumulateNode(
+        'extreme-values',
+        values,
+        [],
+        update => `${update('base', 'x')}
+      ${update('base + 1u', '~x')}
+      ${update('base + 2u', 'y')}
+      ${update('base + 3u', '~y')}
+      ${update('base + 4u', 'sum')}
+      ${update('base + 5u', '~sum')}
+      ${update('base + 6u', 'difference')}
+      ${update('base + 7u', '~difference')}`
+      ),
+      createFill('extreme-ties', ties),
+      // Ties on an extreme value resolve to the smallest other coordinate (y for the x extremes,
+      // x for the others), so each extreme is one lattice point that no scheduling order changes.
+      createAccumulateNode(
+        'extreme-ties',
+        ties,
+        [binding('values', values)],
+        update => `${extremeReads}
+      if (x == minX) { ${update('base', 'y')} }
+      if (x == maxX) { ${update('base + 1u', 'y')} }
+      if (y == minY) { ${update('base + 2u', 'x')} }
+      if (y == maxY) { ${update('base + 3u', 'x')} }
+      if (sum == minSum) { ${update('base + 4u', 'x')} }
+      if (sum == maxSum) { ${update('base + 5u', 'x')} }
+      if (difference == minDifference) { ${update('base + 6u', 'x')} }
+      if (difference == maxDifference) { ${update('base + 7u', 'x')} }`
+      ),
+      // The octagon in counter-clockwise order of support direction: S, SE, E, NE, N, NW, W, SW.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-extreme-points`,
+        operation: OPERATION,
+        variant: 'extreme-points',
+        bindings: [
+          binding('values', values),
+          binding('ties', ties),
+          binding('octagon', octagon, 'u32', 'read_write')
+        ],
+        invocationCount: groupCount,
+        declarations: `const LATTICE_BIAS: u32 = ${LATTICE_BIAS}u;`,
+        body: `let base = index * ${EXTREME_DIRECTION_COUNT}u;
+  let outputBase = index * 16u;
+  ${extremeReads.replace(/^ {6}/gm, '  ')}
+  // Empty groups decode to arbitrary words; no row ever reads them, and u32 arithmetic wraps.
+  var points = array<vec2<u32>, 8>(
+    vec2<u32>(ties[tiesOffset + base + 2u], minY),
+    vec2<u32>(ties[tiesOffset + base + 7u], ties[tiesOffset + base + 7u] + LATTICE_BIAS - maxDifference),
+    vec2<u32>(maxX, ties[tiesOffset + base + 1u]),
+    vec2<u32>(ties[tiesOffset + base + 5u], maxSum - ties[tiesOffset + base + 5u]),
+    vec2<u32>(ties[tiesOffset + base + 3u], maxY),
+    vec2<u32>(ties[tiesOffset + base + 6u], ties[tiesOffset + base + 6u] + LATTICE_BIAS - minDifference),
+    vec2<u32>(minX, ties[tiesOffset + base]),
+    vec2<u32>(ties[tiesOffset + base + 4u], minSum - ties[tiesOffset + base + 4u])
+  );
+  for (var vertex = 0u; vertex < 8u; vertex++) {
+    octagon[octagonOffset + outputBase + 2u * vertex] = points[vertex].x;
+    octagon[octagonOffset + outputBase + 2u * vertex + 1u] = points[vertex].y;
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-filter-rows`,
+        operation: OPERATION,
+        variant: 'filter-rows',
+        bindings: [
+          binding('groupKeys', groupKeys),
+          binding('latticeX', latticeX),
+          binding('latticeY', latticeY),
+          binding('octagon', octagon),
+          binding('filteredKeys', filteredGroupKeys, 'u32', 'read_write')
+        ],
+        invocationCount: rows,
+        declarations: `${declarations}
+${ORIENTATION_WGSL}`,
+        // A row is dropped only when it is strictly left of every non-degenerate octagon edge, so
+        // points on the boundary, on a collinear edge or equal to an extreme always stay.
+        body: `let group = groupKeys[groupKeysOffset + index];
+  var key = group;
+  if (group < GROUP_COUNT) {
+    let px = i32(latticeX[latticeXOffset + index]);
+    let py = i32(latticeY[latticeYOffset + index]);
+    var edgeCount = 0u;
+    var isInterior = true;
+    for (var edge = 0u; edge < 8u; edge++) {
+      let startIndex = octagonOffset + group * 16u + edge * 2u;
+      let endIndex = octagonOffset + group * 16u + ((edge + 1u) & 7u) * 2u;
+      let ax = i32(octagon[startIndex]);
+      let ay = i32(octagon[startIndex + 1u]);
+      let bx = i32(octagon[endIndex]);
+      let by = i32(octagon[endIndex + 1u]);
+      if (ax == bx && ay == by) {
+        continue;
+      }
+      edgeCount++;
+      if (orientationOfPoints(ax, ay, bx, by, px, py) <= 0) {
+        isInterior = false;
+        break;
+      }
+    }
+    if (isInterior && edgeCount > 0u) {
+      key = GROUP_COUNT;
+    }
+  }
+  filteredKeys[filteredKeysOffset + index] = key;`
+      })
+    ];
+  }
 }
 
-/** Exact lattice orientation and the representative test, shared by the chain kernel. @internal */
-const HULL_WGSL = /* wgsl */ `
-fn isRepresentative(row: u32, begin: u32) -> bool {
-  return row == begin || latticeX[latticeXOffset + row] != latticeX[latticeXOffset + row - 1u] ||
-    latticeY[latticeYOffset + row] != latticeY[latticeYOffset + row - 1u];
-}
-
+/** Exact lattice orientation of three points; shared by the filter, prefilter and chain. @internal */
+const ORIENTATION_WGSL = /* wgsl */ `
 // Exact 32 x 32 -> 64 bit unsigned product as (high, low); operands are below 2^30.
 fn multiplyUnsigned(a: u32, b: u32) -> vec2<u32> {
   let a0 = a & 0xffffu;
@@ -829,18 +1111,33 @@ fn compareProducts(leftSign: i32, left: vec2<u32>, rightSign: i32, right: vec2<u
   return magnitude * leftSign;
 }
 
-// Exact orientation of sorted rows a, b, c: 1 counter-clockwise, -1 clockwise, 0 collinear.
-fn orientation(a: u32, b: u32, c: u32) -> i32 {
-  let ax = i32(latticeX[latticeXOffset + a]);
-  let ay = i32(latticeY[latticeYOffset + a]);
-  let abx = i32(latticeX[latticeXOffset + b]) - ax;
-  let aby = i32(latticeY[latticeYOffset + b]) - ay;
-  let acx = i32(latticeX[latticeXOffset + c]) - ax;
-  let acy = i32(latticeY[latticeYOffset + c]) - ay;
+// Exact orientation of points a, b, c: 1 counter-clockwise, -1 clockwise, 0 collinear.
+fn orientationOfPoints(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i32 {
+  let abx = bx - ax;
+  let aby = by - ay;
+  let acx = cx - ax;
+  let acy = cy - ay;
   let leftSign = getSign(abx) * getSign(acy);
   let rightSign = getSign(aby) * getSign(acx);
   let left = multiplyUnsigned(u32(abs(abx)), u32(abs(acy)));
   let right = multiplyUnsigned(u32(abs(aby)), u32(abs(acx)));
   return compareProducts(leftSign, left, rightSign, right);
+}
+`;
+
+/** Representative test and row orientation, shared by the prefilter and chain kernels. @internal */
+const HULL_WGSL = /* wgsl */ `${ORIENTATION_WGSL}
+fn isRepresentative(row: u32, begin: u32) -> bool {
+  return row == begin || latticeX[latticeXOffset + row] != latticeX[latticeXOffset + row - 1u] ||
+    latticeY[latticeYOffset + row] != latticeY[latticeYOffset + row - 1u];
+}
+
+// Exact orientation of sorted rows a, b, c: 1 counter-clockwise, -1 clockwise, 0 collinear.
+fn orientation(a: u32, b: u32, c: u32) -> i32 {
+  return orientationOfPoints(
+    i32(latticeX[latticeXOffset + a]), i32(latticeY[latticeYOffset + a]),
+    i32(latticeX[latticeXOffset + b]), i32(latticeY[latticeYOffset + b]),
+    i32(latticeX[latticeXOffset + c]), i32(latticeY[latticeYOffset + c])
+  );
 }
 `;

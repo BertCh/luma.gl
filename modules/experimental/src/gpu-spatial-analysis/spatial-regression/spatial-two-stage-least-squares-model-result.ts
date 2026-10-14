@@ -7,7 +7,7 @@ import {
   getGPURegressionPredictorNames,
   type GPURegressionCoefficient,
   type GPURegressionModelResult
-} from '../contracts/model-result';
+} from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import {
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN,

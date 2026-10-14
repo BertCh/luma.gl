@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -12,11 +11,14 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createPatchKeysNode,
+  createPatchUnresolvedNodes,
   getPatchLabelViews,
   getPatchRunSegmentsBody,
   getPatchSegmentCount,
@@ -27,6 +29,7 @@ import {GPU_RASTER_SIEVE_PARAMETER_LENGTH} from './gpu-raster-sieve-parameters';
 
 const OPERATION = 'GPURasterSieve';
 const NO_LABEL = '0xffffffffu';
+const SIEVE_WORKGROUP_SIZE = 256;
 
 /** How a sieved patch is resolved. */
 export type GPURasterSieveMode = 'remove' | 'merge';
@@ -54,7 +57,7 @@ export type GPURasterSieveOutput = {
  * Properties for {@link GPURasterSieve}.
  *
  * Per-frame (no recompile): the contents of `parameters` and of the label views. Compile-time:
- * dimensions, `patchCapacity`, `mode`, `connectivity` and which optional outputs are present.
+ * the `grid` size, `patchCapacity`, `mode`, `connectivity` and which optional outputs are present.
  */
 export type GPURasterSieveProps = GPURasterPatchLabels & {
   /** Prefix for generated node and transient IDs. Defaults to `'raster-sieve'`. */
@@ -69,7 +72,8 @@ export type GPURasterSieveProps = GPURasterPatchLabels & {
   /**
    * `'remove'` (default) turns small patches into background. `'merge'` gives each small patch the
    * label of its largest adjacent patch that is not small (ties go to the lowest label); a small
-   * patch with no such neighbor becomes background.
+   * patch with no such neighbor becomes background (`gdal_sieve` leaves it unaltered). Background
+   * (label 0) is never a merge target, as `gdal_sieve` never merges into masked pixels.
    */
   mode?: GPURasterSieveMode;
   /** Adjacency used by `'merge'` to find neighbors. Default 4. */
@@ -90,8 +94,11 @@ export type GPURasterSieveProps = GPURasterPatchLabels & {
  * mask's clumps). Merging is a single pass: a small patch whose neighbors are all small is removed
  * rather than merged into a small neighbor, and no chains form.
  *
- * `labelValidity`, `converged`, `componentCount` and `overflow` turn pixels into background exactly
- * as in `GPURasterPatchMetrics`.
+ * `validity`, `converged`, `componentCount` and `overflow` turn pixels into background exactly
+ * as in `GPURasterPatchMetrics`. Unfinished labels (`converged` reads 0 or `overflow` is nonzero)
+ * are not reported as "no patches": every word of `output.labels`, `output.patchTargets` and
+ * `output.sievedCount` is then {@link GPU_RASTER_PATCH_UNRESOLVED}, which a finished run never
+ * produces.
  */
 export class GPURasterSieve implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -116,32 +123,26 @@ export class GPURasterSieve implements GPUCommandNodeProducer {
     if (this.connectivity !== 4 && this.connectivity !== 8) {
       throw new Error(`${id} connectivity must be 4 or 8`);
     }
-    if (
-      !Number.isSafeInteger(props.patchCapacity) ||
-      props.patchCapacity < 1 ||
-      props.patchCapacity > pixelCount
-    ) {
-      throw new Error(`${id} patchCapacity must be an integer in [1, pixel count]`);
-    }
-    validatePackedUint32View(props.parameters, `${id} parameters`);
+    validateCapacity(id, 'patchCapacity', props.patchCapacity, 1, pixelCount);
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_RASTER_SIEVE_PARAMETER_LENGTH) {
       throw new Error(
-        `${id} parameters must hold ${GPU_RASTER_SIEVE_PARAMETER_LENGTH} uint32 values`
+        `${id} parameters must contain at least ${GPU_RASTER_SIEVE_PARAMETER_LENGTH} values`
       );
     }
     const {output} = props;
-    validatePackedUint32View(output.labels, `${id} output.labels`);
+    validatePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== pixelCount) {
-      throw new Error(`${id} output.labels length must equal width * height`);
+      throw new Error(`${id} output.labels length must equal grid width * height`);
     }
     if (output.patchTargets) {
-      validatePackedUint32View(output.patchTargets, `${id} output.patchTargets`);
+      validatePackedView(output.patchTargets, ['uint32'], `${id} output.patchTargets`);
       if (output.patchTargets.length !== props.patchCapacity) {
         throw new Error(`${id} output.patchTargets length must equal patchCapacity`);
       }
     }
     if (output.sievedCount) {
-      validatePackedUint32View(output.sievedCount, `${id} output.sievedCount`);
+      validatePackedView(output.sievedCount, ['uint32'], `${id} output.sievedCount`);
       if (output.sievedCount.length < 1) {
         throw new Error(`${id} output.sievedCount must hold one uint32`);
       }
@@ -158,7 +159,8 @@ export class GPURasterSieve implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, mode, connectivity} = this;
-    const {output, width, height, patchCapacity, parameters} = props;
+    const {output, patchCapacity, parameters} = props;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       ...getPatchLabelViews(props),
       parameters,
@@ -324,12 +326,31 @@ const HEIGHT: u32 = ${height}u;`;
             : [])
         ],
         invocationCount: patchCapacity,
-        body: `let count = pixelCounts[pixelCountsOffset + index];
+        // With sievedCount each workgroup folds its small patches in a workgroup counter and lane 0
+        // issues one global atomicAdd, instead of every small patch hitting one address. The kernel
+        // is unguarded so the barriers stay in uniform control flow.
+        ...(sievedCount
+          ? {
+              guardIndex: false,
+              workgroupSize: SIEVE_WORKGROUP_SIZE,
+              declarations: 'var<workgroup> workgroupSievedCount: atomic<u32>;'
+            }
+          : {}),
+        body: `${
+          sievedCount
+            ? `if (localInvocationIndex == 0u) {
+    atomicStore(&workgroupSievedCount, 0u);
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {`
+            : ''
+        }
+  let count = pixelCounts[pixelCountsOffset + index];
   var finalLabel = 0u;
   if (count >= parameters[parametersOffset]) {
     finalLabel = index + 1u;
   } else if (count > 0u) {
-    ${sievedCount ? 'atomicAdd(&sievedCount[sievedCountOffset], 1u);' : ''}
+    ${sievedCount ? 'atomicAdd(&workgroupSievedCount, 1u);' : ''}
     ${
       mode === 'merge'
         ? `if (bestCounts[bestCountsOffset + index] != 0u) {
@@ -338,7 +359,19 @@ const HEIGHT: u32 = ${height}u;`;
         : ''
     }
   }
-  patchTargets[patchTargetsOffset + index] = finalLabel;`
+  patchTargets[patchTargetsOffset + index] = finalLabel;${
+    sievedCount
+      ? `
+  }
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    let workgroupTotal = atomicLoad(&workgroupSievedCount);
+    if (workgroupTotal > 0u) {
+      atomicAdd(&sievedCount[sievedCountOffset], workgroupTotal);
+    }
+  }`
+      : ''
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-relabel`,
@@ -354,6 +387,13 @@ const HEIGHT: u32 = ${height}u;`;
   sievedLabels[sievedLabelsOffset + index] =
     select(0u, patchTargets[patchTargetsOffset + key - 1u], key != 0u);`
       })
+    );
+    nodes.push(
+      ...createPatchUnresolvedNodes(graph, id, OPERATION, props, [
+        {view: output.labels, type: 'u32'},
+        ...(output.patchTargets ? [{view: output.patchTargets, type: 'u32' as const}] : []),
+        ...(sievedCount ? [{view: sievedCount, type: 'u32' as const}] : [])
+      ])
     );
     return nodes;
   }

@@ -8,6 +8,7 @@ import {Computation} from '@luma.gl/engine';
 import {
   GraphVectorView,
   type GPUCommandGraph,
+  type GPUCommandGraphCPUCondition,
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
@@ -94,13 +95,19 @@ export class GPUCrossfilterSelection {
   private readonly stateValues = new Uint32Array(SELECTION_STATE_WORD_COUNT);
   private readonly stateBuffer: Buffer;
   private readonly stateView: GraphDataView<'uint32'>;
+  private readonly ownedBuffers: Buffer[] = [];
   private destroyed = false;
 
-  /** Creates one initially disabled selection without reading source data back to the CPU. */
+  /**
+   * Creates one initially disabled selection without reading source data back to the CPU.
+   *
+   * `persistentMask` allocates the graph-owned mask as a persistent buffer instead of a transient
+   * one, so its contents survive encodings in which the predicate pass is skipped.
+   */
   constructor(
     graph: GPUCommandGraph<any>,
     dimension: GPUCrossfilterDimension,
-    props: {id?: string} = {}
+    props: {id?: string; persistentMask?: boolean} = {}
   ) {
     this.graph = graph;
     this.dimension = dimension;
@@ -122,7 +129,12 @@ export class GPUCrossfilterSelection {
       validateSeparateOutputBuffers(dimension, dimension.mask, this.id);
       this.mask = dimension.mask;
     } else {
-      this.mask = createSelectionMask(graph, this.id, primaryInput);
+      this.mask = createSelectionMask(
+        graph,
+        this.id,
+        primaryInput,
+        props.persistentMask ? this.ownedBuffers : undefined
+      );
     }
 
     const stateBuffer = graph.device.createBuffer({
@@ -146,8 +158,14 @@ export class GPUCrossfilterSelection {
       this.stateBuffer = stateBuffer;
     } catch (error) {
       stateBuffer.destroy();
+      for (const buffer of this.ownedBuffers) buffer.destroy();
       throw error;
     }
+  }
+
+  /** Returns the five-word control block read by the predicate passes. @internal */
+  getControlView(): GraphDataView<'uint32'> {
+    return this.stateView;
   }
 
   /** Activates an inclusive scalar range without rebuilding the compiled command graph. */
@@ -190,8 +208,16 @@ export class GPUCrossfilterSelection {
     this.writeState();
   }
 
-  /** Adds one reusable predicate-evaluation pass for each nonempty original source chunk. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /**
+   * Adds one reusable predicate-evaluation pass for each nonempty original source chunk.
+   *
+   * `createCondition` supplies one CPU condition per pass (each pass needs its own, because a
+   * condition may keep per-node state), so a controller can skip passes whose inputs are unchanged.
+   */
+  addToGraph<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    createCondition?: (nodeId: string) => GPUCommandGraphCPUCondition<Parameters> | undefined
+  ): void {
     if (this.destroyed) {
       throw new Error(`${this.id} selection has been destroyed`);
     }
@@ -209,8 +235,11 @@ export class GPUCrossfilterSelection {
       if (primaryChunk.length === 0) {
         continue;
       }
+      const passId =
+        primaryInput instanceof GraphVectorView ? `${this.id}-chunk-${chunkIndex}` : this.id;
       addSelectionPass(graph, {
-        id: primaryInput instanceof GraphVectorView ? `${this.id}-chunk-${chunkIndex}` : this.id,
+        id: passId,
+        condition: createCondition?.(passId),
         primaryInput: primaryChunk,
         secondaryInput: secondaryChunks?.[chunkIndex],
         rejectNonFinite: this.dimension.rejectNonFinite === true,
@@ -229,6 +258,7 @@ export class GPUCrossfilterSelection {
     }
     this.destroyed = true;
     this.stateBuffer.destroy();
+    for (const buffer of this.ownedBuffers) buffer.destroy();
   }
 
   /** Uploads only the fixed-size control block used by already compiled predicate passes. */
@@ -244,14 +274,19 @@ export class GPUCrossfilterSelection {
 function createSelectionMask<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  input: GPUCrossfilterScalarInput
+  input: GPUCrossfilterScalarInput,
+  ownedBuffers?: Buffer[]
 ): GPUCrossfilterMask {
+  const createView = (viewId: string, length: number): GraphDataView<'uint32'> =>
+    ownedBuffers
+      ? createOwnedView(graph, viewId, 'uint32', length, ownedBuffers)
+      : createTransientView(graph, viewId, 'uint32', length);
   if (!(input instanceof GraphVectorView)) {
-    return createTransientView(graph, `${id}-mask`, 'uint32', input.length);
+    return createView(`${id}-mask`, input.length);
   }
 
   const data = input.data.map((chunk, chunkIndex) =>
-    createTransientView(graph, `${id}-mask-chunk-${chunkIndex}`, 'uint32', chunk.length)
+    createView(`${id}-mask-chunk-${chunkIndex}`, chunk.length)
   );
   return new GraphVectorView({
     id: `${id}-mask`,
@@ -266,11 +301,38 @@ function createSelectionMask<Parameters>(
   });
 }
 
+/**
+ * Creates a persistent, zero-initialized, graph-imported buffer view whose contents survive
+ * encodings that skip its writer. The caller destroys every buffer pushed to `ownedBuffers`.
+ *
+ * @internal
+ */
+export function createOwnedView<Parameters, Format extends GPUCrossfilterScalarFormat>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  format: Format,
+  length: number,
+  ownedBuffers: Buffer[]
+): GraphDataView<Format> {
+  const buffer = graph.device.createBuffer({
+    id,
+    byteLength: Math.max(length, 1) * SCALAR_BYTE_LENGTH,
+    usage: Buffer.STORAGE | Buffer.COPY_DST
+  });
+  ownedBuffers.push(buffer);
+  const handle = graph.importBuffer(
+    {id, byteLength: buffer.byteLength, usage: buffer.usage},
+    buffer
+  );
+  return graph.createDataView(handle, {format, length});
+}
+
 /** Adds one packed scalar or two-axis inclusive selection kernel. */
 function addSelectionPass<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
+    condition?: GPUCommandGraphCPUCondition<Parameters>;
     primaryInput: GraphDataView<GPUCrossfilterScalarFormat>;
     secondaryInput?: GraphDataView<GPUCrossfilterScalarFormat>;
     rejectNonFinite: boolean;
@@ -360,6 +422,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   graph.addComputePass({
     id: props.id,
     resources,
+    condition: props.condition,
     compile: ({device}) => {
       const computation = new Computation(device, {
         id: props.id,

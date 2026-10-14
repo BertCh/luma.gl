@@ -43,7 +43,7 @@ export type GPURasterCellStatisticsOutput = {
   /** Number of distinct valid values (0 where the cell is nodata). */
   variety?: GraphDataView<'uint32'>;
   /** Number of valid layers, written for every cell. */
-  count?: GraphDataView<'uint32'>;
+  counts?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -114,7 +114,7 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
         id,
         `output.${name}`,
         view,
-        name === 'count' || name === 'variety' ? 'uint32' : 'float32',
+        name === 'counts' || name === 'variety' ? 'uint32' : 'float32',
         cellCount
       );
     }
@@ -171,7 +171,7 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
     ${statement}
   }`;
     const nodes: GPUCommandNode<Parameters>[] = [];
-    if (output.sum || output.mean || output.standardDeviation || output.count) {
+    if (output.sum || output.mean || output.standardDeviation || output.counts) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-moments`,
@@ -182,7 +182,7 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
             ...write('sumOut', output.sum),
             ...write('meanOut', output.mean),
             ...write('deviationOut', output.standardDeviation),
-            ...write('countOut', output.count, 'u32')
+            ...write('countOut', output.counts, 'u32')
           ],
           invocationCount: cellCount,
           declarations,
@@ -193,7 +193,7 @@ fn readLayer(layer: u32, cell: u32, value: ptr<function, f32>) -> bool {
   let mean = sum / f32(max(count, 1u));
   ${output.sum ? 'sumOut[sumOutOffset + index] = select(nan, sum, isDefined);' : ''}
   ${output.mean ? 'meanOut[meanOutOffset + index] = select(nan, mean, isDefined);' : ''}
-  ${output.count ? 'countOut[countOutOffset + index] = count;' : ''}
+  ${output.counts ? 'countOut[countOutOffset + index] = count;' : ''}
   ${
     output.standardDeviation
       ? `var squaredDeviationSum = 0.0;
@@ -312,7 +312,7 @@ function getOutputEntries(
       'majority',
       'minority',
       'variety',
-      'count'
+      'counts'
     ] as const
   ).flatMap(name => {
     const view = output[name];

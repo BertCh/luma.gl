@@ -4,17 +4,17 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -25,6 +25,22 @@ const OPERATION = 'GPUCatchmentAccessibility';
 
 /** Floating catchment method of {@link GPUCatchmentAccessibility}. */
 export type GPUCatchmentMethod = '2sfca' | '3sfca';
+
+/** Caller-owned outputs of {@link GPUCatchmentAccessibility}. */
+export type GPUCatchmentAccessibilityOutput = {
+  /** Accessibility `A_i` per demand location. */
+  accessibility: GraphDataView<'float32'>;
+  /**
+   * Optional supply-to-demand ratio per facility: `R_j = S_j / sum_i P_i w_ji` for `'2sfca'`, with
+   * `P_i / T_i` in place of `P_i` for `'3sfca'`. 0 when no demand is in range.
+   */
+  ratios?: GraphDataView<'float32'>;
+  /**
+   * Optional count of facilities each demand location reaches: the slots of its demand-weights row
+   * whose neighbor is a facility, whatever their weight.
+   */
+  reachableFacilities?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUCatchmentAccessibility}.
@@ -59,34 +75,35 @@ export type GPUCatchmentAccessibilityProps = {
    * the transpose or a second `GPUNeighborSearch` from demand to facilities.
    */
   demandWeights?: GPUSpatialWeights;
-  /** Caller-owned accessibility `A_i` per demand location. */
-  accessibility: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned supply-to-demand ratio per facility: `R_j = S_j / sum_i P_i w_ji` for
-   * `'2sfca'`, with `P_i / T_i` in place of `P_i` for `'3sfca'`. 0 when no demand is in range.
-   */
-  ratios?: GraphDataView<'float32'>;
-  /** Optional caller-owned count of facilities each demand location reaches (the row length of the demand weights). */
-  reachableFacilities?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUCatchmentAccessibilityOutput;
 };
 
 /**
  * Two-step and three-step floating catchment area accessibility on any {@link GPUSpatialWeights}
- * (Euclidean kernel, network-cost kernel, binary band), generalising the 2SFCA of
- * `GPUNetworkAccessibility`, which reads a dense network cost matrix.
+ * (Euclidean kernel, network-cost kernel, binary band). This is the library's one floating
+ * catchment kernel.
  *
  * With `w` the decay weights, facility supply `S_j` and demand `P_i`:
  * - `'2sfca'`: `R_j = S_j / sum_i P_i w_ji` over the demand in facility `j`'s row (0 when the sum is
  *   0), then `A_i = sum_j w_ij R_j` over the facilities in demand row `i`.
- * - `'3sfca'`: selection weights `G_ij = w_ij / T_i` with `T_i = sum_k w_ik` over demand row `i`.
- *   `R_j = S_j / sum_i P_i G_ij`, `A_i = sum_j G_ij R_j`. Demand locations with `T_i = 0` are skipped.
+ * - `'3sfca'` (Wan, Zou and Sternberg 2012; PySAL `access` `three_stage_fca`): selection weights
+ *   `G_ij = w_ij / T_i` with `T_i = sum_k w_ik` over demand row `i` (the demand weights), applied
+ *   together with the decay. The ratio step reads facility row `j` (the facility weights):
+ *   `R_j = S_j / sum_i P_i w_ji^2 / T_i`. The score step reads demand row `i`:
+ *   `A_i = sum_j (w_ij^2 / T_i) R_j`. Both are `G_ij W_ij` only when the demand weights are the
+ *   transpose of the facility weights. Demand locations with `T_i = 0` are skipped.
  *
  * Both methods conserve supply, `sum_i P_i A_i = sum_j S_j` over facilities with demand in range,
  * whenever the demand weights are the transpose of the facility weights, for any decay function.
  *
  * Each output row accumulates its neighbors in slot order in one invocation, so results are
  * deterministic and match a sequential CPU sum within f32 rounding. Neighbor IDs outside the
- * partner row space are skipped.
+ * partner row space are skipped, and a non-finite demand or ratio (from a non-finite supply) is
+ * missing: it adds nothing to a sum.
+ *
+ * Network costs: `GPUNetworkCostWeights` turns a network cost matrix into the facility weights and
+ * their transpose, which is how the `catchment` option of `GPUNetworkAccessibility` runs.
  *
  * Spatial context: this operator reads no positions, only the weights, so it has no
  * `spatialContext` prop. Distance units and the coordinate space (planar, or great-circle meters)
@@ -117,18 +134,23 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
     if (!props.demandWeights && props.supply.length !== props.demand.length) {
       throw new Error(`${id} needs demandWeights unless supply and demand have equal length`);
     }
+    const {output} = props;
     for (const [name, view] of [
       ['supply', props.supply],
       ['demand', props.demand],
-      ['accessibility', props.accessibility],
-      ['ratios', props.ratios]
+      ['output.accessibility', output.accessibility],
+      ['output.ratios', output.ratios]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
-    if (props.reachableFacilities) {
-      validatePackedUint32View(props.reachableFacilities, `${id} reachableFacilities`);
+    if (output.reachableFacilities) {
+      validatePackedView(
+        output.reachableFacilities,
+        ['uint32'],
+        `${id} output.reachableFacilities`
+      );
     }
     if (props.supply.length !== this.facilityCount) {
       throw new Error(`${id} supply length must equal the facilityWeights row count`);
@@ -136,24 +158,23 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
     if (props.demand.length !== this.demandCount) {
       throw new Error(`${id} demand length must equal the demandWeights row count`);
     }
-    if (props.accessibility.length !== this.demandCount) {
-      throw new Error(`${id} accessibility length must equal the demand count`);
+    if (output.accessibility.length !== this.demandCount) {
+      throw new Error(`${id} output.accessibility length must equal the demand count`);
     }
-    if (props.ratios && props.ratios.length !== this.facilityCount) {
-      throw new Error(`${id} ratios length must equal the facility count`);
+    if (output.ratios && output.ratios.length !== this.facilityCount) {
+      throw new Error(`${id} output.ratios length must equal the facility count`);
     }
-    if (props.reachableFacilities && props.reachableFacilities.length !== this.demandCount) {
-      throw new Error(`${id} reachableFacilities length must equal the demand count`);
+    if (output.reachableFacilities && output.reachableFacilities.length !== this.demandCount) {
+      throw new Error(`${id} output.reachableFacilities length must equal the demand count`);
     }
     const weightViews = getWeightViews(props);
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [props.accessibility, props.ratios, props.reachableFacilities],
-      [props.supply, props.demand, ...weightViews]
-    );
-    const outputBuffers = [props.accessibility, props.ratios, props.reachableFacilities]
-      .filter(view => view !== undefined)
-      .map(view => view.buffer);
+    const outputs = [output.accessibility, output.ratios, output.reachableFacilities];
+    validateGraphOutputsDisjointFromInputs(id, outputs, [
+      props.supply,
+      props.demand,
+      ...weightViews
+    ]);
+    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
     if (new Set(outputBuffers).size !== outputBuffers.length) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
@@ -167,19 +188,20 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, facilityCount, demandCount} = this;
-    const {supply, demand, facilityWeights, accessibility} = props;
+    const {supply, demand, facilityWeights, output} = props;
+    const {accessibility} = output;
     const demandWeights = props.demandWeights ?? facilityWeights;
     validateGraphViewsBelongToGraph(id, graph, [
       supply,
       demand,
       accessibility,
-      props.ratios,
-      props.reachableFacilities,
+      output.ratios,
+      output.reachableFacilities,
       ...getWeightViews(props)
     ]);
     const isThreeStep = props.method === '3sfca';
     const ratios =
-      props.ratios ?? createTransientView(graph, `${id}-ratios`, 'float32', facilityCount);
+      output.ratios ?? createTransientView(graph, `${id}-ratios`, 'float32', facilityCount);
     const selection = isThreeStep
       ? createTransientView(graph, `${id}-selection`, 'float32', demandCount)
       : undefined;
@@ -226,18 +248,25 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
           {name: 'ratios', view: ratios, type: 'f32', access: 'read_write'}
         ],
         invocationCount: facilityCount,
-        declarations: `const PARTNERS: u32 = ${demandCount}u;`,
+        declarations: `const PARTNERS: u32 = ${demandCount}u;
+${IS_FINITE_BITS_WGSL}`,
         body: `var captured = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
     if (partner < PARTNERS) {
-      ${
-        isThreeStep
-          ? `let total = selection[selectionOffset + partner];
-      if (total > 0.0) {
-        captured += demand[demandOffset + partner] * weights[weightsOffset + slot] / total;
-      }`
-          : 'captured += demand[demandOffset + partner] * weights[weightsOffset + slot];'
+      let partnerDemand = demand[demandOffset + partner];
+      // A non-finite demand is missing and captures nothing.
+      if (isFiniteBits(partnerDemand)) {
+        ${
+          isThreeStep
+            ? `let total = selection[selectionOffset + partner];
+        if (total > 0.0) {
+          // Wan, Zou and Sternberg (2012): selection weight G = w / T times the decay w.
+          let weight = weights[weightsOffset + slot];
+          captured += partnerDemand * weight * weight / total;
+        }`
+            : 'captured += partnerDemand * weights[weightsOffset + slot];'
+        }
       }
     }
   }
@@ -256,12 +285,18 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
           {name: 'accessibility', view: accessibility, type: 'f32', access: 'read_write'}
         ],
         invocationCount: demandCount,
-        declarations: `const PARTNERS: u32 = ${facilityCount}u;`,
+        declarations: `const PARTNERS: u32 = ${facilityCount}u;
+${IS_FINITE_BITS_WGSL}`,
         body: `var score = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
     if (partner < PARTNERS) {
-      score += weights[weightsOffset + slot] * ratios[ratiosOffset + partner];
+      let ratio = ratios[ratiosOffset + partner];
+      // A non-finite ratio (a non-finite supply) is missing and adds nothing.
+      if (isFiniteBits(ratio)) {
+        let weight = weights[weightsOffset + slot];
+        score += ${isThreeStep ? 'weight * weight' : 'weight'} * ratio;
+      }
     }
   }
   ${
@@ -273,7 +308,7 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
   accessibility[accessibilityOffset + index] = score;`
       })
     );
-    if (props.reachableFacilities) {
+    if (output.reachableFacilities) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-reachable`,
@@ -282,7 +317,7 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
           bindings: [
             {name: 'offsets', view: demandWeights.offsets, type: 'u32', access: 'read'},
             {name: 'neighbors', view: demandWeights.neighbors, type: 'u32', access: 'read'},
-            {name: 'reachable', view: props.reachableFacilities, type: 'u32', access: 'read_write'}
+            {name: 'reachable', view: output.reachableFacilities, type: 'u32', access: 'read_write'}
           ],
           invocationCount: demandCount,
           declarations: `const PARTNERS: u32 = ${facilityCount}u;`,

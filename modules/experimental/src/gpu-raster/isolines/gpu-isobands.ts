@@ -24,6 +24,8 @@ import {
   validateRasterAlgebraNoData,
   validateRasterAlgebraView
 } from '../raster-algebra/raster-algebra-utils';
+import {validateRasterGrid} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {GPU_ISOBANDS_PARAMETER_LENGTH} from './isobands-parameters';
 import {getIsobandsCellWGSL} from './isobands-wgsl';
 
@@ -31,9 +33,9 @@ const OPERATION = 'GPUIsobands';
 
 /**
  * Caller-owned outputs of {@link GPUIsobands}. Provide any of `bandClasses`, the geometry group
- * (`triangles`, `triangleBands`, `count`, `overflow`, optional `requiredCount` and `vertexCount`) and
- * the boundary edge group (`edges`, `edgeBands`, `edgeCount`, `edgeOverflow`, optional
- * `edgeTotalCount`).
+ * (`triangles`, `triangleBands`, `status.count`, `status.overflow`, optional `status.requiredCount`
+ * and `status.vertexCount`) and the boundary edge group (`edges`, `edgeBands`, `status.edgeCount`,
+ * `status.edgeOverflow`, optional `status.edgeRequiredCount`).
  */
 export type GPUIsobandsOutput = {
   /**
@@ -50,14 +52,6 @@ export type GPUIsobandsOutput = {
   triangles?: GraphDataView<'float32x2'>;
   /** Band index per triangle. Its length is the triangle capacity. */
   triangleBands?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving the triangle count, clamped to the capacity. */
-  count?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when more triangles were produced than fit, otherwise 0. */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped triangle count. */
-  requiredCount?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving `3 * count`, the vertex count of a non-indexed indirect draw. */
-  vertexCount?: GraphDataView<'uint32'>;
   /**
    * Band boundary edges `(x0, y0, x1, y1)`, counter-clockwise around each band region (the band
    * lies on the left). Edges shared by two cells cancel, so only true region boundaries remain:
@@ -67,29 +61,44 @@ export type GPUIsobandsOutput = {
   edges?: GraphDataView<'float32x4'>;
   /** Band index per edge. Its length is the edge capacity. */
   edgeBands?: GraphDataView<'uint32'>;
+  /**
+   * One-row status words. `count`, `overflow`, `requiredCount` and `vertexCount` go with the
+   * geometry group; `edgeCount`, `edgeOverflow` and `edgeRequiredCount` go with the edges.
+   */
+  status?: GPUIsobandsStatus;
+};
+
+/** One-row status words of {@link GPUIsobands}. */
+export type GPUIsobandsStatus = {
+  /** One-row scalar receiving the triangle count, clamped to the capacity. */
+  count?: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving the unclamped triangle count. */
+  requiredCount?: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving `3 * count`, the vertex count of a non-indexed indirect draw. */
+  vertexCount?: GraphDataView<'uint32'>;
   /** One-row scalar receiving the edge count, clamped to the capacity. */
   edgeCount?: GraphDataView<'uint32'>;
+  /** Optional one-row scalar receiving the unclamped edge count. */
+  edgeRequiredCount?: GraphDataView<'uint32'>;
+  /** One-row scalar receiving 1 when more triangles were produced than fit, otherwise 0. */
+  overflow?: GraphDataView<'uint32'>;
   /** One-row scalar receiving 1 when more edges were produced than fit, otherwise 0. */
   edgeOverflow?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped edge count. */
-  edgeTotalCount?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUIsobands}.
  *
  * Per-frame (no recompile): the contents of `values`, `validity`, `breaks` and `parameters` (active
- * break count, extent, optional band window). Topology: `width`, `height`, `breaks.length` (the
+ * break count, extent, optional band window). Topology: `grid` size, `breaks.length` (the
  * maximum break count), `noDataValue`, the optional views and the output capacity.
  */
 export type GPUIsobandsProps = {
   /** Prefix for generated node IDs. Defaults to `'isobands'`. */
   id?: string;
-  /** Raster width in samples, at least 2. */
-  width: number;
-  /** Raster height in samples, at least 2. */
-  height: number;
-  /** Packed row-major float32 raster, at least `width * height` rows. NaN samples are nodata. */
+  /** Raster grid: its width and height (each at least 2) size the kernels. */
+  grid: GPURasterMetadata;
+  /** Packed row-major float32 raster, at least `width * height` rows. NaN and infinite samples are nodata. */
   values: GraphDataView<'float32'>;
   /** Optional row-major `uint32` validity; zero marks a nodata sample. */
   validity?: GraphDataView<'uint32'>;
@@ -149,13 +158,11 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     this.id = props.id ?? 'isobands';
     this.props = props;
     const {id} = this;
-    const {output, width, height} = props;
-    validateRasterAlgebraCount(id, 'width', width, 2, 0x7fffffff);
-    validateRasterAlgebraCount(id, 'height', height, 2, 0x7fffffff);
-    const sampleCount = width * height;
-    if (!Number.isSafeInteger(sampleCount) || sampleCount > 0xffffffff) {
-      throw new Error(`${id} width * height must fit in 32 bits`);
-    }
+    const {output} = props;
+    const sampleCount = validateRasterGrid(id, props.grid);
+    const {width, height} = props.grid;
+    validateRasterAlgebraCount(id, 'grid width', width, 2, 0x7fffffff);
+    validateRasterAlgebraCount(id, 'grid height', height, 2, 0x7fffffff);
     this.cellCount = (width - 1) * (height - 1);
     validateRasterAlgebraView(id, 'values', props.values, 'float32', sampleCount);
     validateRasterAlgebraNoData(id, props.noDataValue);
@@ -170,22 +177,32 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       GPU_ISOBANDS_PARAMETER_LENGTH
     );
     validateRasterAlgebraView(id, 'output.bandClasses', output.bandClasses, 'uint32', sampleCount);
-    const geometryViews = [output.triangles, output.triangleBands, output.count, output.overflow];
+    const geometryViews = [
+      output.triangles,
+      output.triangleBands,
+      output.status?.count,
+      output.status?.overflow
+    ];
     const hasGeometry = geometryViews.some(view => view !== undefined);
     if (hasGeometry && geometryViews.some(view => view === undefined)) {
       throw new Error(
-        `${id} geometry output needs triangles, triangleBands, count and overflow together`
+        `${id} geometry output needs triangles, triangleBands, status.count and status.overflow together`
       );
     }
-    const edgeViews = [output.edges, output.edgeBands, output.edgeCount, output.edgeOverflow];
+    const edgeViews = [
+      output.edges,
+      output.edgeBands,
+      output.status?.edgeCount,
+      output.status?.edgeOverflow
+    ];
     const hasEdges = edgeViews.some(view => view !== undefined);
     if (hasEdges && edgeViews.some(view => view === undefined)) {
       throw new Error(
-        `${id} edge output needs edges, edgeBands, edgeCount and edgeOverflow together`
+        `${id} edge output needs edges, edgeBands, status.edgeCount and status.edgeOverflow together`
       );
     }
-    if (!hasEdges && output.edgeTotalCount) {
-      throw new Error(`${id} edgeTotalCount belongs to the edge output`);
+    if (!hasEdges && output.status?.edgeRequiredCount) {
+      throw new Error(`${id} status.edgeRequiredCount belongs to the edge output`);
     }
     if (!output.bandClasses && !hasGeometry && !hasEdges) {
       throw new Error(`${id} needs output.bandClasses, the geometry output or the edge output`);
@@ -202,9 +219,9 @@ export class GPUIsobands implements GPUCommandNodeProducer {
         );
       }
       for (const [name, view] of [
-        ['edgeCount', output.edgeCount],
-        ['edgeOverflow', output.edgeOverflow],
-        ['edgeTotalCount', output.edgeTotalCount]
+        ['status.edgeCount', output.status?.edgeCount],
+        ['status.edgeOverflow', output.status?.edgeOverflow],
+        ['status.edgeRequiredCount', output.status?.edgeRequiredCount]
       ] as const) {
         validateRasterAlgebraView(id, `output.${name}`, view, 'uint32', 1);
       }
@@ -212,8 +229,10 @@ export class GPUIsobands implements GPUCommandNodeProducer {
         throw new Error(`${id} output.edges must be packed float32x4`);
       }
     }
-    if (!hasGeometry && (output.requiredCount || output.vertexCount)) {
-      throw new Error(`${id} requiredCount and vertexCount belong to the geometry output`);
+    if (!hasGeometry && (output.status?.requiredCount || output.status?.vertexCount)) {
+      throw new Error(
+        `${id} status.requiredCount and status.vertexCount belong to the geometry output`
+      );
     }
     this.triangleCapacity = output.triangleBands?.length ?? 0;
     if (hasGeometry) {
@@ -227,10 +246,10 @@ export class GPUIsobands implements GPUCommandNodeProducer {
         );
       }
       for (const [name, view] of [
-        ['count', output.count],
-        ['overflow', output.overflow],
-        ['requiredCount', output.requiredCount],
-        ['vertexCount', output.vertexCount]
+        ['status.count', output.status?.count],
+        ['status.overflow', output.status?.overflow],
+        ['status.requiredCount', output.status?.requiredCount],
+        ['status.vertexCount', output.status?.vertexCount]
       ] as const) {
         validateRasterAlgebraView(id, `output.${name}`, view, 'uint32', 1);
       }
@@ -242,14 +261,14 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     const writable = [
       output.bandClasses,
       output.triangleBands,
-      output.count,
-      output.overflow,
-      output.requiredCount,
-      output.vertexCount,
+      output.status?.count,
+      output.status?.overflow,
+      output.status?.requiredCount,
+      output.status?.vertexCount,
       output.edgeBands,
-      output.edgeCount,
-      output.edgeOverflow,
-      output.edgeTotalCount
+      output.status?.edgeCount,
+      output.status?.edgeOverflow,
+      output.status?.edgeRequiredCount
     ];
     validateRasterAlgebraAliasing(
       id,
@@ -263,7 +282,8 @@ export class GPUIsobands implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, maximumBreakCount, cellCount, triangleCapacity, edgeCapacity} = this;
-    const {output, width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     validateRasterAlgebraGraph(id, graph, [
       props.values,
       props.validity,
@@ -272,15 +292,15 @@ export class GPUIsobands implements GPUCommandNodeProducer {
       output.bandClasses,
       output.triangles,
       output.triangleBands,
-      output.count,
-      output.overflow,
-      output.requiredCount,
-      output.vertexCount,
+      output.status?.count,
+      output.status?.overflow,
+      output.status?.requiredCount,
+      output.status?.vertexCount,
       output.edges,
       output.edgeBands,
-      output.edgeCount,
-      output.edgeOverflow,
-      output.edgeTotalCount
+      output.status?.edgeCount,
+      output.status?.edgeOverflow,
+      output.status?.edgeRequiredCount
     ]);
     const noEdges = `const EMIT_EDGES: bool = false;
 fn writeEdge(index: u32, start: vec2<f32>, end: vec2<f32>, band: u32) {}`;
@@ -314,7 +334,7 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
           invocationCount: width * height,
           declarations: common,
           body: `let value = values[valuesOffset + index];
-  var isValid = !isNoDataValue(value);
+  var isValid = isFiniteValue(value) && !isNoDataValue(value);
   ${props.validity ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
   let breakCountValue = params[paramsOffset];
   let breakCount = min(u32(clamp(select(0.0, breakCountValue, isFiniteValue(breakCountValue)), 0.0, 4294967040.0)), MAXIMUM_BREAK_COUNT);
@@ -323,7 +343,12 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`;
       );
     }
 
-    if (output.triangles && output.triangleBands && output.count && output.overflow) {
+    if (
+      output.triangles &&
+      output.triangleBands &&
+      output.status?.count &&
+      output.status?.overflow
+    ) {
       const cellWGSL = getIsobandsCellWGSL(Boolean(props.validity));
       const cellCounts = createTransientView(graph, `${id}-cell-counts`, 'uint32', cellCount);
       const cellOffsets = createTransientView(graph, `${id}-cell-offsets`, 'uint32', cellCount);
@@ -406,21 +431,28 @@ ${cellWGSL}`,
           requiredCount: total,
           output: {
             ids: output.triangleBands,
-            count: output.count,
-            overflow: output.overflow,
-            requiredCount: output.requiredCount
+            status: {
+              count: output.status!.count!,
+              overflow: output.status!.overflow!,
+              requiredCount: output.status!.requiredCount
+            }
           }
         })
       );
-      if (output.vertexCount) {
+      if (output.status?.vertexCount) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-vertex-count`,
             operation: OPERATION,
             variant: 'vertex-count',
             bindings: [
-              {name: 'countIn', view: output.count, type: 'u32', access: 'read'},
-              {name: 'vertexCountOut', view: output.vertexCount, type: 'u32', access: 'read_write'}
+              {name: 'countIn', view: output.status?.count, type: 'u32', access: 'read'},
+              {
+                name: 'vertexCountOut',
+                view: output.status?.vertexCount,
+                type: 'u32',
+                access: 'read_write'
+              }
             ],
             invocationCount: 1,
             body: 'vertexCountOut[vertexCountOutOffset] = 3u * countIn[countInOffset];'
@@ -429,7 +461,12 @@ ${cellWGSL}`,
       }
     }
 
-    if (output.edges && output.edgeBands && output.edgeCount && output.edgeOverflow) {
+    if (
+      output.edges &&
+      output.edgeBands &&
+      output.status?.edgeCount &&
+      output.status?.edgeOverflow
+    ) {
       const cellWGSL = getIsobandsCellWGSL(Boolean(props.validity));
       const edgeCounts = createTransientView(graph, `${id}-edge-cell-counts`, 'uint32', cellCount);
       const edgeOffsets = createTransientView(
@@ -518,9 +555,11 @@ ${cellWGSL}`,
           requiredCount: edgeTotal,
           output: {
             ids: output.edgeBands,
-            count: output.edgeCount,
-            overflow: output.edgeOverflow,
-            requiredCount: output.edgeTotalCount
+            status: {
+              count: output.status!.edgeCount!,
+              overflow: output.status!.edgeOverflow!,
+              requiredCount: output.status!.edgeRequiredCount
+            }
           }
         })
       );

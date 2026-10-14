@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -19,16 +18,40 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {createSortedSegmentOffsetsNode} from '../../utils/sorted-segment-offsets';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {GPULineSplit} from '../../gpu-spatial-analysis/line-split/index';
-import type {GPULineSplitPieces} from '../../gpu-spatial-analysis/line-split/index';
-import type {GPUSpatialJoinLines} from '../../gpu-spatial-analysis/spatial-join/index';
+import {
+  validateCapacity,
+  validatePackedView,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
+import {
+  getGPULineSplitMaximumPieceBound,
+  GPULineSplit
+} from '../../gpu-spatial-analysis/line-split/index';
+import {validateLineNodingBounds} from '../../gpu-spatial-analysis/geometry-topology/gpu-line-noding';
+import type {
+  GPULineSplitPieces,
+  GPULineSplitProps
+} from '../../gpu-spatial-analysis/line-split/index';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  getWorkgroupCounterKernelSource,
+  WORKGROUP_COUNTER_WORKGROUP_SIZE
+} from '../network-workgroup-counters';
 
 const OPERATION = 'GPUNetworkNoding';
+
+/**
+ * Largest `intersectionCapacity` of {@link GPUNetworkNoding} on `device`: the internal line split
+ * bounds its pieces by `lines + 4 * intersectionCapacity` (see
+ * {@link getGPULineSplitMaximumPieceBound}), so a quarter of that bound, 1048576 on a default
+ * device (128 MiB bindings). `lines + 4 * intersectionCapacity` is validated too.
+ */
+export function getGPUNetworkNodingMaximumIntersectionCapacity(device: Device): number {
+  return Math.floor(getGPULineSplitMaximumPieceBound(device) / 4);
+}
 
 /** Order-preserving u32 keys of f32 values (for the atomic minimum origin) and the finite test. */
 const NODING_SNAP_WGSL = /* wgsl */ `
@@ -50,13 +73,16 @@ export const GPU_NETWORK_NODING_NONE = 0xffffffff;
 export type GPUNetworkNodingNodes = {
   /** Node coordinates. Capacity (`nodeCount` rows of the CSR) is the length. */
   positions: GraphDataView<'float32x2'>;
-  /** One-row scalar receiving `min(requiredCount, positions.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of distinct nodes. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /** GPU-written status words. */
+  status: {
+    /** One-row scalar receiving `min(requiredCount, positions.length)`. */
+    count: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped number of distinct nodes. */
+    requiredCount?: GraphDataView<'uint32'>;
+  };
 };
 
-/** Edge list of a noded network: edge `e` is piece `e` of {@link GPUNetworkNodingProps.pieces}. */
+/** Edge list of a noded network: edge `e` is piece `e` of {@link GPUNetworkNodingOutput.pieces}. */
 export type GPUNetworkNodingEdges = {
   /** Node ID at the start of each piece. `GPU_NETWORK_NODING_NONE` beyond `pieces.status.count`. */
   fromNodes: GraphDataView<'uint32'>;
@@ -68,11 +94,11 @@ export type GPUNetworkNodingEdges = {
 
 /**
  * Undirected CSR of the noded network: every edge appears twice, once in the row of each end node
- * (a loop appears twice in one row). Rows are ordered by edge, then start before end. The layout
- * is the one `GPUNetworkReachability` and `GPUNetworkServiceAreas` take as `offsets`,
- * `neighbors` and `weights`.
+ * (a loop appears twice in one row). Rows are ordered by edge, then start before end. It has the
+ * shape of `GPUNetworkTopology` (without node positions, which are `nodes.positions`), so it feeds
+ * the `topology` of `GPUNetworkReachability` and `GPUNetworkServiceAreas`.
  */
-export type GPUNetworkNodingCSR = {
+export type GPUNetworkNodingTopology = {
   /** Row offsets with `nodes.positions.length + 1` entries. Rows of unused nodes are empty. */
   offsets: GraphDataView<'uint32'>;
   /** Neighbor node per entry. Capacity `2 * pieces.sourceIds.length`. */
@@ -99,8 +125,11 @@ export type GPUNetworkNodingProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Linestrings, in input coordinate units (planar meters for a routable network). */
-  lines: GPUSpatialJoinLines;
-  /** Capacity of the internal intersection pair list; see `GPULineSplitProps`. */
+  lines: GPULineSplitProps['lines'];
+  /**
+   * Capacity of the internal intersection pair list; see `GPULineSplitProps`. At most
+   * {@link getGPUNetworkNodingMaximumIntersectionCapacity} (1048576 on a default device).
+   */
   intersectionCapacity: number;
   /**
    * One-row per-frame snap tolerance, at least 0. Piece end points whose integer tolerance cells
@@ -109,28 +138,37 @@ export type GPUNetworkNodingProps = {
    * first such end point. 0 merges only bit-identical end points. Two end points closer than the
    * tolerance but on opposite sides of a cell boundary stay separate nodes. Cells are exact up to
    * 2^24 per axis (for example 8.3 km at 0.5 mm, or 8,388 km at 0.5 m); a wider extent raises
-   * `overflow`.
+   * `output.status.overflow`.
    */
   tolerance: GraphDataView<'float32'>;
-  /** Output pieces, the geometry of the edges. */
-  pieces: GPULineSplitPieces;
-  /** Output nodes. */
-  nodes: GPUNetworkNodingNodes;
-  /** Output edge list. */
-  edges: GPUNetworkNodingEdges;
-  /** Output CSR. */
-  csr: GPUNetworkNodingCSR;
   /** Passed to `GPULineSplit`. */
   spatialSort?: boolean;
   /** Passed to `GPULineSplit`. */
   leafCapacity?: number;
-  /** Optional one-row count of uncertified segment pairs; see `GPUSegmentIntersection`. */
-  uncertainCount?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row flag: 1 when pieces, vertices, intersections or nodes exceeded a capacity, or
-   * the end points span more than 2^24 tolerance cells on an axis.
-   */
-  overflow?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUNetworkNodingOutput;
+};
+
+/** GPU-written outputs of {@link GPUNetworkNoding}. */
+export type GPUNetworkNodingOutput = {
+  /** Pieces, the geometry of the edges. */
+  pieces: GPULineSplitPieces;
+  /** Nodes. */
+  nodes: GPUNetworkNodingNodes;
+  /** Edge list. */
+  edges: GPUNetworkNodingEdges;
+  /** Undirected CSR network. */
+  topology: GPUNetworkNodingTopology;
+  /** Optional GPU-written status words. */
+  status?: {
+    /** Optional one-row count of uncertified segment pairs; see `GPUSegmentIntersection`. */
+    uncertainCount?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag: 1 when pieces, vertices, intersections or nodes exceeded a capacity, or
+     * the end points span more than 2^24 tolerance cells on an axis.
+     */
+    overflow?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -153,8 +191,8 @@ export type GPUNetworkNodingProps = {
  * so longitude/latitude lines must be projected first (a `spatialContext` with longitude/latitude
  * throws).
  *
- * Capacity: `pieces` bounds edges and vertices, `nodes.positions` bounds nodes. When any capacity
- * overflows, edges incident to a node beyond the capacity are left out of the CSR and `overflow`
+ * Capacity: `output.pieces` bounds edges and vertices, `output.nodes.positions` bounds nodes. When any capacity
+ * overflows, edges incident to a node beyond the capacity are left out of the CSR and `output.status.overflow`
  * is set. Nothing is read back.
  */
 export class GPUNetworkNoding implements GPUCommandNodeProducer {
@@ -174,20 +212,21 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
-    const {nodes, edges, csr, pieces} = props;
+    const {nodes, edges, topology: csr, pieces} = props.output;
+    validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     validatePackedView(props.tolerance, ['float32'], `${id} tolerance`);
     if (props.tolerance.length < 1) {
       throw new Error(`${id} tolerance must contain one float32 row`);
     }
-    validatePackedView(nodes.positions, ['float32x2'], `${id} nodes.positions`);
+    validatePackedView(nodes.positions, ['float32x2'], `${id} output.nodes.positions`);
     for (const [name, view] of [
-      ['nodes.count', nodes.count],
-      ['nodes.requiredCount', nodes.requiredCount],
-      ['overflow', props.overflow],
-      ['uncertainCount', props.uncertainCount]
+      ['output.nodes.status.count', nodes.status.count],
+      ['output.nodes.status.requiredCount', nodes.status.requiredCount],
+      ['output.status.overflow', props.output.status?.overflow],
+      ['output.status.uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must contain one uint32 row`);
         }
@@ -196,33 +235,40 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     this.nodeCapacity = nodes.positions.length;
     this.edgeCapacity = pieces.sourceIds.length;
     if (this.nodeCapacity < 1) {
-      throw new Error(`${id} nodes.positions must be non-empty`);
+      throw new Error(`${id} output.nodes.positions must be non-empty`);
+    }
+    // The endpoint kernels index the last endpoint, so an empty piece capacity would compile to
+    // an out-of-range constant (review B-25).
+    if (this.edgeCapacity < 1) {
+      throw new Error(`${id} output.pieces.sourceIds must be non-empty`);
     }
     if (csr.offsets.length !== this.nodeCapacity + 1) {
-      throw new Error(`${id} csr.offsets length must be nodes.positions.length + 1`);
+      throw new Error(
+        `${id} output.topology.offsets length must be output.nodes.positions.length + 1`
+      );
     }
-    validatePackedUint32View(csr.offsets, `${id} csr.offsets`);
-    validatePackedUint32View(csr.neighbors, `${id} csr.neighbors`);
-    validatePackedView(csr.weights, ['float32'], `${id} csr.weights`);
+    validatePackedView(csr.offsets, ['uint32'], `${id} output.topology.offsets`);
+    validatePackedView(csr.neighbors, ['uint32'], `${id} output.topology.neighbors`);
+    validatePackedView(csr.weights, ['float32'], `${id} output.topology.weights`);
     for (const [name, view] of [
-      ['csr.neighbors', csr.neighbors],
-      ['csr.weights', csr.weights],
-      ['csr.edgeIds', csr.edgeIds]
+      ['topology.neighbors', csr.neighbors],
+      ['topology.weights', csr.weights],
+      ['topology.edgeIds', csr.edgeIds]
     ] as const) {
       if (view && view.length !== this.edgeCapacity * 2) {
-        throw new Error(`${id} ${name} length must be twice the edge capacity`);
+        throw new Error(`${id} output.${name} length must be twice the edge capacity`);
       }
     }
-    validatePackedUint32View(edges.fromNodes, `${id} edges.fromNodes`);
-    validatePackedUint32View(edges.toNodes, `${id} edges.toNodes`);
-    validatePackedView(edges.lengths, ['float32'], `${id} edges.lengths`);
+    validatePackedView(edges.fromNodes, ['uint32'], `${id} output.edges.fromNodes`);
+    validatePackedView(edges.toNodes, ['uint32'], `${id} output.edges.toNodes`);
+    validatePackedView(edges.lengths, ['float32'], `${id} output.edges.lengths`);
     for (const [name, view] of [
-      ['edges.fromNodes', edges.fromNodes],
-      ['edges.toNodes', edges.toNodes],
-      ['edges.lengths', edges.lengths]
+      ['output.edges.fromNodes', edges.fromNodes],
+      ['output.edges.toNodes', edges.toNodes],
+      ['output.edges.lengths', edges.lengths]
     ] as const) {
       if (view.length !== this.edgeCapacity) {
-        throw new Error(`${id} ${name} length must equal pieces.sourceIds.length`);
+        throw new Error(`${id} ${name} length must equal output.pieces.sourceIds.length`);
       }
     }
   }
@@ -232,12 +278,27 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCapacity, edgeCapacity} = this;
-    const {pieces, nodes: nodeOutputs, edges, csr, tolerance} = props;
+    const {tolerance, output} = props;
+    const {pieces, nodes: nodeOutputs, edges, topology: csr} = output;
+    validateCapacity(
+      id,
+      'intersectionCapacity',
+      props.intersectionCapacity,
+      1,
+      getGPUNetworkNodingMaximumIntersectionCapacity(graph.device)
+    );
+    validateLineNodingBounds(
+      id,
+      graph.device,
+      props.lines.positions.length,
+      Math.max(props.lines.lineOffsets.length - 1, 0),
+      props.intersectionCapacity
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       tolerance,
       nodeOutputs.positions,
-      nodeOutputs.count,
-      nodeOutputs.requiredCount,
+      nodeOutputs.status.count,
+      nodeOutputs.status.requiredCount,
       edges.fromNodes,
       edges.toNodes,
       edges.lengths,
@@ -245,7 +306,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       csr.neighbors,
       csr.weights,
       csr.edgeIds,
-      props.overflow
+      props.output.status?.overflow
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const endpointCount = edgeCapacity * 2;
@@ -263,8 +324,12 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         intersectionCapacity: props.intersectionCapacity,
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
-        uncertainCount: props.uncertainCount,
-        pieces
+        output: {
+          pieces,
+          status: output.status?.uncertainCount
+            ? {uncertainCount: output.status.uncertainCount}
+            : undefined
+        }
       }).getCommandNodes(graph)
     );
 
@@ -279,6 +344,29 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     const endpointIndices = T('endpoint-indices', 'uint32', endpointCount);
     const snapOrigin = T('snap-origin', 'uint32', 2);
     const snapOverflow = T('snap-overflow', 'uint32', 1);
+    // The snap origin is the minimum endpoint, folded per workgroup into one atomic per axis
+    // (rule 14) instead of two atomics per endpoint.
+    const endpointOrigin = getWorkgroupCounterKernelSource({
+      counters: [
+        {target: 'snapOrigin', word: 0, operation: 'min'},
+        {target: 'snapOrigin', word: 1, operation: 'min'}
+      ],
+      rowCount: 'ENDPOINT_COUNT',
+      rowSource: `let edge = index / 2u;
+  endpointIndices[endpointIndicesOffset + index] = index;
+  var point = vec2f(0.0);
+  if (edge < pieceCount[pieceCountOffset]) {
+    var vertex = pieceOffsets[pieceOffsetsOffset + edge];
+    if ((index & 1u) == 1u) { vertex = pieceOffsets[pieceOffsetsOffset + edge + 1u] - 1u; }
+    point = vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
+    if (isFiniteCoordinate(point.x) && isFiniteCoordinate(point.y)) {
+      minCounter(0u, getOrderedKey(point.x));
+      minCounter(1u, getOrderedKey(point.y));
+    }
+  }
+  endpointPoints[endpointPointsOffset + index * 2u] = point.x;
+  endpointPoints[endpointPointsOffset + index * 2u + 1u] = point.y;`
+    });
     nodes.push(
       createFillNode<Parameters>(graph, {
         id: `${id}-clear-snap-origin`,
@@ -307,21 +395,12 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
           {name: 'snapOrigin', view: snapOrigin, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: endpointCount,
-        declarations: NODING_SNAP_WGSL,
-        body: `let edge = index / 2u;
-  endpointIndices[endpointIndicesOffset + index] = index;
-  var point = vec2f(0.0);
-  if (edge < pieceCount[pieceCountOffset]) {
-    var vertex = pieceOffsets[pieceOffsetsOffset + edge];
-    if ((index & 1u) == 1u) { vertex = pieceOffsets[pieceOffsetsOffset + edge + 1u] - 1u; }
-    point = vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
-    if (isFiniteCoordinate(point.x) && isFiniteCoordinate(point.y)) {
-      atomicMin(&snapOrigin[snapOriginOffset], getOrderedKey(point.x));
-      atomicMin(&snapOrigin[snapOriginOffset + 1u], getOrderedKey(point.y));
-    }
-  }
-  endpointPoints[endpointPointsOffset + index * 2u] = point.x;
-  endpointPoints[endpointPointsOffset + index * 2u + 1u] = point.y;`
+        workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${NODING_SNAP_WGSL}
+const ENDPOINT_COUNT: u32 = ${endpointCount}u;
+${endpointOrigin.declarations}`,
+        body: endpointOrigin.body
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-endpoint-keys`,
@@ -623,20 +702,20 @@ const LAST: u32 = ${endpointCount - 1}u;`,
       {name: 'headRanks', view: headRanks, type: 'u32', access: 'read'},
       {name: 'splitOverflow', view: splitOverflow, type: 'u32', access: 'read'},
       {name: 'snapOverflow', view: snapOverflow, type: 'u32', access: 'read'},
-      {name: 'nodeCount', view: nodeOutputs.count, type: 'u32', access: 'read_write'}
+      {name: 'nodeCount', view: nodeOutputs.status.count, type: 'u32', access: 'read_write'}
     ];
-    if (nodeOutputs.requiredCount) {
+    if (nodeOutputs.status.requiredCount) {
       scalarBindings.push({
         name: 'requiredCount',
-        view: nodeOutputs.requiredCount,
+        view: nodeOutputs.status.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (props.overflow) {
+    if (props.output.status?.overflow) {
       scalarBindings.push({
         name: 'overflow',
-        view: props.overflow,
+        view: props.output.status.overflow,
         type: 'u32',
         access: 'read_write'
       });
@@ -652,8 +731,8 @@ const LAST: u32 = ${endpointCount - 1}u;`,
 const LAST: u32 = ${endpointCount - 1}u;`,
         body: `let total = headRanks[headRanksOffset + LAST] + headFlags[headFlagsOffset + LAST];
   nodeCount[nodeCountOffset] = min(total, NODE_CAPACITY);
-  ${nodeOutputs.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
-  ${props.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u || snapOverflow[snapOverflowOffset] != 0u);' : ''}`
+  ${nodeOutputs.status.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
+  ${props.output.status?.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u || snapOverflow[snapOverflowOffset] != 0u);' : ''}`
       })
     );
     return nodes;

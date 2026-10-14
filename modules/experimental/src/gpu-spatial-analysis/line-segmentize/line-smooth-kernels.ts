@@ -6,10 +6,10 @@ import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgp
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 
 /**
- * Per-path Chaikin preparation: `smoothCounts[p]` is the vertex count of a smoothable path (open
+ * Per-line Chaikin preparation: `smoothCounts[p]` is the vertex count of a smoothable line (open
  * with at least two vertices, or closed with at least three after dropping a repeated closing
- * vertex), `plainCounts[p]` the vertex count of a path that is copied unchanged, and
- * `smoothFlags[p]` 1 for smoothable paths. Row `pathCount` of each column is 0 so an exclusive scan
+ * vertex), `plainCounts[p]` the vertex count of a line that is copied unchanged, and
+ * `smoothFlags[p]` 1 for smoothable lines. Row `lineCount` of each column is 0 so an exclusive scan
  * ends with the totals.
  *
  * @internal
@@ -20,27 +20,27 @@ export function createSmoothPrepareNode<Parameters>(
     id: string;
     operation: string;
     positions: GraphDataView<'float32x2'>;
-    pathOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     closed: boolean;
     smoothCounts: GraphDataView<'uint32'>;
     plainCounts: GraphDataView<'uint32'>;
     smoothFlags: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const pathCount = props.pathOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'smooth-prepare',
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
       {name: 'smoothCounts', view: props.smoothCounts, type: 'u32', access: 'read_write'},
       {name: 'plainCounts', view: props.plainCounts, type: 'u32', access: 'read_write'},
       {name: 'smoothFlags', view: props.smoothFlags, type: 'u32', access: 'read_write'}
     ],
-    invocationCount: pathCount + 1,
-    declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+    invocationCount: lineCount + 1,
+    declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const CLOSED: bool = ${props.closed};
 
@@ -49,9 +49,9 @@ fn getPosition(row: u32) -> vec2<f32> {
 }`,
     body: /* wgsl */ `var smoothCount = 0u;
   var plainCount = 0u;
-  if (index < PATH_COUNT) {
-    let start = min(pathOffsets[pathOffsetsOffset + index], ROW_COUNT);
-    let end = min(max(pathOffsets[pathOffsetsOffset + index + 1u], start), ROW_COUNT);
+  if (index < LINE_COUNT) {
+    let start = min(lineOffsets[lineOffsetsOffset + index], ROW_COUNT);
+    let end = min(max(lineOffsets[lineOffsetsOffset + index + 1u], start), ROW_COUNT);
     let count = end - start;
     var effectiveCount = count;
     if (CLOSED && count >= 2u && all(getPosition(start) == getPosition(end - 1u))) {
@@ -67,20 +67,20 @@ fn getPosition(row: u32) -> vec2<f32> {
   });
 }
 
-/** WGSL helpers for path offsets at a Chaikin level, from the scanned prepare columns. */
+/** WGSL helpers for line offsets at a Chaikin level, from the scanned prepare columns. */
 const LEVEL_OFFSETS_WGSL = /* wgsl */ `
-fn getLevelOffset(path: u32, scale: u32, withClosing: bool) -> u32 {
-  var offset = smoothStarts[smoothStartsOffset + path] * scale + plainStarts[plainStartsOffset + path];
+fn getLevelOffset(line: u32, scale: u32, withClosing: bool) -> u32 {
+  var offset = smoothStarts[smoothStartsOffset + line] * scale + plainStarts[plainStartsOffset + line];
   if (withClosing) {
-    offset += getClosingStart(path);
+    offset += getClosingStart(line);
   }
   return offset;
 }
 `;
 
 /**
- * Builds one Chaikin level: every output slot finds its path by binary search over the level's
- * path offsets and computes its vertex from two vertices of the previous level. Open paths keep
+ * Builds one Chaikin level: every output slot finds its line by binary search over the level's
+ * line offsets and computes its vertex from two vertices of the previous level. Open lines keep
  * both endpoints; closed rings wrap and, at the final level, repeat their first vertex.
  *
  * @internal
@@ -90,13 +90,16 @@ export function createSmoothLevelNode<Parameters>(
   props: {
     id: string;
     operation: string;
+    /** Level number, for the variant label only. */
     level: number;
+    /** One-word state holding the current level; {@link createSmoothLevelAdvanceNode} steps it. */
+    levelState: GraphDataView<'uint32'>;
     isFinal: boolean;
     closed: boolean;
-    pathCount: number;
-    /** Level 0 reads the input positions with `pathOffsets`; later levels read the previous level. */
+    lineCount: number;
+    /** Level 0 reads the input positions with `lineOffsets`; later levels read the previous level. */
     source: GraphDataView<'float32x2'>;
-    pathOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     smoothStarts: GraphDataView<'uint32'>;
     plainStarts: GraphDataView<'uint32'>;
     smoothFlagStarts?: GraphDataView<'uint32'>;
@@ -107,11 +110,12 @@ export function createSmoothLevelNode<Parameters>(
   const withClosing = props.isFinal && props.closed;
   const bindings: WGSLKernelBinding[] = [
     {name: 'source', view: props.source, type: 'f32', access: 'read'},
-    {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+    {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
     {name: 'smoothStarts', view: props.smoothStarts, type: 'u32', access: 'read'},
     {name: 'plainStarts', view: props.plainStarts, type: 'u32', access: 'read'},
     {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-    {name: 'destination', view: props.destination, type: 'f32', access: 'read_write'}
+    {name: 'destination', view: props.destination, type: 'f32', access: 'read_write'},
+    {name: 'levelState', view: props.levelState, type: 'u32', access: 'read'}
   ];
   if (withClosing && props.smoothFlagStarts) {
     bindings.push({
@@ -128,54 +132,55 @@ export function createSmoothLevelNode<Parameters>(
     variant: `smooth-level-${props.level}`,
     bindings,
     invocationCount: capacity,
-    declarations: `const PATH_COUNT: u32 = ${props.pathCount}u;
+    declarations: `const LINE_COUNT: u32 = ${props.lineCount}u;
 const CAPACITY: u32 = ${capacity}u;
 const SOURCE_LENGTH: u32 = ${props.source.length}u;
 const IS_FIRST_LEVEL: bool = ${props.level === 0};
 const CLOSED: bool = ${props.closed};
 const WITH_CLOSING: bool = ${withClosing};
-const SOURCE_SCALE: u32 = ${2 ** props.level}u;
-const DESTINATION_SCALE: u32 = ${2 ** (props.level + 1)}u;
 
-fn getClosingStart(path: u32) -> u32 {
-  ${withClosing ? 'return smoothFlagStarts[smoothFlagStartsOffset + path];' : 'return 0u;'}
+fn getClosingStart(line: u32) -> u32 {
+  ${withClosing ? 'return smoothFlagStarts[smoothFlagStartsOffset + line];' : 'return 0u;'}
 }
 ${LEVEL_OFFSETS_WGSL}
 
 fn getSource(row: u32) -> vec2<f32> {
   return vec2<f32>(source[sourceOffset + 2u * row], source[sourceOffset + 2u * row + 1u]);
 }`,
-    body: /* wgsl */ `let total = getLevelOffset(PATH_COUNT, DESTINATION_SCALE, WITH_CLOSING);
+    body: /* wgsl */ `// The level lives in a GPU word, so no pipeline depends on the level (rule 12).
+  let sourceScale = 1u << levelState[levelStateOffset];
+  let destinationScale = sourceScale << 1u;
+  let total = getLevelOffset(LINE_COUNT, destinationScale, WITH_CLOSING);
   if (index >= total) {
     return;
   }
-  // Largest path whose destination offset is at most index.
+  // Largest line whose destination offset is at most index.
   var low = 0u;
-  var high = PATH_COUNT;
+  var high = LINE_COUNT;
   while (high - low > 1u) {
     let middle = (low + high) / 2u;
-    if (getLevelOffset(middle, DESTINATION_SCALE, WITH_CLOSING) <= index) {
+    if (getLevelOffset(middle, destinationScale, WITH_CLOSING) <= index) {
       low = middle;
     } else {
       high = middle;
     }
   }
-  let path = low;
-  let local = index - getLevelOffset(path, DESTINATION_SCALE, WITH_CLOSING);
-  let smoothCount = smoothStarts[smoothStartsOffset + path + 1u] - smoothStarts[smoothStartsOffset + path];
-  var sourceStart = getLevelOffset(path, SOURCE_SCALE, false);
+  let line = low;
+  let local = index - getLevelOffset(line, destinationScale, WITH_CLOSING);
+  let smoothCount = smoothStarts[smoothStartsOffset + line + 1u] - smoothStarts[smoothStartsOffset + line];
+  var sourceStart = getLevelOffset(line, sourceScale, false);
   if (IS_FIRST_LEVEL) {
-    sourceStart = pathOffsets[pathOffsetsOffset + path];
+    sourceStart = lineOffsets[lineOffsetsOffset + line];
   }
   var vertex: vec2<f32>;
   if (smoothCount == 0u) {
-    // Copied path.
+    // Copied line.
     if (sourceStart + local >= SOURCE_LENGTH) {
       return;
     }
     vertex = getSource(sourceStart + local);
   } else {
-    let count = smoothCount * SOURCE_SCALE;
+    let count = smoothCount * sourceScale;
     let ratio = parameters[parametersOffset];
     var edge = 0u;
     var isSecond = false;
@@ -215,7 +220,7 @@ fn getSource(row: u32) -> vec2<f32> {
 }
 
 /**
- * Publishes Chaikin output path offsets (clamped), count, overflow, total and path count.
+ * Publishes Chaikin output line offsets (clamped), count, overflow, total and line count.
  *
  * @internal
  */
@@ -224,18 +229,18 @@ export function createSmoothPublishNode<Parameters>(
   props: {
     id: string;
     operation: string;
-    iterations: number;
+    iterationCount: number;
     closed: boolean;
-    pathCount: number;
+    lineCount: number;
     smoothStarts: GraphDataView<'uint32'>;
     plainStarts: GraphDataView<'uint32'>;
     smoothFlagStarts?: GraphDataView<'uint32'>;
     capacity: number;
-    outputPathOffsets: GraphDataView<'uint32'>;
+    outputLineOffsets: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     requiredCount?: GraphDataView<'uint32'>;
-    pathCountOutput?: GraphDataView<'uint32'>;
+    lineCountOutput?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -251,17 +256,17 @@ export function createSmoothPublishNode<Parameters>(
     });
   }
   bindings.push(
-    {name: 'outputPathOffsets', view: props.outputPathOffsets, type: 'u32', access: 'read_write'},
+    {name: 'outputLineOffsets', view: props.outputLineOffsets, type: 'u32', access: 'read_write'},
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   );
   if (props.requiredCount) {
     bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
-  if (props.pathCountOutput) {
+  if (props.lineCountOutput) {
     bindings.push({
-      name: 'pathCountOut',
-      view: props.pathCountOutput,
+      name: 'lineCountOut',
+      view: props.lineCountOutput,
       type: 'u32',
       access: 'read_write'
     });
@@ -271,22 +276,44 @@ export function createSmoothPublishNode<Parameters>(
     operation: props.operation,
     variant: 'smooth-publish',
     bindings,
-    invocationCount: props.pathCount + 1,
-    declarations: `const PATH_COUNT: u32 = ${props.pathCount}u;
+    invocationCount: props.lineCount + 1,
+    declarations: `const LINE_COUNT: u32 = ${props.lineCount}u;
 const CAPACITY: u32 = ${props.capacity}u;
-const SCALE: u32 = ${2 ** props.iterations}u;
+const SCALE: u32 = ${2 ** props.iterationCount}u;
 
-fn getClosingStart(path: u32) -> u32 {
-  ${props.closed ? 'return smoothFlagStarts[smoothFlagStartsOffset + path];' : 'return 0u;'}
+fn getClosingStart(line: u32) -> u32 {
+  ${props.closed ? 'return smoothFlagStarts[smoothFlagStartsOffset + line];' : 'return 0u;'}
 }
 ${LEVEL_OFFSETS_WGSL}`,
-    body: /* wgsl */ `let total = getLevelOffset(PATH_COUNT, SCALE, true);
-  outputPathOffsets[outputPathOffsetsOffset + index] = min(getLevelOffset(index, SCALE, true), CAPACITY);
+    body: /* wgsl */ `let total = getLevelOffset(LINE_COUNT, SCALE, true);
+  outputLineOffsets[outputLineOffsetsOffset + index] = min(getLevelOffset(index, SCALE, true), CAPACITY);
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
     ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-    ${props.pathCountOutput ? 'pathCountOut[pathCountOutOffset] = PATH_COUNT;' : ''}
+    ${props.lineCountOutput ? 'lineCountOut[lineCountOutOffset] = LINE_COUNT;' : ''}
   }`
+  });
+}
+
+/**
+ * Resets (`reset: true`) or advances the one-word Chaikin level state read by
+ * {@link createSmoothLevelNode}.
+ *
+ * @internal
+ */
+export function createSmoothLevelStateNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; operation: string; levelState: GraphDataView<'uint32'>; reset: boolean}
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: props.operation,
+    variant: props.reset ? 'smooth-level-reset' : 'smooth-level-advance',
+    bindings: [{name: 'levelState', view: props.levelState, type: 'u32', access: 'read_write'}],
+    invocationCount: 1,
+    body: props.reset
+      ? 'levelState[levelStateOffset] = 0u;'
+      : 'levelState[levelStateOffset] = levelState[levelStateOffset] + 1u;'
   });
 }

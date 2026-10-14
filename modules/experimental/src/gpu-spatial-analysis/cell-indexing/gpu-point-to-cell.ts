@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,7 +12,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL, getCellKeyLayout, QUADBIN_TILE_WGSL} from '../cell-aggregation/cell-keys';
 import {validateCellIndexResolution, type GPUCellIndexFamily} from './cell-index-families';
@@ -27,7 +25,7 @@ import {
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUPointToCell';
 
@@ -118,23 +116,13 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
     );
     const id = this.id;
     validateCellIndexResolution(id, props.family, props.resolution);
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['mask', props.mask],
-      ['output.cells', props.output.cells],
-      ['output.validity', props.output.validity]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -144,7 +132,7 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
       throw new Error(`${id} output.cells length must equal the row count`);
     }
     if (props.output.validity) {
-      validatePackedUint32View(props.output.validity, `${id} output.validity`);
+      validatePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
       if (props.output.validity.length !== rows) {
         throw new Error(`${id} output.validity length must equal the row count`);
       }

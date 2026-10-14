@@ -3,7 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphBufferUse,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {
   GEOSPATIAL_WORKGROUP_SIZE,
@@ -19,10 +25,11 @@ import {
   validateMatchingRows,
   validateRowView
 } from './geospatial-utils';
+import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../gpu-spatial-analysis/contracts/spatial-context';
+} from '../analysis-core/contracts/spatial-context';
 
 const NO_INDEX = 0xffffffff;
 
@@ -35,40 +42,56 @@ type GPUPairwisePointLinestringNearestBaseProps = {
    * contexts throw: project positions to a planar frame first.
    */
   spatialContext?: GPUSpatialContext;
-  /** Part offsets with one more row than `points`. */
-  geometryOffsets: GraphDataView<'uint32'>;
-  /** Flattened-vertex offsets with one more row than the total linestring-part count. */
-  linestringOffsets: GraphDataView<'uint32'>;
-  /** Optional local linestring-part ordinal per result row. */
-  linestringIndices?: GraphDataView<'uint32'>;
-  /** Optional local segment ordinal within the selected linestring part. */
+  /** Feature-to-line offsets with one more row than `queryPositions`. */
+  featureOffsets: GraphDataView<'uint32'>;
+  /** Line-to-vertex offsets with one more row than the total line count. */
+  lineOffsets: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of a local-f32 nearest query, one row per query point. */
+export type GPUFloat32PairwisePointLinestringNearestOutput = {
+  /** f32 distance rows. */
+  distances: GraphDataView<'float32'>;
+  /** Optional nearest f32 position rows. */
+  nearestPositions?: GraphDataView<'float32x2'>;
+  /** Optional local line ordinal within the row's feature. */
+  lineIndices?: GraphDataView<'uint32'>;
+  /** Optional local segment ordinal within the selected line. */
+  segmentIndices?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of a raw-binary64 nearest query, one row per query point. */
+export type GPUFloat64PairwisePointLinestringNearestOutput = {
+  /** `[high, low]` double-single distance rows. */
+  distances: GraphDataView<'float32x2'>;
+  /** Optional absolute `[xHigh, xLow, yHigh, yLow]` double-single nearest positions. */
+  nearestPositions?: GraphDataView<'float32x4'>;
+  /** Optional local line ordinal within the row's feature. */
+  lineIndices?: GraphDataView<'uint32'>;
+  /** Optional local segment ordinal within the selected line. */
   segmentIndices?: GraphDataView<'uint32'>;
 };
 
 /** Properties for nearest queries over aligned local-f32 point and multipart-linestring rows. */
 export type GPUFloat32PairwisePointLinestringNearestProps =
   GPUPairwisePointLinestringNearestBaseProps & {
-    /** One local f32 point per geometry row. */
-    points: GraphDataView<'float32x2'>;
-    /** Flattened local f32 linestring vertices. */
-    linestringPositions: GraphDataView<'float32x2'>;
-    /** Caller-owned f32 distance rows. */
-    output: GraphDataView<'float32'>;
-    /** Optional caller-owned nearest f32 position rows. */
-    nearestPoints?: GraphDataView<'float32x2'>;
+    /** One local f32 query point per feature row. */
+    queryPositions: GraphDataView<'float32x2'>;
+    /** Flattened local f32 line vertices. */
+    positions: GraphDataView<'float32x2'>;
+    /** Caller-owned outputs. */
+    output: GPUFloat32PairwisePointLinestringNearestOutput;
   };
 
 /** Properties for nearest queries over aligned raw-binary64 point and multipart-linestring rows. */
 export type GPUFloat64PairwisePointLinestringNearestProps =
   GPUPairwisePointLinestringNearestBaseProps & {
-    /** One raw binary64 point per geometry row. */
-    points: GraphDataView<'uint32x4'>;
-    /** Flattened raw binary64 linestring vertices. */
-    linestringPositions: GraphDataView<'uint32x4'>;
-    /** Caller-owned `[high, low]` double-single distance rows. */
-    output: GraphDataView<'float32x2'>;
-    /** Optional absolute `[xHigh, xLow, yHigh, yLow]` double-single nearest positions. */
-    nearestPoints?: GraphDataView<'float32x4'>;
+    /** One raw binary64 query point per feature row. */
+    queryPositions: GraphDataView<'uint32x4'>;
+    /** Flattened raw binary64 line vertices. */
+    positions: GraphDataView<'uint32x4'>;
+    /** Caller-owned outputs. */
+    output: GPUFloat64PairwisePointLinestringNearestOutput;
   };
 
 /** Properties for one aligned point-to-multipart-linestring nearest query. */
@@ -79,140 +102,158 @@ export type GPUPairwisePointLinestringNearestProps =
 /**
  * Finds the nearest point on one paired multipart linestring for every input point row.
  *
- * `geometryOffsets[i]` and `geometryOffsets[i + 1]` delimit the linestring parts paired with point
- * row `i`. Each part uses `linestringOffsets` to delimit its flattened vertices. Empty and
+ * `featureOffsets[i]` and `featureOffsets[i + 1]` delimit the lines paired with query point
+ * row `i`. Each line uses `lineOffsets` to delimit its flattened vertices. Empty and
  * singleton parts contain no segment, parts are never connected implicitly, and rings are never
  * closed implicitly. Malformed offsets or non-finite reachable positions invalidate the whole row.
  * If no segment remains, outputs are NaN and optional indices are `0xffffffff`. Equal-distance
  * ties retain the first part and segment. Planar only: longitude/latitude positions are rejected
  * at construction.
  */
-export class GPUPairwisePointLinestringNearest {
+export class GPUPairwisePointLinestringNearest implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly points: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
-  readonly linestringPositions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
-  readonly geometryOffsets: GraphDataView<'uint32'>;
-  readonly linestringOffsets: GraphDataView<'uint32'>;
-  readonly output: GraphDataView<'float32'> | GraphDataView<'float32x2'>;
-  readonly nearestPoints?: GraphDataView<'float32x2'> | GraphDataView<'float32x4'>;
-  readonly linestringIndices?: GraphDataView<'uint32'>;
-  readonly segmentIndices?: GraphDataView<'uint32'>;
-  /** Resolved coordinate space; always planar. */
+  readonly queryPositions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
+  readonly positions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
+  readonly featureOffsets: GraphDataView<'uint32'>;
+  readonly lineOffsets: GraphDataView<'uint32'>;
+  readonly output:
+    | GPUFloat32PairwisePointLinestringNearestOutput
+    | GPUFloat64PairwisePointLinestringNearestOutput;
   readonly spatialContext: GPUSpatialContext;
 
-  /** Creates a nearest-linestring contributor without compiling or submitting GPU work. */
   constructor(props: GPUPairwisePointLinestringNearestProps) {
     this.id = props.id ?? 'gpu-pairwise-point-linestring-nearest';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    this.points = props.points;
-    this.linestringPositions = props.linestringPositions;
-    this.geometryOffsets = props.geometryOffsets;
-    this.linestringOffsets = props.linestringOffsets;
+    this.queryPositions = props.queryPositions;
+    this.positions = props.positions;
+    this.featureOffsets = props.featureOffsets;
+    this.lineOffsets = props.lineOffsets;
     this.output = props.output;
-    this.nearestPoints = props.nearestPoints;
-    this.linestringIndices = props.linestringIndices;
-    this.segmentIndices = props.segmentIndices;
 
-    validateRowView(this.points, POSITION_FORMATS, `${this.id} points`);
-    validateRowView(this.linestringPositions, POSITION_FORMATS, `${this.id} linestringPositions`);
-    if (this.linestringPositions.format !== this.points.format) {
+    validateRowView(this.queryPositions, POSITION_FORMATS, `${this.id} queryPositions`);
+    validateRowView(this.positions, POSITION_FORMATS, `${this.id} positions`);
+    if (this.positions.format !== this.queryPositions.format) {
       throw new Error(`${this.id} position formats must match`);
     }
-    validateRowView(this.geometryOffsets, ['uint32'], `${this.id} geometryOffsets`);
-    if (this.geometryOffsets.length !== this.points.length + 1) {
-      throw new Error(`${this.id} geometryOffsets must contain one more row than points`);
+    validateRowView(this.featureOffsets, ['uint32'], `${this.id} featureOffsets`);
+    if (this.featureOffsets.length !== this.queryPositions.length + 1) {
+      throw new Error(`${this.id} featureOffsets must contain one more row than queryPositions`);
     }
-    validateRowView(this.linestringOffsets, ['uint32'], `${this.id} linestringOffsets`);
-    if (this.linestringOffsets.length < 1) {
-      throw new Error(`${this.id} linestringOffsets must contain a terminal offset`);
+    validateRowView(this.lineOffsets, ['uint32'], `${this.id} lineOffsets`);
+    if (this.lineOffsets.length < 1) {
+      throw new Error(`${this.id} lineOffsets must contain a terminal offset`);
     }
-    if (this.linestringOffsets.length - 1 + this.linestringPositions.length > 0xffffffff) {
-      throw new Error(`${this.id} linestring traversal length must fit in uint32`);
+    if (this.lineOffsets.length - 1 + this.positions.length > 0xffffffff) {
+      throw new Error(`${this.id} line traversal length must fit in uint32`);
     }
 
-    const precise = this.points.format === 'uint32x4';
-    validateRowView(this.output, [precise ? 'float32x2' : 'float32'], `${this.id} output`);
-    validateMatchingRows(this.points, this.output, `${this.id} points and output`);
-    if (this.nearestPoints) {
+    const precise = this.queryPositions.format === 'uint32x4';
+    validateRowView(
+      this.output.distances,
+      [precise ? 'float32x2' : 'float32'],
+      `${this.id} output.distances`
+    );
+    validateMatchingRows(
+      this.queryPositions,
+      this.output.distances,
+      `${this.id} queryPositions and output.distances`
+    );
+    if (this.output.nearestPositions) {
       validateRowView(
-        this.nearestPoints,
+        this.output.nearestPositions,
         [precise ? 'float32x4' : 'float32x2'],
-        `${this.id} nearestPoints`
+        `${this.id} output.nearestPositions`
       );
-      validateMatchingRows(this.points, this.nearestPoints, `${this.id} points and nearestPoints`);
+      validateMatchingRows(
+        this.queryPositions,
+        this.output.nearestPositions,
+        `${this.id} queryPositions and output.nearestPositions`
+      );
     }
     for (const [name, indices] of [
-      ['linestringIndices', this.linestringIndices],
-      ['segmentIndices', this.segmentIndices]
+      ['output.lineIndices', this.output.lineIndices],
+      ['output.segmentIndices', this.output.segmentIndices]
     ] as const) {
       if (indices) {
         validateRowView(indices, ['uint32'], `${this.id} ${name}`);
-        validateMatchingRows(this.points, indices, `${this.id} points and ${name}`);
+        validateMatchingRows(this.queryPositions, indices, `${this.id} queryPositions and ${name}`);
       }
     }
 
     validateDisjointGeospatialViews(
       this.id,
       [
-        ['points', this.points],
-        ['linestringPositions', this.linestringPositions],
-        ['geometryOffsets', this.geometryOffsets],
-        ['linestringOffsets', this.linestringOffsets]
+        ['queryPositions', this.queryPositions],
+        ['positions', this.positions],
+        ['featureOffsets', this.featureOffsets],
+        ['lineOffsets', this.lineOffsets]
       ],
       [
-        ['output', this.output],
-        ...(this.nearestPoints ? ([['nearestPoints', this.nearestPoints]] as const) : []),
-        ...(this.linestringIndices
-          ? ([['linestringIndices', this.linestringIndices]] as const)
+        ['output.distances', this.output.distances],
+        ...(this.output.nearestPositions
+          ? ([['output.nearestPositions', this.output.nearestPositions]] as const)
           : []),
-        ...(this.segmentIndices ? ([['segmentIndices', this.segmentIndices]] as const) : [])
+        ...(this.output.lineIndices
+          ? ([['output.lineIndices', this.output.lineIndices]] as const)
+          : []),
+        ...(this.output.segmentIndices
+          ? ([['output.segmentIndices', this.output.segmentIndices]] as const)
+          : [])
       ]
     );
   }
 
-  /** Adds the nearest-linestring work to the target graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns the nearest-linestring nodes, for `graph.add(contributor)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    // The shared geospatial pass helper schedules through `graph.addComputePass`, so the
+    // adapter collects its nodes instead of adding them.
+    return captureGraphCommandNodes(graph, () => this.addNodes(graph));
+  }
+
+  private addNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     const views = [
-      this.points,
-      this.linestringPositions,
-      this.geometryOffsets,
-      this.linestringOffsets,
-      this.output,
-      ...(this.nearestPoints ? [this.nearestPoints] : []),
-      ...(this.linestringIndices ? [this.linestringIndices] : []),
-      ...(this.segmentIndices ? [this.segmentIndices] : [])
+      this.queryPositions,
+      this.positions,
+      this.featureOffsets,
+      this.lineOffsets,
+      this.output.distances,
+      ...(this.output.nearestPositions ? [this.output.nearestPositions] : []),
+      ...(this.output.lineIndices ? [this.output.lineIndices] : []),
+      ...(this.output.segmentIndices ? [this.output.segmentIndices] : [])
     ];
     assertGraphOwnership(graph, views, this.id);
-    if (this.points.length === 0) return;
+    if (this.queryPositions.length === 0) return;
 
-    const pointSource = getPositionReadSource('points', this.points);
-    const linestringSource = getPositionReadSource('linestringPositions', this.linestringPositions);
+    const pointSource = getPositionReadSource('points', this.queryPositions);
+    const linestringSource = getPositionReadSource('linestringPositions', this.positions);
     const precise = pointSource.precise;
     const dispatchLayout = getGeospatialDispatchLayout(
-      this.points.length,
+      this.queryPositions.length,
       graph.device.limits.maxComputeWorkgroupsPerDimension
     );
-    const outputOffset = getViewElementOffset(this.output) / (precise ? 2 : 1);
-    const nearestPointsOffset = this.nearestPoints
-      ? getViewElementOffset(this.nearestPoints) / (precise ? 4 : 2)
+    const outputOffset = getViewElementOffset(this.output.distances) / (precise ? 2 : 1);
+    const nearestPointsOffset = this.output.nearestPositions
+      ? getViewElementOffset(this.output.nearestPositions) / (precise ? 4 : 2)
       : 0;
-    const nearestPointDeclaration = this.nearestPoints
+    const nearestPointDeclaration = this.output.nearestPositions
       ? `@group(0) @binding(auto) var<storage, read_write> outputNearestPoints: array<${precise ? 'vec4f' : 'vec2f'}>;`
       : '';
-    const nearestPointWrite = this.nearestPoints
+    const nearestPointWrite = this.output.nearestPositions
       ? `outputNearestPoints[${nearestPointsOffset}u + index] = nearestPoint;`
       : '';
-    const linestringIndexDeclaration = this.linestringIndices
+    const linestringIndexDeclaration = this.output.lineIndices
       ? '@group(0) @binding(auto) var<storage, read_write> outputLinestringIndices: array<u32>;'
       : '';
-    const linestringIndexWrite = this.linestringIndices
-      ? `outputLinestringIndices[${getViewElementOffset(this.linestringIndices)}u + index] = nearestLinestringIndex;`
+    const linestringIndexWrite = this.output.lineIndices
+      ? `outputLinestringIndices[${getViewElementOffset(this.output.lineIndices)}u + index] = nearestLinestringIndex;`
       : '';
-    const segmentIndexDeclaration = this.segmentIndices
+    const segmentIndexDeclaration = this.output.segmentIndices
       ? '@group(0) @binding(auto) var<storage, read_write> outputSegmentIndices: array<u32>;'
       : '';
-    const segmentIndexWrite = this.segmentIndices
-      ? `outputSegmentIndices[${getViewElementOffset(this.segmentIndices)}u + index] = nearestSegmentIndex;`
+    const segmentIndexWrite = this.output.segmentIndices
+      ? `outputSegmentIndices[${getViewElementOffset(this.output.segmentIndices)}u + index] = nearestSegmentIndex;`
       : '';
     const expression = precise
       ? getPreciseNearestExpression(
@@ -231,11 +272,11 @@ export class GPUPairwisePointLinestringNearest {
         );
     const source = /* wgsl */ `
 ${precise ? `${RAW_POINT_WGSL}\n${PRECISE_DISTANCE_WGSL}\n${PRECISE_NEAREST_SEGMENT_WGSL}` : FLOAT32_FINITE_WGSL}
-const ELEMENT_COUNT: u32 = ${this.points.length}u;
-const LINESTRING_COUNT: u32 = ${this.linestringOffsets.length - 1}u;
-const LINESTRING_POSITION_COUNT: u32 = ${this.linestringPositions.length}u;
-const GEOMETRY_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.geometryOffsets)}u;
-const LINESTRING_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.linestringOffsets)}u;
+const ELEMENT_COUNT: u32 = ${this.queryPositions.length}u;
+const LINESTRING_COUNT: u32 = ${this.lineOffsets.length - 1}u;
+const LINESTRING_POSITION_COUNT: u32 = ${this.positions.length}u;
+const GEOMETRY_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.featureOffsets)}u;
+const LINESTRING_OFFSETS_OFFSET: u32 = ${getViewElementOffset(this.lineOffsets)}u;
 const OUTPUT_OFFSET: u32 = ${outputOffset}u;
 ${pointSource.declaration}
 ${linestringSource.declaration}
@@ -256,34 +297,34 @@ fn main(
   ${expression}
 }`;
     const resources: GraphBufferUse[] = [
-      {buffer: this.points, usage: 'storage-read'},
-      {buffer: this.linestringPositions, usage: 'storage-read'},
-      {buffer: this.geometryOffsets, usage: 'storage-read'},
-      {buffer: this.linestringOffsets, usage: 'storage-read'},
-      {buffer: this.output, usage: 'storage-write'}
+      {buffer: this.queryPositions, usage: 'storage-read'},
+      {buffer: this.positions, usage: 'storage-read'},
+      {buffer: this.featureOffsets, usage: 'storage-read'},
+      {buffer: this.lineOffsets, usage: 'storage-read'},
+      {buffer: this.output.distances, usage: 'storage-write'}
     ];
     const bindings: Record<string, GraphDataView> = {
-      points: this.points,
-      linestringPositions: this.linestringPositions,
-      geometryOffsets: this.geometryOffsets,
-      linestringOffsets: this.linestringOffsets,
-      outputDistances: this.output
+      points: this.queryPositions,
+      linestringPositions: this.positions,
+      geometryOffsets: this.featureOffsets,
+      linestringOffsets: this.lineOffsets,
+      outputDistances: this.output.distances
     };
-    if (this.nearestPoints) {
-      resources.push({buffer: this.nearestPoints, usage: 'storage-write'});
-      bindings['outputNearestPoints'] = this.nearestPoints;
+    if (this.output.nearestPositions) {
+      resources.push({buffer: this.output.nearestPositions, usage: 'storage-write'});
+      bindings['outputNearestPoints'] = this.output.nearestPositions;
     }
-    if (this.linestringIndices) {
-      resources.push({buffer: this.linestringIndices, usage: 'storage-write'});
-      bindings['outputLinestringIndices'] = this.linestringIndices;
+    if (this.output.lineIndices) {
+      resources.push({buffer: this.output.lineIndices, usage: 'storage-write'});
+      bindings['outputLinestringIndices'] = this.output.lineIndices;
     }
-    if (this.segmentIndices) {
-      resources.push({buffer: this.segmentIndices, usage: 'storage-write'});
-      bindings['outputSegmentIndices'] = this.segmentIndices;
+    if (this.output.segmentIndices) {
+      resources.push({buffer: this.output.segmentIndices, usage: 'storage-write'});
+      bindings['outputSegmentIndices'] = this.output.segmentIndices;
     }
     if (!precise) {
       const initializeSource = /* wgsl */ `
-const ELEMENT_COUNT: u32 = ${this.points.length}u;
+const ELEMENT_COUNT: u32 = ${this.queryPositions.length}u;
 const OUTPUT_OFFSET: u32 = ${outputOffset}u;
 @group(0) @binding(auto) var<storage, read_write> outputDistances: array<f32>;
 ${nearestPointDeclaration}
@@ -309,22 +350,24 @@ fn main(
   ${segmentIndexWrite}
 }`;
       const initializeResources: GraphBufferUse[] = [
-        {buffer: this.output, usage: 'storage-write'},
-        ...(this.nearestPoints
-          ? [{buffer: this.nearestPoints, usage: 'storage-write'} as const]
+        {buffer: this.output.distances, usage: 'storage-write'},
+        ...(this.output.nearestPositions
+          ? [{buffer: this.output.nearestPositions, usage: 'storage-write'} as const]
           : []),
-        ...(this.linestringIndices
-          ? [{buffer: this.linestringIndices, usage: 'storage-write'} as const]
+        ...(this.output.lineIndices
+          ? [{buffer: this.output.lineIndices, usage: 'storage-write'} as const]
           : []),
-        ...(this.segmentIndices
-          ? [{buffer: this.segmentIndices, usage: 'storage-write'} as const]
+        ...(this.output.segmentIndices
+          ? [{buffer: this.output.segmentIndices, usage: 'storage-write'} as const]
           : [])
       ];
       const initializeBindings: Record<string, GraphDataView> = {
-        outputDistances: this.output,
-        ...(this.nearestPoints ? {outputNearestPoints: this.nearestPoints} : {}),
-        ...(this.linestringIndices ? {outputLinestringIndices: this.linestringIndices} : {}),
-        ...(this.segmentIndices ? {outputSegmentIndices: this.segmentIndices} : {})
+        outputDistances: this.output.distances,
+        ...(this.output.nearestPositions
+          ? {outputNearestPoints: this.output.nearestPositions}
+          : {}),
+        ...(this.output.lineIndices ? {outputLinestringIndices: this.output.lineIndices} : {}),
+        ...(this.output.segmentIndices ? {outputSegmentIndices: this.output.segmentIndices} : {})
       };
       addGeospatialPass(graph, {
         id: `${this.id}-initialize`,

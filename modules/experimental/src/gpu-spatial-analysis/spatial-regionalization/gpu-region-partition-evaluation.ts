@@ -2,20 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {createLoadBalancedSegmentSumNodes} from '../../utils/load-balanced-for-each';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -30,16 +34,50 @@ const SUMMARY_TILE = 256;
 /** Largest supported attribute column count. */
 export const GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS = 32;
 
-/** Layout of the `summary` words written by {@link GPURegionPartitionEvaluation}. */
+/**
+ * Largest `labels` row count of {@link GPURegionPartitionEvaluation} on `device`: the
+ * contiguity-link pass writes two uint32 link counts (8 bytes) per row in one storage binding, so
+ * 16777216 on a default device (128 MiB bindings).
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPURegionPartitionEvaluationMaximumRowCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 8);
+}
+
+/**
+ * Largest `labelCapacity` of {@link GPURegionPartitionEvaluation} on `device`: the label offsets
+ * hold `labelCapacity + 1` uint32 values in one storage binding, so 33554431 on a default device
+ * (128 MiB bindings). The per-region column sums also bound `labelCapacity * columnCount` by
+ * {@link getGPURegionPartitionEvaluationMaximumRegionValueCount}.
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPURegionPartitionEvaluationMaximumLabelCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 4, 1);
+}
+
+/**
+ * Largest `labelCapacity * columnCount` of {@link GPURegionPartitionEvaluation} on `device`: one
+ * float32 region sum per label and column in one storage binding, so 33554432 on a default device
+ * (128 MiB bindings).
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPURegionPartitionEvaluationMaximumRegionValueCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
+/** Layout of the `output.summary` words written by {@link GPURegionPartitionEvaluation}. */
 export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
   /** Number of non-empty regions. */
   regionCount: 0,
   /** Sum over regions of the within-region sum of squared deviations from the region mean. */
-  withinSsd: 1,
-  /** `totalSsd - withinSsd`: the sum of squares explained by the partition. */
-  betweenSsd: 2,
+  withinSumOfSquares: 1,
+  /** `totalSumOfSquares - withinSumOfSquares`: the sum of squares explained by the partition. */
+  betweenSumOfSquares: 2,
   /** Sum of squared deviations from the global mean over the labelled rows. */
-  totalSsd: 3,
+  totalSumOfSquares: 3,
   /** Smallest non-empty region size in rows. */
   minimumSize: 4,
   /** Largest region size in rows. */
@@ -52,9 +90,10 @@ export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
   /** Rows whose label is `0xffffffff` or at least `labelCapacity`, left out of every statistic. */
   ignoredRows: 7,
   /**
-   * Pseudo-F (Calinski-Harabasz) statistic `(betweenSsd / (k - 1)) / (withinSsd / (n - k))` with
-   * `k` the region count and `n` the labelled rows, the `sklearn.metrics.calinski_harabasz_score`
-   * convention (1 when `withinSsd` is 0). NaN when `k < 2` or `n <= k`, where it is undefined.
+   * Pseudo-F (Calinski-Harabasz) statistic
+   * `(betweenSumOfSquares / (k - 1)) / (withinSumOfSquares / (n - k))` with `k` the region count
+   * and `n` the labelled rows, the `sklearn.metrics.calinski_harabasz_score` convention (1 when
+   * `withinSumOfSquares` is 0). NaN when `k < 2` or `n <= k`, where it is undefined.
    * Larger is a better separated partition; it compares partitions of the same table.
    */
   pseudoF: 8,
@@ -81,19 +120,29 @@ export type GPURegionPartitionEvaluationProps = {
    * `0xffffffff` (unlabelled) are ignored.
    */
   labels: GraphDataView<'uint32'>;
-  /** Number of distinct label values `[0, labelCapacity)`. Defaults to the row count. */
+  /**
+   * Number of distinct label values `[0, labelCapacity)`. Defaults to the row count. At most
+   * {@link getGPURegionPartitionEvaluationMaximumLabelCapacity}, and `labelCapacity * columnCount`
+   * at most {@link getGPURegionPartitionEvaluationMaximumRegionValueCount}.
+   */
   labelCapacity?: number;
   /** Optional weights for `crossLinkFraction` (a compactness proxy on the contiguity graph). */
   weights?: GPUSpatialWeights;
+  /** Caller-owned outputs. */
+  output: GPURegionPartitionEvaluationOutput;
+};
+
+/** Caller-owned outputs of {@link GPURegionPartitionEvaluation}. */
+export type GPURegionPartitionEvaluationOutput = {
   /**
-   * Caller-owned summary words, see {@link GPU_REGION_PARTITION_EVALUATION_LAYOUT}
-   * (`length` float32 entries).
+   * Summary words, see {@link GPU_REGION_PARTITION_EVALUATION_LAYOUT} (`length` float32
+   * entries).
    */
   summary: GraphDataView<'float32'>;
-  /** Optional caller-owned row count per label (`labelCapacity` entries). */
+  /** Optional row count per label (`labelCapacity` entries). */
   regionSizes?: GraphDataView<'uint32'>;
-  /** Optional caller-owned within-region SSD per label (`labelCapacity` entries). */
-  regionWithinSsd?: GraphDataView<'float32'>;
+  /** Optional within-region sum of squared deviations per label (`labelCapacity` entries). */
+  regionWithinSumOfSquares?: GraphDataView<'float32'>;
 };
 
 /**
@@ -103,11 +152,15 @@ export type GPURegionPartitionEvaluationProps = {
  * within-region sum of squares as their `objective`, so pass the table they used (the standardized
  * one unless they ran with `standardize: false`) to compare.
  *
- * Rows are grouped by label with a stable radix sort (ascending row inside a label). Each label is
- * then reduced by one thread over its own rows (mean, then deviations). The summary is a tiled
- * reduction of 256 rows or labels per thread merged in tile order, so the result is deterministic
- * and matches a sequential CPU evaluation within f32 rounding. Work is `O(rows)` plus the sort, independent of `labelCapacity`;
- * a few huge regions still serialise on one thread each.
+ * Rows are grouped by label with a stable radix sort (ascending row inside a label), so every
+ * label is a segment of the sorted rows. Its column sums, then its squared deviations about its
+ * mean, are load-balanced segment sums (merge-path partitioning over the label segments), and the
+ * contiguity link counts are load-balanced over the weights rows, so a huge region or a hub row
+ * spreads over many workgroups instead of serialising one thread. The summary is a tiled
+ * reduction of 256 rows or labels per thread merged in tile order. Every association depends
+ * only on the labels and offsets, so the result is bitwise reproducible and matches a sequential
+ * CPU evaluation within f32 rounding. Work is `O(rows + links)` plus the sort, independent of
+ * `labelCapacity` and of the region size distribution.
  */
 export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -120,49 +173,50 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const columnCount = props.columnCount ?? 1;
-    if (
-      !Number.isSafeInteger(columnCount) ||
-      columnCount < 1 ||
-      columnCount > GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS
-    ) {
-      throw new Error(
-        `${id} columnCount must be an integer in [1, ${GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS}]`
-      );
-    }
+    const {output} = props;
+    validateCapacity(
+      id,
+      'columnCount',
+      columnCount,
+      1,
+      GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS
+    );
     validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedUint32View(props.labels, `${id} labels`);
+    validatePackedView(props.labels, ['uint32'], `${id} labels`);
     const rows = props.labels.length;
     if (rows < 1 || props.values.length !== rows * columnCount) {
       throw new Error(`${id} values length must equal labels.length * columnCount`);
     }
     const labelCapacity = props.labelCapacity ?? rows;
-    if (!Number.isSafeInteger(labelCapacity) || labelCapacity < 1) {
-      throw new Error(`${id} labelCapacity must be a positive integer`);
-    }
+    validateCapacity(id, 'labelCapacity', labelCapacity);
     if (props.weights && validateGPUSpatialWeights(id, props.weights) !== rows) {
       throw new Error(`${id} weights row count must equal labels.length`);
     }
-    validatePackedView(props.summary, ['float32'], `${id} summary`);
-    if (props.summary.length < GPU_REGION_PARTITION_EVALUATION_LAYOUT.length) {
+    validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+    if (output.summary.length < GPU_REGION_PARTITION_EVALUATION_LAYOUT.length) {
       throw new Error(
-        `${id} summary must hold ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.length} words`
+        `${id} output.summary must hold ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.length} words`
       );
     }
-    if (props.regionSizes) {
-      validatePackedUint32View(props.regionSizes, `${id} regionSizes`);
-      if (props.regionSizes.length < labelCapacity) {
-        throw new Error(`${id} regionSizes must hold labelCapacity entries`);
+    if (output.regionSizes) {
+      validatePackedView(output.regionSizes, ['uint32'], `${id} output.regionSizes`);
+      if (output.regionSizes.length < labelCapacity) {
+        throw new Error(`${id} output.regionSizes must hold labelCapacity entries`);
       }
     }
-    if (props.regionWithinSsd) {
-      validatePackedView(props.regionWithinSsd, ['float32'], `${id} regionWithinSsd`);
-      if (props.regionWithinSsd.length < labelCapacity) {
-        throw new Error(`${id} regionWithinSsd must hold labelCapacity entries`);
+    if (output.regionWithinSumOfSquares) {
+      validatePackedView(
+        output.regionWithinSumOfSquares,
+        ['float32'],
+        `${id} output.regionWithinSumOfSquares`
+      );
+      if (output.regionWithinSumOfSquares.length < labelCapacity) {
+        throw new Error(`${id} output.regionWithinSumOfSquares must hold labelCapacity entries`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.summary, props.regionSizes, props.regionWithinSsd],
+      [output.summary, output.regionSizes, output.regionWithinSumOfSquares],
       [props.values, props.labels, props.weights?.offsets, props.weights?.neighbors]
     );
   }
@@ -172,29 +226,65 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {values, labels, weights} = props;
+    const {values, labels, weights, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       values,
       labels,
-      props.summary,
-      props.regionSizes,
-      props.regionWithinSsd,
+      output.summary,
+      output.regionSizes,
+      output.regionWithinSumOfSquares,
       weights?.offsets,
       weights?.neighbors
     ]);
     const rows = labels.length;
     const columnCount = props.columnCount ?? 1;
     const labelCapacity = props.labelCapacity ?? rows;
+    validateMaximumCount(
+      id,
+      'labels rows',
+      rows,
+      getGPURegionPartitionEvaluationMaximumRowCount(graph.device)
+    );
+    validateCapacity(
+      id,
+      'labelCapacity',
+      labelCapacity,
+      1,
+      getGPURegionPartitionEvaluationMaximumLabelCapacity(graph.device)
+    );
+    validateMaximumCount(
+      id,
+      'labelCapacity x columnCount',
+      labelCapacity * columnCount,
+      getGPURegionPartitionEvaluationMaximumRegionValueCount(graph.device)
+    );
     const sizes =
-      props.regionSizes ?? createTransientView(graph, `${id}-sizes`, 'uint32', labelCapacity);
+      output.regionSizes ?? createTransientView(graph, `${id}-sizes`, 'uint32', labelCapacity);
     const within =
-      props.regionWithinSsd ?? createTransientView(graph, `${id}-within`, 'float32', labelCapacity);
-    const crossLinks = weights
-      ? createTransientView(graph, `${id}-cross-links`, 'uint32', rows)
+      output.regionWithinSumOfSquares ??
+      createTransientView(graph, `${id}-within`, 'float32', labelCapacity);
+    // Interleaved (total, cross) link counts per row.
+    const links = weights
+      ? createTransientView(graph, `${id}-link-counts`, 'uint32', 2 * rows)
       : undefined;
-    const totalLinks = weights
-      ? createTransientView(graph, `${id}-total-links`, 'uint32', rows)
-      : undefined;
+    const labelOffsets = createTransientView(
+      graph,
+      `${id}-label-offsets`,
+      'uint32',
+      labelCapacity + 1
+    );
+    const regionSums = createTransientView(
+      graph,
+      `${id}-region-column-sums`,
+      'float32',
+      labelCapacity * columnCount
+    );
+    const regionDeviations = createTransientView(
+      graph,
+      `${id}-region-column-deviations`,
+      'float32',
+      labelCapacity * columnCount
+    );
     const declarations = `const ROWS: u32 = ${rows}u;
 const COLUMNS: u32 = ${columnCount}u;
 const LABELS: u32 = ${labelCapacity}u;`;
@@ -231,90 +321,122 @@ const LABELS: u32 = ${labelCapacity}u;`;
         outputValues: sortedRows,
         keyBits
       }).getCommandNodes(graph),
+      // Label segments of the sorted rows: offsets[label] is the first position with key >= label,
+      // offsets[LABELS] the first ignored row, so the labels form CSR rows over the sorted rows.
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-regions`,
+        id: `${id}-label-offsets`,
         operation: OPERATION,
-        variant: 'regions',
+        variant: 'label-offsets',
         bindings: [
-          {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
-          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
-          {name: 'sizes', view: sizes, type: 'u32', access: 'read_write'},
-          {name: 'within', view: within, type: 'f32', access: 'read_write'}
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read_write'},
+          {name: 'sizes', view: sizes, type: 'u32', access: 'read_write'}
         ],
         invocationCount: labelCapacity,
-        declarations,
-        body: `// Sorted range of this label: first position with key >= label, and with key > label.
+        declarations: `${declarations}
+fn getLowerBound(key: u32) -> u32 {
   var low = 0u;
   var high = ROWS;
   while (low < high) {
     let middle = low + (high - low) / 2u;
-    if (sortedKeys[sortedKeysOffset + middle] < index) {
+    if (sortedKeys[sortedKeysOffset + middle] < key) {
       low = middle + 1u;
     } else {
       high = middle;
     }
   }
-  let first = low;
-  high = ROWS;
-  while (low < high) {
-    let middle = low + (high - low) / 2u;
-    if (sortedKeys[sortedKeysOffset + middle] <= index) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
+  return low;
+}`,
+        body: `let first = getLowerBound(index);
+  let end = getLowerBound(index + 1u);
+  labelOffsets[labelOffsetsOffset + index] = first;
+  sizes[sizesOffset + index] = end - first;
+  if (index + 1u == LABELS) {
+    labelOffsets[labelOffsetsOffset + LABELS] = end;
+  }`
+      }),
+      // Per-label column sums, then squared deviations about the label means, as load-balanced
+      // segment sums over the label segments (algorithms roadmap decision 3), so one huge region
+      // spreads over many workgroups instead of serialising one thread.
+      ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
+        id: `${id}-region-sums`,
+        operation: OPERATION,
+        offsets: labelOffsets,
+        itemCapacity: rows,
+        laneCount: columnCount,
+        accumulatorType: 'f32',
+        output: regionSums,
+        bindings: [
+          {name: 'values', view: values, type: 'f32', access: 'read'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'}
+        ],
+        declarations: `${declarations}
+fn getLoadBalancedContribution(label: u32, item: u32, column: u32) -> f32 {
+  return values[valuesOffset + sortedRows[sortedRowsOffset + item] * COLUMNS + column];
+}`
+      }),
+      ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
+        id: `${id}-region-deviations`,
+        operation: OPERATION,
+        offsets: labelOffsets,
+        itemCapacity: rows,
+        laneCount: columnCount,
+        accumulatorType: 'f32',
+        output: regionDeviations,
+        bindings: [
+          {name: 'values', view: values, type: 'f32', access: 'read'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+          {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
+          {name: 'sizes', view: sizes, type: 'u32', access: 'read'}
+        ],
+        declarations: `${declarations}
+fn getLoadBalancedContribution(label: u32, item: u32, column: u32) -> f32 {
+  // A visited label has at least one row, so the count is positive.
+  let mean = regionSums[regionSumsOffset + label * COLUMNS + column] / f32(sizes[sizesOffset + label]);
+  let delta = values[valuesOffset + sortedRows[sortedRowsOffset + item] * COLUMNS + column] - mean;
+  return delta * delta;
+}`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-region-within`,
+        operation: OPERATION,
+        variant: 'region-within',
+        bindings: [
+          {name: 'regionDeviations', view: regionDeviations, type: 'f32', access: 'read'},
+          {name: 'within', view: within, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: labelCapacity,
+        declarations,
+        body: `var ssd = 0.0;
+  for (var column = 0u; column < COLUMNS; column++) {
+    ssd += regionDeviations[regionDeviationsOffset + index * COLUMNS + column];
   }
-  let end = low;
-  let count = end - first;
-  var sums: array<f32, ${columnCount}>;
-  for (var slot = first; slot < end; slot++) {
-    let row = sortedRows[sortedRowsOffset + slot];
-    for (var column = 0u; column < COLUMNS; column++) {
-      sums[column] += values[valuesOffset + row * COLUMNS + column];
-    }
-  }
-  var ssd = 0.0;
-  for (var slot = first; slot < end; slot++) {
-    let row = sortedRows[sortedRowsOffset + slot];
-    for (var column = 0u; column < COLUMNS; column++) {
-      let delta = values[valuesOffset + row * COLUMNS + column] - sums[column] / f32(count);
-      ssd += delta * delta;
-    }
-  }
-  sizes[sizesOffset + index] = count;
   within[withinOffset + index] = ssd;`
       })
     ];
-    if (weights && crossLinks && totalLinks) {
+    if (weights && links) {
+      // Per-row (total, cross) link counts, load balanced over the weights rows (hub rows).
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
           id: `${id}-links`,
           operation: OPERATION,
-          variant: 'links',
+          offsets: weights.offsets,
+          itemCapacity: weights.neighbors.length,
+          accumulatorType: 'vec2<u32>',
+          output: links,
           bindings: [
-            {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
             {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
-            {name: 'labels', view: labels, type: 'u32', access: 'read'},
-            {name: 'crossLinks', view: crossLinks, type: 'u32', access: 'read_write'},
-            {name: 'totalLinks', view: totalLinks, type: 'u32', access: 'read_write'}
+            {name: 'labels', view: labels, type: 'u32', access: 'read'}
           ],
-          invocationCount: rows,
-          declarations,
-          body: `var cross = 0u;
-  var total = 0u;
-  let own = labels[labelsOffset + index];
-  if (own < LABELS) {
-    for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
-      let other = labels[labelsOffset + neighbors[neighborsOffset + slot]];
-      if (other < LABELS) {
-        total += 1u;
-        cross += select(0u, 1u, other != own);
-      }
-    }
+          declarations: `${declarations}
+fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
+  let own = labels[labelsOffset + row];
+  let other = labels[labelsOffset + neighbors[neighborsOffset + item]];
+  if (own >= LABELS || other >= LABELS) {
+    return vec2<u32>();
   }
-  crossLinks[crossLinksOffset + index] = cross;
-  totalLinks[totalLinksOffset + index] = total;`
+  return vec2<u32>(1u, select(0u, 1u, other != own));
+}`
         })
       );
     }
@@ -356,21 +478,8 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'labels', view: labels, type: 'u32', access: 'read'},
-          ...(crossLinks && totalLinks
-            ? [
-                {
-                  name: 'crossLinks',
-                  view: crossLinks,
-                  type: 'u32' as const,
-                  access: 'read' as const
-                },
-                {
-                  name: 'totalLinks',
-                  view: totalLinks,
-                  type: 'u32' as const,
-                  access: 'read' as const
-                }
-              ]
+          ...(links
+            ? [{name: 'links', view: links, type: 'u32' as const, access: 'read' as const}]
             : []),
           {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read_write'},
           {name: 'rowSums', view: rowSums, type: 'f32', access: 'read_write'}
@@ -386,7 +495,7 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
   for (var row = firstRow; row < min(firstRow + SUMMARY_TILE, ROWS); row++) {
     if (labels[labelsOffset + row] < LABELS) {
       labelled += 1u;
-      ${crossLinks ? 'cross += crossLinks[crossLinksOffset + row]; total += totalLinks[totalLinksOffset + row];' : ''}
+      ${links ? 'total += links[linksOffset + 2u * row]; cross += links[linksOffset + 2u * row + 1u];' : ''}
       for (var column = 0u; column < COLUMNS; column++) {
         sums[column] += values[valuesOffset + row * COLUMNS + column];
       }
@@ -487,7 +596,7 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
           {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read'},
           {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read'},
           {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
-          {name: 'summary', view: props.summary, type: 'f32', access: 'read_write'}
+          {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'}
         ],
         invocationCount: 1,
         declarations: `${tileDeclarations}

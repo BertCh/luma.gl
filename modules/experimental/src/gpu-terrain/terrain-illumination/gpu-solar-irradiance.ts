@@ -9,7 +9,7 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture} from '../../gpu-raster/index';
+import {GPURasterBufferToTexture, type GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -17,14 +17,15 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {
-  GPU_TERRAIN_HORIZON_MAX_DIRECTION_COUNT,
-  GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT
+  GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT,
+  GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT
 } from './gpu-terrain-horizon';
 import {GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES} from './gpu-solar-shadow-mask';
 import {getSolarPosition} from './solar-position';
@@ -37,7 +38,7 @@ import {
   type GPUTerrainHorizonFormat
 } from './terrain-illumination-utils';
 
-/** Number of float32 values read from `GPUSolarIrradianceProps.settings`. */
+/** Number of float32 values read from `GPUSolarIrradianceProps.parameters`. */
 export const GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH = 8;
 
 /** Float32 values per sun table row: azimuth, altitude, duration, direct normal irradiance. */
@@ -183,9 +184,11 @@ export function getGPUSolarIrradianceParameterValues(
   settings: GPUSolarIrradianceSettings,
   target: Float32Array = new Float32Array(GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH) {
-    throw new Error('Solar irradiance settings target must hold 8 values');
-  }
+  validateParameterTarget(
+    'getGPUSolarIrradianceParameterValues',
+    target,
+    GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH
+  );
   if (!Number.isSafeInteger(settings.sampleCount) || settings.sampleCount < 0) {
     throw new Error('Solar irradiance sampleCount must be a non-negative integer');
   }
@@ -202,21 +205,33 @@ export function getGPUSolarIrradianceParameterValues(
   return target;
 }
 
+/** Caller-owned outputs of {@link GPUSolarIrradiance}; at least one is required. */
+export type GPUSolarIrradianceOutput = {
+  /** Hours the solar disk is visible, summed over the sun table. */
+  sunHours?: GraphDataView<'float32'>;
+  /** Energy in Wh/m^2 on the (inclined) surface summed over the sun table. */
+  insolation?: GraphDataView<'float32'>;
+  /** Per-pixel 1 where every output is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunHours`. */
+  sunHoursTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `insolation`. */
+  insolationTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
+
 /**
  * Properties for {@link GPUSolarIrradiance}.
  *
  * Topology: grid size, `directionCount`, `horizonFormat`, `sampleCapacity`, `samplesPerNode`, and
- * which inputs and outputs exist. Per-frame: `settings`, the contents of `sunTable`, and input
+ * which inputs and outputs exist. Per-frame: `parameters`, the contents of `sunTable`, and input
  * contents. The contributor works in pixel space and never reads cell sizes: all terrain geometry is
  * already in the horizon map, slope, and aspect.
  */
 export type GPUSolarIrradianceProps = {
   /** Prefix for node and transient IDs. Defaults to `'solar-irradiance'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Number of horizon sectors, an integer in `[4, 64]`, matching the `GPUTerrainHorizon`. */
   directionCount: number;
   /** Storage format of `horizon`. Defaults to `'float32'`; see `GPUSolarShadowMask`. */
@@ -241,24 +256,16 @@ export type GPUSolarIrradianceProps = {
    * on large grids (GPU watchdog safety). Results are identical to the unchunked path.
    */
   samplesPerNode?: number;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUSolarIrradianceParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUSolarIrradianceParameterValues}. */
+  parameters: GraphDataView<'float32'>;
   /** Optional slope in degrees, as written by `GPUTerrainDerivatives`. Used with `aspect` for `insolation`. */
   slope?: GraphDataView<'float32'>;
   /** Optional aspect in degrees clockwise from north, -1 when flat. Required with `slope`. */
   aspect?: GraphDataView<'float32'>;
   /** Optional sky-view factor scaling the diffuse term of `insolation`. */
   skyViewFactor?: GraphDataView<'float32'>;
-  /** Optional hours the solar disk is visible, summed over the sun table. */
-  sunHours?: GraphDataView<'float32'>;
-  /** Optional energy in Wh/m^2 on the (inclined) surface summed over the sun table. */
-  insolation?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where every output is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunHours`. */
-  sunHoursTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving `insolation`. */
-  insolationTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  /** Caller-owned outputs. */
+  output: GPUSolarIrradianceOutput;
 };
 
 /**
@@ -296,12 +303,13 @@ export class GPUSolarIrradiance implements GPUCommandNodeProducer {
     this.id = props.id ?? 'solar-irradiance';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const {directionCount, sampleCapacity} = props;
     if (
       !Number.isSafeInteger(directionCount) ||
-      directionCount < GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT ||
-      directionCount > GPU_TERRAIN_HORIZON_MAX_DIRECTION_COUNT
+      directionCount < GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT ||
+      directionCount > GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT
     ) {
       throw new Error(`${id} directionCount must be an integer in [4, 64]`);
     }
@@ -313,11 +321,11 @@ export class GPUSolarIrradiance implements GPUCommandNodeProducer {
       throw new Error(`${id} samplesPerNode must be a positive integer`);
     }
     if (
-      !props.sunHours &&
-      !props.insolation &&
-      !props.validity &&
-      !props.sunHoursTexture &&
-      !props.insolationTexture
+      !output.sunHours &&
+      !output.insolation &&
+      !output.outputValidity &&
+      !output.sunHoursTexture &&
+      !output.insolationTexture
     ) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -345,33 +353,32 @@ export class GPUSolarIrradiance implements GPUCommandNodeProducer {
       ['slope', props.slope],
       ['aspect', props.aspect],
       ['skyViewFactor', props.skyViewFactor],
-      ['sunHours', props.sunHours],
-      ['insolation', props.insolation]
+      ['output.sunHours', output.sunHours],
+      ['output.insolation', output.insolation]
     ] as const) {
       validateTerrainIlluminationView(id, name, view, 'float32', pixelCount);
     }
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH);
-    for (const [name, texture] of [
-      ['sunHoursTexture', props.sunHoursTexture],
-      ['insolationTexture', props.insolationTexture]
-    ] as const) {
-      validateTerrainTexture(
-        id,
-        name,
-        texture,
-        ['r32float', 'rgba32float'],
-        props.width,
-        props.height
-      );
-    }
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(
       id,
-      [props.sunHours, props.insolation, props.validity],
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH);
+    for (const [name, texture] of [
+      ['output.sunHoursTexture', output.sunHoursTexture],
+      ['output.insolationTexture', output.insolationTexture]
+    ] as const) {
+      validateRasterOutputTexture(id, name, texture, ['r32float', 'rgba32float'], props.grid);
+    }
+    validateRasterBuffersDistinct(
+      id,
+      [output.sunHours, output.insolation, output.outputValidity],
       [
         props.horizon,
         props.sunTable,
-        props.settings,
+        props.parameters,
         props.slope,
         props.aspect,
         props.skyViewFactor
@@ -384,32 +391,33 @@ export class GPUSolarIrradiance implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, directionCount, sampleCapacity} = props;
-    const pixelCount = width * height;
+    const {output} = props;
+    const {directionCount, sampleCapacity} = props;
+    const pixelCount = props.grid.width * props.grid.height;
     validateGraphViewsBelongToGraph(id, graph, [
       props.horizon,
       props.sunTable,
-      props.settings,
+      props.parameters,
       props.slope,
       props.aspect,
       props.skyViewFactor,
-      props.sunHours,
-      props.insolation,
-      props.validity
+      output.sunHours,
+      output.insolation,
+      output.outputValidity
     ]);
-    for (const texture of [props.sunHoursTexture, props.insolationTexture]) {
+    for (const texture of [output.sunHoursTexture, output.insolationTexture]) {
       if (texture && texture.texture.graph !== graph) {
         throw new Error(`${id} views must belong to the target graph`);
       }
     }
     const hoursTarget =
-      props.sunHours ??
-      (props.sunHoursTexture
+      output.sunHours ??
+      (output.sunHoursTexture
         ? createTransientView(graph, `${id}-sun-hours`, 'float32', pixelCount)
         : undefined);
     const insolationTarget =
-      props.insolation ??
-      (props.insolationTexture
+      output.insolation ??
+      (output.insolationTexture
         ? createTransientView(graph, `${id}-insolation`, 'float32', pixelCount)
         : undefined);
     const horizonType = this.horizonFormat === 'unorm16' ? 'u32' : 'f32';
@@ -451,7 +459,7 @@ ${getTerrainSolarVisibilityWGSL(this.horizonFormat, 'horizon', directionCount)}`
         const bindings: WGSLKernelBinding[] = [
           ...inputBindings(),
           {name: 'sunTable', view: props.sunTable, type: 'f32', access: 'read'},
-          {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+          {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
         ];
         if (hoursTarget) {
           bindings.push({
@@ -542,7 +550,7 @@ ${visibilityDeclarations}`,
         );
       }
     }
-    if (props.validity) {
+    if (output.outputValidity) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-validity`,
@@ -550,7 +558,7 @@ ${visibilityDeclarations}`,
           variant: 'validity',
           bindings: [
             ...inputBindings(),
-            {name: 'validityValues', view: props.validity, type: 'u32', access: 'read_write'}
+            {name: 'validityValues', view: output.outputValidity, type: 'u32', access: 'read_write'}
           ],
           invocationCount: pixelCount,
           declarations: visibilityDeclarations,
@@ -560,8 +568,8 @@ ${visibilityDeclarations}`,
       );
     }
     for (const [name, target, texture] of [
-      ['sun-hours', hoursTarget, props.sunHoursTexture],
-      ['insolation', insolationTarget, props.insolationTexture]
+      ['sun-hours', hoursTarget, output.sunHoursTexture],
+      ['insolation', insolationTarget, output.insolationTexture]
     ] as const) {
       if (texture && target) {
         nodes.push(

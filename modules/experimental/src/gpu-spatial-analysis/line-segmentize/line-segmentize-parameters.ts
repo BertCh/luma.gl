@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {defineGPUSpatialParameterSchema, packGPUSpatialParameterValues} from '../contracts/index';
+import {
+  defineGPUSpatialParameterSchema,
+  packGPUSpatialParameterValues
+} from '../../analysis-core/contracts/index';
 
 /** Number of float32 elements in a `GPULineSegmentize` or `GPUGreatCircleArcs` parameter buffer. */
 export const GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH = 4;
@@ -44,7 +47,7 @@ export const GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA = defineGPUSpatialParameterS
 });
 
 /** CPU description of the per-frame parameters of `GPULineSegmentize`. */
-export type GPULineSegmentizeParameters = {
+export type GPULineSegmentizeSettings = {
   /**
    * Largest output segment length, in position units (`'planar'`) or sphere-radius units
    * (`'spherical'`, meters by default). `0` or `Infinity` disables densification.
@@ -53,7 +56,7 @@ export type GPULineSegmentizeParameters = {
 };
 
 /** CPU description of the per-frame parameters of `GPUGreatCircleArcs`. */
-export type GPUGreatCircleArcsParameters = {
+export type GPUGreatCircleArcsSettings = {
   /**
    * Largest arc segment length in sphere-radius units (meters by default). `0` or `Infinity` lets
    * `minimumSegments` alone decide the resolution.
@@ -86,19 +89,19 @@ function getMaximumSegmentLength(value: number, name: string): number {
  * `[maximumSegmentLength, 0, 0, 0]`. Write the result into a `GPUParameterBuffer` between
  * encodings to change the resolution without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If the length is negative or NaN, or `target` is too short.
  */
 export function getGPULineSegmentizeParameterValues(
-  parameters: GPULineSegmentizeParameters,
+  settings: GPULineSegmentizeSettings,
   target: Float32Array = new Float32Array(GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH)
 ): Float32Array {
   const name = 'Line segmentize';
   getTarget(target, name);
   target.set(
     packGPUSpatialParameterValues(GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA, {
-      maximumSegmentLength: getMaximumSegmentLength(parameters.maximumSegmentLength, name)
+      maximumSegmentLength: getMaximumSegmentLength(settings.maximumSegmentLength, name)
     })
   );
   return target;
@@ -108,24 +111,24 @@ export function getGPULineSegmentizeParameterValues(
  * Packs `GPUGreatCircleArcs` parameters into the 4-element float32 layout
  * `[maximumSegmentLength, minimumSegments, 0, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If the length is negative or NaN, `minimumSegments` is not a positive integer, or
  * `target` is too short.
  */
 export function getGPUGreatCircleArcsParameterValues(
-  parameters: GPUGreatCircleArcsParameters,
+  settings: GPUGreatCircleArcsSettings,
   target: Float32Array = new Float32Array(GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH)
 ): Float32Array {
   const name = 'Great circle arcs';
   getTarget(target, name);
-  const minimumSegments = parameters.minimumSegments ?? 1;
+  const minimumSegments = settings.minimumSegments ?? 1;
   if (!Number.isInteger(minimumSegments) || minimumSegments < 1) {
     throw new Error(`${name} minimumSegments must be a positive integer`);
   }
   target.set(
     packGPUSpatialParameterValues(GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA, {
-      maximumSegmentLength: getMaximumSegmentLength(parameters.maximumSegmentLength, name),
+      maximumSegmentLength: getMaximumSegmentLength(settings.maximumSegmentLength, name),
       minimumSegments
     })
   );

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
   GPUScan,
@@ -91,6 +92,7 @@ export function createCSRStages<Parameters>(
   const {id, operation, rows, capacity} = props;
   const counts = createTransientView(graph, `${id}-counts`, 'uint32', rows);
   const starts = createTransientView(graph, `${id}-starts`, 'uint32', rows);
+  const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
   const constants = `const ROWS: u32 = ${rows}u;
 const CAPACITY: u32 = ${capacity}u;
 const NO_SLOT: u32 = ${NO_SLOT_WGSL};`;
@@ -122,12 +124,20 @@ const NO_SLOT: u32 = ${NO_SLOT_WGSL};`;
     }).getCommandNodes(graph)
   );
   nodes.push(
+    ...createSaturatedScanTotalNodes<Parameters>(graph, {
+      id: id,
+      operation,
+      counts: counts,
+      offsets: starts,
+      rowCount: rows,
+      total: scanTotal
+    }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-offsets`,
       operation,
       variant: 'offsets',
       bindings: [
-        {name: 'counts', view: counts, type: 'u32', access: 'read'},
+        {name: 'scanTotal', view: scanTotal, type: 'u32', access: 'read'},
         {name: 'starts', view: starts, type: 'u32', access: 'read'},
         {name: 'outOffsets', view: props.targetOffsets, type: 'u32', access: 'read_write'},
         {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
@@ -147,7 +157,7 @@ const NO_SLOT: u32 = ${NO_SLOT_WGSL};`;
       body: `if (index < ROWS) {
     outOffsets[outOffsetsOffset + index] = min(starts[startsOffset + index], CAPACITY);
   } else {
-    let total = starts[startsOffset + ROWS - 1u] + counts[countsOffset + ROWS - 1u];
+    let total = scanTotal[scanTotalOffset];
     outOffsets[outOffsetsOffset + ROWS] = min(total, CAPACITY);
     ${
       props.initializesOverflow

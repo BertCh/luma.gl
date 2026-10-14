@@ -13,7 +13,10 @@ export const GPU_GEOMETRY_VALIDITY_BIT = {
   unclosedRing: 1 << 1,
   /** A ring has fewer than three distinct vertices once a closing duplicate is dropped. */
   shortRing: 1 << 2,
-  /** Two consecutive vertices of a ring are equal. */
+  /**
+   * Two consecutive vertices of a ring are equal. GEOS treats this as valid, so the bit is
+   * excluded from {@link GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK}.
+   */
   repeatedVertex: 1 << 3,
   /**
    * A ring meets itself: two non-adjacent edges of one ring cross, touch or overlap, or two
@@ -42,12 +45,15 @@ export const GPU_GEOMETRY_VALIDITY_BIT = {
   tooFewPoints: 1 << 9
 } as const;
 
-/** Union of every bit that makes a geometry structurally invalid: all bits except `badOrientation`. */
+/**
+ * Union of every bit that makes a geometry structurally invalid (GEOS `is_valid` false): all bits
+ * except `badOrientation` (a convention) and `repeatedVertex` (GEOS and OGC accept repeated
+ * vertices, so it is a report-only bit).
+ */
 export const GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK =
   GPU_GEOMETRY_VALIDITY_BIT.nonFinite |
   GPU_GEOMETRY_VALIDITY_BIT.unclosedRing |
   GPU_GEOMETRY_VALIDITY_BIT.shortRing |
-  GPU_GEOMETRY_VALIDITY_BIT.repeatedVertex |
   GPU_GEOMETRY_VALIDITY_BIT.selfIntersection |
   GPU_GEOMETRY_VALIDITY_BIT.crossingRings |
   GPU_GEOMETRY_VALIDITY_BIT.holeOutsideShell |

@@ -4,7 +4,6 @@
 
 import {
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -12,21 +11,24 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogram';
 import {
   getPairStatisticsInputNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
-  validatePairStatisticsInputs
+  validatePairStatisticsInputs,
+  validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {GPU_RIPLEY_PARAMETER_LENGTH} from './ripley-parameters';
 
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPURipley';
 
@@ -42,12 +44,34 @@ const ISOTROPIC_SCALE = 131072;
 /** Largest isotropic edge-correction weight (smallest circle fraction is `1 / cap`). */
 export const GPU_RIPLEY_WEIGHT_CAP = 100;
 
+/** Caller-owned output views of {@link GPURipley}. */
+export type GPURipleyOutput = {
+  /** Caller-owned Ripley's K per radius, `radiusCount` rows. Quiet NaN where undefined. */
+  k: GraphDataView<'float32'>;
+  /** Optional caller-owned Besag's L, `sqrt(K / pi)`, per radius. */
+  l?: GraphDataView<'float32'>;
+  /** Optional caller-owned `L(r) - r` per radius (zero under complete spatial randomness). */
+  lMinusR?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned pair-correlation estimate per annulus,
+   * `(K(r_b) - K(r_b-1)) / (pi (r_b^2 - r_b-1^2))` with `r_-1 = 0` and `K(0) = 0`.
+   */
+  pairCorrelation?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned uncorrected count of ordered pairs `(i, j)` whose distance falls in
+   * annulus `b`, `radiusCount` rows. Saturates at `2^32 - 1`.
+   */
+  pairCounts?: GraphDataView<'uint32'>;
+  /** Optional caller-owned radii, `radiusCount` rows. */
+  radii?: GraphDataView<'float32'>;
+};
+
 /**
  * Properties for {@link GPURipley}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask` and `parameters`
  * (window bounds, maximum distance, edge-correction mode). Compile-time: the row count,
- * `gridSize`, `radiusCount` and which optional outputs are present.
+ * `gridSize`, `radiusCount` and which optional `output` views are present.
  */
 export type GPURipleyProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley'`. */
@@ -79,24 +103,8 @@ export type GPURipleyProps = {
   radiusCount: number;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
-  /** Caller-owned Ripley's K per radius, `radiusCount` rows. Quiet NaN where undefined. */
-  k: GraphDataView<'float32'>;
-  /** Optional caller-owned Besag's L, `sqrt(K / pi)`, per radius. */
-  l?: GraphDataView<'float32'>;
-  /** Optional caller-owned `L(r) - r` per radius (zero under complete spatial randomness). */
-  lMinusR?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned pair-correlation estimate per annulus,
-   * `(K(r_b) - K(r_b-1)) / (pi (r_b^2 - r_b-1^2))` with `r_-1 = 0` and `K(0) = 0`.
-   */
-  pairCorrelation?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned uncorrected count of ordered pairs `(i, j)` whose distance falls in
-   * annulus `b`, `radiusCount` rows. Saturates at `2^32 - 1`.
-   */
-  pairCounts?: GraphDataView<'uint32'>;
-  /** Optional caller-owned radii, `radiusCount` rows. */
-  radii?: GraphDataView<'float32'>;
+  /** Caller-owned output views. */
+  output: GPURipleyOutput;
 };
 
 /**
@@ -161,17 +169,15 @@ export class GPURipley implements GPUCommandNodeProducer {
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {...props, parameterLength: GPU_RIPLEY_PARAMETER_LENGTH});
-    const {radiusCount} = props;
-    if (!Number.isInteger(radiusCount) || radiusCount < 1 || radiusCount > MAXIMUM_RADIUS_COUNT) {
-      throw new Error(`${id} radiusCount must be an integer in [1, ${MAXIMUM_RADIUS_COUNT}]`);
-    }
+    const {radiusCount, output} = props;
+    validateCapacity(id, 'radiusCount', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
     validatePairHistogramShape(id, radiusCount, CHANNEL_COUNT);
     for (const [name, view] of [
-      ['k', props.k],
-      ['l', props.l],
-      ['lMinusR', props.lMinusR],
-      ['pairCorrelation', props.pairCorrelation],
-      ['radii', props.radii]
+      ['output.k', output.k],
+      ['output.l', output.l],
+      ['output.lMinusR', output.lMinusR],
+      ['output.pairCorrelation', output.pairCorrelation],
+      ['output.radii', output.radii]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -180,15 +186,15 @@ export class GPURipley implements GPUCommandNodeProducer {
         }
       }
     }
-    if (props.pairCounts) {
-      validatePackedUint32View(props.pairCounts, `${id} pairCounts`);
-      if (props.pairCounts.length < radiusCount) {
-        throw new Error(`${id} pairCounts must hold radiusCount rows`);
+    if (output.pairCounts) {
+      validatePackedUint32View(output.pairCounts, `${id} output.pairCounts`);
+      if (output.pairCounts.length < radiusCount) {
+        throw new Error(`${id} output.pairCounts must hold radiusCount rows`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.k, props.l, props.lMinusR, props.pairCorrelation, props.pairCounts, props.radii],
+      [output.k, output.l, output.lMinusR, output.pairCorrelation, output.pairCounts, output.radii],
       [props.positions, props.parameters, props.mask]
     );
   }
@@ -198,17 +204,18 @@ export class GPURipley implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize, radiusCount} = props;
+    const {positions, parameters, gridSize, radiusCount, output} = props;
+    validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
       props.mask,
-      props.k,
-      props.l,
-      props.lMinusR,
-      props.pairCorrelation,
-      props.pairCounts,
-      props.radii
+      output.k,
+      output.l,
+      output.lMinusR,
+      output.pairCorrelation,
+      output.pairCounts,
+      output.radii
     ]);
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
       id,
@@ -225,7 +232,7 @@ const ISOTROPIC_SCALE: f32 = ${ISOTROPIC_SCALE}.0;
 const WEIGHT_CAP: f32 = ${GPU_RIPLEY_WEIGHT_CAP}.0;
 // The raw per-annulus pair counts feed K only for the uncorrected estimator, so the other modes
 // tally them only when the caller asked for pairCounts.
-const RAW_PAIRS: bool = ${Boolean(props.pairCounts)};
+const RAW_PAIRS: bool = ${Boolean(output.pairCounts)};
 const PI: f32 = 3.14159265358979;
 const HALF_PI: f32 = 1.57079632679490;
 `;
@@ -300,12 +307,12 @@ fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f
       {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
       {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-      {name: 'k', view: props.k, type: 'f32', access: 'read_write'}
+      {name: 'k', view: output.k, type: 'f32', access: 'read_write'}
     ];
-    if (props.pairCounts) {
+    if (output.pairCounts) {
       finishBindings.push({
         name: 'pairCounts',
-        view: props.pairCounts,
+        view: output.pairCounts,
         type: 'u32',
         access: 'read_write'
       });
@@ -368,7 +375,7 @@ fn getPrefix(channel: u32, last: u32) -> vec2<u32> {
   }
   k[kOffset + index] = kValue;
   ${
-    props.pairCounts
+    output.pairCounts
       ? `let annulusCount = readAccumulator(index, 3u);
   pairCounts[pairCountsOffset + index] = select(annulusCount.x, 0xffffffffu, annulusCount.y != 0u);`
       : ''
@@ -378,13 +385,13 @@ fn getPrefix(channel: u32, last: u32) -> vec2<u32> {
 
     const deriveBindings: WGSLKernelBinding[] = [
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-      {name: 'k', view: props.k, type: 'f32', access: 'read'}
+      {name: 'k', view: output.k, type: 'f32', access: 'read'}
     ];
     for (const [name, view] of [
-      ['l', props.l],
-      ['lMinusR', props.lMinusR],
-      ['pairCorrelation', props.pairCorrelation],
-      ['radii', props.radii]
+      ['l', output.l],
+      ['lMinusR', output.lMinusR],
+      ['pairCorrelation', output.pairCorrelation],
+      ['radii', output.radii]
     ] as const) {
       if (view) {
         deriveBindings.push({name, view, type: 'f32', access: 'read_write'});
@@ -406,11 +413,11 @@ ${constantsWGSL}`,
   let kValue = k[kOffset + index];
   let finite = isFiniteFloat(kValue);
   let lValue = select(nan, sqrt(max(kValue, 0.0) / PI), finite);
-  ${props.l ? 'l[lOffset + index] = lValue;' : ''}
-  ${props.lMinusR ? 'lMinusR[lMinusROffset + index] = select(nan, lValue - radius, finite);' : ''}
-  ${props.radii ? 'radii[radiiOffset + index] = radius;' : ''}
+  ${output.l ? 'l[lOffset + index] = lValue;' : ''}
+  ${output.lMinusR ? 'lMinusR[lMinusROffset + index] = select(nan, lValue - radius, finite);' : ''}
+  ${output.radii ? 'radii[radiiOffset + index] = radius;' : ''}
   ${
-    props.pairCorrelation
+    output.pairCorrelation
       ? `var previousK = 0.0;
   var previousFinite = true;
   if (index > 0u) {

@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,7 +15,8 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
@@ -65,11 +63,30 @@ export type GPUCalendarBucketsOutput = {
 };
 
 /**
+ * Time zone transition table read by {@link GPUCalendarBuckets}; build it with
+ * `getGPUTimeZoneTransitionTable`. Its length is topology: a table of another length needs a new
+ * graph, its contents can change per frame.
+ */
+export type GPUCalendarBucketsTimeZone = {
+  /**
+   * Strictly increasing Int64 epoch-millisecond instants, one `uint32x2` `(low, high)` row each
+   * (the format of `timestamps`), at least one.
+   */
+  transitions: GraphDataView<'uint32x2'>;
+  /**
+   * UTC offset in seconds (`sint32`, within `[-86400, 86400]`), `transitions.length + 1` long:
+   * `offsets[0]` applies before the first transition and `offsets[i + 1]` from transition `i` on.
+   * Seconds keep pre-standardization local mean time such as +00:19:32 exact.
+   */
+  offsets: GraphDataView<'sint32'>;
+};
+
+/**
  * Properties for {@link GPUCalendarBuckets}.
  *
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Topology
- * (needs a new graph): the row count, which outputs are present, and whether `mask` and
- * `utcOffsets` are present.
+ * (needs a new graph): the row count, which outputs are present, and whether `mask`,
+ * `utcOffsets` and `timeZone` are present, and the length of the `timeZone` table.
  */
 export type GPUCalendarBucketsProps = {
   /** Prefix for generated node IDs. Defaults to `'calendar-buckets'`. */
@@ -87,6 +104,14 @@ export type GPUCalendarBucketsProps = {
    * precomputes each row's offset from its zone rules. An out-of-range offset makes the row invalid.
    */
   utcOffsets?: GraphDataView<'sint32'>;
+  /**
+   * Optional time zone transition table. Each row binary-searches its instant in `transitions`
+   * (signed 64-bit compare, the last transition at or before the row) and uses that offset, so
+   * daylight saving time needs no per-row CPU offsets. Mutually exclusive with `utcOffsets`; it
+   * overrides the fixed offset in `parameters`. A table offset beyond +-86400 seconds makes the
+   * row invalid. Build it with `getGPUTimeZoneTransitionTable`.
+   */
+  timeZone?: GPUCalendarBucketsTimeZone;
   /**
    * Per-frame `sint32` view of at least 2 elements written with
    * `getGPUCalendarBucketsParameterValues`: the fixed UTC offset in minutes (a fixed offset, not a
@@ -126,9 +151,10 @@ const COLUMN_OUTPUTS: readonly {
  * weekday, day of year, ISO week, ISO week-year, quarter) and an hour by weekday count matrix, so
  * time-of-day and weekday charts and calendar bucket keys need no per-row `Date` on the CPU.
  *
- * Time zone: local time is UTC plus an offset in minutes. The per-frame `parameters` carry one
- * fixed offset; an optional per-row `utcOffsets` column overrides it and is how daylight saving
- * time is supported (the caller precomputes each row's offset). There is no zone table on the GPU.
+ * Time zone: local time is UTC plus an offset. The per-frame `parameters` carry one fixed offset
+ * in minutes; an optional per-row `utcOffsets` column (minutes) overrides it, and an optional
+ * `timeZone` transition table (offsets in seconds) is searched per row on the GPU, which is how
+ * daylight saving time is supported without per-row CPU work.
  *
  * Exactness: all arithmetic is integer. The signed 64-bit millisecond count plus offset is
  * floor-divided by 86,400,000 with u32 operations (nibble-wise long division, exact for negative
@@ -139,7 +165,7 @@ const COLUMN_OUTPUTS: readonly {
  * start on Monday.
  *
  * Range: rows whose local day number is beyond +-1e9 days (about +-2.7 million years), whose sum with
- * the offset overflows Int64, whose per-row offset is beyond +-1440 minutes, or that are masked,
+ * the offset overflows Int64, whose per-row offset is beyond +-1440 minutes (+-86400 seconds in a table), or that are masked,
  * are invalid and get the sentinels documented on {@link GPUCalendarBucketsOutput}. The hour by
  * weekday matrix counts only valid rows, with integer `atomicAdd`, so it is deterministic.
  *
@@ -159,23 +185,13 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {output} = props;
-    for (const [name, view] of [
-      ['timestamps', props.timestamps],
-      ['mask', props.mask],
-      ['utcOffsets', props.utcOffsets],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
     this.rowCount = props.timestamps.length;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal timestamps length`);
       }
@@ -184,6 +200,19 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
       validatePackedView(props.utcOffsets, ['sint32'], `${id} utcOffsets`);
       if (props.utcOffsets.length !== this.rowCount) {
         throw new Error(`${id} utcOffsets length must equal timestamps length`);
+      }
+    }
+    if (props.timeZone) {
+      if (props.utcOffsets) {
+        throw new Error(`${id} timeZone and utcOffsets are mutually exclusive`);
+      }
+      validatePackedView(props.timeZone.transitions, ['uint32x2'], `${id} timeZone.transitions`);
+      validatePackedView(props.timeZone.offsets, ['sint32'], `${id} timeZone.offsets`);
+      if (props.timeZone.transitions.length < 1) {
+        throw new Error(`${id} timeZone needs at least one transition`);
+      }
+      if (props.timeZone.offsets.length !== props.timeZone.transitions.length + 1) {
+        throw new Error(`${id} timeZone.offsets length must be transitions length + 1`);
       }
     }
     validatePackedView(props.parameters, ['sint32'], `${id} parameters`);
@@ -210,7 +239,7 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
     }
     if (output.hourWeekdayCounts) {
       outputCount++;
-      validatePackedUint32View(output.hourWeekdayCounts, `${id} output.hourWeekdayCounts`);
+      validatePackedView(output.hourWeekdayCounts, ['uint32'], `${id} output.hourWeekdayCounts`);
       if (output.hourWeekdayCounts.length < GPU_CALENDAR_BUCKETS_MATRIX_LENGTH) {
         throw new Error(
           `${id} output.hourWeekdayCounts must hold ${GPU_CALENDAR_BUCKETS_MATRIX_LENGTH} elements`
@@ -277,6 +306,12 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
     if (props.utcOffsets) {
       inputBindings.push(read('rowOffsets', props.utcOffsets, 'i32'));
     }
+    if (props.timeZone) {
+      inputBindings.push(
+        read('zoneTransitions', props.timeZone.transitions, 'u32'),
+        read('zoneOffsets', props.timeZone.offsets, 'i32')
+      );
+    }
     const perKernel = MAXIMUM_BINDINGS - inputBindings.length;
     for (let first = 0, step = 0; first < specs.length; first += perKernel, step++) {
       const group = specs.slice(first, first + perKernel);
@@ -297,11 +332,17 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
             )
           ],
           invocationCount: rowCount,
-          declarations: CALENDAR_WGSL,
+          declarations: props.timeZone
+            ? `const TRANSITION_COUNT: u32 = ${props.timeZone.transitions.length}u;\n${CALENDAR_WGSL}${ZONE_WGSL}`
+            : CALENDAR_WGSL,
           body: `let time = vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]);
-  let offsetMinutes = ${props.utcOffsets ? 'rowOffsets[rowOffsetsOffset + index]' : 'params[paramsOffset]'};
+  let offsetMilliseconds = ${
+    props.timeZone
+      ? 'getZoneOffsetMilliseconds(time)'
+      : `minutesToMilliseconds(${props.utcOffsets ? 'rowOffsets[rowOffsetsOffset + index]' : 'params[paramsOffset]'})`
+  };
   let firstDay = u32(((params[paramsOffset + 1u] % 7) + 7) % 7);
-  var fields = decodeCalendar(time, offsetMinutes, firstDay);
+  var fields = decodeCalendar(time, offsetMilliseconds, firstDay);
   ${props.mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    fields = invalidCalendar();\n  }' : ''}
   ${group.map(spec => spec.write).join('\n  ')}`
         })
@@ -312,9 +353,14 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
 
   private getInputViews(): GraphDataView[] {
     const {props} = this;
-    return [props.timestamps, props.mask, props.utcOffsets, props.parameters].filter(view =>
-      Boolean(view)
-    ) as GraphDataView[];
+    return [
+      props.timestamps,
+      props.mask,
+      props.utcOffsets,
+      props.timeZone?.transitions,
+      props.timeZone?.offsets,
+      props.parameters
+    ].filter(view => Boolean(view)) as GraphDataView[];
   }
 
   private getOutputViews(): GraphDataView[] {
@@ -389,13 +435,17 @@ fn divideUnsigned64(value: vec2<u32>, divisor: u32) -> DivideResult {
   return DivideResult(quotientLow, value.y / divisor, remainder);
 }
 
-fn decodeCalendar(time: vec2<u32>, offsetMinutes: i32, firstDay: u32) -> CalendarFields {
+// Minutes to milliseconds; an offset beyond +-1440 minutes maps to a value the decode rejects.
+fn minutesToMilliseconds(offsetMinutes: i32) -> i32 {
+  return select(offsetMinutes * 60000, 0x7fffffff, offsetMinutes < -1440 || offsetMinutes > 1440);
+}
+
+fn decodeCalendar(time: vec2<u32>, offsetMilliseconds: i32, firstDay: u32) -> CalendarFields {
   let invalid = invalidCalendar();
-  if (offsetMinutes < -1440 || offsetMinutes > 1440) {
+  if (offsetMilliseconds < -86400000 || offsetMilliseconds > 86400000) {
     return invalid;
   }
   // Signed 64-bit local time = time + offset, with overflow detection.
-  let offsetMilliseconds = offsetMinutes * 60000;
   let offsetLow = bitcast<u32>(offsetMilliseconds);
   let offsetHigh = select(0u, 0xffffffffu, offsetMilliseconds < 0);
   let low = time.x + offsetLow;
@@ -442,5 +492,41 @@ fn decodeCalendar(time: vec2<u32>, offsetMinutes: i32, firstDay: u32) -> Calenda
   fields.isoWeekYear = thursdayDate.x;
   fields.quarter = u32((date.y - 1) / 3 + 1);
   return fields;
+}
+`;
+
+const ZONE_WGSL = /* wgsl */ `
+// Signed 64-bit a <= b on (low, high) words.
+fn lessOrEqualInt64(a: vec2<u32>, b: vec2<u32>) -> bool {
+  let aHigh = bitcast<i32>(a.y);
+  let bHigh = bitcast<i32>(b.y);
+  if (aHigh != bHigh) {
+    return aHigh < bHigh;
+  }
+  return a.x <= b.x;
+}
+
+// Upper-bound binary search: the number of transitions at or before the instant, which indexes the
+// offset in force.
+fn getZoneOffsetMilliseconds(time: vec2<u32>) -> i32 {
+  var low = 0u;
+  var high = TRANSITION_COUNT;
+  loop {
+    if (low >= high) {
+      break;
+    }
+    let middle = low + (high - low) / 2u;
+    let transition = vec2<u32>(
+      zoneTransitions[zoneTransitionsOffset + 2u * middle],
+      zoneTransitions[zoneTransitionsOffset + 2u * middle + 1u]);
+    if (lessOrEqualInt64(transition, time)) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  let seconds = zoneOffsets[zoneOffsetsOffset + low];
+  // A table offset beyond +-86400 s maps to a value the decode rejects.
+  return select(seconds * 1000, 0x7fffffff, seconds < -86400 || seconds > 86400);
 }
 `;

@@ -3,24 +3,27 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {GPU_TERRAIN_VISIBILITY} from '../terrain-analysis/gpu-terrain-viewshed';
 import {
-  getTerrainBandViews,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {GPU_POINT_HORIZON_RAYS_PER_DISPATCH} from './gpu-point-horizon-profile';
 import {
+  createPointHorizonChunkStarts,
   createPointHorizonSource,
   getPointHorizonMarchWGSL,
   resolvePointHorizonModel,
@@ -43,10 +46,8 @@ import {
 export type GPUPointHorizonVisibilityProps = GPUPointHorizonModelOptions & {
   /** Prefix for node and transient IDs. Defaults to `'point-horizon-visibility'`. */
   id?: string;
-  /** Grid width in pixels (at least 2). */
-  width: number;
-  /** Grid height in pixels (at least 2). */
-  height: number;
+  /** Raster grid: its width and height (at least 2) size the kernels. */
+  grid: GPURasterMetadata;
   /** Terrain band (elevation). */
   elevation: GPURasterBand;
   /** Observer rows `[column, row, height, 0]`, see `GPUPointHorizonProfileProps.observers`. */
@@ -58,8 +59,16 @@ export type GPUPointHorizonVisibilityProps = GPUPointHorizonModelOptions & {
    * or an invalid ground sample yields `noData`.
    */
   targets: GraphDataView<'float32x4'>;
-  /** Per-frame settings, see `getGPUPointHorizonVisibilityParameterValues`. At least 12 float32. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters, see `getGPUPointHorizonVisibilityParameterValues`. At least 12 float32. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUPointHorizonVisibilityOutput;
+  /** Targets per compute node. Defaults to 65536. */
+  targetsPerDispatch?: number;
+};
+
+/** Caller-owned outputs of {@link GPUPointHorizonVisibility}, one row per target. */
+export type GPUPointHorizonVisibilityOutput = {
   /** One `GPU_TERRAIN_VISIBILITY` code per target (hidden, visible, outOfRange, noData, marginal). */
   visibility: GraphDataView<'uint32'>;
   /**
@@ -68,8 +77,6 @@ export type GPUPointHorizonVisibilityProps = GPUPointHorizonModelOptions & {
    * for `noData`, `outOfRange` and coincident points.
    */
   details?: GraphDataView<'float32x4'>;
-  /** Targets per compute node. Defaults to 65536. */
-  targetsPerDispatch?: number;
 };
 
 /**
@@ -78,7 +85,7 @@ export type GPUPointHorizonVisibilityProps = GPUPointHorizonModelOptions & {
  *
  * Per target the contributor computes the distance and bearing from the observer without cancellation
  * (planar: metres offsets; Web Mercator: a spherical inverse written in haversine form with
- * `Δm = -2πΔrow/worldPixelSize` and `Δλ = 2πΔcolumn/worldPixelSize`, series for small `sinh`,
+ * `Δm = -2πΔrow/worldPixelSize` (derived from the grid by the packer) and `Δλ = 2πΔcolumn/worldPixelSize`, series for small `sinh`,
  * `sin` and `asin`), marches the full ray along that bearing with the same march as
  * `GPUPointHorizonProfile`, and records the running maximum tangent `tQ` before
  * `q = dP - max(targetIgnoreDistance, targetIgnoreFraction * dP)` and the skyline `tSky`. With
@@ -99,36 +106,37 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
     this.id = props.id ?? 'point-horizon-visibility';
     this.props = props;
     const {id} = this;
-    this.model = resolvePointHorizonModel(id, props.width, props.height, {
+    const {output} = props;
+    this.model = resolvePointHorizonModel(id, props.grid, {
       ...props,
       azimuthCount: 720,
       firstAzimuth: 0,
       azimuthSpan: 720
     });
-    validateTerrainSettings(id, props.settings, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);
+    validateRasterParameters(id, props.parameters, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);
     validatePointHorizonRows(id, 'observers', props.observers, 'float32x4');
     validatePointHorizonRows(id, 'targets', props.targets, 'float32x4');
     if (props.observers.length < 1) {
       throw new Error(`${id} requires at least one observer`);
     }
-    validatePackedUint32View(props.visibility, `${id} visibility`);
-    if (props.visibility.length !== props.targets.length) {
-      throw new Error(`${id} visibility must contain one value per target`);
+    validatePackedView(output.visibility, ['uint32'], `${id} output.visibility`);
+    if (output.visibility.length !== props.targets.length) {
+      throw new Error(`${id} output.visibility must contain one value per target`);
     }
-    if (props.details) {
-      validatePointHorizonRows(id, 'details', props.details, 'float32x4');
-      if (props.details.length !== props.targets.length) {
-        throw new Error(`${id} details must contain one row per target`);
+    if (output.details) {
+      validatePointHorizonRows(id, 'output.details', output.details, 'float32x4');
+      if (output.details.length !== props.targets.length) {
+        throw new Error(`${id} output.details must contain one row per target`);
       }
     }
     const targetsPerDispatch = props.targetsPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
     if (!Number.isInteger(targetsPerDispatch) || targetsPerDispatch < 1) {
       throw new Error(`${id} targetsPerDispatch must be a positive integer`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.visibility, props.details],
-      [...getTerrainBandViews(props.elevation), props.settings, props.observers, props.targets]
+      [output.visibility, output.details],
+      [...getRasterBandViews(props.elevation), props.parameters, props.observers, props.targets]
     );
   }
 
@@ -137,33 +145,35 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, model} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.pyramid?.combined,
-      props.settings,
+      props.parameters,
       props.observers,
       props.targets,
-      props.visibility,
-      props.details
+      output.visibility,
+      output.details
     ]);
     const source = createPointHorizonSource(graph, id, model, props.elevation);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const bindings: WGSLKernelBinding[] = [
       ...source.bindings,
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'observers', view: props.observers, type: 'f32', access: 'read'},
       {name: 'targets', view: props.targets, type: 'f32', access: 'read'},
-      {name: 'visibilityOutput', view: props.visibility, type: 'u32', access: 'read_write'}
+      {name: 'visibilityOutput', view: output.visibility, type: 'u32', access: 'read_write'}
     ];
-    if (props.details) {
+    if (output.details) {
       bindings.push({
         name: 'detailsOutput',
-        view: props.details,
+        view: output.details,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (bindings.length > 8) {
+    // The chunk start word is the eighth binding at most.
+    if (bindings.length > 7) {
       throw new Error(`${id} needs more than 8 storage bindings`);
     }
     const mercator = model.projection === 'web-mercator';
@@ -184,33 +194,42 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
   let east = 2.0 * sinHalfLambda * cosHalfLambda * cosP2;
   let rho = sqrt(north * north + east * east);
   let sinA = east / max(rho, 1.0e-30);
-  let cosA = north / max(rho, 1.0e-30);`
+  let cosA = north / max(rho, 1.0e-30);
+  // One Web Mercator pixel at the target's latitude, in meters (isotropic).
+  let targetPixelLength = 2.0 * PI * EARTH_RADIUS * cosP2 / worldPixelSize;`
       : `let deltaX = deltaColumn * settings[settingsOffset + 1u];
   let deltaY = deltaRow * settings[settingsOffset + 2u];
   let distance = sqrt(deltaX * deltaX + deltaY * deltaY);
   let sinA = deltaX / max(distance, 1.0e-30);
-  let cosA = ${model.rowDirection === 'south' ? '-' : ''}deltaY / max(distance, 1.0e-30);`;
+  let cosA = ${model.rowDirection === 'south' ? '-' : ''}deltaY / max(distance, 1.0e-30);
+  // Ground length of one pixel step along the ray (the march's pixels-per-meter is (sinA / cellX, cosA / cellY)).
+  let targetPixelLength = 1.0 / length(vec2<f32>(sinA / settings[settingsOffset + 1u], cosA / settings[settingsOffset + 2u]));`;
     const march = getPointHorizonMarchWGSL(model, POINT_HORIZON_VISIBILITY_PROJECTION_SLOT);
     const {targets} = props;
-    const chunkSize = props.targetsPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
-    const detailsWrite = props.details
-      ? `let detailsBase = detailsOutputOffset + (TARGET_OFFSET + index) * 4u;
+    const chunks = createPointHorizonChunkStarts<Parameters>(graph, {
+      id,
+      operation: 'GPUPointHorizonVisibility',
+      itemCount: targets.length,
+      maximumChunkSize: props.targetsPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH
+    });
+    nodes.push(chunks.writeNode);
+    const detailsWrite = output.details
+      ? `let detailsBase = detailsOutputOffset + (chunkStart[chunkStartOffset] + index) * 4u;
   detailsOutput[detailsBase] = result.details.x;
   detailsOutput[detailsBase + 1u] = result.details.y;
   detailsOutput[detailsBase + 2u] = result.details.z;
   detailsOutput[detailsBase + 3u] = result.details.w;`
       : '';
-    for (let chunk = 0, offset = 0; offset < targets.length; chunk++, offset += chunkSize) {
-      const count = Math.min(chunkSize, targets.length - offset);
+    for (let chunk = 0; chunk < chunks.chunkCount; chunk++) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-classify-${chunk}`,
           operation: 'GPUPointHorizonVisibility',
           variant: model.traversal,
-          bindings,
-          invocationCount: count,
+          bindings: [...bindings, chunks.getChunkStart(chunk)],
+          invocationCount: chunks.chunkSize,
           workgroupSize: 64,
-          declarations: `const TARGET_OFFSET: u32 = ${offset}u;
+          declarations: `const TARGET_COUNT: u32 = ${targets.length}u;
 const OBSERVER_COUNT: u32 = ${props.observers.length}u;
 const HIDDEN: u32 = ${GPU_TERRAIN_VISIBILITY.hidden}u;
 const VISIBLE: u32 = ${GPU_TERRAIN_VISIBILITY.visible}u;
@@ -225,7 +244,7 @@ struct Classification { code: u32, details: vec4<f32> };
 
 fn classifyTarget(index: u32) -> Classification {
   let notANumber = vec4<f32>(nanValue());
-  let base = targetsOffset + (TARGET_OFFSET + index) * 4u;
+  let base = targetsOffset + (chunkStart[chunkStartOffset] + index) * 4u;
   let targetColumn = targets[base];
   let targetRow = targets[base + 1u];
   let targetHeight = targets[base + 2u];
@@ -257,7 +276,10 @@ fn classifyTarget(index: u32) -> Classification {
     return Classification(VISIBLE, notANumber);
   }
   let curvature = settings[settingsOffset];
-  let stop = distance - max(settings[settingsOffset + 8u], settings[settingsOffset + 9u] * distance);
+  // A negative packed ignore distance is the derived default: one ground pixel at the target.
+  let packedIgnoreDistance = settings[settingsOffset + 8u];
+  let ignoreDistance = select(packedIgnoreDistance, targetPixelLength, packedIgnoreDistance < 0.0);
+  let stop = distance - max(ignoreDistance, settings[settingsOffset + 9u] * distance);
   let ray = marchRay(eye, sinA, cosA, stop, stop > 0.0);
   let targetTangent = relativeHeight / distance - opaque(distance * curvature);
   let targetAngle = atanAccurate(targetTangent) * DEGREES;
@@ -273,8 +295,9 @@ fn classifyTarget(index: u32) -> Classification {
   let onSkyline = code != HIDDEN && targetAngle >= skylineAngle - settings[settingsOffset + 7u];
   return Classification(code, vec4<f32>(targetAngle, occluderAngle, skylineAngle, select(0.0, 1.0, onSkyline)));
 }`,
-          body: `let result = classifyTarget(index);
-  visibilityOutput[visibilityOutputOffset + TARGET_OFFSET + index] = result.code;
+          body: `if (chunkStart[chunkStartOffset] + index >= TARGET_COUNT) { return; }
+  let result = classifyTarget(index);
+  visibilityOutput[visibilityOutputOffset + chunkStart[chunkStartOffset] + index] = result.code;
   ${detailsWrite}`
         })
       );

@@ -33,7 +33,7 @@ export const GPU_GWR_NONSTATIONARITY_TABLE = {
 /** Float32 slots of the `summary` output. */
 export const GPU_GWR_NONSTATIONARITY_SUMMARY = {
   /** Permutations `P` run. */
-  permutations: 0,
+  permutationCount: 0,
   /** Included locations `m` (unmasked, finite). */
   locationCount: 1,
   /** Locations with a finite observed fit (they enter the observed standard deviations). */

@@ -5,7 +5,6 @@
 import {
   createTransientView,
   GPUSort,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -14,15 +13,21 @@ import {
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   describeGPUSpatialWeights,
+  getGPUSpatialWeightsStatusViews,
+  getGPUSpatialWeightsViews,
   type GPUSpatialWeights,
-  type GPUSpatialWeightsInfo,
+  type GPUSpatialWeightsInformation,
+  type GPUSpatialWeightsOutput,
   type GPUSpatialWeightsTransformState,
-  validateGPUSpatialWeights
+  validateGPUSpatialWeights,
+  validateGPUSpatialWeightsOutput
 } from './spatial-weights';
 import {
   createCSRStages,
@@ -64,22 +69,17 @@ export type GPUSpatialWeightsAlgebraBaseProps = {
    * Destination CSR with `rows + 1` offsets and the result capacity (`neighbors.length`). It must
    * not share buffers with the inputs. `output.distances` is written only when present, and is
    * not supported by `'higherOrder'` and `'block'` (they have no geometric distances).
-   */
-  output: GPUSpatialWeights;
-  /**
-   * One-element uint32 flag. Set to 1 when the result needs more than the output capacity, else
-   * 0. On overflow the output is still a valid CSR: offsets are clamped to the capacity, so the
-   * leading rows are complete, the row in which the capacity runs out is a sorted prefix and the
-   * following rows are empty.
-   */
-  overflow: GraphDataView<'uint32'>;
-  /**
-   * Optional one-element uint32 view receiving the slot count the final result needs, even past
-   * the capacity: the `requiredCount` of `outputWeights.status`. Exact for every operation except
+   *
+   * `status.overflow` (required) is set to 1 when the result needs more than the output capacity,
+   * else 0. On overflow the output is still a valid CSR: offsets are clamped to the capacity, so
+   * the leading rows are complete, the row in which the capacity runs out is a sorted prefix and
+   * the following rows are empty. `status.requiredCount` (optional) receives the slot count the
+   * final result needs, even past the capacity. It is exact for every operation except
    * `'higherOrder'` with `order > 1`, where an overflowing intermediate set makes it a lower
-   * bound, so that case does not attach it as `requiredCount`; raise `workCapacity` instead.
+   * bound, so `outputWeights.status` does not publish it in that case; raise `workCapacity`
+   * instead.
    */
-  totalNeighbors?: GraphDataView<'uint32'>;
+  output: GPUSpatialWeightsOutput;
 };
 
 /**
@@ -203,14 +203,14 @@ function combineAlgebraTransforms(
 
 /** Returns whether every operand is known to be symmetric. */
 function allSymmetric(...operands: GPUSpatialWeights[]): boolean | 'unknown' {
-  return operands.every(operand => operand.info?.symmetric === true) ? true : 'unknown';
+  return operands.every(operand => operand.information?.symmetric === true) ? true : 'unknown';
 }
 
-/** Describes the result of an algebra operation for `outputWeights.info`. */
-function getAlgebraOutputInfo(
+/** Describes the result of an algebra operation for `outputWeights.information`. */
+function getAlgebraOutputInformation(
   props: GPUSpatialWeightsAlgebraProps,
   rowCount: number
-): GPUSpatialWeightsInfo {
+): GPUSpatialWeightsInformation {
   const provenance = {source: OPERATION, criterion: props.operation};
   switch (props.operation) {
     case 'union':
@@ -226,10 +226,14 @@ function getAlgebraOutputInfo(
             : props.weightRule === 'sum'
               ? combineAlgebraTransforms(
                   ...operands.map(operand =>
-                    operand.info?.transform === 'binary' ? 'unknown' : operand.info?.transform
+                    operand.information?.transform === 'binary'
+                      ? 'unknown'
+                      : operand.information?.transform
                   )
                 )
-              : combineAlgebraTransforms(...operands.map(operand => operand.info?.transform)),
+              : combineAlgebraTransforms(
+                  ...operands.map(operand => operand.information?.transform)
+                ),
         // Difference of two symmetric operands is symmetric too, so both are required.
         symmetric: allSymmetric(props.left, props.right),
         hasSelfWeights: false,
@@ -248,7 +252,7 @@ function getAlgebraOutputInfo(
       return {
         rowCount,
         // The self weight is arbitrary, so only an unscaled input stays unscaled.
-        transform: props.weights.info?.transform === 'raw' ? 'raw' : 'unknown',
+        transform: props.weights.information?.transform === 'raw' ? 'raw' : 'unknown',
         symmetric: allSymmetric(props.weights),
         hasSelfWeights: true,
         provenance
@@ -256,9 +260,9 @@ function getAlgebraOutputInfo(
     case 'subgraph':
       return {
         rowCount,
-        transform: combineAlgebraTransforms(props.weights.info?.transform),
+        transform: combineAlgebraTransforms(props.weights.information?.transform),
         symmetric: allSymmetric(props.weights),
-        hasSelfWeights: props.weights.info?.hasSelfWeights,
+        hasSelfWeights: props.weights.information?.hasSelfWeights,
         provenance
       };
     default:
@@ -292,17 +296,18 @@ function getAlgebraOutputInfo(
  * `GPUGlobalSpatialStatistics` and the local spatial-autocorrelation kernels skip `neighbor ==
  * row` entries by design, so passing self weights to them silently ignores the diagonal.
  *
- * Metadata: {@link GPUSpatialWeightsAlgebra.outputWeights} is `output` with `info` (row count,
+ * Metadata: {@link GPUSpatialWeightsAlgebra.outputWeights} is `output` with `information` (row count,
  * transform state, symmetric flag, provenance) and `status` (`overflow`, `requiredCount`)
- * attached. `symmetric` is `true` only when it is guaranteed by the operands' `info.symmetric`
+ * attached. `symmetric` is `true` only when it is guaranteed by the operands' `information.symmetric`
  * (union, intersection, difference and symmetric difference of two symmetric operands, a symmetric
  * `higherOrder`, `selfWeight` or `subgraph` input, and `block`), else `'unknown'`. The
  * status of `outputWeights` is this operation's own `overflow`; it does not repeat the operands'
  * status, so check an overflowing operand before trusting a result built from it.
  *
- * Capacity grow loop: pass `totalNeighbors`, read it and `overflow` after a frame; when `overflow`
- * is 1 reallocate the output with `getGPUSpatialWeightsCapacity(requiredCount, capacity)` slots
- * and rebuild.
+ * Capacity grow loop: pass `output.status.requiredCount`, read it and `overflow` after a frame;
+ * when `overflow` is 1 reallocate the output with
+ * `getGPUSpatialWeightsCapacityPlan({rowCount, capacity, requiredCount}).capacity` slots and
+ * rebuild.
  *
  * Capacity: row counts run first, then an exclusive scan and clamped offsets, so an operation
  * that fits reproduces the CPU result exactly and an overflowing one is flagged and truncated.
@@ -312,24 +317,14 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialWeightsAlgebraProps;
-  /** The `output` CSR with `info` and `status` attached, for consumers. */
+  /** The `output` CSR with `information` and `status` attached, for consumers. */
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsAlgebraProps) {
     const id = props.id ?? 'spatial-weights-algebra';
     this.id = id;
     this.props = props;
-    const outputRows = validateGPUSpatialWeights(id, props.output, 'output');
-    validatePackedUint32View(props.overflow, `${id} overflow`);
-    if (props.overflow.length < 1) {
-      throw new Error(`${id} overflow must hold one uint32`);
-    }
-    if (props.totalNeighbors) {
-      validatePackedUint32View(props.totalNeighbors, `${id} totalNeighbors`);
-      if (props.totalNeighbors.length < 1) {
-        throw new Error(`${id} totalNeighbors must hold one uint32`);
-      }
-    }
+    const outputRows = validateGPUSpatialWeightsOutput(id, props.output);
     const inputs = this.getInputWeights();
     const checkRows = (weights: GPUSpatialWeights, name: string) => {
       const rows = validateGPUSpatialWeights(id, weights, name);
@@ -351,28 +346,15 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           const needsRight =
             props.operation === 'union' || props.operation === 'symmetricDifference';
           if (!props.left.distances || (needsRight && !props.right.distances)) {
-            throw new Error(
-              `${id} output.distances requires distances on the operands that contribute`
-            );
+            throw new Error(`${id} output.distances needs operand distances`);
           }
         }
         break;
       case 'higherOrder':
         checkRows(props.weights, 'weights');
-        if (
-          !Number.isInteger(props.order) ||
-          props.order < 1 ||
-          props.order > GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER
-        ) {
-          throw new Error(
-            `${id} order must be an integer in [1, ${GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER}]`
-          );
-        }
-        if (
-          props.workCapacity !== undefined &&
-          !(Number.isInteger(props.workCapacity) && props.workCapacity >= 1)
-        ) {
-          throw new Error(`${id} workCapacity must be a positive integer`);
+        validateCapacity(id, 'order', props.order, 1, GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER);
+        if (props.workCapacity !== undefined) {
+          validateCapacity(id, 'workCapacity', props.workCapacity);
         }
         break;
       case 'selfWeight':
@@ -387,24 +369,20 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         break;
       case 'subgraph':
         checkRows(props.weights, 'weights');
-        validatePackedUint32View(props.mask, `${id} mask`);
+        validatePackedView(props.mask, ['uint32'], `${id} mask`);
         if (props.mask.length !== outputRows) {
           throw new Error(`${id} mask length must equal the row count`);
         }
         break;
       case 'block':
-        validatePackedUint32View(props.groupIds, `${id} groupIds`);
+        validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
         if (props.groupIds.length !== outputRows) {
-          throw new Error(`${id} groupIds length must equal the output row count`);
+          throw new Error(`${id} groupIds length must equal the row count`);
         }
-        if (!(Number.isInteger(props.groupCount) && props.groupCount >= 1)) {
-          throw new Error(`${id} groupCount must be a positive integer`);
-        }
+        validateCapacity(id, 'groupCount', props.groupCount);
         break;
       default:
-        throw new Error(
-          `${id} operation must be one of union, intersection, difference, symmetricDifference, higherOrder, selfWeight, subgraph or block`
-        );
+        throw new Error(`${id} unknown operation`);
     }
     if (
       props.output.distances &&
@@ -420,23 +398,21 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       throw new Error(`${id} output.distances requires weights.distances`);
     }
     this.outputWeights = describeGPUSpatialWeights(props.output, {
-      info: getAlgebraOutputInfo(props, outputRows),
+      information: getAlgebraOutputInformation(props, outputRows),
       status: {
-        overflow: props.overflow,
+        ...props.output.status,
         requiredCount:
-          props.operation === 'higherOrder' && props.order > 1 ? undefined : props.totalNeighbors
+          props.operation === 'higherOrder' && props.order > 1
+            ? undefined
+            : props.output.status.requiredCount
       }
     });
     const outputViews = [
-      props.output.offsets,
-      props.output.neighbors,
-      props.output.weights,
-      props.output.distances,
-      props.overflow,
-      props.totalNeighbors
+      ...getGPUSpatialWeightsViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output)
     ];
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
-      ...inputs.flatMap(getViews),
+      ...inputs.flatMap(getGPUSpatialWeightsViews),
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'block' ? props.groupIds : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
@@ -469,10 +445,9 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     validateGraphViewsBelongToGraph(id, graph, [
-      ...this.getInputWeights().flatMap(getViews),
-      ...getViews(props.output),
-      props.overflow,
-      props.totalNeighbors,
+      ...this.getInputWeights().flatMap(getGPUSpatialWeightsViews),
+      ...getGPUSpatialWeightsViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output),
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'block' ? props.groupIds : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
@@ -567,9 +542,9 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       rows,
       targetOffsets: output.offsets,
       capacity: output.neighbors.length,
-      overflow: props.overflow,
+      overflow: props.output.status.overflow,
       initializesOverflow: true,
-      totalNeighbors: props.totalNeighbors,
+      totalNeighbors: props.output.status.requiredCount,
       bindings,
       visit: onItem => getMergeVisitWGSL(operation, onItem),
       attributes
@@ -600,9 +575,9 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         rows,
         targetOffsets: target.offsets,
         capacity: target.neighbors.length,
-        overflow: props.overflow,
+        overflow: props.output.status.overflow,
         initializesOverflow,
-        totalNeighbors: last ? props.totalNeighbors : undefined,
+        totalNeighbors: last ? props.output.status.requiredCount : undefined,
         attributes: [
           {name: 'neighbors', output: target.neighbors, type: 'u32' as const, value: 'id'}
         ]
@@ -757,9 +732,9 @@ ${getContainsFunctionWGSL('visitedContains', 'visitedNeighbors')}`,
       rows,
       targetOffsets: output.offsets,
       capacity: output.neighbors.length,
-      overflow: props.overflow,
+      overflow: props.output.status.overflow,
       initializesOverflow: true,
-      totalNeighbors: props.totalNeighbors,
+      totalNeighbors: props.output.status.requiredCount,
       bindings: [
         {name: 'sourceOffsets', view: weights.offsets, type: 'u32', access: 'read'},
         {name: 'sourceNeighbors', view: weights.neighbors, type: 'u32', access: 'read'}
@@ -826,9 +801,9 @@ ${getContainsFunctionWGSL('visitedContains', 'visitedNeighbors')}`,
       rows,
       targetOffsets: output.offsets,
       capacity: output.neighbors.length,
-      overflow: props.overflow,
+      overflow: props.output.status.overflow,
       initializesOverflow: true,
-      totalNeighbors: props.totalNeighbors,
+      totalNeighbors: props.output.status.requiredCount,
       bindings: [
         {name: 'sourceOffsets', view: weights.offsets, type: 'u32', access: 'read'},
         {name: 'sourceNeighbors', view: weights.neighbors, type: 'u32', access: 'read'},
@@ -887,9 +862,9 @@ ${getContainsFunctionWGSL('visitedContains', 'visitedNeighbors')}`,
         rows,
         targetOffsets: output.offsets,
         capacity: output.neighbors.length,
-        overflow: props.overflow,
+        overflow: props.output.status.overflow,
         initializesOverflow: true,
-        totalNeighbors: props.totalNeighbors,
+        totalNeighbors: props.output.status.requiredCount,
         bindings: [
           {name: 'groupIds', view: groupIds, type: 'u32', access: 'read'},
           {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
@@ -926,10 +901,6 @@ fn lowerBound(key: u32) -> u32 {
       })
     ];
   }
-}
-
-function getViews(weights: GPUSpatialWeights): (GraphDataView | undefined)[] {
-  return [weights.offsets, weights.neighbors, weights.weights, weights.distances];
 }
 
 /** Writes weight 1 into every used slot of `output`. */

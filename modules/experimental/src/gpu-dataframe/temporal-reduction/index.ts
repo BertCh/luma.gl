@@ -11,8 +11,3 @@ export {
   GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
   GPU_TEMPORAL_REDUCTION_WORD_PARAMETER_LENGTH
 } from './temporal-reduction-parameters';
-export {getOrderedFloatKey, reduceTemporalBucketsOnCPU} from './temporal-reduction-cpu';
-export type {
-  GPUTemporalReductionCPUInput,
-  GPUTemporalReductionCPUResult
-} from './temporal-reduction-cpu';

@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -15,12 +13,18 @@ import {
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from '../../utils/sorted-segment-offsets';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUCircularStatisticsContract} from '../contracts/index';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUCircularStatisticsContract} from '../../analysis-core/contracts/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 /** Lanes of the workgroup that owns one group. */
 const ROSE_WORKGROUP_SIZE = 256;
@@ -38,6 +42,15 @@ export const GPU_ROSE_STATISTIC_SUMMARY = {
   stride: GPU_ROSE_STATISTIC_SUMMARY_STRIDE
 } as const;
 
+/** Caller-owned outputs of {@link GPURoseStatistic}, rewritten on every encoding. */
+export type GPURoseStatisticOutput = {
+  /** `groupCount * GPU_ROSE_STATISTIC_SUMMARY_STRIDE` float32 values. */
+  summary: GraphDataView<'float32'>;
+  /** `groupCount * circular.binCount` weighted observations in angle-bin order. */
+  bins: GraphDataView<'float32'>;
+};
+
+/** Properties for {@link GPURoseStatistic}. */
 export type GPURoseStatisticProps = {
   id?: string;
   /**
@@ -53,10 +66,8 @@ export type GPURoseStatisticProps = {
   groupCount?: number;
   mask?: GraphDataView<'uint32'>;
   circular: GPUCircularStatisticsContract;
-  /** `groupCount * GPU_ROSE_STATISTIC_SUMMARY_STRIDE` float32 values. */
-  summary: GraphDataView<'float32'>;
-  /** `groupCount * circular.binCount` weighted observations in angle-bin order. */
-  bins: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPURoseStatisticOutput;
 };
 
 /**
@@ -95,12 +106,11 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
     ] as const) {
       if (!view) continue;
       if (name === 'weights') validatePackedView(view, ['float32'], `${id} ${name}`);
-      else validatePackedUint32View(view as GraphDataView<'uint32'>, `${id} ${name}`);
+      else validatePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length !== props.starts.length)
         throw new Error(`${id} ${name} length must equal starts length`);
     }
-    if (!Number.isSafeInteger(groupCount) || groupCount < 1)
-      throw new Error(`${id} groupCount must be positive`);
+    validateCapacity(id, 'groupCount', groupCount);
     if (!props.groupIds && groupCount !== 1)
       throw new Error(`${id} groupIds are required for multiple groups`);
     if (props.circular.mode !== 'directional' && props.circular.mode !== 'axial')
@@ -111,22 +121,17 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} circular angle convention is unsupported`);
     }
-    if (
-      !Number.isSafeInteger(props.circular.binCount) ||
-      props.circular.binCount < 2 ||
-      props.circular.binCount > 360
-    ) {
-      throw new Error(`${id} circular.binCount must be an integer in [2, 360]`);
-    }
-    validatePackedView(props.summary, ['float32'], `${id} summary`);
-    validatePackedView(props.bins, ['float32'], `${id} bins`);
-    if (props.summary.length < groupCount * GPU_ROSE_STATISTIC_SUMMARY_STRIDE)
-      throw new Error(`${id} summary is too short`);
-    if (props.bins.length < groupCount * props.circular.binCount)
-      throw new Error(`${id} bins are too short`);
+    validateCapacity(id, 'circular.binCount', props.circular.binCount, 2, 360);
+    const {summary, bins} = props.output;
+    validatePackedView(summary, ['float32'], `${id} output.summary`);
+    validatePackedView(bins, ['float32'], `${id} output.bins`);
+    if (summary.length < groupCount * GPU_ROSE_STATISTIC_SUMMARY_STRIDE)
+      throw new Error(`${id} output.summary is too short`);
+    if (bins.length < groupCount * props.circular.binCount)
+      throw new Error(`${id} output.bins are too short`);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.summary, props.bins],
+      [summary, bins],
       [props.starts, props.ends, props.weights, props.groupIds, props.mask]
     );
   }
@@ -141,8 +146,8 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
       props.weights,
       props.groupIds,
       props.mask,
-      props.summary,
-      props.bins
+      props.output.summary,
+      props.output.bins
     ]);
     const rowCount = props.starts.length;
     // Sorted segments only pay off when there is more than one group to separate.
@@ -228,8 +233,8 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
               ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
               : [])
           ]),
-      {name: 'summary', view: props.summary, type: 'f32', access: 'read_write'},
-      {name: 'bins', view: props.bins, type: 'f32', access: 'read_write'}
+      {name: 'summary', view: props.output.summary, type: 'f32', access: 'read_write'},
+      {name: 'bins', view: props.output.bins, type: 'f32', access: 'read_write'}
     ];
     const axial = props.circular.mode === 'axial';
     // Unsegmented tiles walk every row and filter by mask and group. Segmented tiles walk the
@@ -269,7 +274,7 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
         invocationCount: groupCount * ROSE_WORKGROUP_SIZE,
         guardIndex: false,
         bindings,
-        declarations: `const ROWS: u32 = ${rowCount}u;\nconst GROUP_COUNT: u32 = ${groupCount}u;\nconst LANES: u32 = ${ROSE_WORKGROUP_SIZE}u;\nconst BIN_COUNT: u32 = ${props.circular.binCount}u;\nconst PI: f32 = 3.141592653589793;\nconst PERIOD: f32 = ${axial ? 'PI' : '2.0 * PI'};\nfn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
+        declarations: `const ROWS: u32 = ${rowCount}u;\nconst GROUP_COUNT: u32 = ${groupCount}u;\nconst LANES: u32 = ${ROSE_WORKGROUP_SIZE}u;\nconst BIN_COUNT: u32 = ${props.circular.binCount}u;\nconst PI: f32 = 3.141592653589793;\nconst PERIOD: f32 = ${axial ? 'PI' : '2.0 * PI'};\n${IS_FINITE_FLOAT_WGSL}
 var<workgroup> tileBin: array<u32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> tileWeight: array<f32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedCount: array<u32, ${ROSE_WORKGROUP_SIZE}>;

@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUReduction,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -15,7 +13,8 @@ import {
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getSlotGroupingNodes} from './slot-grouping';
 import {
@@ -25,6 +24,16 @@ import {
 } from './spatial-weights';
 
 const OPERATION = 'GPUSpatialWeightsTranspose';
+
+/** Caller-owned output of {@link GPUSpatialWeightsTranspose}: the CSR of `W'`. */
+export type GPUSpatialWeightsTransposeOutput = GPUSpatialWeights & {
+  /**
+   * Optional one-uint32 output: the number of positions `(i, j)` of the union of the patterns of
+   * `W` and `W'` whose weights differ by more than `symmetryTolerance` or that are present in one
+   * only. Zero means `W = W'`. Requires square weights.
+   */
+  asymmetricSlots?: GraphDataView<'uint32'>;
+};
 
 /** Properties for {@link GPUSpatialWeightsTranspose}. */
 export type GPUSpatialWeightsTransposeProps = {
@@ -46,13 +55,7 @@ export type GPUSpatialWeightsTransposeProps = {
    * `weights` (and `distances` when `weights.distances` is set) hold at least as many slots as the
    * input. Row `j` lists the source rows `i` with `w_ij` present, ascending.
    */
-  output: GPUSpatialWeights;
-  /**
-   * Optional one-uint32 output: the number of positions `(i, j)` of the union of the patterns of
-   * `W` and `W'` whose weights differ by more than `symmetryTolerance` or that are present in one
-   * only. Zero means `W = W'`. Requires square weights.
-   */
-  asymmetricSlots?: GraphDataView<'uint32'>;
+  output: GPUSpatialWeightsTransposeOutput;
   /** Absolute weight tolerance of the symmetry check. Defaults to 0 (exact). */
   symmetryTolerance?: number;
 };
@@ -69,9 +72,9 @@ export type GPUSpatialWeightsTransposeProps = {
  * capacity (`nnz` cannot grow); slots of the output past `offsets[columnCount]` are written as
  * zero. `distances` are carried along when present.
  *
- * Optionally reports whether `W` is symmetric (`asymmetricSlots`).
+ * Optionally reports whether `W` is symmetric (`output.asymmetricSlots`).
  *
- * {@link GPUSpatialWeightsTranspose.outputWeights} is `output` with `info` and `status` attached.
+ * {@link GPUSpatialWeightsTranspose.outputWeights} is `output` with `information` and `status` attached.
  * The transpose of `W` is symmetric exactly when `W` is, so `symmetric` is carried over. A
  * `'row'` or `'variance'` transform state becomes `'unknown'` (the transpose is column, not row,
  * standardized); other states are unchanged. The input `status` (for example `overflow` of a
@@ -86,7 +89,7 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
   readonly rowCount: number;
   /** Columns of `W` (rows of the transpose). */
   readonly columnCount: number;
-  /** The `output` CSR with `info` and `status` attached, for consumers. */
+  /** The `output` CSR with `information` and `status` attached, for consumers. */
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsTransposeProps) {
@@ -104,14 +107,14 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
       throw new Error(`${id} output.offsets must hold columnCount + 1 entries`);
     }
     if (output.neighbors.length < weights.neighbors.length) {
-      throw new Error(`${id} output slot capacity must be at least the input slot capacity`);
+      throw new Error(`${id} output capacity must be >= the input capacity`);
     }
     if (weights.distances && !output.distances) {
-      throw new Error(`${id} output.distances is required when weights.distances is set`);
+      throw new Error(`${id} output.distances is required with weights.distances`);
     }
-    if (props.asymmetricSlots) {
-      validatePackedUint32View(props.asymmetricSlots, `${id} asymmetricSlots`);
-      if (props.asymmetricSlots.length !== 1) {
+    if (props.output.asymmetricSlots) {
+      validatePackedView(props.output.asymmetricSlots, ['uint32'], `${id} asymmetricSlots`);
+      if (props.output.asymmetricSlots.length !== 1) {
         throw new Error(`${id} asymmetricSlots must hold one uint32 row`);
       }
       if (rows !== columns) {
@@ -122,28 +125,34 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
       props.symmetryTolerance !== undefined &&
       !(Number.isFinite(props.symmetryTolerance) && props.symmetryTolerance >= 0)
     ) {
-      throw new Error(`${id} symmetryTolerance must be a non-negative finite number`);
+      throw new Error(`${id} symmetryTolerance must be finite and >= 0`);
     }
     if (output.distances) {
       validatePackedView(output.distances, ['float32'], `${id} output.distances`);
     }
     this.rowCount = rows;
     this.columnCount = columns;
-    const inputTransform = weights.info?.transform ?? 'unknown';
+    const inputTransform = weights.information?.transform ?? 'unknown';
     this.outputWeights = describeGPUSpatialWeights(output, {
-      info: {
+      information: {
         rowCount: columns,
         transform:
           inputTransform === 'row' || inputTransform === 'variance' ? 'unknown' : inputTransform,
-        symmetric: rows === columns ? (weights.info?.symmetric ?? 'unknown') : 'unknown',
-        hasSelfWeights: weights.info?.hasSelfWeights,
-        provenance: {...weights.info?.provenance, source: OPERATION, criterion: 'transpose'}
+        symmetric: rows === columns ? (weights.information?.symmetric ?? 'unknown') : 'unknown',
+        hasSelfWeights: weights.information?.hasSelfWeights,
+        provenance: {...weights.information?.provenance, source: OPERATION, criterion: 'transpose'}
       },
       status: weights.status
     });
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.offsets, output.neighbors, output.weights, output.distances, props.asymmetricSlots],
+      [
+        output.offsets,
+        output.neighbors,
+        output.weights,
+        output.distances,
+        props.output.asymmetricSlots
+      ],
       [weights.offsets, weights.neighbors, weights.weights, weights.distances]
     );
   }
@@ -163,7 +172,7 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
       output.neighbors,
       output.weights,
       output.distances,
-      props.asymmetricSlots
+      props.output.asymmetricSlots
     ]);
     const capacity = weights.neighbors.length;
     const transient = <Format extends 'uint32' | 'float32'>(
@@ -259,7 +268,7 @@ fn findRow(slot: u32) -> u32 {
   ${weights.distances ? 'outputDistances[outputDistancesOffset + index] = distance;' : ''}`
       })
     ];
-    if (props.asymmetricSlots) {
+    if (props.output.asymmetricSlots) {
       const rowMismatches = transient('row-mismatches', 'uint32', rows);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
@@ -317,7 +326,7 @@ const NONE: u32 = 0xffffffffu;`,
         ...new GPUReduction({
           id: `${id}-symmetry-total`,
           input: rowMismatches,
-          output: props.asymmetricSlots,
+          output: props.output.asymmetricSlots,
           operation: 'sum'
         }).getCommandNodes(graph)
       );

@@ -25,6 +25,9 @@ import {
   GPU_RASTER_STRETCH_PARAMETER_LENGTH,
   GPU_RASTER_STRETCH_STATISTICS_LENGTH
 } from './raster-stretch-parameters';
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURasterStretch';
@@ -37,7 +40,7 @@ const REDUCE_CELLS_PER_THREAD = 16;
 
 /** Caller-owned outputs of {@link GPURasterStretch}. At least one is required. */
 export type GPURasterStretchOutput = {
-  /** Stretched value per cell in `[0, 1]`; NaN for nodata. At least `width * height` rows. */
+  /** Stretched value per cell in `[0, 1]`; NaN for nodata. At least `grid.width * grid.height` rows. */
   stretched?: GraphDataView<'float32'>;
   /** Packed rgba8 per cell (`r | g << 8 | b << 16 | a << 24`); 0 for nodata. Requires `palette`. */
   colors?: GraphDataView<'uint32'>;
@@ -47,7 +50,7 @@ export type GPURasterStretchOutput = {
   lutColors?: GraphDataView<'uint32'>;
   /** Histogram of the included valid cells inside the domain; exactly `binCount` rows. */
   histogram?: GraphDataView<'uint32'>;
-  /** Eight rows `[domainMin, domainMax, lo, hi, validCount, binWidth, 0, 0]` (see `GPU_RASTER_STRETCH_STATISTICS_INDEX`). */
+  /** Eight rows `[domainMinimum, domainMaximum, lo, hi, validCount, binWidth, 0, 0]` (see `GPU_RASTER_STRETCH_STATISTICS_INDEX`). */
   statistics?: GraphDataView<'float32'>;
 };
 
@@ -55,7 +58,7 @@ export type GPURasterStretchOutput = {
  * Properties for {@link GPURasterStretch}.
  *
  * Per-frame (no recompile): `values` contents, `regionMask` contents, `palette` contents and
- * `parameters` written with `getGPURasterStretchParameterValues`. Topology: width, height,
+ * `parameters` written with `getGPURasterStretchParameterValues`. Topology: the `grid` size,
  * `binCount`, `lutSize`, `noDataValue`, palette size, and which views exist.
  */
 export type GPURasterStretchProps = {
@@ -63,10 +66,8 @@ export type GPURasterStretchProps = {
   id?: string;
   /** Packed row-major float32 raster; cell `(column, row)` is row `row * width + column`. */
   values: GraphDataView<'float32'>;
-  /** Raster width in cells, `[1, 2^24]`. */
-  width: number;
-  /** Raster height in cells, `[1, 2^24]`. */
-  height: number;
+  /** Raster grid: its width and height (each in `[1, 2^24]`) size the kernels. */
+  grid: GPURasterMetadata;
   /** Optional finite nodata sentinel compared exactly. NaN is always nodata. */
   noDataValue?: number;
   /** Optional validity per cell; zero marks nodata. */
@@ -102,7 +103,9 @@ export type GPURasterStretchProps = {
  *   an explicit domain are not counted.
  * - Percentile bounds find the first bin whose cumulative count reaches `p * total` and interpolate
  *   linearly inside it, so `lo`/`hi` are within one bin width (`binWidth`) of the exact percentile.
- * - After the mode, `t` goes through `t ** gamma` and then the sigmoidal contrast.
+ * - After the mode, `t` goes through the display gamma `t ** (1 / gamma)` (`gamma > 1` brightens, as in
+ *   rio-color and GIMP levels) and then the sigmoidal contrast. GDAL has no gamma; its
+ *   `-exponent e` option (`gdal_translate`, VRT) is `t ** e`, so it equals `gamma: 1 / e`.
  * - A degenerate range (`lo >= hi`, e.g. a constant raster, or no included cell for percentile and
  *   equalize) maps values below `lo` to 0, above `hi` to 1 and equal values to 0.5, skipping gamma
  *   and sigmoid.
@@ -123,12 +126,13 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-stretch';
     this.props = props;
     const {id} = this;
-    const {output, width, height} = props;
-    validateRasterAlgebraCount(id, 'width', width, 1, GPU_RASTER_STRETCH_MAXIMUM_EXTENT);
-    validateRasterAlgebraCount(id, 'height', height, 1, GPU_RASTER_STRETCH_MAXIMUM_EXTENT);
-    const cellCount = width * height;
-    if (cellCount > 0xffffffff) {
-      throw new Error(`${id} width * height must fit in uint32`);
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
+    for (const [name, size] of [
+      ['width', props.grid.width],
+      ['height', props.grid.height]
+    ] as const) {
+      validateCapacity(id, `grid ${name}`, size, 1, GPU_RASTER_STRETCH_MAXIMUM_EXTENT);
     }
     this.binCount = props.binCount ?? DEFAULT_BIN_COUNT;
     this.lutSize = props.lutSize ?? DEFAULT_LUT_SIZE;
@@ -195,7 +199,8 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, binCount, lutSize} = this;
-    const {output, width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     const cellCount = width * height;
     validateRasterAlgebraGraph(id, graph, [
       props.values,
@@ -306,6 +311,7 @@ fn readStatisticsValue(index: u32, value: ptr<function, f32>) -> bool {
         ],
         invocationCount: Math.ceil(cellCount / REDUCE_CELLS_PER_THREAD),
         guardIndex: false,
+        workgroupSize: STATISTICS_WORKGROUP_SIZE,
         declarations: `${statisticsWGSL}
 const CELL_COUNT: u32 = ${cellCount}u;
 const CELLS_PER_THREAD: u32 = ${REDUCE_CELLS_PER_THREAD}u;
@@ -364,23 +370,23 @@ ${GET_ORDERED_KEY_WGSL}`,
         declarations: `const BIN_COUNT: u32 = ${binCount}u;
 ${DECODE_ORDERED_KEY_WGSL}`,
         body: `let count = keys[keysOffset + 2u];
-  var domainMin = 0.0;
-  var domainMax = 0.0;
+  var domainMinimum = 0.0;
+  var domainMaximum = 0.0;
   if (params[paramsOffset + 4u] != 0.0) {
-    domainMin = params[paramsOffset + 5u];
-    domainMax = params[paramsOffset + 6u];
+    domainMinimum = params[paramsOffset + 5u];
+    domainMaximum = params[paramsOffset + 6u];
   } else if (count > 0u) {
-    domainMin = decodeOrderedKey(keys[keysOffset]);
-    domainMax = decodeOrderedKey(keys[keysOffset + 1u]);
+    domainMinimum = decodeOrderedKey(keys[keysOffset]);
+    domainMaximum = decodeOrderedKey(keys[keysOffset + 1u]);
   }
-  let hasRange = domainMax > domainMin;
-  let range = domainMax - domainMin;
-  state[stateOffset] = domainMin;
-  state[stateOffset + 1u] = domainMax;
+  let hasRange = domainMaximum > domainMinimum;
+  let range = domainMaximum - domainMinimum;
+  state[stateOffset] = domainMinimum;
+  state[stateOffset + 1u] = domainMaximum;
   state[stateOffset + 2u] = select(0.0, f32(BIN_COUNT) / range, hasRange);
   state[stateOffset + 3u] = select(0.0, range / f32(BIN_COUNT), hasRange);
-  state[stateOffset + 4u] = domainMin;
-  state[stateOffset + 5u] = domainMax;
+  state[stateOffset + 4u] = domainMinimum;
+  state[stateOffset + 5u] = domainMaximum;
   state[stateOffset + 6u] = 0.0;
   state[stateOffset + 7u] = f32(count);`
       }),
@@ -408,6 +414,8 @@ ${DECODE_ORDERED_KEY_WGSL}`,
           ? Math.ceil(cellCount / histogramCellsPerThread)
           : cellCount,
         guardIndex: !privatizeHistogram,
+        // The private-histogram strides and tile loop below assume this size.
+        workgroupSize: privatizeHistogram ? STATISTICS_WORKGROUP_SIZE : undefined,
         declarations: privatizeHistogram
           ? `${statisticsWGSL}
 const CELL_COUNT: u32 = ${cellCount}u;
@@ -421,8 +429,8 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
     atomicStore(&localHistogram[bin], 0u);
   }
   workgroupBarrier();
-  let domainMin = state[stateOffset];
-  let domainMax = state[stateOffset + 1u];
+  let domainMinimum = state[stateOffset];
+  let domainMaximum = state[stateOffset + 1u];
   let binScale = state[stateOffset + 2u];
   let tileStart = (index - localInvocationIndex) * CELLS_PER_THREAD;
   for (var step = 0u; step < CELLS_PER_THREAD; step++) {
@@ -431,8 +439,8 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
       break;
     }
     var value = 0.0;
-    if (readStatisticsValue(cell, &value) && value >= domainMin && value <= domainMax) {
-      let bin = min(u32((value - domainMin) * binScale), BIN_COUNT - 1u);
+    if (readStatisticsValue(cell, &value) && value >= domainMinimum && value <= domainMaximum) {
+      let bin = min(u32((value - domainMinimum) * binScale), BIN_COUNT - 1u);
       atomicAdd(&localHistogram[bin], 1u);
     }
   }
@@ -447,12 +455,12 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
   if (!readStatisticsValue(index, &value)) {
     return;
   }
-  let domainMin = state[stateOffset];
-  let domainMax = state[stateOffset + 1u];
-  if (value < domainMin || value > domainMax) {
+  let domainMinimum = state[stateOffset];
+  let domainMaximum = state[stateOffset + 1u];
+  if (value < domainMinimum || value > domainMaximum) {
     return;
   }
-  let position = (value - domainMin) * state[stateOffset + 2u];
+  let position = (value - domainMinimum) * state[stateOffset + 2u];
   let bin = min(u32(position), BIN_COUNT - 1u);
   atomicAdd(&histogram[histogramOffset + bin], 1u);`
       }),
@@ -513,17 +521,17 @@ fn getPercentileValue(rank: f32) -> f32 {
   if (count > 0u) {
     fraction = clamp((rank - f32(before)) / f32(count), 0.0, 1.0);
   }
-  let domainMin = state[stateOffset];
-  let domainMax = state[stateOffset + 1u];
-  return clamp(domainMin + (f32(low) + fraction) * state[stateOffset + 3u], domainMin, domainMax);
+  let domainMinimum = state[stateOffset];
+  let domainMaximum = state[stateOffset + 1u];
+  return clamp(domainMinimum + (f32(low) + fraction) * state[stateOffset + 3u], domainMinimum, domainMaximum);
 }`,
-        body: `let domainMin = state[stateOffset];
-  let domainMax = state[stateOffset + 1u];
+        body: `let domainMinimum = state[stateOffset];
+  let domainMaximum = state[stateOffset + 1u];
   let validCount = state[stateOffset + 7u];
   let total = cdf[cdfOffset + BIN_COUNT - 1u];
   let mode = u32(params[paramsOffset + 7u]);
-  var lo = domainMin;
-  var hi = domainMax;
+  var lo = domainMinimum;
+  var hi = domainMaximum;
   if (mode != 0u && total == 0u) {
     hi = lo;
   } else if (mode == 1u) {
@@ -537,8 +545,8 @@ fn getPercentileValue(rank: f32) -> f32 {
     output.statistics
       ? `let isEmpty = params[paramsOffset + 4u] == 0.0 && validCount == 0.0;
   let nan = getNaN();
-  statisticsOut[statisticsOutOffset] = select(domainMin, nan, isEmpty);
-  statisticsOut[statisticsOutOffset + 1u] = select(domainMax, nan, isEmpty);
+  statisticsOut[statisticsOutOffset] = select(domainMinimum, nan, isEmpty);
+  statisticsOut[statisticsOutOffset + 1u] = select(domainMaximum, nan, isEmpty);
   statisticsOut[statisticsOutOffset + 2u] = select(lo, nan, isEmpty);
   statisticsOut[statisticsOutOffset + 3u] = select(hi, nan, isEmpty);
   statisticsOut[statisticsOutOffset + 4u] = validCount;
@@ -645,7 +653,7 @@ fn applyCurve(unit: f32) -> f32 {
   var t = unit;
   let gamma = params[paramsOffset + 10u];
   if (gamma != 1.0 && t > 0.0 && t < 1.0) {
-    t = pow(t, gamma);
+    t = pow(t, 1.0 / gamma);
   }
   let contrast = params[paramsOffset + 11u];
   if (contrast > 0.0) {
@@ -669,14 +677,14 @@ fn getStretchedValue(value: f32) -> f32 {
   }
   var unit = 0.0;
   if (u32(params[paramsOffset + 7u]) == 2u) {
-    let domainMin = state[stateOffset];
-    let domainMax = state[stateOffset + 1u];
-    if (value <= domainMin) {
+    let domainMinimum = state[stateOffset];
+    let domainMaximum = state[stateOffset + 1u];
+    if (value <= domainMinimum) {
       unit = 0.0;
-    } else if (value >= domainMax) {
+    } else if (value >= domainMaximum) {
       unit = 1.0;
     } else {
-      let position = (value - domainMin) * state[stateOffset + 2u];
+      let position = (value - domainMinimum) * state[stateOffset + 2u];
       let bin = min(u32(position), BIN_COUNT - 1u);
       let fraction = clamp(position - f32(bin), 0.0, 1.0);
       var before = 0u;

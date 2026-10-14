@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {PHILOX_WGSL} from '../../utils/philox-random';
+import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../utils/philox-random';
 import {getPhilox4x32} from '../../utils/philox-random';
 
 /** Largest `maximumPower` of `GPUSpatialWeightsTraces`: traces `tr(W^q)` for `q = 1..256`. */
@@ -43,9 +43,37 @@ export const GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW_SQUARED = 2;
 export const GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_COLUMN_SQUARES = 3;
 
 /** Philox counter word 3 of the probe stream (`'PROB'`). */
-export const GPU_SPATIAL_WEIGHTS_TRACES_PROBE_STREAM = 0x50524f42;
+export const GPU_SPATIAL_WEIGHTS_TRACES_PROBE_STREAM =
+  PHILOX_PURPOSES.spatialWeightsTracesProbeCounter.id;
 /** Philox key word 1 of the probe stream (`'TRAC'`). */
-export const GPU_SPATIAL_WEIGHTS_TRACES_PROBE_KEY = 0x54524143;
+export const GPU_SPATIAL_WEIGHTS_TRACES_PROBE_KEY = PHILOX_PURPOSES.spatialWeightsTracesProbeKey.id;
+
+/** Number of uint32 words of the per-frame trace parameters (`[seed]`). */
+export const GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH = 1;
+
+/**
+ * Per-frame settings of `GPUSpatialWeightsTraces` (and of the `traceParameters` of the spatial
+ * maximum-likelihood and GM estimators), packed by {@link getGPUSpatialWeightsTracesParameterValues}.
+ */
+export type GPUSpatialWeightsTracesSettings = {
+  /** Philox seed of the stochastic probes, an integer in `[0, 2^32)`. Defaults to 0. */
+  seed?: number;
+};
+
+/**
+ * Packs {@link GPUSpatialWeightsTracesSettings} into `GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH`
+ * uint32 words. Write them to the `parameters` view each frame; the seed is read on the GPU, so
+ * changing it never rebuilds or recompiles the graph.
+ */
+export function getGPUSpatialWeightsTracesParameterValues(
+  settings: GPUSpatialWeightsTracesSettings = {}
+): Uint32Array {
+  const seed = settings.seed ?? 0;
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new Error('getGPUSpatialWeightsTracesParameterValues seed must be a uint32');
+  }
+  return Uint32Array.of(seed);
+}
 
 /** Trace estimation mode of `GPUSpatialWeightsTraces`. */
 export type GPUSpatialWeightsTracesMode = 'exact' | 'stochastic';
@@ -479,23 +507,25 @@ export function getSpatialMultiplierTotalWGSL(
 }
 
 /**
- * WGSL defining `fn getProbeValue(probe: u32, row: u32) -> f32`, the probe vectors of
+ * WGSL defining `fn getProbeValue(seed: u32, probe: u32, row: u32) -> f32`, the probe vectors of
  * `GPUSpatialWeightsTraces`: unit vectors `e_probe` in exact mode, Rademacher `+-1` entries from
  * Philox (counter `(probe, row >> 2, 0, PROBE_STREAM)`, key `(seed, PROBE_KEY)`, lane `row & 3`, low
  * bit) in stochastic mode. Shared by every probe pass that must draw the same probes (the
  * maximum-likelihood `tr(WA'WA)` pass); the CPU mirror is {@link getSpatialWeightsTracesProbeValue}.
  */
-export function getSpatialWeightsTracesProbeWGSL(stochastic: boolean, seed: number): string {
+export function getSpatialWeightsTracesProbeWGSL(stochastic: boolean): string {
   if (!stochastic) {
-    return /* wgsl */ `fn getProbeValue(probe: u32, row: u32) -> f32 {
+    return /* wgsl */ `fn getProbeValue(seed: u32, probe: u32, row: u32) -> f32 {
+  _ = seed;
   return select(0.0, 1.0, row == probe);
 }`;
   }
+  // The seed is a runtime argument (word 2 of the probe batch table), never WGSL text (rule 12).
   return /* wgsl */ `${PHILOX_WGSL}
-fn getProbeValue(probe: u32, row: u32) -> f32 {
+fn getProbeValue(seed: u32, probe: u32, row: u32) -> f32 {
   let randomBlock = philox4x32(
     vec4<u32>(probe, row >> 2u, 0u, ${GPU_SPATIAL_WEIGHTS_TRACES_PROBE_STREAM}u),
-    vec2<u32>(${seed >>> 0}u, ${GPU_SPATIAL_WEIGHTS_TRACES_PROBE_KEY}u)
+    vec2<u32>(seed, ${GPU_SPATIAL_WEIGHTS_TRACES_PROBE_KEY}u)
   );
   let word = randomBlock[row & 3u];
   return select(1.0, -1.0, (word & 1u) == 1u);

@@ -5,35 +5,39 @@
 import {
   createTransientView,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createFillNode,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import type {GPUStatusScalar} from '../contracts/index';
+import type {
+  GPULineGeometryFields,
+  GPUPolygonGeometryFields,
+  GPUStatusScalar
+} from '../../analysis-core/contracts/index';
 import {
   getGPUAreaUnit,
   validateGPUSpatialContext,
   type GPUAreaModel,
   type GPULengthModel,
   type GPUMeasureDescription,
-  type GPUSpatialContext
-} from '../contracts/spatial-context';
+  type GPUSpatialContext,
+  getGPUSphereRadius
+} from '../../analysis-core/contracts/spatial-context';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {createSortedSegmentOffsetsNode} from '../../utils/sorted-segment-offsets';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
+import {assert} from '@luma.gl/core';
 import {COOPERATIVE_RING_ROWS} from './feature-measures-cooperative';
 import {
   createFeatureMeasuresNode,
@@ -42,8 +46,7 @@ import {
   createMeasuresScatterNode,
   GEOMETRY_STATS_STRIDE,
   type GeometryMeasureColumns,
-  type GPUGeometryCoordinateSystem,
-  type GPUGeometryHoleRule
+  type GPUGeometryCoordinateSystem
 } from './geometry-measures-kernels';
 
 const OPERATION = 'GPUGeometryMeasures';
@@ -55,14 +58,12 @@ const OPERATION = 'GPUGeometryMeasures';
 export type GPUGeometryMeasuresOutput = {
   /** Line length, or polygon perimeter over every ring including closing edges. */
   lengths?: GraphDataView<'float32'>;
-  /** Polygon area, `|signedArea|`. Polygons only. */
-  areas?: GraphDataView<'float32'>;
   /**
-   * Polygon signed area, positive for counter-clockwise exteriors (in longitude/latitude order for
-   * geographic coordinates). With `holeRule: 'first-ring-exterior'` it is always non-negative.
-   * Polygons only.
+   * Polygon area, the sum of the shell areas minus the sum of the hole areas. Ring role is
+   * positional (the first ring of each polygon is the shell and later rings are holes, whatever
+   * their winding), so it is never negative. Polygons only.
    */
-  signedAreas?: GraphDataView<'float32'>;
+  areas?: GraphDataView<'float32'>;
   /** Area-weighted (polygons) or length-weighted (lines) centroid. */
   centroids?: GraphDataView<'float32x2'>;
   /** `[minX, minY, maxX, maxY]`. Geographic longitudes are unwrapped from the first vertex. */
@@ -76,62 +77,36 @@ export type GPUGeometryMeasuresOutput = {
    * report `0xffffffff` in every word. Per-feature only.
    */
   extremeVertices?: GraphDataView<'uint32x4'>;
+  /**
+   * Optional status. `invalidCount` receives the exact number of polygon features rejected because
+   * a ring encloses a pole or has an edge spanning 180 degrees of longitude (geographic contexts).
+   * Rejected features report NaN `areas` and `centroids`; lengths, bounds and
+   * vertex counts stay valid. Written every encoding.
+   */
+  status?: {invalidCount?: GPUStatusScalar};
 };
 
 /** Per-group outputs of {@link GPUGeometryMeasures}; `groupCount` rows each. */
-export type GPUGeometryMeasuresGroupOutput = Omit<GPUGeometryMeasuresOutput, 'extremeVertices'> & {
+export type GPUGeometryMeasuresGroupOutput = Omit<
+  GPUGeometryMeasuresOutput,
+  'extremeVertices' | 'status'
+> & {
   /** Number of features with this group ID. */
   featureCounts?: GraphDataView<'uint32'>;
 };
 
-/**
- * Properties for {@link GPUGeometryMeasures}.
- *
- * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
- * feature and group counts, `geometryType`, `spatialContext`, `ellipsoidalEdgeModel`, `holeRule`,
- * and which outputs are present.
- */
-export type GPUGeometryMeasuresProps = {
+/** Props shared by every geometry type of {@link GPUGeometryMeasures}. */
+type GPUGeometryMeasuresSharedProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-measures'`. */
   id?: string;
   /** Coordinate, metric and output-unit contract of the geometry. */
   spatialContext: GPUSpatialContext;
-  /**
-   * Packed vertex positions: planar coordinates, or longitude/latitude degrees for geographic
-   * contexts.
-   */
-  positions: GraphDataView<'float32x2'>;
-  /**
-   * `'lines'` (paths), `'polygons'` (closed rings) or `'points'` (point sets: every ring is one
-   * multi-point, or one point, with centroid = vertex mean as shapely's `MultiPoint.centroid`;
-   * lengths are zero and `areas` and `signedAreas` are unavailable).
-   */
-  geometryType: 'lines' | 'polygons' | 'points';
-  /**
-   * `ringCount + 1` monotonic vertex offsets; ring (or path) `r` owns rows
-   * `[ringOffsets[r], ringOffsets[r + 1])`. Rings close implicitly; a repeated closing vertex just
-   * adds a zero-length edge.
-   */
-  ringOffsets: GraphDataView<'uint32'>;
-  /**
-   * Optional `featureCount + 1` monotonic ring offsets; feature `f` owns rings
-   * `[featureRingOffsets[f], featureRingOffsets[f + 1])` (multi-polygons, polygons with holes,
-   * multi-lines). When omitted every ring is its own feature.
-   */
-  featureRingOffsets?: GraphDataView<'uint32'>;
   /**
    * Ellipsoidal polygon-edge interpretation, for `metric: 'ellipsoidal'` contexts only. Defaults to
    * `'geodesic'`: edges of 20 km or more follow geodesics, as `pyproj.Geod.geometry_area_perimeter`.
    * `'coordinate-linear'`: straight edges in the equal-area mapping of the WGS84 authalic sphere.
    */
   ellipsoidalEdgeModel?: 'coordinate-linear' | 'geodesic';
-  /**
-   * How rings of one polygon feature combine. `'winding'` (default) sums signed ring areas, so
-   * holes subtract when they wind opposite to the exterior (GeoJSON RFC 7946). `'first-ring-exterior'`
-   * counts the first ring of each feature positive and every other ring as a hole, whatever the
-   * winding (one polygon per feature).
-   */
-  holeRule?: GPUGeometryHoleRule;
   /**
    * Compile-time. A feature owning a ring of more than this many vertex rows is measured by one
    * 64-lane workgroup instead of one invocation (see {@link GPUGeometryMeasures}); every other
@@ -146,14 +121,40 @@ export type GPUGeometryMeasuresProps = {
   groupCount?: number;
   /** Per-group outputs. Requires `groupIds`. */
   groupOutput?: GPUGeometryMeasuresGroupOutput;
-  /**
-   * Optional status. `invalidCount` receives the exact number of polygon features rejected because
-   * a ring encloses a pole or has an edge spanning 180 degrees of longitude (geographic contexts).
-   * Rejected features report NaN `areas`, `signedAreas` and `centroids`; lengths, bounds and
-   * vertex counts stay valid. Written every encoding.
-   */
-  status?: {invalidCount?: GPUStatusScalar};
 };
+
+/**
+ * Properties for {@link GPUGeometryMeasures}, discriminated by `geometryType`.
+ *
+ * - `'polygons'`: the four-level layout of {@link GPUPolygonGeometryFields}, one row per feature.
+ *   Ring role is positional: the first ring of every polygon is a shell and later rings are
+ *   holes, whatever their winding (a multi-polygon with mixed winding measures correctly).
+ * - `'lines'`: {@link GPULineGeometryFields} (one feature per line), or with `featureOffsets`
+ *   `featureCount + 1` monotonic line offsets so a feature owns several lines (multi-lines).
+ * - `'points'`: `positions` only (one feature per point), or with `featureOffsets`
+ *   `featureCount + 1` monotonic point offsets so a feature owns several points (multi-points,
+ *   centroid = vertex mean as shapely's `MultiPoint.centroid`; lengths are zero and `areas` is
+ *   unavailable).
+ *
+ * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
+ * feature and group counts, `geometryType`, `spatialContext`, `ellipsoidalEdgeModel`, and which
+ * outputs are present.
+ */
+export type GPUGeometryMeasuresProps = GPUGeometryMeasuresSharedProps &
+  (
+    | ({geometryType: 'polygons'} & GPUPolygonGeometryFields)
+    | ({geometryType: 'lines'} & GPULineGeometryFields & {
+          /** Optional `featureCount + 1` monotonic line offsets (multi-lines). */
+          featureOffsets?: GraphDataView<'uint32'>;
+        })
+    | {
+        geometryType: 'points';
+        /** Packed point positions. */
+        positions: GraphDataView<'float32x2'>;
+        /** Optional `featureCount + 1` monotonic point offsets (multi-points). */
+        featureOffsets?: GraphDataView<'uint32'>;
+      }
+  );
 
 /**
  * Measures many line or polygon features at once: length or perimeter, area, signed area,
@@ -188,7 +189,7 @@ export type GPUGeometryMeasuresProps = {
  * 179 to -179) is measured correctly. A ring whose wrapped steps sum to +-360 degrees encloses a
  * pole, and an edge whose wrapped step reaches 180 degrees (or whose raw step is a full 360)
  * is ambiguous; features owning such a ring report NaN area and centroid and are counted in
- * `status.invalidCount`. Split such polygons at the antimeridian or project them first.
+ * `output.status.invalidCount`. Split such polygons at the antimeridian or project them first.
  *
  * **Measure model.** {@link GPUGeometryMeasures.measures} describes the length and area models and
  * units of the outputs (planar: native units; geographic: meters and square meters unless the
@@ -228,8 +229,6 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly measures: GPUMeasureDescription;
   /** Internal kernel model resolved from `spatialContext`; not a prop. */
   readonly coordinateSystem: GPUGeometryCoordinateSystem;
-  /** Resolved hole rule. */
-  readonly holeRule: GPUGeometryHoleRule;
   /** Resolved sphere radius. */
   readonly radius: number;
   /** Resolved ring size above which a feature is measured cooperatively (0 disables). */
@@ -246,67 +245,45 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       props.ellipsoidalEdgeModel
     );
     this.measures = describeGeometryMeasures(this.coordinateSystem, this.spatialContext);
-    this.holeRule = props.holeRule ?? 'winding';
-    this.radius =
-      this.spatialContext.sphereRadius ??
-      (this.spatialContext.units === 'kilometers'
-        ? GPU_EARTH_MEAN_RADIUS_METERS / 1000
-        : GPU_EARTH_MEAN_RADIUS_METERS);
+    this.radius = getGPUSphereRadius(this.spatialContext);
     this.cooperativeRingRows = props.cooperativeRingRows ?? COOPERATIVE_RING_ROWS;
     const {id} = this;
-    const output = props.output ?? {};
+    const {status, ...output} = props.output ?? {};
     const groupOutput = props.groupOutput ?? {};
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      ringOffsets: props.ringOffsets,
-      featureRingOffsets: props.featureRingOffsets,
-      groupIds: props.groupIds,
-      ...output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     if (!['lines', 'polygons', 'points'].includes(props.geometryType)) {
       throw new Error(`${id} geometryType must be 'lines', 'polygons' or 'points'`);
     }
-    if (this.holeRule !== 'winding' && this.holeRule !== 'first-ring-exterior') {
-      throw new Error(`${id} holeRule must be 'winding' or 'first-ring-exterior'`);
-    }
-    if (!Number.isSafeInteger(this.cooperativeRingRows) || this.cooperativeRingRows < 0) {
-      throw new Error(`${id} cooperativeRingRows must be a non-negative integer`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
-    }
+    validateCapacity(id, 'cooperativeRingRows', this.cooperativeRingRows, 0);
+    // The radius comes from a validated spatial context.
+    assert(Number.isFinite(this.radius) && this.radius > 0);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
-    if (props.ringOffsets.length < 2) {
-      throw new Error(`${id} ringOffsets must contain at least two rows`);
-    }
-    if (props.featureRingOffsets) {
-      validatePackedUint32View(props.featureRingOffsets, `${id} featureRingOffsets`);
-      if (props.featureRingOffsets.length < 2) {
-        throw new Error(`${id} featureRingOffsets must contain at least two rows`);
+    const layout = getMeasuredLayout(props);
+    for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
+      const view = layout[name];
+      if (view) {
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        if (view.length < 2) {
+          throw new Error(`${id} ${name} must contain at least two rows`);
+        }
       }
     }
-    this.featureCount = props.featureRingOffsets
-      ? props.featureRingOffsets.length - 1
-      : props.ringOffsets.length - 1;
+    this.featureCount = layout.featureOffsets
+      ? layout.featureOffsets.length - 1
+      : layout.ringOffsets
+        ? layout.ringOffsets.length - 1
+        : props.positions.length;
     const isPolygon = props.geometryType === 'polygons';
     validateMeasureColumns(id, 'output', output, this.featureCount, isPolygon);
     const hasGroupOutput = Object.values(groupOutput).some(Boolean);
     if (props.groupIds) {
-      validatePackedUint32View(props.groupIds, `${id} groupIds`);
+      validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
       if (props.groupIds.length !== this.featureCount) {
         throw new Error(`${id} groupIds length must equal the feature count`);
       }
-      if (!Number.isSafeInteger(props.groupCount) || (props.groupCount ?? 0) < 1) {
-        throw new Error(`${id} groupCount must be a positive integer with groupIds`);
-      }
+      validateCapacity(id, 'groupCount', props.groupCount ?? 0);
       if (!hasGroupOutput) {
         throw new Error(`${id} groupIds require at least one groupOutput column`);
       }
@@ -314,11 +291,11 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     } else if (hasGroupOutput) {
       throw new Error(`${id} groupOutput requires groupIds`);
     }
-    const invalidCount = props.status?.invalidCount;
+    const invalidCount = status?.invalidCount;
     if (invalidCount) {
-      validatePackedUint32View(invalidCount, `${id} status.invalidCount`);
+      validatePackedView(invalidCount, ['uint32'], `${id} output.status.invalidCount`);
       if (invalidCount.length < 1) {
-        throw new Error(`${id} status.invalidCount must contain one uint32 row`);
+        throw new Error(`${id} output.status.invalidCount must contain one uint32 row`);
       }
     }
     if (!Object.values(output).some(Boolean) && !hasGroupOutput) {
@@ -327,7 +304,13 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [...Object.values(output), ...Object.values(groupOutput), invalidCount],
-      [props.positions, props.ringOffsets, props.featureRingOffsets, props.groupIds]
+      [
+        props.positions,
+        layout.ringOffsets,
+        layout.featureOffsets,
+        layout.polygonOffsets,
+        props.groupIds
+      ]
     );
   }
 
@@ -339,14 +322,16 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, featureCount} = this;
-    const output = props.output ?? {};
+    const {status, ...output} = props.output ?? {};
     const groupOutput = props.groupOutput ?? {};
+    const layout = getMeasuredLayout(props);
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.ringOffsets,
-      props.featureRingOffsets,
+      layout.ringOffsets,
+      layout.featureOffsets,
+      layout.polygonOffsets,
       props.groupIds,
-      props.status?.invalidCount,
+      status?.invalidCount,
       ...Object.values(output),
       ...Object.values(groupOutput)
     ]);
@@ -361,17 +346,17 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       id: `${id}-features`,
       operation: OPERATION,
       positions: props.positions,
-      ringOffsets: props.ringOffsets,
-      featureRingOffsets: props.featureRingOffsets,
+      ringOffsets: layout.ringOffsets,
+      featureOffsets: layout.featureOffsets,
+      polygonOffsets: layout.polygonOffsets,
       featureCount,
       isPolygon,
       isPoint: props.geometryType === 'points',
-      holeRule: this.holeRule,
       coordinateSystem: this.coordinateSystem,
       radius: this.radius,
       featureStats
     };
-    const invalidCount = props.status?.invalidCount;
+    const invalidCount = status?.invalidCount;
     // Rings of at most the threshold can never make a feature cooperative.
     const hasCooperativeFeatures =
       this.cooperativeRingRows > 0 && props.positions.length > this.cooperativeRingRows;
@@ -501,6 +486,30 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   }
 }
 
+/**
+ * Maps the public layout to the kernel's ring layout: polygons keep the four levels; lines use
+ * `lineOffsets` as ring offsets and `featureOffsets` as feature-to-ring; a point set is one ring
+ * spanning its points, so `featureOffsets` doubles as the ring offsets.
+ */
+function getMeasuredLayout(props: GPUGeometryMeasuresProps): {
+  ringOffsets?: GraphDataView<'uint32'>;
+  featureOffsets?: GraphDataView<'uint32'>;
+  polygonOffsets?: GraphDataView<'uint32'>;
+} {
+  switch (props.geometryType) {
+    case 'polygons':
+      return {
+        ringOffsets: props.ringOffsets,
+        featureOffsets: props.featureOffsets,
+        polygonOffsets: props.polygonOffsets
+      };
+    case 'lines':
+      return {ringOffsets: props.lineOffsets, featureOffsets: props.featureOffsets};
+    default:
+      return {ringOffsets: props.featureOffsets};
+  }
+}
+
 function describeGeometryMeasures(
   coordinateSystem: GPUGeometryCoordinateSystem,
   spatialContext: GPUSpatialContext
@@ -595,7 +604,6 @@ function validateMeasureColumns(
   const formats = {
     lengths: 'float32',
     areas: 'float32',
-    signedAreas: 'float32',
     centroids: 'float32x2',
     bounds: 'float32x4',
     vertexCounts: 'uint32',
@@ -616,7 +624,7 @@ function validateMeasureColumns(
     if (view.length !== rowCount) {
       throw new Error(`${id} ${name}.${column} must hold ${rowCount} rows`);
     }
-    if (!isPolygon && (column === 'areas' || column === 'signedAreas')) {
+    if (!isPolygon && column === 'areas') {
       throw new Error(`${id} ${name}.${column} requires geometryType 'polygons'`);
     }
   }

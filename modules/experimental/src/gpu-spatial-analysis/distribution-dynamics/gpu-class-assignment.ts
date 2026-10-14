@@ -4,7 +4,6 @@
 
 import {
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,9 +12,10 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUClassifiedValuesPort} from '../contracts/index';
+import type {GPUClassifiedValuesPort} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUClassAssignment';
 

@@ -4,13 +4,13 @@
 
 export {GPUNetworkIsochrones} from './gpu-network-isochrones';
 export type {
-  GPUNetworkIsochroneCellOutline,
-  GPUNetworkIsochroneRaster,
+  GPUNetworkIsochronesCellOutline,
+  GPUNetworkIsochronesRaster,
   GPUNetworkIsochronesProps
 } from './gpu-network-isochrones';
 export {
-  getGPUNetworkIsochroneParameterValues,
+  getGPUNetworkIsochronesParameterValues,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
 } from './network-isochrones-parameters';
-export type {GPUNetworkIsochroneSettings} from './network-isochrones-parameters';
+export type {GPUNetworkIsochronesSettings} from './network-isochrones-parameters';
 export type {GPUNetworkIsochronesMode} from './network-isochrones-passes';

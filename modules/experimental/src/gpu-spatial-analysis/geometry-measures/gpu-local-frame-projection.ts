@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import {captureGraphCommandNodes} from '../../utils/gpu-contributor-utils';
 import type {GPUFloat32Positions, GPUGeospatialPositions} from '../../geospatial/types';
 import {GPUProjection, type GPUProjectionValidity} from '../../gpu-project/gpu-projection';
 import {compileProjectionPlan} from '../../gpu-project/projection-plan';
 import type {ProjectionBounds, ProjectionPlan} from '../../gpu-project/types';
-import type {GPULocalFrame} from '../contracts/local-frame';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPULocalFrame} from '../../analysis-core/contracts/local-frame';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 /** Props of {@link GPULocalFrameProjection}. */
 export type GPULocalFrameProjectionProps = {
@@ -44,7 +46,7 @@ export type GPULocalFrameProjectionProps = {
  * frame meters: the plan is referenced to the frame origin, so float32 rounding is relative to the
  * frame extent. Pass {@link spatialContext} (the frame's planar context) to downstream operators.
  */
-export class GPULocalFrameProjection {
+export class GPULocalFrameProjection implements GPUCommandNodeProducer {
   readonly id: string;
   readonly frame: GPULocalFrame;
   /** Planar context of the output rows, carrying the frame identity. */
@@ -74,9 +76,11 @@ export class GPULocalFrameProjection {
     });
   }
 
-  /** Adds the projection passes to a graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    this.projection.addToGraph(graph);
+  /** Returns the projection passes; add the contributor with `graph.add(projection)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    return captureGraphCommandNodes(graph, () => this.projection.addToGraph(graph));
   }
 
   /** Releases the owned plan buffer. */

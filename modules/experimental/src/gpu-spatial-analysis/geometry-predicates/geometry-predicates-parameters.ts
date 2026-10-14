@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {defineGPUSpatialParameterSchema} from '../contracts/index';
+import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/index';
 
 /** Number of float32 elements in a `GPUGeometryPredicates` parameter buffer. */
 export const GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH = 4;
@@ -25,8 +25,8 @@ export const GPU_GEOMETRY_PREDICATES_PARAMETER_SCHEMA = defineGPUSpatialParamete
   ]
 });
 
-/** CPU description of the per-frame parameters of `GPUGeometryPredicates`. */
-export type GPUGeometryPredicatesParameters = {
+/** CPU description of the per-frame settings of `GPUGeometryPredicates`. */
+export type GPUGeometryPredicatesSettings = {
   /**
    * `equalsExact` tolerance: two vertices match when their distance is at most this value, in
    * position units. Defaults to `0` (vertices must coincide).
@@ -35,16 +35,16 @@ export type GPUGeometryPredicatesParameters = {
 };
 
 /**
- * Packs `GPUGeometryPredicates` parameters into the 4-element float32 layout `[tolerance, 0, 0, 0]`.
+ * Packs `GPUGeometryPredicates` settings into the 4-element float32 layout `[tolerance, 0, 0, 0]`.
  * Write the result into a `GPUParameterBuffer` between encodings to change the tolerance without
  * recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If the tolerance is negative or NaN, or `target` is too short.
  */
 export function getGPUGeometryPredicatesParameterValues(
-  parameters: GPUGeometryPredicatesParameters = {},
+  settings: GPUGeometryPredicatesSettings = {},
   target: Float32Array = new Float32Array(GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH) {
@@ -52,7 +52,7 @@ export function getGPUGeometryPredicatesParameterValues(
       `Geometry predicates target must hold ${GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH} elements`
     );
   }
-  const tolerance = parameters.tolerance ?? 0;
+  const tolerance = settings.tolerance ?? 0;
   if (Number.isNaN(tolerance) || tolerance < 0) {
     throw new Error('Geometry predicates tolerance must be non-negative');
   }

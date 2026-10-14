@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from './raster-algebra-utils';
+import {validateParameterTarget} from '../raster-band-utils';
 
 /** Largest layer count accepted by {@link GPUWeightedOverlay}. */
 export const GPU_WEIGHTED_OVERLAY_MAXIMUM_LAYER_COUNT = 16;
@@ -17,15 +17,15 @@ export type GPUWeightedOverlayLayerSettings = {
   /** Layer weight. Negative weights are allowed and subtract. */
   weight: number;
   /**
-   * `'linear'` (default) maps `[inputMin, inputMax]` to `[0, 1]`, clamped. `'table'` classifies
+   * `'linear'` (default) maps `[inputMinimum, inputMaximum]` to `[0, 1]`, clamped. `'table'` classifies
    * the value through this layer's rows of `remapBreaks` and returns the matching `remapValues`
    * row; a NaN remap value marks the class as restricted.
    */
   mode?: 'linear' | 'table';
   /** Linear mode: input value mapped to 0. Defaults to 0. */
-  inputMin?: number;
+  inputMinimum?: number;
   /** Linear mode: input value mapped to 1. Defaults to 1. */
-  inputMax?: number;
+  inputMaximum?: number;
   /** Linear mode: use `1 - t` so lower inputs score higher. */
   invert?: boolean;
   /** Table mode: active breaks of this layer, at most the contributor's `maximumBreakCount`. */
@@ -56,50 +56,61 @@ export function getGPUWeightedOverlayParameterLength(layerCount: number): number
  * Packs per-frame {@link GPUWeightedOverlay} parameters.
  *
  * Layout (float32): header `[normalizeWeights, ignoreNoData, 0, 0, 0, 0, 0, 0]`, then per layer
- * `[weight, mode, inputMin, scale, invert, breakCount, closedRight, degenerate]` where
- * `mode` is 0 (linear) or 1 (table), `scale = 1 / (inputMax - inputMin)` is computed here so the
- * shader multiplies instead of dividing, and `degenerate` is 1 when `inputMax == inputMin` (the
- * layer then scores 1 for values `>= inputMin`, else 0).
+ * `[weight, mode, inputMinimum, scale, invert, breakCount, closedRight, degenerate]` where
+ * `mode` is 0 (linear) or 1 (table), `scale = 1 / (inputMaximum - inputMinimum)` is computed here so the
+ * shader multiplies instead of dividing, and `degenerate` is 1 when `inputMaximum == inputMinimum` (the
+ * layer then scores 1 for values `>= inputMinimum`, else 0).
  *
  * @param settings Layer records and global options.
  * @param target Optional destination of at least `getGPUWeightedOverlayParameterLength(layers)`.
- * @throws If the target is too short, a weight or range is not finite, or a count is invalid.
+ * @param options `hasTables: false` declares that the overlay was built without remap tables, so a
+ * `'table'` layer throws here instead of scoring NaN (nodata) on every cell. Defaults to true.
+ * @throws If the target is too short, a weight or range is not finite, a count is invalid, or a
+ * table layer is packed with `hasTables: false`.
  */
 export function getGPUWeightedOverlayParameterValues(
   settings: GPUWeightedOverlaySettings,
   target: Float32Array = new Float32Array(
     getGPUWeightedOverlayParameterLength(settings.layers.length)
-  )
+  ),
+  options: {hasTables?: boolean} = {}
 ): Float32Array {
   const length = getGPUWeightedOverlayParameterLength(settings.layers.length);
-  validateParameterTarget('Weighted overlay', target, length);
+  validateParameterTarget('getGPUWeightedOverlayParameterValues', target, length);
   target.fill(0, 0, length);
   target[0] = settings.normalizeWeights ? 1 : 0;
   target[1] = settings.noDataPolicy === 'ignore' ? 1 : 0;
   for (const [layerIndex, layer] of settings.layers.entries()) {
-    const inputMin = layer.inputMin ?? 0;
-    const inputMax = layer.inputMax ?? 1;
+    const inputMinimum = layer.inputMinimum ?? 0;
+    const inputMaximum = layer.inputMaximum ?? 1;
     const breakCount = layer.breakCount ?? 0;
     for (const [name, value] of [
       ['weight', layer.weight],
-      ['inputMin', inputMin],
-      ['inputMax', inputMax]
+      ['inputMinimum', inputMinimum],
+      ['inputMaximum', inputMaximum]
     ] as const) {
       if (!Number.isFinite(value)) {
-        throw new Error(`Weighted overlay layer ${layerIndex} ${name} must be finite`);
+        throw new Error(
+          `getGPUWeightedOverlayParameterValues layer ${layerIndex} ${name} must be finite`
+        );
       }
     }
     if (!Number.isSafeInteger(breakCount) || breakCount < 0) {
       throw new Error(
-        `Weighted overlay layer ${layerIndex} breakCount must be a non-negative integer`
+        `getGPUWeightedOverlayParameterValues layer ${layerIndex} breakCount must be a non-negative integer`
+      );
+    }
+    if (layer.mode === 'table' && options.hasTables === false) {
+      throw new Error(
+        `getGPUWeightedOverlayParameterValues layer ${layerIndex} is a table layer but has no remap tables`
       );
     }
     const base = HEADER_LENGTH + layerIndex * LAYER_LENGTH;
-    const degenerate = Math.fround(inputMax) === Math.fround(inputMin);
+    const degenerate = Math.fround(inputMaximum) === Math.fround(inputMinimum);
     target[base] = layer.weight;
     target[base + 1] = layer.mode === 'table' ? 1 : 0;
-    target[base + 2] = inputMin;
-    target[base + 3] = degenerate ? 0 : 1 / (Math.fround(inputMax) - Math.fround(inputMin));
+    target[base + 2] = inputMinimum;
+    target[base + 3] = degenerate ? 0 : 1 / (Math.fround(inputMaximum) - Math.fround(inputMinimum));
     target[base + 4] = layer.invert ? 1 : 0;
     target[base + 5] = breakCount;
     target[base + 6] = layer.closed === 'right' ? 1 : 0;

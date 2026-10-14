@@ -5,8 +5,9 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
-import {PERMUTATION_SHUFFLE_WGSL} from '../permutation-inference/permutation-shuffle';
+import {getPermutationShuffleWGSL} from '../permutation-inference/permutation-shuffle';
 import {GPU_SPACE_TIME_SUMMARY} from './space-time-parameters';
+import {SPACE_TIME_STATE} from './space-time-stopping';
 
 /** Largest number of row blocks one (permutation, block) kernel splits the rows into. @internal */
 export const SPACE_TIME_MAXIMUM_BLOCKS = 256;
@@ -25,9 +26,16 @@ export function getSpaceTimeGroupsPerSlot(blocks: number): number {
   return Math.ceil(blocks / SPACE_TIME_WORKGROUP_SIZE);
 }
 
-/** Returns `[blocks, rowsPerBlock]` for `rows` rows. @internal */
-export function getSpaceTimeBlocks(rows: number): [number, number] {
-  const blocks = Math.min(SPACE_TIME_MAXIMUM_BLOCKS, rows);
+/**
+ * Returns `[blocks, rowsPerBlock]` for `rows` rows. `maximumBlocks` lowers the block count, for
+ * example so that a `(permutation, block)` partials table fits one storage binding.
+ * @internal
+ */
+export function getSpaceTimeBlocks(
+  rows: number,
+  maximumBlocks: number = SPACE_TIME_MAXIMUM_BLOCKS
+): [number, number] {
+  const blocks = Math.max(1, Math.min(SPACE_TIME_MAXIMUM_BLOCKS, maximumBlocks, rows));
   return [blocks, Math.ceil(rows / blocks)];
 }
 
@@ -131,11 +139,13 @@ fn readTimeThreshold() -> f32 {
  * swap-or-not shuffle (slot 0 is the identity). The round material of the workgroup's slot must
  * have been loaded with `loadSwapOrNotRounds` followed by a `workgroupBarrier()`.
  *
+ * @param stream Philox purpose ID of the test (`PHILOX_PURPOSES.knoxTestShuffle.id` or
+ *   `mantelTestShuffle.id`), so Knox and Mantel never share a permutation stream.
  * @internal
  */
-export function getSpaceTimeShuffleWGSL(blocks: number): string {
+export function getSpaceTimeShuffleWGSL(blocks: number, stream: number): string {
   return /* wgsl */ `
-${PERMUTATION_SHUFFLE_WGSL}
+${getPermutationShuffleWGSL(stream)}
 const SPACE_TIME_WORKGROUP_SIZE: u32 = ${SPACE_TIME_WORKGROUP_SIZE}u;
 const GROUPS_PER_SLOT: u32 = ${getSpaceTimeGroupsPerSlot(blocks)}u;
 fn getPermutedRow(row: u32, slot: u32) -> u32 {
@@ -166,19 +176,56 @@ export const SPACE_TIME_SLOT_PROLOGUE_WGSL = /* wgsl */ `let workgroup = index /
   let runsSlot = slot <= permutations && block < BLOCKS;`;
 
 /**
+ * The prologue of the Besag-Clifford batch kernels: like {@link SPACE_TIME_SLOT_PROLOGUE_WGSL}, but
+ * the workgroup's slot is `batch cursor * BATCH_SIZE + localSlot`, with the cursor read from the
+ * GPU `state` word 0 (rule 12), so the WGSL is the same for every batch. Also declares `localSlot`,
+ * the slot's index within the batch table. Requires a `state` `u32` binding and a `BATCH_SIZE`
+ * constant; the invocation count is `BATCH_SIZE * groupsPerSlot * SPACE_TIME_WORKGROUP_SIZE`.
+ *
+ * @internal
+ */
+export const SPACE_TIME_BATCH_PROLOGUE_WGSL = /* wgsl */ `let workgroup = index / SPACE_TIME_WORKGROUP_SIZE;
+  let localSlot = workgroup / GROUPS_PER_SLOT;
+  let slot = state[stateOffset] * BATCH_SIZE + localSlot;
+  let block = (workgroup - localSlot * GROUPS_PER_SLOT) * SPACE_TIME_WORKGROUP_SIZE + localInvocationIndex;
+  let permutations = readPermutationCount();
+  if (slot > 0u && slot <= permutations) {
+    loadSwapOrNotRounds(readSeedKey(), slot, ROWS, localInvocationIndex, SPACE_TIME_WORKGROUP_SIZE);
+  }
+  workgroupBarrier();
+  let runsSlot = slot <= permutations && block < BLOCKS;`;
+
+/**
  * WGSL of the summary kernel body. Bindings: `statistics` (`array<STAT>`), `parameters`, and
  * writes `summary` (`array<f32>`, `GPU_SPACE_TIME_SUMMARY_LENGTH` words). `STAT` is `u32` or
  * `f32`. The caller defines `observedPairs`, `timeClosePairs` and `expected` as f32 lets before
  * this body is spliced, which then writes the whole summary.
  *
+ * With `stopAfterExceedances` (Besag-Clifford) the body also needs a `state` `u32` binding and a
+ * `permutationsUsed` `u32` binding: it summarizes the first `L` permutations (the stopping index
+ * of the state, or the permutation count when the rule did not fire), writes `L` to
+ * `permutationsUsed`, and reports `pseudoPGreater = min(1, h / L)` when stopped.
+ *
+ * @param statisticType WGSL element type of `statistics`.
+ * @param stopAfterExceedances The compile-time `h`, or undefined for the unchanged full run.
  * @internal
  */
-export function getSpaceTimeSummaryBodyWGSL(statisticType: 'u32' | 'f32'): string {
+export function getSpaceTimeSummaryBodyWGSL(
+  statisticType: 'u32' | 'f32',
+  stopAfterExceedances?: number
+): string {
   const index = GPU_SPACE_TIME_SUMMARY;
+  const stopping = stopAfterExceedances !== undefined;
   const toFloat = (expression: string) =>
     statisticType === 'u32' ? `f32(${expression})` : expression;
   return /* wgsl */ `
-  let permutations = readPermutationCount();
+  ${
+    stopping
+      ? `let stopIndex = state[stateOffset + ${SPACE_TIME_STATE.stopIndex}u];
+  let permutations = select(readPermutationCount(), stopIndex, (stopIndex != 0u));
+  permutationsUsed[permutationsUsedOffset] = permutations;`
+      : 'let permutations = readPermutationCount();'
+  }
   let observed = statistics[statisticsOffset];
   var greater = 0u;
   var lesser = 0u;
@@ -199,7 +246,11 @@ export function getSpaceTimeSummaryBodyWGSL(statisticType: 'u32' | 'f32'): strin
   }
   let variance = select(0.0, sumSquares / (permutationCount - 1.0), permutations > 1u);
   let mean = ${toFloat('observed')} + meanDeviation;
-  let pGreater = f32(greater + 1u) / (permutationCount + 1.0);
+  let pGreater = ${
+    stopping
+      ? `select(f32(greater + 1u) / (permutationCount + 1.0), min(1.0, ${stopAfterExceedances}.0 / f32(max(stopIndex, 1u))), (stopIndex != 0u))`
+      : 'f32(greater + 1u) / (permutationCount + 1.0)'
+  };
   let pLesser = f32(lesser + 1u) / (permutationCount + 1.0);
   summary[summaryOffset + ${index.observed}u] = ${toFloat('observed')};
   summary[summaryOffset + ${index.pairCount}u] = observedPairs;

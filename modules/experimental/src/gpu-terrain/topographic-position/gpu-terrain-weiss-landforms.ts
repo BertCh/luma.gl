@@ -5,25 +5,29 @@
 import {
   createTransientView,
   GPUReduction,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateParameterTarget,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   type TerrainGeomorphometryCellSettings,
@@ -33,13 +37,14 @@ import {
   GPUTerrainTopographicPosition,
   type GPUTerrainTopographicPositionScale
 } from './gpu-terrain-topographic-position';
+import {getGPUTerrainSummedAreaMaximumCellCount} from './terrain-summed-area-table';
 import {
-  getTerrainGroundCellSizeWGSL,
-  type GPUTerrainCellSizeMode,
-  validateTerrainCellSizeMode
-} from '../terrain-grid-utils';
+  getRasterGroundCellSizeWGSL,
+  type GPURasterCellSizeMode,
+  validateRasterCellSizeMode
+} from '../../analysis-core/raster-grid';
 
-/** Number of float32 values read from `GPUTerrainWeissLandformsProps.settings`. */
+/** Number of float32 values read from `GPUTerrainWeissLandformsProps.parameters`. */
 export const GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH = 8;
 
 /**
@@ -84,10 +89,10 @@ export type GPUTerrainWeissStandardization = 'global' | 'local';
 /**
  * CPU-side description packed by {@link getGPUTerrainWeissLandformsParameterValues}.
  *
- * Cell size model: `cellSize` is in projected metres (`'uniform'`), equatorial Web Mercator metres
- * (`'web-mercator'`), or degrees (`'geographic'`), both scaled per row to WGS84 ground metres at
- * the row latitude (see `GPUTerrainCellSizeMode`). It only affects the slope used to split
- * plains from open slopes; TPI scales are in cells.
+ * Cell size model: the cell size of the grid is in projected metres (`'uniform'`), EPSG:3857
+ * metres (`'web-mercator'`), or degrees (`'geographic'`), both scaled per row to WGS84 ground
+ * metres at the row latitude (see `GPURasterCellSizeMode`). It only affects the slope used to
+ * split plains from open slopes; TPI scales are in cells.
  */
 export type GPUTerrainWeissLandformsSettings = TerrainGeomorphometryCellSettings & {
   /** Standardized position threshold separating low, mid, and high. Defaults to 1. */
@@ -99,39 +104,54 @@ export type GPUTerrainWeissLandformsSettings = TerrainGeomorphometryCellSettings
 /**
  * Packs settings into the 8-float layout read by {@link GPUTerrainWeissLandforms}:
  * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge, standardThreshold,
- * slopeThresholdDegrees, 0]`.
+ * slopeThresholdDegrees, 0]`, with the cell size and the row-edge world y taken from `grid`.
  */
 export function getGPUTerrainWeissLandformsParameterValues(
   settings: GPUTerrainWeissLandformsSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH) {
-    throw new Error('Weiss landform settings target must hold 8 values');
-  }
-  writeTerrainGeomorphometryCellSettings(settings, target);
+  validateParameterTarget(
+    'getGPUTerrainWeissLandformsParameterValues',
+    target,
+    GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH
+  );
+  writeTerrainGeomorphometryCellSettings(settings, grid, target);
   target[5] = settings.standardThreshold ?? 1;
   target[6] = settings.slopeThresholdDegrees ?? 5;
   target[7] = 0;
   return target;
 }
 
+/** Caller-owned outputs of {@link GPUTerrainWeissLandforms}; at least one is required. */
+export type GPUTerrainWeissLandformsOutput = {
+  /** Optional class per pixel, 1 to 10 as in {@link GPU_TERRAIN_WEISS_LANDFORMS}; 0 when invalid. */
+  landforms?: GraphDataView<'uint32'>;
+  /** Optional standardized positions: two planes of `width * height` values, small then large. */
+  standardizedPosition?: GraphDataView<'float32'>;
+  /** Optional per-pixel 1 where the class is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUTerrainWeissLandforms}.
  *
- * Topology: grid size, scales, standardization, quantum, which outputs exist, and `cellSizeMode`. Per-frame: `settings` and elevation contents. See
+ * Topology: grid size, scales, standardization, quantum, which outputs exist, and `cellSizeMode`.
+ * Per-frame: `parameters` (including the grid cell size and latitude band) and elevation contents. See
  * {@link GPUTerrainWeissLandformsSettings} for the cell-size model.
  */
 export type GPUTerrainWeissLandformsProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-weiss-landforms'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /**
+   * Raster grid: its width and height size the kernels. At most
+   * {@link getGPUTerrainSummedAreaMaximumCellCount} cells (11184810 on a default device).
+   */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 8 float32 values. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUTerrainWeissLandformsParameterValues}. */
+  parameters: GraphDataView<'float32'>;
   /** Small neighbourhood in cells. Defaults to `{radius: 3}`. */
   smallScale?: GPUTerrainTopographicPositionScale;
   /** Large neighbourhood in cells. Defaults to `{radius: 15}`. */
@@ -140,14 +160,10 @@ export type GPUTerrainWeissLandformsProps = {
   standardization?: GPUTerrainWeissStandardization;
   /** Elevation quantum of the summed-area table, see `GPUTerrainTopographicPositionProps`. */
   quantum?: number;
-  /** Optional class per pixel, 1 to 10 as in {@link GPU_TERRAIN_WEISS_LANDFORMS}; 0 when invalid. */
-  landforms?: GraphDataView<'uint32'>;
-  /** Optional standardized positions: two planes of `width * height` values, small then large. */
-  standardizedPosition?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the class is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainWeissLandformsOutput;
   /** Cell size interpretation for the slope. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
 };
 
 /**
@@ -179,7 +195,8 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-weiss-landforms';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const scales = this.getScales();
     for (const scale of scales) {
       const innerRadius = scale.innerRadius ?? 0;
@@ -197,32 +214,37 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
     if (!['global', 'local'].includes(props.standardization ?? 'global')) {
       throw new Error(`${id} standardization must be global or local`);
     }
-    validateTerrainCellSizeMode(id, props.cellSizeMode);
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH);
-    if (!props.landforms && !props.standardizedPosition && !props.validity) {
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH);
+    if (!output.landforms && !output.standardizedPosition && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
-    if (props.standardizedPosition) {
-      validatePackedView(props.standardizedPosition, ['float32'], `${id} standardizedPosition`);
-      if (props.standardizedPosition.length !== 2 * pixelCount) {
-        throw new Error(`${id} standardizedPosition must contain two values per pixel`);
+    if (output.standardizedPosition) {
+      validatePackedView(
+        output.standardizedPosition,
+        ['float32'],
+        `${id} output.standardizedPosition`
+      );
+      if (output.standardizedPosition.length !== 2 * pixelCount) {
+        throw new Error(`${id} output.standardizedPosition must contain two values per pixel`);
       }
     }
     for (const [name, view] of [
-      ['landforms', props.landforms],
-      ['validity', props.validity]
+      ['landforms', output.landforms],
+      ['outputValidity', output.outputValidity]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.landforms, props.standardizedPosition, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      [output.landforms, output.standardizedPosition, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -231,17 +253,24 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      props.landforms,
-      props.standardizedPosition,
-      props.validity
+      props.parameters,
+      output.landforms,
+      output.standardizedPosition,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
+    validateMaximumCount(
+      id,
+      'grid cells',
+      pixelCount,
+      getGPUTerrainSummedAreaMaximumCellCount(graph.device)
+    );
     const isGlobal = (props.standardization ?? 'global') === 'global';
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const elevationValidity = source.band.validity;
     if (!elevationValidity) {
       throw new Error(`${id} canonical elevation is missing validity`);
@@ -257,13 +286,14 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
     nodes.push(
       ...new GPUTerrainTopographicPosition({
         id: `${id}-position`,
-        width,
-        height,
+        grid: props.grid,
         elevation: source.band,
         scales: this.getScales(),
         quantum: props.quantum,
-        ...(isGlobal ? {topographicPositionIndex: position} : {deviationFromMean: position}),
-        validity: positionValidity
+        output: {
+          ...(isGlobal ? {topographicPositionIndex: position} : {deviationFromMean: position}),
+          outputValidity: positionValidity
+        }
       }).getCommandNodes(graph)
     );
     const slope = createTransientView(graph, `${id}-slope`, 'float32', pixelCount);
@@ -281,7 +311,7 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
             access: 'read'
           },
           {name: 'elevationValidity', view: elevationValidity, type: 'u32', access: 'read'},
-          {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+          {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'positionValues', view: position, type: 'f32', access: 'read'},
           {name: 'positionValidity', view: positionValidity, type: 'u32', access: 'read'},
           {name: 'slopeValues', view: slope, type: 'f32', access: 'read_write'},
@@ -291,8 +321,8 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
         declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const PIXEL_COUNT: u32 = ${pixelCount}u;
-${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
+${RASTER_WGSL_HELPERS}
+${getRasterGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 fn readElevation(column: i32, row: i32) -> vec2<f32> {
   let sampleColumn = u32(clamp(column, 0i, i32(WIDTH) - 1i));
   let sampleRow = u32(clamp(row, 0i, i32(HEIGHT) - 1i));
@@ -338,7 +368,7 @@ fn readElevation(column: i32, row: i32) -> vec2<f32> {
     const classifyBindings: WGSLKernelBinding[] = [
       {name: 'positionValues', view: position, type: 'f32', access: 'read'},
       {name: 'slopeValues', view: slope, type: 'f32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (isGlobal) {
       const statistics = this.addGlobalStatisticsNodes(graph, nodes, position, mask, pixelCount);
@@ -348,9 +378,9 @@ fn readElevation(column: i32, row: i32) -> vec2<f32> {
       );
     }
     for (const [name, view, type] of [
-      ['landformValues', props.landforms, 'u32'],
-      ['standardizedValues', props.standardizedPosition, 'f32'],
-      ['validityValues', props.validity, 'u32']
+      ['landformValues', output.landforms, 'u32'],
+      ['standardizedValues', output.standardizedPosition, 'f32'],
+      ['validityValues', output.outputValidity, 'u32']
     ] as const) {
       if (view) {
         classifyBindings.push({name, view, type, access: 'read_write'});
@@ -364,7 +394,7 @@ fn readElevation(column: i32, row: i32) -> vec2<f32> {
         bindings: classifyBindings,
         invocationCount: pixelCount,
         declarations: `const PIXEL_COUNT: u32 = ${pixelCount}u;
-${TERRAIN_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}
 fn standardize(value: f32, scale: u32) -> f32 {
   ${
     isGlobal
@@ -401,14 +431,14 @@ fn getPositionClass(value: f32, threshold: f32) -> u32 {
     landform = 8u + largeClass;
   }
   let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
-  ${props.landforms ? 'landformValues[landformValuesOffset + index] = select(0u, landform, isValid);' : ''}
+  ${output.landforms ? 'landformValues[landformValuesOffset + index] = select(0u, landform, isValid);' : ''}
   ${
-    props.standardizedPosition
+    output.standardizedPosition
       ? `standardizedValues[standardizedValuesOffset + index] = select(invalidValue, small, isValid);
   standardizedValues[standardizedValuesOffset + PIXEL_COUNT + index] = select(invalidValue, large, isValid);`
       : ''
   }
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
       })
     );
     return nodes;

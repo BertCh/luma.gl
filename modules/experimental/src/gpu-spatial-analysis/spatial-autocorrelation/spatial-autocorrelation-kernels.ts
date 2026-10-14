@@ -5,13 +5,11 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import type {GPUMultipleTestingMethod} from '../contracts/index';
 import {getGPUSpatialWeightsNeighborLoopWGSL} from '../spatial-weights/spatial-weights';
 import {
   resolveGPUIslandPolicy,
@@ -19,12 +17,17 @@ import {
   type GPUIslandPolicy,
   type GPUSpatialWeights
 } from '../spatial-weights/index';
-import {resolveGPUMultipleTestingMethod} from '../multiple-testing/index';
 import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
 } from './spatial-autocorrelation-parameters';
 import {GET_QUIET_NAN_SEEDED_WGSL, IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {validateCapacity, validatePackedView} from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 
 /** Rows reduced by one workgroup in the first level of the deterministic global sums. */
 const BLOCK_ROWS = 4096;
@@ -43,7 +46,8 @@ const ROW_STATE_ISLAND = 2;
 export type SpatialAutocorrelationInputProps = {
   id: string;
   weights: GPUSpatialWeights;
-  values: GraphDataView<'float32'>;
+  /** Analysis values, `float32` or `uint32` (converted to f32 by one node, exact below 2^24). */
+  values: GPUFloat32OrUint32Values;
   parameters: GraphDataView<'float32'>;
   mask?: GraphDataView<'uint32'>;
   globalStatistics?: GraphDataView<'float32'>;
@@ -70,29 +74,6 @@ export type SpatialAutocorrelationInputs<Parameters> = {
 export const SPATIAL_AUTOCORRELATION_ISLAND_COUNT_SLOT = 4;
 
 /**
- * Resolves `multipleTesting` and the deprecated boolean `falseDiscoveryRate` alias
- * (`true` is `'benjamini-hochberg'`, `false` is `'none'`).
- *
- * @throws If both are given and disagree.
- * @internal
- */
-export function resolveSpatialAutocorrelationMultipleTesting(
-  id: string,
-  multipleTesting: GPUMultipleTestingMethod | undefined,
-  falseDiscoveryRate: boolean | undefined
-): GPUMultipleTestingMethod {
-  const method = resolveGPUMultipleTestingMethod(id, multipleTesting);
-  if (falseDiscoveryRate !== undefined) {
-    const implied = falseDiscoveryRate ? 'benjamini-hochberg' : 'none';
-    if (multipleTesting !== undefined && multipleTesting !== implied) {
-      throw new Error(`${id} falseDiscoveryRate disagrees with multipleTesting '${method}'`);
-    }
-    return implied;
-  }
-  return method;
-}
-
-/**
  * Validates an optional minimum active-neighbor count and returns it (default 1).
  *
  * @internal
@@ -102,9 +83,7 @@ export function resolveSpatialAutocorrelationMinimumNeighbors(
   minimumNeighbors: number | undefined
 ): number {
   const minimum = minimumNeighbors ?? 1;
-  if (!Number.isInteger(minimum) || minimum < 1) {
-    throw new Error(`${id} minimumNeighbors must be an integer >= 1`);
-  }
+  validateCapacity(id, 'minimumNeighbors', minimum);
   return minimum;
 }
 
@@ -118,7 +97,7 @@ export function validateSpatialAutocorrelationInputs(
 ): number {
   const {id} = props;
   const rows = validateGPUSpatialWeights(id, props.weights);
-  validatePackedView(props.values, ['float32'], `${id} values`);
+  validateFloat32OrUint32Values(props.values, `${id} values`);
   validatePackedView(props.parameters, ['float32'], `${id} parameters`);
   if (props.islands !== undefined) {
     resolveGPUIslandPolicy(id, props.islands);
@@ -126,18 +105,17 @@ export function validateSpatialAutocorrelationInputs(
   if (props.weights.status?.overflow) {
     validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
   }
-  if (rows >= 2 ** 24) {
-    // Counts and ranks are compared as f32 inside the kernels.
-    throw new Error(`${id} weights must hold fewer than 2^24 rows`);
-  }
+  // Counts and ranks are compared as f32 inside the kernels.
+  validateCapacity(id, 'weights row count', rows, 1, 2 ** 24 - 1);
   if (props.values.length !== rows) {
     throw new Error(`${id} values length must equal the weights row count`);
   }
-  if (props.parameters.length < GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH) {
-    throw new Error(
-      `${id} parameters must hold ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} float32 values`
-    );
-  }
+  validateCapacity(
+    id,
+    'parameters length',
+    props.parameters.length,
+    GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+  );
   if (props.mask) {
     validatePackedUint32View(props.mask, `${id} mask`);
     if (props.mask.length !== rows) {
@@ -145,12 +123,13 @@ export function validateSpatialAutocorrelationInputs(
     }
   }
   if (props.globalStatistics) {
-    validatePackedView(props.globalStatistics, ['float32'], `${id} globalStatistics`);
-    if (props.globalStatistics.length < GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH) {
-      throw new Error(
-        `${id} globalStatistics must hold ${GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH} float32 values`
-      );
-    }
+    validatePackedView(props.globalStatistics, ['float32'], `${id} output.globalStatistics`);
+    validateCapacity(
+      id,
+      'output.globalStatistics length',
+      props.globalStatistics.length,
+      GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
+    );
   }
   return rows;
 }
@@ -249,11 +228,13 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: SpatialAutocorrelationInputProps & {operation: string}
 ): SpatialAutocorrelationInputs<Parameters> {
-  const {id, operation, values, parameters, mask, weights} = props;
+  const {id, operation, parameters, mask, weights} = props;
+  const valuesInput = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
+  const values = valuesInput.view;
   const rows = values.length;
   const blockCount = Math.ceil(rows / BLOCK_ROWS);
   const sharedWGSL = getSpatialAutocorrelationSharedWGSL();
-  const nodes: GPUCommandNode<Parameters>[] = [];
+  const nodes: GPUCommandNode<Parameters>[] = [...valuesInput.nodes];
   const hasIslandPass = props.islands !== undefined;
   const keepIslands = props.islands === 'keep';
   const overflow = weights.status?.overflow;

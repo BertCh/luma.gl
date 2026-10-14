@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUPointDensity} from './gpu-point-density';
+export {
+  GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT,
+  GPUPointDensity
+} from './gpu-point-density';
 export type {
   GPUPointDensityBinning,
   GPUPointDensityBounds,
@@ -37,13 +40,16 @@ export type {
 export {
   evaluateGPUKernelDensityKernel,
   getGPUKernelDensitySupportRadius,
+  getGPUKernelDensityBinnedErrorBound,
   getGPUKernelDensityWindowMass,
-  getScottBandwidth,
-  getSilvermanBandwidth,
+  GPU_KERNEL_DENSITY_AUTO_SUPPORT_CELLS,
+  GPU_KERNEL_DENSITY_BINNED_MARGIN_BANDWIDTHS,
+  GPU_KERNEL_DENSITY_BINNED_MINIMUM_BANDWIDTH_CELLS,
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION
 } from './kernel-density-math';
 export type {
-  GPUKernelDensityBandwidth,
+  GPUKernelDensityBandwidthRule,
   GPUKernelDensityKernel,
+  GPUKernelDensityMethod,
   GPUKernelDensityWindow
 } from './kernel-density-math';

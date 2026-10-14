@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -11,9 +10,11 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUOffsetExpansion';
 
@@ -24,17 +25,17 @@ export const GPU_OFFSET_EXPANSION_NO_OWNER = 0xffffffff;
 export type GPUOffsetExpansionOutput = {
   /**
    * Owner (parent) index per child row. Its length is the child row capacity. Rows at or beyond
-   * `count` hold {@link GPU_OFFSET_EXPANSION_NO_OWNER}.
+   * `status.count` hold {@link GPU_OFFSET_EXPANSION_NO_OWNER}.
    */
   owners: GraphDataView<'uint32'>;
   /** Optional index of each child row inside its owner; same length as `owners`. */
   localIndex?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(offsets[last], owners.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `1` when `offsets[last] > owners.length`, otherwise `0`. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped child row count `offsets[last]`. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `count` receives `min(offsets[last], owners.length)`, `overflow`
+   * receives `1` when `offsets[last] > owners.length` (otherwise `0`), and the optional
+   * `requiredCount` receives the unclamped child row count `offsets[last]`.
+   */
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
 };
 
 /**
@@ -48,15 +49,15 @@ export type GPUOffsetExpansionProps = {
   id?: string;
   /**
    * `ownerCount + 1` monotonic non-decreasing offsets: owner `p` owns child rows
-   * `[offsets[p], offsets[p + 1])`, the GeoArrow offsets convention (`ringOffsets`,
-   * `featureRingOffsets`, `polygonOffsets`). Monotonicity is not validated on the GPU.
+   * `[offsets[p], offsets[p + 1])`, the GeoArrow offsets convention (`lineOffsets`,
+   * `featureOffsets`, `polygonOffsets`, `ringOffsets`). Monotonicity is not validated on the GPU.
    */
   offsets: GraphDataView<'uint32'>;
   /**
    * Optional per-owner remap. When set, `owners[i]` becomes `ownerMap[owner]`, which chains
-   * levels: expand vertices to rings with `ringOffsets` and pass the ring-to-feature owner rows
-   * (the `owners` output of a second instance over `featureRingOffsets`) as the map, giving
-   * the feature of every vertex. Length at least the owner count.
+   * levels: expand vertices to rings with `ringOffsets` and pass the ring-to-polygon owner rows
+   * (the `owners` output of a second instance over `polygonOffsets`) as the map, giving
+   * the polygon of every vertex. Length at least the owner count.
    */
   ownerMap?: GraphDataView<'uint32'>;
   /** Caller-owned bounded outputs. */
@@ -72,8 +73,8 @@ export type GPUOffsetExpansionProps = {
  * row, so owners with an empty range produce no rows (Shapely `get_coordinates` drops empty
  * geometries; `get_parts` and `explode` keep an empty polygon as one part, which is what
  * `get_num_geometries` offsets already say). `localIndex[i] = i - offsets[p]`. Deterministic, no
- * atomics. Output is bounded by `output.owners.length`; surplus rows are counted in `requiredCount`
- * and flagged by `overflow`.
+ * atomics. Output is bounded by `output.owners.length`; surplus rows are counted in `status.requiredCount`
+ * and flagged by `status.overflow`.
  *
  * Chain levels by expanding each offsets view and feeding the owner rows of the coarser level as
  * `ownerMap`, or gather per-owner attribute columns with `GPUGather` using `owners` as indices
@@ -90,41 +91,47 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     const {output} = props;
-    validatePackedUint32View(props.offsets, `${id} offsets`);
+    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
     if (props.offsets.length < 2) {
-      throw new Error(`${id} offsets must contain at least two rows`);
+      throw new Error(`${id} offsets needs two rows`);
     }
     if (props.ownerMap) {
-      validatePackedUint32View(props.ownerMap, `${id} ownerMap`);
+      validatePackedView(props.ownerMap, ['uint32'], `${id} ownerMap`);
       if (props.ownerMap.length < props.offsets.length - 1) {
         throw new Error(`${id} ownerMap must hold one row per owner`);
       }
     }
-    validatePackedUint32View(output.owners, `${id} output.owners`);
+    validatePackedView(output.owners, ['uint32'], `${id} output.owners`);
     if (output.owners.length < 1) {
-      throw new Error(`${id} output.owners must contain at least one row`);
+      throw new Error(`${id} output.owners must be non-empty`);
     }
     if (output.localIndex) {
-      validatePackedUint32View(output.localIndex, `${id} output.localIndex`);
+      validatePackedView(output.localIndex, ['uint32'], `${id} output.localIndex`);
       if (output.localIndex.length !== output.owners.length) {
         throw new Error(`${id} output.localIndex length must equal output.owners length`);
       }
     }
     for (const [name, scalar] of [
-      ['count', output.count],
-      ['overflow', output.overflow],
-      ['requiredCount', output.requiredCount]
+      ['count', output.status.count],
+      ['overflow', output.status.overflow],
+      ['requiredCount', output.status.requiredCount]
     ] as const) {
       if (scalar) {
-        validatePackedUint32View(scalar, `${id} output.${name}`);
+        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
-          throw new Error(`${id} output.${name} must contain one uint32 row`);
+          throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.owners, output.localIndex, output.count, output.overflow, output.requiredCount],
+      [
+        output.owners,
+        output.localIndex,
+        output.status.count,
+        output.status.overflow,
+        output.status.requiredCount
+      ],
       [props.offsets, props.ownerMap]
     );
   }
@@ -140,16 +147,16 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
       props.ownerMap,
       output.owners,
       output.localIndex,
-      output.count,
-      output.overflow,
-      output.requiredCount
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount
     ]);
     const ownerCount = props.offsets.length - 1;
     const bindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
       {name: 'ownersOut', view: output.owners, type: 'u32', access: 'read_write'},
-      {name: 'countOut', view: output.count, type: 'u32', access: 'read_write'},
-      {name: 'overflowOut', view: output.overflow, type: 'u32', access: 'read_write'}
+      {name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'},
+      {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'}
     ];
     if (props.ownerMap) {
       bindings.push({name: 'ownerMap', view: props.ownerMap, type: 'u32', access: 'read'});
@@ -162,10 +169,10 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
-    if (output.requiredCount) {
+    if (output.status.requiredCount) {
       bindings.push({
         name: 'totalOut',
-        view: output.requiredCount,
+        view: output.status.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -183,7 +190,7 @@ const NO_OWNER: u32 = ${GPU_OFFSET_EXPANSION_NO_OWNER}u;`,
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
-    ${output.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
+    ${output.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
   }
   // Count the owners whose first row is at or before this row (offsets are non-decreasing).
   var low = 0u;

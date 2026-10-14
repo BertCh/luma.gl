@@ -5,25 +5,32 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import type {GPUInferenceMetadata} from '../contracts/index';
+import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 import {GPULocalMoran} from '../spatial-autocorrelation/gpu-local-moran';
-import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../spatial-autocorrelation/spatial-autocorrelation-parameters';
+import {
+  getGPUSpatialAutocorrelationParameterValues,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  type GPUSpatialAutocorrelationSettings
+} from '../spatial-autocorrelation/spatial-autocorrelation-parameters';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {GPU_CLASS_ASSIGNMENT_NO_CLASS} from './gpu-class-assignment';
 import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
-import {getPeriodView} from './period-views';
+import {createPeriodPackNode, getPaddedPeriodStride, getPeriodView} from './period-views';
 
 const OPERATION = 'GPULISAMarkov';
 
@@ -44,7 +51,7 @@ export type GPULISAMarkovGating = 'significance' | 'none';
 /** Caller-owned outputs of {@link GPULISAMarkov}. */
 export type GPULISAMarkovOutput = GPUTransitionMatrixOutput & {
   /**
-   * Optional LISA state per row and period, period-major (`rows * periods` entries): 0 to 4 as in
+   * Optional LISA state per row and period, period-major (`rowCount * periodCount` entries): 0 to 4 as in
    * {@link GPU_LISA_MARKOV_STATE_COUNT}, or `GPU_CLASS_ASSIGNMENT_NO_CLASS` (`0xffffffff`) for a
    * row-period that is not part of the analysis.
    */
@@ -60,17 +67,17 @@ export type GPULISAMarkovOutput = GPUTransitionMatrixOutput & {
 export type GPULISAMarkovProps = {
   /** Prefix for generated node IDs. Defaults to `'lisa-markov'`. */
   id?: string;
-  /** Analysis values per row and period, period-major (`rows * periods` entries). */
+  /** Analysis values per row and period, period-major (`rowCount * periodCount` entries). */
   values: GraphDataView<'float32'>;
-  /** Square self-join weights over the `rows` locations, constant across periods. */
+  /** Square self-join weights over the `rowCount` locations, constant across periods. */
   weights: GPUSpatialWeights;
   /** Number of periods, at least `periodLag + 1`. */
-  periods: number;
+  periodCount: number;
   /** Periods between the two ends of a transition. Defaults to 1. */
   periodLag?: number;
   /** `GPULocalMoran` per-frame parameters (`getGPUSpatialAutocorrelationParameterValues`). */
   parameters: GraphDataView<'float32'>;
-  /** Optional row selection (`rows` entries) applied to every period. */
+  /** Optional row selection (`rowCount` entries) applied to every period. */
   mask?: GraphDataView<'uint32'>;
   /**
    * Compile-time. {@link GPULISAMarkovGating}; defaults to `'none'`, the four-quadrant chain of
@@ -125,7 +132,7 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPULISAMarkovProps;
   /** Rows per period. */
-  readonly rows: number;
+  readonly rowCount: number;
   /** Resolved gating mode. */
   readonly gating: GPULISAMarkovGating;
 
@@ -133,31 +140,28 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
     const id = props.id ?? 'lisa-markov';
     this.id = id;
     this.props = props;
-    this.rows = validateGPUSpatialWeights(id, props.weights);
+    this.rowCount = validateGPUSpatialWeights(id, props.weights);
     this.gating = props.gating ?? 'none';
     validatePackedView(props.values, ['float32'], `${id} values`);
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} words`
-      );
+      throw new Error(`${id} parameters is too short`);
     }
-    if (!Number.isInteger(props.periods) || props.periods < (props.periodLag ?? 1) + 1) {
-      throw new Error(`${id} periods must be an integer of at least periodLag + 1`);
-    }
-    if (props.values.length !== this.rows * props.periods) {
-      throw new Error(`${id} values length must equal rows * periods`);
+    validateCapacity(id, 'periodLag', props.periodLag ?? 1);
+    validateCapacity(id, 'periodCount', props.periodCount, (props.periodLag ?? 1) + 1);
+    if (props.values.length !== this.rowCount * props.periodCount) {
+      throw new Error(`${id} values length must equal rowCount * periodCount`);
     }
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
-      if (props.mask.length !== this.rows) {
+      if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
     }
     if (props.output.quadrants) {
       validatePackedUint32View(props.output.quadrants, `${id} output.quadrants`);
-      if (props.output.quadrants.length !== this.rows * props.periods) {
-        throw new Error(`${id} output.quadrants length must equal rows * periods`);
+      if (props.output.quadrants.length !== this.rowCount * props.periodCount) {
+        throw new Error(`${id} output.quadrants length must equal rowCount * periodCount`);
       }
     }
   }
@@ -166,9 +170,14 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
    * Describes the significance gating of the states, or `undefined` for `gating: 'none'` (no
    * p-value is used). Two-sided analytic normal p-values, no multiple-testing correction.
    *
-   * @param significanceLevel Level of the per-frame `parameters`; defaults to 0.05.
+   * @param settings The `GPULocalMoran` settings packed into `parameters`
+   * (`getGPUSpatialAutocorrelationParameterValues`); validated like the packer.
    */
-  getInferenceMetadata(significanceLevel = 0.05): GPUInferenceMetadata | undefined {
+  getInferenceMetadata(
+    settings: GPUSpatialAutocorrelationSettings
+  ): GPUInferenceMetadata | undefined {
+    // Packing validates the settings exactly as the GPU path does.
+    getGPUSpatialAutocorrelationParameterValues(settings);
     if (this.gating === 'none') {
       return undefined;
     }
@@ -176,18 +185,22 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
       alternative: 'two-sided',
       permutationCount: 0,
       multipleTesting: 'none',
-      significanceLevel,
+      significanceLevel: settings.significanceLevel ?? 0.05,
       testedRowsDefinition:
         'per period, unmasked rows with a finite value and at least one neighbor among such rows, a nonzero centered value and a defined z-score; each period tested separately'
     };
   }
 
-  /** Returns one local Moran chain per period, the state kernel, then the transition nodes. */
+  /**
+   * Returns one pack kernel (contiguous values into a 64-aligned period stride), one local Moran
+   * chain per period, the state kernel (which also unpacks the quadrants), then the transition
+   * nodes.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, rows} = this;
-    const {output, weights, periods, mask} = props;
+    const {id, props, rowCount: rows} = this;
+    const {output, weights, periodCount: periods, mask} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.parameters,
@@ -206,22 +219,55 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
       output.status?.converged
     ]);
     const total = rows * periods;
+    // Per-period transients use a 64-aligned stride so every period view has the same offset
+    // residue and the period loop adds no pipelines (rule 12). `quadrants` stays contiguous for
+    // the states kernel, which also unpacks the padded Moran quadrants.
+    const stride = getPaddedPeriodStride(rows);
+    const paddedTotal = stride * periods;
     const quadrants =
       output.quadrants ?? createTransientView(graph, `${id}-quadrants`, 'uint32', total);
-    const zScores = createTransientView(graph, `${id}-z-scores`, 'float32', total);
-    const neighborCounts = createTransientView(graph, `${id}-neighbor-counts`, 'uint32', total);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const paddedValues = createTransientView(graph, `${id}-padded-values`, 'float32', paddedTotal);
+    const paddedZScores = createTransientView(
+      graph,
+      `${id}-padded-z-scores`,
+      'float32',
+      paddedTotal
+    );
+    const paddedQuadrants = createTransientView(
+      graph,
+      `${id}-padded-quadrants`,
+      'uint32',
+      paddedTotal
+    );
+    const paddedNeighborCounts = createTransientView(
+      graph,
+      `${id}-padded-neighbor-counts`,
+      'uint32',
+      paddedTotal
+    );
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createPeriodPackNode<Parameters>(graph, {
+        id: `${id}-pack-values`,
+        operation: OPERATION,
+        source: props.values,
+        padded: paddedValues,
+        rows,
+        periods
+      })
+    ];
     for (let period = 0; period < periods; period++) {
       nodes.push(
         ...new GPULocalMoran({
           id: `${id}-moran-${period}`,
           weights,
-          values: getPeriodView(graph, props.values, period, rows),
+          values: getPeriodView(graph, paddedValues, period, rows, stride),
           parameters: props.parameters,
           mask,
-          zScores: getPeriodView(graph, zScores, period, rows),
-          quadrants: getPeriodView(graph, quadrants, period, rows),
-          neighborCounts: getPeriodView(graph, neighborCounts, period, rows),
+          output: {
+            zScores: getPeriodView(graph, paddedZScores, period, rows, stride),
+            quadrants: getPeriodView(graph, paddedQuadrants, period, rows, stride),
+            neighborCounts: getPeriodView(graph, paddedNeighborCounts, period, rows, stride)
+          },
           quadrantGating: this.gating === 'none' ? 'none' : 'analytic',
           minimumNeighbors: 1
         }).getCommandNodes(graph)
@@ -237,13 +283,16 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
         variant: 'states',
         bindings: [
           {name: 'values', view: props.values, type: 'f32', access: 'read'},
-          {name: 'neighborCounts', view: neighborCounts, type: 'u32', access: 'read'},
+          {name: 'neighborCounts', view: paddedNeighborCounts, type: 'u32', access: 'read'},
+          {name: 'moranQuadrants', view: paddedQuadrants, type: 'u32', access: 'read'},
           {name: 'quadrants', view: quadrants, type: 'u32', access: 'read_write'}
         ],
         invocationCount: total,
         declarations: IS_FINITE_BITS_WGSL,
-        body: `var state = quadrants[quadrantsOffset + index];
-  if (!isFiniteBits(values[valuesOffset + index]) || neighborCounts[neighborCountsOffset + index] == 0u${
+        body: `let period = index / ${rows}u;
+  let paddedIndex = period * ${stride}u + (index - period * ${rows}u);
+  var state = moranQuadrants[moranQuadrantsOffset + paddedIndex];
+  if (!isFiniteBits(values[valuesOffset + index]) || neighborCounts[neighborCountsOffset + paddedIndex] == 0u${
     this.gating === 'none' ? ' || state == 0u' : ''
   }) {
     state = ${GPU_CLASS_ASSIGNMENT_NO_CLASS}u;
@@ -255,8 +304,7 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
       ...new GPUTransitionMatrix({
         id: `${id}-transitions`,
         classes: quadrants,
-        rows,
-        periods,
+        periodCount: periods,
         classCount: GPU_LISA_MARKOV_STATE_COUNT,
         periodLag: props.periodLag,
         mask,

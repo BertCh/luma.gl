@@ -36,7 +36,7 @@ export type GPUColorScaleType = keyof typeof GPU_COLOR_SCALE_CODES;
 export type GPUColorScaleInterpolation = 'step' | 'linear';
 
 /** Options of {@link getGPUColorScaleParameterValues}. */
-export type GPUColorScaleParameterOptions = {
+export type GPUColorScaleSettings = {
   /** Scale type. */
   scale: GPUColorScaleType;
   /**
@@ -69,40 +69,40 @@ export type GPUColorScaleParameterOptions = {
  * is split into its low and high 16 bits, each exactly representable as an f32 integer, so no NaN
  * bit pattern is ever stored in a float slot.
  *
- * @param options Scale options.
+ * @param settings Scale settings.
  * @param target Optional destination of at least {@link GPU_COLOR_SCALE_PARAMETER_LENGTH} elements.
  * @throws If a count is not a non-negative integer or `target` is short.
  */
 export function getGPUColorScaleParameterValues(
-  options: GPUColorScaleParameterOptions,
+  settings: GPUColorScaleSettings,
   target: Float32Array = new Float32Array(GPU_COLOR_SCALE_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_COLOR_SCALE_PARAMETER_LENGTH) {
     throw new Error(
-      `Color scale parameter target must hold ${GPU_COLOR_SCALE_PARAMETER_LENGTH} elements`
+      `GPUColorScale parameter target must hold ${GPU_COLOR_SCALE_PARAMETER_LENGTH} elements`
     );
   }
-  if (!(options.scale in GPU_COLOR_SCALE_CODES)) {
-    throw new Error(`Unknown color scale '${String(options.scale)}'`);
+  if (!(settings.scale in GPU_COLOR_SCALE_CODES)) {
+    throw new Error(`GPUColorScale unknown scale '${String(settings.scale)}'`);
   }
   for (const [name, count] of [
-    ['domainCount', options.domainCount],
-    ['paletteCount', options.paletteCount]
+    ['domainCount', settings.domainCount],
+    ['paletteCount', settings.paletteCount]
   ] as const) {
     if (!Number.isInteger(count) || count < 0) {
-      throw new Error(`Color scale ${name} must be a non-negative integer`);
+      throw new Error(`GPUColorScale ${name} must be a non-negative integer`);
     }
   }
-  const noDataColor = (options.noDataColor ?? 0) >>> 0;
-  target[0] = GPU_COLOR_SCALE_CODES[options.scale];
-  target[1] = options.domainCount;
-  target[2] = options.paletteCount;
-  target[3] = options.interpolation === 'linear' ? 1 : 0;
-  target[4] = options.clamp ? 1 : 0;
+  const noDataColor = (settings.noDataColor ?? 0) >>> 0;
+  target[0] = GPU_COLOR_SCALE_CODES[settings.scale];
+  target[1] = settings.domainCount;
+  target[2] = settings.paletteCount;
+  target[3] = settings.interpolation === 'linear' ? 1 : 0;
+  target[4] = settings.clamp ? 1 : 0;
   target[5] = noDataColor & 0xffff;
   target[6] = noDataColor >>> 16;
-  target[7] = options.logFloor ?? 1e-5;
-  target[8] = options.exponent ?? 1;
+  target[7] = settings.logFloor ?? 1e-5;
+  target[8] = settings.exponent ?? 1;
   return target;
 }
 

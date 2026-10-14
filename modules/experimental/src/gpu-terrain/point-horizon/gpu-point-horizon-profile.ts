@@ -3,26 +3,28 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
+  createPointHorizonChunkStarts,
   createPointHorizonSource,
   getPointHorizonMarchWGSL,
+  PRECISION_WGSL,
   resolvePointHorizonModel,
   validatePointHorizonRows,
   type GPUPointHorizonModelOptions,
   type ResolvedPointHorizonModel
 } from './point-horizon-march';
 import {
-  GPU_POINT_HORIZON_PARAMETER_LENGTH,
+  GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH,
   POINT_HORIZON_PROFILE_PROJECTION_SLOT
 } from './point-horizon-parameters';
 
@@ -34,13 +36,13 @@ export const GPU_POINT_HORIZON_RAYS_PER_DISPATCH = 65536;
  *
  * Topology (baked into WGSL, see {@link GPUPointHorizonModelOptions}): grid size, projection,
  * row direction, height reference, traversal, azimuth division and the distance lattice. Per-frame:
- * `settings` (curvature, cell size or world size, distance cap), `observers` and the terrain
- * contents.
+ * `parameters` (curvature, distance cap, and the grid cell size or world size), `observers` and
+ * the terrain contents.
  *
- * Projection and cell-size model: `'planar'` rasters are in projected meters with a per-frame
- * `cellSize = [x, y]`; `'web-mercator'` rasters are Web Mercator pixel windows with a per-frame
- * `worldPixelSize` and origin row and great-circle rays on a sphere of radius 6371008.8 m. See
- * {@link GPUPointHorizonProjection} and the settings types in `point-horizon-parameters`.
+ * Projection and cell-size model: `'planar'` rasters are in projected meters with the cell size
+ * of the grid; `'web-mercator'` rasters are windows of EPSG:3857 meters whose world size and top
+ * edge the packer derives from the grid, with great-circle rays on a sphere of radius 6371008.8 m.
+ * See {@link GPUPointHorizonProjection} and the settings type in `point-horizon-parameters`.
  *
  * Curvature convention: terrain drops by `c * d^2` with `c = (1 - k) / (2R)` (see
  * `getGPUTerrainCurvatureCoefficient`; mt-image default `k = 0.13`, GDAL `-cc 0.85714` is `k = 1/7`).
@@ -48,10 +50,8 @@ export const GPU_POINT_HORIZON_RAYS_PER_DISPATCH = 65536;
 export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
   /** Prefix for node and transient IDs. Defaults to `'point-horizon-profile'`. */
   id?: string;
-  /** Grid width in pixels (at least 2). */
-  width: number;
-  /** Grid height in pixels (at least 2). */
-  height: number;
+  /** Raster grid: its width and height (at least 2) size the kernels. */
+  grid: GPURasterMetadata;
   /** Terrain band (elevation), buffer or texture. Calibration, no-data and validity are honored. */
   elevation: GPURasterBand;
   /**
@@ -61,8 +61,16 @@ export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
    * ground mode, yields NaN in every output.
    */
   observers: GraphDataView<'float32x4'>;
-  /** Per-frame settings, see `getGPUPointHorizonParameterValues`. At least 8 float32. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters, see `getGPUPointHorizonProfileParameterValues`. At least 8 float32. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs; at least one is required. */
+  output: GPUPointHorizonProfileOutput;
+  /** Rays per compute node. Defaults to 65536. */
+  raysPerDispatch?: number;
+};
+
+/** Caller-owned outputs of {@link GPUPointHorizonProfile}, one value per ray. */
+export type GPUPointHorizonProfileOutput = {
   /**
    * Optional `observers.length * azimuthSpan` tangents `tBest = max((h - h_eye) / d - c d)`;
    * `-3.4028234663852886e38` when no valid sample was seen, NaN for an invalid observer.
@@ -79,8 +87,6 @@ export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
    * omit one output to use it.
    */
   samples?: GraphDataView<'uint32'>;
-  /** Rays per compute node. Defaults to 65536. */
-  raysPerDispatch?: number;
 };
 
 /**
@@ -117,25 +123,26 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     this.id = props.id ?? 'point-horizon-profile';
     this.props = props;
     const {id} = this;
-    this.model = resolvePointHorizonModel(id, props.width, props.height, props);
-    if (!props.tangent && !props.skylineAngle && !props.distance) {
+    this.model = resolvePointHorizonModel(id, props.grid, props);
+    const {output} = props;
+    if (!output.tangent && !output.skylineAngle && !output.distance) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainSettings(id, props.settings, GPU_POINT_HORIZON_PARAMETER_LENGTH);
+    validateRasterParameters(id, props.parameters, GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH);
     validatePointHorizonRows(id, 'observers', props.observers, 'float32x4');
     if (props.observers.length < 1) {
       throw new Error(`${id} requires at least one observer`);
     }
     const rayCount = props.observers.length * this.model.azimuthSpan;
     for (const [name, view] of [
-      ['tangent', props.tangent],
-      ['skylineAngle', props.skylineAngle],
-      ['distance', props.distance]
+      ['tangent', output.tangent],
+      ['skylineAngle', output.skylineAngle],
+      ['distance', output.distance]
     ] as const) {
       if (view) {
-        validatePointHorizonRows(id, name, view, 'float32');
+        validatePointHorizonRows(id, `output.${name}`, view, 'float32');
         if (view.length !== rayCount) {
-          throw new Error(`${id} ${name} must contain observers * azimuthSpan values`);
+          throw new Error(`${id} output.${name} must contain observers * azimuthSpan values`);
         }
       }
     }
@@ -143,10 +150,10 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     if (!Number.isInteger(raysPerDispatch) || raysPerDispatch < 1) {
       throw new Error(`${id} raysPerDispatch must be a positive integer`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.tangent, props.skylineAngle, props.distance, props.samples],
-      [...getTerrainBandViews(props.elevation), props.settings, props.observers]
+      [output.tangent, output.skylineAngle, output.distance, output.samples],
+      [...getRasterBandViews(props.elevation), props.parameters, props.observers]
     );
   }
 
@@ -155,56 +162,62 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, model} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.pyramid?.combined,
-      props.settings,
+      props.parameters,
       props.observers,
-      props.tangent,
-      props.skylineAngle,
-      props.distance,
-      props.samples
+      output.tangent,
+      output.skylineAngle,
+      output.distance,
+      output.samples
     ]);
     const source = createPointHorizonSource(graph, id, model, props.elevation);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const bindings: WGSLKernelBinding[] = [
       ...source.bindings,
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'observers', view: props.observers, type: 'f32', access: 'read'}
     ];
-    if (props.tangent) {
+    if (output.tangent) {
       bindings.push({
         name: 'tangentOutput',
-        view: props.tangent,
+        view: output.tangent,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.skylineAngle) {
+    // With both angle outputs the march writes only the tangent and a per-ray pass derives the
+    // skyline angle from it with the same pinned `atanAccurate` (bit-identical), so the march stays
+    // within 8 storage buffers with every output on the pyramid traversal (core limit).
+    const deriveSkylineAngle = Boolean(output.tangent && output.skylineAngle);
+    if (output.skylineAngle && !deriveSkylineAngle) {
       bindings.push({
         name: 'skylineAngleOutput',
-        view: props.skylineAngle,
+        view: output.skylineAngle,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.distance) {
+    if (output.distance) {
       bindings.push({
         name: 'distanceOutput',
-        view: props.distance,
+        view: output.distance,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.samples) {
+    if (output.samples) {
       bindings.push({
         name: 'samplesOutput',
-        view: props.samples,
+        view: output.samples,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (bindings.length > 8) {
+    // The chunk start word is the eighth binding at most.
+    if (bindings.length > 7) {
       throw new Error(`${id} needs more than 8 storage bindings`);
     }
     const march = getPointHorizonMarchWGSL(model, POINT_HORIZON_PROFILE_PROJECTION_SLOT);
@@ -212,36 +225,39 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     const raysPerDispatch = props.raysPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
     const writes = (value: string) =>
       [
-        props.tangent
+        output.tangent
           ? `tangentOutput[tangentOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-BIG, result.t, result.has)'};`
           : '',
-        props.skylineAngle
+        output.skylineAngle && !deriveSkylineAngle
           ? `skylineAngleOutput[skylineAngleOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(-90.0, atanAccurate(result.t) * DEGREES, result.has)'};`
           : '',
-        props.distance
+        output.distance
           ? `distanceOutput[distanceOutputOffset + ray] = ${value === 'nan' ? 'nanValue()' : 'select(0.0, result.d, result.has)'};`
           : '',
-        props.samples
+        output.samples
           ? `samplesOutput[samplesOutputOffset + ray] = ${value === 'nan' ? '0u' : 'result.evaluated'};`
           : ''
       ].join('\n  ');
-    for (
-      let chunk = 0, rayOffset = 0;
-      rayOffset < rayCount;
-      chunk++, rayOffset += raysPerDispatch
-    ) {
-      const count = Math.min(raysPerDispatch, rayCount - rayOffset);
+    const chunks = createPointHorizonChunkStarts<Parameters>(graph, {
+      id,
+      operation: 'GPUPointHorizonProfile',
+      itemCount: rayCount,
+      maximumChunkSize: raysPerDispatch
+    });
+    nodes.push(chunks.writeNode);
+    for (let chunk = 0; chunk < chunks.chunkCount; chunk++) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-march-${chunk}`,
           operation: 'GPUPointHorizonProfile',
           variant: model.traversal,
-          bindings,
-          invocationCount: count,
+          bindings: [...bindings, chunks.getChunkStart(chunk)],
+          invocationCount: chunks.chunkSize,
           workgroupSize: 64,
-          declarations: `const RAY_OFFSET: u32 = ${rayOffset}u;
+          declarations: `const RAY_COUNT: u32 = ${rayCount}u;
 ${march}`,
-          body: `let ray = RAY_OFFSET + index;
+          body: `let ray = chunkStart[chunkStartOffset] + index;
+  if (ray >= RAY_COUNT) { return; }
   let observerIndex = ray / AZIMUTH_SPAN;
   let azimuthOffset = ray - observerIndex * AZIMUTH_SPAN;
   let observerBase = observersOffset + observerIndex * 4u;
@@ -253,6 +269,36 @@ ${march}`,
   let direction = azimuthSinCos(FIRST_AZIMUTH + azimuthOffset, AZIMUTH_COUNT);
   let result = marchRay(eye, direction.x, direction.y, 0.0, false);
   ${writes('result')}`
+        })
+      );
+    }
+    if (output.tangent && output.skylineAngle && deriveSkylineAngle) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-skyline-angle`,
+          operation: 'GPUPointHorizonProfile',
+          variant: 'skyline-angle',
+          bindings: [
+            {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'tangent', view: output.tangent, type: 'f32', access: 'read'},
+            {
+              name: 'skylineAngleOutput',
+              view: output.skylineAngle,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: rayCount,
+          declarations: `const RAY_COUNT: u32 = ${rayCount}u;
+${PRECISION_WGSL}`,
+          // The march wrote nanValue() (invalid eye, copied through), -BIG (no horizon) or the tangent.
+          body: `if (index >= RAY_COUNT) { return; }
+  let t = tangent[tangentOffset + index];
+  var angle = t;
+  if ((bitcast<u32>(t) & 0x7fffffffu) <= 0x7f800000u) {
+    angle = select(-90.0, atanAccurate(t) * DEGREES, t != -BIG);
+  }
+  skylineAngleOutput[skylineAngleOutputOffset + index] = angle;`
         })
       );
     }

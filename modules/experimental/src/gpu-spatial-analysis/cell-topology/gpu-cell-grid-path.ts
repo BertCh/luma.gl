@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,7 +12,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
@@ -130,18 +128,6 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
       throw new Error(`${id} wordOrder must be 'little-endian' or 'high-low'`);
     }
     const {output} = props;
-    for (const [name, view] of [
-      ['origins', props.origins],
-      ['destinations', props.destinations],
-      ['mask', props.mask],
-      ['output.distances', output.distances],
-      ['output.cells', output.cells],
-      ['output.counts', output.counts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     const rows = props.origins.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -152,7 +138,7 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
       throw new Error(`${id} destinations length must equal the origins length`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -164,7 +150,7 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
       throw new Error(`${id} output.counts needs output.cells`);
     }
     if (output.distances) {
-      validatePackedUint32View(output.distances, `${id} output.distances`);
+      validatePackedView(output.distances, ['uint32'], `${id} output.distances`);
       if (output.distances.length !== rows) {
         throw new Error(`${id} output.distances length must equal the row count`);
       }
@@ -191,7 +177,7 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
       }
     }
     if (output.counts) {
-      validatePackedUint32View(output.counts, `${id} output.counts`);
+      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
       if (output.counts.length !== rows) {
         throw new Error(`${id} output.counts length must equal the row count`);
       }

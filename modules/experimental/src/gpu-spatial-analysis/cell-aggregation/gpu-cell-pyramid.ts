@@ -4,26 +4,34 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import {
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {getCellKeyLayout} from './cell-keys';
 import {getCellTableFirstRow, validateCellTable, type GPUCellTable} from './cell-table';
 import {GPUCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggregation';
 import {GPUCellRollup} from './gpu-cell-rollup';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
-/** One level of a {@link GPUCellPyramid}. */
-export type GPUCellPyramidLevel = {
-  /** Resolution of this level. Levels are listed finest first with strictly decreasing resolutions. */
-  resolution: number;
-  /** Caller-owned table of this level. */
-  output: GPUCellTable;
+/** Words per level-count slot: 64 words = 256 bytes, the storage binding offset alignment. */
+const LEVEL_COUNT_SLOT_STRIDE = 64;
+
+/** Caller-owned outputs of {@link GPUCellPyramid}. */
+export type GPUCellPyramidOutput = {
+  /** One table per level, finest first, matching `resolutions`. */
+  levels: readonly GPUCellTable[];
+  /**
+   * Optional packed `uint32` view of `levels.length` rows receiving each level's clamped count,
+   * the input of {@link GPUCellLevelSelection}.
+   */
+  levelCounts?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -36,13 +44,13 @@ export type GPUCellPyramidProps = Omit<
 > & {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-pyramid'`. */
   id?: string;
-  /** Levels, finest first. Level 0 aggregates the rows; level `i` rolls up level `i - 1`. */
-  levels: readonly GPUCellPyramidLevel[];
   /**
-   * Optional packed `uint32` view of `levels.length` rows receiving each level's clamped count,
-   * the input of {@link GPUCellLevelSelection}.
+   * Resolution of each level, finest first and strictly decreasing. Level 0 aggregates the rows;
+   * level `i` rolls up level `i - 1`.
    */
-  levelCounts?: GraphDataView<'uint32'>;
+  resolutions: readonly number[];
+  /** Caller-owned level tables and counts. */
+  output: GPUCellPyramidOutput;
 };
 
 /**
@@ -65,44 +73,66 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     this.id = props.id ?? 'cell-pyramid';
     this.props = props;
     const id = this.id;
-    if (props.levels.length < 1) {
+    const {resolutions, output} = props;
+    if (resolutions.length < 1) {
       throw new Error(`${id} needs at least one level`);
     }
-    for (const [levelIndex, level] of props.levels.entries()) {
-      getCellKeyLayout(props.family, level.resolution);
-      validateCellTable(id, `levels[${levelIndex}].output`, level.output);
-      if (levelIndex > 0 && level.resolution >= props.levels[levelIndex - 1].resolution) {
-        throw new Error(`${id} level resolutions must strictly decrease`);
+    if (output.levels.length !== resolutions.length) {
+      throw new Error(`${id} output.levels must hold one table per resolution`);
+    }
+    for (const [levelIndex, resolution] of resolutions.entries()) {
+      getCellKeyLayout(props.family, resolution);
+      validateCellTable(id, `output.levels[${levelIndex}]`, output.levels[levelIndex]);
+      if (levelIndex > 0 && resolution >= resolutions[levelIndex - 1]) {
+        throw new Error(`${id} resolutions must strictly decrease`);
       }
     }
-    if (props.levelCounts) {
-      validatePackedUint32View(props.levelCounts, `${id} levelCounts`);
-      if (props.levelCounts.length !== props.levels.length) {
-        throw new Error(`${id} levelCounts must hold one row per level`);
+    if (output.levelCounts) {
+      validatePackedView(output.levelCounts, ['uint32'], `${id} output.levelCounts`);
+      if (output.levelCounts.length !== resolutions.length) {
+        throw new Error(`${id} output.levelCounts must hold one row per level`);
       }
     }
     // Validate the finest level eagerly; roll-ups validate when nodes are built.
-    this.spatialContext = this.createAggregation(props.levels[0].output, []).spatialContext;
+    this.spatialContext = this.createAggregation(output.levels[0], []).spatialContext;
   }
 
   /** Row offset of each level's `cells` within its buffer, for {@link GPUCellLevelSelection}. */
   get levelFirstRows(): number[] {
-    return this.props.levels.map(level => getCellTableFirstRow(level.output));
+    return this.props.output.levels.map(getCellTableFirstRow);
   }
 
-  /** Returns the aggregation nodes of level 0 followed by one roll-up per coarser level. */
+  /**
+   * Returns the aggregation nodes of level 0, one roll-up per coarser level and, with
+   * `output.levelCounts`, the node that packs the level counts.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [props.levelCounts]);
-    const levelCountViews = props.levels.map((_, levelIndex) =>
-      props.levelCounts
+    const {levelCounts} = props.output;
+    validateGraphViewsBelongToGraph(id, graph, [levelCounts]);
+    // Rule 12: each level publishes its count into its own 256-byte slot of a scratch view, so the
+    // slot binds at element offset 0 and every level shares one publish module (a slice of the
+    // packed `levelCounts` would bake a different element offset per level). One copy node then
+    // packs the slots into `levelCounts`.
+    const levelCountSlots = levelCounts
+      ? createTransientView(
+          graph,
+          `${id}-level-count-slots`,
+          'uint32',
+          props.resolutions.length * LEVEL_COUNT_SLOT_STRIDE
+        )
+      : undefined;
+    const levelCountViews = props.resolutions.map((_, levelIndex) =>
+      levelCountSlots
         ? [
-            graph.createDataView(props.levelCounts.buffer, {
+            graph.createDataView(levelCountSlots.buffer, {
               format: 'uint32',
               length: 1,
-              byteOffset: props.levelCounts.byteOffset + levelIndex * Uint32Array.BYTES_PER_ELEMENT
+              byteOffset:
+                levelCountSlots.byteOffset +
+                levelIndex * LEVEL_COUNT_SLOT_STRIDE * Uint32Array.BYTES_PER_ELEMENT
             })
           ]
         : []
@@ -116,13 +146,28 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
         ...new GPUCellRollup({
           id: `${id}-level-${levelIndex}`,
           family: props.family,
-          sourceResolution: props.levels[levelIndex - 1].resolution,
-          resolution: props.levels[levelIndex].resolution,
+          sourceResolution: props.resolutions[levelIndex - 1],
+          resolution: props.resolutions[levelIndex],
           source: tables[levelIndex - 1],
           sumScale: props.sumScale,
           output: tables[levelIndex],
           extraCounts: levelCountViews[levelIndex]
         }).getCommandNodes(graph)
+      );
+    }
+    if (levelCounts && levelCountSlots) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-level-counts`,
+          operation: 'GPUCellPyramid',
+          variant: 'level-counts',
+          bindings: [
+            {name: 'slots', view: levelCountSlots, type: 'u32', access: 'read'},
+            {name: 'levelCounts', view: levelCounts, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: props.resolutions.length,
+          body: `levelCounts[levelCountsOffset + index] = slots[slotsOffset + index * ${LEVEL_COUNT_SLOT_STRIDE}u];`
+        })
       );
     }
     return nodes;
@@ -132,11 +177,11 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
     output: GPUCellTable,
     extraCounts: readonly GraphDataView<'uint32'>[]
   ): GPUCellAggregation {
-    const {levels, levelCounts: _levelCounts, ...rowProps} = this.props;
+    const {resolutions, output: _output, ...rowProps} = this.props;
     return new GPUCellAggregation({
       ...rowProps,
       id: `${this.id}-level-0`,
-      resolution: levels[0].resolution,
+      resolution: resolutions[0],
       output,
       extraCounts
     });
@@ -144,8 +189,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
 
   /** Level tables with graph-transient sums and extremes where a coarser level needs them. */
   private getLevelTables<Parameters>(graph: GPUCommandGraph<Parameters>): GPUCellTable[] {
-    const {levels} = this.props;
-    const tables = levels.map(level => ({...level.output}));
+    const tables = this.props.output.levels.map(table => ({...table}));
     let needsSums = false;
     let needsMinimums = false;
     let needsMaximums = false;
@@ -167,152 +211,5 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
       needsMaximums ||= Boolean(table.maximums);
     }
     return tables;
-  }
-}
-
-/** Caller-owned outputs of {@link GPUCellLevelSelection}. */
-export type GPUCellLevelSelectionOutput = {
-  /** One-row scalar receiving the active level's occupied row count. */
-  count: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the active level's first row (`levelFirstRows[level]`). */
-  firstRow?: GraphDataView<'uint32'>;
-  /**
-   * Optional indirect draw arguments `[vertexCount, instanceCount, firstVertex, firstInstance]`.
-   * Only `instanceCount` and `firstInstance` are written.
-   */
-  drawArguments?: GraphDataView<'uint32'>;
-};
-
-/** Properties for {@link GPUCellLevelSelection}. */
-export type GPUCellLevelSelectionProps = {
-  /** Prefix for generated node IDs. Defaults to `'cell-level-selection'`. */
-  id?: string;
-  /** Per-level clamped counts, for example `GPUCellPyramidProps.levelCounts`. */
-  levelCounts: GraphDataView<'uint32'>;
-  /**
-   * Per-frame active level index (one `uint32`), typically chosen from the zoom. Values past the
-   * last level select the last (coarsest) level.
-   */
-  activeLevel: GraphDataView<'uint32'>;
-  /** Row offset of each level's cells in a shared buffer. Defaults to zeros. */
-  levelFirstRows?: readonly number[];
-  output: GPUCellLevelSelectionOutput;
-};
-
-/**
- * Publishes the active pyramid level's count, first row and indirect draw arguments from a
- * per-frame level index, so a layer switches levels by rewriting one `uint32` without rebuilding
- * or re-running the pyramid. Put it in a small per-frame graph next to the draw.
- */
-export class GPUCellLevelSelection implements GPUCommandNodeProducer {
-  /** Prefix for every node ID. */
-  readonly id: string;
-  /** Validated properties. */
-  readonly props: GPUCellLevelSelectionProps;
-
-  constructor(props: GPUCellLevelSelectionProps) {
-    this.id = props.id ?? 'cell-level-selection';
-    this.props = props;
-    const id = this.id;
-    validatePackedUint32View(props.levelCounts, `${id} levelCounts`);
-    validatePackedUint32View(props.activeLevel, `${id} activeLevel`);
-    validatePackedUint32View(props.output.count, `${id} output.count`);
-    if (props.levelCounts.length < 1 || props.activeLevel.length < 1) {
-      throw new Error(`${id} levelCounts and activeLevel must hold at least one row`);
-    }
-    const levelFirstRows = props.levelFirstRows ?? [];
-    if (
-      props.levelFirstRows &&
-      (levelFirstRows.length !== props.levelCounts.length ||
-        levelFirstRows.some(row => !Number.isInteger(row) || row < 0 || row > 0xffffffff))
-    ) {
-      throw new Error(`${id} levelFirstRows must hold one uint32 per level`);
-    }
-    if (props.output.firstRow) {
-      validatePackedUint32View(props.output.firstRow, `${id} output.firstRow`);
-    }
-    if (props.output.drawArguments) {
-      validatePackedUint32View(props.output.drawArguments, `${id} output.drawArguments`);
-      if (props.output.drawArguments.length < 4) {
-        throw new Error(`${id} output.drawArguments must hold 4 uint32 values`);
-      }
-    }
-  }
-
-  /** Returns one single-invocation node. */
-  getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
-  ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
-    const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.levelCounts,
-      props.activeLevel,
-      output.count,
-      output.firstRow,
-      output.drawArguments
-    ]);
-    const levelCount = props.levelCounts.length;
-    const firstRows = props.levelFirstRows ?? new Array<number>(levelCount).fill(0);
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-select`,
-        operation: 'GPUCellLevelSelection',
-        bindings: [
-          {
-            name: 'levelCounts',
-            view: props.levelCounts,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'activeLevel',
-            view: props.activeLevel,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'countOut',
-            view: output.count,
-            type: 'u32',
-            access: 'read_write'
-          },
-          ...(output.firstRow
-            ? [
-                {
-                  name: 'firstRowOut',
-                  view: output.firstRow,
-                  type: 'u32',
-                  access: 'read_write'
-                } as const
-              ]
-            : []),
-          ...(output.drawArguments
-            ? [
-                {
-                  name: 'drawArguments',
-                  view: output.drawArguments,
-                  type: 'u32',
-                  access: 'read_write'
-                } as const
-              ]
-            : [])
-        ],
-        invocationCount: 1,
-        declarations: `const LEVEL_FIRST_ROWS = array<u32, ${levelCount}>(${firstRows.map(row => `${row}u`).join(', ')});`,
-        body: `let level = min(activeLevel[activeLevelOffset], ${levelCount - 1}u);
-  let count = levelCounts[levelCountsOffset + level];
-  var firstRows = LEVEL_FIRST_ROWS;
-  let firstRow = firstRows[level];
-  countOut[countOutOffset] = count;
-  ${output.firstRow ? 'firstRowOut[firstRowOutOffset] = firstRow;' : ''}
-  ${
-    output.drawArguments
-      ? `drawArguments[drawArgumentsOffset + 1u] = count;
-  drawArguments[drawArgumentsOffset + 3u] = firstRow;`
-      : ''
-  }`
-      })
-    ];
   }
 }

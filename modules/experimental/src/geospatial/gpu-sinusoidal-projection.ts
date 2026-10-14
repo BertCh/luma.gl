@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import {type GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer
+} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUFloat32Positions, GPUFloat64Positions} from './types';
 import {
   GEOSPATIAL_WORKGROUP_SIZE,
@@ -22,6 +26,7 @@ import {
   validateRowView,
   validateSeparateBuffers
 } from './geospatial-utils';
+import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
 
 const CUSPATIAL_EARTH_CIRCUMFERENCE_KILOMETRES = 40_000;
 const CUSPATIAL_KILOMETRES_PER_DEGREE = CUSPATIAL_EARTH_CIRCUMFERENCE_KILOMETRES / 360;
@@ -60,7 +65,7 @@ export type GPUSinusoidalProjectionProps = {
  * trigonometry. For new code, prefer the spatial-analysis local frames, which use the mean sphere
  * and east/north axes.
  */
-export class GPUSinusoidalProjection {
+export class GPUSinusoidalProjection implements GPUCommandNodeProducer {
   readonly id: string;
   readonly positions: GPUFloat32Positions | GPUFloat64Positions;
   readonly output: GPUFloat32Positions;
@@ -92,8 +97,16 @@ export class GPUSinusoidalProjection {
     }
   }
 
-  /** Adds one projection node per non-empty input chunk to the target graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns one projection node per non-empty input chunk, for `graph.add(contributor)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    // The shared geospatial pass helper schedules through `graph.addComputePass`, so the
+    // adapter collects its nodes instead of adding them.
+    return captureGraphCommandNodes(graph, () => this.addNodes(graph));
+  }
+
+  private addNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertGraphOwnership(graph, [this.positions, this.output], this.id);
     const inputChunks = getRowChunks(this.positions);
     const outputChunks = getRowChunks(this.output);

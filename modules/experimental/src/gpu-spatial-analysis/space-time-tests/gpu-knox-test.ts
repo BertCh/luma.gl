@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../utils/philox-random';
 import {
   createTransientView,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,8 +13,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -28,6 +29,7 @@ import {
   getSpaceTimeGroupsPerSlot,
   getSpaceTimeShuffleWGSL,
   getSpaceTimeSummaryBodyWGSL,
+  SPACE_TIME_BATCH_PROLOGUE_WGSL,
   SPACE_TIME_MAXIMUM_PERMUTATIONS,
   SPACE_TIME_MAXIMUM_ROWS,
   SPACE_TIME_SLOT_PROLOGUE_WGSL,
@@ -37,12 +39,36 @@ import {
   getGPUSpaceTimeInferenceMetadata,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
-  type GPUSpaceTimeParameters
+  type GPUSpaceTimeSettings
 } from './space-time-parameters';
-import type {GPUInferenceMetadata} from '../contracts/index';
+import {
+  createSpaceTimeStateView,
+  createSpaceTimeStoppingNodes,
+  getSpaceTimeStoppingBatchSize,
+  type SpaceTimeBatchNodeProps,
+  validateSpaceTimeStopping
+} from './space-time-stopping';
+import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUKnoxTest';
+
+/** Caller-owned outputs of {@link GPUKnoxTest}. */
+export type GPUKnoxTestOutput = {
+  /**
+   * Caller-owned statistics, `maximumPermutations + 1` rows: element 0 is the observed Knox count,
+   * elements `1..P` the counts under permuted times (rows past `P` are 0).
+   */
+  statistics: GraphDataView<'uint32'>;
+  /** Caller-owned `GPU_SPACE_TIME_SUMMARY_LENGTH` float32 words, see `GPU_SPACE_TIME_SUMMARY`. */
+  summary: GraphDataView<'float32'>;
+  /**
+   * One uint32 word: the number of permutations used, `L` when `stopAfterExceedances` stopped the
+   * run and the permutation count `P` otherwise. Required with `stopAfterExceedances`, rejected
+   * without it.
+   */
+  permutationCount?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUKnoxTest}.
@@ -72,18 +98,28 @@ export type GPUKnoxTestProps = {
   times: GraphDataView<'float32'>;
   /**
    * Per-frame parameters: `GPU_SPACE_TIME_PARAMETER_LENGTH` uint32 words written with
-   * `getGPUSpaceTimeParameterValues` (seed, permutations, `timeThreshold`).
+   * `getGPUSpaceTimeParameterValues` (seed, permutation count, `timeThreshold`).
    */
   parameters: GraphDataView<'uint32'>;
   /** Compile-time upper bound on the per-frame permutation count, 1 to 65536. */
   maximumPermutations: number;
   /**
-   * Caller-owned statistics, `maximumPermutations + 1` rows: element 0 is the observed Knox count,
-   * elements `1..P` the counts under permuted times (rows past `P` are 0).
+   * Compile-time Besag-Clifford sequential stopping (Besag and Clifford 1991): an integer `h` in
+   * `[1, maximumPermutations]`. Omitted (the default) runs all `P` permutations, unchanged. With
+   * `h`, the run stops at the first permutation `L` whose running count of permuted counts `>=`
+   * the observed count equals `h`, and `pseudoPGreater = min(1, h / L)`; when fewer than `h`
+   * exceed in all `P`, it is the usual `(greaterCount + 1) / (P + 1)`. Permutations are evaluated
+   * in batches of 64 or more (the batch size grows so there are at most 256 batches), each batch
+   * scanned in permutation order on the GPU, so `L` and the p-value do not depend on the batch
+   * size, and a stopped run skips the remaining batches. The first `L` permutations equal those
+   * of the full run. `statistics` rows past `L` are 0 and the `summary` mean, variance, counts and
+   * z-score cover the first `L` permutations; `pseudoPLesser` and `pseudoPTwoSided` keep their
+   * fixed-`L` formulas and are not sequentially valid. Requires `output.permutationCount`, which
+   * receives `L`.
    */
-  statistics: GraphDataView<'uint32'>;
-  /** Caller-owned `GPU_SPACE_TIME_SUMMARY_LENGTH` float32 words, see `GPU_SPACE_TIME_SUMMARY`. */
-  summary: GraphDataView<'float32'>;
+  stopAfterExceedances?: number;
+  /** Caller-owned outputs. */
+  output: GPUKnoxTestOutput;
 };
 
 /**
@@ -138,9 +174,9 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     this.props = props;
     this.rows = validateGPUSpatialWeights(id, props.pairs, 'pairs');
     validatePackedView(props.times, ['float32'], `${id} times`);
-    validatePackedUint32View(props.parameters, `${id} parameters`);
-    validatePackedUint32View(props.statistics, `${id} statistics`);
-    validatePackedView(props.summary, ['float32'], `${id} summary`);
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validatePackedView(props.output.statistics, ['uint32'], `${id} output.statistics`);
+    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     if (this.rows < 2) {
       throw new Error(`${id} needs at least two rows`);
     }
@@ -149,29 +185,33 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
       throw new Error(`${id} supports at most ${SPACE_TIME_MAXIMUM_ROWS} rows`);
     }
     if (props.times.length !== this.rows) {
-      throw new Error(`${id} times length must equal the pairs row count`);
+      throw new Error(`${id} times needs one row per pairs row`);
     }
     if (props.parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters must hold ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
+      throw new Error(`${id} parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
     }
-    if (
-      !Number.isInteger(props.maximumPermutations) ||
-      props.maximumPermutations < 1 ||
-      props.maximumPermutations > SPACE_TIME_MAXIMUM_PERMUTATIONS
-    ) {
-      throw new Error(
-        `${id} maximumPermutations must be an integer in [1, ${SPACE_TIME_MAXIMUM_PERMUTATIONS}]`
-      );
+    validateCapacity(
+      id,
+      'maximumPermutations',
+      props.maximumPermutations,
+      1,
+      SPACE_TIME_MAXIMUM_PERMUTATIONS
+    );
+    if (props.output.statistics.length < props.maximumPermutations + 1) {
+      throw new Error(`${id} output.statistics needs maximumPermutations + 1 rows`);
     }
-    if (props.statistics.length < props.maximumPermutations + 1) {
-      throw new Error(`${id} statistics must hold maximumPermutations + 1 rows`);
-    }
-    if (props.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
-      throw new Error(`${id} summary must hold ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
+    validateSpaceTimeStopping(
+      id,
+      props.stopAfterExceedances,
+      props.maximumPermutations,
+      props.output.permutationCount
+    );
+    if (props.output.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
+      throw new Error(`${id} output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.statistics, props.summary],
+      [props.output.statistics, props.output.summary, props.output.permutationCount],
       [
         props.times,
         props.parameters,
@@ -180,23 +220,25 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
         props.pairs.weights
       ]
     );
-    if (props.statistics.buffer === props.summary.buffer) {
+    if (
+      props.output.statistics.buffer === props.output.summary.buffer ||
+      (props.output.permutationCount &&
+        (props.output.permutationCount.buffer === props.output.statistics.buffer ||
+          props.output.permutationCount.buffer === props.output.summary.buffer))
+    ) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
   }
 
   /**
-   * CPU-side description of how the `summary` p-values are produced, for building a legend.
-   * Alternative `'greater'`, Monte Carlo, no multiple-testing correction. Pass the per-frame
-   * `parameters` for the actual permutation count and seed; without them the count is
-   * `maximumPermutations`.
+   * CPU-side description of how the `output.summary` p-values are produced, for building a
+   * legend: alternative `'greater'`, Monte Carlo, no multiple-testing correction.
+   *
+   * @param settings The per-frame settings packed into `parameters` (validated as
+   * `getGPUSpaceTimeParameterValues` does; the count is clamped to `maximumPermutations`).
    */
-  getInferenceMetadata(parameters?: GPUSpaceTimeParameters): GPUInferenceMetadata {
-    return getGPUSpaceTimeInferenceMetadata(
-      'knox',
-      parameters?.permutations ?? this.props.maximumPermutations,
-      parameters?.seed
-    );
+  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUInferenceMetadata {
+    return getGPUSpaceTimeInferenceMetadata('knox', settings, this.props.maximumPermutations);
   }
 
   /**
@@ -207,7 +249,8 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rows} = this;
-    const {pairs, times, parameters, statistics, summary, maximumPermutations} = props;
+    const {pairs, times, parameters, maximumPermutations} = props;
+    const {statistics, summary} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       pairs.offsets,
       pairs.neighbors,
@@ -215,7 +258,8 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
       times,
       parameters,
       statistics,
-      summary
+      summary,
+      ...(props.output.permutationCount ? [props.output.permutationCount] : [])
     ]);
     const [blocks, rowsPerBlock] = getSpaceTimeBlocks(rows);
     const slotCount = maximumPermutations + 1;
@@ -223,16 +267,135 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     const common = getSpaceTimeCommonWGSL(rows, maximumPermutations, blocks, rowsPerBlock);
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
+    const stopAfterExceedances = props.stopAfterExceedances;
+    const stopping = stopAfterExceedances !== undefined;
+    // Stopping evaluates the slots in batches, so the (slot, block) table holds one batch.
+    const batchSize = getSpaceTimeStoppingBatchSize(slotCount);
+    const tableSlots = stopping ? batchSize : slotCount;
+    const state = stopping ? createSpaceTimeStateView(graph, id) : undefined;
+    const stateBindings = state
+      ? [{name: 'state', view: state, type: 'u32' as const, access: 'read' as const}]
+      : [];
+    const batchDeclarations = stopping ? `\nconst BATCH_SIZE: u32 = ${batchSize}u;` : '';
     const sortKeys = u32('sort-keys', rows);
     const sortIndices = u32('sort-indices', rows);
     const sortedKeys = u32('sorted-keys', rows);
     const sortedIndices = u32('sorted-indices', rows);
     const timeClose = u32('time-close', 2);
-    const partials = u32('partials', slotCount * blocks);
+    const partials = u32('partials', tableSlots * blocks);
     const pairPartials = u32('pair-partials', blocks);
     const pairMask = u32('pair-mask', pairs.neighbors.length);
     const orderedKeyWGSL = /* wgsl */ `
 ${GET_ORDERED_KEY_WGSL}${DECODE_ORDERED_KEY_WGSL}`;
+    const createPartialsNode = (batch?: SpaceTimeBatchNodeProps<Parameters>) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: batch?.id ?? `${id}-partials`,
+        operation: OPERATION,
+        variant: 'partials',
+        bindings: [
+          {name: 'offsets', view: pairs.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: pairs.neighbors, type: 'u32', access: 'read'},
+          {name: 'pairMask', view: pairMask, type: 'u32', access: 'read'},
+          {name: 'times', view: times, type: 'f32', access: 'read'},
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          ...stateBindings,
+          {name: 'partials', view: partials, type: 'u32', access: 'read_write'},
+          {name: 'pairPartials', view: pairPartials, type: 'u32', access: 'read_write'}
+        ],
+        condition: batch?.condition,
+        extraResources: batch?.extraResources,
+        workgroupSize: SPACE_TIME_WORKGROUP_SIZE,
+        invocationCount: tableSlots * groupsPerSlot * SPACE_TIME_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${common}
+${getSpaceTimeShuffleWGSL(blocks, PHILOX_PURPOSES.knoxTestShuffle.id)}
+const SLOT_COUNT: u32 = ${tableSlots}u;${batchDeclarations}`,
+        // A workgroup handles one permutation, so its shuffle rounds are drawn once into workgroup
+        // memory; each invocation owns one row block. Rows are interleaved across blocks
+        // (row = block + k * BLOCKS) to even out skewed row lengths. No early return: every
+        // invocation must reach the barrier. With stopping, the slot is the batch cursor (a GPU
+        // word) times the batch size plus the workgroup's slot in the batch.
+        body: `${stopping ? SPACE_TIME_BATCH_PROLOGUE_WGSL : SPACE_TIME_SLOT_PROLOGUE_WGSL}
+  var count = 0u;
+  var pairCount = 0u;
+  if (runsSlot) {
+    let threshold = readTimeThreshold();
+    for (var row = block; row < ROWS; row += BLOCKS) {
+      let time = times[timesOffset + getPermutedRow(row, slot)];
+      for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
+        let other = neighbors[neighborsOffset + entry];
+        if (pairMask[pairMaskOffset + entry] != 0u) {
+          pairCount++;
+          let otherTime = times[timesOffset + getPermutedRow(other, slot)];
+          if (abs(time - otherTime) <= threshold) {
+            count++;
+          }
+        }
+      }
+    }
+  }
+  if (block < BLOCKS) {
+    partials[partialsOffset + block * SLOT_COUNT + ${stopping ? 'localSlot' : 'slot'}] = count;
+  }
+  if (slot == 0u && block < BLOCKS) {
+    pairPartials[pairPartialsOffset + block] = pairCount;
+  }`
+      });
+    const createReduceNode = (batch?: SpaceTimeBatchNodeProps<Parameters>) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: batch?.id ?? `${id}-reduce`,
+        operation: OPERATION,
+        variant: 'reduce',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          ...stateBindings,
+          {name: 'partials', view: partials, type: 'u32', access: 'read'},
+          {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'}
+        ],
+        condition: batch?.condition,
+        extraResources: batch?.extraResources,
+        // Stopping reduces the slots of one batch; the rest of the kernel is the full-run one.
+        ...(stopping
+          ? {workgroupSize: 64, invocationCount: batchSize}
+          : {invocationCount: statistics.length}),
+        declarations: `${common}
+const SLOT_COUNT: u32 = ${tableSlots}u;${batchDeclarations}`,
+        // Adjacent invocations read adjacent slots of one block: coalesced.
+        body: stopping
+          ? `let slot = state[stateOffset] * BATCH_SIZE + index;
+  if (slot <= readPermutationCount()) {
+    var total = 0u;
+    for (var block = 0u; block < BLOCKS; block++) {
+      total += partials[partialsOffset + block * SLOT_COUNT + index];
+    }
+    statistics[statisticsOffset + slot] = total;
+  }`
+          : `var total = 0u;
+  if (index <= readPermutationCount()) {
+    for (var block = 0u; block < BLOCKS; block++) {
+      total += partials[partialsOffset + block * SLOT_COUNT + index];
+    }
+  }
+  statistics[statisticsOffset + index] = total;`
+      });
+    const stoppingNodes =
+      stopping && state
+        ? createSpaceTimeStoppingNodes<Parameters>(graph, {
+            id,
+            operation: OPERATION,
+            stopAfterExceedances,
+            slotCount,
+            groupsPerSlot,
+            workgroupSize: SPACE_TIME_WORKGROUP_SIZE,
+            statisticType: 'u32',
+            parameters,
+            statistics,
+            state,
+            common,
+            createPartialsNode,
+            createReduceNode
+          })
+        : [];
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-keys`,
@@ -273,26 +436,50 @@ ${GET_ORDERED_KEY_WGSL}${DECODE_ORDERED_KEY_WGSL}`;
           {name: 'timeClose', view: timeClose, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: rows,
+        workgroupSize: 256,
+        guardIndex: false,
+        // Each workgroup sums its lanes' counts into a workgroup 64-bit (low word, carry count)
+        // pair, then lane 0 adds that pair to the global 64-bit total: one global atomic pair per
+        // workgroup instead of one per row. Totals stay exact.
         declarations: `${orderedKeyWGSL}
-const ROWS: u32 = ${rows}u;`,
-        // Sorted ascending, so rows after `index` within the threshold form a prefix.
-        body: `let threshold = bitcast<f32>(parameters[parametersOffset + 3u]);
-  let time = decodeOrderedKey(sortedKeys[sortedKeysOffset + index]);
-  var low = index + 1u;
-  var high = ROWS;
-  while (low < high) {
-    let middle = low + (high - low) / 2u;
-    if (abs(decodeOrderedKey(sortedKeys[sortedKeysOffset + middle]) - time) <= threshold) {
-      low = middle + 1u;
-    } else {
-      high = middle;
+const ROWS: u32 = ${rows}u;
+var<workgroup> groupLow: atomic<u32>;
+var<workgroup> groupCarry: atomic<u32>;`,
+        // Sorted ascending, so rows after `index` within the threshold form a prefix. No early
+        // return: every invocation must reach the barrier.
+        body: `if (index < ROWS) {
+    let threshold = bitcast<f32>(parameters[parametersOffset + 3u]);
+    let time = decodeOrderedKey(sortedKeys[sortedKeysOffset + index]);
+    var low = index + 1u;
+    var high = ROWS;
+    while (low < high) {
+      let middle = low + (high - low) / 2u;
+      if (abs(decodeOrderedKey(sortedKeys[sortedKeysOffset + middle]) - time) <= threshold) {
+        low = middle + 1u;
+      } else {
+        high = middle;
+      }
+    }
+    let close = low - (index + 1u);
+    if (close > 0u) {
+      let previous = atomicAdd(&groupLow, close);
+      if (previous + close < previous) {
+        atomicAdd(&groupCarry, 1u);
+      }
     }
   }
-  let close = low - (index + 1u);
-  if (close > 0u) {
-    let previous = atomicAdd(&timeClose[timeCloseOffset], close);
-    if (previous + close < previous) {
-      atomicAdd(&timeClose[timeCloseOffset + 1u], 1u);
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    let groupTotal = atomicLoad(&groupLow);
+    var carries = atomicLoad(&groupCarry);
+    if (groupTotal > 0u) {
+      let previous = atomicAdd(&timeClose[timeCloseOffset], groupTotal);
+      if (previous + groupTotal < previous) {
+        carries++;
+      }
+    }
+    if (carries > 0u) {
+      atomicAdd(&timeClose[timeCloseOffset + 1u], carries);
     }
   }`
       }),
@@ -304,76 +491,7 @@ const ROWS: u32 = ${rows}u;`,
         neighbors: pairs.neighbors,
         pairMask
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-partials`,
-        operation: OPERATION,
-        variant: 'partials',
-        bindings: [
-          {name: 'offsets', view: pairs.offsets, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: pairs.neighbors, type: 'u32', access: 'read'},
-          {name: 'pairMask', view: pairMask, type: 'u32', access: 'read'},
-          {name: 'times', view: times, type: 'f32', access: 'read'},
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'partials', view: partials, type: 'u32', access: 'read_write'},
-          {name: 'pairPartials', view: pairPartials, type: 'u32', access: 'read_write'}
-        ],
-        workgroupSize: SPACE_TIME_WORKGROUP_SIZE,
-        invocationCount: slotCount * groupsPerSlot * SPACE_TIME_WORKGROUP_SIZE,
-        guardIndex: false,
-        declarations: `${common}
-${getSpaceTimeShuffleWGSL(blocks)}
-const SLOT_COUNT: u32 = ${slotCount}u;`,
-        // A workgroup handles one permutation, so its shuffle rounds are drawn once into workgroup
-        // memory; each invocation owns one row block. Rows are interleaved across blocks
-        // (row = block + k * BLOCKS) to even out skewed row lengths. No early return: every
-        // invocation must reach the barrier.
-        body: `${SPACE_TIME_SLOT_PROLOGUE_WGSL}
-  var count = 0u;
-  var pairCount = 0u;
-  if (runsSlot) {
-    let threshold = readTimeThreshold();
-    for (var row = block; row < ROWS; row += BLOCKS) {
-      let time = times[timesOffset + getPermutedRow(row, slot)];
-      for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
-        let other = neighbors[neighborsOffset + entry];
-        if (pairMask[pairMaskOffset + entry] != 0u) {
-          pairCount++;
-          let otherTime = times[timesOffset + getPermutedRow(other, slot)];
-          if (abs(time - otherTime) <= threshold) {
-            count++;
-          }
-        }
-      }
-    }
-  }
-  if (block < BLOCKS) {
-    partials[partialsOffset + block * SLOT_COUNT + slot] = count;
-  }
-  if (slot == 0u && block < BLOCKS) {
-    pairPartials[pairPartialsOffset + block] = pairCount;
-  }`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-reduce`,
-        operation: OPERATION,
-        variant: 'reduce',
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'partials', view: partials, type: 'u32', access: 'read'},
-          {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: statistics.length,
-        declarations: `${common}
-const SLOT_COUNT: u32 = ${slotCount}u;`,
-        // Adjacent invocations read adjacent slots of one block: coalesced.
-        body: `var total = 0u;
-  if (index <= readPermutationCount()) {
-    for (var block = 0u; block < BLOCKS; block++) {
-      total += partials[partialsOffset + block * SLOT_COUNT + index];
-    }
-  }
-  statistics[statisticsOffset + index] = total;`
-      }),
+      ...(stopping ? stoppingNodes : [createPartialsNode(), createReduceNode()]),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
         operation: OPERATION,
@@ -383,7 +501,18 @@ const SLOT_COUNT: u32 = ${slotCount}u;`,
           {name: 'statistics', view: statistics, type: 'u32', access: 'read'},
           {name: 'pairPartials', view: pairPartials, type: 'u32', access: 'read'},
           {name: 'timeClose', view: timeClose, type: 'u32', access: 'read'},
-          {name: 'summary', view: summary, type: 'f32', access: 'read_write'}
+          {name: 'summary', view: summary, type: 'f32', access: 'read_write'},
+          ...stateBindings,
+          ...(props.output.permutationCount
+            ? [
+                {
+                  name: 'permutationsUsed',
+                  view: props.output.permutationCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
         declarations: common,
@@ -395,7 +524,7 @@ const SLOT_COUNT: u32 = ${slotCount}u;`,
   let timeClosePairs = f32(timeClose[timeCloseOffset + 1u]) * 4294967296.0 + f32(timeClose[timeCloseOffset]);
   let allPairs = f32(ROWS) * f32(ROWS - 1u) * 0.5;
   let expected = observedPairs * timeClosePairs / allPairs;
-  ${getSpaceTimeSummaryBodyWGSL('u32')}`
+  ${getSpaceTimeSummaryBodyWGSL('u32', stopAfterExceedances)}`
       })
     ];
     return nodes;

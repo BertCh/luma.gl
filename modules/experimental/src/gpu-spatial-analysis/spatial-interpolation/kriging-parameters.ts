@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
+import {getRasterGridCorners} from './spatial-interpolation-parameters';
 import type {VariogramModelType} from '../../gpu-dataframe/pair-statistics/variogram-model';
 
 /** Number of float32 elements in a {@link GPUKriging} parameter view. */
@@ -9,8 +12,6 @@ export const GPU_KRIGING_PARAMETER_LENGTH = 12;
 
 /** Per-frame settings of {@link GPUKriging}. */
 export type GPUKrigingSettings = {
-  /** Output raster extent `[minX, minY, maxX, maxY]` in position units. Cell centers are predicted. */
-  extent: readonly [number, number, number, number];
   /** Search radius in position units. `Infinity` searches the whole index domain. */
   searchRadius: number;
   /**
@@ -42,15 +43,22 @@ const MODEL_CODES: Record<VariogramModelType, number> = {spherical: 0, exponenti
 /**
  * Packs per-frame {@link GPUKriging} parameters.
  *
- * Layout (float32): `[minX, minY, maxX, maxY, searchRadius, neighborCount, modelCode (0 spherical,
- * 1 exponential, 2 Gaussian), nugget, sill, range, minimumNeighborCount, reserved]`.
+ * Layout (float32): `[startX, startY, endX, endY, searchRadius, neighborCount, modelCode (0 spherical,
+ * 1 exponential, 2 Gaussian), nugget, sill, range, minimumNeighborCount, reserved]`. The first
+ * four values are the outer corners of the output grid in grid order: `(startX, startY)` is the
+ * outer corner of cell `(0, 0)` and `(endX, endY)` the opposite corner, so a north-up grid
+ * (`grid.affine[4] < 0`) has `endY < startY` and row 0 at the top, and a grid whose rows advance
+ * north has row 0 at `minY`.
  *
- * @param settings Extent, radius, neighborhood and variogram.
+ * @param settings Radius, neighborhood and variogram.
+ * @param grid The output grid: axis-aligned; its width and height must match the contributor's.
  * @param target Optional destination of at least 12 elements.
- * @throws If the target is too short or a setting is out of range.
+ * @throws If the grid is rotated or sheared or invalid, the target is too short, or a setting is
+ *   out of range.
  */
 export function getGPUKrigingParameterValues(
   settings: GPUKrigingSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_KRIGING_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_KRIGING_PARAMETER_LENGTH) {
@@ -77,12 +85,10 @@ export function getGPUKrigingParameterValues(
     ['neighborCount', neighborCount],
     ['minimumNeighborCount', minimumNeighborCount]
   ] as const) {
-    if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(`Kriging ${name} must be a non-negative integer`);
-    }
+    validateCapacity('Kriging', name, count, 0);
   }
   target.fill(0);
-  target.set(settings.extent, 0);
+  target.set(getRasterGridCorners('getGPUKrigingParameterValues', grid), 0);
   target[4] = settings.searchRadius;
   target[5] = neighborCount;
   target[6] = modelCode;

@@ -5,7 +5,14 @@
 export {GPUTrajectoryEncounters} from './gpu-trajectory-encounters';
 export type {
   GPUTrajectoryEncountersProps,
-  GPUTrajectoryEncounterOutput
+  GPUTrajectoryEncounterOutput,
+  GPUTrajectoryEncounterPairs
 } from './gpu-trajectory-encounters';
+export {GPUTrajectoryClosestApproach} from './gpu-trajectory-closest-approach';
+export type {
+  GPUTrajectoryClosestApproachOutput,
+  GPUTrajectoryClosestApproachPairs,
+  GPUTrajectoryClosestApproachProps
+} from './gpu-trajectory-closest-approach';
 export {addClockEncounters} from './clock-encounters';
 export type {AddClockEncountersProps, ClockEncounters} from './clock-encounters';

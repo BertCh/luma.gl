@@ -863,7 +863,8 @@ export type SegmentedReductionNodesProps = {
 /**
  * Builds `GPUSegmentedReduction` nodes, splitting the segments into chunks of at most
  * `maximumSegmentCount` because the primitive dispatches one workgroup per segment without 3D
- * folding. Chunks are sub-views of the same offset and output buffers.
+ * folding. Chunks are sub-views of the same offset and output buffers, strided in multiples of 64
+ * rows so their binding offsets are 256-byte aligned.
  *
  * @param maximumSegmentCount Normally `maxComputeWorkgroupsPerDimension`.
  * @internal
@@ -877,13 +878,14 @@ export function getSegmentedReductionNodes<Parameters>(
   if (segmentCount <= maximumSegmentCount) {
     return new GPUSegmentedReduction({...props}).getCommandNodes(graph);
   }
+  // Kernels bake each binding's `(byteOffset % 256) / 4`, so a stride of whole 64-element blocks
+  // keeps every chunk at element offset 0 and all chunks on one pipeline (library rule 12). Limits
+  // below 64 only occur in tests.
+  const chunkStride =
+    maximumSegmentCount >= 64 ? Math.floor(maximumSegmentCount / 64) * 64 : maximumSegmentCount;
   const nodes: GPUCommandNode<Parameters>[] = [];
-  for (
-    let first = 0, chunkIndex = 0;
-    first < segmentCount;
-    first += maximumSegmentCount, chunkIndex++
-  ) {
-    const length = Math.min(maximumSegmentCount, segmentCount - first);
+  for (let first = 0, chunkIndex = 0; first < segmentCount; first += chunkStride, chunkIndex++) {
+    const length = Math.min(chunkStride, segmentCount - first);
     const offsets = graph.createDataView(props.segmentOffsets.buffer, {
       format: 'uint32',
       length: length + 1,

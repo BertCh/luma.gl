@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {
   GPUCommandGraph,
@@ -10,7 +10,7 @@ import type {
   GraphResourceUse,
   GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {getViewBinding, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
+import {getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {
   assertRasterStorageBindingFits,
   getRasterDispatchSize,
@@ -26,6 +26,7 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterScalarFormat, GPURasterTextureFormat} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 /** Explicit graph-native conversion from packed raster samples into a caller-owned storage texture. */
 export type GPURasterBufferToTextureProps<
@@ -184,19 +185,21 @@ export class GPURasterBufferToTexture<
           source: this.getShaderSource(),
           shaderLayout: {bindings}
         });
+        const bindingViews: Record<string, GraphDataView> = {
+          inputValues: this.input.storage.values
+        };
+        if (this.input.validity) {
+          bindingViews['sourceValidity'] = this.input.validity;
+        }
+        if (this.outputValidity) {
+          bindingViews['outputValidity'] = this.outputValidity;
+        }
+        const bindingTextures = {outputTexture: this.output};
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews, bindingTextures);
         return {
           encode: ({computePass, getBuffer, getTextureView}) => {
-            const resolvedBindings: Record<string, Binding> = {
-              inputValues: getViewBinding(this.input.storage.values, getBuffer),
-              outputTexture: getTextureView(this.output)
-            };
-            if (this.input.validity) {
-              resolvedBindings['sourceValidity'] = getViewBinding(this.input.validity, getBuffer);
-            }
-            if (this.outputValidity) {
-              resolvedBindings['outputValidity'] = getViewBinding(this.outputValidity, getBuffer);
-            }
-            computation.setBindings(resolvedBindings);
+            const changedBindings = resolveChangedBindings(getBuffer, getTextureView);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(computePass, horizontalCount, verticalCount);
           },
           destroy: () => computation.destroy()

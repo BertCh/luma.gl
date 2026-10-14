@@ -29,9 +29,9 @@ export type GPUTemporalReductionCPUResult = {
   /** Rows per slot. */
   count: Uint32Array;
   /** Minimum value, NaN for an empty slot. */
-  min: Float32Array;
+  minimums: Float32Array;
   /** Maximum value, NaN for an empty slot. */
-  max: Float32Array;
+  maximums: Float32Array;
   /** Value at the earliest time, lowest row on ties; NaN for an empty slot. */
   first: Float32Array;
   /** Value at the latest time, lowest row on ties; NaN for an empty slot. */
@@ -65,8 +65,8 @@ export function reduceTemporalBucketsOnCPU(
   const {cellCount, bucketCount, values} = input;
   const slotCount = cellCount * bucketCount;
   const count = new Uint32Array(slotCount);
-  const min = new Float32Array(slotCount).fill(NaN);
-  const max = new Float32Array(slotCount).fill(NaN);
+  const minimums = new Float32Array(slotCount).fill(NaN);
+  const maximums = new Float32Array(slotCount).fill(NaN);
   const first = new Float32Array(slotCount).fill(NaN);
   const last = new Float32Array(slotCount).fill(NaN);
   const minKeys = new Array<number>(slotCount).fill(0xffffffff);
@@ -142,12 +142,12 @@ export function reduceTemporalBucketsOnCPU(
       continue;
     }
     occupiedSlots.push(slot);
-    min[slot] = decodeOrderedFloatKey(minKeys[slot]);
-    max[slot] = decodeOrderedFloatKey(maxKeys[slot]);
+    minimums[slot] = decodeOrderedFloatKey(minKeys[slot]);
+    maximums[slot] = decodeOrderedFloatKey(maxKeys[slot]);
     first[slot] = values[firstRows[slot]];
     last[slot] = values[lastRows[slot]];
   }
-  return {count, min, max, first, last, occupiedSlots};
+  return {count, minimums, maximums, first, last, occupiedSlots};
 }
 
 function decodeOrderedFloatKey(key: number): number {

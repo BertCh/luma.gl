@@ -4,6 +4,7 @@
 
 import type {
   GPUCommandGraph,
+  GPUCommandGraphGPUIndirectCondition,
   GPUCommandNode,
   GraphDataView,
   GraphVectorView
@@ -702,11 +703,15 @@ export function createFlowSortedGatherNode<Parameters>(
 }
 
 /**
- * Sums each stored pair's contributions with one 256-thread workgroup per table slot: a strided
+ * Sums each stored pair's contributions with one 256-thread workgroup per stored pair: a strided
  * per-thread partial sum, then a fixed binary tree (the same order as the zonal-statistics segment
  * sum). The pair's rows are the segment `[rowOffsets[r], rowOffsets[r] + rowCounts[r])` of the
  * sorted contributions, where `r` is the pair's representative row; the sum is written to
  * `rowWeights[r]`. The order depends only on those bounds, so the result is bitwise reproducible.
+ *
+ * Workgroup `w` sums the stored slot `slotsByPair[w]` (stored slots sort first). The node is
+ * dispatched indirectly by the stored-pair count (`statistics[0]` of the hash build) through
+ * `condition`, so empty table slots launch no workgroups (review B-18).
  *
  * @internal
  */
@@ -720,13 +725,22 @@ export function createFlowPairSumNode<Parameters>(
     rowOffsets: GraphDataView<'uint32'>;
     sortedContributions: GraphDataView<'float32'>;
     rowWeights: GraphDataView<'float32'>;
+    /** Table slots ordered by pair key, stored slots first. */
+    slotsByPair: GraphDataView<'uint32'>;
+    /** Hash build statistics; word 0 is the stored-pair count. */
+    statistics: GraphDataView<'uint32'>;
+    /** Indirect dispatch sized by the stored-pair count. */
+    condition: GPUCommandGraphGPUIndirectCondition;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'pair-sum',
+    condition: props.condition,
     bindings: [
+      {name: 'slotsByPair', view: props.slotsByPair, type: 'u32', access: 'read'},
+      {name: 'statistics', view: props.statistics, type: 'u32', access: 'read'},
       {name: 'tableKeys', view: props.tableKeys, type: 'u32', access: 'read'},
       {
         name: 'tableValues',
@@ -760,11 +774,12 @@ export function createFlowPairSumNode<Parameters>(
     declarations: `const INPUT_COUNT: u32 = ${props.sortedContributions.length}u;
 ${SEGMENT_PARTIAL_SUMS_WGSL}`,
     // No early return: every invocation of a workgroup must reach the barriers.
-    body: `let slot = index / ${SEGMENT_WORKGROUP_SIZE}u;
-  let isInRange = index < INVOCATION_COUNT;
+    body: `let pairIndex = index / ${SEGMENT_WORKGROUP_SIZE}u;
+  let isInRange = index < INVOCATION_COUNT && pairIndex < statistics[statisticsOffset];
   var partialSum = 0.0;
   var row = 0u;
   var isStored = false;
+  let slot = select(0u, slotsByPair[slotsByPairOffset + pairIndex], isInRange);
   if (isInRange && tableKeys[tableKeysOffset + slot] != 0xffffffffu) {
     isStored = true;
     row = tableValues[tableValuesOffset + slot];

@@ -2,34 +2,33 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral,
-  type WGSLKernelBinding
-} from '../../utils/wgsl-kernel-nodes';
-import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
-  CLASS_BREAKS_BIN_WGSL,
   CLASS_BREAKS_EXTREMES,
   CLASS_BREAKS_HEAD_TAIL,
   CLASS_BREAKS_STATE,
+  CLASS_BREAKS_STATE_LENGTH,
+  getClassBreaksDispatchWGSL,
+  getClassBreaksIndirectGate,
   getClassBreaksMomentNodes,
   getClassBreaksMomentTileCount,
-  MOMENT_STRIDE
+  MOMENT_STRIDE,
+  MOMENT_WORKGROUP_SIZE
 } from './class-breaks-kernels';
 import {
   getGPUClassBreaksParameterLength,
@@ -41,18 +40,18 @@ import {
 } from './class-breaks-parameters';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {getColumnQuantileNodes} from './column-quantiles-nodes';
+import {getNaturalBreaksNodes} from './natural-breaks-nodes';
 
 const OPERATION = 'GPUClassBreaks';
 /** Largest supported class count; the quantile pass refines at most 64 targets. */
 const MAXIMUM_CLASS_COUNT = 64;
 /** Largest row count: moment counts are f32 and quantile ranks are exact up to 2^24. */
 const MAXIMUM_ROW_COUNT = 2 ** 24;
-const DEFAULT_NATURAL_BREAKS_BIN_COUNT = 1024;
+const DEFAULT_NATURAL_BREAKS_BIN_COUNT = 2048;
 const MAXIMUM_NATURAL_BREAKS_BIN_COUNT = 2048;
 /** Quantile parameter code for linear (R-7) interpolation, as numpy and mapclassify use. */
 const LINEAR_INTERPOLATION_CODE = 3;
 const INVALID_METHOD = 0xffffffff;
-const LARGE_COST = '3.0e38';
 const CODES = GPU_CLASS_BREAKS_METHOD_CODES;
 
 /** Caller-owned outputs of {@link GPUClassBreaks}. */
@@ -106,7 +105,11 @@ export type GPUClassBreaksProps = {
    * is needed.
    */
   methods?: readonly GPUClassBreaksMethod[];
-  /** Equal-width bins of the natural-breaks histogram, 2 to 2048. Default 1024. */
+  /**
+   * Equal-width bins of the coarse natural-breaks histogram, 2 to 2048. Default 2048. More bins
+   * resolve finer structure for the coarse dynamic program; the breaks themselves are refined on
+   * the data, so the bin count only decides where that refinement starts.
+   */
   naturalBreaksBinCount?: number;
   /** Caller-owned outputs. */
   output: GPUClassBreaksOutput;
@@ -118,14 +121,17 @@ const HEAD_TAIL_BREAKS_OFFSET = 4;
 /**
  * Computes choropleth class breaks of one column on the GPU every frame, with no readback: equal
  * interval, quantile, standard deviation, head/tail, box plot, maximum breaks, natural breaks
- * (Fisher-Jenks on a binned histogram), and custom edges.
+ * (Fisher-Jenks), and custom edges.
  *
  * Methods (`n` unmasked non-NaN rows, `min`/`max` over the finite ones, `k` classes):
  * - `'equal-interval'`: `e[i] = min + ((max - min) / k) * i` in f32.
- * - `'quantile'`: `e[i]` is the linear (R-7, numpy and d3 default) quantile at `fround(i / k)`,
- *   computed exactly by `GPUColumnQuantiles` radix select. Ties may repeat edges (empty classes).
+ * - `'quantile'`: `e[i]` is the linear (R-7, numpy and d3 default) quantile of the finite values at
+ *   `fround(i / k)`, computed exactly by the `GPUColumnQuantiles` radix select and its
+ *   order-statistic policy. Ties may repeat edges (empty classes).
  * - `'standard-deviation'`: inner edges at `mean + (j - (k - 2) / 2) * interval * sd` for
- *   `j = 0..k-2`, centred on the mean (population sd, fixed-order Chan merge).
+ *   `j = 0..k-2`, centred on the mean, with the sample standard deviation `sqrt(M2 / (n - 1))`
+ *   (mapclassify `StdMean`, R classInt `'sd'`; `M2` from a fixed-order Chan merge). With
+ *   `classCount` k this is mapclassify `StdMean(multiples=[(j - (k - 2) / 2) * interval])`.
  * - `'head-tail'`: Jiang's head/tail breaks. Splits at the mean of the current head, then keeps
  *   the values above it, while the next head holds at most `headTailRatio` of the current rows, has
  *   more than one row, and fewer than `k` classes exist. Produces a data-dependent class count.
@@ -133,21 +139,35 @@ const HEAD_TAIL_BREAKS_OFFSET = 4;
  * - `'maximum-breaks'`: sorts the column, takes the `k - 1` largest gaps between consecutive
  *   distinct values (ties to the lower position), and breaks at their midpoints. Fewer classes when
  *   there are fewer distinct values.
- * - `'natural-breaks'`: exact Fisher-Jenks dynamic program over `naturalBreaksBinCount`
- *   equal-width bins of `[min, max]`, each bin weighted by its count at its centre. Breaks snap to
- *   bin edges, so the error is bounded by one bin width. Cost O(k * B^2) in parallel over bins.
+ * - `'natural-breaks'`: a histogram approximation to Fisher-Jenks (minimum within-class squared
+ *   deviation), followed by local refinement; it does not guarantee the global optimum. A
+ *   monotone divide-and-conquer dynamic program over `naturalBreaksBinCount` equal-width bins of
+ *   `[min, max]` (O(k B log B), exact 64-bit integer prefix sums, no cost table) gives the coarse
+ *   partition; red-black coordinate descent on the rows then moves every break onto the data:
+ *   each break takes the best split of the values in its two adjacent classes, in windows that
+ *   shrink around the cut until a cell is below an f32 ulp. Every inner edge is therefore an
+ *   actual data value, the smallest value of its class (mapclassify and jenkspy return the
+ *   largest value of the class below it). A class count above the number of distinct values yields one class per distinct value. The refinement is a local
+ *   search around the coarse partition: it equals the exact optimum (jenkspy, mapclassify) on 32
+ *   of the 34 reference cases. The other two require moving adjacent cuts jointly: no single-cut
+ *   move improves their cost, even with an unlimited refinement window. Their observed goodness
+ *   of variance fit gaps are 3.44e-8 and 6.95e-13; these are fixture measurements, not an error bound.
+ *   When an extreme outlier collapses the bulk of the data into one bin, the coarse stage runs again over the range of that class. Cost: the
+ *   extents pass plus two passes over the rows per round, at most eight rounds, usually two.
  * - `'custom'`: the edges from the parameter view, used as given.
  *
- * Every computed inner edge is clamped to `[min, max]`. With no finite values the class count is 0
- * and every edge is NaN; when every finite value is equal the class count is 1 (except `'custom'`).
- * Infinite values are excluded from the moments, extremes, gaps, and histogram, but take part in
- * quantiles and classify into the end classes.
+ * Every computed inner edge is clamped to `[min, max]`. With no finite values, or when any edge is
+ * NaN (only a hand-written parameter view with a NaN probability, hinge, interval or custom edge can
+ * cause that), the class count is 0 and every edge is NaN, so every row is unclassified; when every finite value is equal the class count is 1 (except `'custom'`).
+ * Infinite values are missing for every edge computation (moments, extremes, quantiles, gaps,
+ * histogram), so `e[0]` and `e[k]` bound every inner edge; they still classify into the end
+ * classes in `classCounts`.
  *
  * Determinism: extremes, quantiles, counts, histograms, and sorts are integer-exact. Moments are
- * reduced in a fixed tree order and the dynamic program runs a fixed loop per bin, so every output
+ * reduced in a fixed tree order and the natural-breaks sums are 64-bit integers, so every output
  * is bitwise identical across runs. Edges that come out of f32 arithmetic (equal interval,
- * standard deviation, box-plot whiskers, natural-breaks bin edges) may differ from a CPU f32
- * evaluation by an ulp where a driver fuses a multiply-add.
+ * standard deviation, box-plot whiskers) may differ from a CPU f32 evaluation by an ulp where a
+ * driver fuses a multiply-add.
  */
 export class GPUClassBreaks implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -156,7 +176,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
   readonly props: GPUClassBreaksProps;
   /** Compiled methods. */
   readonly methods: readonly GPUClassBreaksMethod[];
-  /** Number of equal-width bins of the natural-breaks histogram. */
+  /** Number of equal-width bins of the coarse natural-breaks histogram. */
   readonly naturalBreaksBinCount: number;
   /** Number of quantile targets refined per frame. */
   readonly quantileCount: number;
@@ -166,13 +186,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {maximumClassCount, output} = props;
-    if (
-      !Number.isInteger(maximumClassCount) ||
-      maximumClassCount < 1 ||
-      maximumClassCount > MAXIMUM_CLASS_COUNT
-    ) {
-      throw new Error(`${id} maximumClassCount must be an integer in [1, ${MAXIMUM_CLASS_COUNT}]`);
-    }
+    validateCapacity(id, 'maximumClassCount', maximumClassCount, 1, MAXIMUM_CLASS_COUNT);
     this.methods = [...new Set(props.methods ?? GPU_CLASS_BREAKS_METHODS)];
     if (this.methods.length === 0) {
       throw new Error(`${id} needs at least one method`);
@@ -189,35 +203,19 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       throw new Error(`${id} box-plot needs maximumClassCount of at least 6`);
     }
     this.naturalBreaksBinCount = props.naturalBreaksBinCount ?? DEFAULT_NATURAL_BREAKS_BIN_COUNT;
-    if (
-      !Number.isInteger(this.naturalBreaksBinCount) ||
-      this.naturalBreaksBinCount < 2 ||
-      this.naturalBreaksBinCount > MAXIMUM_NATURAL_BREAKS_BIN_COUNT
-    ) {
-      throw new Error(
-        `${id} naturalBreaksBinCount must be an integer in [2, ${MAXIMUM_NATURAL_BREAKS_BIN_COUNT}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'naturalBreaksBinCount',
+      this.naturalBreaksBinCount,
+      2,
+      MAXIMUM_NATURAL_BREAKS_BIN_COUNT
+    );
     this.quantileCount = Math.max(maximumClassCount - 1, 3);
-    for (const [name, view] of [
-      ['values', props.values],
-      ['mask', props.mask],
-      ['parameters', props.parameters],
-      ['output.breaks', output.breaks],
-      ['output.classCount', output.classCount],
-      ['output.classCounts', output.classCounts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
     const rowCount = props.values.length;
-    if (rowCount < 1 || rowCount > MAXIMUM_ROW_COUNT) {
-      throw new Error(`${id} values must hold between 1 and 2^24 rows`);
-    }
+    validateCapacity(id, 'values length', rowCount, 1, MAXIMUM_ROW_COUNT);
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rowCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -231,12 +229,12 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     if (output.breaks.length < maximumClassCount + 1) {
       throw new Error(`${id} output.breaks must hold maximumClassCount + 1 rows`);
     }
-    validatePackedUint32View(output.classCount, `${id} output.classCount`);
+    validatePackedView(output.classCount, ['uint32'], `${id} output.classCount`);
     if (output.classCount.length < 1) {
       throw new Error(`${id} output.classCount must hold one row`);
     }
     if (output.classCounts) {
-      validatePackedUint32View(output.classCounts, `${id} output.classCounts`);
+      validatePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
       if (output.classCounts.length < maximumClassCount) {
         throw new Error(`${id} output.classCounts must hold maximumClassCount rows`);
       }
@@ -290,7 +288,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     const maskBinding = mask ? [read('rowMask', mask, 'u32')] : [];
     const maskTest = mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true';
 
-    const state = u32('state', 2);
+    const state = u32('state', CLASS_BREAKS_STATE_LENGTH);
     const extremes = u32('extremes', 4);
     const edges = f32('edges', maximumClassCount + 1);
     const edgeState = u32('edge-state', 1);
@@ -300,7 +298,9 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       : undefined;
     const quantileValues = usesQuantiles ? f32('quantile-values', quantileCount) : undefined;
     const usesMoments = usesStandardDeviation || usesHeadTail;
-    const momentSlotCount = (usesHeadTail ? headTailRounds : 0) + 1;
+    // Slot 0 holds the current head/tail round (consumed by its split kernel before the next round
+    // overwrites it); the last slot holds the standard-deviation moments.
+    const momentSlotCount = (usesHeadTail ? 1 : 0) + 1;
     const moments = usesMoments ? f32('moments', momentSlotCount * MOMENT_STRIDE) : undefined;
     const partials = usesMoments
       ? f32('moment-partials', getClassBreaksMomentTileCount(rowCount) * MOMENT_STRIDE)
@@ -310,6 +310,35 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     const headTail = usesHeadTail
       ? u32('head-tail', HEAD_TAIL_BREAKS_OFFSET + Math.max(headTailRounds, 1))
       : undefined;
+    // Indirect dispatch triples of the head/tail moment kernels: slot 0 the tile kernel, slot 1
+    // the merge kernel. Prepare arms them for the head/tail method and a split kernel disarms them
+    // once the run is done, so the remaining rounds launch nothing (rule 13).
+    const headTailDispatch = usesHeadTail
+      ? createTransientView(
+          graph,
+          `${id}-head-tail-dispatch`,
+          'uint32',
+          6,
+          Buffer.STORAGE | Buffer.INDIRECT
+        )
+      : undefined;
+    const headTailDispatchWGSL = (activeExpression: string) =>
+      [
+        getClassBreaksDispatchWGSL(graph, {
+          operation: OPERATION,
+          slot: 0,
+          invocationCount: getClassBreaksMomentTileCount(rowCount) * MOMENT_WORKGROUP_SIZE,
+          workgroupSize: MOMENT_WORKGROUP_SIZE,
+          activeExpression
+        }),
+        getClassBreaksDispatchWGSL(graph, {
+          operation: OPERATION,
+          slot: 1,
+          invocationCount: MOMENT_WORKGROUP_SIZE,
+          workgroupSize: MOMENT_WORKGROUP_SIZE,
+          activeExpression
+        })
+      ].join('\n  ');
     const compiledMask = methods.reduce((bits, method) => bits | (1 << CODES[method]), 0);
     const methodRead = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u]`;
     const classCountRead = `state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]`;
@@ -345,7 +374,8 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
             write('quantileParameters', quantileParameters, 'f32')
           ]
         : []),
-      ...(headTail ? [write('headTail', headTail)] : [])
+      ...(headTail ? [write('headTail', headTail)] : []),
+      ...(headTailDispatch ? [write('dispatch', headTailDispatch)] : [])
     ];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -376,6 +406,10 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
   }
   state[stateOffset + ${CLASS_BREAKS_STATE.method}u] = method;
   state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u] = classCount;
+  state[stateOffset + ${CLASS_BREAKS_STATE.layerCursor}u] = 0u;
+  state[stateOffset + ${CLASS_BREAKS_STATE.refinementCursor}u] = 0u;
+  state[stateOffset + ${CLASS_BREAKS_STATE.refinementMoved}u] = 0u;
+  state[stateOffset + ${CLASS_BREAKS_STATE.refinementDone}u] = 0u;
   extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u] = 0xffffffffu;
   extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u] = 0u;
   extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.validCount}u] = 0u;
@@ -398,7 +432,8 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
       ? `headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.done}u] = 0u;
   headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.breakCount}u] = 0u;
   headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.thresholdKey}u] = 0u;
-  headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.previousCount}u] = 0u;`
+  headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.previousCount}u] = 0u;
+  ${headTailDispatchWGSL(`method == ${CODES['head-tail']}u`)}`
       : ''
   }`
       })
@@ -465,36 +500,44 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
       );
     }
 
-    // 5. Head/tail rounds: the mean of the current head, then a one-thread split decision.
-    if (moments && partials && headTail) {
+    // 5. Head/tail rounds: the mean of the current head, then a one-thread split decision. Every
+    // round compiles to the same three pipelines: the round index lives in the head/tail state
+    // (rule 12), and the split kernel disarms the moment kernels' dispatch once done (rule 13).
+    if (moments && partials && headTail && headTailDispatch) {
       for (let round = 0; round < headTailRounds; round++) {
+        const roundId = `${id}-head-tail-${round}`;
         nodes.push(
           ...getClassBreaksMomentNodes<Parameters>(graph, {
-            id: `${id}-head-tail-${round}`,
+            id: roundId,
             operation: OPERATION,
             values,
             mask,
             state,
             partials,
             moments,
-            slot: round,
-            gate: {kind: 'head-tail', methodCode: CODES['head-tail'], headTail, round}
+            slot: 0,
+            gate: {kind: 'head-tail', methodCode: CODES['head-tail'], headTail},
+            indirectGates: {
+              tile: getClassBreaksIndirectGate<Parameters>(`${roundId}-tile`, headTailDispatch, 0),
+              merge: getClassBreaksIndirectGate<Parameters>(`${roundId}-merge`, headTailDispatch, 1)
+            }
           })
         );
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
-            id: `${id}-head-tail-${round}-split`,
+            id: `${roundId}-split`,
             operation: OPERATION,
             variant: 'head-tail-split',
             bindings: [
               read('params', parameters, 'f32'),
               read('state', state, 'u32'),
               read('moments', moments, 'f32'),
-              write('headTail', headTail)
+              write('headTail', headTail),
+              write('dispatch', headTailDispatch)
             ],
             invocationCount: 1,
             declarations: COLUMN_ORDERED_KEY_WGSL,
-            body: headTailSplitBody(round, methodRead, classCountRead)
+            body: headTailSplitBody(methodRead, classCountRead, headTailDispatchWGSL('false'))
           })
         );
       }
@@ -505,9 +548,22 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
       nodes.push(...this.getMaximumBreaksNodes(graph, {values, state, extremes, edges, edgeState}));
     }
 
-    // 7. Natural breaks: histogram, class cost matrix, dynamic program, backtrack.
+    // 7. Natural breaks: histogram, prefix sums, monotone dynamic program, refinement.
     if (has('natural-breaks')) {
-      nodes.push(...this.getNaturalBreaksNodes(graph, {values, state, extremes, edges, edgeState}));
+      nodes.push(
+        ...getNaturalBreaksNodes<Parameters>(graph, {
+          id,
+          operation: OPERATION,
+          values,
+          mask,
+          state,
+          extremes,
+          edges,
+          edgeState,
+          maximumClassCount,
+          binCount: this.naturalBreaksBinCount
+        })
+      );
     }
 
     // 8. Closed-form edges for equal interval, quantile, standard deviation, box plot, custom.
@@ -570,6 +626,15 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
     classes = 1u;
   }
   classes = min(classes, MAXIMUM_CLASS_COUNT);
+  // A NaN edge (a hand-written parameter view with a NaN probability, hinge, interval or custom
+  // edge) makes the classification undefined: report 0 classes and NaN edges, the no-data result,
+  // instead of clamping NaN to an end edge and assigning a silent wrong class.
+  for (var edge = 0u; edge <= classes; edge = edge + 1u) {
+    let isComputedEnd = !isCustom && (edge == 0u || edge == classes);
+    if (!isComputedEnd && isNanBits(edges[edgesOffset + edge])) {
+      classes = 0u;
+    }
+  }
   let nan = getNaN();
   for (var edge = 0u; edge <= MAXIMUM_CLASS_COUNT; edge = edge + 1u) {
     var value = nan;
@@ -691,7 +756,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
       ? `if (method == ${CODES['standard-deviation']}u) {
     let count = moments[momentsOffset + ${momentBase}u];
     let mean = moments[momentsOffset + ${momentBase + 1}u];
-    let deviation = sqrt(moments[momentsOffset + ${momentBase + 2}u] / max(count, 1.0));
+    // Sample standard deviation (n - 1), as mapclassify StdMean and R classInt 'sd'.
+    let deviation = sqrt(moments[momentsOffset + ${momentBase + 2}u] / max(count - 1.0, 1.0));
     let interval = params[paramsOffset + 2u] * deviation;
     let center = f32(classCount - 2u) * 0.5;
     for (var edge = 1u; edge < classCount; edge = edge + 1u) {
@@ -877,254 +943,43 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
     );
     return nodes;
   }
-
-  /** Fisher-Jenks over an equal-width histogram. */
-  private getNaturalBreaksNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>,
-    shared: {
-      /** The float32 view of the values (converted when the column is integer). */
-      values: GraphDataView<'float32'>;
-      state: GraphDataView<'uint32'>;
-      extremes: GraphDataView<'uint32'>;
-      edges: GraphDataView<'float32'>;
-      edgeState: GraphDataView<'uint32'>;
-    }
-  ): GPUCommandNode<Parameters>[] {
-    const {id, props, naturalBreaksBinCount: binCount} = this;
-    const {values} = shared;
-    const {mask, maximumClassCount} = props;
-    const rowCount = values.length;
-    const prefix = `${id}-natural-breaks`;
-    const histogram = createTransientView(graph, `${prefix}-histogram`, 'uint32', binCount);
-    const costs = createTransientView(
-      graph,
-      `${prefix}-class-costs`,
-      'float32',
-      binCount * binCount
-    );
-    const totals = createTransientView(
-      graph,
-      `${prefix}-totals`,
-      'float32',
-      maximumClassCount * binCount
-    );
-    const starts = createTransientView(
-      graph,
-      `${prefix}-starts`,
-      'uint32',
-      maximumClassCount * binCount
-    );
-    const stateRead = {name: 'state', view: shared.state, type: 'u32', access: 'read'} as const;
-    const gate = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u] != ${CODES['natural-breaks']}u`;
-    const binDeclarations = `${COLUMN_ORDERED_KEY_WGSL}
-const BIN_COUNT: u32 = ${binCount}u;
-const INVERSE_BIN_COUNT: f32 = ${getWGSLFloatLiteral(1 / binCount)};
-${CLASS_BREAKS_BIN_WGSL}`;
-    const extremesRead = `let minimum = decodeOrderedKey(extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u]);
-  let maximum = decodeOrderedKey(extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u]);
-  let width = (maximum - minimum) * INVERSE_BIN_COUNT;`;
-    const nodes: GPUCommandNode<Parameters>[] = [];
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${prefix}-clear`,
-        operation: OPERATION,
-        variant: 'natural-breaks-clear',
-        bindings: [
-          stateRead,
-          {name: 'histogram', view: histogram, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: binCount,
-        body: `if (${gate}) {
-    return;
-  }
-  histogram[histogramOffset + index] = 0u;`
-      })
-    );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${prefix}-histogram`,
-        operation: OPERATION,
-        variant: 'natural-breaks-histogram',
-        bindings: [
-          {name: 'values', view: values, type: 'f32', access: 'read'},
-          ...(mask ? [{name: 'rowMask', view: mask, type: 'u32', access: 'read'} as const] : []),
-          stateRead,
-          {name: 'extremes', view: shared.extremes, type: 'u32', access: 'read'},
-          {name: 'histogram', view: histogram, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: rowCount,
-        declarations: binDeclarations,
-        body: `if (${gate}) {
-    return;
-  }
-  let value = values[valuesOffset + index];
-  if ((bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u) {
-    return;
-  }
-  ${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
-  ${extremesRead}
-  var bin = 0u;
-  if (width > 0.0) {
-    bin = getBinIndex(value, minimum, width);
-  }
-  atomicAdd(&histogram[histogramOffset + bin], 1u);`
-      })
-    );
-    // Class cost of bins [start, end]: weighted sum of squared deviations of bin centres, by a
-    // weighted Welford update in a fixed loop per start bin. Bin indices stand in for centres,
-    // since the dynamic program is invariant to the affine map from bin index to value.
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${prefix}-class-costs`,
-        operation: OPERATION,
-        variant: 'natural-breaks-class-costs',
-        bindings: [
-          stateRead,
-          {name: 'histogram', view: histogram, type: 'u32', access: 'read'},
-          {name: 'costs', view: costs, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: binCount,
-        declarations: `const BIN_COUNT: u32 = ${binCount}u;`,
-        body: `if (${gate}) {
-    return;
-  }
-  let start = index;
-  var weight = 0.0;
-  var mean = 0.0;
-  var squares = 0.0;
-  for (var end = start; end < BIN_COUNT; end = end + 1u) {
-    let count = f32(histogram[histogramOffset + end]);
-    if (count > 0.0) {
-      let center = f32(end);
-      let total = weight + count;
-      let delta = center - mean;
-      mean = mean + delta * (count / total);
-      squares = squares + count * delta * (center - mean);
-      weight = total;
-    }
-    costs[costsOffset + start * BIN_COUNT + end] = squares;
-  }`
-      })
-    );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${prefix}-layer-0`,
-        operation: OPERATION,
-        variant: 'natural-breaks-layer',
-        bindings: [
-          stateRead,
-          {name: 'costs', view: costs, type: 'f32', access: 'read'},
-          {name: 'totals', view: totals, type: 'f32', access: 'read_write'},
-          {name: 'starts', view: starts, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: binCount,
-        declarations: `const BIN_COUNT: u32 = ${binCount}u;`,
-        body: `if (${gate}) {
-    return;
-  }
-  totals[totalsOffset + index] = costs[costsOffset + index];
-  starts[startsOffset + index] = 0u;`
-      })
-    );
-    // Layer c: the best split of bins [0, end] into c + 1 classes. Ties keep the lowest start.
-    for (let layer = 1; layer < maximumClassCount; layer++) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${prefix}-layer-${layer}`,
-          operation: OPERATION,
-          variant: 'natural-breaks-layer',
-          bindings: [
-            stateRead,
-            {name: 'costs', view: costs, type: 'f32', access: 'read'},
-            {name: 'totals', view: totals, type: 'f32', access: 'read_write'},
-            {name: 'starts', view: starts, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: binCount,
-          declarations: `const BIN_COUNT: u32 = ${binCount}u;
-const LAYER: u32 = ${layer}u;`,
-          body: `if (${gate} || LAYER >= state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]) {
-    return;
-  }
-  let end = index;
-  var best = ${LARGE_COST};
-  var bestStart = LAYER;
-  for (var start = LAYER; start <= end; start = start + 1u) {
-    let candidate = totals[totalsOffset + (LAYER - 1u) * BIN_COUNT + start - 1u] + costs[costsOffset + start * BIN_COUNT + end];
-    if (candidate < best) {
-      best = candidate;
-      bestStart = start;
-    }
-  }
-  totals[totalsOffset + LAYER * BIN_COUNT + end] = best;
-  starts[startsOffset + LAYER * BIN_COUNT + end] = bestStart;`
-        })
-      );
-    }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${prefix}-backtrack`,
-        operation: OPERATION,
-        variant: 'natural-breaks-backtrack',
-        bindings: [
-          stateRead,
-          {name: 'extremes', view: shared.extremes, type: 'u32', access: 'read'},
-          {name: 'starts', view: starts, type: 'u32', access: 'read'},
-          {name: 'edges', view: shared.edges, type: 'f32', access: 'read_write'},
-          {name: 'edgeState', view: shared.edgeState, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: binDeclarations,
-        body: `if (${gate}) {
-    return;
-  }
-  ${extremesRead}
-  let classCount = min(state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u], BIN_COUNT);
-  var end = BIN_COUNT - 1u;
-  for (var layer = classCount - 1u; layer > 0u; layer = layer - 1u) {
-    let start = starts[startsOffset + layer * BIN_COUNT + end];
-    // The class starting at bin 'start' begins at that bin's lower edge.
-    edges[edgesOffset + layer] = minimum + f32(start) * width;
-    end = start - 1u;
-  }
-  edgeState[edgeStateOffset] = classCount;`
-      })
-    );
-    return nodes;
-  }
 }
 
-/** One head/tail split decision for `round`: take the mean of the current head as a break. */
-function headTailSplitBody(round: number, methodRead: string, classCountRead: string): string {
-  const base = round * MOMENT_STRIDE;
-  const done = `headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.done}u]`;
+/**
+ * One head/tail split decision: take the mean of the current head as a break. The round is the
+ * break count so far (equal to the round index while the run is not done), so every round shares
+ * one pipeline. Stopping disarms the moment kernels of the remaining rounds.
+ */
+function headTailSplitBody(methodRead: string, classCountRead: string, disarmWGSL: string): string {
+  const word = (name: keyof typeof CLASS_BREAKS_HEAD_TAIL) =>
+    `headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL[name]}u]`;
+  const done = word('done');
   return `if (${methodRead} != ${CODES['head-tail']}u || ${done} != 0u) {
     return;
   }
-  let count = moments[momentsOffset + ${base}u];
-  let mean = moments[momentsOffset + ${base + 1}u];
-  let minimum = moments[momentsOffset + ${base + 3}u];
-  let maximum = moments[momentsOffset + ${base + 4}u];
+  let round = ${word('breakCount')};
+  let count = moments[momentsOffset];
+  let mean = moments[momentsOffset + 1u];
+  let minimum = moments[momentsOffset + 3u];
+  let maximum = moments[momentsOffset + 4u];
   var ratio = params[paramsOffset + 3u];
   if (!(ratio >= 0.0)) {
     ratio = 0.4;
   }
   // At most k - 1 breaks; stop on an empty or single-valued head.
-  if (${round}u + 1u >= ${classCountRead} || count < 1.0 || !(minimum < maximum)) {
+  var stop = round + 1u >= ${classCountRead} || count < 1.0 || !(minimum < maximum);
+  if (!stop && round > 0u) {
+    let previousCount = bitcast<f32>(${word('previousCount')});
+    // The head kept from the previous split must be a minority (the 40% rule).
+    stop = count > ratio * previousCount || count <= 1.0;
+  }
+  if (stop) {
     ${done} = 1u;
+    ${disarmWGSL}
     return;
   }
-  ${
-    round > 0
-      ? `let previousCount = bitcast<f32>(headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.previousCount}u]);
-  // The head kept from the previous split must be a minority (the 40% rule).
-  if (count > ratio * previousCount || count <= 1.0) {
-    ${done} = 1u;
-    return;
-  }`
-      : ''
-  }
-  headTail[headTailOffset + ${HEAD_TAIL_BREAKS_OFFSET + round}u] = bitcast<u32>(mean);
-  headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.breakCount}u] = ${round + 1}u;
-  headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.thresholdKey}u] = getOrderedKey(mean);
-  headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.previousCount}u] = bitcast<u32>(count);`;
+  headTail[headTailOffset + ${HEAD_TAIL_BREAKS_OFFSET}u + round] = bitcast<u32>(mean);
+  ${word('breakCount')} = round + 1u;
+  ${word('thresholdKey')} = getOrderedKey(mean);
+  ${word('previousCount')} = bitcast<u32>(count);`;
 }

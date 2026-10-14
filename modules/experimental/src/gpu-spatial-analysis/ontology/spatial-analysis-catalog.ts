@@ -18,6 +18,23 @@ const OPPORTUNITY = 'opportunity' as const;
  */
 const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
   {
+    id: 'terrain-peak-prominence',
+    title: 'Terrain peak prominence',
+    status: AVAILABLE,
+    domain: 'topology',
+    stage: 'analyze',
+    summary:
+      'Computes eight-connected upper-excursion-set prominence, key saddles and elder peaks.',
+    inputs: ['surface'],
+    outputs: ['surface', 'attributes'],
+    coordinateModels: ['grid'],
+    outputBound: 'source-sized',
+    operators: ['GPUTerrainPeakProminence'],
+    relatedCapabilities: ['group-and-regional-analysis'],
+    limitation:
+      'Closed boundary; nodata is a barrier. Higher peaks win, then lowest cell index. Component elders have infinite prominence. GPU execution and timing validation are pending.'
+  },
+  {
     id: 'dynamic-parameters',
     title: 'Dynamic graph parameters',
     status: AVAILABLE,
@@ -357,6 +374,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     outputBound: 'capacity-bounded',
     operators: [
       'GPUSpatialClustering',
+      'GPUHierarchicalDensityClustering',
       'GPUKMeans',
       'GPUSpatialWeightsMinimumSpanningTree',
       'GPUSkaterRegions',
@@ -492,6 +510,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
       'GPUTrajectoryResample',
       'GPUZoneEvents',
       'GPUTrajectoryEncounters',
+      'GPUTrajectoryClosestApproach',
       'GPUTrackSimilarity',
       'addClockEncounters'
     ],
@@ -521,7 +540,6 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     operators: [
       'addChangeOfSupportRecipe',
       'addClusterAndOutlineRecipe',
-      'addDriveTimeCatchmentRecipe',
       'addFleetDwellRecipe',
       'addFleetDwellZoneEventsRecipe',
       'addHotSpotAnalysisRecipe',
@@ -675,6 +693,12 @@ const CAPABILITY_EVIDENCE: Readonly<Record<string, GPUSpatialAnalysisCapabilityE
     dispatch: 'multi-pass',
     correctnessOracle:
       'modules/experimental/test/gpu-spatial-analysis/grid-generators/grid-generator-oracle.ts'
+  },
+  'terrain-peak-prominence': {
+    representativeSourceRows: 1400,
+    transientMemory: 'linear-source',
+    dispatch: 'bounded-iterative',
+    correctnessOracle: 'modules/experimental/test/oracles/terrain-peak-prominence.json'
   },
   'geometry-validation': {
     representativeSourceRows: 100_000,

@@ -6,25 +6,66 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
+  type GPUBVH,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUBoundedResultStatusPort, GPUPolygonGeometryPort} from '../contracts/index';
+import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
 import {
-  GPULineNoding,
-  GPU_TOPOLOGY_NONE,
-  type GPUNodedSegmentPort
-} from '../geometry-topology/index';
-import {GPUSegmentRingAssembly} from '../ring-assembly/index';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+  getNextPowerOfTwo,
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import type {
+  GPUBoundedResultStatusPort,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
+import {GPU_TOPOLOGY_NONE} from '../geometry-topology/index';
+import {
+  GPUSnapRoundedNoding,
+  getGPUSnapRoundedNodingMaximumVertexCount,
+  type GPUSnapRoundedSegmentPort
+} from '../geometry-topology/gpu-snap-rounded-noding';
+import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
+import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
+import {GPUSegmentRingAssembly} from '../../analysis-core/ring-assembly/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  createPointerJumpNodes,
+  getFaceRayShootBodyWGSL,
+  getFaceRayShootDeclarationsWGSL,
+  getInsideWindingWGSL,
+  getPointerJumpRoundCount
+} from './overlay-face-labelling-wgsl';
 
 const OPERATION = 'GPUPolygonOverlay';
+
+/** Bits of a sorted lattice coordinate: lattice values are at most 2^22 + 1, the sentinel 2^23 - 1. */
+const LATTICE_KEY_BITS = 23;
+
+/** `readLattice(row)`: the canonical `vec4f(lo, hi)` of a sorted piece row. Needs a `sortedLattice` binding. */
+const READ_LATTICE_WGSL = /* wgsl */ `
+fn readLattice(row: u32) -> vec4f {
+  let base = sortedLatticeOffset + row * 4u;
+  return vec4f(sortedLattice[base], sortedLattice[base + 1u], sortedLattice[base + 2u], sortedLattice[base + 3u]);
+}`;
+
+/** Value step of a pointer-jump chain: the parent's contribution (`COMPONENTS` words per group). */
+const JUMP_INIT_BODY_WGSL = `let parent = parents[parentsOffset + index];
+  for (var component = 0u; component < COMPONENTS; component++) {
+    var value = 0u;
+    if (parent != NO_GROUP) { value = delta[deltaOffset + parent * COMPONENTS + component]; }
+    values[valuesOffset + index * COMPONENTS + component] = value;
+  }`;
 
 const FILL_RULES: readonly GPUPolygonOverlayFillRule[] = [
   'even-odd',
@@ -42,24 +83,26 @@ export type GPUPolygonOverlayOperation =
   | 'dissolve';
 
 /**
- * Rule that decides whether a probe point is inside an operand.
+ * Rule that decides whether a point is inside one polygon of an operand, from the winding number
+ * `w` of all rings of that polygon about the point (counter-clockwise rings count +1, clockwise
+ * rings -1). A point is inside the operand when it is inside any of its polygons.
  *
- * - `'even-odd'` (default): a polygon contains the points inside its first (shell) ring and outside
- *   every other ring of the same polygon, using crossing parity per ring. This is the OGC
- *   shell-and-holes reading of valid polygons.
- * - `'positive'`, `'negative'` and `'nonzero'`: a point is inside when the signed sum of the
- *   winding numbers of ALL rings of one polygon is greater than, less than, or different from zero
- *   (counter-clockwise rings count +1, clockwise rings -1, computed with exact orientation and the
- *   same half-open crossing rule as the parity test, so the rules agree on parity). A point is
- *   inside the operand when it is inside any polygon. Use them for raw, self-overlapping boundaries
- *   such as offset curves, where regions covered twice must stay inside (`'even-odd'` would carve
- *   them out as holes).
+ * - `'even-odd'` (default): `w` is odd. For valid polygons this is the OGC shell-and-holes reading;
+ *   it differs only for holes outside their shell or overlapping holes.
+ * - `'positive'`, `'negative'` and `'nonzero'`: `w > 0`, `w < 0` or `w != 0`. Use them for raw,
+ *   self-overlapping boundaries such as offset curves, where regions covered twice must stay inside
+ *   (`'even-odd'` would carve them out as holes).
  */
 export type GPUPolygonOverlayFillRule = 'even-odd' | 'positive' | 'negative' | 'nonzero';
 
 /** Explicit capacities for the bounded arrangement built by {@link GPUPolygonOverlay}. */
 export type GPUPolygonOverlayCapacity = {
-  /** Segment-intersection events retained while noding both operands. */
+  /**
+   * Crossings retained while noding both operands (each becomes a hot pixel). Both operands
+   * together have at most {@link getGPUSegmentIntersectionMaximumVertexCount} vertex rows plus
+   * one per ring, and those rows plus this capacity at most a quarter of that count (four diagonal
+   * vertices per hot pixel share one segment table), 1048576 on a default device.
+   */
   intersections: number;
   /** Atomic segments retained after noding. */
   nodedSegments: number;
@@ -80,20 +123,25 @@ export type GPUPolygonOverlayBoundaryPort = {
 
 /** Canonical, capacity-bounded polygon result of {@link GPUPolygonOverlay}. */
 export type GPUPolygonOverlayOutput = {
-  geometry: Omit<GPUPolygonGeometryPort, 'positions' | 'sourceIds'> & {
-    positions: GraphDataView<'float32x2'>;
+  geometry: GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
     sourceIds: GraphDataView<'uint32'>;
   };
-  sourceIds: GraphDataView<'uint32'>;
   status: GPUBoundedResultStatusPort & {
     requiredCount: GraphDataView<'uint32'>;
     candidateOverflow: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row count of segment pairs the intersection predicates could not certify.
+     * They set `overflow` whether or not this view is given.
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
+    /** Optional unclamped noded-piece requirement; exact when candidateOverflow is zero. */
+    nodedSegmentRequiredCount?: GraphDataView<'uint32'>;
   };
   boundary: GPUPolygonOverlayBoundaryPort;
 };
 
-type PackedPolygons = Omit<GPUPolygonGeometryPort, 'positions' | 'sourceIds'> & {
-  positions: GraphDataView<'float32x2'>;
+type PackedPolygons = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
+  /** Optional source feature ID per feature. */
   sourceIds?: GraphDataView<'uint32'>;
 };
 
@@ -117,10 +165,16 @@ export type GPUPolygonOverlayProps = {
    */
   fillRule?: GPUPolygonOverlayFillRule;
   capacity: GPUPolygonOverlayCapacity;
-  /** Chebyshev vertex identity tolerance for noding and ring assembly. */
+  /**
+   * Snap grid of the overlay. Every vertex and every crossing is rounded to a lattice of step
+   * `cell`, the smallest power of two that is at least `vertexTolerance` and at least 2^-22 of the
+   * input extent (the larger of the x and y extents of the finite vertices), anchored at a multiple
+   * of `cell` (a power-of-two `vertexTolerance` therefore reproduces shapely `grid_size`
+   * exactly). The result lies on that lattice: its vertices are lattice points, and edges closer
+   * than one cell collapse or merge. Finite and positive.
+   */
   vertexTolerance: number;
   output: GPUPolygonOverlayOutput;
-  uncertainCount?: GraphDataView<'uint32'>;
   spatialSort?: boolean;
   leafCapacity?: number;
 };
@@ -160,26 +214,41 @@ function validateStatus(id: string, name: string, status: GPUPolygonOverlayOutpu
 }
 
 /**
- * General polygon Boolean overlay over a bounded planar arrangement.
+ * General polygon Boolean overlay over a snap-rounded planar arrangement.
  *
- * Both operand boundaries are noded together. Each atomic segment samples the Boolean result on
- * its two sides; a segment is retained exactly when the result changes across it and is oriented
- * with the retained surface on its left. Ring assembly then produces compact GeoArrow-style
- * polygons, including holes. `dissolve` applies the same boundary rule to the union of `left`, so
- * shared and overlapping internal boundaries disappear rather than being returned as masked faces.
+ * Both operands are noded together by snap rounding (`GPUSnapRoundedNoding`): vertices and
+ * crossings are rounded to the lattice described at `vertexTolerance`, and every edge is rerouted
+ * through the hot pixels it passes, so the pieces meet only at shared lattice vertices and
+ * coincident pieces are bit-identical. Faces are then labelled by winding number, not by testing
+ * each piece against every ring: coincident pieces form groups, one ray toward +x per group finds
+ * the nearest group to its right (exact predicates on the lattice, BVH walk), and pointer jumping
+ * along those parents sums the winding of each polygon (level 1) and the number of covering
+ * polygons of each operand (level 2) beside every group. A group is kept when the Boolean result
+ * differs across it, oriented with the retained surface on its left. Ring assembly matches
+ * vertices exactly on the lattice and produces compact GeoArrow-style polygons, including holes.
+ * `dissolve` applies the same rule to the union of `left`, so shared and overlapping internal
+ * boundaries disappear.
  *
  * Operand membership uses the `fillRule` (default even-odd shells and holes; `'positive'`,
- * `'negative'` and `'nonzero'` use exact winding numbers and keep regions a raw boundary covers
- * twice, which `GPUBufferSurface` relies on).
+ * `'negative'` and `'nonzero'` keep regions a raw boundary covers twice, which `GPUBufferSurface`
+ * relies on). When rounding makes an operand invalid (for example, retraced spikes), this winding
+ * rule on the snap-rounded linework still defines the result; GEOS polygon overlay on invalid
+ * operands need not agree.
  *
  * Output and arrangement capacities are explicit. `candidateOverflow` means noding was incomplete;
- * `overflow` additionally covers boundary, ring or vertex capacity. Boundary provenance remains
- * aligned with the compact selected edge list. Coordinates and side tests use f32; exact-or-
- * uncertain segment predicates are inherited from `GPULineNoding`.
+ * `overflow` additionally covers boundary, ring or vertex capacity, non-finite vertices and pairs
+ * the exact predicates could not certify. Boundary provenance is one row per group of coincident
+ * pieces, from the first piece of the group in lattice order, and remains aligned with the compact
+ * selected edge list. Results are exact on the lattice: no node drift, no f32 crossing points.
+ * For valid pointwise lattice-rounded operands, the result equals GEOS OverlayNG with `grid_size`
+ * applied to those operands (shapely on `set_precision` inputs).
  *
  * `output.status.requiredCount` is the unclamped number of rings (shells plus holes) the assembly
  * needed, so callers can size the ring capacity of `output.geometry`;
- * `output.boundary.status.requiredCount` is the unclamped selected-edge count.
+ * `output.boundary.status.requiredCount` is the unclamped selected-edge count. Optional
+ * `output.status.nodedSegmentRequiredCount` reports the noder's unclamped piece requirement.
+ * When boundary overflow is zero, positions need at most selected edges plus required rings
+ * (one closing vertex per ring). Candidate overflow must be resolved before trusting the plan.
  */
 export class GPUPolygonOverlay implements GPUCommandNodeProducer {
   readonly id: string;
@@ -214,20 +283,15 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
       throw new Error(`${id} vertexTolerance must be finite and positive`);
     }
     for (const [name, value] of Object.entries(props.capacity)) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} capacity.${name} must be a positive integer`);
-      }
+      validateCapacity(id, `capacity.${name}`, value);
     }
     validatePolygons(id, 'output.geometry', output.geometry);
-    validatePackedUint32View(output.sourceIds, `${id} output.sourceIds`);
-    if (output.geometry.sourceIds !== output.sourceIds) {
-      throw new Error(`${id} output.geometry.sourceIds and output.sourceIds must be the same view`);
-    }
+    validatePackedUint32View(output.geometry.sourceIds, `${id} output.geometry.sourceIds`);
     const ringCapacity = output.geometry.ringOffsets.length - 1;
     if (
       output.geometry.polygonOffsets.length !== ringCapacity + 1 ||
       output.geometry.featureOffsets.length !== ringCapacity + 1 ||
-      output.sourceIds.length !== ringCapacity
+      output.geometry.sourceIds.length !== ringCapacity
     ) {
       throw new Error(`${id} output polygon offsets and source IDs must share one ring capacity`);
     }
@@ -266,14 +330,33 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
       output.geometry.featureOffsets,
       output.geometry.polygonOffsets,
       output.geometry.ringOffsets,
-      output.sourceIds,
+      output.geometry.sourceIds,
       output.boundary.endpoints,
       output.boundary.operandIds,
       output.boundary.sourceFeatureIds,
       ...Object.values(output.boundary.status),
-      ...Object.values(output.status),
-      props.uncertainCount
+      ...Object.values(output.status)
     ]);
+    // The operands are noded together as open lines, one repeated first vertex per ring, in one
+    // segment table and one piece table.
+    const operandRingCount =
+      props.left.ringOffsets.length - 1 + (props.right ? props.right.ringOffsets.length - 1 : 0);
+    validateMaximumCount(
+      id,
+      'left + right positions rows + rings',
+      props.left.positions.length + (props.right?.positions.length ?? 0) + operandRingCount,
+      getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+    );
+    // Snap rounding keeps four diagonal vertices per hot pixel (a vertex or a crossing).
+    validateMaximumCount(
+      id,
+      'left + right positions rows + rings + capacity.intersections',
+      props.left.positions.length +
+        (props.right?.positions.length ?? 0) +
+        operandRingCount +
+        props.capacity.intersections,
+      getGPUSnapRoundedNodingMaximumVertexCount(graph.device, 0)
+    );
 
     const rightVertexCount = right?.positions.length ?? 0;
     const leftRingCount = left.ringOffsets.length - 1;
@@ -444,10 +527,55 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
       })
     );
     nodes.push(combinePositionsNode);
+    // Global polygon index of every combined ring (left polygons, then right polygons offset by the
+    // left count). Separate from `combine-topology`, which already binds eight storage buffers.
+    const ringPolygons = createTransientView(
+      graph,
+      `${id}-ring-polygons`,
+      'uint32',
+      combinedRingCount
+    );
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-ring-polygons`,
+        operation: OPERATION,
+        variant: 'ring-polygons',
+        bindings: [
+          {name: 'leftPolygonOffsets', view: left.polygonOffsets, type: 'u32', access: 'read'},
+          ...(right
+            ? [
+                {
+                  name: 'rightPolygonOffsets',
+                  view: right.polygonOffsets,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          {name: 'ringPolygons', view: ringPolygons, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: combinedRingCount,
+        declarations: `const LEFT_RING_COUNT: u32 = ${leftRingCount}u;
+const LEFT_POLYGON_COUNT: u32 = ${left.polygonOffsets.length - 1}u;
+const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u;`,
+        body: `let fromLeft = index < LEFT_RING_COUNT;
+  let ring = select(index - LEFT_RING_COUNT, index, fromLeft);
+  var polygon = 0u;
+  var high = select(RIGHT_POLYGON_COUNT, LEFT_POLYGON_COUNT, fromLeft);
+  while (polygon + 1u < high) {
+    let middle = (polygon + high) / 2u;
+    var start = 0u;
+    if (fromLeft) { start = leftPolygonOffsets[leftPolygonOffsetsOffset + middle]; }
+    ${right ? 'else { start = rightPolygonOffsets[rightPolygonOffsetsOffset + middle]; }' : ''}
+    if (start <= ring) { polygon = middle; } else { high = middle; }
+  }
+  ringPolygons[ringPolygonsOffset + index] = polygon + select(LEFT_POLYGON_COUNT, 0u, fromLeft);`
+      })
+    );
 
     const noded = this._createNodedPort(graph);
     nodes.push(
-      ...new GPULineNoding({
+      ...new GPUSnapRoundedNoding({
         id: `${id}-noding`,
         spatialContext: this.spatialContext,
         lines: {
@@ -457,162 +585,504 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
           sourceIds: combinedSources
         },
         intersectionCapacity: props.capacity.intersections,
-        output: noded,
-        uncertainCount: props.uncertainCount,
+        gridSize: props.vertexTolerance,
+        output: {
+          ...noded,
+          status: {...noded.status, uncertainCount: output.status.uncertainCount}
+        },
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity
       }).getCommandNodes(graph)
     );
 
-    const selected = createTransientView(
-      graph,
-      `${id}-selected`,
-      'uint32',
-      props.capacity.nodedSegments
+    // ---- Face labelling on the lattice arrangement (see overlay-face-labelling-wgsl.ts). ----
+    const capacity = props.capacity.nodedSegments;
+    const transient = <Format extends 'uint32' | 'float32' | 'float32x2' | 'float32x4'>(
+      name: string,
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `${id}-${name}`, format, length);
+    const kernel = (
+      variant: string,
+      bindings: readonly WGSLKernelBinding[],
+      invocationCount: number,
+      body: string,
+      declarations?: string
+    ) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-${variant}`,
+        operation: OPERATION,
+        variant,
+        bindings,
+        invocationCount,
+        declarations,
+        body
+      });
+    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32' | 'i32' = 'u32') =>
+      ({name, view, type, access: 'read'}) as const;
+    const write = (name: string, view: GraphDataView, type: 'u32' | 'f32' | 'i32' = 'u32') =>
+      ({name, view, type, access: 'read_write'}) as const;
+
+    // 1. Canonical lattice pieces: lo -> hi in (y, x) order, direction sign, identity rows.
+    const pieceLattice = transient('piece-lattice', 'float32x4', capacity);
+    const pieceSigma = transient('piece-sigma', 'uint32', capacity);
+    const identity = transient('piece-identity', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'piece-canonical',
+        [
+          read('segmentCount', noded.status.count),
+          read('latticeEndpoints', noded.latticeEndpoints, 'f32'),
+          write('pieceLattice', pieceLattice, 'f32'),
+          write('pieceSigma', pieceSigma),
+          write('identity', identity)
+        ],
+        capacity,
+        `identity[identityOffset + index] = index;
+  var lattice = vec4f(-1.0);
+  var sigma = 0u;
+  if (index < min(segmentCount[segmentCountOffset], CAPACITY)) {
+    let base = latticeEndpointsOffset + index * 4u;
+    let first = vec2f(latticeEndpoints[base], latticeEndpoints[base + 1u]);
+    let second = vec2f(latticeEndpoints[base + 2u], latticeEndpoints[base + 3u]);
+    // Lattice values are finite integers >= 0; non-finite or collapsed pieces carry no boundary.
+    if (first.x >= 0.0 && first.y >= 0.0 && second.x >= 0.0 && second.y >= 0.0 && any(first != second)) {
+      let firstIsLow = first.y < second.y || (first.y == second.y && first.x < second.x);
+      lattice = select(vec4f(second, first), vec4f(first, second), firstIsLow);
+      // +1 when the piece runs lo -> hi, -1 (as a wrapping u32) otherwise.
+      sigma = select(0xffffffffu, 1u, firstIsLow);
+    }
+  }
+  let output = pieceLatticeOffset + index * 4u;
+  pieceLattice[output] = lattice.x;
+  pieceLattice[output + 1u] = lattice.y;
+  pieceLattice[output + 2u] = lattice.z;
+  pieceLattice[output + 3u] = lattice.w;
+  pieceSigma[pieceSigmaOffset + index] = sigma;`,
+        `const CAPACITY: u32 = ${capacity}u;`
+      )
     );
-    const orientations = createTransientView(
-      graph,
-      `${id}-orientations`,
-      'uint32',
-      props.capacity.nodedSegments
+
+    // 2. Sort keys: (loY, loX, hiY, hiX, polygon); collapsed pieces sort last (loY sentinel).
+    const keyLowY = transient('key-low-y', 'uint32', capacity);
+    const keyLowX = transient('key-low-x', 'uint32', capacity);
+    const keyHighY = transient('key-high-y', 'uint32', capacity);
+    const keyHighX = transient('key-high-x', 'uint32', capacity);
+    const keyPolygon = transient('key-polygon', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'piece-keys',
+        [
+          read('pieceLattice', pieceLattice, 'f32'),
+          read('sourceRingIds', noded.sourceRingIds),
+          read('ringPolygons', ringPolygons),
+          write('keyLowY', keyLowY),
+          write('keyLowX', keyLowX),
+          write('keyHighY', keyHighY),
+          write('keyHighX', keyHighX),
+          write('keyPolygon', keyPolygon)
+        ],
+        capacity,
+        `let base = pieceLatticeOffset + index * 4u;
+  let lattice = vec4f(pieceLattice[base], pieceLattice[base + 1u], pieceLattice[base + 2u], pieceLattice[base + 3u]);
+  var lowY = KEY_SENTINEL;
+  var lowX = 0u;
+  var highY = 0u;
+  var highX = 0u;
+  var polygon = 0u;
+  if (lattice.x >= 0.0) {
+    lowY = u32(lattice.y);
+    lowX = u32(lattice.x);
+    highY = u32(lattice.w);
+    highX = u32(lattice.z);
+    let ring = sourceRingIds[sourceRingIdsOffset + index];
+    if (ring < RING_COUNT) { polygon = ringPolygons[ringPolygonsOffset + ring]; }
+  }
+  keyLowY[keyLowYOffset + index] = lowY;
+  keyLowX[keyLowXOffset + index] = lowX;
+  keyHighY[keyHighYOffset + index] = highY;
+  keyHighX[keyHighXOffset + index] = highX;
+  keyPolygon[keyPolygonOffset + index] = polygon;`,
+        `const RING_COUNT: u32 = ${combinedRingCount}u;
+// Above every lattice value (at most 2^22 + 1), within the 23 sorted bits.
+const KEY_SENTINEL: u32 = 0x7fffffu;`
+      )
     );
-    const selectionScan = createTransientView(
-      graph,
-      `${id}-selection-scan`,
-      'uint32',
-      props.capacity.nodedSegments
+    const polygonCount =
+      left.polygonOffsets.length - 1 + (right ? right.polygonOffsets.length - 1 : 0);
+    const sorted = createStableLexicographicIndexSortNodes<Parameters>(graph, {
+      id: `${id}-piece-sort`,
+      operation: OPERATION,
+      indices: identity,
+      keys: [
+        {view: keyLowY, keyBits: LATTICE_KEY_BITS},
+        {view: keyLowX, keyBits: LATTICE_KEY_BITS},
+        {view: keyHighY, keyBits: LATTICE_KEY_BITS},
+        {view: keyHighX, keyBits: LATTICE_KEY_BITS},
+        {
+          view: keyPolygon,
+          keyBits: Math.min(31, Math.max(1, Math.ceil(Math.log2(polygonCount + 1))))
+        }
+      ]
+    });
+    nodes.push(...sorted.nodes);
+
+    // 3. Pieces in group order.
+    const sortedLattice = transient('sorted-lattice', 'float32x4', capacity);
+    const sortedSigma = transient('sorted-sigma', 'uint32', capacity);
+    const sortedPolygon = transient('sorted-polygon', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'sort-gather',
+        [
+          read('sortedIndices', sorted.sortedIndices),
+          read('pieceLattice', pieceLattice, 'f32'),
+          read('pieceSigma', pieceSigma),
+          read('keyPolygon', keyPolygon),
+          write('sortedLattice', sortedLattice, 'f32'),
+          write('sortedSigma', sortedSigma),
+          write('sortedPolygon', sortedPolygon)
+        ],
+        capacity,
+        `let piece = min(sortedIndices[sortedIndicesOffset + index], CAPACITY - 1u);
+  for (var component = 0u; component < 4u; component++) {
+    sortedLattice[sortedLatticeOffset + index * 4u + component] = pieceLattice[pieceLatticeOffset + piece * 4u + component];
+  }
+  sortedSigma[sortedSigmaOffset + index] = pieceSigma[pieceSigmaOffset + piece];
+  sortedPolygon[sortedPolygonOffset + index] = keyPolygon[keyPolygonOffset + piece];`,
+        `const CAPACITY: u32 = ${capacity}u;`
+      )
     );
-    const leftMembership = createTransientView(
-      graph,
-      `${id}-left-membership`,
-      'uint32',
-      props.capacity.nodedSegments
+
+    // 4. Group boundaries: level 1 = (lo, hi, polygon) runs, level 2 = (lo, hi) runs.
+    const flagsOne = transient('flags-one', 'uint32', capacity);
+    const flagsTwo = transient('flags-two', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'group-flags',
+        [
+          read('sortedLattice', sortedLattice, 'f32'),
+          read('sortedPolygon', sortedPolygon),
+          write('flagsOne', flagsOne),
+          write('flagsTwo', flagsTwo)
+        ],
+        capacity,
+        `let current = readLattice(index);
+  var one = 0u;
+  var two = 0u;
+  if (current.x >= 0.0) {
+    if (index == 0u) {
+      one = 1u;
+      two = 1u;
+    } else {
+      let differs = any(readLattice(index - 1u) != current);
+      two = select(0u, 1u, differs);
+      one = select(0u, 1u, differs || sortedPolygon[sortedPolygonOffset + index - 1u] != sortedPolygon[sortedPolygonOffset + index]);
+    }
+  }
+  flagsOne[flagsOneOffset + index] = one;
+  flagsTwo[flagsTwoOffset + index] = two;`,
+        READ_LATTICE_WGSL
+      )
     );
-    const rightMembership = right
-      ? createTransientView(graph, `${id}-right-membership`, 'uint32', props.capacity.nodedSegments)
-      : undefined;
-    // Per-ring [minY, maxY] extents let the membership ray cast skip rings a probe cannot cross.
-    const leftRingBounds = createTransientView(
-      graph,
-      `${id}-left-ring-bounds`,
-      'float32',
-      leftRingCount * 2
-    );
-    nodes.push(this._createRingBoundsNode(graph, 'left', left, leftRingBounds, leftRingCount));
-    let rightRingBounds: GraphDataView<'float32'> | undefined;
-    if (right) {
-      rightRingBounds = createTransientView(
-        graph,
-        `${id}-right-ring-bounds`,
-        'float32',
-        rightRingCount * 2
-      );
+    const ordinalsOne = transient('ordinals-one', 'uint32', capacity);
+    const ordinalsTwo = transient('ordinals-two', 'uint32', capacity);
+    const sigmaPrefix = transient('sigma-prefix', 'uint32', capacity);
+    for (const [name, input, scanOutput] of [
+      ['ordinals-one', flagsOne, ordinalsOne],
+      ['ordinals-two', flagsTwo, ordinalsTwo],
+      ['sigma-prefix', sortedSigma, sigmaPrefix]
+    ] as const) {
       nodes.push(
-        this._createRingBoundsNode(graph, 'right', right, rightRingBounds, rightRingCount)
+        ...new GPUScan({
+          id: `${id}-${name}`,
+          input,
+          output: scanOutput,
+          mode: 'inclusive'
+        }).getCommandNodes(graph)
       );
     }
+    const counts = transient('group-counts', 'uint32', 2);
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-left-membership`,
-        operation: OPERATION,
-        variant: 'left-membership',
-        bindings: [
-          {name: 'segmentCount', view: noded.status.count, type: 'u32', access: 'read'},
-          {name: 'endpoints', view: noded.endpoints, type: 'f32', access: 'read'},
-          {name: 'positions', view: left.positions, type: 'f32', access: 'read'},
-          {name: 'polygonOffsets', view: left.polygonOffsets, type: 'u32', access: 'read'},
-          {name: 'ringOffsets', view: left.ringOffsets, type: 'u32', access: 'read'},
-          {name: 'ringBounds', view: leftRingBounds, type: 'f32', access: 'read'},
-          {name: 'membership', view: leftMembership, type: 'u32', access: 'read_write'}
+      kernel(
+        'group-counts',
+        [
+          read('ordinalsOne', ordinalsOne),
+          read('ordinalsTwo', ordinalsTwo),
+          write('counts', counts)
         ],
-        invocationCount: props.capacity.nodedSegments,
-        declarations: this._getMembershipWGSL(left.polygonOffsets.length - 1, this.fillRule),
-        body: `var value = 0u;
-  if (index < segmentCount[segmentCountOffset]) {
-    let base = endpointsOffset + index * 4u;
-    let a = vec2f(endpoints[base], endpoints[base + 1u]);
-    let b = vec2f(endpoints[base + 2u], endpoints[base + 3u]);
-    let delta = b - a;
-    let length = max(length(delta), ${getWGSLFloatLiteral(props.vertexTolerance)});
-    let normal = vec2f(-delta.y, delta.x) / length;
-    let probeDistance = max(${getWGSLFloatLiteral(props.vertexTolerance * 0.25)}, length * 1e-6);
-    let midpoint = 0.5 * (a + b);
-    let leftProbe = midpoint + normal * probeDistance;
-    let rightProbe = midpoint - normal * probeDistance;
-    value = select(0u, 1u, insidePolygons(leftProbe)) |
-      select(0u, 2u, insidePolygons(rightProbe));
-  }
-  membership[membershipOffset + index] = value;`
-      })
+        1,
+        `counts[countsOffset] = ordinalsOne[ordinalsOneOffset + ${capacity - 1}u];
+  counts[countsOffset + 1u] = ordinalsTwo[ordinalsTwoOffset + ${capacity - 1}u];`
+      )
     );
-    if (right && rightMembership && rightRingBounds) {
+    const headsOne = transient('heads-one', 'uint32', capacity);
+    const headsTwo = transient('heads-two', 'uint32', capacity);
+    const firstOne = transient('first-one', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'group-heads',
+        [
+          read('flagsOne', flagsOne),
+          read('flagsTwo', flagsTwo),
+          read('ordinalsOne', ordinalsOne),
+          read('ordinalsTwo', ordinalsTwo),
+          write('headsOne', headsOne),
+          write('headsTwo', headsTwo),
+          write('firstOne', firstOne)
+        ],
+        capacity,
+        `if (flagsOne[flagsOneOffset + index] != 0u) {
+    headsOne[headsOneOffset + ordinalsOne[ordinalsOneOffset + index] - 1u] = index;
+  }
+  if (flagsTwo[flagsTwoOffset + index] != 0u) {
+    let group = ordinalsTwo[ordinalsTwoOffset + index] - 1u;
+    headsTwo[headsTwoOffset + group] = index;
+    firstOne[firstOneOffset + group] = ordinalsOne[ordinalsOneOffset + index] - 1u;
+  }`
+      )
+    );
+
+    // 5. Group tables: lattice edge, BVH bounds, and for level 1 polygon and winding step.
+    const buildGroupTable = (level: 1 | 2, heads: GraphDataView<'uint32'>) => {
+      const groupLattice = transient(`group-lattice-${level}`, 'float32x4', capacity);
+      const minima = transient(`group-minima-${level}`, 'float32x2', capacity);
+      const maxima = transient(`group-maxima-${level}`, 'float32x2', capacity);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-right-membership`,
-          operation: OPERATION,
-          variant: 'right-membership',
-          bindings: [
-            {name: 'segmentCount', view: noded.status.count, type: 'u32', access: 'read'},
-            {name: 'endpoints', view: noded.endpoints, type: 'f32', access: 'read'},
-            {name: 'positions', view: right.positions, type: 'f32', access: 'read'},
-            {name: 'polygonOffsets', view: right.polygonOffsets, type: 'u32', access: 'read'},
-            {name: 'ringOffsets', view: right.ringOffsets, type: 'u32', access: 'read'},
-            {name: 'ringBounds', view: rightRingBounds, type: 'f32', access: 'read'},
-            {name: 'membership', view: rightMembership, type: 'u32', access: 'read_write'}
+        kernel(
+          `group-lattice-${level}`,
+          [
+            read('counts', counts),
+            read('heads', heads),
+            read('sortedLattice', sortedLattice, 'f32'),
+            write('groupLattice', groupLattice, 'f32'),
+            write('minima', minima, 'f32'),
+            write('maxima', maxima, 'f32')
           ],
-          invocationCount: props.capacity.nodedSegments,
-          declarations: this._getMembershipWGSL(right.polygonOffsets.length - 1, this.fillRule),
-          body: `var value = 0u;
-  if (index < segmentCount[segmentCountOffset]) {
-    let base = endpointsOffset + index * 4u;
-    let a = vec2f(endpoints[base], endpoints[base + 1u]);
-    let b = vec2f(endpoints[base + 2u], endpoints[base + 3u]);
-    let delta = b - a;
-    let length = max(length(delta), ${getWGSLFloatLiteral(props.vertexTolerance)});
-    let normal = vec2f(-delta.y, delta.x) / length;
-    let probeDistance = max(${getWGSLFloatLiteral(props.vertexTolerance * 0.25)}, length * 1e-6);
-    let midpoint = 0.5 * (a + b);
-    value = select(0u, 1u, insidePolygons(midpoint + normal * probeDistance)) |
-      select(0u, 2u, insidePolygons(midpoint - normal * probeDistance));
+          capacity,
+          `var edge = vec4f(0.0);
+  var minimum = vec2f(FAR, FAR);
+  var maximum = vec2f(-FAR, -FAR);
+  if (index < counts[countsOffset + ${level - 1}u]) {
+    edge = readLattice(heads[headsOffset + index]);
+    minimum = vec2f(min(edge.x, edge.z), edge.y);
+    maximum = vec2f(max(edge.x, edge.z), edge.w);
   }
-  membership[membershipOffset + index] = value;`
-        })
+  for (var component = 0u; component < 4u; component++) {
+    groupLattice[groupLatticeOffset + index * 4u + component] = edge[component];
+  }
+  minima[minimaOffset + index * 2u] = minimum.x;
+  minima[minimaOffset + index * 2u + 1u] = minimum.y;
+  maxima[maximaOffset + index * 2u] = maximum.x;
+  maxima[maximaOffset + index * 2u + 1u] = maximum.y;`,
+          `const FAR: f32 = 3.0e38;
+${READ_LATTICE_WGSL}`
+        )
+      );
+      // An inverted box (minimum > maximum) is skipped by the BVH build and the ray walk.
+      const {bvh, nodes: bvhNodes} = getSegmentBVHNodes(graph, {
+        id: `${id}-group-bvh-${level}`,
+        operation: OPERATION,
+        minima,
+        maxima,
+        leafCapacity: Math.max(2, getNextPowerOfTwo(capacity)),
+        spatialSort: false
+      });
+      nodes.push(...bvhNodes);
+      return {groupLattice, bvh};
+    };
+    const levelOne = buildGroupTable(1, headsOne);
+    const groupPolygons = transient('group-polygons', 'uint32', capacity);
+    const groupDelta = transient('group-delta', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'group-winding-steps',
+        [
+          read('counts', counts),
+          read('heads', headsOne),
+          read('sigmaPrefix', sigmaPrefix),
+          read('sortedPolygon', sortedPolygon),
+          write('groupPolygons', groupPolygons),
+          write('groupDelta', groupDelta)
+        ],
+        capacity,
+        `var polygon = 0u;
+  var delta = 0u;
+  let groupCount = counts[countsOffset];
+  if (index < groupCount) {
+    let start = heads[headsOffset + index];
+    var end = ${capacity}u;
+    if (index + 1u < groupCount) { end = heads[headsOffset + index + 1u]; }
+    // Sum of the direction signs over the run, from the prefix sums (wrapping, so exact as i32).
+    var before = 0u;
+    if (start > 0u) { before = sigmaPrefix[sigmaPrefixOffset + start - 1u]; }
+    delta = sigmaPrefix[sigmaPrefixOffset + end - 1u] - before;
+    polygon = sortedPolygon[sortedPolygonOffset + start];
+  }
+  groupPolygons[groupPolygonsOffset + index] = polygon;
+  groupDelta[groupDeltaOffset + index] = delta;`
+      )
+    );
+
+    // 6. Level 1: winding of each polygon beside its own edges.
+    const parentsOne = transient('parents-one', 'uint32', capacity);
+    const valuesOne = transient('values-one', 'uint32', capacity);
+    nodes.push(
+      this._createRayShootNode(graph, 1, levelOne, counts, groupPolygons, parentsOne),
+      kernel(
+        'jump-init-1',
+        [read('parents', parentsOne), read('delta', groupDelta), write('values', valuesOne)],
+        capacity,
+        JUMP_INIT_BODY_WGSL.replaceAll('COMPONENTS', '1u'),
+        'const NO_GROUP: u32 = 0xffffffffu;'
+      )
+    );
+    const jumpOne = createPointerJumpNodes<Parameters>(graph, {
+      id: `${id}-jump-1`,
+      operation: OPERATION,
+      parents: parentsOne,
+      values: valuesOne,
+      componentCount: 1,
+      rounds: getPointerJumpRoundCount(capacity)
+    });
+    nodes.push(...jumpOne.nodes);
+
+    // 7. Coverage change across each level-2 group, per operand.
+    const coverageA = transient('coverage-a', 'uint32', capacity);
+    const coverageB = transient('coverage-b', 'uint32', capacity);
+    const leftPolygonCount = left.polygonOffsets.length - 1;
+    nodes.push(
+      kernel(
+        'group-coverage',
+        [
+          read('counts', counts),
+          read('groupPolygons', groupPolygons),
+          read('groupDelta', groupDelta, 'i32'),
+          read('windings', jumpOne.values, 'i32'),
+          write('coverageA', coverageA, 'i32'),
+          write('coverageB', coverageB, 'i32')
+        ],
+        capacity,
+        `var changeA = 0;
+  var changeB = 0;
+  if (index < counts[countsOffset]) {
+    let right = windings[windingsOffset + index];
+    let left = right + groupDelta[groupDeltaOffset + index];
+    let change = select(0, 1, insideWinding(left)) - select(0, 1, insideWinding(right));
+    if (groupPolygons[groupPolygonsOffset + index] < LEFT_POLYGON_COUNT) { changeA = change; } else { changeB = change; }
+  }
+  coverageA[coverageAOffset + index] = changeA;
+  coverageB[coverageBOffset + index] = changeB;`,
+        `const LEFT_POLYGON_COUNT: u32 = ${leftPolygonCount}u;
+${getInsideWindingWGSL(this.fillRule)}`
+      )
+    );
+    const coveragePrefixA = transient('coverage-prefix-a', 'uint32', capacity);
+    const coveragePrefixB = transient('coverage-prefix-b', 'uint32', capacity);
+    for (const [name, input, scanOutput] of [
+      ['coverage-prefix-a', coverageA, coveragePrefixA],
+      ['coverage-prefix-b', coverageB, coveragePrefixB]
+    ] as const) {
+      nodes.push(
+        ...new GPUScan({
+          id: `${id}-${name}`,
+          input,
+          output: scanOutput,
+          mode: 'inclusive'
+        }).getCommandNodes(graph)
       );
     }
+    const groupCoverageDelta = transient('group-coverage-delta', 'uint32', 2 * capacity);
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-classify-boundary`,
-        operation: OPERATION,
-        variant: props.operation,
-        bindings: [
-          {name: 'leftMembership', view: leftMembership, type: 'u32', access: 'read'},
-          ...(rightMembership
-            ? [
-                {
-                  name: 'rightMembership',
-                  view: rightMembership,
-                  type: 'u32' as const,
-                  access: 'read' as const
-                }
-              ]
-            : []),
-          {name: 'selected', view: selected, type: 'u32', access: 'read_write'},
-          {name: 'orientations', view: orientations, type: 'u32', access: 'read_write'}
+      kernel(
+        'group-coverage-delta',
+        [
+          read('counts', counts),
+          read('firstOne', firstOne),
+          read('prefixA', coveragePrefixA),
+          read('prefixB', coveragePrefixB),
+          write('coverageDelta', groupCoverageDelta)
         ],
-        invocationCount: props.capacity.nodedSegments,
-        body: `let leftBits = leftMembership[leftMembershipOffset + index];
-  let rightBits = ${rightMembership ? 'rightMembership[rightMembershipOffset + index]' : '0u'};
-  let leftA = (leftBits & 1u) != 0u;
-  let rightA = (leftBits & 2u) != 0u;
-  let leftB = (rightBits & 1u) != 0u;
-  let rightB = (rightBits & 2u) != 0u;
-  let leftResult = ${this._getOperationExpression('leftA', 'leftB')};
-  let rightResult = ${this._getOperationExpression('rightA', 'rightB')};
-  let keep = leftResult != rightResult;
-  let reverse = keep && rightResult;
+        capacity,
+        `var deltaA = 0u;
+  var deltaB = 0u;
+  if (index < counts[countsOffset + 1u]) {
+    let first = firstOne[firstOneOffset + index];
+    var end = counts[countsOffset];
+    if (index + 1u < counts[countsOffset + 1u]) { end = firstOne[firstOneOffset + index + 1u]; }
+    var beforeA = 0u;
+    var beforeB = 0u;
+    if (first > 0u) {
+      beforeA = prefixA[prefixAOffset + first - 1u];
+      beforeB = prefixB[prefixBOffset + first - 1u];
+    }
+    deltaA = prefixA[prefixAOffset + end - 1u] - beforeA;
+    deltaB = prefixB[prefixBOffset + end - 1u] - beforeB;
+  }
+  coverageDelta[coverageDeltaOffset + index * 2u] = deltaA;
+  coverageDelta[coverageDeltaOffset + index * 2u + 1u] = deltaB;`
+      )
+    );
+
+    // 8. Level 2: coverage count of each operand beside every edge group.
+    const levelTwo = buildGroupTable(2, headsTwo);
+    const parentsTwo = transient('parents-two', 'uint32', capacity);
+    const valuesTwo = transient('values-two', 'uint32', 2 * capacity);
+    nodes.push(
+      this._createRayShootNode(graph, 2, levelTwo, counts, undefined, parentsTwo),
+      kernel(
+        'jump-init-2',
+        [
+          read('parents', parentsTwo),
+          read('delta', groupCoverageDelta),
+          write('values', valuesTwo)
+        ],
+        capacity,
+        JUMP_INIT_BODY_WGSL.replaceAll('COMPONENTS', '2u'),
+        'const NO_GROUP: u32 = 0xffffffffu;'
+      )
+    );
+    const jumpTwo = createPointerJumpNodes<Parameters>(graph, {
+      id: `${id}-jump-2`,
+      operation: OPERATION,
+      parents: parentsTwo,
+      values: valuesTwo,
+      componentCount: 2,
+      rounds: getPointerJumpRoundCount(capacity)
+    });
+    nodes.push(...jumpTwo.nodes);
+
+    // 9. Classification: keep a group when the Boolean result differs across it.
+    const selected = transient('selected', 'uint32', capacity);
+    const orientations = transient('orientations', 'uint32', capacity);
+    const selectionScan = transient('selection-scan', 'uint32', capacity);
+    nodes.push(
+      kernel(
+        'classify-boundary',
+        [
+          read('counts', counts),
+          read('rightCoverage', jumpTwo.values, 'i32'),
+          read('coverageDelta', groupCoverageDelta, 'i32'),
+          write('selected', selected),
+          write('orientations', orientations)
+        ],
+        capacity,
+        `var keep = false;
+  var reverse = false;
+  if (index < counts[countsOffset + 1u]) {
+    let rightA = rightCoverage[rightCoverageOffset + index * 2u];
+    let rightB = rightCoverage[rightCoverageOffset + index * 2u + 1u];
+    let leftA = rightA + coverageDelta[coverageDeltaOffset + index * 2u];
+    let leftB = rightB + coverageDelta[coverageDeltaOffset + index * 2u + 1u];
+    let leftResult = ${this._getOperationExpression('(leftA > 0)', '(leftB > 0)')};
+    let rightResult = ${this._getOperationExpression('(rightA > 0)', '(rightB > 0)')};
+    keep = leftResult != rightResult;
+    // The edge runs lo -> hi with its left side on the left: flip it when the result is on the right.
+    reverse = keep && rightResult;
+  }
   selected[selectedOffset + index] = select(0u, 1u, keep);
   orientations[orientationsOffset + index] = select(0u, 1u, reverse);`
-      }),
+      ),
       ...new GPUScan({
         id: `${id}-selection-scan`,
         input: selected,
@@ -622,261 +1092,242 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
     );
 
     const boundary = output.boundary;
-    const boundaryGroups = createTransientView(
-      graph,
-      `${id}-boundary-groups`,
-      'uint32',
-      boundary.endpoints.length
-    );
+    const boundaryGroups = transient('boundary-groups', 'uint32', boundary.endpoints.length);
+    const latticeBoundary = transient('lattice-boundary', 'float32x4', boundary.endpoints.length);
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-emit-boundary`,
-        operation: OPERATION,
-        variant: 'emit-boundary',
-        bindings: [
-          {name: 'selected', view: selected, type: 'u32', access: 'read'},
-          {name: 'scan', view: selectionScan, type: 'u32', access: 'read'},
-          {name: 'orientations', view: orientations, type: 'u32', access: 'read'},
-          {name: 'sourceEndpoints', view: noded.endpoints, type: 'f32', access: 'read'},
-          {name: 'endpoints', view: boundary.endpoints, type: 'f32', access: 'read_write'},
-          {name: 'groups', view: boundaryGroups, type: 'u32', access: 'read_write'}
+      kernel(
+        'emit-boundary',
+        [
+          read('selected', selected),
+          read('scan', selectionScan),
+          read('orientations', orientations),
+          read('heads', headsTwo),
+          read('sortedLattice', sortedLattice, 'f32'),
+          read('lattice', noded.lattice, 'f32'),
+          write('endpoints', boundary.endpoints, 'f32'),
+          write('latticeEndpoints', latticeBoundary, 'f32')
         ],
-        invocationCount: props.capacity.nodedSegments,
-        declarations: `const BOUNDARY_CAPACITY: u32 = ${boundary.endpoints.length}u;`,
-        body: `if (selected[selectedOffset + index] == 0u) { return; }
+        capacity,
+        `if (selected[selectedOffset + index] == 0u) { return; }
   let outputRow = scan[scanOffset + index] - 1u;
   if (outputRow >= BOUNDARY_CAPACITY) { return; }
-  let input = sourceEndpointsOffset + index * 4u;
-  let outputBase = endpointsOffset + outputRow * 4u;
+  let edge = readLattice(heads[headsOffset + index]);
   let reverse = orientations[orientationsOffset + index] != 0u;
-  endpoints[outputBase] = sourceEndpoints[input + select(0u, 2u, reverse)];
-  endpoints[outputBase + 1u] = sourceEndpoints[input + select(1u, 3u, reverse)];
-  endpoints[outputBase + 2u] = sourceEndpoints[input + select(2u, 0u, reverse)];
-  endpoints[outputBase + 3u] = sourceEndpoints[input + select(3u, 1u, reverse)];
-  groups[groupsOffset + outputRow] = 0u;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-emit-boundary-provenance`,
-        operation: OPERATION,
-        variant: 'emit-boundary-provenance',
-        bindings: [
-          {name: 'selected', view: selected, type: 'u32', access: 'read'},
-          {name: 'scan', view: selectionScan, type: 'u32', access: 'read'},
-          {name: 'packedSources', view: noded.sourceFeatureIds, type: 'u32', access: 'read'},
-          {name: 'operandIds', view: boundary.operandIds, type: 'u32', access: 'read_write'},
-          {
-            name: 'sourceFeatureIds',
-            view: boundary.sourceFeatureIds,
-            type: 'u32',
-            access: 'read_write'
-          }
+  let start = select(edge.xy, edge.zw, reverse);
+  let end = select(edge.zw, edge.xy, reverse);
+  let origin = vec2f(lattice[latticeOffset], lattice[latticeOffset + 1u]);
+  let cell = lattice[latticeOffset + 2u];
+  let outputBase = endpointsOffset + outputRow * 4u;
+  let latticeBase = latticeEndpointsOffset + outputRow * 4u;
+  latticeEndpoints[latticeBase] = start.x;
+  latticeEndpoints[latticeBase + 1u] = start.y;
+  latticeEndpoints[latticeBase + 2u] = end.x;
+  latticeEndpoints[latticeBase + 3u] = end.y;
+  // World position of a lattice point: origin + k * cell (cell is a power of two).
+  endpoints[outputBase] = origin.x + start.x * cell;
+  endpoints[outputBase + 1u] = origin.y + start.y * cell;
+  endpoints[outputBase + 2u] = origin.x + end.x * cell;
+  endpoints[outputBase + 3u] = origin.y + end.y * cell;`,
+        `const BOUNDARY_CAPACITY: u32 = ${boundary.endpoints.length}u;
+${READ_LATTICE_WGSL}`
+      ),
+      kernel(
+        'boundary-groups',
+        [write('groups', boundaryGroups)],
+        boundary.endpoints.length,
+        'groups[groupsOffset + index] = 0u;'
+      ),
+      kernel(
+        'emit-boundary-provenance',
+        [
+          read('selected', selected),
+          read('scan', selectionScan),
+          read('heads', headsTwo),
+          read('sortedIndices', sorted.sortedIndices),
+          read('packedSources', noded.sourceFeatureIds),
+          write('operandIds', boundary.operandIds),
+          write('sourceFeatureIds', boundary.sourceFeatureIds)
         ],
-        invocationCount: props.capacity.nodedSegments,
-        declarations: `const BOUNDARY_CAPACITY: u32 = ${boundary.endpoints.length}u;`,
-        body: `if (selected[selectedOffset + index] == 0u) { return; }
+        capacity,
+        `if (selected[selectedOffset + index] == 0u) { return; }
   let outputRow = scan[scanOffset + index] - 1u;
   if (outputRow >= BOUNDARY_CAPACITY) { return; }
-  let packed = packedSources[packedSourcesOffset + index];
+  // The first piece of the group in sort order owns its provenance.
+  let piece = sortedIndices[sortedIndicesOffset + heads[headsOffset + index]];
+  let packed = packedSources[packedSourcesOffset + piece];
   operandIds[operandIdsOffset + outputRow] = packed >> 31u;
-  sourceFeatureIds[sourceFeatureIdsOffset + outputRow] = packed & 0x7fffffffu;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-boundary-status`,
-        operation: OPERATION,
-        variant: 'boundary-status',
-        bindings: [
-          {name: 'scan', view: selectionScan, type: 'u32', access: 'read'},
-          {name: 'nodingOverflow', view: noded.status.overflow, type: 'u32', access: 'read'},
-          {
-            name: 'nodingCandidateOverflow',
-            view: noded.status.candidateOverflow,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'count', view: boundary.status.count, type: 'u32', access: 'read_write'},
-          {
-            name: 'requiredCount',
-            view: boundary.status.requiredCount,
-            type: 'u32',
-            access: 'read_write'
-          },
-          {name: 'overflow', view: boundary.status.overflow, type: 'u32', access: 'read_write'},
-          {
-            name: 'candidateOverflow',
-            view: boundary.status.candidateOverflow,
-            type: 'u32',
-            access: 'read_write'
-          }
+  sourceFeatureIds[sourceFeatureIdsOffset + outputRow] = packed & 0x7fffffffu;`,
+        `const BOUNDARY_CAPACITY: u32 = ${boundary.endpoints.length}u;`
+      ),
+      kernel(
+        'boundary-status',
+        [
+          read('scan', selectionScan),
+          read('nodingOverflow', noded.status.overflow),
+          read('nodingCandidateOverflow', noded.status.candidateOverflow),
+          write('count', boundary.status.count),
+          write('requiredCount', boundary.status.requiredCount),
+          write('overflow', boundary.status.overflow),
+          write('candidateOverflow', boundary.status.candidateOverflow)
         ],
-        invocationCount: 1,
-        declarations: `const BOUNDARY_CAPACITY: u32 = ${boundary.endpoints.length}u;
-const NODED_CAPACITY: u32 = ${props.capacity.nodedSegments}u;`,
-        body: `let required = scan[scanOffset + NODED_CAPACITY - 1u];
+        1,
+        `let required = scan[scanOffset + NODED_CAPACITY - 1u];
   let candidateIncomplete = nodingCandidateOverflow[nodingCandidateOverflowOffset];
   requiredCount[requiredCountOffset] = required;
   count[countOffset] = min(required, BOUNDARY_CAPACITY);
   overflow[overflowOffset] = select(0u, 1u, required > BOUNDARY_CAPACITY || nodingOverflow[nodingOverflowOffset] != 0u);
-  candidateOverflow[candidateOverflowOffset] = candidateIncomplete;`
-      })
+  candidateOverflow[candidateOverflowOffset] = candidateIncomplete;`,
+        `const BOUNDARY_CAPACITY: u32 = ${boundary.endpoints.length}u;
+const NODED_CAPACITY: u32 = ${capacity}u;`
+      )
     );
 
+    // 10. Ring assembly on the lattice (exact vertex matching), then back to world coordinates.
     const ringCapacity = output.geometry.ringOffsets.length - 1;
-    const ringPositions = createTransientView(
-      graph,
-      `${id}-ring-positions`,
+    const ringPositions = transient(
+      'ring-positions',
       'float32x2',
       output.geometry.positions.length
     );
-    const ringOffsets = createTransientView(
-      graph,
-      `${id}-ring-offsets`,
-      'uint32',
-      ringCapacity + 1
-    );
-    const ringCount = createTransientView(graph, `${id}-ring-count`, 'uint32', 1);
-    const ringRequiredCount = createTransientView(graph, `${id}-ring-required-count`, 'uint32', 1);
-    const ringOverflow = createTransientView(graph, `${id}-ring-overflow`, 'uint32', 1);
+    const ringOffsets = transient('ring-offsets', 'uint32', ringCapacity + 1);
+    const ringCount = transient('ring-count', 'uint32', 1);
+    const ringRequiredCount = transient('ring-required-count', 'uint32', 1);
+    const ringOverflow = transient('ring-overflow', 'uint32', 1);
     nodes.push(
       ...new GPUSegmentRingAssembly({
         id: `${id}-assemble`,
         spatialContext: this.spatialContext,
-        endpoints: boundary.endpoints,
+        endpoints: latticeBoundary,
         count: boundary.status.count,
         groups: boundaryGroups,
-        vertexTolerance: props.vertexTolerance,
+        // Distinct lattice points are at least 1 apart: matching at 1/4 is exact.
+        vertexTolerance: 0.25,
         interiorSide: 'left',
         normalizeWinding: true,
-        cancelOpposingSegments: true,
+        // Selection emits exactly one directed edge per coincident group; no opposite pair
+        // survives to assembly, so another cancellation search would only repeat that work.
+        cancelOpposingSegments: false,
         splitTouchingRings: true,
         output: {
           positions: ringPositions,
           ringOffsets,
-          count: ringCount,
-          requiredCount: ringRequiredCount,
-          overflow: ringOverflow,
+          status: {count: ringCount, requiredCount: ringRequiredCount, overflow: ringOverflow},
           polygons: output.geometry
         }
       }).getCommandNodes(graph)
     );
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-source-ids`,
-        operation: OPERATION,
-        variant: 'source-ids',
-        bindings: [
-          {
-            name: 'featureOffsets',
-            view: output.geometry.featureOffsets,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'sourceIds', view: output.sourceIds, type: 'u32', access: 'read_write'}
+      kernel(
+        'lattice-to-world',
+        [
+          read('lattice', noded.lattice, 'f32'),
+          read('ringOffsets', output.geometry.ringOffsets),
+          write('positions', output.geometry.positions, 'f32')
         ],
-        invocationCount: Math.max(1, output.sourceIds.length),
-        declarations: `const RING_CAPACITY: u32 = ${ringCapacity}u;
-const SOURCE_CAPACITY: u32 = ${output.sourceIds.length}u;
-const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
-        body: `let featureCount = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
+        Math.max(1, output.geometry.positions.length),
+        `if (index >= ringOffsets[ringOffsetsOffset + RING_CAPACITY]) { return; }
+  let cell = lattice[latticeOffset + 2u];
+  positions[positionsOffset + index * 2u] = lattice[latticeOffset] + positions[positionsOffset + index * 2u] * cell;
+  positions[positionsOffset + index * 2u + 1u] = lattice[latticeOffset + 1u] + positions[positionsOffset + index * 2u + 1u] * cell;`,
+        `const RING_CAPACITY: u32 = ${ringCapacity}u;`
+      ),
+      kernel(
+        'source-ids',
+        [
+          read('featureOffsets', output.geometry.featureOffsets),
+          write('sourceIds', output.geometry.sourceIds),
+          read('ringRequiredCount', ringRequiredCount),
+          write('requiredCount', output.status.requiredCount)
+        ],
+        Math.max(1, output.geometry.sourceIds.length),
+        `if (index == 0u) { requiredCount[requiredCountOffset] = ringRequiredCount[ringRequiredCountOffset]; }
+  let featureCount = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
   if (index < SOURCE_CAPACITY) {
     sourceIds[sourceIdsOffset + index] = select(NONE, index, index < featureCount);
-  }`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-publish-required`,
-        operation: OPERATION,
-        variant: 'publish-required',
-        bindings: [
-          {name: 'ringRequiredCount', view: ringRequiredCount, type: 'u32', access: 'read'},
-          {
-            name: 'requiredCount',
-            view: output.status.requiredCount,
-            type: 'u32',
-            access: 'read_write'
-          }
+  }`,
+        `const RING_CAPACITY: u32 = ${ringCapacity}u;
+const SOURCE_CAPACITY: u32 = ${output.geometry.sourceIds.length}u;
+const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`
+      ),
+      kernel(
+        'publish',
+        [
+          read('featureOffsets', output.geometry.featureOffsets),
+          read('boundaryOverflow', boundary.status.overflow),
+          read('candidateOverflowInput', boundary.status.candidateOverflow),
+          read('ringOverflow', ringOverflow),
+          write('count', output.status.count),
+          write('overflow', output.status.overflow),
+          write('candidateOverflow', output.status.candidateOverflow)
         ],
-        invocationCount: 1,
-        // Unclamped ring requirement of the assembly (shells plus holes), for sizing capacity.
-        body: 'requiredCount[requiredCountOffset] = ringRequiredCount[ringRequiredCountOffset];'
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-publish`,
-        operation: OPERATION,
-        variant: 'publish',
-        bindings: [
-          {
-            name: 'featureOffsets',
-            view: output.geometry.featureOffsets,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'boundaryOverflow', view: boundary.status.overflow, type: 'u32', access: 'read'},
-          {
-            name: 'candidateOverflowInput',
-            view: boundary.status.candidateOverflow,
-            type: 'u32',
-            access: 'read'
-          },
-          {name: 'ringOverflow', view: ringOverflow, type: 'u32', access: 'read'},
-          {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
-          {
-            name: 'candidateOverflow',
-            view: output.status.candidateOverflow,
-            type: 'u32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: 1,
-        declarations: `const RING_CAPACITY: u32 = ${ringCapacity}u;`,
-        body: `let featureCount = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
+        1,
+        `let featureCount = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
   let incomplete = boundaryOverflow[boundaryOverflowOffset] | ringOverflow[ringOverflowOffset];
   count[countOffset] = featureCount;
   overflow[overflowOffset] = incomplete;
-  candidateOverflow[candidateOverflowOffset] = candidateOverflowInput[candidateOverflowInputOffset];`
-      })
+  candidateOverflow[candidateOverflowOffset] = candidateOverflowInput[candidateOverflowInputOffset];`,
+        `const RING_CAPACITY: u32 = ${ringCapacity}u;`
+      )
     );
     return nodes;
   }
 
-  private _createRingBoundsNode<Parameters>(
+  private _createRayShootNode<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    side: 'left' | 'right',
-    polygons: PackedPolygons,
-    bounds: GraphDataView<'float32'>,
-    ringCount: number
+    level: 1 | 2,
+    table: {groupLattice: GraphDataView<'float32x4'>; bvh: GPUBVH},
+    counts: GraphDataView<'uint32'>,
+    groupPolygons: GraphDataView<'uint32'> | undefined,
+    parents: GraphDataView<'uint32'>
   ): GPUCommandNode<Parameters> {
+    const {bvh} = table;
     return createWGSLKernelNode<Parameters>(graph, {
-      id: `${this.id}-${side}-ring-bounds`,
+      id: `${this.id}-ray-shoot-${level}`,
       operation: OPERATION,
-      variant: `${side}-ring-bounds`,
+      variant: `ray-shoot-${level}`,
       bindings: [
-        {name: 'positions', view: polygons.positions, type: 'f32', access: 'read'},
-        {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
-        {name: 'bounds', view: bounds, type: 'f32', access: 'read_write'}
+        {name: 'counts', view: counts, type: 'u32', access: 'read'},
+        {name: 'groupLattice', view: table.groupLattice, type: 'f32', access: 'read'},
+        ...(groupPolygons
+          ? [
+              {
+                name: 'groupPolygons',
+                view: groupPolygons,
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
+        {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
+        {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
+        {name: 'leafIds', view: bvh.leafIds, type: 'u32', access: 'read'},
+        {name: 'parents', view: parents, type: 'u32', access: 'read_write'}
       ],
-      invocationCount: Math.max(1, ringCount),
-      declarations: `const RING_COUNT: u32 = ${ringCount}u;`,
-      body: `if (index >= RING_COUNT) { return; }
-  let begin = ringOffsets[ringOffsetsOffset + index];
-  let end = ringOffsets[ringOffsetsOffset + index + 1u];
-  var lowY = 3.4e38;
-  var highY = -3.4e38;
-  for (var row = begin; row < end; row++) {
-    let y = positions[positionsOffset + row * 2u + 1u];
-    lowY = min(lowY, y);
-    highY = max(highY, y);
-  }
-  bounds[boundsOffset + index * 2u] = lowY;
-  bounds[boundsOffset + index * 2u + 1u] = highY;`
+      invocationCount: parents.length,
+      declarations: getFaceRayShootDeclarationsWGSL({
+        internalNodeCount: bvh.internalNodeCount,
+        countRow: level - 1,
+        samePolygon: level === 1
+      }),
+      body: getFaceRayShootBodyWGSL({samePolygon: level === 1})
     });
   }
 
-  private _createNodedPort<Parameters>(graph: GPUCommandGraph<Parameters>): GPUNodedSegmentPort {
+  private _createNodedPort<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUSnapRoundedSegmentPort {
     const {id, props} = this;
     const rows = props.capacity.nodedSegments;
     const scalar = (name: string) => createTransientView(graph, `${id}-${name}`, 'uint32', 1);
     return {
       endpoints: createTransientView(graph, `${id}-noded-endpoints`, 'float32x4', rows),
+      latticeEndpoints: createTransientView(
+        graph,
+        `${id}-noded-lattice-endpoints`,
+        'float32x4',
+        rows
+      ),
+      lattice: createTransientView(graph, `${id}-lattice`, 'float32', 4),
       sourceFeatureIds: createTransientView(graph, `${id}-noded-features`, 'uint32', rows),
       sourceRingIds: createTransientView(graph, `${id}-noded-rings`, 'uint32', rows),
       sourceEdgeIds: createTransientView(graph, `${id}-noded-edges`, 'uint32', rows),
@@ -884,7 +1335,8 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
       sourceEndParameters: createTransientView(graph, `${id}-noded-end`, 'float32', rows),
       status: {
         count: scalar('noded-count'),
-        requiredCount: scalar('noded-required-count'),
+        requiredCount:
+          props.output.status.nodedSegmentRequiredCount ?? scalar('noded-required-count'),
         overflow: scalar('noded-overflow'),
         candidateOverflow: scalar('noded-candidate-overflow')
       }
@@ -904,105 +1356,5 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
       case 'dissolve':
         return left;
     }
-  }
-
-  private _getMembershipWGSL(polygonCount: number, fillRule: GPUPolygonOverlayFillRule): string {
-    if (fillRule !== 'even-odd') {
-      return this._getWindingMembershipWGSL(polygonCount, fillRule);
-    }
-    return /* wgsl */ `
-const POLYGON_COUNT: u32 = ${polygonCount}u;
-
-fn insidePolygons(point: vec2f) -> bool {
-  for (var polygon = 0u; polygon < POLYGON_COUNT; polygon++) {
-    let firstRing = polygonOffsets[polygonOffsetsOffset + polygon];
-    let lastRing = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
-    var inShell = false;
-    var inHole = false;
-    for (var ring = firstRing; ring < lastRing; ring++) {
-      let begin = ringOffsets[ringOffsetsOffset + ring];
-      let end = ringOffsets[ringOffsetsOffset + ring + 1u];
-      var inside = false;
-      let lowY = ringBounds[ringBoundsOffset + ring * 2u];
-      let highY = ringBounds[ringBoundsOffset + ring * 2u + 1u];
-      // A probe outside the ring's y extent cannot toggle the crossing parity.
-      if (end > begin + 2u && point.y >= lowY && point.y < highY) {
-        var previous = end - 1u;
-        for (var row = begin; row < end; row++) {
-          let a = vec2f(positions[positionsOffset + previous * 2u], positions[positionsOffset + previous * 2u + 1u]);
-          let b = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
-          if ((a.y > point.y) != (b.y > point.y)) {
-            let crossing = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x;
-            if (point.x < crossing) { inside = !inside; }
-          }
-          previous = row;
-        }
-      }
-      if (ring == firstRing) {
-        inShell = inside;
-        if (!inShell) { break; }
-      } else if (inside) {
-        inHole = true;
-        break;
-      }
-    }
-    if (inShell && !inHole) { return true; }
-  }
-  return false;
-}`;
-  }
-
-  /**
-   * Winding-number membership. Uses the half-open crossing rule of the parity test
-   * (`(a.y > y) != (b.y > y)` and the probe strictly left of the crossing), decided with exact
-   * orientation: an upward edge counts +1 when the probe is strictly left of it, a downward edge
-   * counts -1 when the probe is strictly right of it.
-   */
-  private _getWindingMembershipWGSL(
-    polygonCount: number,
-    fillRule: GPUPolygonOverlayFillRule
-  ): string {
-    const test =
-      fillRule === 'positive'
-        ? 'winding > 0'
-        : fillRule === 'negative'
-          ? 'winding < 0'
-          : 'winding != 0';
-    return /* wgsl */ `
-const POLYGON_COUNT: u32 = ${polygonCount}u;
-${EXACT_ORIENTATION_WGSL}
-
-fn insidePolygons(point: vec2f) -> bool {
-  for (var polygon = 0u; polygon < POLYGON_COUNT; polygon++) {
-    let firstRing = polygonOffsets[polygonOffsetsOffset + polygon];
-    let lastRing = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
-    var winding = 0;
-    for (var ring = firstRing; ring < lastRing; ring++) {
-      let begin = ringOffsets[ringOffsetsOffset + ring];
-      let end = ringOffsets[ringOffsetsOffset + ring + 1u];
-      let lowY = ringBounds[ringBoundsOffset + ring * 2u];
-      let highY = ringBounds[ringBoundsOffset + ring * 2u + 1u];
-      // A probe outside the ring's y extent cannot cross any edge.
-      if (end > begin + 2u && point.y >= lowY && point.y < highY) {
-        var previous = end - 1u;
-        for (var row = begin; row < end; row++) {
-          let a = vec2f(positions[positionsOffset + previous * 2u], positions[positionsOffset + previous * 2u + 1u]);
-          let b = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
-          if ((a.y > point.y) != (b.y > point.y)) {
-            let side = orientSign(a, b, point);
-            if (b.y > a.y) {
-              if (side == 1) { winding += 1; }
-            } else if (side == -1) {
-              winding -= 1;
-            }
-          }
-          previous = row;
-        }
-      }
-    }
-    if (${test}) { return true; }
-  }
-  return false;
-}`;
   }
 }

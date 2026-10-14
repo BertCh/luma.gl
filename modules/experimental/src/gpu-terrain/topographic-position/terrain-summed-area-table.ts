@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {assert, type Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
@@ -13,7 +14,20 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPURasterBufferBand} from '../../gpu-raster/index';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {TERRAIN_WGSL_HELPERS} from '../terrain-analysis/terrain-analysis-utils';
+import {RASTER_WGSL_HELPERS} from '../../gpu-raster/raster-band-utils';
+import {getStorageBindingElementLimit} from '../../utils/gpu-contributor-utils';
+
+/**
+ * Largest grid cell count (`width * height`) of the summed-area table behind
+ * {@link GPUTerrainTopographicPosition} and {@link GPUTerrainWeissLandforms} on `device`: the
+ * low-word table holds three `uint32` planes (sum, square, count), 12 bytes per cell, in one
+ * storage binding, so 11184810 (about 3344 x 3344) on a default device (128 MiB bindings). The
+ * scans and the transpose run over the whole grid, so the table is not chunked. The relief mean
+ * filters use the same value to choose the exact table over the separable fallback.
+ */
+export function getGPUTerrainSummedAreaMaximumCellCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 12);
+}
 
 /**
  * Largest quantized magnitude accepted by the quantize kernel. Elevations whose quantized value
@@ -31,7 +45,7 @@ const TERRAIN_SUMMED_AREA_MAXIMUM_QUANTIZED = 2147483520;
  * @internal
  */
 export const TERRAIN_SUMMED_AREA_WGSL_HELPERS = /* wgsl */ `
-${TERRAIN_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}
 const MAXIMUM_QUANTIZED: f32 = ${getWGSLFloatLiteral(TERRAIN_SUMMED_AREA_MAXIMUM_QUANTIZED)};
 fn add64(left: vec2<u32>, right: vec2<u32>) -> vec2<u32> {
   let low = left.x + right.x;
@@ -90,6 +104,8 @@ export type TerrainSummedAreaTable<Parameters> = {
   lowTable: GraphDataView<'uint32'>;
   /** High words: two planes (sum high, square high) with the same layout. */
   highTable: GraphDataView<'uint32'>;
+  /** GPU-selected, quantum-snapped first valid elevation for an origin-relative table. */
+  anchor?: GraphDataView<'float32'>;
   /** Command nodes in execution order. */
   nodes: GPUCommandNode<Parameters>[];
 };
@@ -97,7 +113,8 @@ export type TerrainSummedAreaTable<Parameters> = {
 /**
  * Adds the nodes that build an exact modular summed-area table of quantized elevations.
  *
- * Elevations are quantized to signed integers `q = round(z / quantum)`. A quantize kernel writes
+ * Elevations are quantized to signed integers `q = round((z - anchor) / quantum)`; anchor is zero
+ * unless originRelative selects the first finite valid value on the GPU. A quantize kernel writes
  * `q` (sign-extended to 64 bits), `q²` (64 bits), and a valid-cell flag; invalid cells contribute
  * zero. One global row-major inclusive scan (`GPUScanUint64` / `GPUScan`), a `GPUTranspose`, and a
  * second global scan over the column-major data produce the table. No segment restarts are needed:
@@ -119,20 +136,37 @@ export function addTerrainSummedAreaTableNodes<Parameters>(
     height: number;
     elevation: GPURasterBufferBand;
     quantum: number;
+    /**
+     * Whether the table holds the `q²` plane. Defaults to true. With false the table has only the
+     * sum and count planes (low words: sum, count; high words: sum), which saves a third of the
+     * memory and the square scans; read it with {@link TERRAIN_SUMMED_AREA_SUM_COUNT_BOX_WGSL}.
+     */
+    includeSquares?: boolean;
+    /** Quantize relative to the first finite valid cell (GPU-selected). Defaults to false. */
+    originRelative?: boolean;
   }
 ): TerrainSummedAreaTable<Parameters> {
   const {id, width, height} = props;
+  const includeSquares = props.includeSquares ?? true;
+  const lowPlaneCount = includeSquares ? 3 : 2;
+  const highPlaneCount = includeSquares ? 2 : 1;
+  const countPlane = lowPlaneCount - 1;
   const pixelCount = width * height;
-  const byteLength = 3 * pixelCount * 4;
-  if (byteLength > graph.device.limits.maxStorageBufferBindingSize) {
-    throw new Error(
-      `${id} summed-area table needs ${byteLength}-byte bindings, more than the device ` +
-        `maxStorageBufferBindingSize of ${graph.device.limits.maxStorageBufferBindingSize}`
-    );
-  }
+  // Every caller validates or chooses by getGPUTerrainSummedAreaMaximumCellCount(graph.device).
+  assert(pixelCount <= getGPUTerrainSummedAreaMaximumCellCount(graph.device));
   const createStage = (stage: string) => ({
-    low: createTransientView(graph, `${id}-summed-area-${stage}-low`, 'uint32', 3 * pixelCount),
-    high: createTransientView(graph, `${id}-summed-area-${stage}-high`, 'uint32', 2 * pixelCount)
+    low: createTransientView(
+      graph,
+      `${id}-summed-area-${stage}-low`,
+      'uint32',
+      lowPlaneCount * pixelCount
+    ),
+    high: createTransientView(
+      graph,
+      `${id}-summed-area-${stage}-high`,
+      'uint32',
+      highPlaneCount * pixelCount
+    )
   });
   const first = createStage('first');
   const second = createStage('second');
@@ -147,7 +181,57 @@ export function addTerrainSummedAreaTableNodes<Parameters>(
   if (!elevationValidity) {
     throw new Error(`${id} summed-area table requires a canonical elevation band`);
   }
-  const nodes: GPUCommandNode<Parameters>[] = [
+  const anchorIndex = props.originRelative
+    ? createTransientView(graph, `${id}-anchor-index`, 'uint32', 1)
+    : undefined;
+  const anchor = props.originRelative
+    ? createTransientView(graph, `${id}-anchor`, 'float32', 1)
+    : undefined;
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  if (anchorIndex && anchor) {
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-anchor-reset`,
+        operation: 'GPUTerrainTopographicPosition',
+        bindings: [{name: 'anchorIndex', view: anchorIndex, type: 'u32', access: 'read_write'}],
+        invocationCount: 1,
+        body: 'anchorIndex[anchorIndexOffset] = 0xffffffffu;'
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-anchor-select`,
+        operation: 'GPUTerrainTopographicPosition',
+        bindings: [
+          {name: 'values', view: props.elevation.storage.values, type: 'f32', access: 'read'},
+          {name: 'validity', view: elevationValidity, type: 'u32', access: 'read'},
+          {name: 'anchorIndex', view: anchorIndex, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        invocationCount: pixelCount,
+        declarations: RASTER_WGSL_HELPERS,
+        body: `if (validity[validityOffset + index] != 0u && isFiniteValue(values[valuesOffset + index])) {
+          atomicMin(&anchorIndex[anchorIndexOffset], index);
+        }`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-anchor-publish`,
+        operation: 'GPUTerrainTopographicPosition',
+        bindings: [
+          {name: 'values', view: props.elevation.storage.values, type: 'f32', access: 'read'},
+          {name: 'anchorIndex', view: anchorIndex, type: 'u32', access: 'read'},
+          {name: 'anchor', view: anchor, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        body: `let first = anchorIndex[anchorIndexOffset];
+          var origin = 0.0;
+          if (first != 0xffffffffu) { origin = values[valuesOffset + first]; }
+          // Snap only small anchors; large f32 values already lie on the quantum lattice.
+          if (abs(origin) < ${getWGSLFloatLiteral(props.quantum * 2 ** 23)}) {
+            origin = round(origin * ${getWGSLFloatLiteral(1 / props.quantum)}) * ${getWGSLFloatLiteral(props.quantum)};
+          }
+          anchor[anchorOffset] = origin;`
+      })
+    );
+  }
+  nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-summed-area-quantize`,
       operation: 'GPUTerrainTopographicPosition',
@@ -159,6 +243,9 @@ export function addTerrainSummedAreaTableNodes<Parameters>(
           type: 'f32',
           access: 'read'
         },
+        ...(anchor
+          ? [{name: 'anchor', view: anchor, type: 'f32' as const, access: 'read' as const}]
+          : []),
         {name: 'elevationValidity', view: elevationValidity, type: 'u32', access: 'read'},
         {name: 'lowPlanes', view: first.low, type: 'u32', access: 'read_write'},
         {name: 'highPlanes', view: first.high, type: 'u32', access: 'read_write'}
@@ -167,26 +254,32 @@ export function addTerrainSummedAreaTableNodes<Parameters>(
       declarations: `const PIXEL_COUNT: u32 = ${pixelCount}u;
 const INVERSE_QUANTUM: f32 = ${getWGSLFloatLiteral(1 / props.quantum)};
 ${TERRAIN_SUMMED_AREA_WGSL_HELPERS}`,
-      body: `let elevation = elevationValues[elevationValuesOffset + index];
+      body: `let elevation = elevationValues[elevationValuesOffset + index]${anchor ? ' - anchor[anchorOffset]' : ''};
   let isValid = elevationValidity[elevationValidityOffset + index] != 0u && isQuantizable(elevation);
   var quantized = 0i;
   if (isValid) {
     quantized = quantizeElevation(elevation);
   }
+  lowPlanes[lowPlanesOffset + index] = bitcast<u32>(quantized);
+  lowPlanes[lowPlanesOffset + ${countPlane}u * PIXEL_COUNT + index] = select(0u, 1u, isValid);
+  highPlanes[highPlanesOffset + index] = select(0u, 0xffffffffu, quantized < 0i);${
+    includeSquares
+      ? `
   let magnitude = u32(abs(quantized));
   let square = multiplyWide32(magnitude, magnitude);
-  lowPlanes[lowPlanesOffset + index] = bitcast<u32>(quantized);
   lowPlanes[lowPlanesOffset + PIXEL_COUNT + index] = square.x;
-  lowPlanes[lowPlanesOffset + 2u * PIXEL_COUNT + index] = select(0u, 1u, isValid);
-  highPlanes[highPlanesOffset + index] = select(0u, 0xffffffffu, quantized < 0i);
   highPlanes[highPlanesOffset + PIXEL_COUNT + index] = square.y;`
+      : ''
+  }`
     })
-  ];
+  );
   const addScans = (stage: string, input: Stage, output: Stage) => {
-    for (const [name, plane] of [
-      ['sum', 0],
-      ['square', 1]
-    ] as const) {
+    for (const [name, plane] of includeSquares
+      ? ([
+          ['sum', 0],
+          ['square', 1]
+        ] as const)
+      : ([['sum', 0]] as const)) {
       nodes.push(
         ...new GPUScanUint64({
           id: `${id}-summed-area-${stage}-${name}`,
@@ -200,8 +293,8 @@ ${TERRAIN_SUMMED_AREA_WGSL_HELPERS}`,
     nodes.push(
       ...new GPUScan({
         id: `${id}-summed-area-${stage}-count`,
-        input: getPlane(input.low, 2),
-        output: getPlane(output.low, 2),
+        input: getPlane(input.low, countPlane),
+        output: getPlane(output.low, countPlane),
         mode: 'inclusive'
       }).getCommandNodes(graph)
     );
@@ -210,8 +303,8 @@ ${TERRAIN_SUMMED_AREA_WGSL_HELPERS}`,
   addScans('rows', first, second);
   // Transpose every plane: second -> first (column-major).
   for (const [word, planeCount] of [
-    ['low', 3],
-    ['high', 2]
+    ['low', lowPlaneCount],
+    ['high', highPlaneCount]
   ] as const) {
     for (let plane = 0; plane < planeCount; plane++) {
       nodes.push(
@@ -227,7 +320,7 @@ ${TERRAIN_SUMMED_AREA_WGSL_HELPERS}`,
   }
   // Column-major inclusive prefix of the row prefixes: first -> second.
   addScans('columns', first, second);
-  return {lowTable: second.low, highTable: second.high, nodes};
+  return {lowTable: second.low, highTable: second.high, anchor, nodes};
 }
 
 /**
@@ -288,4 +381,53 @@ fn readBoxSums(firstColumn: i32, lastColumn: i32, firstRow: i32, lastRow: i32) -
     subtract64(right.square, left.square),
     right.count - left.count
   );
+}`;
+
+/**
+ * WGSL box-sum reader for a table built with `includeSquares: false`: the same derivation as
+ * {@link TERRAIN_SUMMED_AREA_BOX_WGSL} over the sum and count planes only (low words: sum, count;
+ * high words: sum). `readBoxSums(firstColumn, lastColumn, firstRow, lastRow)` returns the exact
+ * modular sum of the quantized elevations and the count of valid cells over the inclusive,
+ * in-raster box. Requires the same bindings and constants as {@link TERRAIN_SUMMED_AREA_BOX_WGSL};
+ * the two readers cannot share a module.
+ *
+ * @internal
+ */
+export const TERRAIN_SUMMED_AREA_SUM_COUNT_BOX_WGSL = /* wgsl */ `
+struct TerrainBoxSums {
+  sum: vec2<u32>,
+  count: u32,
+}
+fn readTableSum64(linearIndex: i32) -> vec2<u32> {
+  if (linearIndex < 0i) {
+    return vec2<u32>(0u, 0u);
+  }
+  return vec2<u32>(lowTable[lowTableOffset + u32(linearIndex)], highTable[highTableOffset + u32(linearIndex)]);
+}
+fn readTableCount(linearIndex: i32) -> u32 {
+  if (linearIndex < 0i) {
+    return 0u;
+  }
+  return lowTable[lowTableOffset + PIXEL_COUNT + u32(linearIndex)];
+}
+fn readColumnRange(column: i32, firstRow: i32, lastRow: i32) -> TerrainBoxSums {
+  var upper: i32;
+  var lower: i32;
+  if (column >= 0i) {
+    upper = column * i32(HEIGHT) + lastRow;
+    lower = column * i32(HEIGHT) + firstRow - 1i;
+  } else {
+    let lastColumnStart = (i32(WIDTH) - 1i) * i32(HEIGHT);
+    upper = lastColumnStart + lastRow - 1i;
+    lower = lastColumnStart + max(firstRow, 1i) - 2i;
+  }
+  return TerrainBoxSums(
+    subtract64(readTableSum64(upper), readTableSum64(lower)),
+    readTableCount(upper) - readTableCount(lower)
+  );
+}
+fn readBoxSums(firstColumn: i32, lastColumn: i32, firstRow: i32, lastRow: i32) -> TerrainBoxSums {
+  let right = readColumnRange(lastColumn, firstRow, lastRow);
+  let left = readColumnRange(firstColumn - 1i, firstRow, lastRow);
+  return TerrainBoxSums(subtract64(right.sum, left.sum), right.count - left.count);
 }`;

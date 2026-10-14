@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,8 +11,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
@@ -110,32 +109,7 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {output, maximumClassCount} = props;
-    if (
-      !Number.isInteger(maximumClassCount) ||
-      maximumClassCount < 1 ||
-      maximumClassCount > MAXIMUM_AXIS_CLASS_COUNT
-    ) {
-      throw new Error(
-        `${id} maximumClassCount must be an integer in [1, ${MAXIMUM_AXIS_CLASS_COUNT}]`
-      );
-    }
-    for (const [name, view] of [
-      ['valuesX', props.valuesX],
-      ['valuesY', props.valuesY],
-      ['mask', props.mask],
-      ['breaksX', props.breaksX],
-      ['breaksY', props.breaksY],
-      ['palette', props.palette],
-      ['alphaValues', props.alphaValues],
-      ['parameters', props.parameters],
-      ['output.classIds', output.classIds],
-      ['output.colors', output.colors],
-      ['output.classCounts', output.classCounts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(id, 'maximumClassCount', maximumClassCount, 1, MAXIMUM_AXIS_CLASS_COUNT);
     if (!output.classIds && !output.colors && !output.classCounts) {
       throw new Error(`${id} needs at least one output (classIds, colors, or classCounts)`);
     }
@@ -147,13 +121,13 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     validatePackedView(props.valuesY, ['float32'], `${id} valuesY`);
     validatePackedView(props.breaksX, ['float32'], `${id} breaksX`);
     validatePackedView(props.breaksY, ['float32'], `${id} breaksY`);
-    validatePackedUint32View(props.palette, `${id} palette`);
+    validatePackedView(props.palette, ['uint32'], `${id} palette`);
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.alphaValues) {
       validatePackedView(props.alphaValues, ['float32'], `${id} alphaValues`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     for (const [name, view] of [
       ['valuesY', props.valuesY],
@@ -184,14 +158,14 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     for (const name of ['classIds', 'colors'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per value`);
         }
       }
     }
     if (output.classCounts) {
-      validatePackedUint32View(output.classCounts, `${id} output.classCounts`);
+      validatePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
       if (output.classCounts.length < jointCount) {
         throw new Error(`${id} output.classCounts must hold maximumClassCount ** 2 rows`);
       }

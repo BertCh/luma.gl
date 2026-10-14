@@ -9,7 +9,7 @@ export const GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT = 16;
 export const GPU_COMPOSITE_SCORE_PARAMETER_LENGTH =
   4 + 2 * GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT;
 
-/** Float32 values per indicator in the `columnStatistics` output: `[min, max, mean, std]`. */
+/** Float32 values per indicator in the `columnStatistics` output: `[minimum, maximum, mean, standardDeviation]`. */
 export const GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE = 4;
 
 /** Float32 slots of the `principalComponentSummary` output. */
@@ -60,7 +60,11 @@ export type GPUCompositeScoreSettings = {
   scaler?: GPUCompositeScoreScaler;
   /** How scaled indicators combine into the score. Defaults to `'weighted-sum'`. */
   aggregation?: GPUCompositeScoreAggregation;
-  /** One weight per indicator (at most 16). Missing trailing weights are 0. */
+  /**
+   * One weight per indicator (at most 16). Missing trailing weights are 0. A negative weight
+   * penalizes an indicator in `'weighted-sum'`; `'weighted-geometric-mean'` refuses negative
+   * weights (a weighted geometric mean needs `w >= 0`): use `directions` to flip an indicator.
+   */
   weights: ArrayLike<number>;
   /**
    * One direction per indicator: a negative value means "higher is worse" and flips the scaled
@@ -80,8 +84,8 @@ export type GPUCompositeScoreSettings = {
  *
  * @param settings Scaler, aggregation, weights and directions.
  * @param target Optional destination of at least {@link GPU_COMPOSITE_SCORE_PARAMETER_LENGTH} elements.
- * @throws If more than 16 weights or directions are given, a weight is not finite, epsilon is not
- * positive, or `target` is too short.
+ * @throws If more than 16 weights or directions are given, a weight is not finite, a weight is
+ * negative with `'weighted-geometric-mean'`, epsilon is not positive, or `target` is too short.
  */
 export function getGPUCompositeScoreParameterValues(
   settings: GPUCompositeScoreSettings,
@@ -114,6 +118,9 @@ export function getGPUCompositeScoreParameterValues(
     const weight = column < weights.length ? weights[column] : 0;
     if (!Number.isFinite(weight)) {
       throw new Error('Composite score weights must be finite');
+    }
+    if (weight < 0 && aggregation === GPU_COMPOSITE_SCORE_AGGREGATION['weighted-geometric-mean']) {
+      throw new Error('Composite score geometric mean weights must be non-negative');
     }
     target[4 + column] = weight;
     const direction = directions && column < directions.length ? directions[column] : 1;

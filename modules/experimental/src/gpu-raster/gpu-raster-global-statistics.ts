@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration, Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {
   GPUCommandGraph,
@@ -10,14 +10,14 @@ import type {
   GraphDataView,
   GraphResourceUse
 } from '@luma.gl/gpgpu/gpu-core';
-import {createTransientView, getViewBinding, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
+import {createTransientView, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {GPURasterHistogram} from './gpu-raster-histogram';
 import {GPURasterStatistics} from './gpu-raster-statistics';
 import {
   assertRasterStorageBindingFits,
   getRasterDispatchSize,
-  getRasterFloatLiteral,
   MAXIMUM_RASTER_PIXEL_COUNT,
+  getRasterFloatLiteral,
   RASTER_WORKGROUP_DIMENSION,
   validateRasterBand,
   validateRasterScalarView,
@@ -25,6 +25,8 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {validateMaximumCount} from '../utils/gpu-contributor-utils';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 /** Caller-owned persistent global outputs shared by separately encoded tile and replay graphs. */
 export type GPURasterGlobalAccumulator = {
@@ -46,10 +48,22 @@ export type GPURasterGlobalInitializeProps = {
   accumulator: GPURasterGlobalAccumulator;
 };
 
+/**
+ * Largest tile `width x height` pixel count of {@link GPURasterGlobalStatisticsMerge} and
+ * {@link GPURasterGlobalHistogramMerge} on `device`: the tile reductions cover the pixels with one
+ * 1-D dispatch of 256-invocation workgroups, limited to `maxComputeWorkgroupsPerDimension`
+ * workgroups, so 16776960 on a default device (65535 workgroups).
+ */
+export function getGPURasterGlobalMergeMaximumPixelCount(device: Device): number {
+  return device.limits.maxComputeWorkgroupsPerDimension * 256;
+}
+
 /** One bounded, calibrated, validity-aware floating tile contributing global scalar partials. */
 export type GPURasterGlobalStatisticsMergeProps = {
   id?: string;
+  /** Tile width in pixels. `width * height` is at most {@link getGPURasterGlobalMergeMaximumPixelCount} (16776960 on a default device). */
   width: number;
+  /** Tile height in pixels. */
   height: number;
   input: GPURasterBufferBand<'float32'>;
   accumulator: GPURasterGlobalAccumulator;
@@ -58,7 +72,9 @@ export type GPURasterGlobalStatisticsMergeProps = {
 /** One replayed tile contributing bins against the final stable GPU-resident global domain. */
 export type GPURasterGlobalHistogramMergeProps = {
   id?: string;
+  /** Tile width in pixels. `width * height` is at most {@link getGPURasterGlobalMergeMaximumPixelCount} (16776960 on a default device). */
   width: number;
+  /** Tile height in pixels. */
   height: number;
   input: GPURasterBufferBand<'float32'>;
   accumulator: GPURasterGlobalAccumulator;
@@ -156,6 +172,12 @@ export class GPURasterGlobalStatisticsMerge {
   /** Recomputes only tile-owned scratch and preserves every separately initialized global value. */
   addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertAccumulatorGraph(graph, this.accumulator, this.id);
+    validateMaximumCount(
+      this.id,
+      'width x height',
+      this.width * this.height,
+      getGPURasterGlobalMergeMaximumPixelCount(graph.device)
+    );
     const tileCount = createTransientView(graph, `${this.id}-tile-count`, 'uint32', 1);
     const tileSum = createTransientView(graph, `${this.id}-tile-sum`, 'float32', 1);
     const tileMean = createTransientView(graph, `${this.id}-tile-mean`, 'float32', 1);
@@ -263,6 +285,12 @@ export class GPURasterGlobalHistogramMerge {
   addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertAccumulatorGraph(graph, this.accumulator, this.id);
     const pixelCount = this.width * this.height;
+    validateMaximumCount(
+      this.id,
+      'width x height',
+      pixelCount,
+      getGPURasterGlobalMergeMaximumPixelCount(graph.device)
+    );
     const calibratedValues = createTransientView(
       graph,
       `${this.id}-calibrated-values`,
@@ -630,13 +658,15 @@ function addGlobalPass<Parameters>(
         source: makeShader(locations),
         shaderLayout: {bindings: declarations}
       });
+      const bindingViews: Record<string, GraphDataView> = {};
+      for (const binding of bindings) {
+        bindingViews[binding.name] = binding.view;
+      }
+      const resolveChangedBindings = createChangedBindingResolver(bindingViews);
       return {
         encode: ({computePass, getBuffer}) => {
-          const resolved: Record<string, Binding> = {};
-          for (const binding of bindings) {
-            resolved[binding.name] = getViewBinding(binding.view, getBuffer);
-          }
-          computation.setBindings(resolved);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           computation.dispatch(computePass, dispatch[0], dispatch[1]);
         },
         destroy: () => computation.destroy()

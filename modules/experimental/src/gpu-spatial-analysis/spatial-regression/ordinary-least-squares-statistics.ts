@@ -7,7 +7,7 @@ import {
   getGPURegressionPredictorNames,
   type GPURegressionCoefficient,
   type GPURegressionModelResult
-} from '../contracts/model-result';
+} from '../../analysis-core/contracts/model-result';
 import {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,

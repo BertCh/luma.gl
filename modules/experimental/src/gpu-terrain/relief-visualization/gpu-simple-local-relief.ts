@@ -8,59 +8,91 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {validateTerrainIlluminationView} from '../terrain-illumination/terrain-illumination-utils';
 import {
-  createReliefMeanFilterScratch,
-  getReliefMeanFilterNodes
+  createReliefMeanFilterSetup,
+  GPU_RELIEF_DEFAULT_QUANTUM,
+  validateReliefMeanFilter,
+  validateReliefMeanFilterRadius
 } from './relief-visualization-utils';
 
-/** Number of float32 values read from `GPUSimpleLocalReliefProps.settings`. */
+/** Number of float32 values read from `GPUSimpleLocalReliefProps.parameters`. */
 export const GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH = 4;
+
+/** Index of the per-frame window radius in the packed parameters. */
+const RADIUS_PARAMETER_INDEX = 1;
 
 /** CPU-side description packed by {@link getGPUSimpleLocalReliefParameterValues}. */
 export type GPUSimpleLocalReliefSettings = {
   /** Vertical exaggeration applied to the relief. Defaults to 1. */
   verticalExaggeration?: number;
+  /**
+   * Window half-width in pixels, an integer in `[1, maximumRadius]`. Defaults to
+   * `maximumRadius`. The packer throws for a value that is not an integer of at least 1; a value
+   * above `maximumRadius` written to the buffer by other means is clamped to `maximumRadius` by
+   * the kernel.
+   */
+  radius?: number;
 };
 
 /**
  * Packs settings into the 4-float layout read by {@link GPUSimpleLocalRelief}:
- * `[verticalExaggeration, 0, 0, 0]`.
+ * `[verticalExaggeration, radius, 0, 0]`. `radius` is 0 when `settings.radius` is omitted, which
+ * the kernel reads as `maximumRadius`.
  *
- * @throws If a value is not finite or `target` holds fewer than 4 values.
+ * @throws If a value is not finite, `radius` is not an integer of at least 1, or `target` holds
+ * fewer than 4 values.
  */
 export function getGPUSimpleLocalReliefParameterValues(
   settings: GPUSimpleLocalReliefSettings = {},
   target: Float32Array = new Float32Array(GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH) {
-    throw new Error('Simple local relief settings target must hold 4 values');
-  }
+  validateParameterTarget(
+    'getGPUSimpleLocalReliefParameterValues',
+    target,
+    GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH
+  );
   const verticalExaggeration = settings.verticalExaggeration ?? 1;
   if (!Number.isFinite(verticalExaggeration)) {
     throw new Error('Simple local relief settings must be finite');
   }
+  if (
+    settings.radius !== undefined &&
+    (!Number.isSafeInteger(settings.radius) || settings.radius < 1)
+  ) {
+    throw new Error('Simple local relief radius must be an integer of at least 1');
+  }
   target.fill(0, 0, GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH);
   target[0] = verticalExaggeration;
+  target[RADIUS_PARAMETER_INDEX] = settings.radius ?? 0;
   return target;
 }
+
+/** Caller-owned outputs of {@link GPUSimpleLocalRelief}; at least one is required. */
+export type GPUSimpleLocalReliefOutput = {
+  /** Optional relief per pixel, `verticalExaggeration * (z - mean_r(z))`, NaN where invalid. */
+  relief?: GraphDataView<'float32'>;
+  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUSimpleLocalRelief}.
  *
- * Topology: grid size, elevation format and calibration, `radius`, and which outputs exist.
- * Per-frame: `settings` (vertical exaggeration) and elevation contents.
+ * Topology: grid size, elevation format and calibration, `maximumRadius`, and which outputs exist.
+ * Per-frame: `parameters` (vertical exaggeration and window `radius`) and elevation contents.
  *
  * Cell size model: pixel units. The window radius is counted in pixels and the cell size is not
  * used, exactly as in RVT; output is in elevation units times the exaggeration.
@@ -68,23 +100,28 @@ export function getGPUSimpleLocalReliefParameterValues(
 export type GPUSimpleLocalReliefProps = {
   /** Prefix for node and transient IDs. Defaults to `'simple-local-relief'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 4 float32 values, see {@link getGPUSimpleLocalReliefParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 4 float32 values, see {@link getGPUSimpleLocalReliefParameterValues}. */
+  parameters: GraphDataView<'float32'>;
   /**
-   * Window half-width in pixels, an integer of at least 1. RVT restricts the trend radius to
+   * Largest window half-width in pixels the contributor serves, an integer of at least 1. It
+   * sizes `requiredHalo` and bounds the loops; the per-frame `radius` of the settings picks any
+   * value in `[1, maximumRadius]` with the same pipelines. RVT restricts the trend radius to
    * 10 to 50 pixels; this contributor accepts any radius (cost grows linearly with it).
    */
-  radius: number;
-  /** Optional relief per pixel, `verticalExaggeration * (z - mean_r(z))`, NaN where invalid. */
-  relief?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  maximumRadius: number;
+  /**
+   * Elevation quantum of the exact summed-area table, a power of two. Defaults to `2^-16`
+   * (see `GPU_RELIEF_DEFAULT_QUANTUM`). It bounds the error of the window mean by `quantum / 2`.
+   * Used only for grids up to `getGPUTerrainSummedAreaMaximumCellCount` cells; elevations of
+   * offset magnitude from the GPU-selected first valid anchor of `2^31 * quantum` or more (32768 by default) are treated as invalid there.
+   */
+  quantum?: number;
+  /** Caller-owned outputs. */
+  output: GPUSimpleLocalReliefOutput;
 };
 
 /**
@@ -98,8 +135,17 @@ export type GPUSimpleLocalReliefProps = {
  *
  * The mean is taken over the `(2r + 1)^2` window with edge-clamped coordinates, with nodata
  * excluded from the sum and the count. The deviation is computed without large-value
- * cancellation, see {@link getReliefMeanFilterNodes}. Invalid centers receive NaN and validity 0.
- * `requiredHalo` is `radius`.
+ * cancellation. Invalid centers receive NaN and validity 0. `requiredHalo` is `maximumRadius`;
+ * the window radius is the per-frame `radius` setting.
+ *
+ * Two paths, chosen at declaration by grid size and device limit only, both matching RVT's float64 mean filter
+ * (edge replication, nodata excluded) within their bound. Grids up to
+ * `getGPUTerrainSummedAreaMaximumCellCount` cells (about 3344 x 3344 on a default device) use one exact 64-bit
+ * summed-area table of elevations quantized to `quantum`: O(1) work per pixel independent of the
+ * radius, with an error of at most `quantum / 2` (zero for `|z| >= 128` at the default) plus a few
+ * float32 ULP of the relief. `maximumRadius` is then at most 23170. Larger grids use the separable
+ * O(radius) float filter, accurate to float32 rounding of the relief. Table-path pixels with
+ * `|z - anchor| >= 2^31 * quantum` are invalid.
  */
 export class GPUSimpleLocalRelief implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -113,49 +159,67 @@ export class GPUSimpleLocalRelief implements GPUCommandNodeProducer {
     this.id = props.id ?? 'simple-local-relief';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
-    if (!Number.isSafeInteger(props.radius) || props.radius < 1) {
-      throw new Error(`${id} radius must be an integer of at least 1`);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
+    if (!Number.isSafeInteger(props.maximumRadius) || props.maximumRadius < 1) {
+      throw new Error(`${id} maximumRadius must be an integer of at least 1`);
     }
-    this.requiredHalo = props.radius;
-    if (!props.relief && !props.validity) {
+    this.requiredHalo = props.maximumRadius;
+    validateReliefMeanFilter(id, props.quantum ?? GPU_RELIEF_DEFAULT_QUANTUM);
+    if (!output.relief && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainIlluminationView(id, 'relief', props.relief, 'float32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH);
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(id, 'output.relief', output.relief, 'float32', pixelCount);
+    validateTerrainIlluminationView(
       id,
-      [props.relief, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH);
+    validateRasterBuffersDistinct(
+      id,
+      [output.relief, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
-  /** Returns canonicalization plus the row and column mean filter nodes. */
+  /** Returns canonicalization, the summed-area table (or scratch) and the mean filter nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.settings, props.relief, props.validity]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.parameters,
+      output.relief,
+      output.outputValidity
+    ]);
     const pixelCount = width * height;
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    validateReliefMeanFilterRadius(id, graph.device, pixelCount, props.maximumRadius);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
+    const filter = createReliefMeanFilterSetup(graph, {
+      id,
+      width,
+      height,
+      band: source.band,
+      quantum: props.quantum ?? GPU_RELIEF_DEFAULT_QUANTUM
+    });
     return [
       ...source.nodes,
-      ...getReliefMeanFilterNodes(graph, {
+      ...filter.nodes,
+      ...filter.getFilterNodes({
         id: `${id}-mean`,
         operation: 'GPUSimpleLocalRelief',
-        width,
-        height,
-        radius: props.radius,
-        values: source.band.storage.values as GraphDataView<'float32'>,
-        validity: source.band.validity as GraphDataView<'uint32'>,
-        scratch: createReliefMeanFilterScratch(graph, id, pixelCount),
+        radius: props.maximumRadius,
+        radiusSlot: {settings: props.parameters, index: RADIUS_PARAMETER_INDEX},
         deviation:
-          props.relief ?? createTransientView(graph, `${id}-relief`, 'float32', pixelCount),
-        scale: {settings: props.settings, index: 0},
-        validityOutput: props.validity
+          output.relief ?? createTransientView(graph, `${id}-relief`, 'float32', pixelCount),
+        scale: {settings: props.parameters, index: 0},
+        validityOutput: output.outputValidity
       })
     ];
   }

@@ -5,7 +5,6 @@
 import {
   createTransientView,
   GPUReduction,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -22,8 +21,15 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   captureGraphCommandNodes,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology,
+  type GPUNetworkAdjacency
+} from '../../analysis-core/network-topology';
+import type {GPUIterationStatusPort} from '../../analysis-core/contracts/index';
 
 /**
  * One node-aligned analytics column and its optional normalized and extent companions.
@@ -50,7 +56,7 @@ export type GPUNetworkAnalyticsColumn<Format extends 'uint32' | 'float32'> = {
  * Properties for {@link GPUNetworkAnalyticsColumns}.
  *
  * Compile-time: node count, which metrics and optional views exist, and every algorithm option
- * (`damping`, `iterations`), because the gpu-graph algorithms bake them into their shaders.
+ * (`damping`, `iterationCount`, `maximumIterations`), because the gpu-graph algorithms bake them into their shaders.
  * Per-frame: the contents of the CSR, so closing a road in a live buffer changes every column on
  * the next encoding without recompiling.
  */
@@ -58,60 +64,60 @@ export type GPUNetworkAnalyticsColumnsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'network-analytics-columns'`. */
   id?: string;
   /**
-   * Forward CSR row offsets with `nodeCount + 1` rows. Any graph view, so a CSR built in the same
+   * Forward network connectivity; edge weights are ignored. `offsets` has `nodeCount + 1` rows and
+   * `neighbors` indices `>= nodeCount` are ignored. Any graph view, so a CSR built in the same
    * graph by `GPUCOOToCSR` works as well as an imported buffer.
    *
-   * Without a reverse CSR the graph is treated as UNDIRECTED, so the forward CSR must be
+   * Without `reverseTopology` the graph is treated as UNDIRECTED, so the forward CSR must be
    * symmetric: every two-way road is listed in both directions (the same convention as
-   * `GPUNetworkReachability`). With a reverse CSR the graph is directed.
+   * `GPUNetworkReachability`). With `reverseTopology` the graph is directed.
    */
-  offsets: GraphDataView<'uint32'>;
-  /** CSR destination node per edge. Indices `>= nodeCount` are ignored. */
-  neighbors: GraphDataView<'uint32'>;
-  /** Optional reverse CSR offsets. Its presence makes the graph directed. */
-  reverseOffsets?: GraphDataView<'uint32'>;
-  /** Reverse CSR neighbors. Required together with `reverseOffsets`. */
-  reverseNeighbors?: GraphDataView<'uint32'>;
+  topology: GPUNetworkAdjacency;
+  /** Optional reverse CSR with the same node count. Its presence makes the graph directed. */
+  reverseTopology?: Pick<GPUNetworkAdjacency, 'offsets' | 'neighbors'>;
   /** Outgoing degree (incident degree when undirected). */
   degree?: GPUNetworkAnalyticsColumn<'uint32'>;
   /** Incoming degree. Requires the reverse CSR. */
   inDegree?: GPUNetworkAnalyticsColumn<'uint32'>;
   /**
-   * Normalized PageRank. `damping` (default 0.85), `iterations` (default 40, at most 1024) and
-   * the presence of `residual` are compile-time. `residual` is a caller-owned one-row float
+   * Normalized PageRank. `damping` (default 0.85), `iterationCount` (default 40, at most 1024,
+   * always run) and the presence of `residual` are compile-time. `residual` is a caller-owned one-row float
    * receiving the final absolute rank change.
    */
   pageRank?: GPUNetworkAnalyticsColumn<'float32'> & {
     damping?: number;
-    iterations?: number;
+    iterationCount?: number;
     residual?: GraphDataView<'float32'>;
   };
   /**
-   * Simple undirected k-core number. `iterations` (default 32) is compile-time; `converged` and
+   * Simple undirected k-core number. `maximumIterations` (default 32) is compile-time; `status.converged` and
    * `degeneracy` are caller-owned one-row scalars.
    */
   coreNumber?: GPUNetworkAnalyticsColumn<'uint32'> & {
-    iterations?: number;
-    converged?: GraphDataView<'uint32'>;
+    maximumIterations?: number;
     degeneracy?: GraphDataView<'uint32'>;
+    /** Caller-owned one-row status words. */
+    status?: Pick<GPUIterationStatusPort, 'converged'>;
   };
   /**
    * Weak connected component label, the lowest node index of each component once converged.
-   * `iterations` (default 32) is compile-time.
+   * `maximumIterations` (default 32) is compile-time.
    */
   components?: {
     output: GraphDataView<'uint32'>;
-    iterations?: number;
-    converged?: GraphDataView<'uint32'>;
+    maximumIterations?: number;
+    /** Caller-owned one-row status words. */
+    status?: Pick<GPUIterationStatusPort, 'converged'>;
   };
   /**
    * Label-propagation community label, a bounded majority-vote heuristic (not modularity
-   * optimization). `iterations` (default 32) is compile-time.
+   * optimization). `maximumIterations` (default 32) is compile-time.
    */
   communities?: {
     output: GraphDataView<'uint32'>;
-    iterations?: number;
-    converged?: GraphDataView<'uint32'>;
+    maximumIterations?: number;
+    /** Caller-owned one-row status words. */
+    status?: Pick<GPUIterationStatusPort, 'converged'>;
   };
 };
 
@@ -142,15 +148,13 @@ type AnalyticsMetric = {
  *
  * Non-goals: weighted metrics (edge weights are ignored), betweenness or closeness centrality,
  * modularity-optimizing communities, and CPU readback of any column.
- *
- * Owns no GPU resources.
  */
 export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkAnalyticsColumnsProps;
-  /** Number of nodes, `offsets.length - 1`. */
+  /** Number of nodes, `topology.offsets.length - 1`. */
   readonly nodeCount: number;
   private readonly metrics: readonly AnalyticsMetric[];
 
@@ -158,21 +162,23 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     this.id = props.id ?? 'network-analytics-columns';
     this.props = props;
     const {id} = this;
-    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
-    validatePackedView(props.neighbors, ['uint32'], `${id} neighbors`);
-    this.nodeCount = props.offsets.length - 1;
+    this.nodeCount = validateGPUNetworkTopology(id, props.topology).nodeCount;
     const {nodeCount} = this;
-    if (nodeCount < 1) {
-      throw new Error(`${id} offsets must contain at least two rows`);
-    }
-    if (Boolean(props.reverseOffsets) !== Boolean(props.reverseNeighbors)) {
-      throw new Error(`${id} reverseOffsets and reverseNeighbors must be given together`);
-    }
-    if (props.reverseOffsets && props.reverseNeighbors) {
-      validatePackedView(props.reverseOffsets, ['uint32'], `${id} reverseOffsets`);
-      validatePackedView(props.reverseNeighbors, ['uint32'], `${id} reverseNeighbors`);
-      if (props.reverseOffsets.length !== nodeCount + 1) {
-        throw new Error(`${id} reverseOffsets must contain the same number of rows as offsets`);
+    if (props.reverseTopology) {
+      validatePackedView(
+        props.reverseTopology.offsets,
+        ['uint32'],
+        `${id} reverseTopology.offsets`
+      );
+      validatePackedView(
+        props.reverseTopology.neighbors,
+        ['uint32'],
+        `${id} reverseTopology.neighbors`
+      );
+      if (props.reverseTopology.offsets.length !== nodeCount + 1) {
+        throw new Error(
+          `${id} reverseTopology.offsets must contain the same number of rows as topology.offsets`
+        );
       }
     }
     if (
@@ -185,8 +191,8 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} requires at least one metric`);
     }
-    if (props.inDegree && !props.reverseOffsets) {
-      throw new Error(`${id} inDegree requires reverseOffsets and reverseNeighbors`);
+    if (props.inDegree && !props.reverseTopology) {
+      throw new Error(`${id} inDegree requires reverseTopology`);
     }
     const nodeColumns: [string, GraphDataView, 'uint32' | 'float32'][] = [];
     const scalars: [string, GraphDataView | undefined, 'uint32' | 'float32'][] = [];
@@ -221,10 +227,10 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     }
     scalars.push(
       ['pageRank.residual', props.pageRank?.residual, 'float32'],
-      ['coreNumber.converged', props.coreNumber?.converged, 'uint32'],
+      ['coreNumber.status.converged', props.coreNumber?.status?.converged, 'uint32'],
       ['coreNumber.degeneracy', props.coreNumber?.degeneracy, 'uint32'],
-      ['components.converged', props.components?.converged, 'uint32'],
-      ['communities.converged', props.communities?.converged, 'uint32']
+      ['components.status.converged', props.components?.status?.converged, 'uint32'],
+      ['communities.status.converged', props.communities?.status?.converged, 'uint32']
     );
     for (const [name, view, format] of nodeColumns) {
       validatePackedView(view, [format], `${id} ${name}`);
@@ -249,10 +255,9 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
       }
     }
     const inputBuffers = [
-      props.offsets,
-      props.neighbors,
-      props.reverseOffsets,
-      props.reverseNeighbors
+      ...getGPUNetworkTopologyViews(props.topology),
+      props.reverseTopology?.offsets,
+      props.reverseTopology?.neighbors
     ]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
@@ -324,22 +329,18 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     return nodes;
   }
 
-  /**
-   * Kept for API compatibility. The contributor owns no GPU resources: each gpu-graph algorithm clears
-   * its own graph-owned zero overflow word.
-   */
-  destroy(): void {}
-
   private createMetrics(): AnalyticsMetric[] {
     const {id, props, nodeCount} = this;
     const topology = new GPUGraphTopologyView({
       id: `${id}-topology`,
       vertexCount: nodeCount,
-      forward: {offsets: props.offsets, neighbors: props.neighbors},
-      reverse:
-        props.reverseOffsets && props.reverseNeighbors
-          ? {offsets: props.reverseOffsets, neighbors: props.reverseNeighbors}
-          : undefined
+      forward: {offsets: props.topology.offsets, neighbors: props.topology.neighbors},
+      reverse: props.reverseTopology
+        ? {
+            offsets: props.reverseTopology.offsets,
+            neighbors: props.reverseTopology.neighbors
+          }
+        : undefined
     });
     const metrics: AnalyticsMetric[] = [];
     if (props.degree) {
@@ -381,7 +382,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           topology,
           output: pageRank.output,
           damping: pageRank.damping,
-          iterations: pageRank.iterations,
+          iterations: pageRank.iterationCount,
           residual: pageRank.residual && pageRank.residual
         }),
         format: 'float32',
@@ -398,8 +399,8 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           id: `${id}-core-number`,
           topology,
           output: coreNumber.output,
-          iterations: coreNumber.iterations,
-          converged: coreNumber.converged && coreNumber.converged,
+          iterations: coreNumber.maximumIterations,
+          converged: coreNumber.status?.converged,
           degeneracy: coreNumber.degeneracy && coreNumber.degeneracy
         }),
         format: 'uint32',
@@ -416,8 +417,8 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           id: `${id}-components`,
           topology,
           output: components.output,
-          iterations: components.iterations,
-          converged: components.converged && components.converged
+          iterations: components.maximumIterations,
+          converged: components.status?.converged
         })
       });
     }
@@ -429,8 +430,8 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           id: `${id}-communities`,
           topology,
           output: communities.output,
-          iterations: communities.iterations,
-          converged: communities.converged && communities.converged
+          iterations: communities.maximumIterations,
+          converged: communities.status?.converged
         })
       });
     }
@@ -441,21 +442,20 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
 /** Returns every graph view referenced by the props. */
 function getViews(props: GPUNetworkAnalyticsColumnsProps): (GraphDataView | undefined)[] {
   return [
-    props.offsets,
-    props.neighbors,
-    props.reverseOffsets,
-    props.reverseNeighbors,
+    ...getGPUNetworkTopologyViews(props.topology),
+    props.reverseTopology?.offsets,
+    props.reverseTopology?.neighbors,
     ...[props.degree, props.inDegree, props.pageRank, props.coreNumber].flatMap(metric => [
       metric?.output,
       metric?.normalized,
       metric?.extent
     ]),
     props.pageRank?.residual,
-    props.coreNumber?.converged,
+    props.coreNumber?.status?.converged,
     props.coreNumber?.degeneracy,
     props.components?.output,
-    props.components?.converged,
+    props.components?.status?.converged,
     props.communities?.output,
-    props.communities?.converged
+    props.communities?.status?.converged
   ];
 }

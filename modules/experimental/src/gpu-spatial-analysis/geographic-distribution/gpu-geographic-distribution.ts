@@ -6,24 +6,29 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   createFillNode,
+  createWGSLDispatchGate,
   createWGSLKernelNode,
   getWGSLFloatLiteral,
+  type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {
+  createSegmentSumNode,
+  getSegmentSumDispatchShape,
+  getSortKeyBits
+} from '../../utils/sorted-segment-sums';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GEOGRAPHIC_DISTRIBUTION_MAXIMUM_ROWS,
@@ -31,10 +36,23 @@ import {
   WEISZFELD_COINCIDENT_DISTANCE_SQUARED
 } from './geographic-distribution-kernels';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from './geographic-distribution-parameters';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
-import {GROUPED_SUM_MAXIMUM_GROUPS, getGroupedSumNodes} from './grouped-sum-reduction';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  GROUPED_SUM_MAXIMUM_GROUPS,
+  getGroupedSumDispatchShapes,
+  getGroupedSumNodes,
+  type GroupedSumProps
+} from './grouped-sum-reduction';
 
 const OPERATION = 'GPUGeographicDistribution';
+/** Workgroup size of the chunked median convergence check (one lane per group). */
+const CHECK_WORKGROUP_SIZE = 256;
+/** Workgroup size of the sorted median update (a workgroup OR before one global atomic). */
+const UPDATE_WORKGROUP_SIZE = 256;
+
 const MAXIMUM_MEDIAN_ITERATIONS = 256;
 const DEFAULT_MEDIAN_ITERATIONS = 24;
 const DEFAULT_POLYGON_VERTEX_COUNT = 64;
@@ -110,7 +128,7 @@ export type GPUGeographicDistributionOutput = {
  *
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Topology
  * (needs a new graph): view lengths, `groupCount`, which inputs and outputs are present,
- * `medianIterations` and `polygonVertexCount`.
+ * `maximumMedianIterations` and `polygonVertexCount`.
  */
 export type GPUGeographicDistributionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geographic-distribution'`. */
@@ -147,8 +165,12 @@ export type GPUGeographicDistributionProps = {
   lineEnds?: GraphDataView<'float32x2'>;
   /** Per-frame parameters packed by `getGPUGeographicDistributionParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Weiszfeld iterations of the median centre. Compile-time, 1 to 256. Defaults to 24. */
-  medianIterations?: number;
+  /**
+   * Largest number of Weiszfeld iterations of the median centre. Compile-time, 1 to 256. Defaults
+   * to 24. Iterations after the first one in which every non-empty group moved at most
+   * `medianTolerance` are skipped on the GPU.
+   */
+  maximumMedianIterations?: number;
   /** Vertices per ring of `ellipseVertices` and `circleVertices`, at least 3. Defaults to 64. */
   polygonVertexCount?: number;
   /**
@@ -194,7 +216,9 @@ export type GPUGeographicDistributionProps = {
  *   (short) axis, `angle = -theta` wrapped to `(-pi/2, pi/2]`. The long axis points at
  *   `angle + pi/2`. A vertex is `M + R(angle) * (sigmaX cos t, sigmaY sin t)`.
  * - Median centre: Weiszfeld iteration `m <- m + sum(w d / |d|) / sum(w / |d|)` with `d = p - m`
- *   started at the mean centre, `medianIterations` fixed steps. A point within `1e-6` of the
+ *   started at the mean centre, at most `maximumMedianIterations` steps. All groups step together and
+ *   stop after the first step in which every non-empty group moved at most `medianTolerance`
+ *   (a GPU-written indirect dispatch skips the remaining iterations). A point within `1e-6` of the
  *   iterate is left out of the sums and handled by the Vardi-Zhang (2000) correction: the step is
  *   scaled by `1 - min(1, eta / R)` with `eta` the weight of the coincident points and `R` the
  *   length of the others' pull, so an iterate that reaches a data point which is the median stays
@@ -242,8 +266,8 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   readonly props: GPUGeographicDistributionProps;
   /** Number of groups, the row count of every per-group output. */
   readonly groupCount: number;
-  /** Weiszfeld iteration count. */
-  readonly medianIterations: number;
+  /** Largest Weiszfeld iteration count. */
+  readonly maximumMedianIterations: number;
   /** Vertices per ring. */
   readonly polygonVertexCount: number;
   /** Resolved reduction strategy. */
@@ -257,18 +281,6 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {output} = props;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['weights', props.weights],
-      ['groupIds', props.groupIds],
-      ['mask', props.mask],
-      ['lineEnds', props.lineEnds],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
@@ -281,10 +293,10 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       validatePackedView(props.weights, ['float32'], `${id} weights`);
     }
     if (props.groupIds) {
-      validatePackedUint32View(props.groupIds, `${id} groupIds`);
+      validatePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
     }
     if (props.lineEnds) {
       validatePackedView(props.lineEnds, ['float32x2'], `${id} lineEnds`);
@@ -306,26 +318,18 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       );
     }
     this.groupCount = props.groupCount ?? 1;
-    if (
-      !Number.isInteger(this.groupCount) ||
-      this.groupCount < 1 ||
-      this.groupCount > GEOGRAPHIC_DISTRIBUTION_MAXIMUM_ROWS
-    ) {
-      throw new Error(`${id} groupCount must be a positive integer below 2^24`);
-    }
+    validateCapacity(id, 'groupCount', this.groupCount, 1, GEOGRAPHIC_DISTRIBUTION_MAXIMUM_ROWS);
     if (!props.groupIds && this.groupCount !== 1) {
       throw new Error(`${id} groupCount must be 1 without groupIds`);
     }
-    this.medianIterations = props.medianIterations ?? DEFAULT_MEDIAN_ITERATIONS;
-    if (
-      !Number.isInteger(this.medianIterations) ||
-      this.medianIterations < 1 ||
-      this.medianIterations > MAXIMUM_MEDIAN_ITERATIONS
-    ) {
-      throw new Error(
-        `${id} medianIterations must be an integer in [1, ${MAXIMUM_MEDIAN_ITERATIONS}]`
-      );
-    }
+    this.maximumMedianIterations = props.maximumMedianIterations ?? DEFAULT_MEDIAN_ITERATIONS;
+    validateCapacity(
+      id,
+      'maximumMedianIterations',
+      this.maximumMedianIterations,
+      1,
+      MAXIMUM_MEDIAN_ITERATIONS
+    );
     const reduction = props.reduction ?? 'auto';
     if (reduction !== 'auto' && reduction !== 'chunked' && reduction !== 'sorted') {
       throw new Error(`${id} reduction must be auto, chunked, or sorted`);
@@ -342,9 +346,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
           : 'sorted'
         : reduction;
     this.polygonVertexCount = props.polygonVertexCount ?? DEFAULT_POLYGON_VERTEX_COUNT;
-    if (!Number.isInteger(this.polygonVertexCount) || this.polygonVertexCount < 3) {
-      throw new Error(`${id} polygonVertexCount must be an integer of at least 3`);
-    }
+    validateCapacity(id, 'polygonVertexCount', this.polygonVertexCount, 3);
 
     const groups = this.groupCount;
     const vertices = groups * this.polygonVertexCount;
@@ -423,16 +425,19 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       invocationCount: number,
       bindings: WGSLKernelBinding[],
       body: string,
-      declarations = ''
+      declarations = '',
+      gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>,
+      variant = step
     ) =>
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-${step}`,
         operation: OPERATION,
-        variant: step,
+        variant,
         bindings,
         invocationCount,
         declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}\n${declarations}`,
-        body
+        body,
+        ...gate
       });
     const groupConstants = `const GROUP_COUNT: u32 = ${groupCount}u;`;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -491,6 +496,7 @@ fn loadRow(row: u32) -> RowData {
         countOutput?: GraphDataView<'uint32'>;
         finish?: {bindings: WGSLKernelBinding[]; declarations?: string; body: string};
         foldSuffix?: string;
+        gates?: GroupedSumProps<Parameters>['gates'];
       }
     ) =>
       getGroupedSumNodes<Parameters>(graph, {
@@ -504,7 +510,8 @@ fn loadRow(row: u32) -> RowData {
         outputs: props.outputs,
         countOutput: props.countOutput,
         finish: props.finish,
-        foldSuffix: props.foldSuffix
+        foldSuffix: props.foldSuffix,
+        gates: props.gates
       });
     const sumX = f32('sum-x', groupCount);
     const sumY = f32('sum-y', groupCount);
@@ -564,20 +571,49 @@ fn loadRow(row: u32) -> RowData {
   }`
       );
     };
+    // Median record per group: [offsetX, offsetY, anchorX, anchorY]. The anchor is the group's
+    // mean centre as stored in f32 and the iterate is held as a small offset from it (rule 3), so
+    // `(p - anchor) - offset` keeps the step's precision at any coordinate magnitude: an absolute
+    // f32 iterate near 1e5 could not move by less than its ulp (~0.008), and steps would never fall
+    // to a tolerance below that. The last word is a runtime zero: the anchor subtraction is routed
+    // through an XOR with it, because Metal otherwise reassociates `(p - anchor) - offset` into
+    // `p - (anchor + offset)` and rounds the iterate back to the f32 grid of `p` (measured: steps
+    // stalled near 1e-2 at 1e6). The median starts at the anchor and arms the iteration gate. `active` (sorted path
+    // only) is the word the update kernels set while some group still moves.
     const createMedianStartNode = (
-      median: GraphDataView<'float32x2'>,
-      lastMoves: GraphDataView<'float32'>
+      median: GraphDataView<'float32'>,
+      lastMoves: GraphDataView<'float32'>,
+      gate: WGSLDispatchGate<Parameters>,
+      active?: GraphDataView<'uint32'>
     ) =>
       kernel(
         'median-start',
         groupCount,
-        [read('mean', meanCenters, 'f32'), write('median', median), write('lastMoves', lastMoves)],
-        `median[medianOffset + index * 2u] = mean[meanOffset + index * 2u];
-  median[medianOffset + index * 2u + 1u] = mean[meanOffset + index * 2u + 1u];
-  lastMoves[lastMovesOffset + index] = 0.0;`
+        [
+          read('mean', meanCenters, 'f32'),
+          write('median', median),
+          write('lastMoves', lastMoves),
+          write('dispatch', gate.view, 'u32'),
+          ...(active ? [write('medianActive', active, 'u32')] : [])
+        ],
+        `median[medianOffset + index * 4u] = 0.0;
+  median[medianOffset + index * 4u + 1u] = 0.0;
+  median[medianOffset + index * 4u + 2u] = mean[meanOffset + index * 2u];
+  median[medianOffset + index * 4u + 3u] = mean[meanOffset + index * 2u + 1u];
+  lastMoves[lastMovesOffset + index] = 0.0;
+  if (index == 0u) {
+    median[medianOffset + 4u * ${groupCount}u] = 0.0;
+    ${active ? 'medianActive[medianActiveOffset] = 0u;' : ''}
+    ${gate.armWGSL}
+  }`
       );
+    // A group still moves when its median is finite and its last step exceeds medianTolerance
+    // (NaN steps count as moving, so they never stop the loop early).
+    const MEDIAN_MOVING_WGSL = `fn isMedianMoving(medianX: f32, stepLength: f32, tolerance: f32) -> bool {
+  return isFiniteValue(medianX) && !(stepLength <= tolerance);
+}`;
     const createMedianPublishNode = (
-      median: GraphDataView<'float32x2'>,
+      median: GraphDataView<'float32'>,
       lastMoves: GraphDataView<'float32'>
     ) => {
       const medianBindings = [
@@ -597,13 +633,15 @@ fn loadRow(row: u32) -> RowData {
         medianBindings,
         `${
           output.medianCenters
-            ? `medianCenters[medianCentersOffset + index * 2u] = median[medianOffset + index * 2u] + parameters[parametersOffset];
-  medianCenters[medianCentersOffset + index * 2u + 1u] = median[medianOffset + index * 2u + 1u] + parameters[parametersOffset + 1u];`
+            ? `medianCenters[medianCentersOffset + index * 2u] =
+    (median[medianOffset + index * 4u + 2u] + median[medianOffset + index * 4u]) + parameters[parametersOffset];
+  medianCenters[medianCentersOffset + index * 2u + 1u] =
+    (median[medianOffset + index * 4u + 3u] + median[medianOffset + index * 4u + 1u]) + parameters[parametersOffset + 1u];`
             : ''
         }
   ${
     output.medianConverged
-      ? `let isValid = isFiniteValue(median[medianOffset + index * 2u]);
+      ? `let isValid = isFiniteValue(median[medianOffset + index * 4u + 2u]) && isFiniteValue(median[medianOffset + index * 4u]);
   medianConverged[medianConvergedOffset + index] = select(0u, 1u, isValid && lastMoves[lastMovesOffset + index] <= parameters[parametersOffset + 5u]);`
       : ''
   }`
@@ -697,7 +735,7 @@ fn loadRow(row: u32) -> RowData {
       // 5. Weiszfeld median centre: each iteration is one fused row pass plus a fold whose lane 0
       // applies the step, so no per-row contribution arrays are written or re-read.
       if (output.medianCenters || output.medianConverged) {
-        const median = createTransientView(graph, `${id}-median`, 'float32x2', groupCount);
+        const median = createTransientView(graph, `${id}-median`, 'float32', 4 * groupCount + 1);
         const lastMoves = f32('median-moves', groupCount);
         const sumMedianWeight = f32('median-sum-weight', groupCount);
         const sumMedianX = f32('median-sum-x', groupCount);
@@ -706,16 +744,27 @@ fn loadRow(row: u32) -> RowData {
         const coincidentDistanceSquared = getWGSLFloatLiteral(
           WEISZFELD_COINCIDENT_DISTANCE_SQUARED
         );
-        nodes.push(createMedianStartNode(median, lastMoves));
-        for (let iteration = 0; iteration < this.medianIterations; iteration++) {
+        const shapes = getGroupedSumDispatchShapes(rows, groupCount);
+        // Slots: grouped partial pass, grouped fold (which applies the step).
+        const gate = createWGSLDispatchGate(graph, {
+          id: `${id}-median-dispatch`,
+          operation: OPERATION,
+          shapes: [shapes.partial, shapes.fold]
+        });
+        nodes.push(createMedianStartNode(median, lastMoves, gate));
+        for (let iteration = 0; iteration < this.maximumMedianIterations; iteration++) {
           nodes.push(
             ...grouped(`median-${iteration}`, {
+              gates: {partial: gate.getGate(0), fold: gate.getGate(1)},
               bindings: [read('median', median, 'f32')],
               rowSnippet: `let data = loadRow(row);
       group = data.group;
       if (group != NO_GROUP) {
-        let dx = data.x - median[medianOffset + group * 2u];
-        let dy = data.y - median[medianOffset + group * 2u + 1u];
+        let opaqueZero = bitcast<u32>(median[medianOffset + 4u * GROUP_COUNT]);
+        let relative = bitcast<vec2f>(bitcast<vec2u>(vec2f(data.x, data.y) -
+          vec2f(median[medianOffset + group * 4u + 2u], median[medianOffset + group * 4u + 3u])) ^ vec2u(opaqueZero));
+        let dx = relative.x - median[medianOffset + group * 4u];
+        let dy = relative.y - median[medianOffset + group * 4u + 1u];
         let distanceSquared = dx * dx + dy * dy;
         if (distanceSquared > ${coincidentDistanceSquared}) {
           let inverseWeight = data.weight / sqrt(distanceSquared);
@@ -737,10 +786,42 @@ fn loadRow(row: u32) -> RowData {
       stepY = sum2 / sum0;
     }
     ${getVardiZhangWGSL('sum1', 'sum2', 'sum3')}
-    median[medianOffset + group * 2u] = median[medianOffset + group * 2u] + stepX;
-    median[medianOffset + group * 2u + 1u] = median[medianOffset + group * 2u + 1u] + stepY;
+    median[medianOffset + group * 4u] = median[medianOffset + group * 4u] + stepX;
+    median[medianOffset + group * 4u + 1u] = median[medianOffset + group * 4u + 1u] + stepY;
     lastMoves[lastMovesOffset + group] = sqrt(stepX * stepX + stepY * stepY);`
               }
+            }),
+            // Ungated (it writes the gate): one lane per group (at most 256 in the chunked path).
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-median-${iteration}-check`,
+              operation: OPERATION,
+              variant: 'median-check',
+              bindings: [
+                read('median', median, 'f32'),
+                read('lastMoves', lastMoves, 'f32'),
+                read('parameters', parameters, 'f32'),
+                write('dispatch', gate.view, 'u32')
+              ],
+              invocationCount: CHECK_WORKGROUP_SIZE,
+              workgroupSize: CHECK_WORKGROUP_SIZE,
+              guardIndex: false,
+              declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${MEDIAN_MOVING_WGSL}
+${groupConstants}
+var<workgroup> moving: atomic<u32>;`,
+              body: `if (localInvocationIndex == 0u) {
+    atomicStore(&moving, 0u);
+  }
+  workgroupBarrier();
+  let group = localInvocationIndex;
+  if (group < GROUP_COUNT &&
+      isMedianMoving(median[medianOffset + group * 4u + 2u] + median[medianOffset + group * 4u], lastMoves[lastMovesOffset + group], parameters[parametersOffset + 5u])) {
+    atomicOr(&moving, 1u);
+  }
+  workgroupBarrier();
+  if (localInvocationIndex == 0u && atomicLoad(&moving) == 0u) {
+    ${gate.disarmWGSL}
+  }`
             })
           );
         }
@@ -880,7 +961,8 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
       const sum = (
         name: string,
         input: GraphDataView<'float32'>,
-        result: GraphDataView<'float32'>
+        result: GraphDataView<'float32'>,
+        gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>
       ) =>
         createSegmentSumNode<Parameters>(graph, {
           id: `${id}-sum-${name}`,
@@ -889,6 +971,7 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
           input,
           segmentOffsets,
           output: result,
+          ...gate,
           // Exclusive scan of per-group counts of valid rows, so the last offset is at most `rows`.
           offsetsWithinInput: input.length >= rows
         });
@@ -1005,7 +1088,7 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
 
       // 5. Weiszfeld median centre, reusing the sorted order every iteration.
       if (output.medianCenters || output.medianConverged) {
-        const median = createTransientView(graph, `${id}-median`, 'float32x2', groupCount);
+        const median = createTransientView(graph, `${id}-median`, 'float32', 4 * groupCount + 1);
         const lastMoves = f32('median-moves', groupCount);
         const contributionWeight = f32('median-contribution-weight', rows);
         const contributionX = f32('median-contribution-x', rows);
@@ -1018,8 +1101,20 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
         const coincidentDistanceSquared = getWGSLFloatLiteral(
           WEISZFELD_COINCIDENT_DISTANCE_SQUARED
         );
-        nodes.push(createMedianStartNode(median, lastMoves));
-        for (let iteration = 0; iteration < this.medianIterations; iteration++) {
+        // Slots: the two row kernels (same shape), the per-group update, the four segment sums
+        // between them, so converged rounds skip them.
+        const gate = createWGSLDispatchGate(graph, {
+          id: `${id}-median-dispatch`,
+          operation: OPERATION,
+          shapes: [
+            [rows],
+            [groupCount, UPDATE_WORKGROUP_SIZE],
+            getSegmentSumDispatchShape(groupCount)
+          ]
+        });
+        const active = u32('median-active', 1);
+        nodes.push(createMedianStartNode(median, lastMoves, gate, active));
+        for (let iteration = 0; iteration < this.maximumMedianIterations; iteration++) {
           const step = `median-${iteration}`;
           nodes.push(
             kernel(
@@ -1040,8 +1135,11 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
   var deltaX = 0.0;
   var coincidentWeight = 0.0;
   if (group < GROUP_COUNT) {
-    let dx = sortedX[sortedXOffset + index] - median[medianOffset + group * 2u];
-    let dy = sortedY[sortedYOffset + index] - median[medianOffset + group * 2u + 1u];
+    let opaqueZero = bitcast<u32>(median[medianOffset + 4u * GROUP_COUNT]);
+    let relative = bitcast<vec2f>(bitcast<vec2u>(vec2f(sortedX[sortedXOffset + index], sortedY[sortedYOffset + index]) -
+      vec2f(median[medianOffset + group * 4u + 2u], median[medianOffset + group * 4u + 3u])) ^ vec2u(opaqueZero));
+    let dx = relative.x - median[medianOffset + group * 4u];
+    let dy = relative.y - median[medianOffset + group * 4u + 1u];
     let distanceSquared = dx * dx + dy * dy;
     if (distanceSquared > ${coincidentDistanceSquared}) {
       inverseWeight = sortedWeights[sortedWeightsOffset + index] / sqrt(distanceSquared);
@@ -1053,7 +1151,9 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
   contributionWeight[contributionWeightOffset + index] = inverseWeight;
   contributionX[contributionXOffset + index] = deltaX;
   contributionCoincident[contributionCoincidentOffset + index] = coincidentWeight;`,
-              groupConstants
+              groupConstants,
+              gate.getGate(0),
+              'median-x'
             ),
             kernel(
               `${step}-y`,
@@ -1068,27 +1168,46 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
               `let group = sortedKeys[sortedKeysOffset + index];
   var deltaY = 0.0;
   if (group < GROUP_COUNT) {
-    deltaY = contributionWeight[contributionWeightOffset + index] * (sortedY[sortedYOffset + index] - median[medianOffset + group * 2u + 1u]);
+    deltaY = contributionWeight[contributionWeightOffset + index] * (bitcast<f32>(bitcast<u32>(sortedY[sortedYOffset + index] - median[medianOffset + group * 4u + 3u]) ^
+      bitcast<u32>(median[medianOffset + 4u * GROUP_COUNT])) - median[medianOffset + group * 4u + 1u]);
   }
   contributionY[contributionYOffset + index] = deltaY;`,
-              groupConstants
+              groupConstants,
+              gate.getGate(0),
+              'median-y'
             ),
-            sum(`${step}-weight`, contributionWeight, sumMedianWeight),
-            sum(`${step}-x`, contributionX, sumMedianX),
-            sum(`${step}-y`, contributionY, sumMedianY),
-            sum(`${step}-coincident`, contributionCoincident, sumMedianCoincident),
-            kernel(
-              `${step}-update`,
-              groupCount,
-              [
+            sum(`${step}-weight`, contributionWeight, sumMedianWeight, gate.getGate(2)),
+            sum(`${step}-x`, contributionX, sumMedianX, gate.getGate(2)),
+            sum(`${step}-y`, contributionY, sumMedianY, gate.getGate(2)),
+            sum(`${step}-coincident`, contributionCoincident, sumMedianCoincident, gate.getGate(2)),
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-${step}-update`,
+              operation: OPERATION,
+              variant: 'median-update',
+              bindings: [
                 read('sumWeight', sumMedianWeight, 'f32'),
                 read('sumX', sumMedianX, 'f32'),
                 read('sumY', sumMedianY, 'f32'),
                 read('sumCoincident', sumMedianCoincident, 'f32'),
                 write('median', median),
-                write('lastMoves', lastMoves)
+                write('lastMoves', lastMoves),
+                read('parameters', parameters, 'f32'),
+                write('medianActive', active, 'atomic<u32>')
               ],
-              `let total = sumWeight[sumWeightOffset + index];
+              invocationCount: groupCount,
+              workgroupSize: UPDATE_WORKGROUP_SIZE,
+              guardIndex: false,
+              ...gate.getGate(1),
+              declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${MEDIAN_MOVING_WGSL}
+var<workgroup> moving: atomic<u32>;`,
+              // Unguarded so every lane reaches the barriers; one global atomic per workgroup.
+              body: `if (localInvocationIndex == 0u) {
+    atomicStore(&moving, 0u);
+  }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {
+  let total = sumWeight[sumWeightOffset + index];
   var stepX = 0.0;
   var stepY = 0.0;
   if (total > 0.0) {
@@ -1096,10 +1215,32 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
     stepY = sumY[sumYOffset + index] / total;
   }
   ${getVardiZhangWGSL('sumX[sumXOffset + index]', 'sumY[sumYOffset + index]', 'sumCoincident[sumCoincidentOffset + index]')}
-  median[medianOffset + index * 2u] = median[medianOffset + index * 2u] + stepX;
-  median[medianOffset + index * 2u + 1u] = median[medianOffset + index * 2u + 1u] + stepY;
-  lastMoves[lastMovesOffset + index] = sqrt(stepX * stepX + stepY * stepY);`
-            )
+  let nextX = median[medianOffset + index * 4u] + stepX;
+  median[medianOffset + index * 4u] = nextX;
+  median[medianOffset + index * 4u + 1u] = median[medianOffset + index * 4u + 1u] + stepY;
+  let stepLength = sqrt(stepX * stepX + stepY * stepY);
+  lastMoves[lastMovesOffset + index] = stepLength;
+  if (isMedianMoving(median[medianOffset + index * 4u + 2u] + nextX, stepLength, parameters[parametersOffset + 5u])) {
+    atomicOr(&moving, 1u);
+  }
+  }
+  workgroupBarrier();
+  if (localInvocationIndex == 0u && atomicLoad(&moving) != 0u) {
+    atomicOr(&medianActive[medianActiveOffset], 1u);
+  }`
+            }),
+            // Ungated (it writes the gate): stop once no group moved, then clear the word.
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-${step}-check`,
+              operation: OPERATION,
+              variant: 'median-check',
+              bindings: [write('medianActive', active, 'u32'), write('dispatch', gate.view, 'u32')],
+              invocationCount: 1,
+              body: `if (medianActive[medianActiveOffset] == 0u) {
+    ${gate.disarmWGSL}
+  }
+  medianActive[medianActiveOffset] = 0u;`
+            })
           );
         }
         nodes.push(createMedianPublishNode(median, lastMoves));

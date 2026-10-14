@@ -18,20 +18,40 @@ export type GPUUint32Rows = GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
  */
 export type GPUFloat32Positions = GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
 
+/** One GPU-written unsigned scalar: a one-row `uint32` status word. */
+export type GPUStatusScalar = GraphDataView<'uint32'>;
+
 /**
- * Caller-owned, capacity-bounded compact result shared by GPU contributors.
+ * Usable and, when known, exact required cardinality of a bounded result. Defined here because
+ * `utils` sits below `analysis-core`; the analysis status contracts re-export it.
+ */
+export type GPUCardinalityPort = {
+  /** Number of usable rows or elements written. */
+  count: GPUStatusScalar;
+  /** Exact unclamped requirement. Omit when the operation cannot compute it exactly. */
+  requiredCount?: GPUStatusScalar;
+};
+
+/** Final-output completeness for a capacity-bounded result. */
+export type GPUOverflowStatusPort = {
+  /** One when the final result is incomplete because its output capacity was too small. */
+  overflow: GPUStatusScalar;
+};
+
+/**
+ * Caller-owned, capacity-bounded compact result shared by every GPU contributor and geospatial
+ * query (the one compact-output contract; re-exported from the analysis contracts).
  *
- * This shape is structurally identical to the geospatial `GPUSpatialQueryOutput`, so one result
- * can feed either family. `count` is always clamped to `ids.length` and is therefore safe to use as
- * an indirect draw instance count. Writable views must not alias each other or contributor inputs.
+ * `status.count` is always clamped to `ids.length` and is therefore safe to use as an indirect
+ * draw instance count. Writable views must not alias each other or contributor inputs.
  */
 export type GPUCompactOutput = {
   /** Compact stable source IDs, or zero-based row indices when the contributor has no source IDs. */
   ids: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(requiredCount, ids.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `1` when any capacity in the contributor overflowed, otherwise `0`. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of accepted rows. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `count` receives `min(requiredCount, ids.length)`, `overflow` receives
+   * `1` when any capacity in the contributor overflowed (otherwise `0`), and the optional
+   * `requiredCount` receives the unclamped number of accepted rows.
+   */
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
 };

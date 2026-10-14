@@ -53,19 +53,19 @@ export function createVisvalingamInitNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    trackOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     scratch: VisvalingamScratch;
     importance: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const lineCount = props.trackOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   const {scratch} = props;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'visvalingam-init',
     bindings: [
-      {name: 'trackOffsets', view: props.trackOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
       {name: 'previousRows', view: scratch.previousRows, type: 'u32', access: 'read_write'},
       {name: 'nextRows', view: scratch.nextRows, type: 'u32', access: 'read_write'},
       {name: 'areaKeys', view: scratch.areaKeys, type: 'u32', access: 'read_write'},
@@ -82,8 +82,8 @@ const ENDPOINT_IMPORTANCE: u32 = ${LINE_ENDPOINT_IMPORTANCE_BITS}u;`,
   previousRows[previousRowsOffset + index] = index;
   nextRows[nextRowsOffset + index] = index;
   importance[importanceOffset + index] = 0u;
-  let firstRow = trackOffsets[trackOffsetsOffset];
-  let endRow = trackOffsets[trackOffsetsOffset + LINE_COUNT];
+  let firstRow = lineOffsets[lineOffsetsOffset];
+  let endRow = lineOffsets[lineOffsetsOffset + LINE_COUNT];
   if (index < firstRow || index >= endRow) {
     return;
   }
@@ -92,15 +92,15 @@ const ENDPOINT_IMPORTANCE: u32 = ${LINE_ENDPOINT_IMPORTANCE_BITS}u;`,
   var high = LINE_COUNT + 1u;
   while (low < high) {
     let middle = (low + high) / 2u;
-    if (trackOffsets[trackOffsetsOffset + middle] <= index) {
+    if (lineOffsets[lineOffsetsOffset + middle] <= index) {
       low = middle + 1u;
     } else {
       high = middle;
     }
   }
   let line = low - 1u;
-  let lineStart = trackOffsets[trackOffsetsOffset + line];
-  let lineLast = trackOffsets[trackOffsetsOffset + line + 1u] - 1u;
+  let lineStart = lineOffsets[lineOffsetsOffset + line];
+  let lineLast = lineOffsets[lineOffsetsOffset + line + 1u] - 1u;
   if (index == lineStart || index >= lineLast) {
     importance[importanceOffset + index] = ENDPOINT_IMPORTANCE;
     return;

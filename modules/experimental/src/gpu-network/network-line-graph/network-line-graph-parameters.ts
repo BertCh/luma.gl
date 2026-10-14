@@ -42,7 +42,7 @@ export function getGPUNetworkLineGraphParameterValues(
 ): Float32Array {
   if (target.length < GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH) {
     throw new Error(
-      `Line graph parameter target must hold ${GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH} elements`
+      `GPUNetworkLineGraph parameter target must hold ${GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH} elements`
     );
   }
   const angleCost = settings.angleCost ?? 0;
@@ -54,12 +54,12 @@ export function getGPUNetworkLineGraphParameterValues(
     ['rightTurnCost', rightTurnCost]
   ] as const) {
     if (!(value >= 0) || !Number.isFinite(value)) {
-      throw new Error(`Line graph ${name} must be a non-negative finite number`);
+      throw new Error(`GPUNetworkLineGraph ${name} must be a non-negative finite number`);
     }
   }
   const bannedTurnCount = settings.bannedTurnCount ?? 0;
   if (!Number.isSafeInteger(bannedTurnCount) || bannedTurnCount < 0) {
-    throw new Error('Line graph bannedTurnCount must be a non-negative integer');
+    throw new Error('GPUNetworkLineGraph bannedTurnCount must be a non-negative integer');
   }
   target[0] = angleCost;
   target[1] = leftTurnCost;

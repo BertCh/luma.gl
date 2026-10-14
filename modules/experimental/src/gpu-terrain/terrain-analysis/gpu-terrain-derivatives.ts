@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
@@ -15,117 +13,122 @@ import {
   GPURasterBufferToTexture,
   GPURasterGradient,
   type GPURasterBand,
-  type GPURasterBorderMode
+  type GPURasterBorderMode,
+  type GPURasterMetadata
 } from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from './terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateParameterTarget,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  getTerrainRowNorthSignWGSL,
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection,
-  TERRAIN_DEGREES_TO_RADIANS_WGSL,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection
-} from '../terrain-grid-utils';
-
-export type {GPUTerrainCellSizeMode} from '../terrain-grid-utils';
-
-/** How the shade kernel converts settings cell sizes into ground meters per pixel for each row. */
+  getRasterGroundCellSizeWGSL,
+  getRasterRowNorthSignWGSL,
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection,
+  RASTER_DEGREES_TO_RADIANS_WGSL,
+  validateRasterCellSizeMode,
+  validateRasterRowDirection,
+  writeRasterGridParameterValues
+} from '../../analysis-core/raster-grid';
 
 /** Slope output unit. */
 export type GPUTerrainSlopeUnits = 'degrees' | 'percent';
 
-/** Number of float32 values read from `GPUTerrainDerivativesProps.settings`. */
+/** Number of float32 values read from `GPUTerrainDerivativesProps.parameters`. */
 export const GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH = 8;
 
-/** CPU-side description packed by {@link getGPUTerrainDerivativesParameterValues}. */
+/** Cell size and row-edge slots of the derivative parameter layout. */
+const TERRAIN_DERIVATIVES_GRID_SLOTS = {cellSizeIndex: 0, northEdgeIndex: 5} as const;
+
+/**
+ * CPU-side description packed by {@link getGPUTerrainDerivativesParameterValues}. Cell size and
+ * latitude band come from the grid passed next to it.
+ */
 export type GPUTerrainDerivativesSettings = {
-  /** `[x, y]` cell size: meters (uniform), equatorial Web Mercator meters, or degrees (geographic). */
-  cellSize: readonly [number, number];
   /** Elevation multiplier applied to derivatives. Defaults to 1. */
   zFactor?: number;
   /** Direction the light comes from, degrees clockwise from north. Defaults to 315. */
   azimuthDegrees?: number;
   /** Light elevation above the horizon in degrees. Defaults to 45. */
   altitudeDegrees?: number;
-  /** Top edge of row 0: normalized Web Mercator y in `[0, 1]` or latitude degrees. Defaults to 0. */
-  northEdge?: number;
-  /** Bottom edge of the last row, same units as `northEdge`. Defaults to 0. */
-  southEdge?: number;
 };
 
 /**
  * Packs settings into the 8-float layout read by {@link GPUTerrainDerivatives}:
- * `[cellSizeX, cellSizeY, zFactor, azimuthDegrees, altitudeDegrees, northEdge, southEdge, 0]`.
+ * `[cellSizeX, cellSizeY, zFactor, azimuthDegrees, altitudeDegrees, northEdge, southEdge, 0]`,
+ * with the cell size and the row-edge world y taken from `grid`.
  */
 export function getGPUTerrainDerivativesParameterValues(
   settings: GPUTerrainDerivativesSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH) {
-    throw new Error('Terrain derivative settings target must hold 8 values');
-  }
-  target.set([
-    settings.cellSize[0],
-    settings.cellSize[1],
-    settings.zFactor ?? 1,
-    settings.azimuthDegrees ?? 315,
-    settings.altitudeDegrees ?? 45,
-    settings.northEdge ?? 0,
-    settings.southEdge ?? 0,
-    0
-  ]);
+  validateParameterTarget(
+    'getGPUTerrainDerivativesParameterValues',
+    target,
+    GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
+  );
+  target[2] = settings.zFactor ?? 1;
+  target[3] = settings.azimuthDegrees ?? 315;
+  target[4] = settings.altitudeDegrees ?? 45;
+  target[7] = 0;
+  writeRasterGridParameterValues(target, grid, TERRAIN_DERIVATIVES_GRID_SLOTS);
   return target;
 }
+
+/** Caller-owned outputs of {@link GPUTerrainDerivatives}; at least one is required. */
+export type GPUTerrainDerivativesOutput = {
+  /** Slope per pixel in degrees `[0, 90)` or percent. */
+  slope?: GraphDataView<'float32'>;
+  /** Downslope direction per pixel, degrees clockwise from north; -1 for flat cells. */
+  aspect?: GraphDataView<'float32'>;
+  /** Hillshade per pixel in `[0, 1]`. */
+  hillshade?: GraphDataView<'float32'>;
+  /** Per-pixel 1 where every output is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the hillshade. */
+  hillshadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
 
 /**
  * Properties for {@link GPUTerrainDerivatives}.
  *
  * Topology: grid size, elevation format and calibration, which outputs exist, `cellSizeMode`,
- * `slopeUnits`, `rowDirection`, and `borderMode`. Per-frame: `settings` and elevation contents.
+ * `slopeUnits`, `rowDirection`, and `borderMode`. Per-frame: `parameters` (including the grid
+ * cell size and latitude band) and elevation contents.
  */
 export type GPUTerrainDerivativesProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-derivatives'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUTerrainDerivativesParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Optional slope per pixel in degrees `[0, 90)` or percent. */
-  slope?: GraphDataView<'float32'>;
-  /** Optional downslope direction per pixel, degrees clockwise from north; -1 for flat cells. */
-  aspect?: GraphDataView<'float32'>;
-  /** Optional hillshade per pixel in `[0, 1]`. */
-  hillshade?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where every output is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving the hillshade. */
-  hillshadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUTerrainDerivativesParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainDerivativesOutput;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Slope unit. Defaults to `'degrees'`. */
   slopeUnits?: GPUTerrainSlopeUnits;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: GPUTerrainRowDirection;
+  rowDirection?: GPURasterRowDirection;
   /** Sobel border treatment forwarded to `GPURasterGradient`. Defaults to `'clamp'`. */
   borderMode?: GPURasterBorderMode;
 };
@@ -134,7 +137,7 @@ export type GPUTerrainDerivativesProps = {
  * Computes slope, aspect, and hillshade for an elevation tile with Horn's 3x3 method.
  *
  * Composes two Sobel `GPURasterGradient` passes and one fused shade kernel. Cell size, z factor,
- * sun position, and latitude band are read from `settings` every encoding. Columns increase east
+ * sun position, and latitude band are read from `parameters` every encoding. Columns increase east
  * and, with the default `rowDirection`, rows increase south. Invalid pixels (an invalid center or
  * 3x3 neighbor, or invalid settings) receive NaN and validity 0. For seamless tiles, pass a tile
  * with a one-pixel halo; the contributor satisfies the `GPURasterHaloStage` contract.
@@ -151,52 +154,48 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-derivatives';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     if (
-      !props.slope &&
-      !props.aspect &&
-      !props.hillshade &&
-      !props.validity &&
-      !props.hillshadeTexture
+      !output.slope &&
+      !output.aspect &&
+      !output.hillshade &&
+      !output.outputValidity &&
+      !output.hillshadeTexture
     ) {
       throw new Error(`${id} requires at least one output`);
     }
-    for (const [name, view] of [
-      ['slope', props.slope],
-      ['aspect', props.aspect],
-      ['hillshade', props.hillshade]
+    for (const [name, view, format] of [
+      ['slope', output.slope, 'float32'],
+      ['aspect', output.aspect, 'float32'],
+      ['hillshade', output.hillshade, 'float32'],
+      ['outputValidity', output.outputValidity, 'uint32']
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, [format], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    if (props.validity) {
-      validatePackedUint32View(props.validity, `${id} validity`);
-      if (props.validity.length !== pixelCount) {
-        throw new Error(`${id} validity must contain one value per pixel`);
-      }
-    }
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH);
-    validateTerrainTexture(
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH);
+    validateRasterOutputTexture(
       id,
-      'hillshadeTexture',
-      props.hillshadeTexture,
+      'output.hillshadeTexture',
+      output.hillshadeTexture,
       ['r32float', 'rgba32float'],
-      props.width,
-      props.height
+      props.grid
     );
-    validateTerrainCellSizeMode(id, props.cellSizeMode);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     if (!['degrees', 'percent'].includes(props.slopeUnits ?? 'degrees')) {
       throw new Error(`${id} slopeUnits must be degrees or percent`);
     }
-    validateTerrainRowDirection(id, props.rowDirection);
-    validateTerrainBuffersDistinct(
+    validateRasterRowDirection(id, props.rowDirection);
+    validateRasterBuffersDistinct(
       id,
-      [props.slope, props.aspect, props.hillshade, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      [output.slope, output.aspect, output.hillshade, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -205,18 +204,19 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, [props.hillshadeTexture]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, [output.hillshadeTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      props.slope,
-      props.aspect,
-      props.hillshade,
-      props.validity
+      props.parameters,
+      output.slope,
+      output.aspect,
+      output.hillshade,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
     const borderMode = props.borderMode ?? 'clamp';
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, false);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, false);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const gradients = (['x', 'y'] as const).map(direction => {
       const values = createTransientView(
@@ -250,8 +250,8 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
       return {values, validity};
     });
     const hillshadeTarget =
-      props.hillshade ??
-      (props.hillshadeTexture
+      output.hillshade ??
+      (output.hillshadeTexture
         ? createTransientView(graph, `${id}-hillshade`, 'float32', pixelCount)
         : undefined);
     nodes.push(
@@ -262,18 +262,18 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer {
         gradientX: gradients[0].values,
         gradientY: gradients[1].values,
         gradientValidity: gradients[0].validity,
-        settings: props.settings,
-        slope: props.slope,
-        aspect: props.aspect,
+        settings: props.parameters,
+        slope: output.slope,
+        aspect: output.aspect,
         hillshade: hillshadeTarget,
-        validity: props.validity,
+        validity: output.outputValidity,
         cellSizeMode: props.cellSizeMode ?? 'uniform',
         slopeUnits: props.slopeUnits ?? 'degrees',
         rowDirection: props.rowDirection ?? 'south'
       })
     );
-    if (props.hillshadeTexture && hillshadeTarget) {
-      const texture = props.hillshadeTexture;
+    if (output.hillshadeTexture && hillshadeTarget) {
+      const texture = output.hillshadeTexture;
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterBufferToTexture({
@@ -308,9 +308,9 @@ function getShadeNode<Parameters>(
     aspect?: GraphDataView<'float32'>;
     hillshade?: GraphDataView<'float32'>;
     validity?: GraphDataView<'uint32'>;
-    cellSizeMode: GPUTerrainCellSizeMode;
+    cellSizeMode: GPURasterCellSizeMode;
     slopeUnits: GPUTerrainSlopeUnits;
-    rowDirection: GPUTerrainRowDirection;
+    rowDirection: GPURasterRowDirection;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -349,11 +349,11 @@ function getShadeNode<Parameters>(
     declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
 const PI: f32 = 3.141592653589793;
-${TERRAIN_DEGREES_TO_RADIANS_WGSL}
+${RASTER_DEGREES_TO_RADIANS_WGSL}
 const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
-${getTerrainRowNorthSignWGSL(props.rowDirection)}
-${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {cellSizeIndex: 0, northEdgeIndex: 5})}`,
+${getRasterRowNorthSignWGSL(props.rowDirection)}
+${RASTER_WGSL_HELPERS}
+${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_DERIVATIVES_GRID_SLOTS)}`,
     body: `let row = index / WIDTH;
   let rawX = gradientX[gradientXOffset + index];
   let rawY = gradientY[gradientYOffset + index];

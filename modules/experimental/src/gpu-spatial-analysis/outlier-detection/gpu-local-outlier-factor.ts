@@ -3,8 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,7 +11,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -24,6 +23,26 @@ import {GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH} from './outlier-detection-par
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPULocalOutlierFactor';
+
+/** Caller-owned outputs of {@link GPULocalOutlierFactor}. */
+export type GPULocalOutlierFactorOutput = {
+  /** k-distance per row: the largest neighbor distance, 0 for an empty row. */
+  kDistance: GraphDataView<'float32'>;
+  /**
+   * Local reachability density per row: the inverse of the row's mean reachability distance plus
+   * `densityFloor`. 0 for an empty row.
+   */
+  localReachabilityDensity: GraphDataView<'float32'>;
+  /** Local outlier factor per row. 1 for a row with no neighbors. */
+  lof: GraphDataView<'float32'>;
+  /**
+   * Optional mask: 1 where `lof > threshold`, else 0. All 0 when no `threshold` was packed (there
+   * is no default threshold).
+   */
+  outlier?: GraphDataView<'uint32'>;
+  /** Optional one-row count of rows with `lof > threshold`. Requires `outlier`. */
+  outlierCount?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPULocalOutlierFactor}.
@@ -53,22 +72,8 @@ export type GPULocalOutlierFactorProps = {
    * `getGPULocalOutlierFactorParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /** Caller-owned k-distance per row: the largest neighbor distance, 0 for an empty row. */
-  kDistance: GraphDataView<'float32'>;
-  /**
-   * Caller-owned local reachability density per row: the inverse of the row's mean reachability
-   * distance plus `densityFloor`. 0 for an empty row.
-   */
-  localReachabilityDensity: GraphDataView<'float32'>;
-  /** Caller-owned local outlier factor per row. 1 for a row with no neighbors. */
-  lof: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned mask: 1 where `lof > threshold`, else 0. All 0 when no `threshold` was
-   * packed (there is no default threshold).
-   */
-  outlier?: GraphDataView<'uint32'>;
-  /** Optional caller-owned one-row count of rows with `lof > threshold`. */
-  outlierCount?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPULocalOutlierFactorOutput;
 };
 
 /**
@@ -127,39 +132,40 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH} float32 values`
       );
     }
+    const {output} = props;
     for (const [name, view] of [
-      ['kDistance', props.kDistance],
-      ['localReachabilityDensity', props.localReachabilityDensity],
-      ['lof', props.lof]
+      ['kDistance', output.kDistance],
+      ['localReachabilityDensity', output.localReachabilityDensity],
+      ['lof', output.lof]
     ] as const) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validatePackedView(view, ['float32'], `${id} output.${name}`);
       if (view.length !== rows) {
-        throw new Error(`${id} ${name} length must equal the neighbors row count`);
+        throw new Error(`${id} output.${name} length must equal the neighbors row count`);
       }
     }
-    if (props.outlier) {
-      validatePackedUint32View(props.outlier, `${id} outlier`);
-      if (props.outlier.length !== rows) {
-        throw new Error(`${id} outlier length must equal the neighbors row count`);
+    if (output.outlier) {
+      validatePackedView(output.outlier, ['uint32'], `${id} output.outlier`);
+      if (output.outlier.length !== rows) {
+        throw new Error(`${id} output.outlier length must equal the neighbors row count`);
       }
     }
-    if (props.outlierCount) {
-      validatePackedUint32View(props.outlierCount, `${id} outlierCount`);
-      if (props.outlierCount.length < 1) {
-        throw new Error(`${id} outlierCount must hold one uint32`);
+    if (output.outlierCount) {
+      validatePackedView(output.outlierCount, ['uint32'], `${id} output.outlierCount`);
+      if (output.outlierCount.length < 1) {
+        throw new Error(`${id} output.outlierCount must hold one uint32`);
       }
-      if (!props.outlier) {
-        throw new Error(`${id} outlierCount requires outlier`);
+      if (!output.outlier) {
+        throw new Error(`${id} output.outlierCount requires output.outlier`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.kDistance,
-        props.localReachabilityDensity,
-        props.lof,
-        props.outlier,
-        props.outlierCount
+        output.kDistance,
+        output.localReachabilityDensity,
+        output.lof,
+        output.outlier,
+        output.outlierCount
       ],
       [
         props.neighbors.offsets,
@@ -175,7 +181,8 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {neighbors, parameters, kDistance, localReachabilityDensity, lof} = props;
+    const {neighbors, parameters, output} = props;
+    const {kDistance, localReachabilityDensity, lof} = output;
     const distances = neighbors.distances!;
     validateGraphViewsBelongToGraph(id, graph, [
       neighbors.offsets,
@@ -185,8 +192,8 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
       kDistance,
       localReachabilityDensity,
       lof,
-      props.outlier,
-      props.outlierCount
+      output.outlier,
+      output.outlierCount
     ]);
     const rows = neighbors.offsets.length - 1;
     const tableBindings = [
@@ -266,15 +273,15 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
     select(1.0, sum / f32(max(count, 1u)) / own, count > 0u && own > 0.0);`
       })
     ];
-    if (props.outlier) {
-      if (props.outlierCount) {
+    if (output.outlier) {
+      if (output.outlierCount) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-clear-count`,
             operation: OPERATION,
             variant: 'clear-count',
             bindings: [
-              {name: 'outlierCount', view: props.outlierCount, type: 'u32', access: 'read_write'}
+              {name: 'outlierCount', view: output.outlierCount, type: 'u32', access: 'read_write'}
             ],
             invocationCount: 1,
             body: 'outlierCount[outlierCountOffset] = 0u;'
@@ -285,16 +292,16 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-outlier`,
           operation: OPERATION,
-          variant: props.outlierCount ? 'mask-count' : 'mask',
+          variant: output.outlierCount ? 'mask-count' : 'mask',
           bindings: [
             {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
             {name: 'lof', view: lof, type: 'f32', access: 'read'},
-            {name: 'outlier', view: props.outlier, type: 'u32', access: 'read_write'},
-            ...(props.outlierCount
+            {name: 'outlier', view: output.outlier, type: 'u32', access: 'read_write'},
+            ...(output.outlierCount
               ? [
                   {
                     name: 'outlierCount',
-                    view: props.outlierCount,
+                    view: output.outlierCount,
                     type: 'atomic<u32>' as const,
                     access: 'read_write' as const
                   }
@@ -310,7 +317,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
   let flagged = hasThreshold && lof[lofOffset + index] > threshold;
   outlier[outlierOffset + index] = select(0u, 1u, flagged);
   ${
-    props.outlierCount
+    output.outlierCount
       ? 'if (flagged) {\n    atomicAdd(&outlierCount[outlierCountOffset], 1u);\n  }'
       : ''
   }`

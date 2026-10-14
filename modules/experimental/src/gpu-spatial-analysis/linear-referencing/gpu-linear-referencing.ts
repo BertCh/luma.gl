@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,22 +12,38 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  getStorageBindingElementLimit,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView,
+  validatePowerOfTwo
 } from '../../utils/gpu-contributor-utils';
 import {
   getGPUSphereRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../contracts/spatial-context';
-import {GPUNearestFeatureJoin} from '../spatial-join/gpu-nearest-feature-join';
-import {createPathPrefixNode} from '../line-segmentize/line-segmentize-kernels';
+} from '../../analysis-core/contracts/spatial-context';
+import type {GPULineGeometryFields} from '../../analysis-core/contracts/index';
+import {
+  getGPUNearestFeatureJoinMaximumLeafCapacity,
+  GPUNearestFeatureJoin
+} from '../spatial-join/gpu-nearest-feature-join';
+import {
+  getDefaultSpatialSort,
+  getNextPowerOfTwo,
+  getSortedFeatureBVHNodes
+} from '../spatial-join/spatial-join-passes';
+import {createLinePrefixNode} from '../line-segmentize/line-segmentize-kernels';
 import {
   createPackedScatterNodes,
-  createPathSegmentsNode,
+  createLineSegmentsNode,
   createPointProjectionNode,
+  createSphericalArcBoundsNode,
+  createSphericalNodeDataNode,
   createSphericalProjectionNode,
   createSphericalSegmentTableNode,
+  SPHERICAL_NODE_WORDS,
   getPointProjectionScatterColumns,
   LINEAR_REFERENCING_RESULT_STRIDE,
   SPHERICAL_SEGMENT_TABLE_STRIDE,
@@ -42,8 +56,8 @@ const OPERATION = 'GPULinearReferencing';
 export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
 
 /**
- * Per-point outputs of {@link GPULinearReferencing}; each optional, `points.length` rows. Points with
- * no path within the radius get `GPU_LINE_NO_SOURCE` indices, NaN fractions, foot points, measures,
+ * Outputs of {@link GPULinearReferencing}; each column optional, `queryPositions.length` rows. Points with
+ * no line within the radius get `GPU_LINE_NO_SOURCE` indices, NaN fractions, foot points, measures,
  * normalized measures and signed offsets, distance `-1` and side `0`.
  *
  * With a great-circle `spatialContext`, foot points are longitude/latitude degrees, `fractions` is
@@ -51,39 +65,74 @@ export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
  * in sphere-radius units (meters by default).
  */
 export type GPULinearReferencingOutput = {
-  /** Index of the nearest path. */
-  pathIndices?: GraphDataView<'uint32'>;
-  /** Index of the nearest segment within its path (segment `k` joins vertices `k` and `k + 1`). */
+  /** Index of the nearest line. */
+  lineIndices?: GraphDataView<'uint32'>;
+  /** Index of the nearest segment within its line (segment `k` joins vertices `k` and `k + 1`). */
   segmentIndices?: GraphDataView<'uint32'>;
   /** Position of the foot point along the segment, in `[0, 1]`. */
   fractions?: GraphDataView<'float32'>;
-  /** Closest point on the path (turf `nearestPointOnLine`, PostGIS `ST_ClosestPoint`). */
+  /** Closest point on the line (turf `nearestPointOnLine`, PostGIS `ST_ClosestPoint`). */
   footPoints?: GraphDataView<'float32x2'>;
   /** Distance from the point to the foot point. */
   distances?: GraphDataView<'float32'>;
-  /** Distance along the path from its first vertex to the foot point (`ST_LineLocatePoint` times length). */
+  /** Distance along the line from its first vertex to the foot point (`ST_LineLocatePoint` times length). */
   measures?: GraphDataView<'float32'>;
   /**
-   * `measures` divided by the length of the nearest path, in `[0, 1]` (shapely
-   * `line_locate_point(normalized=True)`); `0` for zero-length paths.
+   * `measures` divided by the length of the nearest line, in `[0, 1]` (shapely
+   * `line_locate_point(normalized=True)`); `0` for zero-length lines.
    */
   normalizedMeasures?: GraphDataView<'float32'>;
   /** `1` left of the segment direction, `-1` right, `0` on the line. */
   sides?: GraphDataView<'sint32'>;
   /** `side * distance`: signed lateral offset, positive to the left. */
   signedOffsets?: GraphDataView<'float32'>;
-  /** Optional per-vertex cumulative path measure, `positions.length` rows. */
+  /** Optional per-vertex cumulative line measure, `positions.length` rows. */
   vertexMeasures?: GraphDataView<'float32'>;
+  /** Completeness of the search (BVH leaf capacity; planar also candidate capacity). */
+  status: {
+    /** One-row flag: 1 when the BVH leaf or candidate capacity overflowed. */
+    overflow: GraphDataView<'uint32'>;
+    /** Optional one-row unclamped candidate count. */
+    candidateCount?: GraphDataView<'uint32'>;
+  };
 };
+
+/**
+ * Largest `queryPositions` row count of {@link GPULinearReferencing} on `device`: the packed result
+ * table holds 9 `uint32` words (36 bytes) per query in one storage binding, so 3728270 on a default
+ * device (128 MiB bindings).
+ */
+export function getGPULinearReferencingMaximumQueryCount(device: Device): number {
+  return getStorageBindingElementLimit(device, LINEAR_REFERENCING_RESULT_STRIDE * 4);
+}
+
+/**
+ * Largest `positions` row count of {@link GPULinearReferencing} with a planar context on `device`:
+ * the BVH over the segments takes `nextPowerOfTwo(positions)` leaf slots by default, so this is the
+ * largest power of two that {@link getGPUNearestFeatureJoinMaximumLeafCapacity} allows, 2^23 on a
+ * default device (128 MiB bindings).
+ */
+export function getGPULinearReferencingMaximumPlanarPositionCount(device: Device): number {
+  return getGPUNearestFeatureJoinMaximumLeafCapacity(device);
+}
+
+/**
+ * Largest `positions` row count of {@link GPULinearReferencing} with a great-circle context on
+ * `device`: the arc table holds 16 `float32` words (64 bytes) per row in one storage binding, so
+ * 2097152 on a default device (128 MiB bindings). A planar context has no such table.
+ */
+export function getGPULinearReferencingMaximumSphericalPositionCount(device: Device): number {
+  return getStorageBindingElementLimit(device, SPHERICAL_SEGMENT_TABLE_STRIDE * 4);
+}
 
 /**
  * Properties for {@link GPULinearReferencing}.
  *
  * Per-frame (no recompile): `radius` and the contents of every input buffer. Compile-time: view
- * lengths, the path count, `spatialContext`, `candidateCapacity`, `leafCapacity`,
+ * lengths, the line count, `spatialContext`, `candidateCapacity`, `leafCapacity`,
  * `spatialSort`, and which outputs are present.
  */
-export type GPULinearReferencingProps = {
+export type GPULinearReferencingProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'linear-referencing'`. */
   id?: string;
   /**
@@ -94,44 +143,47 @@ export type GPULinearReferencingProps = {
    * `sphereRadius` props.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed query points (longitude/latitude degrees for a great-circle context). */
-  points: GraphDataView<'float32x2'>;
   /**
-   * Packed path vertices sorted by path (longitude/latitude degrees for a great-circle context; project
-   * geographic data first for planar contexts).
+   * Packed query points (longitude/latitude degrees for a great-circle context), at most
+   * {@link getGPULinearReferencingMaximumQueryCount} rows (3728270 on a default device). Qualified as `queryPositions` because
+   * `positions` and `lineOffsets` (the line layout) hold the lines. A great-circle context also
+   * limits `positions` to {@link getGPULinearReferencingMaximumSphericalPositionCount} rows
+   * (2097152 on a default device), a planar one to
+   * {@link getGPULinearReferencingMaximumPlanarPositionCount} (8388608).
    */
-  positions: GraphDataView<'float32x2'>;
-  /** `pathCount + 1` monotonic row offsets. */
-  pathOffsets: GraphDataView<'uint32'>;
+  queryPositions: GraphDataView<'float32x2'>;
   /** Per-frame search radius, one float32 row. NaN, negative or infinite matches nothing. */
   radius: GraphDataView<'float32'>;
   /**
    * Maximum `(point, segment)` bounding-box candidates per encoding. Required for `'planar'`;
-   * ignored by `'spherical'`, which scans every segment and never overflows.
+   * ignored by a great-circle context, whose branch-and-bound arc BVH traversal needs no candidate
+   * list.
    */
   candidateCapacity?: number;
-  /** Power-of-two BVH leaf slots. Defaults to the next power of two of `positions.length`. Planar only. */
+  /**
+   * Power-of-two BVH leaf slots (over segments, or over great-circle arcs). Defaults to the next
+   * power of two of `positions.length`; fewer slots than positions sets `output.status.overflow`.
+   */
   leafCapacity?: number;
-  /** Morton-sort segments before the BVH build; see `GPUNearestFeatureJoin`. Default false. Planar only. */
+  /**
+   * Hilbert-sort segments (arcs) before the BVH build; see `GPUNearestFeatureJoin`. Results are
+   * identical either way. Planar: default false. Great-circle: defaults to on from 256 positions.
+   */
   spatialSort?: boolean;
-  /** Per-point outputs. */
+  /** Per-point outputs and status. */
   output: GPULinearReferencingOutput;
-  /** One-row flag: 1 when the BVH leaf or candidate capacity overflowed. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped candidate count. */
-  candidateCount?: GraphDataView<'uint32'>;
 };
 
 /**
  * Snaps many points to the nearest of many polylines and reports linear-referencing coordinates:
- * path, segment, fraction, foot point, distance, measure along the path, side and signed offset
+ * line, segment, fraction, foot point, distance, measure along the line, side and signed offset
  * (turf `nearestPointOnLine`, PostGIS `ST_ClosestPoint` and `ST_LineLocatePoint`, route chainage,
  * map-matching candidates, lateral position against a corridor).
  *
- * Composition: one kernel turns every vertex row into a segment to the next row of the same path
+ * Composition: one kernel turns every vertex row into a segment to the next row of the same line
  * (other rows become NaN segments that never match); `GPUNearestFeatureJoin` finds each point's
  * nearest segment within the radius through its BVH, with ties going to the smallest segment row
- * (so the earliest segment along the path, and the lowest path); a per-path sequential prefix
+ * (so the earliest segment along the line, and the lowest line); a per-line sequential prefix
  * computes cumulative vertex measures (Neumaier-compensated, deterministic); one kernel projects
  * each point onto its segment in segment-local coordinates; scatter kernels copy the requested
  * columns.
@@ -139,9 +191,12 @@ export type GPULinearReferencingProps = {
  * A great-circle `spatialContext` treats positions as longitude/latitude degrees and segments as
  * great-circle arcs (HaversineClosestPoint, cross-track and along-track distance): a per-row table
  * stores each arc's unit start vector, tangent and normal (built from the degree-difference
- * bearing, so meter-scale arcs stay well conditioned), and a brute-force kernel scans every arc per
- * point. Cost is `points x segments`, so use planar projection with the BVH join for large
- * networks. Distances, measures and offsets come out in sphere-radius units (meters by default);
+ * bearing, so meter-scale arcs stay well conditioned), a `GPUBVH` over conservative
+ * longitude/latitude boxes of the arcs (including the great circle's latitude peak, every
+ * longitude for arcs across the antimeridian or near a pole) is Hilbert sorted by default, and
+ * each point walks it branch-and-bound with the great-circle box lower bound, evaluating exact arc
+ * distances at the leaves (ties to the lowest segment row). Cost is about `log(segments)` arcs per
+ * point instead of every arc. Distances, measures and offsets come out in sphere-radius units (meters by default);
  * the search radius is in the same units. Precision is f32: about 1 m for arcs in the full
  * longitude range, dominated by the f32 longitude/latitude inputs. Arcs spanning more than about
  * 179 degrees are unsupported.
@@ -153,14 +208,14 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULinearReferencingProps;
-  /** Number of paths. */
-  readonly pathCount: number;
+  /** Number of lines. */
+  readonly lineCount: number;
   /** Resolved spatial context (planar unless given). */
   readonly spatialContext: GPUSpatialContext;
   /** Kernel model derived from `spatialContext`; not a prop. */
-  readonly coordinateSystem: GPULinearReferencingCoordinateSystem;
+  private readonly coordinateSystem: GPULinearReferencingCoordinateSystem;
   /** Resolved sphere radius in the context's length unit (1 for planar). */
-  readonly sphereRadius: number;
+  private readonly sphereRadius: number;
 
   constructor(props: GPULinearReferencingProps) {
     this.id = props.id ?? 'linear-referencing';
@@ -170,50 +225,38 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    if (
-      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
-      this.spatialContext.metric !== 'great-circle'
-    ) {
-      throw new Error(`${this.id} longitude-latitude positions need the great-circle metric`);
-    }
     this.coordinateSystem =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';
     this.sphereRadius =
       this.coordinateSystem === 'spherical' ? getGPUSphereRadius(this.spatialContext) : 1;
     const {id} = this;
     const {output} = props;
-    for (const [name, view] of Object.entries({
-      points: props.points,
-      positions: props.positions,
-      pathOffsets: props.pathOffsets,
-      ...output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     if (
       this.coordinateSystem === 'planar' &&
       !(Number.isInteger(props.candidateCapacity) && (props.candidateCapacity as number) > 0)
     ) {
-      throw new Error(`${id} candidateCapacity must be a positive integer for planar projection`);
+      throw new Error(`${id} planar needs candidateCapacity`);
     }
-    validatePackedView(props.points, ['float32x2'], `${id} points`);
-    if (props.points.length < 1) {
-      throw new Error(`${id} needs at least one point`);
+    // Delegates are built later, in getCommandNodes: check forwarded options now, under this id.
+    if (props.leafCapacity !== undefined) {
+      validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
+    }
+    validatePackedView(props.queryPositions, ['float32x2'], `${id} queryPositions`);
+    if (props.queryPositions.length < 1) {
+      throw new Error(`${id} needs at least one query`);
     }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 2) {
       throw new Error(`${id} needs at least two positions`);
     }
-    validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-    if (props.pathOffsets.length < 2) {
-      throw new Error(`${id} pathOffsets must contain at least two rows`);
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
     }
-    this.pathCount = props.pathOffsets.length - 1;
-    const pointCount = props.points.length;
+    this.lineCount = props.lineOffsets.length - 1;
+    const pointCount = props.queryPositions.length;
     const formats = {
-      pathIndices: 'uint32',
+      lineIndices: 'uint32',
       segmentIndices: 'uint32',
       fractions: 'float32',
       footPoints: 'float32x2',
@@ -225,7 +268,8 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       vertexMeasures: 'float32'
     } as const;
     let columnCount = 0;
-    for (const [name, view] of Object.entries(output) as [
+    const {status, ...columns} = output;
+    for (const [name, view] of Object.entries(columns) as [
       keyof typeof formats,
       GraphDataView | undefined
     ][]) {
@@ -245,11 +289,11 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
     if (columnCount === 0) {
       throw new Error(`${id} requires at least one output column`);
     }
-    validatePackedUint32View(props.overflow, `${id} overflow`);
+    validatePackedView(status.overflow, ['uint32'], `${id} output.status.overflow`);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [...Object.values(output), props.overflow, props.candidateCount],
-      [props.points, props.positions, props.pathOffsets, props.radius]
+      [...Object.values(columns), status.overflow, status.candidateCount],
+      [props.queryPositions, props.positions, props.lineOffsets, props.radius]
     );
   }
 
@@ -262,17 +306,32 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {output} = props;
+    const {status, ...columns} = output;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.points,
+      props.queryPositions,
       props.positions,
-      props.pathOffsets,
+      props.lineOffsets,
       props.radius,
-      props.overflow,
-      props.candidateCount,
-      ...Object.values(output)
+      status.overflow,
+      status.candidateCount,
+      ...Object.values(columns)
     ]);
+    validateMaximumCount(
+      id,
+      'queryPositions rows',
+      props.queryPositions.length,
+      getGPULinearReferencingMaximumQueryCount(graph.device)
+    );
+    validateMaximumCount(
+      id,
+      'positions rows',
+      props.positions.length,
+      this.coordinateSystem === 'spherical'
+        ? getGPULinearReferencingMaximumSphericalPositionCount(graph.device)
+        : getGPULinearReferencingMaximumPlanarPositionCount(graph.device)
+    );
     const rowCount = props.positions.length;
-    const pointCount = props.points.length;
+    const pointCount = props.queryPositions.length;
     const spherical = this.coordinateSystem === 'spherical';
     const vertexMeasures =
       output.vertexMeasures ??
@@ -283,11 +342,11 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       'uint32',
       pointCount * LINEAR_REFERENCING_RESULT_STRIDE
     );
-    const prefixNode = createPathPrefixNode<Parameters>(graph, {
+    const prefixNode = createLinePrefixNode<Parameters>(graph, {
       id: `${id}-vertex-measures`,
       operation: OPERATION,
       positions: props.positions,
-      pathOffsets: props.pathOffsets,
+      lineOffsets: props.lineOffsets,
       coordinateSystem: this.coordinateSystem,
       radius: spherical ? this.sphereRadius : 1,
       rowMeasures: vertexMeasures
@@ -298,7 +357,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       rowCount: pointCount,
       stride: LINEAR_REFERENCING_RESULT_STRIDE,
       results,
-      columns: getPointProjectionScatterColumns(output as PointProjectionColumns)
+      columns: getPointProjectionScatterColumns(columns as PointProjectionColumns)
     });
     if (spherical) {
       const table = createTransientView(
@@ -307,27 +366,69 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
         'float32',
         rowCount * SPHERICAL_SEGMENT_TABLE_STRIDE
       );
+      const arcMinima = createTransientView(graph, `${id}-arc-minima`, 'float32x2', rowCount);
+      const arcMaxima = createTransientView(graph, `${id}-arc-maxima`, 'float32x2', rowCount);
+      const leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(rowCount);
+      const {bvh, nodes: bvhNodes} = getSortedFeatureBVHNodes<Parameters>(
+        graph,
+        `${id}-arcs`,
+        OPERATION,
+        arcMinima,
+        arcMaxima,
+        leafCapacity,
+        props.spatialSort ?? getDefaultSpatialSort(rowCount)
+      );
+      const nodeData = createTransientView(
+        graph,
+        `${id}-node-data`,
+        'uint32',
+        bvh.nodeCount * SPHERICAL_NODE_WORDS
+      );
       return [
         createSphericalSegmentTableNode<Parameters>(graph, {
           id: `${id}-segment-table`,
           operation: OPERATION,
           positions: props.positions,
-          pathOffsets: props.pathOffsets,
+          lineOffsets: props.lineOffsets,
           table,
-          overflow: props.overflow,
-          candidateCount: props.candidateCount
+          overflow: status.overflow,
+          candidateCount: status.candidateCount
+        }),
+        createSphericalArcBoundsNode<Parameters>(graph, {
+          id: `${id}-arc-bounds`,
+          operation: OPERATION,
+          positions: props.positions,
+          table,
+          arcMinima,
+          arcMaxima
+        }),
+        ...bvhNodes,
+        createSphericalNodeDataNode<Parameters>(graph, {
+          id: `${id}-node-data`,
+          operation: OPERATION,
+          nodeMinima: bvh.nodeMinima,
+          nodeMaxima: bvh.nodeMaxima,
+          leafIds: bvh.leafIds,
+          bvhOverflow: bvh.overflow,
+          internalNodeCount: bvh.internalNodeCount,
+          nodeCount: bvh.nodeCount,
+          nodeData,
+          overflow: status.overflow
         }),
         prefixNode,
         createSphericalProjectionNode<Parameters>(graph, {
           id: `${id}-project`,
           operation: OPERATION,
-          points: props.points,
+          points: props.queryPositions,
           positions: props.positions,
-          pathOffsets: props.pathOffsets,
+          lineOffsets: props.lineOffsets,
           table,
           vertexMeasures,
           radius: props.radius,
           sphereRadius: this.sphereRadius,
+          nodeData,
+          internalNodeCount: bvh.internalNodeCount,
+          levelCount: bvh.levelCount,
           results
         }),
         ...scatterNodes
@@ -342,33 +443,34 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       pointCount
     );
     return [
-      createPathSegmentsNode<Parameters>(graph, {
+      createLineSegmentsNode<Parameters>(graph, {
         id: `${id}-segments`,
         operation: OPERATION,
         positions: props.positions,
-        pathOffsets: props.pathOffsets,
+        lineOffsets: props.lineOffsets,
         segmentStarts,
         segmentEnds
       }),
       prefixNode,
       ...new GPUNearestFeatureJoin({
         id: `${id}-join`,
-        points: props.points,
+        queries: {kind: 'points', positions: props.queryPositions},
         features: {kind: 'segments', starts: segmentStarts, ends: segmentEnds},
         radius: props.radius,
         candidateCapacity: props.candidateCapacity as number,
         leafCapacity: props.leafCapacity,
         spatialSort: props.spatialSort,
-        nearestFeatureIds: nearestSegments,
-        overflow: props.overflow,
-        candidateCount: props.candidateCount
+        output: {
+          nearestFeatureIds: nearestSegments,
+          status: {overflow: status.overflow, candidateCount: status.candidateCount}
+        }
       }).getCommandNodes(graph),
       createPointProjectionNode<Parameters>(graph, {
         id: `${id}-project`,
         operation: OPERATION,
-        points: props.points,
+        points: props.queryPositions,
         positions: props.positions,
-        pathOffsets: props.pathOffsets,
+        lineOffsets: props.lineOffsets,
         nearestSegments,
         vertexMeasures,
         results

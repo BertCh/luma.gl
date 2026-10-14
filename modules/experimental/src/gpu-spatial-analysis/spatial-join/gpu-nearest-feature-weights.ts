@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,13 +13,16 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView,
+  validateCapacity
 } from '../../utils/gpu-contributor-utils';
 import {
-  type GPUSpatialWeights,
+  type GPUSpatialWeightsOutput,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from './spatial-join-types';
+import {validateStatusScalars} from './spatial-join-geometry';
 
 const OPERATION = 'GPUNearestFeatureWeights';
 
@@ -77,11 +78,10 @@ export type GPUNearestFeatureWeightsProps = {
   /**
    * Caller-owned output CSR with `neighborCounts.length + 1` offsets. Neighbor IDs ascend within
    * each row. `distances` is filled when present. The capacity (`neighbors.length`) must be at least
-   * `1`; `rows * (k)` always suffices.
+   * `1`; `rows * (k)` always suffices. `status.overflow` is 1 when the kept neighbors did not fit;
+   * `status.requiredCount` and `status.candidateOverflow` are not written (they must be omitted).
    */
-  weights: GPUSpatialWeights;
-  /** Caller-owned one-row flag: 1 when the kept neighbors did not fit `weights` capacity. */
-  overflow: GraphDataView<'uint32'>;
+  output: GPUSpatialWeightsOutput;
 };
 
 /**
@@ -119,21 +119,17 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const {slotCapacity} = props;
-    if (!Number.isInteger(slotCapacity) || slotCapacity < 1 || slotCapacity > MAXIMUM_SLOTS) {
-      throw new Error(`${id} slotCapacity must be an integer in [1, ${MAXIMUM_SLOTS}]`);
-    }
+    validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
     this.k = props.k ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
-    if (!Number.isInteger(this.k) || this.k < 1 || this.k > slotCapacity) {
-      throw new Error(`${id} k must be an integer in [1, slotCapacity]`);
-    }
-    validatePackedUint32View(props.neighborIds, `${id} neighborIds`);
-    validatePackedUint32View(props.neighborCounts, `${id} neighborCounts`);
+    validateCapacity(id, 'k', this.k, 1, slotCapacity);
+    validatePackedView(props.neighborIds, ['uint32'], `${id} neighborIds`);
+    validatePackedView(props.neighborCounts, ['uint32'], `${id} neighborCounts`);
     this.rows = props.neighborCounts.length;
     if (this.rows < 1) {
-      throw new Error(`${id} neighborCounts must hold at least one row`);
+      throw new Error(`${id} neighborCounts needs at least one row`);
     }
     if (props.neighborIds.length !== this.rows * slotCapacity) {
-      throw new Error(`${id} neighborIds length must equal neighborCounts.length * slotCapacity`);
+      throw new Error(`${id} neighborIds needs rows * slotCapacity rows`);
     }
     const weightType = props.weightType ?? 'binary';
     if (weightType !== 'binary' && weightType !== 'inverse-distance') {
@@ -142,14 +138,11 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     if (props.neighborDistances) {
       validatePackedView(props.neighborDistances, ['float32'], `${id} neighborDistances`);
       if (props.neighborDistances.length !== props.neighborIds.length) {
-        throw new Error(`${id} neighborDistances length must equal neighborIds length`);
+        throw new Error(`${id} neighborDistances needs one row per slot`);
       }
     }
-    if (
-      (weightType === 'inverse-distance' || props.weights.distances) &&
-      !props.neighborDistances
-    ) {
-      throw new Error(`${id} neighborDistances is required for inverse-distance and distances`);
+    if ((weightType === 'inverse-distance' || props.output.distances) && !props.neighborDistances) {
+      throw new Error(`${id} needs neighborDistances for distances`);
     }
     for (const [name, value] of [
       ['power', props.power],
@@ -159,21 +152,22 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must be a positive finite number`);
       }
     }
-    if (validateGPUSpatialWeights(id, props.weights) !== this.rows) {
-      throw new Error(`${id} weights.offsets length must equal neighborCounts.length + 1`);
+    if (validateGPUSpatialWeights(id, props.output) !== this.rows) {
+      throw new Error(`${id} output.offsets needs neighborCounts.length + 1 rows`);
     }
-    validatePackedUint32View(props.overflow, `${id} overflow`);
-    if (props.overflow.length < 1) {
-      throw new Error(`${id} overflow must hold one uint32`);
+    const {status} = props.output;
+    if (status.requiredCount || status.candidateOverflow) {
+      throw new Error(`${id} writes only output.status.overflow`);
     }
+    validateStatusScalars(id, {overflow: status.overflow});
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.weights.offsets,
-        props.weights.neighbors,
-        props.weights.weights,
-        props.weights.distances,
-        props.overflow
+        props.output.offsets,
+        props.output.neighbors,
+        props.output.weights,
+        props.output.distances,
+        status.overflow
       ],
       [props.neighborIds, props.neighborCounts, props.neighborDistances]
     );
@@ -184,7 +178,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rows, k} = this;
-    const {weights, slotCapacity} = props;
+    const {output: weights, slotCapacity} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.neighborIds,
       props.neighborCounts,
@@ -193,7 +187,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       weights.neighbors,
       weights.weights,
       weights.distances,
-      props.overflow
+      weights.status.overflow
     ]);
     const capacity = weights.neighbors.length;
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rows);
@@ -263,7 +257,7 @@ const FLOOR: f32 = ${getWGSLFloatLiteral(props.distanceFloor ?? 1e-6)};`;
           {name: 'counts', view: counts, type: 'u32', access: 'read'},
           {name: 'starts', view: starts, type: 'u32', access: 'read'},
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+          {name: 'overflow', view: weights.status.overflow, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows + 1,
         declarations: `const ROWS: u32 = ${rows}u;

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {GPUCommandGraph, GraphDataView, GraphResourceUse} from '@luma.gl/gpgpu/gpu-core';
-import {getViewBinding, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
+import {getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {
   assertRasterStorageBindingFits,
   getRasterDispatchSize,
@@ -21,6 +21,7 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterMetadata} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 /** Symmetric or independent positive integer source pixels per generated overview pixel. */
 export type GPURasterOverviewScale = number | readonly [number, number];
@@ -657,13 +658,15 @@ function addOverviewPass<Parameters>(
         source: getShaderSource(locations),
         shaderLayout: {bindings: declarations}
       });
+      const bindingViews: Record<string, GraphDataView> = {};
+      for (const binding of bindings) {
+        bindingViews[binding.name] = binding.view;
+      }
+      const resolveChangedBindings = createChangedBindingResolver(bindingViews);
       return {
         encode: ({computePass, getBuffer}) => {
-          const resolved: Record<string, Binding> = {};
-          for (const binding of bindings) {
-            resolved[binding.name] = getViewBinding(binding.view, getBuffer);
-          }
-          computation.setBindings(resolved);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           computation.dispatch(computePass, dispatch[0], dispatch[1]);
         },
         destroy: () => computation.destroy()

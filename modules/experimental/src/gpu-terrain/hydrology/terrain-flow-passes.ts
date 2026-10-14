@@ -8,7 +8,7 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import type {GPUTerrainCellSizeMode} from '../terrain-analysis/index';
+import type {GPURasterCellSizeMode} from '../../analysis-core/raster-grid';
 import {getRasterGridWGSL} from '../../gpu-raster/cost-distance/raster-grid-utils';
 import {
   createRasterGatedLoopNodes,
@@ -20,13 +20,19 @@ import {
   getRasterRelaxationTileWGSL
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 
+import {
+  createTerrainFlowEulerTourNodes,
+  getTerrainFlowEulerTourWGSL,
+  TERRAIN_FLOW_TOUR_RESOLVED_WGSL
+} from './terrain-flow-euler-tour';
+
 const OPERATION = 'GPUTerrainFlow';
 
 /** Compile-time grid description shared by the terrain flow kernels. @internal */
 export type TerrainFlowGrid = {
   width: number;
   height: number;
-  cellSizeMode: GPUTerrainCellSizeMode;
+  cellSizeMode: GPURasterCellSizeMode;
 };
 
 /**
@@ -42,8 +48,9 @@ export const TERRAIN_FLOW_SWEEP_AFTER_ITERATION = 96;
 export const TERRAIN_FLOW_MAXIMUM_WALK_LENGTH = 1024;
 
 /**
- * Returns the depression filling nodes: initialization, tiled Planchon-Darboux relaxation, and the
- * optional converged-flag publication.
+ * Returns the depression filling nodes (initialization, tiled Planchon-Darboux relaxation, and the
+ * optional converged-flag publication) and the relaxation status view, whose word 3 is 1 once the
+ * fill reached its fixpoint.
  *
  * @internal
  */
@@ -58,7 +65,7 @@ export function createTerrainFlowFillNodes<Parameters>(
     converged?: GraphDataView<'uint32'>;
     iterationCount?: GraphDataView<'uint32'>;
   }
-): GPUCommandNode<Parameters>[] {
+): {nodes: GPUCommandNode<Parameters>[]; status: GraphDataView<'uint32'>} {
   const relaxationProps = {
     id: `${props.id}-fill`,
     operation: OPERATION,
@@ -138,7 +145,7 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
       })
     );
   }
-  return nodes;
+  return {nodes, status: relaxation.state.status};
 }
 
 /**
@@ -227,8 +234,100 @@ export function createTerrainFlowDirectionNode<Parameters>(
 }
 
 /**
- * Returns the deterministic pull-based accumulation nodes: sentinel fill, loop reset, and
- * `maxIterations` gated rounds.
+ * Whether D8 accumulation of this configuration runs on the Euler tour (exact integer subtree
+ * sizes, `O(log n)` rounds) instead of the pull rounds: unit weights only (no `runoff`, no area),
+ * and the tour arrays (`2 * cellCount` words) must fit one storage binding.
+ *
+ * @internal
+ */
+export function canUseTerrainFlowTourAccumulation<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {width: number; height: number; runoff?: unknown; area: boolean}
+): boolean {
+  return (
+    !props.runoff &&
+    !props.area &&
+    8 * props.width * props.height <= graph.device.limits.maxStorageBufferBindingSize
+  );
+}
+
+/**
+ * Returns the D8 'cells' accumulation nodes on the Euler tour of the receiver forest: tour link,
+ * gated Wyllie ranking rounds, and one kernel that turns ranks into subtree sizes. The count of a
+ * cell is `(distance(E) - distance(X) + 1) / 2`, an exact `u32` converted once to float32, so the
+ * result does not depend on the forest height or on any iteration limit. Cells whose list ends at
+ * no root (receiver cycles) read NaN and clear the converged flag; invalid cells read NaN.
+ *
+ * @internal
+ */
+function createTerrainFlowTourAccumulationNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: TerrainFlowGrid & {
+    id: string;
+    elevation: GraphDataView<'float32'>;
+    receivers: GraphDataView<'uint32'>;
+    accumulation: GraphDataView<'float32'>;
+    converged?: GraphDataView<'uint32'>;
+    iterationCount?: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const cellCount = props.width * props.height;
+  const tour = createTerrainFlowEulerTourNodes<Parameters>(graph, {
+    id: `${props.id}-accumulate`,
+    operation: OPERATION,
+    contributorId: props.id,
+    width: props.width,
+    height: props.height,
+    declarations: `fn getTourParent(cell: u32) -> u32 { return receivers[receiversOffset + cell]; }`,
+    parentBindings: [{name: 'receivers', view: props.receivers, type: 'u32', access: 'read'}]
+  });
+  const count = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-accumulate-count`,
+    operation: OPERATION,
+    variant: 'tour-accumulation',
+    bindings: [
+      {name: 'acc', view: props.accumulation, type: 'u32', access: 'read_write'},
+      {name: 'receivers', view: props.receivers, type: 'u32', access: 'read'},
+      {name: 'elevation', view: props.elevation, type: 'f32', access: 'read'},
+      {name: 'tourSucc', view: tour.successor, type: 'u32', access: 'read'},
+      {name: 'tourDist', view: tour.distance, type: 'u32', access: 'read'},
+      {name: 'status', view: tour.state.status, type: 'atomic<u32>', access: 'read_write'}
+    ],
+    invocationCount: cellCount,
+    declarations: `${getTerrainFlowEulerTourWGSL(props.width, props.height)}
+fn getTourParent(cell: u32) -> u32 { return receivers[receiversOffset + cell]; }
+${TERRAIN_FLOW_TOUR_RESOLVED_WGSL}`,
+    body: `let isValid = (bitcast<u32>(elevation[elevationOffset + index]) & 0x7fffffffu) < 0x7f800000u;
+  if (!isValid) { acc[accOffset + index] = 0xffffffffu; return; }
+  if (!isTourEdgeResolved(2u * index)) {
+    // The list never reached a root: a receiver cycle. Not converged.
+    acc[accOffset + index] = 0xffffffffu;
+    atomicStore(&status[statusOffset + 3u], 0u);
+    return;
+  }
+  // The edges from E(v) to X(v) inclusive are the tour of v's subtree: 2 * size(v) of them.
+  let size = (tourDist[tourDistOffset + 2u * index] - tourDist[tourDistOffset + 2u * index + 1u] + 1u) / 2u;
+  acc[accOffset + index] = bitcast<u32>(f32(size));`
+  });
+  const nodes = [...tour.nodes, count];
+  if (props.converged || props.iterationCount) {
+    nodes.push(
+      createRasterIterationFinalizeNode<Parameters>(graph, {
+        id: `${props.id}-accumulate-finalize`,
+        operation: OPERATION,
+        state: tour.state,
+        converged: props.converged,
+        iterationCount: props.iterationCount
+      })
+    );
+  }
+  return nodes;
+}
+
+/**
+ * Returns the D8 accumulation nodes. Unit-weight accumulation ('cells' without `runoff`) runs on
+ * the Euler tour of the receiver forest and ignores `maxIterations`; weighted accumulation (`runoff`
+ * or area) is the deterministic pull: sentinel fill, loop reset, and `maxIterations` gated rounds.
  *
  * @internal
  */
@@ -247,6 +346,9 @@ export function createTerrainFlowAccumulationNodes<Parameters>(
     iterationCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
+  if (canUseTerrainFlowTourAccumulation(graph, props)) {
+    return createTerrainFlowTourAccumulationNodes(graph, props);
+  }
   const cellCount = props.width * props.height;
   const state = createRasterIterationState(graph, `${props.id}-accumulate`, OPERATION, cellCount);
   const nodes: GPUCommandNode<Parameters>[] = [
@@ -329,12 +431,12 @@ fn tryFinalize(cell: u32) -> bool {
       operation: OPERATION,
       state,
       maxIterations: props.maxIterations,
-      createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+      createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
         createWGSLKernelNode<Parameters>(graph, {
           id: nodeId,
           operation: OPERATION,
           variant: 'accumulate-round',
-          bindings,
+          bindings: [...bindings, slotBinding],
           invocationCount: cellCount,
           declarations,
           body: getBody(markChangedWGSL),

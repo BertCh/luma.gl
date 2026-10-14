@@ -3,9 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,13 +11,17 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 /** Reference count above which the global mode searches a BVH instead of scanning every row. */
 const BVH_MINIMUM_REFERENCES = 64;
@@ -139,19 +141,6 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      referencePositions: props.referencePositions,
-      featureOffsets: props.featureOffsets,
-      referenceOffsets: props.referenceOffsets,
-      parameters: props.parameters,
-      outputPositions: props.output.positions,
-      outputReferenceRows: props.output.referenceRows
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.referencePositions, ['float32x2'], `${id} referencePositions`);
     if (props.positions.length < 1) {

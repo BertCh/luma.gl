@@ -11,7 +11,7 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture} from '../index';
+import {GPURasterBufferToTexture} from '../gpu-raster-buffer-to-texture';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -20,12 +20,14 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling';
-import {LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE} from './line-integral-convolution-cpu';
 import {
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
-  GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH
+  GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH,
+  LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE
 } from './line-integral-convolution-parameters';
 import {PHILOX_WGSL} from '../../utils/philox-random';
+import {validateRasterGrid} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 
 const OPERATION = 'GPULineIntegralConvolution';
 const MAXIMUM_STEP_COUNT = 256;
@@ -47,7 +49,7 @@ export type GPULineIntegralConvolutionOutput = {
  * Properties for {@link GPULineIntegralConvolution}.
  *
  * Per-frame (no recompile): the contents of `parameters` (extents, step length, minimum speed,
- * phase, period), `wordParameters` (seed) and `velocities`. Topology: field and output sizes,
+ * phase, period), `uint32Parameters` (seed) and `velocities`. Topology: field and output sizes,
  * `stepCount`, which optional outputs are present.
  */
 export type GPULineIntegralConvolutionProps = {
@@ -59,16 +61,14 @@ export type GPULineIntegralConvolutionProps = {
   fieldWidth: number;
   /** Field height in cells. Compile-time. */
   fieldHeight: number;
-  /** Output width in pixels. Compile-time. */
-  width: number;
-  /** Output height in pixels. Compile-time. */
-  height: number;
+  /** Output raster grid: its width and height size the kernels. Compile-time. */
+  grid: GPURasterMetadata;
   /** Streamline steps in each direction (`L`), at most 256. Compile-time. Defaults to 20. */
   stepCount?: number;
   /** Per-frame float32 parameters from `getGPULineIntegralConvolutionParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Per-frame uint32 parameters from `getGPULineIntegralConvolutionWordParameterValues`. */
-  wordParameters: GraphDataView<'uint32'>;
+  /** Per-frame uint32 parameters from `getGPULineIntegralConvolutionUint32ParameterValues`. */
+  uint32Parameters: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPULineIntegralConvolutionOutput;
 };
@@ -105,8 +105,8 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
     for (const [name, value] of [
       ['fieldWidth', props.fieldWidth],
       ['fieldHeight', props.fieldHeight],
-      ['width', props.width],
-      ['height', props.height]
+      ['grid width', props.grid.width],
+      ['grid height', props.grid.height]
     ] as const) {
       if (!Number.isInteger(value) || value < 1 || value > 65535) {
         throw new Error(`${id} ${name} must be an integer in [1, 65535]`);
@@ -126,36 +126,36 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
         `${id} parameters must contain ${GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH} float32 rows`
       );
     }
-    validatePackedUint32View(props.wordParameters, `${id} wordParameters`);
-    if (props.wordParameters.length < GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH) {
+    validatePackedUint32View(props.uint32Parameters, `${id} uint32Parameters`);
+    if (props.uint32Parameters.length < GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH) {
       throw new Error(
-        `${id} wordParameters must contain ${GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH} uint32 rows`
+        `${id} uint32Parameters must contain ${GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH} uint32 rows`
       );
     }
-    const pixelCount = props.width * props.height;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const {output} = props;
     validatePackedView(output.values, ['float32'], `${id} output.values`);
     if (output.values.length !== pixelCount) {
-      throw new Error(`${id} output.values must have width * height rows`);
+      throw new Error(`${id} output.values must have grid width * height rows`);
     }
     if (output.speeds) {
       validatePackedView(output.speeds, ['float32'], `${id} output.speeds`);
       if (output.speeds.length !== pixelCount) {
-        throw new Error(`${id} output.speeds must have width * height rows`);
+        throw new Error(`${id} output.speeds must have grid width * height rows`);
       }
     }
     if (
       output.texture &&
       (output.texture.format !== 'r32float' ||
-        output.texture.width !== props.width ||
-        output.texture.height !== props.height)
+        output.texture.width !== props.grid.width ||
+        output.texture.height !== props.grid.height)
     ) {
       throw new Error(`${id} output.texture must be r32float with width x height`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.values, output.speeds],
-      [props.velocities, props.parameters, props.wordParameters]
+      [props.velocities, props.parameters, props.uint32Parameters]
     );
     this.id = id;
     this.stepCount = stepCount;
@@ -167,11 +167,12 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, stepCount} = this;
-    const {output, width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       props.velocities,
       props.parameters,
-      props.wordParameters,
+      props.uint32Parameters,
       output.values,
       output.speeds
     ]);
@@ -188,7 +189,7 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
         bindings: [
           {
             name: 'words',
-            view: props.wordParameters,
+            view: props.uint32Parameters,
             type: 'u32',
             access: 'read'
           },

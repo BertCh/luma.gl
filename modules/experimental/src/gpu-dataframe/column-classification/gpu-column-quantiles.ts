@@ -3,15 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphOutputsDisjointFromInputs} from '../../utils/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {getColumnQuantileNodes, type GPUColumnQuantilesOutput} from './column-quantiles-nodes';
 import {
   getGPUColumnQuantilesParameterLength,
@@ -34,7 +35,7 @@ const MAXIMUM_ROW_COUNT = 2 ** 24;
 export type GPUColumnQuantilesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'column-quantiles'`. */
   id?: string;
-  /** Packed float32 column. NaN rows are skipped. At most 2^24 rows. */
+  /** Packed float32 column. NaN and +-Infinity rows are missing and skipped. At most 2^24 rows. */
   values: GraphDataView<'float32'>;
   /** Optional packed `uint32` row mask; zero skips the row. */
   mask?: GraphDataView<'uint32'>;
@@ -53,17 +54,22 @@ export type GPUColumnQuantilesProps = {
  * Exact quantiles of a float32 column by GPU radix selection, plus a per-frame percentile-range
  * filter mask, with no readback and no sort.
  *
- * With `n` valid rows (unmasked, not NaN) sorted ascending as `x[0..n-1]` and probability `p`,
+ * With `n` valid rows (unmasked and finite: NaN and +-Infinity are missing, as in every
+ * interpolating kernel; `-0` equals `+0`) sorted ascending as `x[0..n-1]` and probability `p`,
  * `h = fround(fround(n - 1) * p)`, `lo = floor(h)`, `hi = min(lo + 1, n - 1)`:
  * `lower` is `x[lo]`, `higher` is `x[ceil(h)]`, `nearest` is `x[round-half-to-even(h)]` (numpy),
  * `linear` is `x[lo] + (x[hi] - x[lo]) * (h - lo)` (numpy `linear`, d3 `quantile`, R-7), and
  * `midpoint` is `(x[lo] + x[ceil(h)]) / 2`. When the two order statistics compare equal the first
  * is returned unchanged. A probability that is NaN or outside `[0, 1]`, or `n == 0`, gives NaN.
+ * This is `numpy.quantile(x[numpy.isfinite(x)], p, method=...)`; numpy keeps infinities and
+ * raises on an invalid `p`. `GPUClassBreaks` and the `GPUGroupStatistics` medians and percentiles
+ * use the same policy and the same `linear` arithmetic. When `x[hi] - x[lo]` overflows f32, the
+ * convex form `x[lo] * (1 - t) + x[hi] * t` keeps the result finite.
  *
  * The percentile filter follows deck.gl `lowerPercentile` / `upperPercentile` semantics with
  * fractions `fl`, `fu` in `[0, 1]` (NaN counts as 0 and 1): `lowerIndex = clamp(floor(n * fl), 0,
  * n - 1)` and `upperIndex = clamp(ceil(n * fu) - 1, 0, n - 1)`, with the products rounded to f32.
- * `filterBounds` is `[x[lowerIndex], x[upperIndex]]` and `filterMask[row]` is 1 when the row is
+ * `filterBounds` is `[x[lowerIndex], x[upperIndex]]` and `outputMask[row]` is 1 when the row is
  * valid and `lowerBound <= value <= upperBound` in ordered-key order. With `n == 0` the bounds are
  * NaN and the mask is all 0.
  *
@@ -71,13 +77,12 @@ export type GPUColumnQuantilesProps = {
  * pass builds histograms with integer atomics (workgroup-local, flushed to global) per distinct
  * active prefix and one single-workgroup kernel narrows every target rank to a bucket. Targets are
  * the needed order statistics (two per probability plus two for the filter). The result key is
- * exact, so `lower`, `higher`, `nearest`, the bounds, the mask, and `validCount` are bitwise equal
- * to a sort-based oracle and independent of GPU thread order. `linear` and `midpoint` select the
- * two order statistics exactly; only the final f32 arithmetic can differ from the CPU by at most 1
- * ULP because a GPU may contract it into a fused multiply-add. It is still run-to-run identical.
+ * exact, so every output, including `linear` and `midpoint` (each f32 step is rounded separately,
+ * never fused into a multiply-add), is bitwise equal to a sort-based `Math.fround` oracle and
+ * independent of GPU thread order.
  *
  * Limits: at most 2^24 rows (row counts and ranks use f32 arithmetic) and 64 probabilities.
- * Inputs must be single packed views.
+ * Inputs must be single packed views (chunked vectors are rejected).
  */
 export class GPUColumnQuantiles implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -90,24 +95,13 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {quantileCount, output} = props;
-    if (
-      !Number.isInteger(quantileCount) ||
-      quantileCount < 1 ||
-      quantileCount > GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT
-    ) {
-      throw new Error(
-        `${id} quantileCount must be an integer in [1, ${GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT}]`
-      );
-    }
-    for (const [name, view] of [
-      ['values', props.values],
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'quantileCount',
+      quantileCount,
+      1,
+      GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT
+    );
     const rows = props.values.length;
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
@@ -117,7 +111,7 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
     }
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -131,14 +125,14 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
     if (output.quantiles.length < quantileCount) {
       throw new Error(`${id} output.quantiles must hold quantileCount rows`);
     }
-    validatePackedUint32View(output.validCount, `${id} output.validCount`);
+    validatePackedView(output.validCount, ['uint32'], `${id} output.validCount`);
     if (output.validCount.length < 1) {
       throw new Error(`${id} output.validCount must hold one row`);
     }
-    if (output.filterMask) {
-      validatePackedUint32View(output.filterMask, `${id} output.filterMask`);
-      if (output.filterMask.length < rows) {
-        throw new Error(`${id} output.filterMask must hold values.length rows`);
+    if (output.outputMask) {
+      validatePackedView(output.outputMask, ['uint32'], `${id} output.outputMask`);
+      if (output.outputMask.length < rows) {
+        throw new Error(`${id} output.outputMask must hold values.length rows`);
       }
     }
     if (output.filterBounds) {
@@ -149,7 +143,7 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.quantiles, output.validCount, output.filterMask, output.filterBounds],
+      [output.quantiles, output.validCount, output.outputMask, output.filterBounds],
       [props.values, props.mask, props.parameters]
     );
   }

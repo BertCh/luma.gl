@@ -3,15 +3,36 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {GPUParameterBuffer} from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/index';
-import {GPULocalPermutationTest} from '../permutation-inference/index';
-import type {GPUPermutationAlternative} from '../permutation-inference/index';
-import {GPUEmpiricalBayesRates} from '../rate-smoothing/index';
-import {GPULocalMoran} from '../spatial-autocorrelation/index';
-import {GPUContiguityWeights, GPUSpatialWeightsTransform} from '../spatial-weights/index';
-import type {GPUContiguityCriterion, GPUSpatialWeights} from '../spatial-weights/index';
+import type {
+  GPUInferenceAlternative,
+  GPUInferenceMetadata,
+  GPUMultipleTestingMethod,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort,
+  GPURecipeStatusPort,
+  GPUStatusScalar
+} from '../../analysis-core/contracts/index';
 import {
+  GPU_PERMUTATION_PARAMETER_LENGTH,
+  GPULocalPermutationTest
+} from '../permutation-inference/index';
+import {GPUEmpiricalBayesRates} from '../rate-smoothing/index';
+import {
+  getGPUSpatialAutocorrelationParameterValues,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPULocalMoran
+} from '../spatial-autocorrelation/index';
+import {GPUContiguityWeights, GPUSpatialWeightsTransform} from '../spatial-weights/index';
+import type {
+  GPUContiguityCriterion,
+  GPUFloat32OrUint32Values,
+  GPUSpatialWeights,
+  GPUSpatialWeightsOutput
+} from '../spatial-weights/index';
+import {
+  assertRecipe,
   createTransientSpatialWeights,
   getOrCreateView,
   RecipeBuilder,
@@ -29,6 +50,20 @@ export const GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH = 5;
 export const GPU_RATE_CLUSTER_MAP_DEFAULT_MULTIPLE_TESTING: GPUMultipleTestingMethod =
   'benjamini-hochberg';
 
+/**
+ * Per-frame inference settings of {@link addRateClusterMapRecipe}. The recipe packs these settings
+ * into its `GPUParameterBuffer`s and derives `result.inference` from the same object, so the
+ * legend cannot describe a test other than the one that runs.
+ */
+export type GPURateClusterMapRecipeSettings = {
+  /** Significance level of the cluster gate, analytic or permutation. Defaults to 0.05. */
+  significanceLevel?: number;
+  /** Permutation seed, with `permutation`. Defaults to 0. */
+  seed?: number;
+  /** Per-frame permutation count, with `permutation`. Defaults to `maximumPermutations`. */
+  permutationCount?: number;
+};
+
 /** Which empirical-Bayes output is analysed. */
 export type GPURateClusterMapRate = 'standardized' | 'smoothed';
 
@@ -36,18 +71,24 @@ export type GPURateClusterMapRate = 'standardized' | 'smoothed';
 export type GPURateClusterMapRecipeProps = {
   /** Prefix for every node and transient ID. Defaults to `'rate-cluster-map'`. */
   id?: string;
-  /** Event count per polygon. */
-  events: GraphDataView<'float32'>;
-  /** Population at risk per polygon (rows with a population of 0 are excluded). */
-  populations: GraphDataView<'float32'>;
-  /** Optional polygon selection. */
+  /**
+   * Event count per feature, `float32` or `uint32` (for example the `counts` of
+   * `addPointsInPolygonsChoroplethRecipe`; exact in f32 below 2^24).
+   */
+  events: GPUFloat32OrUint32Values;
+  /**
+   * Population at risk per feature, `float32` or `uint32` (rows with a population of 0 are
+   * excluded).
+   */
+  populations: GPUFloat32OrUint32Values;
+  /** Optional feature selection. */
   mask?: GraphDataView<'uint32'>;
-  /** Flattened polygon ring vertices (GeoArrow layout). */
-  positions: GraphDataView<'float32x2'>;
-  /** Ring-to-vertex offsets with a terminal entry. */
-  ringOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets with a terminal entry; the row count is its length minus one. */
-  polygonOffsets: GraphDataView<'uint32'>;
+  /**
+   * Polygon or multipolygon features in the four-level `GPUPolygonGeometryPort` layout; the rows
+   * of every output are the features (`featureOffsets.length - 1`), so the `counts` of a
+   * points-in-polygons recipe on the same features chain in directly.
+   */
+  polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /** `'queen'` (default) or `'rook'`. */
   criterion?: GPUContiguityCriterion;
   /** Vertex snap tolerance of the contiguity search. */
@@ -87,33 +128,33 @@ export type GPURateClusterMapRecipeProps = {
    */
   multipleTesting?: GPUMultipleTestingMethod;
   /**
-   * CPU-side significance level recorded in `result.inference.significanceLevel` (default 0.05);
-   * the GPU reads the level from `parameters` (analytic) or `permutation.parameters`. Keep them
-   * equal.
+   * Inference settings: the recipe packs them into `parameters` (and `permutation.parameters`)
+   * and builds `result.inference` from them; change them per frame with `result.setSettings`.
+   * Defaults to `{}` (every setting at its default).
    */
-  significanceLevel?: number;
-  /** `getGPUSpatialAutocorrelationParameterValues` view. */
-  parameters: GraphDataView<'float32'>;
+  settings?: GPURateClusterMapRecipeSettings;
+  /**
+   * Local Moran parameters: a `GPUParameterBuffer` of at least
+   * `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` float32 values that the recipe fills from
+   * `settings`.
+   */
+  parameters: GPUParameterBuffer<'float32'>;
   /**
    * Permutation inference gating the colors (the reference method; 999 permutations
    * recommended). Analytic local Moran quadrants, a preview, are used when absent.
    */
   permutation?: {
-    /** `getGPUPermutationParameterValues` view. */
-    parameters: GraphDataView<'uint32'>;
+    /**
+     * A `GPUParameterBuffer` of at least `GPU_PERMUTATION_PARAMETER_LENGTH` uint32 values that the
+     * recipe fills from `settings`.
+     */
+    parameters: GPUParameterBuffer<'uint32'>;
     /** Compile-time upper bound of the per-frame permutation count. */
     maximumPermutations: number;
     /** Tail of the pseudo p-value. Defaults to `'two-sided'`. */
-    alternative?: GPUPermutationAlternative;
+    alternative?: GPUInferenceAlternative;
     /** Compile-time neighbor bound, up to 64. */
     maximumNeighbors?: number;
-    /**
-     * CPU-side permutation count recorded in `result.inference`; the GPU reads the count from
-     * `parameters`. Defaults to `maximumPermutations`.
-     */
-    permutations?: number;
-    /** CPU-side seed recorded in `result.inference`; the GPU reads it from `parameters`. */
-    seed?: number;
   };
   /**
    * Packed rgba8 palette of `GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH` entries indexed by quadrant:
@@ -129,7 +170,12 @@ export type GPURateClusterMapRecipeProps = {
     localI?: GraphDataView<'float32'>;
     quadrants?: GraphDataView<'uint32'>;
     colors?: GraphDataView<'uint32'>;
-    weightsOverflow?: GraphDataView<'uint32'>;
+    /** Mirrors `result.status`. */
+    status?: {
+      weightsOverflow?: GPUStatusScalar;
+      /** One-row unclamped neighbor-slot total of the contiguity weights (stage `weights`). */
+      weightsRequiredCount?: GPUStatusScalar;
+    };
     analytic?: {
       pValues?: GraphDataView<'float32'>;
       adjustedPValues?: GraphDataView<'float32'>;
@@ -139,7 +185,7 @@ export type GPURateClusterMapRecipeProps = {
       pseudoPValues?: GraphDataView<'float32'>;
       adjustedPValues?: GraphDataView<'float32'>;
       significant?: GraphDataView<'uint32'>;
-      overflow?: GraphDataView<'uint32'>;
+      status?: {overflow?: GPUStatusScalar};
     };
   },
   {
@@ -158,15 +204,22 @@ export type GPURateClusterMapRecipeResult = GPURecipeResult & {
   analyzedRates: GraphDataView<'float32'>;
   standardizedRates: GraphDataView<'float32'>;
   smoothedRates: GraphDataView<'float32'>;
-  /** Row-standardized contiguity weights. */
-  weights: GPUSpatialWeights;
-  weightsOverflow: GraphDataView<'uint32'>;
+  /** Row-standardized contiguity weights, with their `status`. */
+  weights: GPUSpatialWeightsOutput;
   zScores: GraphDataView<'float32'>;
   spatialLag: GraphDataView<'float32'>;
   quadrants: GraphDataView<'uint32'>;
   colors: GraphDataView<'uint32'>;
-  /** How the p-values and the significance gate were produced, for building a legend. */
+  /**
+   * How the p-values and the significance gate were produced, for building a legend. It is
+   * derived from the packed `settings`.
+   */
   inference: GPUInferenceMetadata;
+  /**
+   * Writes `settings` into the parameter buffers for the next submitted encoding and updates
+   * `inference` from the same object. Throws, writing nothing, on invalid settings.
+   */
+  setSettings: (settings: GPURateClusterMapRecipeSettings) => void;
   /**
    * Present without `permutation`: analytic two-sided p-values and their `multipleTesting`
    * adjusted values (NaN for polygons that are not tested).
@@ -182,8 +235,18 @@ export type GPURateClusterMapRecipeResult = GPURecipeResult & {
     /** Pseudo p-values adjusted by `multipleTesting` (NaN where not tested). */
     adjustedPValues: GraphDataView<'float32'>;
     significant: GraphDataView<'uint32'>;
-    overflow: GraphDataView<'uint32'>;
+    status: {overflow: GPUStatusScalar};
   };
+  /** Status words next to the per-stage `stages`. */
+  status: {
+    /** One-row flag: 1 when the contiguity weights overflowed `neighborCapacity` (stage `weights`). */
+    weightsOverflow: GPUStatusScalar;
+    /**
+     * Unclamped neighbor-slot total: feed it to `getGPUSpatialWeightsCapacityPlan` to size
+     * `neighborCapacity` (stage `weights`).
+     */
+    weightsRequiredCount: GPUStatusScalar;
+  } & GPURecipeStatusPort;
 };
 
 /**
@@ -212,14 +275,33 @@ export function addRateClusterMapRecipe<Parameters>(
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
-  const rowCount = props.polygonOffsets.length - 1;
+  const rowCount = props.polygons.featureOffsets.length - 1;
   const multipleTesting = props.multipleTesting ?? GPU_RATE_CLUSTER_MAP_DEFAULT_MULTIPLE_TESTING;
-  if (rowCount < 3) {
-    throw new Error('addRateClusterMapRecipe needs at least three polygons');
-  }
-  if (props.events.length !== rowCount || props.populations.length !== rowCount) {
-    throw new Error('addRateClusterMapRecipe events and populations need one row per polygon');
-  }
+  assertRecipe(id, rowCount >= 3, 'needs at least three features');
+  assertRecipe(
+    id,
+    props.events.length === rowCount && props.populations.length === rowCount,
+    'events and populations need one row per feature'
+  );
+  // One source of truth (rule 19): the recipe packs `settings` itself and derives the inference
+  // metadata from the same object.
+  const parameterBuffer = props.parameters;
+  const permutationBuffer = props.permutation?.parameters ?? null;
+  assertRecipe(
+    id,
+    parameterBuffer.length >= GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+    `parameters needs ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} values`
+  );
+  assertRecipe(
+    id,
+    !permutationBuffer || permutationBuffer.length >= GPU_PERMUTATION_PARAMETER_LENGTH,
+    `permutation.parameters needs ${GPU_PERMUTATION_PARAMETER_LENGTH} values`
+  );
+  const parameters = parameterBuffer.importToGraph(graph, `${id}-parameters`);
+  const permutationParameters = permutationBuffer?.importToGraph(
+    graph,
+    `${id}-permutation-parameters`
+  );
   const standardizedRates = getOrCreateView(
     graph,
     `${id}-standardized`,
@@ -240,11 +322,13 @@ export function addRateClusterMapRecipe<Parameters>(
       events: props.events,
       populations: props.populations,
       mask: props.mask,
-      standardizedRates,
-      smoothedRates,
       clampPriorVariance: props.clampPriorVariance,
-      rawRates: scratch.rawRates,
-      summary: scratch.summary
+      output: {
+        standardizedRates,
+        smoothedRates,
+        rawRates: scratch.rawRates,
+        summary: scratch.summary
+      }
     })
   );
   const analyzedRates = props.analyze === 'smoothed' ? smoothedRates : standardizedRates;
@@ -254,25 +338,23 @@ export function addRateClusterMapRecipe<Parameters>(
     `${id}-weights`,
     rowCount,
     props.neighborCapacity,
-    scratch.weights
+    {
+      ...scratch.weights,
+      status: {
+        overflow: outputs.status?.weightsOverflow,
+        requiredCount: outputs.status?.weightsRequiredCount
+      }
+    }
   );
-  const weightsOverflow = getOrCreateView(
-    graph,
-    `${id}-weights-overflow`,
-    'uint32',
-    1,
-    outputs.weightsOverflow
-  );
+  const weightsOverflow = weights.status.overflow;
+  const weightsRequiredCount = weights.status.requiredCount!;
   builder.add(
     new GPUContiguityWeights({
       id: `${id}-contiguity`,
       criterion: props.criterion ?? 'queen',
-      positions: props.positions,
-      ringOffsets: props.ringOffsets,
-      polygonOffsets: props.polygonOffsets,
+      polygons: props.polygons,
       snapTolerance: props.snapTolerance,
-      weights,
-      overflow: weightsOverflow,
+      output: weights,
       pairCapacity: props.pairCapacity
     })
   );
@@ -322,15 +404,17 @@ export function addRateClusterMapRecipe<Parameters>(
       id: `${id}-local-moran`,
       weights,
       values: analyzedRates,
-      parameters: props.parameters,
-      zScores,
-      localI: outputs.localI,
-      spatialLag,
-      quadrants: localQuadrants,
+      parameters,
       quadrantGating: props.permutation ? 'none' : 'analytic',
       multipleTesting: props.permutation ? 'none' : multipleTesting,
-      pValues: analytic?.pValues,
-      adjustedPValues: analytic?.adjustedPValues
+      output: {
+        zScores,
+        localI: outputs.localI,
+        spatialLag,
+        quadrants: localQuadrants,
+        pValues: analytic?.pValues,
+        adjustedPValues: analytic?.adjustedPValues
+      }
     })
   );
 
@@ -368,7 +452,15 @@ export function addRateClusterMapRecipe<Parameters>(
         rowCount,
         provided.significant
       ),
-      overflow: getOrCreateView(graph, `${id}-permutation-overflow`, 'uint32', 1, provided.overflow)
+      status: {
+        overflow: getOrCreateView(
+          graph,
+          `${id}-permutation-overflow`,
+          'uint32',
+          1,
+          provided.status?.overflow
+        )
+      }
     };
     permutationTest = builder.add(
       new GPULocalPermutationTest({
@@ -377,11 +469,17 @@ export function addRateClusterMapRecipe<Parameters>(
         values: analyzedRates,
         statistic: 'localMoran',
         alternative: options.alternative,
-        parameters: options.parameters,
+        parameters: permutationParameters!,
         maximumPermutations: options.maximumPermutations,
         maximumNeighbors: options.maximumNeighbors,
         multipleTesting,
-        ...permutation
+        output: {
+          exceedances: permutation.exceedances,
+          pseudoPValues: permutation.pseudoPValues,
+          adjustedPValues: permutation.adjustedPValues,
+          significant: permutation.significant,
+          status: permutation.status
+        }
       })
     );
   }
@@ -416,35 +514,56 @@ export function addRateClusterMapRecipe<Parameters>(
   colorOutput[colorOutputOffset + index] = palette[paletteOffset + quadrant];`
     })
   );
-  // The metadata comes from the node that produces the p-values, so it cannot drift from the
-  // settings packed for the GPU. The recipe records the seed only when the caller states it.
-  let inference: GPUInferenceMetadata;
-  if (permutationTest && props.permutation) {
-    const {seed, permutations, maximumPermutations} = props.permutation;
-    inference = permutationTest.getInferenceMetadata({
-      seed: seed ?? 0,
-      permutations: permutations ?? maximumPermutations,
-      significanceLevel: props.significanceLevel
-    });
-    if (seed === undefined) {
-      delete inference.seed;
+  // The metadata comes from the node that produces the p-values; the same settings object is
+  // packed for the GPU and described here.
+  const getSettingsInference = (
+    settings: GPURateClusterMapRecipeSettings
+  ): GPUInferenceMetadata => {
+    if (permutationTest && props.permutation) {
+      return permutationTest.getInferenceMetadata({
+        seed: settings.seed ?? 0,
+        permutationCount: settings.permutationCount ?? props.permutation.maximumPermutations,
+        significanceLevel: settings.significanceLevel
+      });
     }
-  } else {
-    inference = localMoran.getInferenceMetadata(props.significanceLevel);
-  }
-  return {
+    return localMoran.getInferenceMetadata({significanceLevel: settings.significanceLevel});
+  };
+  const writeSettings = (settings: GPURateClusterMapRecipeSettings): GPUInferenceMetadata => {
+    // Pack (and validate) both views before writing either.
+    const values = getGPUSpatialAutocorrelationParameterValues({
+      significanceLevel: settings.significanceLevel
+    });
+    const permutationValues =
+      permutationTest && props.permutation
+        ? permutationTest.getParameterValues({
+            seed: settings.seed ?? 0,
+            permutationCount: settings.permutationCount ?? props.permutation.maximumPermutations,
+            significanceLevel: settings.significanceLevel
+          })
+        : null;
+    const metadata = getSettingsInference(settings);
+    parameterBuffer.write(values);
+    if (permutationValues) {
+      permutationBuffer!.write(permutationValues);
+    }
+    return metadata;
+  };
+  const inference = writeSettings(props.settings ?? {});
+  const result: GPURateClusterMapRecipeResult = {
     contributors: builder.contributors,
     rowCount,
     analyzedRates,
     standardizedRates,
     smoothedRates,
     weights,
-    weightsOverflow,
     zScores,
     spatialLag,
     quadrants,
     colors,
     inference,
+    setSettings: settings => {
+      result.inference = writeSettings(settings);
+    },
     analytic,
     permutation,
     outputs: {
@@ -459,10 +578,16 @@ export function addRateClusterMapRecipe<Parameters>(
     },
     intermediates: {weights, spatialLag},
     status: {
+      weightsOverflow,
+      weightsRequiredCount,
       stages: [
-        {stage: 'weights', status: {overflow: weightsOverflow}},
-        ...(permutation ? [{stage: 'permutation', status: {overflow: permutation.overflow}}] : [])
+        {
+          stage: 'weights',
+          status: {overflow: weightsOverflow, requiredCount: weightsRequiredCount}
+        },
+        ...(permutation ? [{stage: 'permutation', status: permutation.status}] : [])
       ]
     }
   };
+  return result;
 }

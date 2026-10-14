@@ -17,7 +17,6 @@ export {GPUCellCompaction, GPU_CELL_UNCOMPACT_DEFAULT_MAXIMUM_DEPTH} from './gpu
 export type {
   GPUCellCompactionProps,
   GPUCellCompactionOutput,
-  GPUCellCompactionWordOrder,
   GPUCellCompactOperation,
   GPUCellUncompactOperation
 } from './gpu-cell-compaction';

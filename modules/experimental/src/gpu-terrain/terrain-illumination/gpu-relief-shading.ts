@@ -13,7 +13,8 @@ import {
   GPURasterBufferToTexture,
   GPURasterGradient,
   type GPURasterBand,
-  type GPURasterBorderMode
+  type GPURasterBorderMode,
+  type GPURasterMetadata
 } from '../../gpu-raster/index';
 import {
   createWGSLKernelNode,
@@ -26,34 +27,37 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainIlluminationView
 } from './terrain-illumination-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  getTerrainRowNorthSignWGSL,
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection
-} from '../terrain-grid-utils';
+  getRasterGroundCellSizeWGSL,
+  getRasterRowNorthSignWGSL,
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection,
+  validateRasterCellSizeMode,
+  validateRasterRowDirection,
+  writeRasterGridParameterValues
+} from '../../analysis-core/raster-grid';
 
 /** Maximum number of lights in {@link GPUReliefShadingSettings.lights}. */
-export const GPU_RELIEF_SHADING_MAX_LIGHT_COUNT = 8;
+export const GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT = 8;
 
 /** Maximum number of stops in {@link GPUReliefShadingSettings.elevationStops}. */
-export const GPU_RELIEF_SHADING_MAX_STOP_COUNT = 8;
+export const GPU_RELIEF_SHADING_MAXIMUM_STOP_COUNT = 8;
 
-/** Number of float32 values read from `GPUReliefShadingProps.settings`. */
+/** Number of float32 values read from `GPUReliefShadingProps.parameters`. */
 export const GPU_RELIEF_SHADING_PARAMETER_LENGTH = 80;
 
 /** Pivot grey of the elevation-dependent contrast term: `shade = mix(pivot, shade, k)`. */
@@ -61,6 +65,9 @@ export const GPU_RELIEF_SHADING_CONTRAST_PIVOT = 0.72;
 
 /** Default maximum light azimuth swing of `'imhof-swing'` in degrees (mt-image `IMHOF_SWING_MAX`). */
 const DEFAULT_IMHOF_SWING_DEGREES = 65;
+
+/** Cell size and row-edge slots of the relief shading layout. @internal */
+const RELIEF_SHADING_GRID_SLOTS = {cellSizeIndex: 0, northEdgeIndex: 3} as const;
 
 /** Settings slot of the first light (`azimuth, altitude, weight` triples). @internal */
 const LIGHT_OFFSET = 20;
@@ -104,14 +111,8 @@ export type GPUReliefShadingWeighting = 'fixed' | 'aspect' | 'imhof-swing';
 
 /** CPU-side description packed by {@link getGPUReliefShadingParameterValues}. */
 export type GPUReliefShadingSettings = {
-  /** `[x, y]` cell size: meters (uniform), equatorial Web Mercator meters, or degrees (geographic). */
-  cellSize: readonly [number, number];
   /** Elevation multiplier applied to derivatives. Defaults to 1. */
   zFactor?: number;
-  /** Top edge of row 0: normalized Web Mercator y in `[0, 1]` or latitude degrees. Defaults to 0. */
-  northEdge?: number;
-  /** Bottom edge of the last row, same units as `northEdge`. Defaults to 0. */
-  southEdge?: number;
   /**
    * Lights, or `'mdow'` for the USGS set: azimuths 225, 270, 315, 360 at 30 degrees altitude with
    * `'aspect'` weighting. Defaults to `'mdow'`.
@@ -177,7 +178,7 @@ export const GPU_RELIEF_SHADING_MDOW_LIGHTS: readonly GPUReliefShadingLight[] = 
  *
  * | slots | values |
  * | --- | --- |
- * | 0-4 | cellSizeX, cellSizeY, zFactor, northEdge, southEdge |
+ * | 0-4 | cellSizeX, cellSizeY, zFactor, northEdge, southEdge (cell size and edges from `grid`) |
  * | 5-6 | lightCount, weighting (0 fixed, 1 aspect, 2 imhof-swing) |
  * | 7-11 | hillshadeStrength, skyViewStrength, textureShadeStrength, exposure, tintStrength |
  * | 12-14, 15 | warm rgb, stopCount |
@@ -192,18 +193,21 @@ export const GPU_RELIEF_SHADING_MDOW_LIGHTS: readonly GPUReliefShadingLight[] = 
  */
 export function getGPUReliefShadingParameterValues(
   settings: GPUReliefShadingSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_RELIEF_SHADING_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_RELIEF_SHADING_PARAMETER_LENGTH) {
-    throw new Error('Relief shading settings target must hold 80 values');
-  }
+  validateParameterTarget(
+    'getGPUReliefShadingParameterValues',
+    target,
+    GPU_RELIEF_SHADING_PARAMETER_LENGTH
+  );
   const lightSet = settings.lights ?? 'mdow';
   const lights = lightSet === 'mdow' ? GPU_RELIEF_SHADING_MDOW_LIGHTS : lightSet;
-  if (lights.length < 1 || lights.length > GPU_RELIEF_SHADING_MAX_LIGHT_COUNT) {
+  if (lights.length < 1 || lights.length > GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT) {
     throw new Error('Relief shading needs 1 to 8 lights');
   }
   const stops = settings.elevationStops ?? [];
-  if (stops.length > GPU_RELIEF_SHADING_MAX_STOP_COUNT) {
+  if (stops.length > GPU_RELIEF_SHADING_MAXIMUM_STOP_COUNT) {
     throw new Error('Relief shading supports at most 8 elevation stops');
   }
   for (let index = 1; index < stops.length; index++) {
@@ -216,11 +220,11 @@ export function getGPUReliefShadingParameterValues(
   const cool = settings.coolColor ?? [0.8, 0.85, 1];
   target.fill(0, 0, GPU_RELIEF_SHADING_PARAMETER_LENGTH);
   target.set([
-    settings.cellSize[0],
-    settings.cellSize[1],
+    0,
+    0,
     settings.zFactor ?? 1,
-    settings.northEdge ?? 0,
-    settings.southEdge ?? 0,
+    0,
+    0,
     lights.length,
     weighting === 'imhof-swing' ? 2 : weighting === 'aspect' ? 1 : 0,
     settings.hillshadeStrength ?? 1,
@@ -255,27 +259,45 @@ export function getGPUReliefShadingParameterValues(
     ],
     CURVATURE_STRENGTH_SLOT
   );
+  writeRasterGridParameterValues(target, grid, RELIEF_SHADING_GRID_SLOTS);
   return target;
 }
+
+/** Caller-owned outputs of {@link GPUReliefShading}; at least one is required. */
+export type GPUReliefShadingOutput = {
+  /** Multidirectional hillshade per pixel in `[0, 1]`. */
+  hillshade?: GraphDataView<'float32'>;
+  /** Blended relief luminance per pixel in `[0, 1]`. */
+  relief?: GraphDataView<'float32'>;
+  /** Packed RGBA8 color per pixel (`pack4x8unorm`, red in the low byte, alpha 255). */
+  color?: GraphDataView<'uint32'>;
+  /** Per-pixel 1 where every output is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the hillshade. */
+  hillshadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the relief. */
+  reliefTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
 
 /**
  * Properties for {@link GPUReliefShading}.
  *
  * Topology: grid size, elevation format and calibration, which inputs and outputs exist,
- * `cellSizeMode`, `rowDirection`, and `borderMode`. Per-frame: `settings` (lights, weighting,
+ * `cellSizeMode`, `rowDirection`, and `borderMode`. Per-frame: `parameters` (grid cell size and
+ * latitude band, lights, weighting,
  * blend strengths, tints, elevation ramp) and input contents.
  */
 export type GPUReliefShadingProps = {
   /** Prefix for node and transient IDs. Defaults to `'relief-shading'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 80 float32 values, see {@link getGPUReliefShadingParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 80 float32 values, see {@link getGPUReliefShadingParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUReliefShadingOutput;
   /** Optional sky-view factor per pixel, for example from `GPUTerrainHorizon`. */
   skyViewFactor?: GraphDataView<'float32'>;
   /** Optional texture shade per pixel, for example from `GPUTextureShading`. */
@@ -289,29 +311,17 @@ export type GPUReliefShadingProps = {
    */
   curvature?: GraphDataView<'float32'>;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: GPUTerrainRowDirection;
+  rowDirection?: GPURasterRowDirection;
   /** Sobel border treatment forwarded to `GPURasterGradient`. Defaults to `'clamp'`. */
   borderMode?: GPURasterBorderMode;
-  /** Optional multidirectional hillshade per pixel in `[0, 1]`. */
-  hillshade?: GraphDataView<'float32'>;
-  /** Optional blended relief luminance per pixel in `[0, 1]`. */
-  relief?: GraphDataView<'float32'>;
-  /** Optional packed RGBA8 color per pixel (`pack4x8unorm`, red in the low byte, alpha 255). */
-  color?: GraphDataView<'uint32'>;
-  /** Optional per-pixel 1 where every output is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
   /**
    * Topology switch that adds the `'imhof-swing'` hillshade node (default false). Without it the
    * `'imhof-swing'` weighting behaves like `'aspect'`. The node runs every frame but exits at once
    * unless the per-frame weighting is `'imhof-swing'`, and it keeps the other weightings bit-identical.
    */
   imhofSwing?: boolean;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving the hillshade. */
-  hillshadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving the relief. */
-  reliefTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
 };
 
 /**
@@ -351,14 +361,15 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
     this.id = props.id ?? 'relief-shading';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     if (
-      !props.hillshade &&
-      !props.relief &&
-      !props.color &&
-      !props.validity &&
-      !props.hillshadeTexture &&
-      !props.reliefTexture
+      !output.hillshade &&
+      !output.relief &&
+      !output.color &&
+      !output.outputValidity &&
+      !output.hillshadeTexture &&
+      !output.reliefTexture
     ) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -366,35 +377,35 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
       ['skyViewFactor', props.skyViewFactor],
       ['textureShade', props.textureShade],
       ['curvature', props.curvature],
-      ['hillshade', props.hillshade],
-      ['relief', props.relief]
+      ['output.hillshade', output.hillshade],
+      ['output.relief', output.relief]
     ] as const) {
       validateTerrainIlluminationView(id, name, view, 'float32', pixelCount);
     }
-    validateTerrainIlluminationView(id, 'color', props.color, 'uint32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_RELIEF_SHADING_PARAMETER_LENGTH);
-    for (const [name, texture] of [
-      ['hillshadeTexture', props.hillshadeTexture],
-      ['reliefTexture', props.reliefTexture]
-    ] as const) {
-      validateTerrainTexture(
-        id,
-        name,
-        texture,
-        ['r32float', 'rgba32float'],
-        props.width,
-        props.height
-      );
-    }
-    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateTerrainRowDirection(id, props.rowDirection ?? 'south');
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(id, 'output.color', output.color, 'uint32', pixelCount);
+    validateTerrainIlluminationView(
       id,
-      [props.hillshade, props.relief, props.color, props.validity],
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_RELIEF_SHADING_PARAMETER_LENGTH);
+    for (const [name, texture] of [
+      ['output.hillshadeTexture', output.hillshadeTexture],
+      ['output.reliefTexture', output.reliefTexture]
+    ] as const) {
+      validateRasterOutputTexture(id, name, texture, ['r32float', 'rgba32float'], props.grid);
+    }
+    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterRowDirection(id, props.rowDirection ?? 'south');
+    validateRasterBuffersDistinct(
+      id,
+      [output.hillshade, output.relief, output.color, output.outputValidity],
       [
-        ...getTerrainBandViews(props.elevation),
-        props.settings,
+        ...getRasterBandViews(props.elevation),
+        props.parameters,
         props.skyViewFactor,
         props.textureShade,
         props.curvature
@@ -407,35 +418,29 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, [
-      props.hillshadeTexture,
-      props.reliefTexture
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, [
+      output.hillshadeTexture,
+      output.reliefTexture
     ]);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
+      props.parameters,
       props.skyViewFactor,
       props.textureShade,
       props.curvature,
-      props.hillshade,
-      props.relief,
-      props.color,
-      props.validity
+      output.hillshade,
+      output.relief,
+      output.color,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
     const borderMode = props.borderMode ?? 'clamp';
     const needsCompose = Boolean(
-      props.relief || props.color || props.validity || props.reliefTexture
+      output.relief || output.color || output.outputValidity || output.reliefTexture
     );
     // The compose kernel reads calibrated elevation for the tint ramp.
-    const source = getTerrainElevationNodes(
-      graph,
-      id,
-      props.elevation,
-      width,
-      height,
-      needsCompose
-    );
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, needsCompose);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const gradients = (['x', 'y'] as const).map(direction => {
       const values = createTransientView(
@@ -469,7 +474,7 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
       return {values, validity};
     });
     const hillshadeTarget =
-      props.hillshade ?? createTransientView(graph, `${id}-hillshade`, 'float32', pixelCount);
+      output.hillshade ?? createTransientView(graph, `${id}-hillshade`, 'float32', pixelCount);
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -497,7 +502,7 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
           },
           {
             name: 'settings',
-            view: props.settings,
+            view: props.parameters,
             type: 'f32',
             access: 'read'
           },
@@ -511,14 +516,11 @@ export class GPUReliefShading implements GPUCommandNodeProducer {
         invocationCount: pixelCount,
         declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-${getTerrainRowNorthSignWGSL(props.rowDirection ?? 'south')}
+${getRasterRowNorthSignWGSL(props.rowDirection ?? 'south')}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
-const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAX_LIGHT_COUNT}u;
+const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainGroundCellSizeWGSL(cellSizeMode, {
-  cellSizeIndex: 0,
-  northEdgeIndex: 3
-})}`,
+${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
         body: `let row = index / WIDTH;
   let rawX = gradientX[gradientXOffset + index];
   let rawY = gradientY[gradientYOffset + index];
@@ -568,14 +570,14 @@ ${getTerrainGroundCellSizeWGSL(cellSizeMode, {
           gradientX: gradients[0].values,
           gradientY: gradients[1].values,
           gradientValidity: gradients[0].validity,
-          settings: props.settings,
+          settings: props.parameters,
           hillshade: hillshadeTarget
         })
       );
     }
     const reliefTarget =
-      props.relief ??
-      (props.reliefTexture
+      output.relief ??
+      (output.reliefTexture
         ? createTransientView(graph, `${id}-relief`, 'float32', pixelCount)
         : undefined);
     let detailTexture = props.textureShade;
@@ -587,9 +589,9 @@ ${getTerrainGroundCellSizeWGSL(cellSizeMode, {
         props.skyViewFactor,
         props.textureShade,
         props.curvature,
-        props.relief ?? props.reliefTexture,
-        props.color,
-        props.validity
+        output.relief ?? output.reliefTexture,
+        output.color,
+        output.outputValidity
       ].filter(Boolean).length;
     const foldCurvature = needsCompose && Boolean(props.curvature) && composeBindingCount > 8;
     if (foldCurvature) {
@@ -598,7 +600,7 @@ ${getTerrainGroundCellSizeWGSL(cellSizeMode, {
         getDetailNode(graph, {
           id: `${id}-detail`,
           pixelCount,
-          settings: props.settings,
+          settings: props.parameters,
           textureShade: props.textureShade,
           curvature: props.curvature as GraphDataView<'float32'>,
           detail: detailTexture
@@ -612,20 +614,20 @@ ${getTerrainGroundCellSizeWGSL(cellSizeMode, {
           pixelCount,
           elevation: source.band.storage.values as GraphDataView<'float32'>,
           hillshade: hillshadeTarget,
-          settings: props.settings,
+          settings: props.parameters,
           skyViewFactor: props.skyViewFactor,
           textureShade: detailTexture,
           textureShadeFolded: foldCurvature,
           curvature: foldCurvature ? undefined : props.curvature,
           relief: reliefTarget,
-          color: props.color,
-          validity: props.validity
+          color: output.color,
+          validity: output.outputValidity
         })
       );
     }
     for (const [name, target, texture] of [
-      ['hillshade', hillshadeTarget, props.hillshadeTexture],
-      ['relief', reliefTarget, props.reliefTexture]
+      ['hillshade', hillshadeTarget, output.hillshadeTexture],
+      ['relief', reliefTarget, output.reliefTexture]
     ] as const) {
       if (texture && target) {
         nodes.push(
@@ -660,8 +662,8 @@ function getSwingNode<Parameters>(
     id: string;
     width: number;
     height: number;
-    cellSizeMode: GPUTerrainCellSizeMode;
-    rowDirection: GPUTerrainRowDirection;
+    cellSizeMode: GPURasterCellSizeMode;
+    rowDirection: GPURasterRowDirection;
     gradientX: GraphDataView<'float32'>;
     gradientY: GraphDataView<'float32'>;
     gradientValidity: GraphDataView<'uint32'>;
@@ -683,14 +685,11 @@ function getSwingNode<Parameters>(
     invocationCount: props.width * props.height,
     declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
-${getTerrainRowNorthSignWGSL(props.rowDirection)}
+${getRasterRowNorthSignWGSL(props.rowDirection)}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
-const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAX_LIGHT_COUNT}u;
+const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
-  cellSizeIndex: 0,
-  northEdgeIndex: 3
-})}`,
+${getRasterGroundCellSizeWGSL(props.cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
     body: `if (settings[settingsOffset + 6u] != 2.0) {
     return;
   }
@@ -857,7 +856,7 @@ function getComposeNode<Parameters>(
     invocationCount: props.pixelCount,
     declarations: `const STOP_OFFSET: u32 = ${STOP_OFFSET}u;
 const CONTRAST_PIVOT: f32 = ${getWGSLFloatLiteral(GPU_RELIEF_SHADING_CONTRAST_PIVOT)};
-const MAX_STOP_COUNT: u32 = ${GPU_RELIEF_SHADING_MAX_STOP_COUNT}u;
+const MAX_STOP_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_STOP_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 fn getSettingsColor(slot: u32) -> vec3<f32> {
   return vec3<f32>(settings[settingsOffset + slot], settings[settingsOffset + slot + 1u],

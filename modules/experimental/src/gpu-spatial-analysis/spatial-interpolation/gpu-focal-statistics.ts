@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,9 +14,13 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
 import {GPU_FOCAL_STATISTICS_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
@@ -28,8 +29,8 @@ const OPERATION = 'GPUFocalStatistics';
 const MAXIMUM_FOCAL_RADIUS = 64;
 
 /**
- * Caller-owned row-major outputs of {@link GPUFocalStatistics}, each at least `width * height`
- * rows. Provide any non-empty subset. Float outputs are NaN for nodata cells.
+ * Caller-owned row-major outputs of {@link GPUFocalStatistics}, each at least
+ * `grid.width * grid.height` rows. Provide any non-empty subset. Float outputs are NaN for nodata cells.
  */
 export type GPUFocalStatisticsOutput = {
   /** Mean of valid window cells. */
@@ -45,29 +46,30 @@ export type GPUFocalStatisticsOutput = {
   /** Population standard deviation, `sqrt(sum((x - mean)^2) / n)`, from a centered second pass. */
   standardDeviation?: GraphDataView<'float32'>;
   /** Number of valid window cells, written for every cell (also nodata ones). */
-  count?: GraphDataView<'uint32'>;
+  counts?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUFocalStatistics}.
  *
  * Per-frame (no recompile): the contents of `parameters` (radius, shape, minimum count, center
- * nodata policy) and of the input raster. Topology: `width`, `height`, `maximumRadius`,
+ * nodata policy) and of the input raster. Topology: the `grid` size, `maximumRadius`,
  * `noDataValue`, whether `validity` is present, and which outputs are present.
  */
 export type GPUFocalStatisticsProps = {
   /** Prefix for generated node IDs. Defaults to `'focal-statistics'`. */
   id?: string;
-  /** Packed row-major float32 raster, at least `width * height` rows. NaN cells are nodata. */
+  /** Packed row-major float32 raster, at least `grid.width * grid.height` rows. NaN cells are nodata. */
   values: GraphDataView<'float32'>;
   /** Optional row-major `uint32` validity; zero marks a nodata cell. */
   validity?: GraphDataView<'uint32'>;
   /** Optional finite nodata sentinel compared exactly against cell values. */
   noDataValue?: number;
-  /** Raster width in cells. */
-  width: number;
-  /** Raster height in cells. */
-  height: number;
+  /**
+   * Raster grid: its width and height size the kernels and define the row-major layout. The
+   * statistics work on cell offsets only, so any affine is accepted.
+   */
+  grid: GPURasterMetadata;
   /**
    * Compile-time cap on the per-frame radius, an integer in `[0, 64]`. The per-frame radius is
    * clamped to it, which bounds the worst-case cost at `(2 * maximumRadius + 1)^2` reads per cell.
@@ -99,32 +101,15 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUFocalStatisticsProps;
-  /** `width * height`. */
+  /** `grid.width * grid.height`. */
   readonly cellCount: number;
 
   constructor(props: GPUFocalStatisticsProps) {
     this.id = props.id ?? 'focal-statistics';
     this.props = props;
     const {id} = this;
-    for (const [name, size] of [
-      ['width', props.width],
-      ['height', props.height]
-    ] as const) {
-      if (!Number.isSafeInteger(size) || size < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    this.cellCount = props.width * props.height;
-    if (this.cellCount > 0xffffffff) {
-      throw new Error(`${id} cell count must fit in uint32`);
-    }
-    if (
-      !Number.isSafeInteger(props.maximumRadius) ||
-      props.maximumRadius < 0 ||
-      props.maximumRadius > MAXIMUM_FOCAL_RADIUS
-    ) {
-      throw new Error(`${id} maximumRadius must be an integer in [0, ${MAXIMUM_FOCAL_RADIUS}]`);
-    }
+    this.cellCount = validateRasterGrid(id, props.grid);
+    validateCapacity(id, 'maximumRadius', props.maximumRadius, 0, MAXIMUM_FOCAL_RADIUS);
     if (props.noDataValue !== undefined && !Number.isFinite(props.noDataValue)) {
       throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
     }
@@ -133,24 +118,14 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
     if (outputs.length === 0) {
       throw new Error(`${id} needs at least one output`);
     }
-    for (const [name, view] of [
-      ['values', props.values],
-      ['validity', props.validity],
-      ['parameters', props.parameters],
-      ...outputs
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length < this.cellCount) {
-      throw new Error(`${id} values must hold width * height rows`);
+      throw new Error(`${id} values must hold grid.width * grid.height rows`);
     }
     if (props.validity) {
-      validatePackedUint32View(props.validity, `${id} validity`);
+      validatePackedView(props.validity, ['uint32'], `${id} validity`);
       if (props.validity.length < this.cellCount) {
-        throw new Error(`${id} validity must hold width * height rows`);
+        throw new Error(`${id} validity must hold grid.width * grid.height rows`);
       }
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -160,13 +135,13 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
       );
     }
     for (const [name, view] of outputs) {
-      if (name === 'count') {
-        validatePackedUint32View(view, `${id} output.count`);
+      if (name === 'counts') {
+        validatePackedView(view, ['uint32'], `${id} output.counts`);
       } else {
         validatePackedView(view, ['float32'], `${id} output.${name}`);
       }
       if (view.length < this.cellCount) {
-        throw new Error(`${id} output.${name} must hold width * height rows`);
+        throw new Error(`${id} output.${name} must hold grid.width * grid.height rows`);
       }
     }
     const outputBuffers = outputs.map(([, view]) => view.buffer);
@@ -206,8 +181,8 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer {
         : []),
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
-    const declarations = `const WIDTH: u32 = ${props.width}u;
-const HEIGHT: u32 = ${props.height}u;
+    const declarations = `const WIDTH: u32 = ${props.grid.width}u;
+const HEIGHT: u32 = ${props.grid.height}u;
 const MAXIMUM_RADIUS: i32 = ${props.maximumRadius};
 ${getValidityWGSL(Boolean(props.validity), props.noDataValue)}`;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -217,7 +192,7 @@ ${getValidityWGSL(Boolean(props.validity), props.noDataValue)}`;
       type: 'f32' | 'u32' = 'f32'
     ): WGSLKernelBinding[] => (view ? [{name, view, type, access: 'read_write'}] : []);
 
-    if (output.sum || output.mean || output.standardDeviation || output.count) {
+    if (output.sum || output.mean || output.standardDeviation || output.counts) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-moments`,
@@ -228,7 +203,7 @@ ${getValidityWGSL(Boolean(props.validity), props.noDataValue)}`;
             ...write('sumOut', output.sum),
             ...write('meanOut', output.mean),
             ...write('deviationOut', output.standardDeviation),
-            ...write('countOut', output.count, 'u32')
+            ...write('countOut', output.counts, 'u32')
           ],
           invocationCount: cellCount,
           workgroupSize: 64,
@@ -242,7 +217,7 @@ ${getValidityWGSL(Boolean(props.validity), props.noDataValue)}`;
   let mean = sum / f32(max(count, 1u));
   ${output.sum ? 'sumOut[sumOutOffset + index] = select(nan, sum, isDefined);' : ''}
   ${output.mean ? 'meanOut[meanOutOffset + index] = select(nan, mean, isDefined);' : ''}
-  ${output.count ? 'countOut[countOutOffset + index] = count;' : ''}
+  ${output.counts ? 'countOut[countOutOffset + index] = count;' : ''}
   ${
     output.standardDeviation
       ? `var squaredDeviationSum = 0.0;
@@ -298,7 +273,7 @@ ${getValidityWGSL(Boolean(props.validity), props.noDataValue)}`;
 function getOutputEntries(
   output: GPUFocalStatisticsOutput
 ): (readonly [keyof GPUFocalStatisticsOutput, GraphDataView])[] {
-  return (['mean', 'sum', 'min', 'max', 'range', 'standardDeviation', 'count'] as const).flatMap(
+  return (['mean', 'sum', 'min', 'max', 'range', 'standardDeviation', 'counts'] as const).flatMap(
     name => {
       const view = output[name];
       return view ? [[name, view as GraphDataView] as const] : [];

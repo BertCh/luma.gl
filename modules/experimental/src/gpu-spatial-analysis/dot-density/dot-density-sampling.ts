@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,36 +18,53 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   DOT_DENSITY_CANDIDATE_PURPOSE,
   DOT_DENSITY_REMAINDER_PURPOSE,
   getDotSlotCountLimit
-} from './dot-density-cpu';
+} from './dot-density-constants';
+import {
+  getPolygonTriangulationIndexCount,
+  GPUPolygonTriangulation
+} from '../polygon-triangulation/gpu-polygon-triangulation';
+import {createSegmentSumNode} from '../../utils/sorted-segment-sums';
+import {IS_FINITE_BITS_WGSL, IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
 import {PHILOX_WGSL} from '../../utils/philox-random';
 
 /** Feature ID written past the published count. */
 const NO_FEATURE = '0xffffffffu';
-/** Words per feature in the transient feature table: ring range plus f32 bounds bits. */
-const FEATURE_WORDS = 6;
-/** Default rejection-sampling attempts per dot. */
-export const DEFAULT_DOT_MAXIMUM_ATTEMPTS = 32;
+/** Words per dot in the transient dot table: slot, rank, first triangle and end triangle. */
+const DOT_WORDS = 4;
 
-/** GeoArrow polygon columns shared by {@link GPUDotDensity} and {@link GPURandomPointsInPolygon}. */
-export type GPUDotDensityPolygons = {
-  /** Flattened polygon vertices (GeoArrow layout, as `GPUPointInPolygonJoin`). */
-  polygonPositions: GraphDataView<'float32x2'>;
-  /** Feature-to-polygon offsets with `featureCount + 1` entries, first 0. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets with a terminal entry. Ring 0 of a polygon is the shell; others are holes. */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly; a repeated first vertex is harmless. */
-  ringOffsets: GraphDataView<'uint32'>;
-};
+/**
+ * Largest dot capacity (`output.positions.length`) of `GPUDotDensity` and the shared dot sampler on
+ * `device`: the per-dot slot table holds 16 bytes per dot in one storage binding, so 8388608 on a
+ * default device (128 MiB bindings).
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPUDotDensityMaximumCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, DOT_WORDS * 4);
+}
+
+/**
+ * Fixed-point total of the per-feature triangle areas. Areas are scaled so one feature sums to at
+ * most this value, which leaves about 7% of the u32 range as headroom for f32 rounding of the
+ * area total. The selection bias of the quantization is below one part in 1e9 per triangle.
+ */
+const AREA_FIXED_POINT_TOTAL = '4.0e9';
+/** Default mask-rejection attempts per dot. */
+export const DEFAULT_DOT_MAXIMUM_ATTEMPTS = 32;
 
 /** Optional dasymetric constraint shared by {@link GPUDotDensity} and {@link GPURandomPointsInPolygon}. */
 export type GPUDotDensityMask = {
@@ -67,8 +83,9 @@ export type GPUDotDensityMask = {
 /** Caller-owned outputs shared by {@link GPUDotDensity} and {@link GPURandomPointsInPolygon}. */
 export type GPUDotDensityOutput = {
   /**
-   * Dot positions, capacity rows. Rows past `dots.count` are NaN. A dot whose rejection attempts
-   * all failed is NaN too (and counted in `failedCount`), so it occupies its slot but is not drawn.
+   * Dot positions, capacity rows. Rows past `dots.count` are NaN. A dot of a feature that failed to
+   * triangulate or has zero area, or whose mask attempts all failed, is NaN too (and counted in
+   * `status.failedCount`), so it occupies its slot but is not drawn.
    */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -79,16 +96,23 @@ export type GPUDotDensityOutput = {
   dots: GPUCompactOutput;
   /** Optional category per dot (dot density only), capacity rows. */
   categories?: GraphDataView<'uint32'>;
-  /** Optional one-row count of dots whose attempts all failed. */
-  failedCount?: GraphDataView<'uint32'>;
   /** Optional per-slot dot counts, one row per slot. */
   slotCounts?: GraphDataView<'uint32'>;
   /** Optional per-slot exclusive offsets into the dot list, one row per slot. */
   slotOffsets?: GraphDataView<'uint32'>;
+  /** Optional completeness scalars. */
+  status?: {
+    /**
+     * Optional one-row count of dots that could not be placed: dots of features whose polygons
+     * failed to triangulate (or overflowed the triangulation work budget) or whose area is zero or
+     * not finite, plus dots whose mask attempts all failed. Zero means every dot was placed.
+     */
+    failedCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /** Internal configuration of the shared dot sampling graph. @internal */
-export type DotSamplingConfig = GPUDotDensityPolygons & {
+export type DotSamplingConfig = GPUPolygonGeometryFields & {
   id: string;
   operation: string;
   /** Float values per slot (dot density) or integer counts per feature (random points). */
@@ -105,17 +129,15 @@ export type DotSamplingConfig = GPUDotDensityPolygons & {
 /** Validates a shared dot sampling configuration and returns the feature count. @internal */
 export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   const {id, output, mask} = config;
-  validatePackedView(config.polygonPositions, ['float32x2'], `${id} polygonPositions`);
-  validatePackedUint32View(config.featureOffsets, `${id} featureOffsets`);
-  validatePackedUint32View(config.polygonOffsets, `${id} polygonOffsets`);
-  validatePackedUint32View(config.ringOffsets, `${id} ringOffsets`);
+  validatePackedView(config.positions, ['float32x2'], `${id} positions`);
+  validatePackedView(config.featureOffsets, ['uint32'], `${id} featureOffsets`);
+  validatePackedView(config.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
+  validatePackedView(config.ringOffsets, ['uint32'], `${id} ringOffsets`);
   const featureCount = config.featureOffsets.length - 1;
   if (featureCount < 1) {
     throw new Error(`${id} featureOffsets must describe at least one feature`);
   }
-  if (!Number.isInteger(config.categoryCount) || config.categoryCount < 1) {
-    throw new Error(`${id} categoryCount must be a positive integer`);
-  }
+  validateCapacity(id, 'categoryCount', config.categoryCount);
   const slotCount = featureCount * config.categoryCount;
   if (config.source.kind === 'values') {
     validatePackedView(config.source.values, ['float32'], `${id} values`);
@@ -123,20 +145,18 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
       throw new Error(`${id} values must have featureCount * categoryCount rows`);
     }
   } else {
-    validatePackedUint32View(config.source.counts, `${id} counts`);
+    validatePackedView(config.source.counts, ['uint32'], `${id} counts`);
     if (config.source.counts.length !== featureCount) {
       throw new Error(`${id} counts must have one row per feature`);
     }
   }
-  validatePackedUint32View(config.parameters, `${id} parameters`);
+  validatePackedView(config.parameters, ['uint32'], `${id} parameters`);
   if (config.parameters.length < GPU_DOT_DENSITY_PARAMETER_LENGTH) {
     throw new Error(
       `${id} parameters must contain ${GPU_DOT_DENSITY_PARAMETER_LENGTH} uint32 rows`
     );
   }
-  if (!Number.isInteger(config.maximumAttempts) || config.maximumAttempts < 1) {
-    throw new Error(`${id} maximumAttempts must be a positive integer`);
-  }
+  validateCapacity(id, 'maximumAttempts', config.maximumAttempts);
   if (mask) {
     validatePackedView(mask.weights, ['float32'], `${id} mask.weights`);
     if (
@@ -156,15 +176,16 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
     throw new Error(`${id} output.positions and output.dots.ids must share a positive capacity`);
   }
   if (output.categories) {
-    validatePackedUint32View(output.categories, `${id} output.categories`);
+    validatePackedView(output.categories, ['uint32'], `${id} output.categories`);
     if (output.categories.length !== capacity) {
       throw new Error(`${id} output.categories must have capacity rows`);
     }
   }
-  if (output.failedCount) {
-    validatePackedUint32View(output.failedCount, `${id} output.failedCount`);
-    if (output.failedCount.length < 1) {
-      throw new Error(`${id} output.failedCount must contain one uint32 row`);
+  const failedCountView = output.status?.failedCount;
+  if (failedCountView) {
+    validatePackedView(failedCountView, ['uint32'], `${id} output.status.failedCount`);
+    if (failedCountView.length < 1) {
+      throw new Error(`${id} output.status.failedCount must contain one uint32 row`);
     }
   }
   for (const [name, view] of [
@@ -172,7 +193,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
     ['slotOffsets', output.slotOffsets]
   ] as const) {
     if (view) {
-      validatePackedUint32View(view, `${id} output.${name}`);
+      validatePackedView(view, ['uint32'], `${id} output.${name}`);
       if (view.length !== slotCount) {
         throw new Error(`${id} output.${name} must have one row per slot`);
       }
@@ -183,11 +204,11 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
     [
       output.positions,
       output.dots.ids,
-      output.dots.count,
-      output.dots.overflow,
-      output.dots.requiredCount,
+      output.dots.status.count,
+      output.dots.status.overflow,
+      output.dots.status.requiredCount,
       output.categories,
-      output.failedCount,
+      output.status?.failedCount,
       output.slotCounts,
       output.slotOffsets
     ],
@@ -198,7 +219,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
 
 function getDotSamplingInputs(config: DotSamplingConfig): GraphDataView[] {
   return [
-    config.polygonPositions,
+    config.positions,
     config.featureOffsets,
     config.polygonOffsets,
     config.ringOffsets,
@@ -210,9 +231,11 @@ function getDotSamplingInputs(config: DotSamplingConfig): GraphDataView[] {
 
 /**
  * Builds the shared dot sampling nodes:
- * `features` (ring range and bounds per feature) -> `counts` (dots per slot) -> prefix scan ->
- * `total` -> `locate` (slot and rank per dot, feature IDs, categories) -> `clear-failed` ->
- * `sample` (rejection sampling) -> `publish`.
+ * `triangulation` (GPUPolygonTriangulation) -> `triangle-areas` -> `feature-triangles` (triangle
+ * range and validity per feature) -> feature area sums -> `cumulative-areas` (per-feature inclusive
+ * prefix of fixed-point areas) -> `counts` (dots per slot) -> slot prefix scan -> `total` ->
+ * `locate` (slot, rank and triangle range per dot, feature IDs, categories) -> `clear-failed` ->
+ * `sample` (area-weighted triangle, then uniform point in the triangle) -> `publish`.
  *
  * @internal
  */
@@ -226,99 +249,210 @@ export function getDotSamplingNodes<Parameters>(
     ...getDotSamplingInputs(config),
     output.positions,
     output.dots.ids,
-    output.dots.count,
-    output.dots.overflow,
-    output.dots.requiredCount,
+    output.dots.status.count,
+    output.dots.status.overflow,
+    output.dots.status.requiredCount,
     output.categories,
-    output.failedCount,
+    output.status?.failedCount,
     output.slotCounts,
     output.slotOffsets
   ]);
   const slotCount = featureCount * categoryCount;
   const capacity = output.positions.length;
+  validateMaximumCount(
+    id,
+    'output.positions rows',
+    capacity,
+    getGPUDotDensityMaximumCapacity(graph.device)
+  );
   const slotLimit = getDotSlotCountLimit(slotCount, capacity);
+  const polygonCount = config.polygonOffsets.length - 1;
+  const triangleCount = Math.floor(
+    getPolygonTriangulationIndexCount(
+      config.positions.length,
+      config.ringOffsets.length - 1,
+      polygonCount
+    ) / 3
+  );
   const nodes: GPUCommandNode<Parameters>[] = [];
 
-  const featureTable = createTransientView(
+  const triangleIndices = createTransientView(
     graph,
-    `${id}-feature-table`,
+    `${id}-triangle-indices`,
     'uint32',
-    featureCount * FEATURE_WORDS
+    Math.max(3 * triangleCount, 1)
   );
+  const polygonValid = createTransientView(
+    graph,
+    `${id}-polygon-valid`,
+    'uint32',
+    Math.max(polygonCount, 1)
+  );
+  const triangleAreas = createTransientView(
+    graph,
+    `${id}-triangle-areas`,
+    'float32',
+    Math.max(triangleCount, 1)
+  );
+  const cumulativeAreas = createTransientView(
+    graph,
+    `${id}-cumulative-areas`,
+    'uint32',
+    Math.max(triangleCount, 1)
+  );
+  const featureTriangleOffsets = createTransientView(
+    graph,
+    `${id}-feature-triangle-offsets`,
+    'uint32',
+    featureCount + 1
+  );
+  const featureValid = createTransientView(graph, `${id}-feature-valid`, 'uint32', featureCount);
+  const featureAreas = createTransientView(graph, `${id}-feature-areas`, 'float32', featureCount);
   const slotCounts =
     output.slotCounts ?? createTransientView(graph, `${id}-slot-counts`, 'uint32', slotCount);
   const slotOffsets =
     output.slotOffsets ?? createTransientView(graph, `${id}-slot-offsets`, 'uint32', slotCount);
   const clampFlag = createTransientView(graph, `${id}-clamped`, 'uint32', 1);
   const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
-  const dotSlots = createTransientView(graph, `${id}-dot-slots`, 'uint32', capacity * 2);
-  const failedCount = output.failedCount ?? createTransientView(graph, `${id}-failed`, 'uint32', 1);
+  const dotSlots = createTransientView(graph, `${id}-dot-slots`, 'uint32', capacity * DOT_WORDS);
+  const failedCount =
+    output.status?.failedCount ?? createTransientView(graph, `${id}-failed`, 'uint32', 1);
 
-  // 1. Ring range and vertex bounds per feature.
+  // 1. Triangulate every polygon (shell first, later rings are holes, as GeoArrow positions say).
+  nodes.push(
+    ...new GPUPolygonTriangulation({
+      id: `${id}-triangulation`,
+      positions: config.positions,
+      featureOffsets: config.featureOffsets,
+      polygonOffsets: config.polygonOffsets,
+      ringOffsets: config.ringOffsets,
+      output: {indices: triangleIndices, valid: polygonValid}
+    }).getCommandNodes(graph)
+  );
+
+  // 2. Area of every triangle slot; padding slots are degenerate and have area 0.
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-features`,
+      id: `${id}-triangle-areas`,
       operation,
-      variant: 'features',
+      variant: 'triangle-areas',
       bindings: [
-        {
-          name: 'polygonPositions',
-          view: config.polygonPositions,
-          type: 'f32',
-          access: 'read'
-        },
-        {
-          name: 'featureOffsets',
-          view: config.featureOffsets,
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'polygonOffsets',
-          view: config.polygonOffsets,
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'ringOffsets',
-          view: config.ringOffsets,
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'featureTable',
-          view: featureTable,
-          type: 'u32',
-          access: 'read_write'
-        }
+        {name: 'polygonPositions', view: config.positions, type: 'f32', access: 'read'},
+        {name: 'triangleIndices', view: triangleIndices, type: 'u32', access: 'read'},
+        {name: 'triangleAreas', view: triangleAreas, type: 'f32', access: 'read_write'}
       ],
-      invocationCount: featureCount,
+      invocationCount: Math.max(triangleCount, 1),
+      declarations: /* wgsl */ `
+const TRIANGLE_COUNT: u32 = ${triangleCount}u;
+fn readVertex(vertex: u32) -> vec2<f32> {
+  return vec2<f32>(polygonPositions[polygonPositionsOffset + 2u * vertex], polygonPositions[polygonPositionsOffset + 2u * vertex + 1u]);
+}`,
       body: /* wgsl */ `
-  let ringStart = polygonOffsets[polygonOffsetsOffset + featureOffsets[featureOffsetsOffset + index]];
-  let ringEnd = polygonOffsets[polygonOffsetsOffset + featureOffsets[featureOffsetsOffset + index + 1u]];
-  let vertexStart = ringOffsets[ringOffsetsOffset + ringStart];
-  let vertexEnd = ringOffsets[ringOffsetsOffset + ringEnd];
-  var minimum = vec2<f32>(bitcast<f32>(0x7f7fffffu));
-  var maximum = vec2<f32>(bitcast<f32>(0xff7fffffu));
-  for (var vertex = vertexStart; vertex < vertexEnd; vertex = vertex + 1u) {
-    let point = vec2<f32>(
-      polygonPositions[polygonPositionsOffset + 2u * vertex],
-      polygonPositions[polygonPositionsOffset + 2u * vertex + 1u]
-    );
-    minimum = min(minimum, point);
-    maximum = max(maximum, point);
+  var area = 0.0;
+  if (index < TRIANGLE_COUNT) {
+    let base = triangleIndicesOffset + 3u * index;
+    let first = readVertex(triangleIndices[base]);
+    // Edge vectors from one vertex keep the cross product accurate far from the origin.
+    let edgeOne = readVertex(triangleIndices[base + 1u]) - first;
+    let edgeTwo = readVertex(triangleIndices[base + 2u]) - first;
+    area = 0.5 * abs(edgeOne.x * edgeTwo.y - edgeOne.y * edgeTwo.x);
   }
-  let base = featureTableOffset + index * ${FEATURE_WORDS}u;
-  featureTable[base] = ringStart;
-  featureTable[base + 1u] = ringEnd;
-  featureTable[base + 2u] = bitcast<u32>(minimum.x);
-  featureTable[base + 3u] = bitcast<u32>(minimum.y);
-  featureTable[base + 4u] = bitcast<u32>(maximum.x);
-  featureTable[base + 5u] = bitcast<u32>(maximum.y);`
+  triangleAreas[triangleAreasOffset + index] = area;`
     })
   );
 
-  // 2. Dots per slot: ceil(value * dotsPerUnit - u) (dot density) or the integer count.
+  // 3. Triangle range [offsets[f], offsets[f + 1]) of every feature and whether all of its polygons
+  // triangulated. The slice of polygon p starts at triangle ringOffsets[polygonOffsets[p]] +
+  // 2 * polygonOffsets[p] - 4 * p (the index prefix of GPUPolygonTriangulation divided by 3).
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-feature-triangles`,
+      operation,
+      variant: 'feature-triangles',
+      bindings: [
+        {name: 'featureOffsets', view: config.featureOffsets, type: 'u32', access: 'read'},
+        {name: 'polygonOffsets', view: config.polygonOffsets, type: 'u32', access: 'read'},
+        {name: 'ringOffsets', view: config.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'polygonValid', view: polygonValid, type: 'u32', access: 'read'},
+        {
+          name: 'featureTriangleOffsets',
+          view: featureTriangleOffsets,
+          type: 'u32',
+          access: 'read_write'
+        },
+        {name: 'featureValid', view: featureValid, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: featureCount + 1,
+      declarations: /* wgsl */ `
+const FEATURE_COUNT: u32 = ${featureCount}u;
+const POLYGON_COUNT: u32 = ${polygonCount}u;
+const TRIANGLE_COUNT: u32 = ${triangleCount}u;
+fn getTriangleStart(polygon: u32) -> u32 {
+  let ringPrefix = polygonOffsets[polygonOffsetsOffset + polygon];
+  return min(ringOffsets[ringOffsetsOffset + ringPrefix] + 2u * ringPrefix - 4u * polygon, TRIANGLE_COUNT);
+}`,
+      body: /* wgsl */ `
+  let firstPolygon = min(featureOffsets[featureOffsetsOffset + index], POLYGON_COUNT);
+  featureTriangleOffsets[featureTriangleOffsetsOffset + index] = getTriangleStart(firstPolygon);
+  if (index < FEATURE_COUNT) {
+    let endPolygon = min(featureOffsets[featureOffsetsOffset + index + 1u], POLYGON_COUNT);
+    var valid = 1u;
+    for (var polygon = firstPolygon; polygon < endPolygon; polygon = polygon + 1u) {
+      valid = valid & polygonValid[polygonValidOffset + polygon];
+    }
+    featureValid[featureValidOffset + index] = valid;
+  }`
+    })
+  );
+
+  // 4. Total area per feature (deterministic segmented sum).
+  nodes.push(
+    createSegmentSumNode<Parameters>(graph, {
+      id: `${id}-feature-areas`,
+      operation,
+      segmentCount: featureCount,
+      input: triangleAreas,
+      segmentOffsets: featureTriangleOffsets,
+      output: featureAreas,
+      offsetsWithinInput: true
+    })
+  );
+
+  // 5. Cumulative fixed-point area inside every feature (inclusive prefix), one invocation per
+  // feature in triangle order. A feature whose polygons failed to triangulate or whose area is
+  // zero or not finite gets all zeros, which the sampler reports. Each triangle gets
+  // floor(share * total) units, so the running sum never exceeds the fixed-point total.
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-cumulative-areas`,
+      operation,
+      variant: 'cumulative-areas',
+      bindings: [
+        {name: 'triangleAreas', view: triangleAreas, type: 'f32', access: 'read'},
+        {name: 'featureTriangleOffsets', view: featureTriangleOffsets, type: 'u32', access: 'read'},
+        {name: 'featureValid', view: featureValid, type: 'u32', access: 'read'},
+        {name: 'featureAreas', view: featureAreas, type: 'f32', access: 'read'},
+        {name: 'cumulativeAreas', view: cumulativeAreas, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: featureCount,
+      declarations: IS_FINITE_BITS_WGSL,
+      body: /* wgsl */ `
+  let first = featureTriangleOffsets[featureTriangleOffsetsOffset + index];
+  let end = featureTriangleOffsets[featureTriangleOffsetsOffset + index + 1u];
+  let featureArea = featureAreas[featureAreasOffset + index];
+  let usable = featureValid[featureValidOffset + index] == 1u && isFiniteBits(featureArea) && featureArea > 0.0;
+  var running = 0u;
+  for (var triangle = first; triangle < end; triangle = triangle + 1u) {
+    let area = triangleAreas[triangleAreasOffset + triangle];
+    if (usable && isFiniteBits(area)) {
+      running = running + u32(clamp(area / featureArea, 0.0, 1.0) * ${AREA_FIXED_POINT_TOTAL});
+    }
+    cumulativeAreas[cumulativeAreasOffset + triangle] = running;
+  }`
+    })
+  );
+
+  // 7. Dots per slot: ceil(value * dotsPerUnit - u) (dot density) or the integer count.
   nodes.push(
     createFillNode<Parameters>(graph, {
       id: `${id}-clear-clamped`,
@@ -370,8 +504,8 @@ export function getDotSamplingNodes<Parameters>(
       ],
       invocationCount: slotCount,
       declarations: `${PHILOX_WGSL}
-const SLOT_LIMIT: u32 = ${slotLimit}u;
-fn isNanFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }`,
+${IS_NAN_BITS_WGSL}
+const SLOT_LIMIT: u32 = ${slotLimit}u;`,
       body:
         config.source.kind === 'values'
           ? /* wgsl */ `
@@ -380,7 +514,7 @@ fn isNanFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) >
   let scaled = sourceValues[sourceValuesOffset + index] * dotsPerUnit;
   var dots = 0u;
   var clamped = false;
-  if (!isNanFloat(scaled) && scaled > 0.0) {
+  if (!isNanBits(scaled) && scaled > 0.0) {
     let remainder = philoxUnitFloat(
       philox4x32(vec4<u32>(index, 0u, 0u, 0u), vec2<u32>(seed, ${DOT_DENSITY_REMAINDER_PURPOSE}u)).x
     );
@@ -411,7 +545,7 @@ fn isNanFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) >
     })
   );
 
-  // 3. Exclusive offsets and the total.
+  // 8. Exclusive offsets and the total.
   nodes.push(
     ...new GPUScan({
       id: `${id}-slot-scan`,
@@ -436,11 +570,12 @@ fn isNanFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) >
     })
   );
 
-  // 4. Slot and rank of every published dot (binary search on the inclusive prefix).
+  // 9. Slot, rank and triangle range of every published dot (binary search on the inclusive prefix).
   const locateBindings: WGSLKernelBinding[] = [
     {name: 'slotCounts', view: slotCounts, type: 'u32', access: 'read'},
     {name: 'slotOffsets', view: slotOffsets, type: 'u32', access: 'read'},
     {name: 'total', view: total, type: 'u32', access: 'read'},
+    {name: 'featureTriangleOffsets', view: featureTriangleOffsets, type: 'u32', access: 'read'},
     {name: 'dotSlots', view: dotSlots, type: 'u32', access: 'read_write'},
     {
       name: 'featureIds',
@@ -468,9 +603,12 @@ fn isNanFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) >
 const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
       body: /* wgsl */ `
   let count = min(total[totalOffset], ${capacity}u);
+  let table = dotSlotsOffset + ${DOT_WORDS}u * index;
   if (index >= count) {
-    dotSlots[dotSlotsOffset + 2u * index] = ${NO_FEATURE};
-    dotSlots[dotSlotsOffset + 2u * index + 1u] = 0u;
+    dotSlots[table] = ${NO_FEATURE};
+    dotSlots[table + 1u] = 0u;
+    dotSlots[table + 2u] = 0u;
+    dotSlots[table + 3u] = 0u;
     featureIds[featureIdsOffset + index] = ${NO_FEATURE};
     ${output.categories ? `categories[categoriesOffset + index] = ${NO_FEATURE};` : ''}
     return;
@@ -486,14 +624,17 @@ const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
       low = middle + 1u;
     }
   }
-  dotSlots[dotSlotsOffset + 2u * index] = low;
-  dotSlots[dotSlotsOffset + 2u * index + 1u] = index - slotOffsets[slotOffsetsOffset + low];
-  featureIds[featureIdsOffset + index] = low / CATEGORY_COUNT;
+  let feature = low / CATEGORY_COUNT;
+  dotSlots[table] = low;
+  dotSlots[table + 1u] = index - slotOffsets[slotOffsetsOffset + low];
+  dotSlots[table + 2u] = featureTriangleOffsets[featureTriangleOffsetsOffset + feature];
+  dotSlots[table + 3u] = featureTriangleOffsets[featureTriangleOffsetsOffset + feature + 1u];
+  featureIds[featureIdsOffset + index] = feature;
   ${output.categories ? 'categories[categoriesOffset + index] = low % CATEGORY_COUNT;' : ''}`
     })
   );
 
-  // 5. Rejection sampling inside each dot's feature.
+  // 10. Area-weighted triangle, then a uniform point inside it.
   nodes.push(
     createFillNode<Parameters>(graph, {
       id: `${id}-clear-failed`,
@@ -507,17 +648,12 @@ const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
   const sampleBindings: WGSLKernelBinding[] = [
     {
       name: 'polygonPositions',
-      view: config.polygonPositions,
+      view: config.positions,
       type: 'f32',
       access: 'read'
     },
-    {
-      name: 'ringOffsets',
-      view: config.ringOffsets,
-      type: 'u32',
-      access: 'read'
-    },
-    {name: 'featureTable', view: featureTable, type: 'u32', access: 'read'},
+    {name: 'triangleIndices', view: triangleIndices, type: 'u32', access: 'read'},
+    {name: 'cumulativeAreas', view: cumulativeAreas, type: 'u32', access: 'read'},
     {name: 'dotSlots', view: dotSlots, type: 'u32', access: 'read'},
     {
       name: 'parameters',
@@ -555,73 +691,75 @@ const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
       invocationCount: capacity,
       declarations: `${PHILOX_WGSL}
 const CATEGORY_COUNT: u32 = ${categoryCount}u;
-const MAXIMUM_ATTEMPTS: u32 = ${config.maximumAttempts}u;
-fn isNanFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
+// Without a mask the first candidate is always kept; with one, candidates are rejected by weight.
+const MAXIMUM_ATTEMPTS: u32 = ${mask ? config.maximumAttempts : 1}u;
 fn readVertex(vertex: u32) -> vec2<f32> {
   return vec2<f32>(polygonPositions[polygonPositionsOffset + 2u * vertex], polygonPositions[polygonPositionsOffset + 2u * vertex + 1u]);
 }
-fn isInsideFeature(point: vec2<f32>, ringStart: u32, ringEnd: u32) -> bool {
-  var inside = false;
-  for (var ring = ringStart; ring < ringEnd; ring = ring + 1u) {
-    let first = ringOffsets[ringOffsetsOffset + ring];
-    let end = ringOffsets[ringOffsetsOffset + ring + 1u];
-    if (end <= first) {
-      continue;
-    }
-    var previous = readVertex(end - 1u);
-    for (var vertex = first; vertex < end; vertex = vertex + 1u) {
-      let current = readVertex(vertex);
-      if ((current.y > point.y) != (previous.y > point.y)) {
-        let t = (point.y - current.y) / (previous.y - current.y);
-        let crossX = current.x + t * (previous.x - current.x);
-        if (point.x < crossX) {
-          inside = !inside;
-        }
-      }
-      previous = current;
-    }
-  }
-  return inside;
+// Uniform point of a triangle: r1 = sqrt(u1), P = (1 - r1) A + r1 (1 - u2) B + r1 u2 C, written
+// relative to A (the same point) for accuracy far from the origin.
+fn getTrianglePoint(triangle: u32, u1: f32, u2: f32) -> vec2<f32> {
+  let base = triangleIndicesOffset + 3u * triangle;
+  let a = readVertex(triangleIndices[base]);
+  let edgeB = readVertex(triangleIndices[base + 1u]) - a;
+  let edgeC = readVertex(triangleIndices[base + 2u]) - a;
+  return a + sqrt(u1) * ((1.0 - u2) * edgeB + u2 * edgeC);
 }
 ${
   mask
-    ? `const MASK_WIDTH: u32 = ${mask.width}u;
+    ? `${IS_NAN_BITS_WGSL}
+const MASK_WIDTH: u32 = ${mask.width}u;
 const MASK_HEIGHT: u32 = ${mask.height}u;
 fn getMaskWeight(point: vec2<f32>) -> f32 {
   let origin = vec2<f32>(bitcast<f32>(parameters[parametersOffset + 2u]), bitcast<f32>(parameters[parametersOffset + 3u]));
   let cell = vec2<f32>(bitcast<f32>(parameters[parametersOffset + 4u]), bitcast<f32>(parameters[parametersOffset + 5u]));
   let local = (point - origin) / cell;
-  if (isNanFloat(local.x) || isNanFloat(local.y) || local.x < 0.0 || local.y < 0.0 ||
+  if (isNanBits(local.x) || isNanBits(local.y) || local.x < 0.0 || local.y < 0.0 ||
       local.x >= f32(MASK_WIDTH) || local.y >= f32(MASK_HEIGHT)) {
     return 0.0;
   }
   let weight = maskWeights[maskWeightsOffset + u32(local.y) * MASK_WIDTH + u32(local.x)];
-  return select(weight, 0.0, isNanFloat(weight));
+  return select(weight, 0.0, isNanBits(weight));
 }`
     : ''
 }`,
       body: /* wgsl */ `
-  let slot = dotSlots[dotSlotsOffset + 2u * index];
+  let table = dotSlotsOffset + ${DOT_WORDS}u * index;
+  let slot = dotSlots[table];
   var nanBits = 0x7fc00000u;
   var position = vec2<f32>(bitcast<f32>(nanBits));
   if (slot != ${NO_FEATURE}) {
-    let rank = dotSlots[dotSlotsOffset + 2u * index + 1u];
+    let rank = dotSlots[table + 1u];
+    let firstTriangle = dotSlots[table + 2u];
+    let endTriangle = dotSlots[table + 3u];
     let seed = parameters[parametersOffset];
-    let base = featureTableOffset + (slot / CATEGORY_COUNT) * ${FEATURE_WORDS}u;
-    let ringStart = featureTable[base];
-    let ringEnd = featureTable[base + 1u];
-    let minimum = vec2<f32>(bitcast<f32>(featureTable[base + 2u]), bitcast<f32>(featureTable[base + 3u]));
-    let span = vec2<f32>(bitcast<f32>(featureTable[base + 4u]), bitcast<f32>(featureTable[base + 5u])) - minimum;
+    // Fixed-point area of the whole feature; 0 when it failed to triangulate or has no area.
+    var featureArea = 0u;
+    if (endTriangle > firstTriangle) {
+      featureArea = cumulativeAreas[cumulativeAreasOffset + endTriangle - 1u];
+    }
     var accepted = false;
-    for (var attempt = 0u; attempt < MAXIMUM_ATTEMPTS; attempt = attempt + 1u) {
-      let random = philox4x32(vec4<u32>(slot, rank, attempt, 0u), vec2<u32>(seed, ${DOT_DENSITY_CANDIDATE_PURPOSE}u));
-      let candidate = minimum + vec2<f32>(philoxUnitFloat(random.x), philoxUnitFloat(random.y)) * span;
-      var inside = isInsideFeature(candidate, ringStart, ringEnd);
-      ${mask ? 'inside = inside && philoxUnitFloat(random.z) < getMaskWeight(candidate);' : ''}
-      if (inside) {
-        position = candidate;
-        accepted = true;
-        break;
+    if (featureArea > 0u) {
+      for (var attempt = 0u; attempt < MAXIMUM_ATTEMPTS; attempt = attempt + 1u) {
+        let random = philox4x32(vec4<u32>(slot, rank, attempt, 0u), vec2<u32>(seed, ${DOT_DENSITY_CANDIDATE_PURPOSE}u));
+        let areaTarget = min(u32(philoxUnitFloat(random.x) * f32(featureArea)), featureArea - 1u);
+        // First triangle whose cumulative area exceeds the target; zero-area triangles never match.
+        var low = firstTriangle;
+        var high = endTriangle - 1u;
+        while (low < high) {
+          let middle = (low + high) / 2u;
+          if (cumulativeAreas[cumulativeAreasOffset + middle] > areaTarget) {
+            high = middle;
+          } else {
+            low = middle + 1u;
+          }
+        }
+        let candidate = getTrianglePoint(low, philoxUnitFloat(random.y), philoxUnitFloat(random.z));
+        ${mask ? 'accepted = philoxUnitFloat(random.w) < getMaskWeight(candidate);' : 'accepted = true;'}
+        if (accepted) {
+          position = candidate;
+          break;
+        }
       }
     }
     if (!accepted) {
@@ -633,7 +771,7 @@ fn getMaskWeight(point: vec2<f32>) -> f32 {
     })
   );
 
-  // 6. Count, overflow (capacity or clamped slot) and the unclamped total.
+  // 11. Count, overflow (capacity or clamped slot) and the unclamped total.
   nodes.push(
     createPublishNode<Parameters>(graph, {
       id: `${id}-publish`,

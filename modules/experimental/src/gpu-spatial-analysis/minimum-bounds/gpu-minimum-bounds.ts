@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -15,9 +15,12 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {GPUGroupConvexHull} from '../group-geometry/index';
 
 const OPERATION = 'GPUMinimumBounds';
@@ -52,21 +55,18 @@ export type GPUMinimumBoundsOutput = {
   bounds?: GraphDataView<'float32x4'>;
   /** True convex hull vertex count per group, before the `maximumHullVertices` cap. */
   hullSizes?: GraphDataView<'uint32'>;
-  /**
-   * One row, a bit set; bit 1 (`GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW`) means some hull exceeded
-   * `maximumHullVertices` and its group's rows are NaN. `0` when every group was computed.
-   */
-  overflow: GraphDataView<'uint32'>;
+  /** Completeness scalars. */
+  status: {
+    /**
+     * One row, a bit set; bit 1 (`GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW`) means some hull exceeded
+     * `maximumHullVertices` and its group's rows are NaN. `0` when every group was computed.
+     */
+    overflow: GraphDataView<'uint32'>;
+  };
 };
 
-/**
- * Properties for {@link GPUMinimumBounds}.
- *
- * Give either geometry (`ringOffsets`, optional `featureRingOffsets`, one group per feature) or
- * explicit `labels` with `groupCount`, not both. All input contents are per-frame; view lengths,
- * `groupCount`, `maximumHullVertices` and the set of requested outputs need a new graph.
- */
-export type GPUMinimumBoundsProps = {
+/** Props shared by both inputs of {@link GPUMinimumBounds}. */
+type GPUMinimumBoundsSharedProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'minimum-bounds'`. */
   id?: string;
   /**
@@ -76,22 +76,6 @@ export type GPUMinimumBoundsProps = {
    * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
    */
   spatialContext?: GPUSpatialContext;
-  /** Planar points or vertices (fewer than `2^24` rows). Non-finite rows are excluded. */
-  positions: GraphDataView<'float32x2'>;
-  /**
-   * GeoArrow-style ring (or line, or point-part) offsets: ring `r` owns
-   * `positions[ringOffsets[r] .. ringOffsets[r + 1])`. Vertices outside every ring are excluded.
-   */
-  ringOffsets?: GraphDataView<'uint32'>;
-  /**
-   * Optional feature to ring offsets (multi-geometries, holes). Feature `f` owns rings
-   * `[featureRingOffsets[f], featureRingOffsets[f + 1])`. Without it every ring is a feature.
-   */
-  featureRingOffsets?: GraphDataView<'uint32'>;
-  /** Alternative to geometry: a group label per position row. Labels `>= groupCount` are excluded. */
-  labels?: GraphDataView<'uint32'>;
-  /** Number of groups when `labels` is given. */
-  groupCount?: number;
   /**
    * Largest convex hull handled per group (at least 3, default 256). Larger hulls are flagged in
    * `overflow` and produce NaN. Hulls above 16 vertices use rotating calipers for the rectangle and
@@ -101,6 +85,27 @@ export type GPUMinimumBoundsProps = {
   /** Caller-owned outputs. */
   output: GPUMinimumBoundsOutput;
 };
+
+/**
+ * Properties for {@link GPUMinimumBounds}.
+ *
+ * Give either polygons (the four-level layout of {@link GPUPolygonGeometryFields}, one group per
+ * feature; vertices outside every ring are excluded) or `positions` with explicit `labels` and
+ * `groupCount` (any geometry: points, lines or vertices). All input contents are per-frame; view
+ * lengths, `groupCount`, `maximumHullVertices` and the set of requested outputs need a new graph.
+ */
+export type GPUMinimumBoundsProps = GPUMinimumBoundsSharedProps &
+  (
+    | (GPUPolygonGeometryFields & {labels?: undefined; groupCount?: undefined})
+    | {
+        /** Planar points or vertices (fewer than `2^24` rows). Non-finite rows are excluded. */
+        positions: GraphDataView<'float32x2'>;
+        /** A group label per position row. Labels `>= groupCount` are excluded. */
+        labels: GraphDataView<'uint32'>;
+        /** Number of groups. */
+        groupCount: number;
+      }
+  );
 
 /**
  * Minimum bounding shapes of every feature (or label group): the minimum-area rotated rectangle
@@ -155,16 +160,6 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['ringOffsets', props.ringOffsets],
-      ['featureRingOffsets', props.featureRingOffsets],
-      ['labels', props.labels]
-    ] as const) {
-      if (view && (view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {
@@ -173,48 +168,24 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
-    if (props.labels && props.ringOffsets) {
-      throw new Error(`${id} takes either labels or ringOffsets, not both`);
-    }
     if (props.labels) {
-      validatePackedUint32View(props.labels, `${id} labels`);
+      validatePackedView(props.labels, ['uint32'], `${id} labels`);
       if (props.labels.length !== rows) {
         throw new Error(`${id} labels length must equal positions length`);
       }
-      if (props.featureRingOffsets) {
-        throw new Error(`${id} featureRingOffsets needs ringOffsets`);
-      }
-      const groups = props.groupCount;
-      if (
-        groups === undefined ||
-        !Number.isInteger(groups) ||
-        groups < 1 ||
-        groups > MAXIMUM_ROWS
-      ) {
-        throw new Error(`${id} groupCount must be a positive integer below 2^24 with labels`);
-      }
-      this.groupCount = groups;
-    } else if (props.ringOffsets) {
-      validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
-      if (props.ringOffsets.length < 2) {
-        throw new Error(`${id} ringOffsets must contain at least two rows`);
-      }
-      if (props.featureRingOffsets) {
-        validatePackedUint32View(props.featureRingOffsets, `${id} featureRingOffsets`);
-        if (props.featureRingOffsets.length < 2) {
-          throw new Error(`${id} featureRingOffsets must contain at least two rows`);
+      validateCapacity(id, 'groupCount', props.groupCount ?? 0, 1, MAXIMUM_ROWS);
+      this.groupCount = props.groupCount;
+    } else {
+      for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
+        validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+        if (props[name].length < 2) {
+          throw new Error(`${id} ${name} must contain at least two rows`);
         }
       }
-      this.groupCount = props.featureRingOffsets
-        ? props.featureRingOffsets.length - 1
-        : props.ringOffsets.length - 1;
-    } else {
-      throw new Error(`${id} needs ringOffsets or labels`);
+      this.groupCount = props.featureOffsets.length - 1;
     }
     this.maximumHullVertices = props.maximumHullVertices ?? DEFAULT_MAXIMUM_HULL_VERTICES;
-    if (!Number.isInteger(this.maximumHullVertices) || this.maximumHullVertices < 3) {
-      throw new Error(`${id} maximumHullVertices must be an integer of at least 3`);
-    }
+    validateCapacity(id, 'maximumHullVertices', this.maximumHullVertices, 3);
     const groups = this.groupCount;
     const checks = [
       ['rectangleCorners', output.rectangleCorners, ['float32x2'], groups * 4],
@@ -224,7 +195,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       ['diameters', output.diameters, ['float32'], groups],
       ['bounds', output.bounds, ['float32x4'], groups],
       ['hullSizes', output.hullSizes, ['uint32'], groups],
-      ['overflow', output.overflow, ['uint32'], 1]
+      ['overflow', output.status.overflow, ['uint32'], 1]
     ] as const;
     for (const [name, view, formats, length] of checks) {
       if (!view) {
@@ -248,7 +219,13 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       checks.map(([, view]) => view),
-      [props.positions, props.ringOffsets, props.featureRingOffsets, props.labels]
+      [
+        props.positions,
+        'ringOffsets' in props ? props.ringOffsets : undefined,
+        'polygonOffsets' in props ? props.polygonOffsets : undefined,
+        'featureOffsets' in props ? props.featureOffsets : undefined,
+        props.labels
+      ]
     );
   }
 
@@ -258,12 +235,16 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, groupCount} = this;
     const {output, positions} = props;
+    const {status, ...columns} = output;
+    const polygons = 'ringOffsets' in props ? props : undefined;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
-      props.ringOffsets,
-      props.featureRingOffsets,
+      polygons?.ringOffsets,
+      polygons?.polygonOffsets,
+      polygons?.featureOffsets,
       props.labels,
-      ...Object.values(output)
+      ...Object.values(columns),
+      status.overflow
     ]);
     const rows = positions.length;
     const u32 = (name: string, length: number) =>
@@ -297,55 +278,44 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     // 1. Vertex to group labels.
     let labels = props.labels;
     if (!labels) {
-      const ringOffsets = props.ringOffsets!;
-      const featureRingOffsets = props.featureRingOffsets;
-      const ringCount = ringOffsets.length - 1;
-      const featureCount = featureRingOffsets ? featureRingOffsets.length - 1 : ringCount;
+      // Without labels the props are the polygon layout.
+      const {ringOffsets, polygonOffsets, featureOffsets} = props as GPUPolygonGeometryFields;
       labels = createTransientView(graph, `${id}-labels`, 'uint32', rows);
-      const bindings = [read('ringOffsets', ringOffsets, 'u32')];
-      if (featureRingOffsets) {
-        bindings.push(read('featureRingOffsets', featureRingOffsets, 'u32'));
+      // The last entry that starts at or before `value`, within the covered range of `offsets`.
+      const ownerSearch = (offsets: string, count: number, value: string, owner: string) =>
+        `if (${value} >= ${offsets}[${offsets}Offset] && ${value} < ${offsets}[${offsets}Offset + ${count}u]) {
+    var ${owner}Low = 0u;
+    var ${owner}High = ${count - 1}u;
+    while (${owner}Low < ${owner}High) {
+      let middle = (${owner}Low + ${owner}High + 1u) >> 1u;
+      if (${offsets}[${offsets}Offset + middle] <= ${value}) {
+        ${owner}Low = middle;
+      } else {
+        ${owner}High = middle - 1u;
       }
-      bindings.push(write('labels', labels, 'u32'));
+    }
+    ${owner} = ${owner}Low;`;
       nodes.push(
         kernel(
           'labels',
           rows,
-          bindings,
-          `var label = 0xffffffffu;
-  if (index >= ringOffsets[ringOffsetsOffset] && index < ringOffsets[ringOffsetsOffset + ${ringCount}u]) {
-    var low = 0u;
-    var high = ${ringCount - 1}u;
-    while (low < high) {
-      let middle = (low + high + 1u) >> 1u;
-      if (ringOffsets[ringOffsetsOffset + middle] <= index) {
-        low = middle;
-      } else {
-        high = middle - 1u;
+          [
+            read('ringOffsets', ringOffsets, 'u32'),
+            read('polygonOffsets', polygonOffsets, 'u32'),
+            read('featureOffsets', featureOffsets, 'u32'),
+            write('labels', labels, 'u32')
+          ],
+          // Vertex row -> ring -> polygon -> feature; any miss leaves the row unlabeled.
+          `var ring = 0xffffffffu;
+  var polygon = 0xffffffffu;
+  var feature = 0xffffffffu;
+  ${ownerSearch('ringOffsets', ringOffsets.length - 1, 'index', 'ring')}
+    ${ownerSearch('polygonOffsets', polygonOffsets.length - 1, 'ring', 'polygon')}
+      ${ownerSearch('featureOffsets', featureOffsets.length - 1, 'polygon', 'feature')}
       }
-    }
-    label = low;
-    ${
-      featureRingOffsets
-        ? `if (low >= featureRingOffsets[featureRingOffsetsOffset] && low < featureRingOffsets[featureRingOffsetsOffset + ${featureCount}u]) {
-      var featureLow = 0u;
-      var featureHigh = ${featureCount - 1}u;
-      while (featureLow < featureHigh) {
-        let middle = (featureLow + featureHigh + 1u) >> 1u;
-        if (featureRingOffsets[featureRingOffsetsOffset + middle] <= low) {
-          featureLow = middle;
-        } else {
-          featureHigh = middle - 1u;
-        }
-      }
-      label = featureLow;
-    } else {
-      label = 0xffffffffu;
-    }`
-        : ''
     }
   }
-  labels[labelsOffset + index] = label;`
+  labels[labelsOffset + index] = feature;`
         )
       );
     }
@@ -362,14 +332,14 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
         labels,
         groupCount,
         maximumVerticesPerGroup: this.maximumHullVertices,
-        totalCapacity: rows,
+        vertexCapacity: rows,
         output: {
           vertexIndices: hullIndices,
           vertexPositions: hullPositions,
           offsets: hullOffsets,
           counts: hullCounts,
           sizes: output.hullSizes,
-          overflow: output.overflow
+          status: {overflow: output.status.overflow}
         }
       }).getCommandNodes(graph)
     );

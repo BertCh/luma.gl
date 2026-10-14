@@ -4,28 +4,38 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {GPUSegmentIntersection} from '../segment-intersection/index';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getGPUSegmentIntersectionMaximumVertexCount,
+  GPUSegmentIntersection
+} from '../segment-intersection/index';
 import {SEGMENT_PREDICATES_WGSL} from '../segment-intersection/segment-intersection-wgsl';
-import type {
-  GPUSpatialJoinLines,
-  GPUSpatialJoinPoints,
-  GPUSpatialJoinPolygons
-} from '../spatial-join/index';
 import {
   GPU_GEOMETRY_VALIDITY_BIT,
   type GPUGeometryValidityOrientation,
   type GPUGeometryValidityRingClosure
 } from './geometry-validity-types';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPULineGeometryPort,
+  GPUPackedGeometryPort,
+  GPUPointGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUGeometryValidity';
 
@@ -39,6 +49,23 @@ const OPERATION = 'GPUGeometryValidity';
  * serializes the stage.
  */
 const RING_LANES = 64;
+
+/** Caller-owned outputs of {@link GPUGeometryValidity}. */
+export type GPUGeometryValidityOutput = {
+  /** Bitmask per feature, `featureCount` rows. See {@link GPU_GEOMETRY_VALIDITY_BIT}. */
+  mask: GraphDataView<'uint32'>;
+  /** Completeness scalars; `overflow` is required for polygons. */
+  status?: {
+    /**
+     * One-row flag that is 1 when the intersection list or the BVH overflowed. Then
+     * `selfIntersection` and `crossingRings` may be missing for some features; every other bit is
+     * unaffected. Required for polygons.
+     */
+    overflow?: GraphDataView<'uint32'>;
+    /** Optional one-row unclamped number of same-feature segment intersections found, for sizing `intersectionCapacity`. */
+    intersectionCount?: GraphDataView<'uint32'>;
+  };
+};
 
 /**
  * Properties for {@link GPUGeometryValidity}.
@@ -60,30 +87,27 @@ export type GPUGeometryValidityProps = {
    * Polygon or multipolygon features in the GeoArrow layout of `GPUSpatialPredicateJoin`. Give
    * exactly one of `polygons`, `lines` and `points`.
    */
-  polygons?: GPUSpatialJoinPolygons;
+  polygons?: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /**
    * Linestring features. Valid means finite coordinates and, for a non-empty line, at least two
    * distinct vertices (Shapely `is_valid` for a `LineString`). Self-intersection is allowed.
    */
-  lines?: GPUSpatialJoinLines;
+  lines?: GPUPackedGeometryPort<GPULineGeometryPort>;
   /** Point features. Valid means finite coordinates (Shapely `is_valid` for a `Point`). */
-  points?: GPUSpatialJoinPoints;
-  /** Caller-owned bitmask per feature, `featureCount` rows. See {@link GPU_GEOMETRY_VALIDITY_BIT}. Lines and points use only `nonFinite` and `tooFewPoints`. */
-  mask: GraphDataView<'uint32'>;
+  points?: GPUPackedGeometryPort<GPUPointGeometryPort>;
+  /**
+   * Caller-owned outputs: the validity `mask`, one bitmask per feature (`featureCount` rows, see
+   * {@link GPU_GEOMETRY_VALIDITY_BIT}; lines and points use only `nonFinite` and `tooFewPoints`)
+   * and the completeness `status`.
+   */
+  output: GPUGeometryValidityOutput;
   /**
    * Capacity of the internal list of same-feature segment intersections. Valid polygons produce
    * almost none, so it only needs to cover the intersections of the invalid features, plus ring
-   * contacts that are allowed (a hole touching its shell at a point). Required for polygons.
+   * contacts that are allowed (a hole touching its shell at a point). Required for polygons, whose
+   * `positions` have at most {@link getGPUSegmentIntersectionMaximumVertexCount} rows (4194304 on a default device).
    */
   intersectionCapacity?: number;
-  /**
-   * One-row flag that is 1 when the intersection list or the BVH overflowed. Then
-   * `selfIntersection` and `crossingRings` may be missing for some features; every other bit is
-   * unaffected. Required for polygons.
-   */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped number of same-feature segment intersections found, for sizing `intersectionCapacity`. */
-  intersectionCount?: GraphDataView<'uint32'>;
   /** Power-of-two BVH leaf slots over segments. Defaults to the next power of two of the vertex count. */
   leafCapacity?: number;
   /** Ring closure convention. Defaults to `'implicit'`. */
@@ -126,7 +150,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
   readonly featureCount: number;
   /** Number of rings, `ringOffsets.length - 1`. */
   readonly ringCount: number;
-  private readonly polygons?: GPUSpatialJoinPolygons;
+  private readonly polygons?: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
 
   constructor(props: GPUGeometryValidityProps) {
     this.id = props.id ?? 'geometry-validity';
@@ -145,7 +169,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         ['polygonOffsets', polygons.polygonOffsets],
         ['ringOffsets', polygons.ringOffsets]
       ] as const) {
-        validatePackedUint32View(view, `${id} polygons.${name}`);
+        validatePackedView(view, ['uint32'], `${id} polygons.${name}`);
         if (view.length < 1) {
           throw new Error(`${id} polygons.${name} requires a terminal entry`);
         }
@@ -155,19 +179,19 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       if (polygons.positions.length < 1) {
         throw new Error(`${id} polygons must contain at least one vertex`);
       }
-      if (!props.overflow || props.intersectionCapacity === undefined) {
-        throw new Error(`${id} polygons require overflow and intersectionCapacity`);
+      if (!props.output.status?.overflow || props.intersectionCapacity === undefined) {
+        throw new Error(`${id} polygons require status.overflow and intersectionCapacity`);
       }
     } else if (lines) {
       validatePackedView(lines.positions, ['float32x2'], `${id} lines.positions`);
-      validatePackedUint32View(lines.lineOffsets, `${id} lines.lineOffsets`);
+      validatePackedView(lines.lineOffsets, ['uint32'], `${id} lines.lineOffsets`);
       if (lines.lineOffsets.length < 1) {
         throw new Error(`${id} lines.lineOffsets requires a terminal entry`);
       }
       this.featureCount = lines.lineOffsets.length - 1;
       this.ringCount = 0;
     } else {
-      const pointGeometry = points as GPUSpatialJoinPoints;
+      const pointGeometry = points as GPUPackedGeometryPort<GPUPointGeometryPort>;
       validatePackedView(pointGeometry.positions, ['float32x2'], `${id} points.positions`);
       this.featureCount = pointGeometry.positions.length;
       this.ringCount = 0;
@@ -175,27 +199,24 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
     if (this.featureCount < 1) {
       throw new Error(`${id} geometry must contain at least one feature`);
     }
-    validatePackedUint32View(props.mask, `${id} mask`);
-    if (props.mask.length !== this.featureCount) {
-      throw new Error(`${id} mask length must equal the feature count`);
+    const {mask, status} = props.output;
+    validatePackedView(mask, ['uint32'], `${id} output.mask`);
+    if (mask.length !== this.featureCount) {
+      throw new Error(`${id} output.mask length must equal the feature count`);
     }
     for (const [name, view] of [
-      ['overflow', props.overflow],
-      ['intersectionCount', props.intersectionCount]
+      ['overflow', status?.overflow],
+      ['intersectionCount', status?.intersectionCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
         if (view.length < 1) {
-          throw new Error(`${id} ${name} must contain one uint32 row`);
+          throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }
       }
     }
-    if (
-      polygons &&
-      (!Number.isSafeInteger(props.intersectionCapacity) ||
-        (props.intersectionCapacity as number) < 1)
-    ) {
-      throw new Error(`${id} intersectionCapacity must be a positive integer`);
+    if (polygons) {
+      validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity ?? 0);
     }
     if (props.ringClosure && !['implicit', 'explicit'].includes(props.ringClosure)) {
       throw new Error(`${id} ringClosure must be implicit or explicit`);
@@ -216,8 +237,9 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       ? [polygons.positions, polygons.featureOffsets, polygons.polygonOffsets, polygons.ringOffsets]
       : props.lines
         ? [props.lines.positions, props.lines.lineOffsets]
-        : [(props.points as GPUSpatialJoinPoints).positions];
-    return [...geometryViews, props.mask, props.overflow, props.intersectionCount];
+        : [(props.points as GPUPackedGeometryPort<GPUPointGeometryPort>).positions];
+    const {mask, status} = props.output;
+    return [...geometryViews, mask, status?.overflow, status?.intersectionCount];
   }
 
   /** One thread per line or point feature: finite coordinates and, for lines, two distinct vertices. */
@@ -227,14 +249,15 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
     const {id, props, featureCount} = this;
     const bit = GPU_GEOMETRY_VALIDITY_BIT;
     const {lines} = props;
-    const positions = (lines ?? (props.points as GPUSpatialJoinPoints)).positions;
+    const positions = (lines ?? (props.points as GPUPackedGeometryPort<GPUPointGeometryPort>))
+      .positions;
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: positions, type: 'f32', access: 'read'}
     ];
     if (lines) {
       bindings.push({name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'});
     }
-    bindings.push({name: 'mask', view: props.mask, type: 'u32', access: 'read_write'});
+    bindings.push({name: 'mask', view: props.output.mask, type: 'u32', access: 'read_write'});
     return createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-simple-kinds`,
       operation: OPERATION,
@@ -274,10 +297,19 @@ fn vertexAt(vertex: u32) -> vec2f {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, polygons, featureCount, ringCount} = this;
     validateGraphViewsBelongToGraph(id, graph, this.getViews());
+    if (props.polygons) {
+      // The ring test builds a segment table over every vertex.
+      validateMaximumCount(
+        id,
+        'polygons.positions rows',
+        props.polygons.positions.length,
+        getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+      );
+    }
     if (!polygons) {
       return [this.getLineOrPointNode(graph)];
     }
-    const {mask} = props;
+    const {mask, status} = props.output;
     const intersectionCapacity = props.intersectionCapacity as number;
     const orientation = props.orientation ?? 'counter-clockwise-shell';
     const explicitClosure = props.ringClosure === 'explicit';
@@ -791,17 +823,22 @@ fn locateInShell(point: vec2f, shellStart: u32, count: u32, shellRing: u32, lane
       left: polygons,
       sameFeatureOnly: true,
       leafCapacity: props.leafCapacity,
-      pairs: {
-        leftIds: pairLeft,
-        rightIds: pairRight,
-        count: pairCount,
-        overflow: props.overflow as GraphDataView<'uint32'>,
-        requiredCount: props.intersectionCount
-      },
-      kinds,
-      leftFeatures,
-      leftRings,
-      rightRings
+      output: {
+        pairs: {
+          leftIds: pairLeft,
+          rightIds: pairRight,
+          status: {
+            count: pairCount,
+            // The constructor requires status.overflow for polygons.
+            overflow: status?.overflow as GraphDataView<'uint32'>,
+            requiredCount: status?.intersectionCount
+          }
+        },
+        kinds,
+        leftFeatures,
+        leftRings,
+        rightRings
+      }
     });
     nodes.push(...intersection.getCommandNodes(graph));
 

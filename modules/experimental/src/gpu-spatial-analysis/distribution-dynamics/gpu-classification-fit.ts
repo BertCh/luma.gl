@@ -6,7 +6,6 @@ import {
   createTransientView,
   GPUSort,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,13 +13,15 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 
 const OPERATION = 'GPUClassificationFit';
 /** Lanes of the per-class statistics workgroup. */
-const STATS_WORKGROUP_SIZE = 256;
+const STATISTICS_WORKGROUP_SIZE = 256;
 const MAXIMUM_CLASS_COUNT = 256;
 
 /** Rows of the optional `summary` output of {@link GPUClassificationFit}. */
@@ -123,9 +124,7 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
     const {values, classes, classCount, mask, output} = props;
     validatePackedView(values, ['float32'], `${id} values`);
     validatePackedUint32View(classes, `${id} classes`);
-    if (!Number.isInteger(classCount) || classCount < 1 || classCount > MAXIMUM_CLASS_COUNT) {
-      throw new Error(`${id} classCount must be an integer from 1 to ${MAXIMUM_CLASS_COUNT}`);
-    }
+    validateCapacity(id, 'classCount', classCount, 1, MAXIMUM_CLASS_COUNT);
     if (values.length < 1) {
       throw new Error(`${id} values must hold at least one row`);
     }
@@ -150,13 +149,13 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
       ['squaredDeviations', output.squaredDeviations]
     ] as const) {
       if (view.length !== slots) {
-        throw new Error(`${id} ${name} must hold classCount + 1 (${slots}) rows`);
+        throw new Error(`${id} ${name} length must equal classCount + 1`);
       }
     }
     if (output.summary) {
       validatePackedView(output.summary, ['float32'], `${id} summary`);
       if (output.summary.length !== GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH) {
-        throw new Error(`${id} summary must hold ${GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH} rows`);
+        throw new Error(`${id} summary length must equal the summary layout`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -288,11 +287,12 @@ const UNCOUNTED_KEY: u32 = 0xffffffffu;`;
         // One workgroup per class slot (plus the all-rows slot): the lanes stride over the slot's
         // sorted segment and tree-reduce each sum, so the depth is segment / 256 + log 256, not
         // the whole segment on one invocation. Every lane reaches every barrier.
-        invocationCount: (classCount + 1) * STATS_WORKGROUP_SIZE,
+        invocationCount: (classCount + 1) * STATISTICS_WORKGROUP_SIZE,
+        workgroupSize: STATISTICS_WORKGROUP_SIZE,
         guardIndex: false,
         declarations: `${constants}
-const LANES: u32 = ${STATS_WORKGROUP_SIZE}u;
-var<workgroup> scratch: array<f32, ${STATS_WORKGROUP_SIZE}>;
+const LANES: u32 = ${STATISTICS_WORKGROUP_SIZE}u;
+var<workgroup> scratch: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;
 
 fn reduceSum(value: f32, lane: u32) -> f32 {
   workgroupBarrier();

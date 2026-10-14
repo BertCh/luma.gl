@@ -6,23 +6,35 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import type {GPUPolygonGeometryPort} from '../contracts/index';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import type {
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validatePackedView,
+  validatePowerOfTwo
+} from '../../utils/gpu-contributor-utils';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {validateLineNodingBounds} from './gpu-line-noding';
 import {GPUPolygonize, type GPUPolygonizeProps} from './gpu-polygonize';
 import {
   GPU_TOPOLOGY_NONE,
   type GPUPolygonizeOutput,
   type GPUTopologyPrecisionPolicy
 } from './topology-types';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUMakeValid';
 
@@ -37,14 +49,20 @@ export type GPUMakeValidProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Polygon boundaries to node and rebuild into bounded faces. */
-  polygons: Omit<GPUPolygonGeometryPort, 'positions' | 'sourceIds'> & {
-    positions: GraphDataView<'float32x2'>;
+  polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
+    /** Optional source feature ID per feature, carried to `output.polygons.sourceIds`. */
     sourceIds?: GraphDataView<'uint32'>;
   };
+  /**
+   * Capacity of the exact intersection event list used by noding. The ring count plus four times
+   * this capacity is at most {@link getGPULineSplitMaximumPieceBound} (4194304 on a default
+   * device), and `polygons.positions` has at most
+   * {@link getGPUSegmentIntersectionMaximumVertexCount} rows.
+   */
   intersectionCapacity: number;
   precision: GPUTopologyPrecisionPolicy;
+  /** Caller-owned outputs; `output.status.uncertainCount` is the optional uncertain-pair counter. */
   output: GPUPolygonizeOutput;
-  uncertainCount?: GraphDataView<'uint32'>;
   spatialSort?: boolean;
   leafCapacity?: number;
 };
@@ -65,8 +83,9 @@ export type GPUMakeValidProps = {
  * Parity is evaluated exactly against the noded segments of the feature. For each face the
  * operator looks at the first edge of the face's shell (counter-clockwise, face on its left) and
  * counts crossings of a ray cast from an infinitesimal point inside the face next to that edge.
- * The point is symbolic (`a + delta * edge + epsilon * leftNormal` with `epsilon << delta << 1`),
- * so it is strictly inside the face by construction and no rounded sample coordinate is needed.
+ * The point is symbolic (infinitesimally left of the edge's midpoint, the shared probe of
+ * `utils/exact-geometry-wgsl.ts`), so it is strictly inside the face by construction and no
+ * rounded sample coordinate is needed.
  * Every sign comes from `orientSign`; a centroid is not used because it can fall outside a
  * concave face or inside one of its holes. The probe is brute force: each face scans every noded
  * segment (`faces * nodedSegments` tests), one thread per face.
@@ -92,6 +111,11 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
     }
     if (props.polygons.ringOffsets.length < 2) {
       throw new Error(`${this.id} polygons require at least one ring`);
+    }
+    // Delegates are built later, in getCommandNodes: check forwarded options now, under this id.
+    validateCapacity(this.id, 'intersectionCapacity', props.intersectionCapacity);
+    if (props.leafCapacity !== undefined) {
+      validatePowerOfTwo(this.id, 'leafCapacity', props.leafCapacity);
     }
     const {polygons: faces} = props.output;
     const ringCapacity = faces.ringOffsets.length - 1;
@@ -182,6 +206,13 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       ...Object.values(output.nodedSegments.status),
       ...Object.values(output.status)
     ]);
+    validateLineNodingBounds(
+      id,
+      graph.device,
+      props.polygons.positions.length,
+      props.polygons.ringOffsets.length - 1,
+      props.intersectionCapacity
+    );
 
     // GPUPolygonize emits every bounded face into transient storage; the parity filter below
     // compacts the faces it keeps into the caller's polygon port.
@@ -221,7 +252,6 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       intersectionCapacity: props.intersectionCapacity,
       precision: props.precision,
       output: {...output, polygons: faces},
-      uncertainCount: props.uncertainCount,
       spatialSort: props.spatialSort,
       leafCapacity: props.leafCapacity
     };
@@ -303,12 +333,11 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
     let start = faceRingOffsets[faceRingOffsetsOffset + shell];
     let end = faceRingOffsets[faceRingOffsetsOffset + shell + 1u];
     if (end - start >= 3u) {
-    // First edge of the counter-clockwise shell: the face lies on its left.
+    // First edge of the counter-clockwise shell: the face lies on its left. The probe is the
+    // symbolic point infinitesimally left of the edge's midpoint (utils/exact-geometry-wgsl.ts).
     let a = vec2f(facePositions[facePositionsOffset + 2u * start], facePositions[facePositionsOffset + 2u * start + 1u]);
     let b = vec2f(facePositions[facePositionsOffset + 2u * start + 2u], facePositions[facePositionsOffset + 2u * start + 3u]);
-    // Sign of the probe's infinitesimal y offset: the edge direction first, then its left normal.
-    var probeSign = compareSign(b.y, a.y);
-    if (probeSign == 0) { probeSign = compareSign(b.x, a.x); }
+    let probe = ExactProbe(0.5 * (a + b), a, b, 1);
     var parity = 0u;
     var uncertain = false;
     for (var segment = 0u; segment < SEGMENT_CAPACITY; segment++) {
@@ -316,25 +345,10 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       let base = nodedEndpointsOffset + 4u * segment;
       let first = vec2f(nodedEndpoints[base], nodedEndpoints[base + 1u]);
       let second = vec2f(nodedEndpoints[base + 2u], nodedEndpoints[base + 3u]);
-      let firstAbove = isAboveProbe(first, a, probeSign);
-      if (firstAbove == isAboveProbe(second, a, probeSign)) { continue; }
-      var low = first;
-      var high = second;
-      if (firstAbove) { low = second; high = first; }
-      // The ray runs towards +x: it crosses the segment when the probe is left of low -> high.
-      var side = orientSign(low, high, a);
-      if (side == 0) {
-        // The edge start lies on the segment's line: break the tie with the edge direction,
-        // then with the left normal (the infinitesimal offsets, in that order).
-        side = orientSign(low, high, b);
-        if (side == 0) {
-          var alignment = compareSign(high.x, low.x) * compareSign(b.x, a.x);
-          if (alignment == 0) { alignment = compareSign(high.y, low.y) * compareSign(b.y, a.y); }
-          side = alignment;
-        }
-      }
-      if (side == 2) { uncertain = true; }
-      if (side == 1) { parity = parity ^ 1u; }
+      // The single call site of the exact helpers in this kernel.
+      let crossing = exactProbeCrossing(probe, first, second);
+      if ((u32(crossing.y) & EXACT_FLAG_UNCERTAIN) != 0u) { uncertain = true; }
+      if (crossing.x != 0) { parity = parity ^ 1u; }
     }
     keepFace = select(0u, 1u, parity == 1u || uncertain);
     }
@@ -342,12 +356,7 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
   keep[keepOffset + index] = keepFace;`,
         `const SEGMENT_CAPACITY: u32 = ${segmentCapacity}u;
 ${EXACT_ORIENTATION_WGSL}
-fn compareSign(value: f32, reference: f32) -> i32 { return select(select(0, -1, value < reference), 1, value > reference); }
-// value.y > a.y + w.y, where w.y is infinitesimal with the sign probeSign (never zero).
-fn isAboveProbe(value: vec2f, a: vec2f, probeSign: i32) -> bool {
-  if (value.y != a.y) { return value.y > a.y; }
-  return probeSign < 0;
-}`
+${EXACT_GEOMETRY_WGSL}`
       ),
       kernel(
         'face-counts',

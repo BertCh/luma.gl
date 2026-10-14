@@ -4,7 +4,7 @@
 
 export {GPUNetworkSubgraphFilter} from './gpu-network-subgraph-filter';
 export type {
-  GPUNetworkSubgraphFilterInducedCSR,
+  GPUNetworkSubgraphFilterInducedTopology,
   GPUNetworkSubgraphFilterOutput,
   GPUNetworkSubgraphFilterProps
 } from './gpu-network-subgraph-filter';

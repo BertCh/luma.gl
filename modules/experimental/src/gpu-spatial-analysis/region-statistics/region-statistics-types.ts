@@ -3,11 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUGridIndexView, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import type {GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
+import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 /** Number of `uint32` header words at the start of a region statistics summary. */
 export const GPU_REGION_STATISTICS_HEADER_LENGTH = 8;
@@ -36,7 +38,7 @@ export const GPU_REGION_STATISTICS_SUMMARY_LAYOUT = {
 
 /** Bits of the summary `flags` word. */
 export const GPU_REGION_STATISTICS_FLAGS = {
-  /** `output.ids` was too small for every selected row. */
+  /** `output.selectedRows.ids` was too small for every selected row. */
   selectionTruncated: 1,
   /** The region input was truncated: lasso vertex count above capacity, or pick-region overflow. */
   regionTruncated: 2,
@@ -90,7 +92,7 @@ export type GPURegionPickSelection = {
   /** Selection discriminator. */
   kind: 'pick-region';
   /** Packed region-pick result `[count, overflow, (objectIndex, batchIndex)...]`. */
-  result: GraphDataView<'uint32'>;
+  picks: GraphDataView<'uint32'>;
   /** Compile-time batch filter. Omit it to accept every batch. */
   batchIndex?: number;
 };
@@ -101,6 +103,43 @@ export type GPURegionMaskSelection = {
   kind: 'mask';
   /** Source-aligned mask. */
   mask: GraphDataView<'uint32'>;
+};
+
+/**
+ * Caller-owned outputs of `GPURegionMask` and `GPUPickRegionMask`: a source-aligned 0/1 mask and a
+ * one-row truncation flag, both rewritten every encoding.
+ */
+export type GPURegionMaskOutput = {
+  /** Packed mask with one row per source row. Every row is written with 0 or 1. */
+  mask: GraphDataView<'uint32'>;
+  /**
+   * `overflow`: one row, 1 when the region input was truncated (lasso vertex count above capacity,
+   * or a pick-region overflow), else 0.
+   */
+  status: GPUOverflowStatusPort;
+};
+
+/** Caller-owned outputs of `GPURegionStatistics`. */
+export type GPURegionStatisticsOutput = {
+  /** Packed summary of `8 + binCount` uint32 words, see {@link GPU_REGION_STATISTICS_SUMMARY_LAYOUT}. */
+  summary: GraphDataView<'uint32'>;
+  /** Optional 0/1 source-aligned selection mask for highlighting. Not allowed with `kind: 'mask'`. */
+  mask?: GraphDataView<'uint32'>;
+  /**
+   * Optional bounded stable-ID result (the compact-output contract). `selectedRows.ids.length` must
+   * be at least 1.
+   */
+  selectedRows?: GPUCompactOutput;
+  /**
+   * Optional packed one-row view that receives the clamped selected count, the same value as
+   * `selectedRows.status.count` (`min(selected, selectedRows.ids.length)`), rewritten every encoding.
+   * Typically the `instanceCount` word of an indirect draw record, imported as a 1-row view at an
+   * element offset so an instanced draw of the selected rows needs no readback. Requires
+   * `selectedRows`: the draw indexes rows through `selectedRows.ids`, so a contributor with no id
+   * list has nothing to draw, and statistics-only contributors read the selected count from
+   * `summary` instead. Must not alias any other output or input.
+   */
+  drawInstanceCount?: GraphDataView<'uint32'>;
 };
 
 /** Every region input accepted by `GPURegionStatistics`. */
@@ -116,7 +155,7 @@ export type GPURegionSelection =
  *
  * Identity guarantee: when the summary's `candidatesTruncated` flag is 0, `selectedCount`,
  * `valueCount`, `minimum`, `maximum`, `histogram`, `histogramOutsideCount`, the other flags, the
- * selected IDs, and `outputMask` are bit-identical to the brute-force path, because the same exact
+ * selected IDs, and `output.mask` are bit-identical to the brute-force path, because the same exact
  * predicate primitive runs on the candidates. `sum` and `mean` come from a reduction over a
  * compacted candidate order, so they are equal only up to float reassociation (exactly equal for
  * integer values with `|sum| < 2^24`).
@@ -129,8 +168,8 @@ export type GPURegionSelection =
  * A non-finite circle radius selects nothing, as in brute force.
  *
  * Non-goals: screen-space selections, `pick-region` and `mask` selections, vector (chunked)
- * inputs, chunked index storage, and 3D indices. `output` and `outputMask` still cost O(rowCount) (mask clear and scatter, then the
- * unchanged visibility workflow); only candidate gathering, predicate, counts, reductions, and
+ * inputs, chunked index storage, and 3D indices. `output.selectedRows` and `output.mask` still
+ * cost O(rowCount) (mask clear and scatter, then the unchanged visibility workflow); only candidate gathering, predicate, counts, reductions, and
  * histogram shrink to `candidateCapacity`.
  */
 export type GPURegionStatisticsGridIndex = {
@@ -181,7 +220,7 @@ export type GPURegionStatisticsResult = {
   histogram: Uint32Array;
   /** Finite selected values outside the histogram domain. */
   histogramOutsideCount: number;
-  /** Whether `output.ids` was too small. */
+  /** Whether `output.selectedRows.ids` was too small. */
   selectionTruncated: boolean;
   /** Whether the region input was truncated. */
   regionTruncated: boolean;
@@ -208,13 +247,12 @@ export const GPU_REGION_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Obje
 export function resolveGPURegionSpatialContext(
   id: string,
   context: GPUSpatialContext | undefined,
-  selectionKind: GPURegionSelection['kind'] | undefined
+  regionKind: GPURegionSelection['kind'] | undefined
 ): GPUSpatialContext {
   const resolved = resolveGPUSpatialContext(id, context, GPU_REGION_SPATIAL_CONTEXT_SUPPORT);
-  if (selectionKind === 'radius' && resolved.coordinateSpace === 'longitude-latitude') {
-    throw new Error(
-      `${id} radius selections need planar coordinates; project positions to a planar frame first or use a rectangle or lasso`
-    );
+  if (regionKind === 'radius' && resolved.coordinateSpace === 'longitude-latitude') {
+    // A radius is a planar distance in position units.
+    throw new Error(`${id} radius regions need planar coordinates`);
   }
   return resolved;
 }

@@ -4,9 +4,7 @@
 
 import {sampleFieldOnCPU, type FieldRaster} from '../vector-field-common/vector-field-sampling';
 import {getPhilox4x32, getPhiloxUnitFloat} from '../../utils/philox-random';
-
-/** Philox key word 1 of the LIC white-noise stream. */
-export const LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE = 1;
+import {LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE} from './line-integral-convolution-parameters';
 
 /** Result of {@link convolveLineIntegralOnCPU}. */
 export type LineIntegralConvolutionCPUResult = {

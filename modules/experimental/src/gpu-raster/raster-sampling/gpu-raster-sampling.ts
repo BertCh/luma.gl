@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgp
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import type {GPURasterMetadata} from '../types';
 import {GPU_RASTER_SAMPLING_PARAMETER_LENGTH} from './raster-sampling-parameters';
 import {
   getRasterSamplingWGSL,
@@ -20,23 +21,21 @@ export type GPURasterSamplingOutput = {
   /** Sampled value per point; NaN outside the extent, for nodata results and for inactive rows. */
   values: GraphDataView<'float32'>;
   /** Optional `1` where the sampled value is not NaN, otherwise `0`. */
-  validity?: GraphDataView<'uint32'>;
+  outputValidity?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPURasterSampling}.
  *
  * Per-frame (no recompile): raster, position and `pointCount` contents and `parameters` (extent,
- * method, nodata policy). Topology: `width`, `height`, `noDataValue`, which optional views exist.
+ * method, nodata policy). Topology: `grid` size, `noDataValue`, which optional views exist.
  */
 export type GPURasterSamplingProps = {
   /** Prefix for generated node IDs. Defaults to `'raster-sampling'`. */
   id?: string;
-  /** Raster width in cells. */
-  width: number;
-  /** Raster height in cells. */
-  height: number;
-  /** Row-major raster of at least `width * height` rows; row 0 is at `minY`. NaN is nodata. */
+  /** Raster grid: its width and height size the kernels; its extent places the samples. */
+  grid: GPURasterMetadata;
+  /** Row-major raster of at least `width * height` rows (row 0 is the grid's first row). NaN is nodata. */
   values: GraphDataView<'float32'>;
   /** Optional finite sentinel treated as nodata. */
   noDataValue?: number;
@@ -90,11 +89,11 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-sampling';
     this.props = props;
     const {id} = this;
-    const {width, height, output} = props;
-    validateRasterDescription(id, width, height, props.noDataValue);
-    validateRasterSamplingView(id, 'values', props.values, 'float32', width * height);
+    const {output} = props;
+    const pixelCount = validateRasterDescription(id, props.grid, props.noDataValue);
+    validateRasterSamplingView(id, 'values', props.values, 'float32', pixelCount);
     if (props.validity) {
-      validateRasterSamplingView(id, 'validity', props.validity, 'uint32', width * height);
+      validateRasterSamplingView(id, 'validity', props.validity, 'uint32', pixelCount);
     }
     validateRasterSamplingView(id, 'positions', props.positions, 'float32x2', 0);
     if (props.pointCount) {
@@ -112,10 +111,16 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
     }
     const capacity = props.positions.length;
     validateRasterSamplingView(id, 'output.values', output.values, 'float32', capacity);
-    if (output.validity) {
-      validateRasterSamplingView(id, 'output.validity', output.validity, 'uint32', capacity);
+    if (output.outputValidity) {
+      validateRasterSamplingView(
+        id,
+        'output.outputValidity',
+        output.outputValidity,
+        'uint32',
+        capacity
+      );
     }
-    const outputs = [output.values, output.validity].filter(view => view !== undefined);
+    const outputs = [output.values, output.outputValidity].filter(view => view !== undefined);
     const inputs = [
       props.values,
       props.validity,
@@ -147,7 +152,7 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
       props.pointCount,
       props.parameters,
       output.values,
-      output.validity
+      output.outputValidity
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'raster', view: props.values, type: 'f32', access: 'read'}
@@ -163,10 +168,10 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'}
     );
-    if (output.validity) {
+    if (output.outputValidity) {
       bindings.push({
         name: 'validityOut',
-        view: output.validity,
+        view: output.outputValidity,
         type: 'u32',
         access: 'read_write'
       });
@@ -179,8 +184,8 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.positions.length,
         declarations: `${getRasterSamplingWGSL({
-          width: props.width,
-          height: props.height,
+          width: props.grid.width,
+          height: props.grid.height,
           noDataValue: props.noDataValue,
           hasValidity: Boolean(props.validity)
         })}
@@ -194,7 +199,7 @@ const POINT_CAPACITY: u32 = ${props.positions.length}u;`,
     );
   }
   valuesOut[valuesOutOffset + index] = result;
-  ${output.validity ? 'validityOut[validityOutOffset + index] = select(1u, 0u, isNaNValue(result));' : ''}`
+  ${output.outputValidity ? 'validityOut[validityOutOffset + index] = select(1u, 0u, isNaNValue(result));' : ''}`
       })
     ];
   }

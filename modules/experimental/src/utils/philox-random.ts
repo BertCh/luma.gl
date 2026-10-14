@@ -14,6 +14,70 @@
  * uses the same decomposition.
  */
 
+/**
+ * The one registry of Philox purpose IDs. Every random stream of the analysis contributors names
+ * its purpose here, so one user seed never gives two features the same stream (B-22).
+ *
+ * A Philox block is a pure function of `(key, counter)`, so two streams can only share a block when
+ * both their keys and their counters are equal. Each purpose sits in one word:
+ * - `word: 'key'`: streams with a 32-bit seed use the key `(seed, id)`. Counter word 3 is 0, or
+ *   another ID registered to the same feature.
+ * - `word: 'counter'`: streams with a 64-bit seed (permutation inference) use both seed words as the
+ *   key and put `id` in counter word 3.
+ *
+ * IDs are unique and nonzero, so key streams differ from each other in key word 1, counter streams
+ * differ from each other in counter word 3, and a key stream differs from every counter stream in
+ * counter word 3. Shared WGSL helpers count as one feature: every caller of the permutation
+ * shuffle or the Feistel round keys draws the same permutations for the same seed.
+ *
+ * New IDs must be unique; `test/utils/philox-random.node.spec.ts` checks the table and that no
+ * source file defines a purpose literal of its own.
+ * @internal
+ */
+export const PHILOX_PURPOSES = {
+  /** `GPULineIntegralConvolution` white noise, counter `(column, row, 0, 0)`. */
+  lineIntegralConvolutionNoise: {id: 1, word: 'key'},
+  /** `GPUStreamlines` lattice jitter and line priorities, counter `(lattice point, 0, 0, 0)`. */
+  streamlinesJitter: {id: 2, word: 'key'},
+  /** `GPURandomPointsOnLine` positions, counter `(line, rank, 0, 0)`. */
+  randomPointsOnLine: {id: 3, word: 'key'},
+  /** `GPUParticleAdvection` respawn positions and ages, counter `(particle, generation, 0, 0)`. */
+  particleAdvectionSpawn: {id: 4, word: 'key'},
+  /** `GPUParticleAdvection` per-frame drop test, counter `(particle, frame, 0, 0)`. */
+  particleAdvectionDrop: {id: 5, word: 'key'},
+  /** `GPUDotDensity` per-slot Bernoulli remainder, counter `(slot, 0, 0, 0)`. */
+  dotDensityRemainder: {id: 6, word: 'key'},
+  /** `GPUDotDensity` candidate positions, counter `(slot, rank, attempt, 0)`. */
+  dotDensityCandidate: {id: 7, word: 'key'},
+  /** `GPUMaxPRegions` seed-row order, counter `(row, start, 0, 0)`. */
+  maxPRegionsSeedOrder: {id: 8, word: 'key'},
+  /** `GPURipleyEnvelope` CSR simulations (`'RIPF'`), counter `(row, simulation, 0, 0)`. */
+  ripleyEnvelopeSimulation: {id: 0x52495046, word: 'key'},
+  /** `GPUSpatialWeightsTraces` probes (`'TRAC'`), counter `(probe, row / 4, 0, 'PROB')`. */
+  spatialWeightsTracesProbeKey: {id: 0x54524143, word: 'key'},
+  /** Counter word 3 of the `GPUSpatialWeightsTraces` probe stream (`'PROB'`). */
+  spatialWeightsTracesProbeCounter: {id: 0x50524f42, word: 'counter'},
+  /** Feistel round keys of the permutation-inference bijection. */
+  permutationFeistel: {id: 0xfe157e10, word: 'counter'},
+  /** Swap-or-not permutation shuffle of `GPUGlobalPermutationTest`. */
+  permutationShuffle: {id: 0x5a0b5a0b, word: 'counter'},
+  /** `GPUKnoxTest` swap-or-not time permutations (`'KNOX'`). */
+  knoxTestShuffle: {id: 0x4b4e4f58, word: 'counter'},
+  /** `GPUMantelTest` swap-or-not time permutations (`'MANT'`). */
+  mantelTestShuffle: {id: 0x4d414e54, word: 'counter'},
+  /** `GPUGeographicallyWeightedRegressionNonstationarityTest` location permutations (`'GWRN'`). */
+  geographicallyWeightedRegressionNonstationarityShuffle: {id: 0x4757524e, word: 'counter'},
+  /** `GPULocalPermutationTest` conditional draws. */
+  localPermutationTest: {id: 0x10ca1, word: 'counter'},
+  /** `GPUSpatialScanStatistic` Monte Carlo replicates. */
+  spatialScanStatistic: {id: 0x5ca75747, word: 'counter'},
+  /** `GPUNetworkKFunction` simulated events (`'KFUN'`). */
+  networkKFunction: {id: 0x4b46554e, word: 'counter'}
+} as const satisfies Record<string, {id: number; word: 'key' | 'counter'}>;
+
+/** Name of one registered Philox purpose. @internal */
+export type PhiloxPurpose = keyof typeof PHILOX_PURPOSES;
+
 /** Philox 4x32 round multipliers and Weyl key increments (Random123 constants). */
 const PHILOX_M0 = 0xd2511f53;
 const PHILOX_M1 = 0xcd9e8d57;

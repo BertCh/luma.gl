@@ -6,21 +6,31 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPULineGeometryPort, GPUPolygonGeometryPort} from '../contracts/index';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView,
+  validatePowerOfTwo
+} from '../../utils/gpu-contributor-utils';
+import type {
+  GPULineGeometryPort,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 import {
   GPUGeometryOrientation,
   GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH
 } from '../geometry-edit/index';
 import {
   getGPUOffsetCurveRowsPerVertex,
+  GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS,
   GPUOffsetCurve,
   GPU_OFFSET_CURVE_PARAMETER_LENGTH,
   type GPUOffsetCurveJoinStyle
@@ -31,22 +41,33 @@ import {
   type GPUPolygonOverlayOutput
 } from '../polygon-overlay/index';
 import type {GPUPolygonOverlayFillRule} from '../polygon-overlay/gpu-polygon-overlay';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {getGPUSnapRoundedNodingMaximumVertexCount} from '../geometry-topology/gpu-snap-rounded-noding';
+import type {Device} from '@luma.gl/core';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUBufferSurface';
 
+/**
+ * Largest sum of boundary rows and `capacity.intersections` of {@link GPUBufferSurface} on
+ * `device`: the raw boundary rows plus one closing vertex per raw boundary ring are noded by
+ * `GPUPolygonOverlay`, which snap-rounds them and keeps four diagonal vertices of 32 bytes per hot
+ * pixel (a vertex or a crossing) in one segment table. The limit is
+ * `floor(device.limits.maxStorageBufferBindingSize / 128)`: 1048576 with 128 MiB bindings,
+ * or 8388608 with 1 GiB bindings. The boundary rows may use what `capacity.intersections`
+ * leaves. For polygons the rows are `(1 + 2 * rowsPerVertex) * vertices + 3 * rings`, and for lines
+ * `2 * rowsPerVertex * vertices + (2 * capRows + 1) * lines`, where `rowsPerVertex` is
+ * `getGPUOffsetCurveRowsPerVertex(joinStyle, quadSegments, 'buffer')` (17 for the default round
+ * joins).
+ */
+export function getGPUBufferSurfaceMaximumBoundaryRowCount(device: Device): number {
+  return getGPUSnapRoundedNodingMaximumVertexCount(device, 0);
+}
+
 /** End treatment for buffered lines. */
 export type GPUBufferCapStyle = 'round' | 'flat' | 'square';
-
-type PackedLines = Omit<GPULineGeometryPort, 'positions' | 'sourceIds'> & {
-  positions: GraphDataView<'float32x2'>;
-  sourceIds?: GraphDataView<'uint32'>;
-};
-
-type PackedPolygons = Omit<GPUPolygonGeometryPort, 'positions' | 'sourceIds'> & {
-  positions: GraphDataView<'float32x2'>;
-  sourceIds?: GraphDataView<'uint32'>;
-};
 
 /** Properties for {@link GPUBufferSurface}. */
 export type GPUBufferSurfaceProps = {
@@ -58,7 +79,12 @@ export type GPUBufferSurfaceProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
-  geometry: PackedLines | PackedPolygons;
+  /**
+   * Lines or polygons to buffer; a generated geometry port can be passed as is. The raw boundary
+   * rows derived from it (see {@link getGPUBufferSurfaceMaximumBoundaryRowCount}) are at most that
+   * maximum minus `capacity.intersections` (1048576 before that subtraction on a default device).
+   */
+  geometry: GPUPackedGeometryPort<GPULineGeometryPort | GPUPolygonGeometryPort>;
   /** `[distance, mitreLimit, 0, 0]`, matching `GPUOffsetCurve`. */
   parameters: GraphDataView<'float32'>;
   joinStyle?: GPUOffsetCurveJoinStyle;
@@ -66,8 +92,8 @@ export type GPUBufferSurfaceProps = {
   quadSegments?: number;
   vertexTolerance: number;
   capacity: GPUPolygonOverlayCapacity;
+  /** Caller-owned outputs; `output.status.uncertainCount` is the optional uncertain-pair counter. */
   output: GPUPolygonOverlayOutput;
-  uncertainCount?: GraphDataView<'uint32'>;
   spatialSort?: boolean;
   leafCapacity?: number;
 };
@@ -84,20 +110,20 @@ export type GPUBufferSurfaceProps = {
  * rings are closed; the offset curve requires open rings, and a repeated closing vertex would leave
  * a notch there). Lines keep their endpoints, so a closed line stays a line with coincident ends.
  *
- * Fill rule: the raw offset boundary is dissolved with a WINDING rule, not even-odd, so regions
- * the raw offset covers more than once (hairpins and switchbacks closer than twice the distance,
- * self-crossing lines, polygon slots narrower than twice the distance) stay inside, as in
- * `shapely.buffer`. Polygons are normalized to counter-clockwise shells and clockwise holes and
- * dissolved with `'positive'` winding, which also discards the inverted loops a negative buffer
- * leaves where a neck is thinner than twice the distance; lines emit a clockwise outline and use
- * `'negative'`. Checked against `shapely.buffer` on hairpin, figure-eight, slot and thin-neck
- * shapes with mitre joins.
+ * Fill rule: raw boundaries are dissolved with a WINDING rule (`'negative'`), not even-odd, so
+ * regions the raw boundaries cover more than once (hairpins and switchbacks closer than twice the
+ * distance, self-crossing lines, polygon slots narrower than twice the distance) stay inside, as in
+ * `shapely.buffer`. Lines emit the clockwise outline of their two offsets and caps.
  *
- * Known limitation: a polygon hole that the offset collapses (hole narrower than twice the
- * distance for a positive buffer) is not removed. The raw offset of the hole keeps its clockwise
- * orientation when it inverts, so it is carved out as a smaller reflected hole instead of
- * disappearing. A "union of simple pieces" construction (polygon union ring strokes) would fix it
- * and is deferred.
+ * Polygons are a union of simple pieces: the polygon (normalized to counter-clockwise shells and
+ * clockwise holes, then reversed) and the stroke of every ring: its two closed offset rings at
+ * `+|d|` and `-|d|` (joins at every vertex, inside turns routed through the vertex where the
+ * offsets do not meet, as GEOS does; a ring narrower than `2|d|` drops its interior-side offset,
+ * the GEOS eroded-ring test). A positive distance keeps `polygon + strokes`, a negative one
+ * `polygon - strokes` (the stroke rings are then read the other way, so their winding cancels the
+ * polygon's), so collapsed holes vanish and necks thinner than twice the distance split, as in
+ * `shapely.buffer`. Raw boundary rows per ring of `n` vertices: `n (1 + 2 rowsPerVertex)`, so
+ * size `capacity` for about twice the segments of the ring offset alone.
  *
  * Planar only: the distance is in position units, so buffering longitude/latitude degrees gives an
  * ellipse on the ground and a longitude-latitude `spatialContext` throws. Project first, for example
@@ -124,7 +150,12 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     this.joinStyle = props.joinStyle ?? 'round';
     this.capStyle = props.capStyle ?? 'round';
     this.quadSegments = props.quadSegments ?? 8;
-    this.rowsPerVertex = getGPUOffsetCurveRowsPerVertex(this.joinStyle, this.quadSegments);
+    // Buffer-style inside turns keep the raw boundary's winding inside the buffer.
+    this.rowsPerVertex = getGPUOffsetCurveRowsPerVertex(
+      this.joinStyle,
+      this.quadSegments,
+      'buffer'
+    );
     const {id} = this;
     const {geometry} = props;
     validatePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
@@ -158,8 +189,16 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     if (!['round', 'flat', 'square'].includes(this.capStyle)) {
       throw new Error(`${id} capStyle must be round, flat or square`);
     }
-    if (!Number.isSafeInteger(this.quadSegments) || this.quadSegments < 1) {
-      throw new Error(`${id} quadSegments must be a positive integer`);
+    validateCapacity(
+      id,
+      'quadSegments',
+      this.quadSegments,
+      1,
+      GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS
+    );
+    // Delegates are built later, in getCommandNodes: check forwarded options now, under this id.
+    if (this.props.leafCapacity !== undefined) {
+      validatePowerOfTwo(id, 'leafCapacity', this.props.leafCapacity);
     }
   }
 
@@ -172,19 +211,41 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       geometry.kind === 'lines' ? geometry.lineOffsets : geometry.featureOffsets,
       geometry.kind === 'lines' ? undefined : geometry.polygonOffsets,
       geometry.kind === 'lines' ? undefined : geometry.ringOffsets,
-      geometry.sourceIds,
       this.props.parameters
     ]);
+    const capRows =
+      this.capStyle === 'round' ? 2 * this.quadSegments - 1 : this.capStyle === 'square' ? 2 : 0;
+    validateMaximumCount(
+      this.id,
+      'boundary rows',
+      geometry.kind === 'lines'
+        ? 2 * this.rowsPerVertex * geometry.positions.length +
+            (2 * capRows + 1) * (geometry.lineOffsets.length - 1)
+        : (1 + 2 * this.rowsPerVertex) * geometry.positions.length +
+            3 * (geometry.ringOffsets.length - 1),
+      getGPUBufferSurfaceMaximumBoundaryRowCount(graph.device) - this.props.capacity.intersections
+    );
     return geometry.kind === 'lines'
       ? this._getLineNodes(graph, geometry)
       : this._getPolygonNodes(graph, geometry);
   }
 
+  /**
+   * Polygon buffer as a union of simple pieces: the polygon itself and the stroke (two-sided
+   * buffer of width `2|d|`) of every ring, `polygon + stroke` for positive and `polygon - stroke`
+   * for negative distances. Every piece is written as raw rings of one polygon per source polygon:
+   * the normalized rings reversed (winding -1 inside the polygon) and, per ring, its two closed
+   * offset rings at `+|d|` (forward) and `-|d|` (reversed), whose windings sum to <= -1 inside the
+   * stroke for `d > 0`; for `d < 0` both are read backwards (>= +1). The `'negative'` fill rule then
+   * keeps exactly the union, or the polygon minus the stroke, so a hole the buffer collapses
+   * disappears instead of leaving a reflected hole. Closed ring offsets have a join at every vertex
+   * and no caps or repeated edges, whose separately rounded copies would form slivers.
+   */
   private _getPolygonNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    polygons: PackedPolygons
+    polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>
   ): GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
+    const {id, props, rowsPerVertex} = this;
     const prepared = this._getCompactionNodes(
       graph,
       'ring',
@@ -192,36 +253,59 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       polygons.ringOffsets,
       true
     );
-    const normalized = createTransientView(
-      graph,
-      `${id}-normalized`,
-      'float32x2',
-      polygons.positions.length
-    );
-    const orientationParameters = createTransientView(
-      graph,
-      `${id}-orientation-parameters`,
+    const ringCount = polygons.ringOffsets.length - 1;
+    const polygonCount = polygons.polygonOffsets.length - 1;
+    const vertexCapacity = polygons.positions.length;
+    const rawRowCount = (1 + 2 * rowsPerVertex) * vertexCapacity;
+    const transient = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+      name: string,
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `${id}-${name}`, format, length);
+    const normalized = transient('normalized', 'float32x2', vertexCapacity);
+    const orientationParameters = transient(
+      'orientation-parameters',
       'float32',
       GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH
     );
-    const offsetParameters = createTransientView(
-      graph,
-      `${id}-offset-parameters`,
-      'float32',
-      GPU_OFFSET_CURVE_PARAMETER_LENGTH
-    );
-    const rawPositions = createTransientView(
-      graph,
-      `${id}-raw-positions`,
-      'float32x2',
-      polygons.positions.length * this.rowsPerVertex
-    );
-    const rawRingOffsets = createTransientView(
-      graph,
-      `${id}-raw-ring-offsets`,
-      'uint32',
-      polygons.ringOffsets.length
-    );
+    const leftParameters = transient('stroke-left-parameters', 'float32', 4);
+    const rightParameters = transient('stroke-right-parameters', 'float32', 4);
+    const leftPositions = transient('stroke-left', 'float32x2', vertexCapacity * rowsPerVertex);
+    const rightPositions = transient('stroke-right', 'float32x2', vertexCapacity * rowsPerVertex);
+    const rawPositions = transient('raw-positions', 'float32x2', rawRowCount);
+    const rawRingOffsets = transient('raw-ring-offsets', 'uint32', 3 * ringCount + 1);
+    const rawPolygonOffsets = transient('raw-polygon-offsets', 'uint32', polygonCount + 1);
+    // Ring layout of the raw pieces: polygon p owns raw rings [3 r0, 3 r1) for its source rings
+    // [r0, r1): first the reversed rings, then for each ring its +|d| and -|d| offset rings. A ring
+    // of n vertices gives n reversed rows and n ROWS_PER_VERTEX rows per offset ring.
+    const layoutWGSL = /* wgsl */ `const RING_COUNT: u32 = ${ringCount}u;
+const POLYGON_COUNT: u32 = ${polygonCount}u;
+const ROWS_PER_VERTEX: u32 = ${rowsPerVertex}u;
+
+fn findPolygonOfRing(ring: u32) -> u32 {
+  var low = 0u;
+  var high = POLYGON_COUNT;
+  while (low + 1u < high) {
+    let middle = (low + high) / 2u;
+    if (polygonOffsets[polygonOffsetsOffset + middle] <= ring) { low = middle; } else { high = middle; }
+  }
+  return low;
+}`;
+    const offsetCurve = (side: 'left' | 'right') =>
+      new GPUOffsetCurve({
+        id: `${id}-stroke-${side}-offset`,
+        spatialContext: this.spatialContext,
+        positions: normalized,
+        featureOffsets: polygons.featureOffsets,
+        polygonOffsets: polygons.polygonOffsets,
+        ringOffsets: prepared.offsets,
+        geometryType: 'polygons',
+        joinStyle: this.joinStyle,
+        quadSegments: this.quadSegments,
+        insideTurns: 'buffer',
+        parameters: side === 'left' ? leftParameters : rightParameters,
+        output: {positions: side === 'left' ? leftPositions : rightPositions}
+      }).getCommandNodes(graph);
     const nodes: GPUCommandNode<Parameters>[] = [
       ...prepared.nodes,
       createWGSLKernelNode<Parameters>(graph, {
@@ -231,11 +315,15 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         bindings: [
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'orientation', view: orientationParameters, type: 'f32', access: 'read_write'},
-          {name: 'offset', view: offsetParameters, type: 'f32', access: 'read_write'}
+          {name: 'left', view: leftParameters, type: 'f32', access: 'read_write'},
+          {name: 'right', view: rightParameters, type: 'f32', access: 'read_write'}
         ],
         invocationCount: GPU_OFFSET_CURVE_PARAMETER_LENGTH,
         body: `orientation[orientationOffset + index] = 0.0;
-  offset[offsetOffset + index] = select(parameters[parametersOffset + index], -parameters[parametersOffset], index == 0u);`
+  let distance = abs(parameters[parametersOffset]);
+  let value = parameters[parametersOffset + index];
+  left[leftOffset + index] = select(value, distance, index == 0u);
+  right[rightOffset + index] = select(value, -distance, index == 0u);`
       }),
       ...new GPUGeometryOrientation({
         id: `${id}-orient`,
@@ -243,32 +331,162 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         positions: prepared.positions,
         ringOffsets: prepared.offsets,
         polygonOffsets: polygons.polygonOffsets,
+        featureOffsets: polygons.featureOffsets,
         mode: 'orient-polygons',
         parameters: orientationParameters,
         output: {positions: normalized}
       }).getCommandNodes(graph),
-      ...new GPUOffsetCurve({
-        id: `${id}-offset`,
-        spatialContext: this.spatialContext,
-        positions: normalized,
-        pathOffsets: prepared.offsets,
-        geometryType: 'rings',
-        joinStyle: this.joinStyle,
-        quadSegments: this.quadSegments,
-        parameters: offsetParameters,
-        output: {positions: rawPositions}
-      }).getCommandNodes(graph),
+      ...offsetCurve('left'),
+      ...offsetCurve('right'),
+      // A ring whose envelope is narrower than 2|d| is entirely within |d| of itself (the GEOS
+      // eroded-ring test): its offset toward its own interior inverts, and an inverted ring would
+      // cancel the stroke there. That offset ring is collapsed to one point, so the stroke covers
+      // the whole ring interior (a hole a positive buffer collapses disappears).
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-polygon-offsets`,
+        id: `${id}-stroke-collapse`,
         operation: OPERATION,
-        variant: 'polygon-offsets',
+        variant: 'stroke-collapse',
         bindings: [
-          {name: 'input', view: prepared.offsets, type: 'u32', access: 'read'},
-          {name: 'output', view: rawRingOffsets, type: 'u32', access: 'read_write'}
+          {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+          {name: 'ringOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
+          {name: 'normalized', view: normalized, type: 'f32', access: 'read'},
+          {name: 'leftPositions', view: leftPositions, type: 'f32', access: 'read_write'},
+          {name: 'rightPositions', view: rightPositions, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: polygons.ringOffsets.length,
-        declarations: `const ROWS_PER_VERTEX: u32 = ${this.rowsPerVertex}u;`,
-        body: 'output[outputOffset + index] = input[inputOffset + index] * ROWS_PER_VERTEX;'
+        invocationCount: Math.max(ringCount, 1),
+        declarations: `const RING_COUNT: u32 = ${ringCount}u;
+const ROWS_PER_VERTEX: u32 = ${rowsPerVertex}u;
+fn readNormalized(row: u32) -> vec2f {
+  return vec2f(normalized[normalizedOffset + 2u * row], normalized[normalizedOffset + 2u * row + 1u]);
+}`,
+        body: `if (index >= RING_COUNT) { return; }
+  let begin = ringOffsets[ringOffsetsOffset + index];
+  let end = ringOffsets[ringOffsetsOffset + index + 1u];
+  if (end < begin + 3u) { return; }
+  let origin = readNormalized(begin);
+  var low = vec2f(0.0);
+  var high = vec2f(0.0);
+  var doubledArea = 0.0;
+  var previous = readNormalized(end - 1u) - origin;
+  for (var row = begin; row < end; row++) {
+    let current = readNormalized(row) - origin;
+    low = min(low, current);
+    high = max(high, current);
+    doubledArea += previous.x * current.y - previous.y * current.x;
+    previous = current;
+  }
+  let extent = high - low;
+  if (min(extent.x, extent.y) >= 2.0 * abs(parameters[parametersOffset])) { return; }
+  // The interior side is left of a counter-clockwise ring and right of a clockwise one.
+  let rowBegin = begin * ROWS_PER_VERTEX;
+  let rowEnd = end * ROWS_PER_VERTEX;
+  if (doubledArea > 0.0) {
+    let point = vec2f(leftPositions[leftPositionsOffset + 2u * rowBegin], leftPositions[leftPositionsOffset + 2u * rowBegin + 1u]);
+    for (var row = rowBegin; row < rowEnd; row++) {
+      leftPositions[leftPositionsOffset + 2u * row] = point.x;
+      leftPositions[leftPositionsOffset + 2u * row + 1u] = point.y;
+    }
+  } else {
+    let point = vec2f(rightPositions[rightPositionsOffset + 2u * rowBegin], rightPositions[rightPositionsOffset + 2u * rowBegin + 1u]);
+    for (var row = rowBegin; row < rowEnd; row++) {
+      rightPositions[rightPositionsOffset + 2u * row] = point.x;
+      rightPositions[rightPositionsOffset + 2u * row + 1u] = point.y;
+    }
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-raw-layout`,
+        operation: OPERATION,
+        variant: 'raw-layout',
+        bindings: [
+          {name: 'ringOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
+          {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
+          {name: 'rawRingOffsets', view: rawRingOffsets, type: 'u32', access: 'read_write'},
+          {name: 'rawPolygonOffsets', view: rawPolygonOffsets, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: Math.max(3 * ringCount, polygonCount) + 1,
+        declarations: layoutWGSL,
+        body: `if (index <= POLYGON_COUNT) {
+    rawPolygonOffsets[rawPolygonOffsetsOffset + index] = 3u * polygonOffsets[polygonOffsetsOffset + index];
+  }
+  if (index > 3u * RING_COUNT) { return; }
+  var start = 0u;
+  if (index == 3u * RING_COUNT) {
+    start = (1u + 2u * ROWS_PER_VERTEX) * ringOffsets[ringOffsetsOffset + RING_COUNT];
+  } else {
+    let polygon = findPolygonOfRing(index / 3u);
+    let firstRing = polygonOffsets[polygonOffsetsOffset + polygon];
+    let lastRing = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
+    let firstVertex = ringOffsets[ringOffsetsOffset + firstRing];
+    let lastVertex = ringOffsets[ringOffsetsOffset + lastRing];
+    let local = index - 3u * firstRing;
+    let polygonStart = (1u + 2u * ROWS_PER_VERTEX) * firstVertex;
+    if (local < lastRing - firstRing) {
+      start = polygonStart + ringOffsets[ringOffsetsOffset + firstRing + local] - firstVertex;
+    } else {
+      let band = local - (lastRing - firstRing);
+      let ring = firstRing + band / 2u;
+      let ringBegin = ringOffsets[ringOffsetsOffset + ring];
+      let ringLength = ringOffsets[ringOffsetsOffset + ring + 1u] - ringBegin;
+      start = polygonStart + (lastVertex - firstVertex) +
+        2u * ROWS_PER_VERTEX * (ringBegin - firstVertex) + (band % 2u) * ROWS_PER_VERTEX * ringLength;
+    }
+  }
+  rawRingOffsets[rawRingOffsetsOffset + index] = start;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-raw-pieces`,
+        operation: OPERATION,
+        variant: 'raw-pieces',
+        bindings: [
+          {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+          {name: 'ringOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
+          {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
+          {name: 'rawRingOffsets', view: rawRingOffsets, type: 'u32', access: 'read'},
+          {name: 'normalized', view: normalized, type: 'f32', access: 'read'},
+          {name: 'leftPositions', view: leftPositions, type: 'f32', access: 'read'},
+          {name: 'rightPositions', view: rightPositions, type: 'f32', access: 'read'},
+          {name: 'output', view: rawPositions, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: rawRowCount,
+        declarations: layoutWGSL,
+        body: `var value = vec2f(0.0);
+  if (index < rawRingOffsets[rawRingOffsetsOffset + 3u * RING_COUNT]) {
+    var rawRing = 0u;
+    var high = 3u * RING_COUNT;
+    while (rawRing + 1u < high) {
+      let middle = (rawRing + high) / 2u;
+      if (rawRingOffsets[rawRingOffsetsOffset + middle] <= index) { rawRing = middle; } else { high = middle; }
+    }
+    let polygon = findPolygonOfRing(rawRing / 3u);
+    let firstRing = polygonOffsets[polygonOffsetsOffset + polygon];
+    let ringsInPolygon = polygonOffsets[polygonOffsetsOffset + polygon + 1u] - firstRing;
+    let local = rawRing - 3u * firstRing;
+    let row = index - rawRingOffsets[rawRingOffsetsOffset + rawRing];
+    if (local < ringsInPolygon) {
+      // Reversed normalized ring: winding -1 inside the polygon.
+      let ring = firstRing + local;
+      let source = ringOffsets[ringOffsetsOffset + ring + 1u] - 1u - row;
+      value = vec2f(normalized[normalizedOffset + 2u * source], normalized[normalizedOffset + 2u * source + 1u]);
+    } else {
+      // Stroke rings: the +|d| offset forward and the -|d| offset backward (stroke winding -1 for
+      // a positive distance); a negative distance reads both the other way (+1).
+      let band = local - ringsInPolygon;
+      let ring = firstRing + band / 2u;
+      let rowBegin = ringOffsets[ringOffsetsOffset + ring] * ROWS_PER_VERTEX;
+      let rowCount = (ringOffsets[ringOffsetsOffset + ring + 1u] - ringOffsets[ringOffsetsOffset + ring]) * ROWS_PER_VERTEX;
+      let isLeft = (band % 2u) == 0u;
+      let forward = isLeft == (parameters[parametersOffset] >= 0.0);
+      let source = rowBegin + select(rowCount - 1u - row, row, forward);
+      if (isLeft) {
+        value = vec2f(leftPositions[leftPositionsOffset + 2u * source], leftPositions[leftPositionsOffset + 2u * source + 1u]);
+      } else {
+        value = vec2f(rightPositions[rightPositionsOffset + 2u * source], rightPositions[rightPositionsOffset + 2u * source + 1u]);
+      }
+    }
+  }
+  output[outputOffset + 2u * index] = value.x;
+  output[outputOffset + 2u * index + 1u] = value.y;`
       })
     ];
     nodes.push(
@@ -278,11 +496,11 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
           kind: 'polygons',
           positions: rawPositions,
           featureOffsets: polygons.featureOffsets,
-          polygonOffsets: polygons.polygonOffsets,
+          polygonOffsets: rawPolygonOffsets,
           ringOffsets: rawRingOffsets,
           sourceIds: polygons.sourceIds
         },
-        'positive'
+        'negative'
       )
     );
     return nodes;
@@ -290,7 +508,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
 
   private _getLineNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    lines: PackedLines
+    lines: GPUPackedGeometryPort<GPULineGeometryPort>
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const prepared = this._getCompactionNodes(
@@ -343,10 +561,11 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         id: `${id}-left-offset`,
         spatialContext: this.spatialContext,
         positions: prepared.positions,
-        pathOffsets: prepared.offsets,
+        lineOffsets: prepared.offsets,
         geometryType: 'lines',
         joinStyle: this.joinStyle,
         quadSegments: this.quadSegments,
+        insideTurns: 'buffer',
         parameters: positiveParameters,
         output: {positions: leftPositions}
       }).getCommandNodes(graph),
@@ -354,10 +573,11 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         id: `${id}-right-offset`,
         spatialContext: this.spatialContext,
         positions: prepared.positions,
-        pathOffsets: prepared.offsets,
+        lineOffsets: prepared.offsets,
         geometryType: 'lines',
         joinStyle: this.joinStyle,
         quadSegments: this.quadSegments,
+        insideTurns: 'buffer',
         parameters: negativeParameters,
         output: {positions: rightPositions}
       }).getCommandNodes(graph),
@@ -491,7 +711,7 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
       'uint32',
       offsets.length
     );
-    const pathCount = offsets.length - 1;
+    const lineCount = offsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${prefix}-flags`,
@@ -503,21 +723,21 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
           {name: 'keep', view: keep, type: 'u32', access: 'read_write'}
         ],
         invocationCount: positions.length,
-        declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+        declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const DROP_CLOSING: bool = ${dropClosingVertex};
 
 fn isSame(first: u32, second: u32) -> bool {
   return positions[positionsOffset + 2u * first] == positions[positionsOffset + 2u * second] &&
     positions[positionsOffset + 2u * first + 1u] == positions[positionsOffset + 2u * second + 1u];
 }`,
-        body: `var path = 0u;
-  var high = PATH_COUNT;
-  while (path + 1u < high) {
-    let middle = (path + high) / 2u;
-    if (offsets[offsetsOffset + middle] <= index) { path = middle; } else { high = middle; }
+        body: `var line = 0u;
+  var high = LINE_COUNT;
+  while (line + 1u < high) {
+    let middle = (line + high) / 2u;
+    if (offsets[offsetsOffset + middle] <= index) { line = middle; } else { high = middle; }
   }
-  let begin = offsets[offsetsOffset + path];
-  let end = offsets[offsetsOffset + path + 1u];
+  let begin = offsets[offsetsOffset + line];
+  let end = offsets[offsetsOffset + line + 1u];
   var flag = index < end;
   if (flag && index > begin && isSame(index - 1u, index)) { flag = false; }
   if (flag && DROP_CLOSING && index + 1u == end && index > begin && isSame(begin, index)) { flag = false; }
@@ -590,7 +810,7 @@ fn isSame(first: u32, second: u32) -> bool {
 
   private _getDissolveNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    raw: PackedPolygons,
+    raw: GPUPackedGeometryPort<GPUPolygonGeometryPort>,
     fillRule: GPUPolygonOverlayFillRule
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
@@ -603,7 +823,6 @@ fn isSame(first: u32, second: u32) -> bool {
       capacity: props.capacity,
       vertexTolerance: props.vertexTolerance,
       output: props.output,
-      uncertainCount: props.uncertainCount,
       spatialSort: props.spatialSort,
       leafCapacity: props.leafCapacity
     }).getCommandNodes(graph);

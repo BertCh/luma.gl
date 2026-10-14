@@ -7,7 +7,7 @@ import {
   getGPURegressionPredictorNames,
   type GPURegressionCoefficient,
   type GPURegressionModelResult
-} from '../contracts/model-result';
+} from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import {
   GPU_SPATIAL_ERROR_GM_SUMMARY_CONDITION_NUMBER,

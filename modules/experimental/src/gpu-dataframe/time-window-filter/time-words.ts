@@ -28,7 +28,7 @@ import type {GraphDataView, GraphVectorView} from '@luma.gl/gpgpu/gpu-core';
 export type GPUInt64TimeWordRows = GraphDataView<'uint32x2'> | GraphVectorView<'uint32x2'>;
 
 /** Number of uint32 elements in a word time-window parameter buffer. */
-export const GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH = 8;
+export const GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH = 8;
 
 const INT64_MINIMUM = -(2n ** 63n);
 const INT64_MAXIMUM = 2n ** 63n - 1n;
@@ -45,12 +45,12 @@ export type GPUTimeWords = {
 };
 
 /**
- * CPU description of one per-frame time window over Int64 word timestamps.
+ * CPU description of one per-frame time window over Int64 word timestamps, the word-mode settings of {@link GPUTimeWindowFilter}.
  *
  * Instants use the unit of the timestamps, for example epoch milliseconds. A `number` may carry a
  * fraction (a smooth playhead); a `bigint` is an exact integer.
  */
-export type GPUTimeWordWindow = {
+export type GPUTimeWindowFilterWordSettings = {
   /** Inclusive window start. */
   start: number | bigint;
   /** Inclusive window end. A window with `end < start` accepts nothing. */
@@ -126,29 +126,29 @@ export function getInt64TimeWords(values: BigInt64Array | BigUint64Array): Uint3
  * endFadeDuration]`, where the last four are f32 bit patterns. Write it into a
  * `GPUParameterBuffer` with `format: 'uint32'` between encodings.
  *
- * @param window Window to encode.
+ * @param settings Time window to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If an instant cannot be split, a fade duration is negative or not finite, or `target` is
  * too short.
  */
-export function getGPUTimeWindowWordParameterValues(
-  window: GPUTimeWordWindow,
-  target: Uint32Array = new Uint32Array(GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH)
+export function getGPUTimeWindowFilterWordParameterValues(
+  settings: GPUTimeWindowFilterWordSettings,
+  target: Uint32Array = new Uint32Array(GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH)
 ): Uint32Array {
-  if (target.length < GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH) {
+  if (target.length < GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH) {
     throw new Error(
-      `Time word window target must hold ${GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH} elements`
+      `Time word window target must hold ${GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH} elements`
     );
   }
-  const startFadeDuration = window.startFadeDuration ?? 0;
-  const endFadeDuration = window.endFadeDuration ?? 0;
+  const startFadeDuration = settings.startFadeDuration ?? 0;
+  const endFadeDuration = settings.endFadeDuration ?? 0;
   for (const value of [startFadeDuration, endFadeDuration]) {
     if (!Number.isFinite(value) || value < 0) {
       throw new Error('Time window fade durations must be finite and non-negative');
     }
   }
-  const start = splitTimeWords(window.start);
-  const end = splitTimeWords(window.end);
+  const start = splitTimeWords(settings.start);
+  const end = splitTimeWords(settings.end);
   const floats = new Float32Array([
     start.fraction,
     end.fraction,

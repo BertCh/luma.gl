@@ -12,11 +12,11 @@ export const GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE = 1e-3;
 export type GPUGeographicDistributionEllipseConvention = 'arcgis' | 'standard';
 
 /**
- * CPU description of the per-frame parameters of `GPUGeographicDistribution`.
+ * CPU settings packed into the per-frame `parameters` of `GPUGeographicDistribution`.
  *
  * Every field can change between encodings without rebuilding or recompiling the graph.
  */
-export type GPUGeographicDistributionParameters = {
+export type GPUGeographicDistributionSettings = {
   /**
    * Local origin `[x, y]` subtracted from every position before any sum, so float32 sums keep
    * precision when the planar coordinates are large (for example Web Mercator meters). Choose a
@@ -41,27 +41,28 @@ export type GPUGeographicDistributionParameters = {
   orientationOnly?: boolean;
   /**
    * Absolute tolerance, in position units, under which the last Weiszfeld step counts as
-   * converged for `medianConverged`. Non-negative. Defaults to
+   * converged for `medianConverged`. The iteration stops once every non-empty group's last step
+   * is at most this value. Non-negative. Defaults to
    * {@link GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE}.
    */
   medianTolerance?: number;
 };
 
 /**
- * Packs geographic-distribution parameters into the 8-element float32 layout read by
+ * Packs geographic-distribution settings into the 8-element float32 layout read by
  * `GPUGeographicDistribution`.
  *
  * Layout: `[originX, originY, standardDeviations, ellipseScale, orientationOnly,
  * medianTolerance, 0, 0]`, where `ellipseScale` is `sqrt(2)` for the `'arcgis'` convention and `1`
  * for `'standard'`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, `standardDeviations <= 0`, `medianTolerance < 0`, the
  * convention is unknown, or `target` is too short.
  */
 export function getGPUGeographicDistributionParameterValues(
-  parameters: GPUGeographicDistributionParameters = {},
+  settings: GPUGeographicDistributionSettings = {},
   target: Float32Array = new Float32Array(GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH) {
@@ -69,11 +70,11 @@ export function getGPUGeographicDistributionParameterValues(
       `Geographic distribution target must hold ${GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} elements`
     );
   }
-  const [originX, originY] = parameters.origin ?? [0, 0];
-  const standardDeviations = parameters.standardDeviations ?? 1;
-  const convention = parameters.ellipseConvention ?? 'arcgis';
+  const [originX, originY] = settings.origin ?? [0, 0];
+  const standardDeviations = settings.standardDeviations ?? 1;
+  const convention = settings.ellipseConvention ?? 'arcgis';
   const medianTolerance =
-    parameters.medianTolerance ?? GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE;
+    settings.medianTolerance ?? GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE;
   for (const value of [originX, originY, standardDeviations, medianTolerance]) {
     if (!Number.isFinite(value)) {
       throw new Error(
@@ -95,7 +96,7 @@ export function getGPUGeographicDistributionParameterValues(
     originY,
     standardDeviations,
     convention === 'arcgis' ? Math.SQRT2 : 1,
-    parameters.orientationOnly ? 1 : 0,
+    settings.orientationOnly ? 1 : 0,
     medianTolerance,
     0,
     0

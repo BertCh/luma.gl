@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUSphereRadius} from '../../analysis-core/contracts/spatial-context';
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,12 +15,18 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {validateGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../../analysis-core/contracts/index';
 import {RHUMB_WGSL} from './rhumb-wgsl';
-import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
+import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   getVincentyWGSL,
   GPU_GEODESIC_DEFAULT_ITERATIONS,
@@ -45,15 +49,18 @@ export type GPUGeodesicPairsOutput = {
    * (turf `midpoint`). Spherical in every model.
    */
   midpoints?: GraphDataView<'float32x2'>;
-  /** `'wgs84'` only: `1` when Vincenty converged, `0` for near-antipodal pairs (sphere fallback). */
-  converged?: GraphDataView<'uint32'>;
+  /** Per-pair status scalars. */
+  status?: {
+    /** `'wgs84'` only: `1` when Vincenty converged, `0` for near-antipodal pairs (sphere fallback). */
+    converged?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
  * Properties for {@link GPUGeodesicPairs}.
  *
  * Per-frame (no recompile): the contents of `origins` and `targets`. Compile-time: the pair count,
- * `model`, `radius`, `iterations`, and which outputs are present.
+ * `model`, `radius`, `maximumIterations`, and which outputs are present.
  */
 export type GPUGeodesicPairsProps = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-pairs'`. */
@@ -65,7 +72,7 @@ export type GPUGeodesicPairsProps = {
   /** Targets aligned with `origins`. */
   targets: GraphDataView<'float32x2'>;
   /** Compile-time Vincenty iteration cap for `'wgs84'`. Default 16. */
-  iterations?: number;
+  maximumIterations?: number;
   /** Per-pair outputs; at least one. */
   output: GPUGeodesicPairsOutput;
 };
@@ -93,7 +100,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   /** Resolved radius. */
   readonly radius: number;
   /** Resolved Vincenty iteration cap. */
-  readonly iterations: number;
+  readonly maximumIterations: number;
 
   constructor(props: GPUGeodesicPairsProps) {
     this.id = props.id ?? 'geodesic-pairs';
@@ -102,17 +109,14 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     const metric = resolveGeodesicSpatialContext(this.id, this.spatialContext);
     this.model = metric.model;
     this.radius = metric.radius;
-    this.iterations = props.iterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
-    validateGeodesicOptions(this.id, this.model, this.radius, this.iterations);
+    this.maximumIterations = props.maximumIterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
+    validateGeodesicOptions(this.id, this.model, this.radius, this.maximumIterations);
     const {id} = this;
     const {output} = props;
     for (const [name, view] of [
       ['origins', props.origins],
       ['targets', props.targets]
     ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
       validatePackedView(view, ['float32x2'], `${id} ${name}`);
     }
     const pairCount = props.origins.length;
@@ -124,13 +128,13 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
       initialBearings: 'float32',
       finalBearings: 'float32',
       midpoints: 'float32x2',
-      converged: 'uint32'
+      'status.converged': 'uint32'
     } as const;
     validateGeodesicColumns(id, output, formats, pairCount);
-    if (output.converged && this.model !== 'wgs84') {
-      throw new Error(`${id} output.converged requires model 'wgs84'`);
+    if (output.status?.converged && this.model !== 'wgs84') {
+      throw new Error(`${id} output.status.converged requires model 'wgs84'`);
     }
-    validateGraphOutputsDisjointFromInputs(id, Object.values(output), [
+    validateGraphOutputsDisjointFromInputs(id, Object.values(flattenGeodesicOutput(output)), [
       props.origins,
       props.targets
     ]);
@@ -145,7 +149,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.origins,
       props.targets,
-      ...Object.values(output)
+      ...Object.values(flattenGeodesicOutput(output))
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'origins', view: props.origins, type: 'f32', access: 'read'},
@@ -153,8 +157,12 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     ];
     const statements: string[] = [];
     const rhumb = this.model === 'rhumb';
-    const add = (name: keyof GPUGeodesicPairsOutput, type: 'f32' | 'u32', statement: string) => {
-      const view = output[name];
+    const add = (
+      name: Exclude<keyof GPUGeodesicPairsOutput, 'status'> | 'converged',
+      type: 'f32' | 'u32',
+      statement: string
+    ) => {
+      const view = name === 'converged' ? output.status?.converged : output[name];
       if (view) {
         bindings.push({name, view, type, access: 'read_write'});
         statements.push(statement);
@@ -188,7 +196,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
-${wgs84 ? getVincentyWGSL(this.iterations) : ''}
+${wgs84 ? getVincentyWGSL(this.maximumIterations) : ''}
 ${SPHERE_PAIR_WGSL}
 ${rhumb ? RHUMB_WGSL : ''}
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
@@ -223,33 +231,35 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   }
 }
 
-/** Resolves a canonical spatial context to the kernel model shared by geodesic contributors. */
+/** Longitude/latitude with a great-circle, rhumb or ellipsoidal metric. */
+const GEODESIC_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['longitude-latitude'] as const),
+  metricsByCoordinateSpace: Object.freeze({
+    'longitude-latitude': Object.freeze(['great-circle', 'rhumb', 'ellipsoidal'] as const)
+  })
+});
+
+const GEODESIC_MODELS = {
+  'great-circle': 'sphere',
+  rhumb: 'rhumb',
+  ellipsoidal: 'wgs84'
+} as const;
+
+/**
+ * Resolves a canonical spatial context to the kernel model shared by geodesic contributors. A thin
+ * wrapper over `resolveGPUSpatialContext`: the support table checks the space and metric, and the
+ * wrapper maps the metric to its kernel model.
+ */
 export function resolveGeodesicSpatialContext(
   id: string,
   spatialContext: GPUSpatialContext
 ): {model: GPUGeodesicModel; radius: number} {
-  validateGPUSpatialContext(id, spatialContext);
-  if (spatialContext.coordinateSpace !== 'longitude-latitude') {
-    throw new Error(`${id} requires longitude-latitude coordinates`);
-  }
-  const model: GPUGeodesicModel =
-    spatialContext.metric === 'great-circle'
-      ? 'sphere'
-      : spatialContext.metric === 'rhumb'
-        ? 'rhumb'
-        : spatialContext.metric === 'ellipsoidal'
-          ? 'wgs84'
-          : (() => {
-              throw new Error(`${id} requires a great-circle, rhumb, or ellipsoidal metric`);
-            })();
+  const resolved = resolveGPUSpatialContext(id, spatialContext, GEODESIC_SPATIAL_CONTEXT_SUPPORT);
+  const model: GPUGeodesicModel = GEODESIC_MODELS[resolved.metric as keyof typeof GEODESIC_MODELS];
   if (model === 'wgs84' && spatialContext.units === 'kilometers') {
     throw new Error(`${id} ellipsoidal kernels currently publish meters`);
   }
-  const defaultRadius =
-    spatialContext.units === 'kilometers'
-      ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
-      : GPU_GEODESIC_MEAN_EARTH_RADIUS;
-  return {model, radius: spatialContext.sphereRadius ?? defaultRadius};
+  return {model, radius: getGPUSphereRadius(spatialContext)};
 }
 
 /** Validates the shared model options of the geodesic column contributors. @internal */
@@ -257,7 +267,7 @@ export function validateGeodesicOptions(
   id: string,
   model: GPUGeodesicModel,
   radius: number,
-  iterations: number
+  maximumIterations: number
 ): void {
   if (model !== 'sphere' && model !== 'wgs84' && model !== 'rhumb') {
     throw new Error(`${id} model must be 'sphere', 'wgs84' or 'rhumb'`);
@@ -265,20 +275,33 @@ export function validateGeodesicOptions(
   if (!Number.isFinite(radius) || radius <= 0) {
     throw new Error(`${id} radius must be a positive finite number`);
   }
-  if (!Number.isInteger(iterations) || iterations < 1 || iterations > 200) {
-    throw new Error(`${id} iterations must be an integer in [1, 200]`);
-  }
+  validateCapacity(id, 'maximumIterations', maximumIterations, 1, 200);
+}
+
+/**
+ * Returns the writable views of a geodesic output keyed by their `output` path (`status.converged`
+ * for the per-row convergence flags). @internal
+ */
+export function flattenGeodesicOutput(output: {
+  status?: {converged?: GraphDataView};
+  [name: string]: unknown;
+}): Record<string, GraphDataView | undefined> {
+  const {status, ...columns} = output;
+  return {
+    ...(columns as Record<string, GraphDataView | undefined>),
+    'status.converged': status?.converged
+  };
 }
 
 /** Validates optional per-row output columns against their formats and row count. @internal */
 export function validateGeodesicColumns(
   id: string,
-  output: Record<string, GraphDataView | undefined>,
+  output: {status?: {converged?: GraphDataView}} & Record<string, unknown>,
   formats: Record<string, 'float32' | 'float32x2' | 'uint32'>,
   rowCount: number
 ): void {
   let columnCount = 0;
-  for (const [name, view] of Object.entries(output)) {
+  for (const [name, view] of Object.entries(flattenGeodesicOutput(output))) {
     if (!view) {
       continue;
     }
@@ -286,14 +309,7 @@ export function validateGeodesicColumns(
     if (!format) {
       throw new Error(`${id} output.${name} is not a known column`);
     }
-    if ((view as unknown) instanceof GraphVectorView) {
-      throw new Error(`${id} output.${name} must be a single packed view, not a chunked vector`);
-    }
-    if (format === 'uint32') {
-      validatePackedUint32View(view as GraphDataView<'uint32'>, `${id} output.${name}`);
-    } else {
-      validatePackedView(view, [format], `${id} output.${name}`);
-    }
+    validatePackedView(view, [format], `${id} output.${name}`);
     if (view.length !== rowCount) {
       throw new Error(`${id} output.${name} must hold ${rowCount} rows`);
     }

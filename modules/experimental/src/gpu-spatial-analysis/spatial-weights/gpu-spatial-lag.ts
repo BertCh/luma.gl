@@ -3,18 +3,25 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
+  createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
+  type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {createLoadBalancedSegmentSumNodes} from '../../utils/load-balanced-for-each';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  type GPUFloat32OrUint32Values,
+  validateFloat32OrUint32Values
+} from './float32-values';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
 
 const OPERATION = 'GPUSpatialLag';
@@ -29,17 +36,14 @@ export type GPUSpatialLagProps = {
   /** Prefix for generated node IDs. Defaults to `'spatial-lag'`. */
   id?: string;
   /**
-   * Per-source values `y`, row-major with `columnCount` columns: `sourceCount * columnCount`
-   * entries. Without `sourceCount` the weights are square and this is `rows * columnCount`.
+   * Per-source values `y`, row-major with `columnCount` columns, `float32` or `uint32` (counts,
+   * exact below 2^24). Its row count (`values.length / columnCount`) is the neighbor-ID space: the
+   * weights row count for square weights, or the target rows of cross weights (query rows to
+   * target neighbors, for example the area-share weights of `GPUArealInterpolation`, whose rows
+   * are targets and neighbors are sources). Neighbors at or above that row count are skipped.
+   * `mask` requires square weights.
    */
-  values: GraphDataView<'float32'>;
-  /**
-   * Number of neighbor-ID rows of `values`. Defaults to the weights row count (square weights).
-   * Set it for cross weights (query rows to target neighbors), for example the area-share weights
-   * of `GPUArealInterpolation` (rows are targets, neighbors are sources). Neighbors at or above
-   * `sourceCount` are skipped. `mask` requires square weights.
-   */
-  sourceCount?: number;
+  values: GPUFloat32OrUint32Values;
   /**
    * Number of value columns lagged at once. Defaults to 1. Column `c` of row `i` is
    * `output[i * columnCount + c]`; `normalize` divides each row by the same weight sum.
@@ -62,11 +66,12 @@ export type GPUSpatialLagProps = {
 /**
  * Spatial lag `lag_i = sum_j w_ij y_j` (PySAL `lag_spatial`) for a {@link GPUSpatialWeights}.
  *
- * Neighbors `j` with a zero mask, or outside `[0, rows)`, are skipped. With `normalize` the result is
- * `sum_j w_ij y_j / sum_j w_ij` over the included neighbors. Each row accumulates in slot order
- * in f32, so the result is deterministic and matches a sequential CPU sum within f32 fused
- * multiply-add differences. This is a single-purpose row loop; for an arbitrary CSR matrix times a
- * vector, `GPUProgramSpMV` in `@luma.gl/gpgpu` is the general (semantic) form.
+ * Neighbors `j` with a zero mask, or outside the value rows, are skipped. With `normalize` the
+ * result is `sum_j w_ij y_j / sum_j w_ij` over the included neighbors. Rows are summed with the
+ * shared load-balanced CSR loop, so hub rows (one row with 1e5 neighbors) spread over many
+ * workgroups. The association depends only on the offsets, so the result is bitwise reproducible
+ * and matches a sequential CPU sum within f32 rounding. This is a single-purpose row loop; for an arbitrary CSR matrix
+ * times a vector, `GPUProgramSpMV` in `@luma.gl/gpgpu` is the general (semantic) form.
  */
 export class GPUSpatialLag implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -79,37 +84,21 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
-    validatePackedView(props.values, ['float32'], `${id} values`);
+    const valueCount = validateFloat32OrUint32Values(props.values, `${id} values`);
     validatePackedView(props.output, ['float32'], `${id} output`);
-    const sourceCount = props.sourceCount ?? rows;
     const columnCount = props.columnCount ?? 1;
-    for (const [name, value] of [
-      ['sourceCount', sourceCount],
-      ['columnCount', columnCount]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    if (props.values.length !== sourceCount * columnCount) {
-      throw new Error(
-        props.sourceCount === undefined && columnCount === 1
-          ? `${id} values length must equal the weights row count`
-          : `${id} values length must equal sourceCount * columnCount`
-      );
+    validateCapacity(id, 'columnCount', columnCount);
+    if (valueCount % columnCount !== 0 || valueCount === 0) {
+      throw new Error(`${id} values length must be a multiple of columnCount`);
     }
     if (props.output.length !== rows * columnCount) {
-      throw new Error(
-        columnCount === 1
-          ? `${id} output length must equal the weights row count`
-          : `${id} output length must equal rows * columnCount`
-      );
-    }
-    if (props.mask && sourceCount !== rows) {
-      throw new Error(`${id} mask requires square weights (sourceCount equal to the row count)`);
+      throw new Error(`${id} output length must equal rows * columnCount`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      if (valueCount / columnCount !== rows) {
+        throw new Error(`${id} mask requires square weights`);
+      }
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
@@ -127,14 +116,19 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns the lag node. */
+  /** Number of value rows, the neighbor-ID space of `weights`. */
+  getValueRowCount(): number {
+    return this.props.values.length / (this.props.columnCount ?? 1);
+  }
+
+  /** Returns the lag nodes: value conversion, load-balanced sum and fixup, optional normalize. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, mask, values, output} = props;
+    const {weights, mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      values,
+      props.values,
       mask,
       output,
       weights.offsets,
@@ -142,43 +136,88 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
       weights.weights
     ]);
     const rows = weights.offsets.length - 1;
-    const sourceCount = props.sourceCount ?? rows;
+    const valueRowCount = this.getValueRowCount();
     const columnCount = props.columnCount ?? 1;
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
+    const values = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
+    const rowIncluded = mask ? 'mask[maskOffset + row] != 0u' : 'true';
+    const neighborIncluded = mask ? 'mask[maskOffset + neighbor] != 0u' : 'true';
+    // Load-balanced CSR sum (algorithms roadmap decision 3): a hub row spreads over many
+    // workgroups instead of one thread. One lane per value column.
+    // Normalize with one weight sum per row; interleaved (lag, weight) scratch would double
+    // the caller's binding size and exceed the device limit for otherwise valid outputs.
+    const accumulatorType = 'f32';
+    const nodes: GPUCommandNode<Parameters>[] = [
+      ...values.nodes,
+      ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
         id: `${id}-lag`,
         operation: OPERATION,
         variant: props.normalize ? 'normalized' : 'sum',
+        offsets: weights.offsets,
+        itemCapacity: weights.neighbors.length,
+        laneCount: columnCount,
+        accumulatorType,
+        output,
         bindings: [
-          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
-          {name: 'values', view: values, type: 'f32', access: 'read'},
+          {name: 'values', view: values.view, type: 'f32', access: 'read'},
           ...(mask
             ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
-            : []),
-          {name: 'output', view: output, type: 'f32', access: 'read_write'}
+            : [])
         ],
-        invocationCount: rows * columnCount,
-        declarations: `const ROWS: u32 = ${sourceCount}u;
-const COLUMNS: u32 = ${columnCount}u;`,
-        body: `let row = index / COLUMNS;
-  let column = index % COLUMNS;
-  var lag = 0.0;
-  var weightSum = 0.0;
-  if (${mask ? 'mask[maskOffset + row] != 0u' : 'true'}) {
-    for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
-      let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor < ROWS && ${mask ? 'mask[maskOffset + neighbor] != 0u' : 'true'}) {
-        let weight = weights[weightsOffset + slot];
-        lag += weight * values[valuesOffset + neighbor * COLUMNS + column];
-        weightSum += weight;
-      }
-    }
+        declarations: `const ROWS: u32 = ${valueRowCount}u;
+const COLUMNS: u32 = ${columnCount}u;
+fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> ${accumulatorType} {
+  let neighbor = neighbors[neighborsOffset + item];
+  if (!(${rowIncluded}) || neighbor >= ROWS || !(${neighborIncluded})) {
+    return ${accumulatorType}();
   }
-  ${props.normalize ? 'lag = select(0.0, lag / weightSum, weightSum > 0.0);' : ''}
-  output[outputOffset + index] = lag;`
+  let weight = weights[weightsOffset + item];
+  let lagTerm = weight * values[valuesOffset + neighbor * COLUMNS + lane];
+  return lagTerm;
+}`
       })
     ];
+    if (props.normalize) {
+      const weightSums = createTransientView(graph, `${id}-weight-sums`, 'float32', rows);
+      nodes.push(
+        ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
+          id: `${id}-weights`,
+          operation: OPERATION,
+          offsets: weights.offsets,
+          itemCapacity: weights.neighbors.length,
+          accumulatorType: 'f32',
+          output: weightSums,
+          bindings: [
+            {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+            {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+            ...(mask
+              ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
+              : [])
+          ],
+          declarations: `fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> f32 {
+  let neighbor = neighbors[neighborsOffset + item];
+  if (!(${rowIncluded}) || neighbor >= ${valueRowCount}u || !(${neighborIncluded})) {
+    return 0.0;
+  }
+  return weights[weightsOffset + item];
+}`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-normalize`,
+          operation: OPERATION,
+          variant: 'normalize',
+          bindings: [
+            {name: 'weightSums', view: weightSums, type: 'f32', access: 'read'},
+            {name: 'output', view: output, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: rows * columnCount,
+          body: `let lag = output[outputOffset + index];
+  let weightSum = weightSums[weightSumsOffset + index / ${columnCount}u];
+  output[outputOffset + index] = select(0.0, lag / weightSum, weightSum > 0.0);`
+        })
+      );
+    }
+    return nodes;
   }
 }

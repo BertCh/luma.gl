@@ -5,8 +5,7 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
-import type {GPUGeometryHoleRule} from '../geometry-measures/index';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 
 /** Number of float32 elements in a `GPUShapeDescriptors` parameter buffer. */
 export const GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH = 4;
@@ -16,31 +15,29 @@ export type FeatureRingInputs = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
+  /** Ring-to-vertex offsets. */
   ringOffsets: GraphDataView<'uint32'>;
-  featureRingOffsets?: GraphDataView<'uint32'>;
+  /** Feature-to-polygon offsets. */
+  featureOffsets: GraphDataView<'uint32'>;
+  /** Polygon-to-ring offsets; the first ring of each polygon is its shell. */
+  polygonOffsets: GraphDataView<'uint32'>;
   featureCount: number;
 };
 
 export function getRingBindings(props: FeatureRingInputs): WGSLKernelBinding[] {
   const bindings: WGSLKernelBinding[] = [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-    {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'}
+    {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+    {name: 'featureOffsets', view: props.featureOffsets, type: 'u32', access: 'read'},
+    {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'}
   ];
-  if (props.featureRingOffsets) {
-    bindings.push({
-      name: 'featureRingOffsets',
-      view: props.featureRingOffsets,
-      type: 'u32',
-      access: 'read'
-    });
-  }
   return bindings;
 }
 
-export function getRingDeclarations(props: FeatureRingInputs): string {
+/** Declarations of `getPosition` and `getNan` for kernels that bind only `positions`. @internal */
+export function getPositionDeclarations(rowCount: number): string {
   return /* wgsl */ `
-const ROW_COUNT: u32 = ${props.positions.length}u;
-const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const ROW_COUNT: u32 = ${rowCount}u;
 fn getNan(seed: u32) -> f32 {
   // A runtime operand keeps the compiler from folding a constant NaN.
   return bitcast<f32>(0x7fc00000u | (seed & 0u));
@@ -49,13 +46,42 @@ fn getNan(seed: u32) -> f32 {
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
+`;
+}
 
+export function getRingDeclarations(props: FeatureRingInputs): string {
+  return /* wgsl */ `${getPositionDeclarations(props.positions.length)}
+const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
+
+// Feature -> polygons -> rings: a feature owns the rings of its polygons.
 fn getRingStart(feature: u32) -> u32 {
-  ${props.featureRingOffsets ? 'return min(featureRingOffsets[featureRingOffsetsOffset + feature], RING_COUNT);' : 'return feature;'}
+  let polygon = min(featureOffsets[featureOffsetsOffset + feature], POLYGON_COUNT);
+  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
 }
 
 fn getRingEnd(feature: u32) -> u32 {
-  ${props.featureRingOffsets ? 'return min(featureRingOffsets[featureRingOffsetsOffset + feature + 1u], RING_COUNT);' : 'return feature + 1u;'}
+  let polygon = min(featureOffsets[featureOffsetsOffset + feature + 1u], POLYGON_COUNT);
+  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
+}
+
+// Ring role by position: ring 'ring' is a shell when it starts a polygon (binary search of
+// polygonOffsets). A ring outside the polygonOffsets range keeps the first-ring rule.
+fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
+  if (ring < polygonOffsets[polygonOffsetsOffset] || ring >= polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT]) {
+    return isFirstRing;
+  }
+  var low = 0u;
+  var high = POLYGON_COUNT;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (polygonOffsets[polygonOffsetsOffset + middle] < ring) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return polygonOffsets[polygonOffsetsOffset + low] == ring;
 }
 
 fn getRingRowStart(ring: u32) -> u32 {
@@ -80,7 +106,6 @@ fn getRingRowEnd(ring: u32) -> u32 {
 export function createMomentsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: FeatureRingInputs & {
-    holeRule: GPUGeometryHoleRule;
     centroids: GraphDataView<'float32x2'>;
     moments: GraphDataView<'float32x4'>;
   }
@@ -97,7 +122,6 @@ export function createMomentsNode<Parameters>(
     invocationCount: props.featureCount,
     declarations: `${getRingDeclarations(props)}
 ${IS_NAN_BITS_WGSL}
-const FIRST_RING_EXTERIOR: bool = ${props.holeRule === 'first-ring-exterior'};
 
 // accumulator = (sum, compensation).
 fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
@@ -143,18 +167,15 @@ fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
       if (ring == ringStart) {
         firstArea = 0.5 * ringTwiceArea;
       }
-      var factor = 1.0;
-      if (FIRST_RING_EXTERIOR) {
-        factor = select(-1.0, 1.0, ring == ringStart) * sign(ringTwiceArea);
-      }
+      let factor = select(-1.0, 1.0, isShellRing(ring, ring == ringStart)) * sign(ringTwiceArea);
       totalTwiceArea += factor * ringTwiceArea;
       addNeumaier(&totalXX, factor * (ringXX.x + ringXX.y) / 12.0);
       addNeumaier(&totalYY, factor * (ringYY.x + ringYY.y) / 12.0);
       addNeumaier(&totalXY, factor * (ringXY.x + ringXY.y) / 24.0);
     }
   }
-  // A clockwise exterior under the winding rule integrates to negative moments; flip them so the
-  // moments always describe the covered region.
+  // Shell rings count positive and holes negative whatever their winding, so the total is
+  // non-negative; the flip only guards a zero-area feature.
   let orientationSign = select(1.0, -1.0, totalTwiceArea < 0.0);
   moments[momentsOffset + 4u * index] = orientationSign * (totalXX.x + totalXX.y);
   moments[momentsOffset + 4u * index + 1u] = orientationSign * (totalYY.x + totalYY.y);
@@ -373,7 +394,7 @@ export function createOrientationNode<Parameters>(
   let minor = max(mean - radius, 0.0);
   let isValid = major > 0.0;
   ${props.elongation ? 'elongation[elongationOffset + index] = select(getNan(index), 1.0 - sqrt(minor / major), isValid);' : ''}
-  ${props.orientation ? 'orientation[orientationOffset + index] = select(getNan(index), 0.5 * atan2(2.0 * xy, xx - yy), isValid);' : ''}
+  ${props.orientation ? 'orientation[orientationOffset + index] = select(getNan(index), select(0.0, 0.5 * atan2(2.0 * xy, xx - yy), (xy != 0.0) || (xx != yy)), isValid);' : ''}
   ${props.clockwise ? 'clockwise[clockwiseOffset + index] = select(0u, 1u, firstArea < 0.0);' : ''}`
   });
 }

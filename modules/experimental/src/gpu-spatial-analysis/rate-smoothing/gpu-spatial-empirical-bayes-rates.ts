@@ -4,7 +4,6 @@
 
 import {
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,8 +12,14 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  validateFloat32OrUint32Values,
+  type GPUFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {
   type GPUSpatialWeights,
@@ -25,26 +30,8 @@ const OPERATION = 'GPUSpatialEmpiricalBayesRates';
 /** WebGPU core limit of storage buffers per shader stage. */
 const MAXIMUM_STORAGE_BUFFERS = 8;
 
-/**
- * Properties for {@link GPUSpatialEmpiricalBayesRates}.
- *
- * Per-frame (no rebuild or recompile): the contents of `events`, `populations`, `mask` and
- * `weights`. Compile-time: the row count and which outputs exist.
- */
-export type GPUSpatialEmpiricalBayesRatesProps = {
-  /** Prefix for generated node IDs. Defaults to `'spatial-empirical-bayes-rates'`. */
-  id?: string;
-  /** Event counts `e`, one per row. */
-  events: GraphDataView<'float32'>;
-  /** Populations at risk `b`, one per row. Rows with `b <= 0` or a non-finite value are excluded. */
-  populations: GraphDataView<'float32'>;
-  /**
-   * Square self-join spatial weights. Only the neighbor structure is used (esda's binary
-   * transform): every listed neighbor counts once whatever its weight value.
-   */
-  weights: GPUSpatialWeights;
-  /** Optional row selection: nonzero includes the row, both as a focus row and as a neighbor. */
-  mask?: GraphDataView<'uint32'>;
+/** Caller-owned outputs of {@link GPUSpatialEmpiricalBayesRates}; at least one must be given. */
+export type GPUSpatialEmpiricalBayesRatesOutput = {
   /** Optional caller-owned spatial rate per row (esda `Spatial_Rate.r`), NaN for excluded rows. */
   spatialRates?: GraphDataView<'float32'>;
   /** Optional caller-owned spatial empirical-Bayes rate per row (esda `Spatial_Empirical_Bayes.r`), NaN if excluded. */
@@ -53,6 +40,35 @@ export type GPUSpatialEmpiricalBayesRatesProps = {
   priorMeans?: GraphDataView<'float32'>;
   /** Optional caller-owned local prior variance per row, after clamping at zero, NaN if excluded. */
   priorVariances?: GraphDataView<'float32'>;
+};
+
+/**
+ * Properties for {@link GPUSpatialEmpiricalBayesRates}.
+ *
+ * Per-frame (no rebuild or recompile): the contents of `events`, `populations`, `mask` and
+ * `weights`. Compile-time: the row count, the input formats and which outputs exist.
+ */
+export type GPUSpatialEmpiricalBayesRatesProps = {
+  /** Prefix for generated node IDs. Defaults to `'spatial-empirical-bayes-rates'`. */
+  id?: string;
+  /**
+   * Event counts `e`, one per row, `float32` or `uint32` (converted to f32, exact below 2^24).
+   */
+  events: GPUFloat32OrUint32Values;
+  /**
+   * Populations at risk `b`, one per row, `float32` or `uint32`. Rows with `b <= 0` or a non-finite
+   * value are excluded.
+   */
+  populations: GPUFloat32OrUint32Values;
+  /**
+   * Square self-join spatial weights. Only the neighbor structure is used (esda's binary
+   * transform): every listed neighbor counts once whatever its weight value.
+   */
+  weights: GPUSpatialWeights;
+  /** Optional row selection: nonzero includes the row, both as a focus row and as a neighbor. */
+  mask?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUSpatialEmpiricalBayesRatesOutput;
 };
 
 /**
@@ -92,13 +108,11 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
     const id = props.id ?? 'spatial-empirical-bayes-rates';
     this.id = id;
     this.props = props;
-    validatePackedView(props.events, ['float32'], `${id} events`);
-    validatePackedView(props.populations, ['float32'], `${id} populations`);
-    const rows = props.events.length;
+    const rows = validateFloat32OrUint32Values(props.events, `${id} events`);
     if (rows < 1) {
       throw new Error(`${id} events must hold at least one row`);
     }
-    if (props.populations.length !== rows) {
+    if (validateFloat32OrUint32Values(props.populations, `${id} populations`) !== rows) {
       throw new Error(`${id} populations length must equal the events length`);
     }
     if (validateGPUSpatialWeights(id, props.weights) !== rows) {
@@ -112,9 +126,9 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
     }
     const outputs = this._getOutputs();
     for (const [name, view] of outputs) {
-      validatePackedView(view, ['float32'], `${id} ${name}`);
+      validatePackedView(view, ['float32'], `${id} output.${name}`);
       if (view.length !== rows) {
-        throw new Error(`${id} ${name} length must equal the events length`);
+        throw new Error(`${id} output.${name} length must equal the events length`);
       }
     }
     if (outputs.length === 0) {
@@ -139,17 +153,25 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {events, populations, weights, mask} = props;
+    const {weights, mask} = props;
     const outputs = this._getOutputs();
     validateGraphViewsBelongToGraph(id, graph, [
-      events,
-      populations,
+      props.events,
+      props.populations,
       mask,
       weights.offsets,
       weights.neighbors,
       weights.weights,
       ...outputs.map(([, view]) => view)
     ]);
+    const eventValues = createFloat32ValuesNodes(graph, `${id}-events`, props.events);
+    const populationValues = createFloat32ValuesNodes(
+      graph,
+      `${id}-populations`,
+      props.populations
+    );
+    const events = eventValues.view;
+    const populations = populationValues.view;
     const rows = events.length;
     const maskBinding: WGSLKernelBinding[] = mask
       ? [{name: 'mask', view: mask, type: 'u32', access: 'read'}]
@@ -183,7 +205,7 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
     if (outputChunks.length === 0) {
       outputChunks.push([]);
     }
-    return outputChunks.map((chunk, chunkIndex) =>
+    const smoothNodes = outputChunks.map((chunk, chunkIndex) =>
       createWGSLKernelNode<Parameters>(graph, {
         id: outputChunks.length > 1 ? `${id}-smooth-${chunkIndex}` : `${id}-smooth`,
         operation: OPERATION,
@@ -238,15 +260,16 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
   ${writeOutputs(chunk, name => expressions[name])}`
       })
     );
+    return [...eventValues.nodes, ...populationValues.nodes, ...smoothNodes];
   }
 
   private _getOutputs(): [string, GraphDataView<'float32'>][] {
-    const {props} = this;
+    const {output} = this.props;
     const outputs: [string, GraphDataView<'float32'> | undefined][] = [
-      ['spatialRates', props.spatialRates],
-      ['smoothedRates', props.smoothedRates],
-      ['priorMeans', props.priorMeans],
-      ['priorVariances', props.priorVariances]
+      ['spatialRates', output.spatialRates],
+      ['smoothedRates', output.smoothedRates],
+      ['priorMeans', output.priorMeans],
+      ['priorVariances', output.priorVariances]
     ];
     return outputs.filter(
       (entry): entry is [string, GraphDataView<'float32'>] => entry[1] !== undefined

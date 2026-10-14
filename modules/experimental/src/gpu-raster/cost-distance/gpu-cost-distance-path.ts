@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -11,50 +10,61 @@ import {
 import {createWGSLKernelNode, createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {validateRasterBuffersDistinct, validateRasterGrid} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {createContributorTransientView} from './raster-grid-utils';
 import {GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_UNRESOLVED} from './gpu-cost-distance';
 
 const OPERATION = 'GPUCostDistancePath';
 
+/** One-row status words of {@link GPUCostDistancePath}. */
+export type GPUCostDistancePathStatus = {
+  /**
+   * One row: 1 when the walk met a `GPU_COST_DISTANCE_UNRESOLVED` back-link, that is,
+   * {@link GPUCostDistance} ran out of `maximumIterations` or `maximumTieIterations` before this
+   * path was certified; the path is then empty. Otherwise 0.
+   */
+  iterationLimitReached?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUCostDistancePath}. */
+export type GPUCostDistancePathOutput = {
+  /**
+   * Bounded compact output. `ids` holds cell indices from the target (first) to the source
+   * cell (last); capacity is `ids.length` (compile-time). `count` is clamped, `overflow` is 1 when
+   * the path is longer than the capacity, `requiredCount` is the exact path length. The path is empty
+   * (count 0) when the target is out of range or unreached, when the walk meets a
+   * `GPU_COST_DISTANCE_UNRESOLVED` link (see `status.iterationLimitReached`), and when the links are
+   * not a valid {@link GPUCostDistance} forest (an invalid code, a link off the grid or into an
+   * unreached cell, or a cycle). A path is only ever reported complete, from the target to a
+   * source.
+   */
+  path: GPUCompactOutput;
+  /** Optional one-row status words. */
+  status?: GPUCostDistancePathStatus;
+};
+
 /**
  * Properties for {@link GPUCostDistancePath}.
  *
- * Compile-time: `width`, `height`, the capacity of `output.ids`, and the presence of
- * `iterationLimitReached`. Per-frame: the contents of `backLinks` and `target`.
+ * Compile-time: `grid` size, the capacity of `output.path.ids`, and the presence of
+ * `output.status.iterationLimitReached`. Per-frame: the contents of `backLinks` and `target`.
  */
 export type GPUCostDistancePathProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cost-distance-path'`. */
   id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Back-link raster from {@link GPUCostDistance}, one value per cell. Per-frame contents. */
   backLinks: GraphDataView<'uint32'>;
   /** One-row target cell index (`row * width + column`). Per-frame contents. */
   target: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned bounded output. `ids` holds cell indices from the target (first) to the source
-   * cell (last); capacity is `ids.length` (compile-time). `count` is clamped, `overflow` is 1 when
-   * the path is longer than the capacity, `requiredCount` is the exact path length. The path is empty
-   * (count 0) when the target is out of range or unreached, when the walk meets a
-   * `GPU_COST_DISTANCE_UNRESOLVED` link (see `iterationLimitReached`), and when the links are not a
-   * valid {@link GPUCostDistance} forest (an invalid code, a link off the grid or into an
-   * unreached cell, or a cycle). A path is only ever reported complete, from the target to a
-   * source.
-   */
-  output: GPUCompactOutput;
-  /**
-   * Optional one-row output: 1 when the walk met a `GPU_COST_DISTANCE_UNRESOLVED` back-link, that
-   * is, {@link GPUCostDistance} ran out of `maxIterations` or `maxTieIterations` before this path
-   * was certified; the path is then empty. Otherwise 0.
-   */
-  iterationLimitReached?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUCostDistancePathOutput;
 };
 
 /**
@@ -77,19 +87,21 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
     this.id = props.id ?? 'cost-distance-path';
     this.props = props;
     const {id} = this;
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
+    const cellCount = validateRasterGrid(id, props.grid);
     const {output} = props;
+    const {path} = output;
+    const iterationLimitReached = output.status?.iterationLimitReached;
     for (const [name, view] of [
       ['backLinks', props.backLinks],
       ['target', props.target],
-      ['output ids', output.ids],
-      ['output count', output.count],
-      ['output overflow', output.overflow],
-      ['output requiredCount', output.requiredCount],
-      ['iterationLimitReached', props.iterationLimitReached]
+      ['output.path.ids', path.ids],
+      ['output.path.count', path.status.count],
+      ['output.path.overflow', path.status.overflow],
+      ['output.path.requiredCount', path.status.requiredCount],
+      ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (props.backLinks.length !== cellCount) {
@@ -97,26 +109,26 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['target', props.target],
-      ['output count', output.count],
-      ['output overflow', output.overflow],
-      ['output requiredCount', output.requiredCount],
-      ['iterationLimitReached', props.iterationLimitReached]
+      ['output.path.count', path.status.count],
+      ['output.path.overflow', path.status.overflow],
+      ['output.path.requiredCount', path.status.requiredCount],
+      ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
       }
     }
-    if (output.ids.length < 1) {
-      throw new Error(`${id} output ids must have a capacity of at least one`);
+    if (path.ids.length < 1) {
+      throw new Error(`${id} output.path.ids must have a capacity of at least one`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
       [
-        output.ids,
-        output.count,
-        output.overflow,
-        output.requiredCount,
-        props.iterationLimitReached
+        path.ids,
+        path.status.count,
+        path.status.overflow,
+        path.status.requiredCount,
+        iterationLimitReached
       ],
       [props.backLinks, props.target]
     );
@@ -128,16 +140,19 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
+    const {path} = output;
+    const {width, height} = props.grid;
+    const iterationLimitReached = output.status?.iterationLimitReached;
     validateGraphViewsBelongToGraph(id, graph, [
       props.backLinks,
       props.target,
-      output.ids,
-      output.count,
-      output.overflow,
-      output.requiredCount,
-      props.iterationLimitReached
+      path.ids,
+      path.status.count,
+      path.status.overflow,
+      path.status.requiredCount,
+      iterationLimitReached
     ]);
-    const cellCount = props.width * props.height;
+    const cellCount = width * height;
     const total = createContributorTransientView(graph, OPERATION, id, `${id}-total`, 'uint32', 1);
     return [
       createWGSLKernelNode<Parameters>(graph, {
@@ -147,13 +162,13 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
         bindings: [
           {name: 'backLinks', view: props.backLinks, type: 'u32', access: 'read'},
           {name: 'targetCells', view: props.target, type: 'u32', access: 'read'},
-          {name: 'ids', view: output.ids, type: 'u32', access: 'read_write'},
+          {name: 'ids', view: path.ids, type: 'u32', access: 'read_write'},
           {name: 'total', view: total, type: 'u32', access: 'read_write'},
-          ...(props.iterationLimitReached
+          ...(iterationLimitReached
             ? [
                 {
                   name: 'iterationLimitReached',
-                  view: props.iterationLimitReached,
+                  view: iterationLimitReached,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -161,10 +176,10 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
             : [])
         ],
         invocationCount: 1,
-        declarations: `const GRID_WIDTH: u32 = ${props.width}u;
-const GRID_HEIGHT: u32 = ${props.height}u;
+        declarations: `const GRID_WIDTH: u32 = ${width}u;
+const GRID_HEIGHT: u32 = ${height}u;
 const CELL_COUNT: u32 = ${cellCount}u;
-const CAPACITY: u32 = ${output.ids.length}u;
+const CAPACITY: u32 = ${path.ids.length}u;
 const NONE: u32 = ${GPU_COST_DISTANCE_NONE}u;
 const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;
 
@@ -203,13 +218,13 @@ fn getNeighbor(cell: u32, direction: u32) -> u32 {
     if (!complete) { pathLength = 0u; }
   }
   total[totalOffset] = pathLength;
-  ${props.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = select(0u, 1u, unresolved);' : ''}`
+  ${iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = select(0u, 1u, unresolved);' : ''}`
       }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: total,
-        output
+        output: path
       })
     ];
   }

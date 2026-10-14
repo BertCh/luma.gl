@@ -11,7 +11,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {ORDERED_KEY_WGSL} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
+import {ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   atomicBinding,
   createGatherNode,
@@ -20,6 +20,7 @@ import {
   writeBinding
 } from './group-statistics-common';
 import {getKeyOrderNodes, type GroupStructure} from './group-statistics-sort';
+import {ORDER_STATISTIC_WGSL} from '../column-classification/order-statistic-wgsl';
 
 /** Output views of one column written by the order statistics. @internal */
 export type GroupColumnOrderOutput = {
@@ -31,23 +32,20 @@ export type GroupColumnOrderOutput = {
 
 /**
  * Linear-interpolation quantile of the first `n` sorted keys of a group (numpy `linear`,
- * `d3.quantile`): `h = (n - 1) p`, `lo + (hi - lo) * (h - floor h)` in f32.
+ * `d3.quantile`, R-7) under the shared order-statistic policy of `ORDER_STATISTIC_WGSL`: finite
+ * values only, NaN for a probability that is NaN or outside `[0, 1]`, and the same f32 arithmetic
+ * as `GPUColumnQuantiles`.
  */
 const QUANTILE_WGSL = /* wgsl */ `
-// Identity that compilers cannot fold: \`zero\` is always 0 at run time (counts stay below 2^31)
-// but unknown at compile time, so the bit operation stops multiply-add fusion and every f32 step
-// rounds exactly like the CPU oracle.
-fn roundStep(value: f32, zero: u32) -> f32 {
-  return bitcast<f32>(bitcast<u32>(value) | zero);
-}
+${ORDER_STATISTIC_WGSL}
 
-fn getQuantile(begin: u32, count: u32, rawP: f32) -> f32 {
-  if (count == 0u || !isFiniteBits(bitcast<u32>(rawP))) {
+fn getQuantile(begin: u32, count: u32, p: f32) -> f32 {
+  if (count == 0u || !isOrderStatisticProbability(p)) {
     return getNaN();
   }
-  let p = clamp(rawP, 0.0, 1.0);
+  // Counts stay below 2^31, so this is a runtime zero that blocks multiply-add fusion.
   let zero = count >> 31u;
-  let h = roundStep(f32(count - 1u) * p, zero);
+  let h = roundOrderStatisticStep(f32(count - 1u) * p, zero);
   let floorH = floor(h);
   let lowIndex = min(u32(floorH), count - 1u);
   let low = decodeOrderedKey(sortedKeys[sortedKeysOffset + begin + lowIndex]);
@@ -55,7 +53,7 @@ fn getQuantile(begin: u32, count: u32, rawP: f32) -> f32 {
     return low;
   }
   let high = decodeOrderedKey(sortedKeys[sortedKeysOffset + begin + lowIndex + 1u]);
-  return low + roundStep((high - low) * (h - floorH), zero);
+  return interpolateOrderStatistic(low, high, h - floorH, zero);
 }
 `;
 
@@ -64,7 +62,8 @@ fn getQuantile(begin: u32, count: u32, rawP: f32) -> f32 {
  * group's finite values are ascending at the front of the group's range, then quantiles by direct
  * lookup, and modes / unique counts from run heads, a scan and integer-atomic run reductions.
  *
- * `percentiles` is read from a parameter view at encode time (clamped to [0, 1]).
+ * `percentiles` is read from a parameter view at encode time; a fraction that is NaN or outside
+ * `[0, 1]` gives NaN.
  *
  * @internal
  */

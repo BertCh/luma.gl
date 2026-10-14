@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,8 +13,14 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  createFloat32ValuesNodes,
+  validateFloat32OrUint32Values,
+  type GPUFloat32OrUint32Values
+} from '../spatial-weights/float32-values';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 
 const OPERATION = 'GPUEmpiricalBayesRates';
@@ -42,21 +47,8 @@ export const GPU_EMPIRICAL_BAYES_SUMMARY = {
   length: 8
 } as const;
 
-/**
- * Properties for {@link GPUEmpiricalBayesRates}.
- *
- * Per-frame (no rebuild or recompile): the contents of `events`, `populations` and `mask`.
- * Compile-time: the row count and which outputs exist.
- */
-export type GPUEmpiricalBayesRatesProps = {
-  /** Prefix for generated node and transient IDs. Defaults to `'empirical-bayes-rates'`. */
-  id?: string;
-  /** Event counts `e`, one per row. */
-  events: GraphDataView<'float32'>;
-  /** Populations at risk `b`, one per row. Rows with `b <= 0` or a non-finite value are excluded. */
-  populations: GraphDataView<'float32'>;
-  /** Optional row selection: nonzero includes the row. */
-  mask?: GraphDataView<'uint32'>;
+/** Caller-owned outputs of {@link GPUEmpiricalBayesRates}; at least one must be given. */
+export type GPUEmpiricalBayesRatesOutput = {
   /**
    * Optional caller-owned Assunção-Reis standardized rate per row (esda `assuncao_rate`), quiet NaN
    * for excluded rows. This is the column to give `GPULocalMoran` and `GPUGlobalSpatialStatistics`
@@ -65,6 +57,33 @@ export type GPUEmpiricalBayesRatesProps = {
   standardizedRates?: GraphDataView<'float32'>;
   /** Optional caller-owned global empirical-Bayes smoothed rate per row (esda `Empirical_Bayes`), NaN if excluded. */
   smoothedRates?: GraphDataView<'float32'>;
+  /** Optional caller-owned raw rate `e / b` per row, NaN if excluded. */
+  rawRates?: GraphDataView<'float32'>;
+  /** Optional caller-owned moments, `GPU_EMPIRICAL_BAYES_SUMMARY.length` float32 values. */
+  summary?: GraphDataView<'float32'>;
+};
+
+/**
+ * Properties for {@link GPUEmpiricalBayesRates}.
+ *
+ * Per-frame (no rebuild or recompile): the contents of `events`, `populations` and `mask`.
+ * Compile-time: the row count, the input formats and which outputs exist.
+ */
+export type GPUEmpiricalBayesRatesProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'empirical-bayes-rates'`. */
+  id?: string;
+  /**
+   * Event counts `e`, one per row, `float32` or `uint32` (for example points-in-polygons `counts`;
+   * converted to f32, exact below 2^24).
+   */
+  events: GPUFloat32OrUint32Values;
+  /**
+   * Populations at risk `b`, one per row, `float32` or `uint32`. Rows with `b <= 0` or a non-finite
+   * value are excluded.
+   */
+  populations: GPUFloat32OrUint32Values;
+  /** Optional row selection: nonzero includes the row. */
+  mask?: GraphDataView<'uint32'>;
   /**
    * Compile-time. Clamp the estimated prior variance at zero in `smoothedRates` (Marshall 1991,
    * GeoDa), so the shrinkage weight `w = a / (a + m / b)` stays in `[0, 1]`: when the counts are
@@ -74,10 +93,8 @@ export type GPUEmpiricalBayesRatesProps = {
    * are never clamped (esda `assuncao_rate` keeps its own `a + m / b < 0` guard).
    */
   clampPriorVariance?: boolean;
-  /** Optional caller-owned raw rate `e / b` per row, NaN if excluded. */
-  rawRates?: GraphDataView<'float32'>;
-  /** Optional caller-owned moments, `GPU_EMPIRICAL_BAYES_SUMMARY.length` float32 values. */
-  summary?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUEmpiricalBayesRatesOutput;
 };
 
 /**
@@ -115,13 +132,12 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
     const id = props.id ?? 'empirical-bayes-rates';
     this.id = id;
     this.props = props;
-    validatePackedView(props.events, ['float32'], `${id} events`);
-    validatePackedView(props.populations, ['float32'], `${id} populations`);
-    const rows = props.events.length;
+    const {output} = props;
+    const rows = validateFloat32OrUint32Values(props.events, `${id} events`);
     if (rows < 1) {
       throw new Error(`${id} events must hold at least one row`);
     }
-    if (props.populations.length !== rows) {
+    if (validateFloat32OrUint32Values(props.populations, `${id} populations`) !== rows) {
       throw new Error(`${id} populations length must equal the events length`);
     }
     if (props.mask) {
@@ -131,31 +147,29 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
       }
     }
     for (const [name, view] of [
-      ['standardizedRates', props.standardizedRates],
-      ['smoothedRates', props.smoothedRates],
-      ['rawRates', props.rawRates]
+      ['standardizedRates', output.standardizedRates],
+      ['smoothedRates', output.smoothedRates],
+      ['rawRates', output.rawRates]
     ] as const) {
       if (view) {
-        validatePackedView(view, ['float32'], `${id} ${name}`);
+        validatePackedView(view, ['float32'], `${id} output.${name}`);
         if (view.length !== rows) {
-          throw new Error(`${id} ${name} length must equal the events length`);
+          throw new Error(`${id} output.${name} length must equal the events length`);
         }
       }
     }
-    if (props.summary) {
-      validatePackedView(props.summary, ['float32'], `${id} summary`);
-      if (props.summary.length < GPU_EMPIRICAL_BAYES_SUMMARY.length) {
-        throw new Error(
-          `${id} summary must hold ${GPU_EMPIRICAL_BAYES_SUMMARY.length} float32 values`
-        );
+    if (output.summary) {
+      validatePackedView(output.summary, ['float32'], `${id} output.summary`);
+      if (output.summary.length < GPU_EMPIRICAL_BAYES_SUMMARY.length) {
+        throw new Error(`${id} output.summary is too short`);
       }
     }
-    if (!props.standardizedRates && !props.smoothedRates && !props.rawRates && !props.summary) {
+    if (!output.standardizedRates && !output.smoothedRates && !output.rawRates && !output.summary) {
       throw new Error(`${id} requests no output`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.standardizedRates, props.smoothedRates, props.rawRates, props.summary],
+      [output.standardizedRates, output.smoothedRates, output.rawRates, output.summary],
       [props.events, props.populations, props.mask]
     );
   }
@@ -165,23 +179,31 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {events, populations, mask} = props;
+    const {mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      events,
-      populations,
+      props.events,
+      props.populations,
       mask,
-      props.standardizedRates,
-      props.smoothedRates,
-      props.rawRates,
-      props.summary
+      output.standardizedRates,
+      output.smoothedRates,
+      output.rawRates,
+      output.summary
     ]);
+    const eventValues = createFloat32ValuesNodes(graph, `${id}-events`, props.events);
+    const populationValues = createFloat32ValuesNodes(
+      graph,
+      `${id}-populations`,
+      props.populations
+    );
+    const events = eventValues.view;
+    const populations = populationValues.view;
     const rows = events.length;
     const groups = Math.ceil(rows / LANES);
     const partialsA = createTransientView(graph, `${id}-partials-a`, 'float32', 3 * groups);
     const partialsB = createTransientView(graph, `${id}-partials-b`, 'float32', groups);
     const totalsA = createTransientView(graph, `${id}-totals-a`, 'float32', 3);
     const summary =
-      props.summary ??
+      output.summary ??
       createTransientView(graph, `${id}-summary`, 'float32', GPU_EMPIRICAL_BAYES_SUMMARY.length);
     const S = GPU_EMPIRICAL_BAYES_SUMMARY;
     const clampPriorVariance = props.clampPriorVariance ?? true;
@@ -217,6 +239,8 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
     included = ${includedWGSL};
   }`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...eventValues.nodes,
+      ...populationValues.nodes,
       // Block partials of (count, sum e, sum b): one workgroup per block of rows.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-partials-a`,
@@ -229,6 +253,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
           {name: 'partialsA', view: partialsA, type: 'f32', access: 'read_write'}
         ],
         invocationCount: groups * LANES,
+        workgroupSize: LANES,
         guardIndex: false,
         declarations: constants,
         body: `let lane = localInvocationIndex;
@@ -253,6 +278,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
           {name: 'totalsA', view: totalsA, type: 'f32', access: 'read_write'}
         ],
         invocationCount: 3 * LANES,
+        workgroupSize: LANES,
         guardIndex: false,
         declarations: constants,
         body: `let lane = localInvocationIndex;
@@ -279,6 +305,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
           {name: 'partialsB', view: partialsB, type: 'f32', access: 'read_write'}
         ],
         invocationCount: groups * LANES,
+        workgroupSize: LANES,
         guardIndex: false,
         declarations: constants,
         body: `let lane = localInvocationIndex;
@@ -301,6 +328,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
           {name: 'summary', view: summary, type: 'f32', access: 'read_write'}
         ],
         invocationCount: LANES,
+        workgroupSize: LANES,
         guardIndex: false,
         declarations: constants,
         body: `let lane = localInvocationIndex;
@@ -334,9 +362,9 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
     const outputWGSL: string[] = [];
     const excludedWGSL: string[] = [];
     for (const [name, view, expression] of [
-      ['standardizedRates', props.standardizedRates, 'standardized'],
-      ['smoothedRates', props.smoothedRates, 'smoothed'],
-      ['rawRates', props.rawRates, 'rate']
+      ['standardizedRates', output.standardizedRates, 'standardized'],
+      ['smoothedRates', output.smoothedRates, 'smoothed'],
+      ['rawRates', output.rawRates, 'rate']
     ] as const) {
       if (view) {
         outputBindings.push({name, view, type: 'f32', access: 'read_write'});

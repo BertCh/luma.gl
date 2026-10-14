@@ -11,51 +11,51 @@ import {GPUTrajectoryResample} from '../trajectory-interpolation/gpu-trajectory-
 import {createClockBucketTimesNode} from './encounter-kernels';
 import {
   GPUTrajectoryEncounters,
+  type GPUTrajectoryEncounterOutput,
   type GPUTrajectoryEncountersProps
 } from './gpu-trajectory-encounters';
+import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 
 /**
  * Properties for {@link addClockEncounters}.
  *
- * The encounter options (`distance`, `cellSize`, `bounds`, `hitCapacity`, `pairs`) are those of
+ * The encounter options (`distance`, `cellSize`, `bounds`, `hitCapacity`, `output`) are those of
  * {@link GPUTrajectoryEncountersProps}; `samples`, `trackCount`, `bucketCount` and `trackValid`
  * are derived. Per-frame (no recompile): every input buffer, `clock` (start and step) and
  * `distance`. Compile-time: view lengths, `bucketCount`, `cellSize`, `bounds`, `hitCapacity`, the
  * output capacity, and the time format.
  */
-export type AddClockEncountersProps = Omit<
-  GPUTrajectoryEncountersProps,
-  'samples' | 'trackCount' | 'bucketCount' | 'trackValid' | 'bucketTimes'
-> & {
-  /** Prefix for generated node and transient IDs. Defaults to `'clock-encounters'`. */
-  id?: string;
-  /**
-   * Packed positions (planar, or longitude/latitude degrees per `spatialContext`), one row per
-   * sample, sorted by track and then time.
-   */
-  positions: GraphDataView<'float32x2'>;
-  /** Packed sample times, float32 relative or `uint32x2` Int64 words, sorted inside each track. */
-  timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
-  /** `trackCount + 1` monotonic row offsets. */
-  trackOffsets: GraphDataView<'uint32'>;
-  /**
-   * Per-frame shared clock: float32 from `getGPUTrajectoryClockParameterValues` for float32
-   * timestamps, or uint32 from `getGPUTrajectoryClockWordParameterValues` for word timestamps.
-   */
-  clock: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Number of clock buckets, the dense table width. Bucket `k` is `start + k * step`. */
-  bucketCount: number;
-  /**
-   * Optional output, `bucketCount` rows, receiving the time of each bucket relative to the clock
-   * start (`k * step`). Created internally when omitted and `pairs.firstTimes` needs it.
-   */
-  bucketTimes?: GraphDataView<'float32'>;
-  /**
-   * Optional output, `trackCount * bucketCount` rows, receiving the shared-clock positions
-   * (NaN while a track is absent). Created internally when omitted.
-   */
-  samples?: GraphDataView<'float32x2'>;
-};
+export type AddClockEncountersProps = GPUTrajectoryGeometryFields &
+  Omit<
+    GPUTrajectoryEncountersProps,
+    'samples' | 'trackCount' | 'bucketCount' | 'trackValid' | 'bucketTimes' | 'output'
+  > & {
+    /** Prefix for generated node and transient IDs. Defaults to `'clock-encounters'`. */
+    id?: string;
+    /**
+     * Per-frame shared clock: float32 from `getGPUTrajectoryClockParameterValues` for float32
+     * timestamps, or uint32 from `getGPUTrajectoryClockWordParameterValues` for word timestamps.
+     */
+    clock: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+    /** Number of clock buckets, the dense table width. Bucket `k` is `start + k * step`. */
+    bucketCount: number;
+    /**
+     * Caller-owned outputs: the pair list and status of {@link GPUTrajectoryEncounterOutput}, plus
+     * two optional dense views that are created internally when omitted.
+     */
+    output: GPUTrajectoryEncounterOutput & {
+      /**
+       * Optional, `bucketCount` rows, receiving the time of each bucket relative to the clock start
+       * (`k * step`). Created internally when omitted and `pairs.firstTimes` needs it.
+       */
+      bucketTimes?: GraphDataView<'float32'>;
+      /**
+       * Optional, `trackCount * bucketCount` rows, receiving the shared-clock positions (NaN while a
+       * track is absent). Created internally when omitted.
+       */
+      samples?: GraphDataView<'float32x2'>;
+    };
+  };
 
 /** Result of {@link addClockEncounters}. */
 export type ClockEncounters = {
@@ -76,7 +76,7 @@ export type ClockEncounters = {
  * `start + k * step`, NaN outside its own time range) and a `GPUTrajectoryEncounters` that reads
  * the result directly, so callers do not wire the dense table by hand. Changing the clock start
  * or step, or `distance`, only rewrites parameter buffers. The nodes are added to `graph` in
- * order; read pairs from `props.pairs`.
+ * order; read pairs from `props.output.pairs`.
  *
  * Because absent samples are NaN, a pair only encounters while both tracks exist. The same
  * discrete-approximation caveat as `GPUTrajectoryEncounters` applies: pick a clock step small
@@ -91,18 +91,19 @@ export function addClockEncounters<Parameters>(
   props: AddClockEncountersProps
 ): ClockEncounters {
   const id = props.id ?? 'clock-encounters';
-  const {positions, timestamps, trackOffsets, clock, bucketCount, ...encounterProps} = props;
+  const {positions, timestamps, trackOffsets, clock, bucketCount, output, ...encounterProps} =
+    props;
   const trackCount = trackOffsets.length - 1;
   if (trackCount < 1) {
     throw new Error(`${id} trackOffsets must contain at least two rows`);
   }
   const sampleCount = trackCount * bucketCount;
   const samples =
-    props.samples ??
+    output.samples ??
     createTransientView(graph, `${id}-samples`, 'float32x2', Math.max(sampleCount, 1));
-  const needsBucketTimes = Boolean(props.bucketTimes || props.pairs.firstTimes);
+  const needsBucketTimes = Boolean(output.bucketTimes || output.pairs.firstTimes);
   const bucketTimes = needsBucketTimes
-    ? (props.bucketTimes ??
+    ? (output.bucketTimes ??
       createTransientView(graph, `${id}-bucket-times`, 'float32', Math.max(bucketCount, 1)))
     : undefined;
   const resample = new GPUTrajectoryResample({
@@ -114,7 +115,7 @@ export function addClockEncounters<Parameters>(
     sampleCount: bucketCount,
     spacing: 'clock',
     clock,
-    samples
+    output: {samples}
   });
   const encounters = new GPUTrajectoryEncounters({
     ...encounterProps,
@@ -122,7 +123,8 @@ export function addClockEncounters<Parameters>(
     samples,
     trackCount,
     bucketCount,
-    bucketTimes
+    bucketTimes,
+    output: {pairs: output.pairs, status: output.status}
   });
   graph.add(resample);
   if (bucketTimes) {

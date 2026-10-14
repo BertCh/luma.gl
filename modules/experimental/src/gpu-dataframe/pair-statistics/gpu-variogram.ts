@@ -4,7 +4,6 @@
 
 import {
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -12,8 +11,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   getPairHistogramNodes,
@@ -24,7 +25,8 @@ import {
 import {
   getPairStatisticsInputNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
-  validatePairStatisticsInputs
+  validatePairStatisticsInputs,
+  validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
 import {
@@ -35,11 +37,11 @@ import {
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   validateGPUStatusPort,
-  type GPUStatusScalar
-} from '../../gpu-spatial-analysis/contracts/status';
+  type GPUOverflowStatusPort
+} from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUVariogram';
 
@@ -56,12 +58,47 @@ const FIXED_POINT_SCALE = 16777216;
  */
 const SEMIVARIANCE_UNITS_PER_VARIANCE = 16777216;
 
+/** Caller-owned output views of {@link GPUVariogram}. */
+export type GPUVariogramOutput = {
+  /**
+   * Caller-owned Matheron semivariance per sector and lag, `directionCount * lagCount` rows
+   * (sector-major). Quiet NaN for empty bins.
+   */
+  semivariances: GraphDataView<'float32'>;
+  /** Optional caller-owned pair count per sector and lag (each unordered pair counted once). */
+  pairCounts?: GraphDataView<'uint32'>;
+  /** Optional caller-owned mean pair distance per sector and lag. Quiet NaN for empty bins. */
+  meanDistances?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned Cressie-Hawkins robust semivariance per sector and lag. Quiet NaN for
+   * empty bins.
+   */
+  robustSemivariances?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned `[n, mean, variance, minimum, maximum]` of the included values
+   * (`GPU_VARIOGRAM_STATISTICS_LENGTH` rows; population variance). The variance is the usual
+   * sill reference for a stationary field.
+   */
+  statistics?: GraphDataView<'float32'>;
+  /** Optional caller-owned one-row status scalars. */
+  status?: {
+    /**
+     * One row: 1 when the integer sums are incomplete, either because
+     * an accumulator carried out of 64 bits (sums beyond `2^40` robust variances for terms below
+     * 256, or `2^52` for larger terms, for example an enormous sentinel with very many neighbors), a
+     * single term was beyond the clamp (`2^51` robust variances of `(z_i - z_j)^2 / 2`), or a bin pair count reached `2^32 - 1` (`pairCounts` then saturates at
+     * `0xffffffff`). 0 otherwise.
+     */
+    overflow?: GPUOverflowStatusPort['overflow'];
+  };
+};
+
 /**
  * Properties for {@link GPUVariogram}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `values`, `mask` and
  * `parameters` (bounds, maximum distance, azimuth offset). Compile-time: the row count,
- * `gridSize`, `lagCount`, `directionCount`, and which optional outputs are present.
+ * `gridSize`, `lagCount`, `directionCount`, and which optional `output` views are present.
  */
 export type GPUVariogramProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'variogram'`. */
@@ -92,40 +129,14 @@ export type GPUVariogramProps = {
   lagCount: number;
   /**
    * Number of direction sectors over `[0, pi)`. Compile-time. Defaults to 1 (omnidirectional).
-   * `lagCount * directionCount` must be at most 512 (409 with `robustSemivariances`: the
+   * `lagCount * directionCount` must be at most 512 (409 with `output.robustSemivariances`: the
    * accumulators are limited to 2048 bins x channels).
    */
   directionCount?: number;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
-  /**
-   * Caller-owned Matheron semivariance per sector and lag, `directionCount * lagCount` rows
-   * (sector-major). Quiet NaN for empty bins.
-   */
-  semivariances: GraphDataView<'float32'>;
-  /** Optional caller-owned pair count per sector and lag (each unordered pair counted once). */
-  pairCounts?: GraphDataView<'uint32'>;
-  /** Optional caller-owned mean pair distance per sector and lag. Quiet NaN for empty bins. */
-  meanDistances?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned Cressie-Hawkins robust semivariance per sector and lag. Quiet NaN for
-   * empty bins.
-   */
-  robustSemivariances?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned `[n, mean, variance, minimum, maximum]` of the included values
-   * (`GPU_VARIOGRAM_STATISTICS_LENGTH` rows; population variance). The variance is the usual
-   * sill reference for a stationary field.
-   */
-  statistics?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned one-row status: 1 when the integer sums are incomplete, either because
-   * an accumulator carried out of 64 bits (sums beyond `2^40` robust variances for terms below
-   * 256, or `2^52` for larger terms, for example an enormous sentinel with very many neighbors), a
-   * single term was beyond the clamp (`2^51` robust variances of `(z_i - z_j)^2 / 2`), or a bin pair count reached `2^32 - 1` (`pairCounts` then saturates at
-   * `0xffffffff`). 0 otherwise.
-   */
-  overflow?: GPUStatusScalar;
+  /** Caller-owned output views. */
+  output: GPUVariogramOutput;
 };
 
 /**
@@ -197,27 +208,24 @@ export class GPUVariogram implements GPUCommandNodeProducer {
       ...props,
       parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH
     });
+    const {output} = props;
     const directionCount = props.directionCount ?? 1;
     this.directionCount = directionCount;
-    if (!Number.isInteger(props.lagCount) || props.lagCount < 1) {
-      throw new Error(`${id} lagCount must be a positive integer`);
-    }
-    if (!Number.isInteger(directionCount) || directionCount < 1) {
-      throw new Error(`${id} directionCount must be a positive integer`);
-    }
+    validateCapacity(id, 'lagCount', props.lagCount);
+    validateCapacity(id, 'directionCount', directionCount);
     const binCount = props.lagCount * directionCount;
     if (binCount > 512) {
       throw new Error(`${id} lagCount * directionCount must be at most 512`);
     }
     // Count, Matheron, distance, the large-term Matheron channel and optionally Cressie-Hawkins.
-    validatePairHistogramShape(id, binCount, props.robustSemivariances ? 5 : 4);
-    if (props.overflow) {
-      validateGPUStatusPort(id, {overflow: props.overflow});
+    validatePairHistogramShape(id, binCount, output.robustSemivariances ? 5 : 4);
+    if (output.status?.overflow) {
+      validateGPUStatusPort(id, {overflow: output.status?.overflow});
     }
     for (const [name, view] of [
-      ['semivariances', props.semivariances],
-      ['meanDistances', props.meanDistances],
-      ['robustSemivariances', props.robustSemivariances]
+      ['output.semivariances', output.semivariances],
+      ['output.meanDistances', output.meanDistances],
+      ['output.robustSemivariances', output.robustSemivariances]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -226,27 +234,29 @@ export class GPUVariogram implements GPUCommandNodeProducer {
         }
       }
     }
-    if (props.pairCounts) {
-      validatePackedUint32View(props.pairCounts, `${id} pairCounts`);
-      if (props.pairCounts.length < binCount) {
-        throw new Error(`${id} pairCounts must hold lagCount * directionCount rows`);
+    if (output.pairCounts) {
+      validatePackedUint32View(output.pairCounts, `${id} output.pairCounts`);
+      if (output.pairCounts.length < binCount) {
+        throw new Error(`${id} output.pairCounts must hold lagCount * directionCount rows`);
       }
     }
-    if (props.statistics) {
-      validatePackedView(props.statistics, ['float32'], `${id} statistics`);
-      if (props.statistics.length < GPU_VARIOGRAM_STATISTICS_LENGTH) {
-        throw new Error(`${id} statistics must hold ${GPU_VARIOGRAM_STATISTICS_LENGTH} rows`);
+    if (output.statistics) {
+      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      if (output.statistics.length < GPU_VARIOGRAM_STATISTICS_LENGTH) {
+        throw new Error(
+          `${id} output.statistics must hold ${GPU_VARIOGRAM_STATISTICS_LENGTH} rows`
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.semivariances,
-        props.pairCounts,
-        props.meanDistances,
-        props.robustSemivariances,
-        props.statistics,
-        props.overflow
+        output.semivariances,
+        output.pairCounts,
+        output.meanDistances,
+        output.robustSemivariances,
+        output.statistics,
+        output.status?.overflow
       ],
       [props.positions, props.values, props.parameters, props.mask]
     );
@@ -257,22 +267,23 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, directionCount} = this;
-    const {positions, parameters, gridSize, lagCount} = props;
+    const {positions, parameters, gridSize, lagCount, output} = props;
+    validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       props.values,
       parameters,
       props.mask,
-      props.semivariances,
-      props.pairCounts,
-      props.meanDistances,
-      props.robustSemivariances,
-      props.statistics,
-      props.overflow
+      output.semivariances,
+      output.pairCounts,
+      output.meanDistances,
+      output.robustSemivariances,
+      output.statistics,
+      output.status?.overflow
     ]);
     const rows = positions.length;
     const binCount = lagCount * directionCount;
-    const robust = Boolean(props.robustSemivariances);
+    const robust = Boolean(output.robustSemivariances);
     // Channels: 0 pair count, 1 Matheron, 2 distance, [3 robust,] then the large Matheron terms.
     const largeChannel = robust ? 4 : 3;
     const channelCount = largeChannel + 1;
@@ -363,28 +374,28 @@ fn getVariogramScales() -> VariogramScales {
       {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
       {name: 'unitVarianceView', view: unitVariance, type: 'f32', access: 'read'},
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-      {name: 'semivariances', view: props.semivariances, type: 'f32', access: 'read_write'}
+      {name: 'semivariances', view: output.semivariances, type: 'f32', access: 'read_write'}
     ];
-    if (props.pairCounts) {
+    if (output.pairCounts) {
       finishBindings.push({
         name: 'pairCounts',
-        view: props.pairCounts,
+        view: output.pairCounts,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (props.meanDistances) {
+    if (output.meanDistances) {
       finishBindings.push({
         name: 'meanDistances',
-        view: props.meanDistances,
+        view: output.meanDistances,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.robustSemivariances) {
+    if (output.robustSemivariances) {
       finishBindings.push({
         name: 'robustSemivariances',
-        view: props.robustSemivariances,
+        view: output.robustSemivariances,
         type: 'f32',
         access: 'read_write'
       });
@@ -408,9 +419,9 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
   // A zero variance means every difference is 0 (scale 0, sum 0).
   let semivariance = select(0.0, semivarianceSum / scales.semivariance / pairCount, scales.semivariance > 0.0);
   semivariances[semivariancesOffset + index] = select(nan, semivariance, hasPairs);
-  ${props.pairCounts ? 'pairCounts[pairCountsOffset + index] = readPairCount(index, 0u);' : ''}
+  ${output.pairCounts ? 'pairCounts[pairCountsOffset + index] = readPairCount(index, 0u);' : ''}
   ${
-    props.meanDistances
+    output.meanDistances
       ? `meanDistances[meanDistancesOffset + index] =
     select(nan, readPairAccumulator(index, 2u) / scales.distance / pairCount, hasPairs);`
       : ''
@@ -426,7 +437,7 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
       })
     );
 
-    if (props.overflow) {
+    if (output.status?.overflow) {
       // One row: the histogram overflow word, or any bin whose pair count left the low word.
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
@@ -435,7 +446,7 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
           variant: 'overflow',
           bindings: [
             {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
-            {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+            {name: 'overflow', view: output.status?.overflow, type: 'u32', access: 'read_write'}
           ],
           invocationCount: 1,
           declarations: getPairHistogramReadWGSL('accumulators', channelCount, '', binCount),
@@ -448,7 +459,7 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
       );
     }
 
-    if (props.statistics) {
+    if (output.statistics) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-statistics`,
@@ -456,7 +467,7 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
           variant: 'statistics',
           bindings: [
             {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
-            {name: 'statisticsOut', view: props.statistics, type: 'f32', access: 'read_write'}
+            {name: 'statisticsOut', view: output.statistics, type: 'f32', access: 'read_write'}
           ],
           invocationCount: 1,
           declarations: `const MOMENTS: u32 = ${rows}u;`,

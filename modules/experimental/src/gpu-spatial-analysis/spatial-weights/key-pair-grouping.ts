@@ -15,6 +15,18 @@ import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 /** Key value that marks an invalid item. Both halves equal it, and invalid items sort last. @internal */
 export const KEY_PAIR_INVALID = 0xffffffff;
 
+/** uint32 transients {@link getKeyPairSortNodes} declares per item (the gpgpu sort scratch excluded). @internal */
+export const KEY_PAIR_SORT_WORDS_PER_ITEM = 6;
+
+/**
+ * uint32 transients {@link getKeyGroupNodes} declares for `count` items (the gpgpu scan scratch
+ * excluded): run flags, group index and `count + 1` group starts.
+ * @internal
+ */
+export function getKeyGroupTransientWordCount(count: number): number {
+  return 3 * count + 1;
+}
+
 /** Result of {@link getKeyPairSortNodes}. @internal */
 export type KeyPairSort<Parameters> = {
   nodes: GPUCommandNode<Parameters>[];

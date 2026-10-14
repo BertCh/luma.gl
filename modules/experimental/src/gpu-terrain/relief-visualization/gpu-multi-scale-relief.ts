@@ -8,28 +8,31 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainIlluminationView
 } from '../terrain-illumination/terrain-illumination-utils';
 import {
-  createReliefMeanFilterScratch,
-  getReliefMeanFilterNodes
+  createReliefMeanFilterSetup,
+  GPU_RELIEF_DEFAULT_QUANTUM,
+  validateReliefMeanFilter,
+  validateReliefMeanFilterRadius
 } from './relief-visualization-utils';
 
-/** Number of float32 values read from `GPUMultiScaleReliefProps.settings`. */
+/** Number of float32 values read from `GPUMultiScaleReliefProps.parameters`. */
 export const GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH = 4;
 
 /** Feature-size description shared by {@link getGPUMultiScaleReliefRadii} and the contributor. */
@@ -127,9 +130,11 @@ export function getGPUMultiScaleReliefParameterValues(
   settings: GPUMultiScaleReliefSettings = {},
   target: Float32Array = new Float32Array(GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH) {
-    throw new Error('Multi-scale relief settings target must hold 4 values');
-  }
+  validateParameterTarget(
+    'getGPUMultiScaleReliefParameterValues',
+    target,
+    GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH
+  );
   const verticalExaggeration = settings.verticalExaggeration ?? 1;
   if (!Number.isFinite(verticalExaggeration)) {
     throw new Error('Multi-scale relief settings must be finite');
@@ -139,11 +144,19 @@ export function getGPUMultiScaleReliefParameterValues(
   return target;
 }
 
+/** Caller-owned outputs of {@link GPUMultiScaleRelief}; at least one is required. */
+export type GPUMultiScaleReliefOutput = {
+  /** Optional relief per pixel, in elevation units times exaggeration, NaN where invalid. */
+  relief?: GraphDataView<'float32'>;
+  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUMultiScaleRelief}.
  *
  * Topology: grid size, elevation format and calibration, the feature-size scales, and which
- * outputs exist. Per-frame: `settings` (vertical exaggeration) and elevation contents.
+ * outputs exist. Per-frame: `parameters` (vertical exaggeration) and elevation contents.
  *
  * Cell size model: projected metres. `resolution` and the feature sizes are metres and are
  * converted to pixel radii once at construction; geographic or Web Mercator grids with
@@ -152,18 +165,20 @@ export function getGPUMultiScaleReliefParameterValues(
 export type GPUMultiScaleReliefProps = GPUMultiScaleReliefScales & {
   /** Prefix for node and transient IDs. Defaults to `'multi-scale-relief'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
-  /** Per-frame settings with at least 4 float32 values, see {@link getGPUMultiScaleReliefParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Optional relief per pixel, in elevation units times exaggeration, NaN where invalid. */
-  relief?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  /** Per-frame parameters with at least 4 float32 values, see {@link getGPUMultiScaleReliefParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /**
+   * Elevation quantum of the exact summed-area table, a power of two. Defaults to `2^-16`
+   * (see `GPU_RELIEF_DEFAULT_QUANTUM`). Both filters read one table. See {@link GPUMultiScaleRelief}
+   * for the path choice and error bound.
+   */
+  quantum?: number;
+  /** Caller-owned outputs. */
+  output: GPUMultiScaleReliefOutput;
 };
 
 /**
@@ -178,10 +193,18 @@ export type GPUMultiScaleReliefProps = GPUMultiScaleReliefScales & {
  * RVT sums the differences of consecutive mean filters with radii `k^s`, `k = i..n`. The sum
  * telescopes: `msrm = (lpf_i - lpf_n) / (n - i)`, where `lpf_k` is the mean filter of radius
  * `k^s` and `lpf` of radius 0 is the elevation itself. So only two filters are computed, whatever
- * the number of scales, and with `d_r = z - lpf_r` (see {@link getReliefMeanFilterNodes}, which
- * returns that precise deviation directly) `msrm = ve * (d_last - d_first) / (n - i)`. The test
+ * the number of scales, and with `d_r = z - lpf_r` (the mean filters return that precise
+ * deviation directly) `msrm = ve * (d_last - d_first) / (n - i)`. The test
  * oracle runs RVT's loop literally and proves the equality. Invalid centers receive NaN.
  * `requiredHalo` is the coarsest radius.
+ *
+ * Two mean filter paths, chosen at declaration by grid size and device limit only, both matching RVT's float64
+ * mean filter within their bound. Grids up to `getGPUTerrainSummedAreaMaximumCellCount` cells
+ * use one exact 64-bit summed-area table (built once for both filters) of elevations quantized to
+ * `quantum`: O(1) per pixel, error at most `quantum / 2` per filter (zero for `|z| >= 128` at the
+ * default) plus a few float32 ULP of the deviation; the coarsest radius is then at most 23170.
+ * Larger grids use the separable O(radius) float filter. Table-path pixels with
+ * `|z - anchor| >= 2^31 * quantum` are invalid.
  */
 export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -197,19 +220,27 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
     this.id = props.id ?? 'multi-scale-relief';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     this.radii = getGPUMultiScaleReliefRadii(props);
     this.requiredHalo = this.radii.lastRadius;
-    if (!props.relief && !props.validity) {
+    validateReliefMeanFilter(id, props.quantum ?? GPU_RELIEF_DEFAULT_QUANTUM);
+    if (!output.relief && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainIlluminationView(id, 'relief', props.relief, 'float32', pixelCount);
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(id, props.settings, GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH);
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(id, 'output.relief', output.relief, 'float32', pixelCount);
+    validateTerrainIlluminationView(
       id,
-      [props.relief, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(id, props.parameters, GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH);
+    validateRasterBuffersDistinct(
+      id,
+      [output.relief, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -218,26 +249,31 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, radii} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.settings, props.relief, props.validity]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.parameters,
+      output.relief,
+      output.outputValidity
+    ]);
     const pixelCount = width * height;
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
-    const values = source.band.storage.values as GraphDataView<'float32'>;
-    const validity = source.band.validity as GraphDataView<'uint32'>;
-    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
-    const scratch = createReliefMeanFilterScratch(graph, id, pixelCount);
+    validateReliefMeanFilterRadius(id, graph.device, pixelCount, this.radii.lastRadius);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
+    const filter = createReliefMeanFilterSetup(graph, {
+      id,
+      width,
+      height,
+      band: source.band,
+      quantum: props.quantum ?? GPU_RELIEF_DEFAULT_QUANTUM
+    });
+    const nodes: GPUCommandNode<Parameters>[] = [...source.nodes, ...filter.nodes];
     const coarse = createTransientView(graph, `${id}-coarse-deviation`, 'float32', pixelCount);
     nodes.push(
-      ...getReliefMeanFilterNodes(graph, {
+      ...filter.getFilterNodes({
         id: `${id}-last`,
         operation: 'GPUMultiScaleRelief',
-        width,
-        height,
         radius: radii.lastRadius,
-        values,
-        validity,
-        scratch,
         deviation: coarse
       })
     );
@@ -247,33 +283,28 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
       : undefined;
     if (fine) {
       nodes.push(
-        ...getReliefMeanFilterNodes(graph, {
+        ...filter.getFilterNodes({
           id: `${id}-first`,
           operation: 'GPUMultiScaleRelief',
-          width,
-          height,
           radius: radii.firstRadius,
-          values,
-          validity,
-          scratch,
           deviation: fine
         })
       );
     }
     const bindings: WGSLKernelBinding[] = [
       {name: 'coarse', view: coarse, type: 'f32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (fine) {
       bindings.push({name: 'fine', view: fine, type: 'f32', access: 'read'});
     }
     const target =
-      props.relief ?? createTransientView(graph, `${id}-relief`, 'float32', pixelCount);
+      output.relief ?? createTransientView(graph, `${id}-relief`, 'float32', pixelCount);
     bindings.push({name: 'relief', view: target, type: 'f32', access: 'read_write'});
-    if (props.validity) {
+    if (output.outputValidity) {
       bindings.push({
         name: 'validityValues',
-        view: props.validity,
+        view: output.outputValidity,
         type: 'u32',
         access: 'read_write'
       });
@@ -293,7 +324,7 @@ const SCALE_COUNT: f32 = ${radii.lastIndex - radii.firstIndex}.0;`,
   let fineValue = ${fine ? 'fine[fineOffset + index]' : '0.0'};
   let value = settings[settingsOffset] * (coarseValue - fineValue) / SCALE_COUNT;
   relief[reliefOffset + index] = select(getNaN(index), value, isValid);
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
       })
     );
     return nodes;

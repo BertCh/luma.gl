@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateParameterTarget} from '../raster-band-utils';
+
 /** Number of uint32 elements in a sieve parameter buffer. */
 export const GPU_RASTER_SIEVE_PARAMETER_LENGTH = 4;
 
-/** CPU description of the per-frame parameters of `GPURasterSieve`. */
-export type GPURasterSieveParameters = {
+/** CPU description of the per-frame settings packed for `GPURasterSieve`. */
+export type GPURasterSieveSettings = {
   /** Patches with fewer pixels than this are sieved. Integer from 1 through 2^32 - 1. */
   minimumPixels: number;
 };
@@ -17,20 +19,24 @@ export type GPURasterSieveParameters = {
  * Layout: `[minimumPixels, 0, 0, 0]`. Write the result into a `GPUParameterBuffer` between
  * encodings to change the threshold without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements. A new array is returned when omitted.
  * @throws If `minimumPixels` is not an integer in `[1, 2^32 - 1]`, or `target` is too short.
  */
 export function getGPURasterSieveParameterValues(
-  parameters: GPURasterSieveParameters,
+  settings: GPURasterSieveSettings,
   target: Uint32Array = new Uint32Array(GPU_RASTER_SIEVE_PARAMETER_LENGTH)
 ): Uint32Array {
-  if (target.length < GPU_RASTER_SIEVE_PARAMETER_LENGTH) {
-    throw new Error(`Raster sieve target must hold ${GPU_RASTER_SIEVE_PARAMETER_LENGTH} elements`);
-  }
-  const {minimumPixels} = parameters;
+  validateParameterTarget(
+    'getGPURasterSieveParameterValues',
+    target,
+    GPU_RASTER_SIEVE_PARAMETER_LENGTH
+  );
+  const {minimumPixels} = settings;
   if (!Number.isInteger(minimumPixels) || minimumPixels < 1 || minimumPixels > 0xffffffff) {
-    throw new Error('Raster sieve minimumPixels must be an integer in [1, 2^32 - 1]');
+    throw new Error(
+      'getGPURasterSieveParameterValues minimumPixels must be an integer in [1, 2^32 - 1]'
+    );
   }
   target.set([minimumPixels, 0, 0, 0]);
   return target;

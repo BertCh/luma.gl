@@ -2,32 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
-import {Kernel} from '@luma.gl/engine';
 import {
-  createGPUComputeCommandNode,
-  getViewBinding,
-  getViewElementOffset,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
-  type GraphResourceUse,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {
-  assertRasterStorageBindingFits,
-  getRasterDispatchSize,
-  RASTER_WORKGROUP_DIMENSION
-} from '../../gpu-raster/raster-utils';
+import {assertRasterStorageBindingFits} from '../../gpu-raster/raster-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 
 /** RGB elevation encodings understood by {@link GPUTerrainRGBDecode}. */
 export type GPUTerrainRGBEncoding = 'terrarium' | 'mapbox';
@@ -62,6 +54,14 @@ export type GPUTerrainRGBDecodeInput =
       buffer: GraphDataView<'uint32'>;
     };
 
+/** Caller-owned outputs of {@link GPUTerrainRGBDecode}. */
+export type GPUTerrainRGBDecodeOutput = {
+  /** Float32 heights, one per pixel. Nodata pixels hold NaN bits `0x7fc00000`. */
+  values: GraphDataView<'float32'>;
+  /** Uint32 validity, one per pixel: 1 for decoded heights, 0 for nodata. */
+  outputValidity: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUTerrainRGBDecode}.
  *
@@ -71,10 +71,8 @@ export type GPUTerrainRGBDecodeInput =
 export type GPUTerrainRGBDecodeProps = {
   /** Prefix for node IDs. Defaults to `'terrain-rgb-decode'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernel. */
+  grid: GPURasterMetadata;
   /**
    * `'terrarium'`: `h = R * 256 + G + B / 256 - 32768`.
    * `'mapbox'`: Mapbox terrain-RGB, `h = -10000 + 0.1 * (R * 65536 + G * 256 + B)`.
@@ -83,7 +81,7 @@ export type GPUTerrainRGBDecodeProps = {
   /** Encoded source, see {@link GPUTerrainRGBDecodeInput}. */
   input: GPUTerrainRGBDecodeInput;
   /** Optional source validity for the buffer input. Zero marks a pixel as nodata. */
-  inputValidity?: GraphDataView<'uint32'>;
+  validity?: GraphDataView<'uint32'>;
   /** When true (default), a pixel whose alpha byte is 0 is nodata (transparent PNG pixels). */
   alphaNoData?: boolean;
   /** Optional encoded nodata colour as bytes `[R, G, B]`; matching pixels are nodata. */
@@ -102,10 +100,8 @@ export type GPUTerrainRGBDecodeProps = {
    * Validity is evaluated on the unclamped height.
    */
   clampBathymetry?: boolean;
-  /** Caller-owned float32 heights, one per pixel. Nodata pixels hold NaN bits `0x7fc00000`. */
-  values: GraphDataView<'float32'>;
-  /** Caller-owned uint32 validity, one per pixel: 1 for decoded heights, 0 for nodata. */
-  validity: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainRGBDecodeOutput;
 };
 
 const INVALID_VALUE_EXPRESSION = 'bitcast<f32>(0x7fc00000u | (pixelIndex & 0u))';
@@ -139,7 +135,7 @@ const INVALID_VALUE_EXPRESSION = 'bitcast<f32>(0x7fc00000u | (pixelIndex & 0u))'
  * from the correctly rounded float32 of `M / 10`, by exactly 1 ulp at most, and the worst error
  * reaches 0.96 of the stated bound.
  *
- * Nodata never bleeds: alpha 0, `noDataRGB`, `inputValidity` and `validRange` mark a pixel invalid
+ * Nodata never bleeds: alpha 0, `noDataRGB`, `validity` and `validRange` mark a pixel invalid
  * and its decoded value is replaced by NaN bits, never blended into anything.
  */
 export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
@@ -153,7 +149,8 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-rgb-decode';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     if (props.encoding !== 'terrarium' && props.encoding !== 'mapbox') {
       throw new Error(`${id} encoding must be 'terrarium' or 'mapbox'`);
     }
@@ -169,30 +166,30 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
         texture.dimension !== '2d' ||
         texture.mipLevelCount !== 1 ||
         texture.arrayLayerCount !== 1 ||
-        texture.width !== props.width ||
-        texture.height !== props.height
+        texture.width !== props.grid.width ||
+        texture.height !== props.grid.height
       ) {
         throw new Error(`${id} input texture must be one 2D mip with the grid extent`);
       }
-      if (props.inputValidity) {
-        throw new Error(`${id} inputValidity requires a buffer input`);
+      if (props.validity) {
+        throw new Error(`${id} validity requires a buffer input`);
       }
     }
     if (buffer) {
-      validatePackedUint32View(buffer, `${id} input buffer`);
+      validatePackedView(buffer, ['uint32'], `${id} input buffer`);
       if (buffer.length !== pixelCount) {
         throw new Error(`${id} input buffer must contain one packed RGBA8 word per pixel`);
       }
     }
-    if (props.inputValidity) {
-      validatePackedUint32View(props.inputValidity, `${id} inputValidity`);
-      if (props.inputValidity.length !== pixelCount) {
-        throw new Error(`${id} inputValidity must contain one value per pixel`);
+    if (props.validity) {
+      validatePackedView(props.validity, ['uint32'], `${id} validity`);
+      if (props.validity.length !== pixelCount) {
+        throw new Error(`${id} validity must contain one value per pixel`);
       }
     }
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedUint32View(props.validity, `${id} validity`);
-    if (props.values.length !== pixelCount || props.validity.length !== pixelCount) {
+    validatePackedView(output.values, ['float32'], `${id} output.values`);
+    validatePackedView(output.outputValidity, ['uint32'], `${id} output.outputValidity`);
+    if (output.values.length !== pixelCount || output.outputValidity.length !== pixelCount) {
       throw new Error(`${id} outputs must contain one value per pixel`);
     }
     if (props.noDataRGB) {
@@ -208,10 +205,10 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
     if (Number.isNaN(rangeMinimum) || Number.isNaN(rangeMaximum) || rangeMinimum > rangeMaximum) {
       throw new Error(`${id} validRange must be [minimum, maximum] with minimum <= maximum`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.values, props.validity],
-      [buffer, props.inputValidity]
+      [output.values, output.outputValidity],
+      [buffer, props.validity]
     );
   }
 
@@ -220,11 +217,12 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.input.buffer,
-      props.inputValidity,
-      props.values,
-      props.validity
+      props.validity,
+      output.values,
+      output.outputValidity
     ]);
     if (props.input.texture) {
       if (props.input.texture.texture.graph !== graph) {
@@ -235,11 +233,11 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
     const source = props.input.buffer as GraphDataView<'uint32'>;
     const bindings = [
       {name: 'inputWords', view: source, type: 'u32' as const, access: 'read' as const},
-      ...(props.inputValidity
+      ...(props.validity
         ? [
             {
               name: 'inputValidity',
-              view: props.inputValidity,
+              view: props.validity,
               type: 'u32' as const,
               access: 'read' as const
             }
@@ -247,13 +245,13 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
         : []),
       {
         name: 'outputValues',
-        view: props.values,
+        view: output.values,
         type: 'f32' as const,
         access: 'read_write' as const
       },
       {
         name: 'outputValidity',
-        view: props.validity,
+        view: output.outputValidity,
         type: 'u32' as const,
         access: 'read_write' as const
       }
@@ -264,7 +262,7 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
         operation: 'GPUTerrainRGBDecode',
         variant: `${props.encoding}-buffer`,
         bindings,
-        invocationCount: props.width * props.height,
+        invocationCount: props.grid.width * props.grid.height,
         declarations: this.getDecodeDeclarations(),
         body: `let pixelIndex = index;
   let word = inputWords[inputWordsOffset + pixelIndex];
@@ -273,7 +271,7 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
   let blue = (word >> 16u) & 0xffu;
   let alpha = word >> 24u;
   var isValid = isEncodedPixelValid(red, green, blue, alpha);
-  ${props.inputValidity ? 'isValid = isValid && inputValidity[inputValidityOffset + pixelIndex] != 0u;' : ''}
+  ${props.validity ? 'isValid = isValid && inputValidity[inputValidityOffset + pixelIndex] != 0u;' : ''}
   ${this.getDecodeStatements()}`
       })
     ];
@@ -291,8 +289,8 @@ export class GPUTerrainRGBDecode implements GPUCommandNodeProducer {
       props.encoding === 'terrarium'
         ? 'f32(code) * 0.00390625 - 32768.0'
         : `f32(i32(code) - 100000) * ${getWGSLFloatLiteral(0.1)}`;
-    return `const WIDTH: u32 = ${props.width}u;
-const HEIGHT: u32 = ${props.height}u;
+    return `const WIDTH: u32 = ${props.grid.width}u;
+const HEIGHT: u32 = ${props.grid.height}u;
 fn isEncodedPixelValid(red: u32, green: u32, blue: u32, alpha: u32) -> bool {
   ${props.alphaNoData === false ? '' : 'if (alpha == 0u) { return false; }'}
   ${noDataRGB ? `if (red == ${noDataRGB[0]}u && green == ${noDataRGB[1]}u && blue == ${noDataRGB[2]}u) { return false; }` : ''}
@@ -325,72 +323,34 @@ fn applySeaClamp(height: f32) -> f32 {
     texture: GraphTextureView<'rgba8unorm'>
   ): GPUCommandNode<Parameters> {
     const {id, props} = this;
-    assertRasterStorageBindingFits(graph.device, props.values, `${id} values`);
-    assertRasterStorageBindingFits(graph.device, props.validity, `${id} validity`);
-    const [horizontalCount, verticalCount] = getRasterDispatchSize(
+    const {output} = props;
+    assertRasterStorageBindingFits(graph.device, output.values, `${id} output.values`);
+    assertRasterStorageBindingFits(
       graph.device,
-      props.width,
-      props.height,
-      id
+      output.outputValidity,
+      `${id} output.outputValidity`
     );
-    const resources: GraphResourceUse[] = [
-      {texture, usage: 'sampled'},
-      {buffer: props.values, usage: 'storage-write'},
-      {buffer: props.validity, usage: 'storage-write'}
-    ];
-    const source = /* wgsl */ `
-const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(props.values)}u;
-const OUTPUT_VALIDITY_OFFSET: u32 = ${getViewElementOffset(props.validity)}u;
-@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(0) @binding(1) var<storage, read_write> outputValuesBuffer: array<f32>;
-@group(0) @binding(2) var<storage, read_write> outputValidityBuffer: array<u32>;
-${this.getDecodeDeclarations()}
-
-@compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
-fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-  if (globalId.x >= WIDTH || globalId.y >= HEIGHT) { return; }
-  let pixelIndex = globalId.y * WIDTH + globalId.x;
-  // Exact for unorm8: the load is within half a code of k / 255.
-  let texel = clamp(textureLoad(sourceTexture, vec2<i32>(globalId.xy), 0), vec4<f32>(0.0), vec4<f32>(1.0));
-  let bytes = vec4<u32>(round(texel * 255.0));
-  var isValid = isEncodedPixelValid(bytes.x, bytes.y, bytes.z, bytes.w);
-  let height = decodeHeight(bytes.x, bytes.y, bytes.z);
-  isValid = isValid && isHeightInRange(height);
-  outputValidityBuffer[OUTPUT_VALIDITY_OFFSET + pixelIndex] = select(0u, 1u, isValid);
-  outputValuesBuffer[OUTPUT_VALUES_OFFSET + pixelIndex] =
-    select(${INVALID_VALUE_EXPRESSION}, applySeaClamp(height), isValid);
-}`;
-    return createGPUComputeCommandNode<Parameters>({
+    return createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-decode`,
-      resources,
-      compile: ({device}) => {
-        const bindingDeclarations: BindingDeclaration[] = [
-          {name: 'sourceTexture', type: 'texture', group: 0, location: 0, sampleType: 'float'},
-          {name: 'outputValuesBuffer', type: 'storage', group: 0, location: 1},
-          {name: 'outputValidityBuffer', type: 'storage', group: 0, location: 2}
-        ];
-        // Direct Kernel: createWGSLKernelNode binds buffers only, and this node also reads a texture.
-        const kernel = new Kernel(device, {
-          id: `${id}-decode`,
-          source,
-          shaderLayout: {bindings: bindingDeclarations}
-        });
-        return {
-          encode: ({computePass, getBuffer, getTextureView}) => {
-            const resolvedBindings: Record<string, Binding> = {
-              sourceTexture: getTextureView(texture),
-              outputValuesBuffer: getViewBinding(props.values, getBuffer),
-              outputValidityBuffer: getViewBinding(props.validity, getBuffer)
-            };
-            kernel.dispatch(computePass, {
-              bindings: resolvedBindings,
-              x: horizontalCount,
-              y: verticalCount
-            });
-          },
-          destroy: () => kernel.destroy()
-        };
-      }
+      operation: 'GPUTerrainRGBDecode',
+      variant: `${props.encoding}-texture`,
+      bindings: [
+        {name: 'outputValues', view: output.values, type: 'f32', access: 'read_write'},
+        {name: 'outputValidity', view: output.outputValidity, type: 'u32', access: 'read_write'}
+      ],
+      textures: [{name: 'sourceTexture', texture, sampleType: 'float'}],
+      invocationCount: props.grid.width * props.grid.height,
+      declarations: this.getDecodeDeclarations(),
+      body: `let pixelIndex = index;
+  let texelCoordinate = vec2<i32>(i32(pixelIndex % WIDTH), i32(pixelIndex / WIDTH));
+  // Exact for unorm8: the load is within half a code of k / 255.
+  let texel = clamp(textureLoad(sourceTexture, texelCoordinate, 0), vec4<f32>(0.0), vec4<f32>(1.0));
+  let bytes = vec4<u32>(round(texel * 255.0));
+  let red = bytes.x;
+  let green = bytes.y;
+  let blue = bytes.z;
+  var isValid = isEncodedPixelValid(red, green, blue, bytes.w);
+  ${this.getDecodeStatements()}`
     });
   }
 }

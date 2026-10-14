@@ -25,6 +25,36 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUN
 /** Largest compile-time number of bandwidth refinement passes. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT = 4;
 
+/** Default compile-time number of golden-section search iterations (see `maximumSearchIterations`). */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS = 30;
+
+/** Largest compile-time number of golden-section search iterations. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_SEARCH_ITERATIONS = 64;
+
+/**
+ * Section constant of the golden-section search, mgwr's `delta = 0.38197` (`1 - (sqrt(5) - 1) / 2`
+ * to five digits): the interior points are `a + delta (c - a)` and `c - delta (c - a)`.
+ */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_DELTA = 0.38197;
+
+/** mgwr's absolute convergence tolerance on the AICc difference of the two interior points. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_TOLERANCE = 1e-6;
+
+/**
+ * Relative floor of the golden-section convergence tolerance: the search stops when the two interior
+ * AICc values differ by no more than `max(1e-6, 4e-6 max(|AICc_b|, |AICc_d|))`. The AICc sums `n` float32
+ * terms, so differences below a few times `n 2^-24 |AICc|` are rounding noise and cannot steer
+ * the search; mgwr's float64 `1e-6` alone would never fire at AICc values of hundreds.
+ */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_GOLDEN_SECTION_RELATIVE_TOLERANCE = 4e-6;
+
+/**
+ * Recommended `gaussianCutoff`: a Gaussian weight at 5 bandwidths is `exp(-12.5) = 3.7e-6`. For a
+ * locally uniform density the omitted share of the weight sum is that same `3.7e-6` and of the
+ * second moment `(1 + 12.5) 3.7e-6 = 5e-5`, below float32 accumulation error of the fits.
+ */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_RECOMMENDED_GAUSSIAN_CUTOFF = 5;
+
 /** Largest compile-time bandwidth ladder length. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH = 32;
 
@@ -153,6 +183,37 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE = {
 /** Float32 values per candidate of the `candidateTable` output. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE = 7;
 
+/** Float32 slots of the optional `searchState` output of the golden-section search. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE = {
+  /** Lower end `a` of the bracket after the last iteration. */
+  LOWER: 0,
+  /** Lower interior point `b`. */
+  LOWER_INTERIOR: 1,
+  /** Upper end `c` of the bracket. */
+  UPPER: 2,
+  /** Upper interior point `d`. */
+  UPPER_INTERIOR: 3,
+  /** Candidate table row of the evaluation of `b`. */
+  LOWER_INTERIOR_ROW: 4,
+  /** Candidate table row of the evaluation of `d`. */
+  UPPER_INTERIOR_ROW: 5,
+  /** Iterations whose two interior scores were compared (mgwr's iteration count). */
+  ITERATION_COUNT: 6,
+  /** 1 while the search is armed, 0 once it stopped. */
+  ACTIVE: 7,
+  /** Candidate table row of the optimum of the last iteration, -1 before the first. */
+  OPTIMUM_ROW: 8,
+  /** Candidate table rows used (evaluations scheduled). */
+  EVALUATION_COUNT: 9,
+  /** 1 when the search stopped on its tolerance, 0 when it ran out of iterations. */
+  CONVERGED: 10,
+  /** Unused. */
+  RESERVED: 11
+} as const;
+
+/** Number of float32 elements in the `searchState` output. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH = 12;
+
 /** Kernel names accepted by {@link getGPUGeographicallyWeightedRegressionParameterValues}. */
 export type GPUGeographicallyWeightedRegressionKernel =
   keyof typeof GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_KERNEL;
@@ -170,7 +231,9 @@ export type GPUGeographicallyWeightedRegressionSettings = {
   /**
    * Candidate bandwidths: distances (`'fixed'`) or neighbour counts `k` (`'adaptive'`, rounded to
    * integers). One value is a fixed bandwidth; several are searched by AICc (and refined, see
-   * `refinementPassCount`).
+   * `refinementPassCount`). With `bandwidthSearch: 'golden-section'` the first two values are the
+   * search bounds `[minimum, maximum]` (a value of 0 or less takes mgwr's default for that bound);
+   * further values are ignored.
    */
   bandwidths: ArrayLike<number>;
   /**

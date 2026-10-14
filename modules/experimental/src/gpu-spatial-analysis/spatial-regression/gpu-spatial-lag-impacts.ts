@@ -3,8 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,8 +10,10 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
@@ -68,7 +68,7 @@ export type GPUSpatialLagImpactsProps = {
     powerSums: GraphDataView<'float32'>;
     infinityNorm: GraphDataView<'float32'>;
   };
-  /** Optional fit status scalar; any nonzero value turns every impact into NaN. */
+  /** Optional fit status code (a model's `output.status.code`); any nonzero value turns every impact into NaN. */
   status?: GraphDataView<'uint32'>;
   /**
    * Largest `|rho| * ||W||_inf` (the scaled series parameter) for which the series is evaluated;
@@ -119,24 +119,10 @@ export class GPUSpatialLagImpacts implements GPUCommandNodeProducer {
     this.props = props;
     const {predictorCount, maximumPower, coefficientStride, rhoIndex, rowCount} = props;
     const firstPredictorIndex = props.firstPredictorIndex ?? 1;
-    if (!Number.isInteger(predictorCount) || predictorCount < 1) {
-      throw new Error(`${id} predictorCount must be a positive integer`);
-    }
-    if (!Number.isInteger(rowCount) || rowCount < 1) {
-      throw new Error(`${id} rowCount must be a positive integer`);
-    }
-    if (
-      !Number.isInteger(maximumPower) ||
-      maximumPower < 1 ||
-      maximumPower > GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
-    ) {
-      throw new Error(
-        `${id} maximumPower must be an integer in [1, ${GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER}]`
-      );
-    }
-    if (!Number.isInteger(coefficientStride) || coefficientStride < 1) {
-      throw new Error(`${id} coefficientStride must be a positive integer`);
-    }
+    validateCapacity(id, 'predictorCount', predictorCount);
+    validateCapacity(id, 'rowCount', rowCount);
+    validateCapacity(id, 'maximumPower', maximumPower, 1, GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER);
+    validateCapacity(id, 'coefficientStride', coefficientStride);
     if (!Number.isInteger(rhoIndex) || rhoIndex < 0) {
       throw new Error(`${id} rhoIndex must be a non-negative integer`);
     }
@@ -167,7 +153,7 @@ export class GPUSpatialLagImpacts implements GPUCommandNodeProducer {
       throw new Error(`${id} traces.infinityNorm must hold one float32 value`);
     }
     if (props.status) {
-      validatePackedUint32View(props.status, `${id} status`);
+      validatePackedView(props.status, ['uint32'], `${id} status`);
       if (props.status.length < 1) {
         throw new Error(`${id} status must hold one uint32 row`);
       }

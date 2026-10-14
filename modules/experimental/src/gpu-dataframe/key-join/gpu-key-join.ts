@@ -6,9 +6,6 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -24,14 +21,15 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   getFixedPointWGSL,
   GPU_CELL_DEFAULT_SUM_SCALE,
   ORDERED_KEY_WGSL,
   validateSumScale
-} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
+} from '../../analysis-core/cell-key-wgsl';
 
 const OPERATION = 'GPUKeyJoin';
 const MAXIMUM_GATHER_COLUMNS_PER_KERNEL = 3;
@@ -162,30 +160,6 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     const {output} = props;
     const gather = props.gather ?? [];
     const aggregates = props.aggregates ?? [];
-    const allViews: [string, unknown][] = [
-      ['leftKeys', props.leftKeys],
-      ['rightKeys', props.rightKeys],
-      ['leftMask', props.leftMask],
-      ['rightMask', props.rightMask],
-      ...gather.flatMap((entry, index): [string, unknown][] => [
-        [`gather[${index}].column`, entry.column],
-        [`gather[${index}].output`, entry.output]
-      ]),
-      ...aggregates.flatMap((entry, index): [string, unknown][] => [
-        [`aggregates[${index}].column`, entry.column],
-        [`aggregates[${index}].output`, entry.output],
-        [`aggregates[${index}].sums`, entry.sums]
-      ]),
-      ['output.rightRows', output.rightRows],
-      ['output.matchCounts', output.matchCounts],
-      ['output.matched', output.matched],
-      ['output.rightMatched', output.rightMatched]
-    ];
-    for (const [name, view] of allViews) {
-      if (view instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     const keyFormat = props.leftKeys.format;
     if (keyFormat !== 'uint32' && keyFormat !== 'uint32x2') {
       throw new Error(`${id} leftKeys must be uint32 or uint32x2`);
@@ -202,7 +176,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       ['rightMask', props.rightMask, rightCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== count) {
           throw new Error(`${id} ${name} length must equal the ${name.slice(0, -4)} row count`);
         }
@@ -251,14 +225,14 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     for (const name of ['rightRows', 'matchCounts', 'matched'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== leftCount) {
           throw new Error(`${id} output.${name} length must equal the left row count`);
         }
       }
     }
     if (output.rightMatched) {
-      validatePackedUint32View(output.rightMatched, `${id} output.rightMatched`);
+      validatePackedView(output.rightMatched, ['uint32'], `${id} output.rightMatched`);
       if (output.rightMatched.length !== rightCount) {
         throw new Error(`${id} output.rightMatched length must equal the right row count`);
       }
@@ -288,9 +262,9 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.matched,
       output.rightMatched,
       output.rows?.ids,
-      output.rows?.count,
-      output.rows?.overflow,
-      output.rows?.requiredCount,
+      output.rows?.status.count,
+      output.rows?.status.overflow,
+      output.rows?.status.requiredCount,
       ...gather.map(entry => entry.output),
       ...aggregates.flatMap(entry => [entry.output, entry.sums])
     ];
@@ -317,9 +291,9 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.matched,
       output.rightMatched,
       output.rows?.ids,
-      output.rows?.count,
-      output.rows?.overflow,
-      output.rows?.requiredCount
+      output.rows?.status.count,
+      output.rows?.status.overflow,
+      output.rows?.status.requiredCount
     ]);
     const twoWords = props.leftKeys.format === 'uint32x2';
     const leftCount = props.leftKeys.length;

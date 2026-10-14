@@ -2,22 +2,28 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import type {
+  GPULineGeometryFields,
+  GPUPolygonGeometryFields
+} from '../../analysis-core/contracts/index';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {FIND_PATH_WGSL} from './gpu-outline-geometry';
+import {FIND_LINE_WGSL} from './gpu-outline-geometry';
 
 const OPERATION = 'GPUOffsetCurve';
 
@@ -30,47 +36,56 @@ export const GPU_OFFSET_CURVE_DEFAULT_MITRE_LIMIT = 5;
 /** Default number of segments per quarter circle of round joins, matching `shapely`. */
 export const GPU_OFFSET_CURVE_DEFAULT_QUAD_SEGMENTS = 8;
 
+/**
+ * Largest `quadSegments`. Each vertex keeps its `2 * quadSegments + 1` join points in a private
+ * array, which must stay within the 8,192 B per-function limit of core WebGPU (513 x 8 B here).
+ */
+export const GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS = 256;
+
 /** Corner treatment of {@link GPUOffsetCurve}, matching shapely `join_style`. */
 export type GPUOffsetCurveJoinStyle = 'round' | 'mitre' | 'bevel';
 
 /** Input geometry kind of {@link GPUOffsetCurve}. */
 export type GPUOffsetCurveGeometryType =
-  /** Open paths: the first and last vertex offset along their only segment. */
+  /** Open lines: the first and last vertex offset along their only segment. */
   | 'lines'
-  /** Closed rings with an implicit closing edge (do not repeat the first vertex). */
-  | 'rings';
+  /**
+   * Polygon rings, each a closed ring with an implicit closing edge (do not repeat the first
+   * vertex). Takes the four-level polygon layout; the ring count is preserved.
+   */
+  | 'polygons';
 
 /** CPU description of the per-frame parameters of {@link GPUOffsetCurve}. */
-export type GPUOffsetCurveParameters = {
-  /** Signed offset in position units: positive is the left of the path direction, negative the right. */
+export type GPUOffsetCurveSettings = {
+  /** Signed offset in position units: positive is the left of the line direction, negative the right. */
   distance: number;
   /** Mitre length over `abs(distance)` beyond which a mitre corner is clipped. Default 5, at least 1. */
   mitreLimit?: number;
 };
 
 /**
- * Packs {@link GPUOffsetCurveParameters} into the 4-element float32 layout
+ * Packs {@link GPUOffsetCurveSettings} into the 4-element float32 layout
  * `[distance, mitreLimit, 0, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If a value is not finite, `mitreLimit` is below 1, or `target` is too short.
  */
 export function getGPUOffsetCurveParameterValues(
-  parameters: GPUOffsetCurveParameters,
+  settings: GPUOffsetCurveSettings,
   target: Float32Array = new Float32Array(GPU_OFFSET_CURVE_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_OFFSET_CURVE_PARAMETER_LENGTH) {
     throw new Error(`Offset curve target must hold ${GPU_OFFSET_CURVE_PARAMETER_LENGTH} elements`);
   }
-  const mitreLimit = parameters.mitreLimit ?? GPU_OFFSET_CURVE_DEFAULT_MITRE_LIMIT;
-  if (!Number.isFinite(parameters.distance)) {
+  const mitreLimit = settings.mitreLimit ?? GPU_OFFSET_CURVE_DEFAULT_MITRE_LIMIT;
+  if (!Number.isFinite(settings.distance)) {
     throw new Error('Offset curve distance must be a finite number');
   }
   if (!Number.isFinite(mitreLimit) || mitreLimit < 1) {
     throw new Error('Offset curve mitreLimit must be a finite number of at least 1');
   }
-  target.set([parameters.distance, mitreLimit, 0, 0]);
+  target.set([settings.distance, mitreLimit, 0, 0]);
   return target;
 }
 
@@ -80,17 +95,31 @@ export function getGPUOffsetCurveParameterValues(
  */
 export function getGPUOffsetCurveRowsPerVertex(
   joinStyle: GPUOffsetCurveJoinStyle,
-  quadSegments: number
+  quadSegments: number,
+  insideTurns: GPUOffsetCurveInsideTurns = 'intersection'
 ): number {
-  return joinStyle === 'round' ? 2 * quadSegments + 1 : 2;
+  // A buffer-style inside turn emits three points (offset end, vertex, offset start).
+  const minimum = insideTurns === 'buffer' ? 3 : 2;
+  return Math.max(joinStyle === 'round' ? 2 * quadSegments + 1 : 2, minimum);
 }
+
+/**
+ * Inside-of-turn rule of {@link GPUOffsetCurve}.
+ *
+ * - `'intersection'` (default): the intersection of the two offset lines (`shapely.offset_curve`).
+ * - `'buffer'`: the intersection only while it lies on both offset segments; otherwise the corner
+ *   is routed through the input vertex (`a + dn1, a, a + dn2`), as the GEOS buffer builder does, so
+ *   a raw buffer boundary keeps a winding of at least one everywhere inside the buffer instead of
+ *   the inverted far-away corner a tight switchback produces.
+ */
+export type GPUOffsetCurveInsideTurns = 'intersection' | 'buffer';
 
 /** Caller-owned outputs of {@link GPUOffsetCurve}. */
 export type GPUOffsetCurveOutput = {
   /**
    * Offset points, exactly `positions.length * getGPUOffsetCurveRowsPerVertex(...)` rows. Input
    * vertex `i` owns rows `[i * k, (i + 1) * k)`; its first `counts[i]` rows are the offset points in
-   * path order and any remaining rows repeat the last of them (zero-length, safe to draw).
+   * line order and any remaining rows repeat the last of them (zero-length, safe to draw).
    */
   positions: GraphDataView<'float32x2'>;
   /** Optional per-input-vertex number of distinct offset points, `positions.length` rows. */
@@ -103,7 +132,22 @@ export type GPUOffsetCurveOutput = {
  * Per-frame (no recompile): the contents of `parameters` (signed distance, mitre limit) and every
  * input buffer. Compile-time: view lengths, `geometryType`, `joinStyle`, `quadSegments`.
  */
-export type GPUOffsetCurveProps = {
+export type GPUOffsetCurveProps = (
+  | ({
+      /** Open lines (default). Takes `positions` and `lineOffsets`. */
+      geometryType?: 'lines';
+    } & GPULineGeometryFields)
+  | ({
+      /**
+       * Closed rings with an implicit closing edge. Takes the four-level polygon layout
+       * (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`); every ring is offset on
+       * its own, so the ring count is preserved: output ring `r` owns the rows
+       * `[ringOffsets[r] * k, ringOffsets[r + 1] * k)` and `featureOffsets` and `polygonOffsets`
+       * apply to it unchanged.
+       */
+      geometryType: 'polygons';
+    } & GPUPolygonGeometryFields)
+) & {
   /** Prefix for generated node IDs. Defaults to `'offset-curve'`. */
   id?: string;
   /**
@@ -113,16 +157,15 @@ export type GPUOffsetCurveProps = {
    * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed planar positions. */
-  positions: GraphDataView<'float32x2'>;
-  /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
-  pathOffsets: GraphDataView<'uint32'>;
-  /** `'lines'` (default) or `'rings'`. */
-  geometryType?: GPUOffsetCurveGeometryType;
   /** Corner treatment on the outside of a turn. Default `'round'`. */
   joinStyle?: GPUOffsetCurveJoinStyle;
-  /** Segments per quarter circle of round joins, at least 1. Default 8, like shapely. */
+  /**
+   * Segments per quarter circle of round joins, 1 to {@link GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS}.
+   * Default 8, like shapely.
+   */
   quadSegments?: number;
+  /** Inside-of-turn rule, see {@link GPUOffsetCurveInsideTurns}. Default `'intersection'`. */
+  insideTurns?: GPUOffsetCurveInsideTurns;
   /** Per-frame packed float32 view written with {@link getGPUOffsetCurveParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Output points. */
@@ -136,8 +179,8 @@ export type GPUOffsetCurveProps = {
  * For every input vertex the kernel emits the offset corner: on the outside of a turn a round arc
  * (`quadSegments` per quarter circle, GEOS rounding rule), a mitre point (clipped like GEOS when
  * the mitre exceeds `mitreLimit`) or a bevel pair; on the inside of a turn the single intersection
- * of the two offset segments; at path ends the plain normal offset. Positive distance offsets to the
- * left of the path direction, negative to the right. Planar coordinates only.
+ * of the two offset segments; at line ends the plain normal offset. Positive distance offsets to the
+ * left of the line direction, negative to the right. Planar coordinates only.
  *
  * **Render-grade, not GEOS-clean.** GEOS removes the loops that form when an offset segment is
  * shorter than the inset at an inside corner, and drops pieces closer than `distance` to the input.
@@ -146,7 +189,7 @@ export type GPUOffsetCurveProps = {
  * `shapely.offset_curve` (checked in the spec against GEOS, including mitre clipping and ring
  * closure). GEOS clamps `quad_segs` to at least 8 for offset curves, so compare round joins at
  * `quadSegments >= 8`; lower values here give coarser, cheaper arcs. On the outside of a ring GEOS
- * leaves the corner at the first vertex open (a quirk); this contributor joins it. Repeated vertices are treated as path ends on that side, so remove duplicates first,
+ * leaves the corner at the first vertex open (a quirk); this contributor joins it. Repeated vertices are treated as line ends on that side, so remove duplicates first,
  * and rings must not repeat the first vertex.
  *
  * Output size is fixed up front ({@link getGPUOffsetCurveRowsPerVertex} rows per input vertex), so
@@ -166,49 +209,62 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Resolved geometry kind. */
   readonly geometryType: GPUOffsetCurveGeometryType;
+  /** Line offsets, or the polygon ring offsets, as read by the kernel. */
+  readonly boundaryOffsets: GraphDataView<'uint32'>;
   /** Resolved join style. */
   readonly joinStyle: GPUOffsetCurveJoinStyle;
   /** Resolved quarter-circle segment count. */
   readonly quadSegments: number;
   /** Output rows per input vertex. */
   readonly rowsPerVertex: number;
+  /** Resolved inside-of-turn rule. */
+  readonly insideTurns: GPUOffsetCurveInsideTurns;
 
   constructor(props: GPUOffsetCurveProps) {
     this.id = props.id ?? 'offset-curve';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.geometryType = props.geometryType ?? 'lines';
+    // Rings of a polygon are offset like closed lines, so the kernel reads them as line offsets.
+    this.boundaryOffsets =
+      props.geometryType === 'polygons' ? props.ringOffsets : props.lineOffsets;
     this.joinStyle = props.joinStyle ?? 'round';
     this.quadSegments = props.quadSegments ?? GPU_OFFSET_CURVE_DEFAULT_QUAD_SEGMENTS;
-    this.rowsPerVertex = getGPUOffsetCurveRowsPerVertex(this.joinStyle, this.quadSegments);
+    this.insideTurns = props.insideTurns ?? 'intersection';
+    this.rowsPerVertex = getGPUOffsetCurveRowsPerVertex(
+      this.joinStyle,
+      this.quadSegments,
+      this.insideTurns
+    );
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      pathOffsets: props.pathOffsets,
-      parameters: props.parameters,
-      outputPositions: props.output.positions,
-      outputCounts: props.output.counts
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
+    if (this.insideTurns !== 'intersection' && this.insideTurns !== 'buffer') {
+      throw new Error(`${id} insideTurns must be 'intersection' or 'buffer'`);
     }
-    if (this.geometryType !== 'lines' && this.geometryType !== 'rings') {
-      throw new Error(`${id} geometryType must be 'lines' or 'rings'`);
+    if (this.geometryType !== 'lines' && this.geometryType !== 'polygons') {
+      throw new Error(`${id} geometryType must be 'lines' or 'polygons'`);
     }
     if (!['round', 'mitre', 'bevel'].includes(this.joinStyle)) {
       throw new Error(`${id} joinStyle must be 'round', 'mitre' or 'bevel'`);
     }
-    if (!Number.isInteger(this.quadSegments) || this.quadSegments < 1) {
-      throw new Error(`${id} quadSegments must be a positive integer`);
-    }
+    validateCapacity(
+      id,
+      'quadSegments',
+      this.quadSegments,
+      1,
+      GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-    if (props.pathOffsets.length < 2) {
-      throw new Error(`${id} pathOffsets must contain at least two rows`);
+    const offsetsName = props.geometryType === 'polygons' ? 'ringOffsets' : 'lineOffsets';
+    validatePackedView(this.boundaryOffsets, ['uint32'], `${id} ${offsetsName}`);
+    if (this.boundaryOffsets.length < 2) {
+      throw new Error(`${id} ${offsetsName} needs two rows`);
+    }
+    if (props.geometryType === 'polygons') {
+      validatePackedView(props.featureOffsets, ['uint32'], `${id} featureOffsets`);
+      validatePackedView(props.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_OFFSET_CURVE_PARAMETER_LENGTH) {
@@ -225,7 +281,7 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
       throw new Error(`${id} output is too large`);
     }
     if (props.output.counts) {
-      validatePackedUint32View(props.output.counts, `${id} output.counts`);
+      validatePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
       if (props.output.counts.length !== props.positions.length) {
         throw new Error(`${id} output.counts must hold ${props.positions.length} rows`);
       }
@@ -233,7 +289,7 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.positions, props.output.counts],
-      [props.positions, props.pathOffsets, props.parameters]
+      [props.positions, this.boundaryOffsets, props.parameters]
     );
   }
 
@@ -244,14 +300,14 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
     const {props, id} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.pathOffsets,
+      this.boundaryOffsets,
       props.parameters,
       props.output.positions,
       props.output.counts
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: this.boundaryOffsets, type: 'u32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'outputPositions', view: props.output.positions, type: 'f32', access: 'read_write'}
     ];
@@ -268,15 +324,15 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-generate`,
         operation: OPERATION,
-        variant: `${this.geometryType}-${this.joinStyle}`,
+        variant: `${this.geometryType}-${this.joinStyle}-${this.insideTurns}`,
         bindings,
         invocationCount: props.positions.length,
         declarations: /* wgsl */ `
-const PATH_COUNT: u32 = ${props.pathOffsets.length - 1}u;
+const LINE_COUNT: u32 = ${this.boundaryOffsets.length - 1}u;
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const ROWS_PER_VERTEX: u32 = ${this.rowsPerVertex}u;
 const QUAD_SEGMENTS: f32 = ${this.quadSegments}.0;
-const IS_RING: bool = ${this.geometryType === 'rings'};
+const IS_RING: bool = ${this.geometryType === 'polygons'};
 const HALF_PI: f32 = 1.5707963267948966;
 
 fn getPosition(row: u32) -> vec2<f32> {
@@ -292,7 +348,7 @@ fn rotateVector(v: vec2<f32>, angle: f32) -> vec2<f32> {
   let s = sin(angle);
   return vec2<f32>(c * v.x - s * v.y, s * v.x + c * v.y);
 }
-${FIND_PATH_WGSL}`,
+${FIND_LINE_WGSL}`,
         body: /* wgsl */ `let offsetDistance = parameters[parametersOffset];
   let mitreLimit = max(parameters[parametersOffset + 1u], 1.0);
   let magnitude = abs(offsetDistance);
@@ -305,28 +361,31 @@ ${FIND_PATH_WGSL}`,
   var hasOutgoing = false;
   var incoming = vec2<f32>(0.0);
   var outgoing = vec2<f32>(0.0);
-  let path = findPath(index);
-  if (path != NO_PATH) {
-    let pathStart = pathOffsets[pathOffsetsOffset + path];
-    let pathEnd = min(pathOffsets[pathOffsetsOffset + path + 1u], ROW_COUNT);
-    let pathLength = pathEnd - pathStart;
+  var incomingLength = 0.0;
+  var outgoingLength = 0.0;
+  let line = findLine(index);
+  if (line != NO_LINE) {
+    let lineStart = lineOffsets[lineOffsetsOffset + line];
+    let lineEnd = min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT);
+    let lineLength = lineEnd - lineStart;
     var previousRow = ROW_COUNT;
     var nextRow = ROW_COUNT;
-    if (index > pathStart) {
+    if (index > lineStart) {
       previousRow = index - 1u;
-    } else if (IS_RING && pathLength >= 3u) {
-      previousRow = pathEnd - 1u;
+    } else if (IS_RING && lineLength >= 3u) {
+      previousRow = lineEnd - 1u;
     }
-    if (index + 1u < pathEnd) {
+    if (index + 1u < lineEnd) {
       nextRow = index + 1u;
-    } else if (IS_RING && pathLength >= 3u) {
-      nextRow = pathStart;
+    } else if (IS_RING && lineLength >= 3u) {
+      nextRow = lineStart;
     }
     if (previousRow < ROW_COUNT) {
       let delta = center - getPosition(previousRow);
       let deltaLength = length(delta);
       if (deltaLength > 0.0) {
         incoming = delta / deltaLength;
+        incomingLength = deltaLength;
         hasIncoming = true;
       }
     }
@@ -335,6 +394,7 @@ ${FIND_PATH_WGSL}`,
       let deltaLength = length(delta);
       if (deltaLength > 0.0) {
         outgoing = delta / deltaLength;
+        outgoingLength = deltaLength;
         hasOutgoing = true;
       }
     }
@@ -353,7 +413,17 @@ ${FIND_PATH_WGSL}`,
     let cosTurn = clamp(dot(incoming, outgoing), -1.0, 1.0);
     if (turn * offsetDistance > 0.0 && 1.0 + cosTurn > 1e-6) {
       // Inside of the turn: intersection of the two offset segments.
-      points[0] = center + (a + b) / (1.0 + cosTurn);
+      ${getInsideTurnSource(this.insideTurns)}${
+        this.insideTurns === 'buffer'
+          ? `
+    } else if (turn * offsetDistance > 0.0) {
+      // A full reversal on the inside: route through the vertex.
+      points[0] = center + a;
+      points[1] = center;
+      points[2] = center + b;
+      count = 3u;`
+          : ''
+      }
     } else if (length(a - b) < magnitude * 1e-3) {
       points[0] = center + a;
     } else {
@@ -372,6 +442,24 @@ ${FIND_PATH_WGSL}`,
       })
     ];
   }
+}
+
+/** WGSL statements for the inside-of-turn corner; set `points` and `count`. @internal */
+function getInsideTurnSource(insideTurns: GPUOffsetCurveInsideTurns): string {
+  if (insideTurns === 'intersection') {
+    return 'points[0] = center + (a + b) / (1.0 + cosTurn);';
+  }
+  // The intersection lies |d| tan(theta / 2) back along each segment (theta the turn angle); where
+  // that overshoots either segment the corner goes through the vertex (GEOS buffer rule).
+  return `let inset = magnitude * sqrt(max(1.0 - cosTurn, 0.0) / (1.0 + cosTurn));
+      if (inset > incomingLength || inset > outgoingLength) {
+        points[0] = center + a;
+        points[1] = center;
+        points[2] = center + b;
+        count = 3u;
+      } else {
+        points[0] = center + (a + b) / (1.0 + cosTurn);
+      }`;
 }
 
 /** WGSL statements for the outside-of-turn corner; set `points` and `count`. @internal */

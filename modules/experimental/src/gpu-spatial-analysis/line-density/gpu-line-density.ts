@@ -2,20 +2,26 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {
+  GPULineGeometryFields,
+  GPUOverflowStatusPort
+} from '../../analysis-core/contracts/index';
+import {getGPUSphereRadius} from '../../analysis-core/contracts/spatial-context';
+import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {createFillNode} from '../../utils/wgsl-kernel-nodes';
@@ -24,8 +30,7 @@ import {
   packGPUSpatialParameterValues,
   validateGPUSpatialContext,
   type GPUSpatialContext
-} from '../contracts/index';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
+} from '../../analysis-core/contracts/index';
 import {
   createDensityNode,
   createRecordPublishNode,
@@ -38,6 +43,13 @@ const OPERATION = 'GPULineDensity';
 
 /** Number of float32 elements in a {@link GPULineDensity} parameter buffer. */
 export const GPU_LINE_DENSITY_PARAMETER_LENGTH = 4;
+
+/**
+ * Largest `columns * rows` of {@link GPULineDensity}: the per-cell sum runs one 256-thread
+ * workgroup per cell and the dispatch holds at most `2^32 - 1` invocations, so
+ * `floor((2^32 - 1) / 256)`, `2^24 - 1`.
+ */
+export const GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 256);
 
 /** Declarative layout of the per-encoding line-density grid. */
 export const GPU_LINE_DENSITY_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
@@ -69,7 +81,7 @@ export const GPU_LINE_DENSITY_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema
 });
 
 /** CPU description of the per-frame grid of {@link GPULineDensity}. */
-export type GPULineDensityParameters = {
+export type GPULineDensitySettings = {
   /** X of the grid's lower-left corner. */
   minX: number;
   /** Y of the grid's lower-left corner. */
@@ -81,16 +93,16 @@ export type GPULineDensityParameters = {
 };
 
 /**
- * Packs {@link GPULineDensityParameters} into the 4-element float32 layout
+ * Packs {@link GPULineDensitySettings} into the 4-element float32 layout
  * `[minX, minY, cellWidth, cellHeight]`. Write the result into a `GPUParameterBuffer` between
  * encodings to pan or zoom the grid without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If a value is not finite, a cell size is not positive, or `target` is too short.
  */
 export function getGPULineDensityParameterValues(
-  parameters: GPULineDensityParameters,
+  settings: GPULineDensitySettings,
   target: Float32Array = new Float32Array(GPU_LINE_DENSITY_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LINE_DENSITY_PARAMETER_LENGTH) {
@@ -98,10 +110,10 @@ export function getGPULineDensityParameterValues(
   }
   target.set(
     packGPUSpatialParameterValues(GPU_LINE_DENSITY_PARAMETER_SCHEMA, {
-      minimumX: parameters.minX,
-      minimumY: parameters.minY,
-      cellWidth: parameters.cellWidth,
-      cellHeight: parameters.cellHeight
+      minimumX: settings.minX,
+      minimumY: settings.minY,
+      cellWidth: settings.cellWidth,
+      cellHeight: settings.cellHeight
     })
   );
   return target;
@@ -120,10 +132,12 @@ export type GPULineDensityOutput = {
    * spherical area of the longitude/latitude cell.
    */
   densities?: GraphDataView<'float32'>;
-  /** One-row scalar receiving `1` when the piece capacity overflowed (lengths are then low), else `0`. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of segment-cell pieces. */
-  totalRecords?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `overflow` receives `1` when the piece capacity overflowed (lengths
+   * are then low), else `0`, and the optional `requiredCount` receives the unclamped number of
+   * segment-cell pieces.
+   */
+  status: GPUOverflowStatusPort & {requiredCount?: GraphDataView<'uint32'>};
 };
 
 /**
@@ -131,27 +145,23 @@ export type GPULineDensityOutput = {
  *
  * Per-frame (no recompile): the grid origin and cell size in `parameters`, and every input
  * buffer. Compile-time: view lengths, `columns`, `rows`, `coordinateSystem`, `radius`,
- * `maximumRecords`, and which outputs are present.
+ * `recordCapacity`, and which outputs are present.
  */
-export type GPULineDensityProps = {
+export type GPULineDensityProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-density'`. */
   id?: string;
   /** Planar/native or longitude-latitude/great-circle context for positions and lengths. */
   spatialContext: GPUSpatialContext;
-  /** Packed positions sorted by path: planar coordinates, or longitude/latitude degrees. */
-  positions: GraphDataView<'float32x2'>;
-  /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
-  pathOffsets: GraphDataView<'uint32'>;
-  /** Grid columns (compile time). */
+  /** Grid columns (compile time). `columns * rows` is at most {@link GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT}. */
   columns: number;
-  /** Grid rows (compile time). */
+  /** Grid rows (compile time). `columns * rows` is at most {@link GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT}. */
   rows: number;
   /**
    * Compile-time capacity of segment-cell pieces. A segment crossing `k` grid lines produces
-   * `k + 1` pieces. Default `max(1024, 4 * positions.length)`. When exceeded, `overflow` is set
+   * `k + 1` pieces. Default `max(1024, 4 * positions.length)`. When exceeded, `status.overflow` is set
    * and the cells fed by the dropped pieces (the last segments in row order) are low.
    */
-  maximumRecords?: number;
+  recordCapacity?: number;
   /** Per-frame packed float32 view written with {@link getGPULineDensityParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Output columns. */
@@ -169,8 +179,8 @@ export type GPULineDensityProps = {
  * cell by a stable sort and a fixed-order segmented sum, so lengths are bitwise reproducible. No
  * float atomics. A segment lying exactly along a cell boundary counts in the cell above or to the
  * right, and one on the grid's upper or right edge in the last row or column. Segments outside the
- * grid contribute nothing; consecutive paths are not joined, and only segments inside a path are
- * counted (single-vertex paths have length 0).
+ * grid contribute nothing; consecutive lines are not joined, and only segments inside a line are
+ * counted (single-vertex lines have length 0).
  *
  * For per-polygon line length (QGIS "Sum line lengths") use {@link GPULineLengthPerPolygon}.
  *
@@ -191,7 +201,7 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   /** Resolved sphere radius. */
   readonly radius: number;
   /** Resolved piece capacity. */
-  readonly maximumRecords: number;
+  readonly recordCapacity: number;
 
   constructor(props: GPULineDensityProps) {
     this.id = props.id ?? 'line-density';
@@ -210,47 +220,21 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       );
     }
     this.coordinateSystem = spherical ? 'spherical' : 'planar';
-    // An explicit sphereRadius is in result units; the default sphere honours units: 'kilometers'.
-    this.radius = spherical
-      ? (this.spatialContext.sphereRadius ??
-        (this.spatialContext.units === 'kilometers'
-          ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
-          : GPU_GEODESIC_MEAN_EARTH_RADIUS))
-      : 1;
-    this.maximumRecords = props.maximumRecords ?? Math.max(1024, 4 * props.positions.length);
+    this.radius = spherical ? getGPUSphereRadius(this.spatialContext) : 1;
+    this.recordCapacity = props.recordCapacity ?? Math.max(1024, 4 * props.positions.length);
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      pathOffsets: props.pathOffsets,
-      parameters: props.parameters,
-      ...props.output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
-    for (const [name, value] of [
-      ['columns', props.columns],
-      ['rows', props.rows]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    validateCapacity(id, 'columns', props.columns);
+    validateCapacity(id, 'rows', props.rows);
     this.cellCount = props.columns * props.rows;
-    if (this.cellCount > 0x7fffffff) {
-      throw new Error(`${id} grid is too large`);
-    }
-    if (!Number.isSafeInteger(this.maximumRecords) || this.maximumRecords < 1) {
-      throw new Error(`${id} maximumRecords must be a positive integer`);
-    }
+    validateMaximumCount(id, 'columns x rows', this.cellCount, GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT);
+    validateCapacity(id, 'recordCapacity', this.recordCapacity);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 2) {
-      throw new Error(`${id} needs at least two positions`);
+      throw new Error(`${id} needs two positions`);
     }
-    validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-    if (props.pathOffsets.length < 2) {
-      throw new Error(`${id} pathOffsets must contain at least two rows`);
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_DENSITY_PARAMETER_LENGTH) {
@@ -258,7 +242,8 @@ export class GPULineDensity implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_LINE_DENSITY_PARAMETER_LENGTH} float32 values`
       );
     }
-    const {lengths, densities, overflow, totalRecords} = props.output;
+    const {lengths, densities, status} = props.output;
+    const {overflow, requiredCount} = status;
     validatePackedView(lengths, ['float32'], `${id} output.lengths`);
     if (lengths.length !== this.cellCount) {
       throw new Error(`${id} output.lengths must hold ${this.cellCount} rows`);
@@ -271,19 +256,19 @@ export class GPULineDensity implements GPUCommandNodeProducer {
     }
     for (const [name, scalar] of [
       ['overflow', overflow],
-      ['totalRecords', totalRecords]
+      ['requiredCount', requiredCount]
     ] as const) {
       if (scalar) {
-        validatePackedUint32View(scalar, `${id} output.${name}`);
+        validatePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
         if (scalar.length < 1) {
-          throw new Error(`${id} output.${name} must contain one uint32 row`);
+          throw new Error(`${id} output.status.${name} must contain one uint32 row`);
         }
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [lengths, densities, overflow, totalRecords],
-      [props.positions, props.pathOffsets, props.parameters]
+      [lengths, densities, overflow, requiredCount],
+      [props.positions, props.lineOffsets, props.parameters]
     );
   }
 
@@ -294,35 +279,36 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, cellCount, maximumRecords} = this;
+    const {props, id, cellCount, recordCapacity} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.pathOffsets,
+      props.lineOffsets,
       props.parameters,
       output.lengths,
       output.densities,
-      output.overflow,
-      output.totalRecords
+      output.status.overflow,
+      output.status.requiredCount
     ]);
     const rowCount = props.positions.length;
     const constants: LineDensityGridConstants = {
       positions: props.positions,
-      pathOffsets: props.pathOffsets,
+      lineOffsets: props.lineOffsets,
       columns: props.columns,
       rows: props.rows,
       coordinateSystem: this.coordinateSystem,
       radius: this.radius,
-      capacity: maximumRecords
+      capacity: recordCapacity
     };
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rowCount);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rowCount);
-    const keys = createTransientView(graph, `${id}-keys`, 'uint32', maximumRecords);
+    const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
+    const keys = createTransientView(graph, `${id}-keys`, 'uint32', recordCapacity);
     const contributions = createTransientView(
       graph,
       `${id}-contributions`,
       'float32',
-      maximumRecords
+      recordCapacity
     );
     return [
       createWalkCountNode<Parameters>(graph, {
@@ -338,6 +324,14 @@ export class GPULineDensity implements GPUCommandNodeProducer {
         output: starts,
         mode: 'exclusive'
       }).getCommandNodes(graph),
+      ...createSaturatedScanTotalNodes<Parameters>(graph, {
+        id: id,
+        operation: OPERATION,
+        counts: counts,
+        offsets: starts,
+        rowCount: rowCount,
+        total: scanTotal
+      }),
       // Unwritten slots keep the out-of-range key, which sorts after every cell.
       createFillNode<Parameters>(graph, {
         id: `${id}-fill-keys`,
@@ -358,11 +352,10 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       createRecordPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        capacity: maximumRecords,
-        starts,
-        counts,
-        overflow: output.overflow,
-        totalRecords: output.totalRecords
+        capacity: recordCapacity,
+        total: scanTotal,
+        overflow: output.status.overflow,
+        totalRecords: output.status.requiredCount
       }),
       ...getSortedSegmentSumNodes<Parameters>(graph, {
         id: `${id}-sum`,

@@ -18,5 +18,6 @@ export {
   getGPURasterSieveParameterValues,
   GPU_RASTER_SIEVE_PARAMETER_LENGTH
 } from './gpu-raster-sieve-parameters';
-export type {GPURasterSieveParameters} from './gpu-raster-sieve-parameters';
+export type {GPURasterSieveSettings} from './gpu-raster-sieve-parameters';
+export {GPU_RASTER_PATCH_UNRESOLVED} from './patch-labels';
 export type {GPURasterPatchLabels} from './patch-labels';

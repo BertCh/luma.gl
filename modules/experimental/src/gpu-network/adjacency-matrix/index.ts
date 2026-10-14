@@ -4,15 +4,16 @@
 
 export {
   GPUAdjacencyMatrix,
-  GPU_ADJACENCY_MATRIX_WINDOW_LENGTH,
+  GPU_ADJACENCY_MATRIX_PARAMETER_LENGTH,
   GPU_ADJACENCY_MATRIX_DEFAULT_WEIGHT_SCALE,
-  encodeGPUAdjacencyMatrixWindow,
+  getGPUAdjacencyMatrixParameterValues,
   getGPUAdjacencyMatrixFixedWeight,
   type GPUAdjacencyMatrixProps,
-  type GPUAdjacencyMatrixWindow
+  type GPUAdjacencyMatrixSettings
 } from './gpu-adjacency-matrix';
 export {
   GPUAdjacencyMatrixOrder,
   computeAdjacencyMatrixOrder,
+  type GPUAdjacencyMatrixOrderOutput,
   type GPUAdjacencyMatrixOrderProps
 } from './adjacency-matrix-order';

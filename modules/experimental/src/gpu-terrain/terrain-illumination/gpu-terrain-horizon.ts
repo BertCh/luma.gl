@@ -9,7 +9,11 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
+import {
+  GPURasterBufferToTexture,
+  type GPURasterBand,
+  type GPURasterMetadata
+} from '../../gpu-raster/index';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -21,14 +25,16 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {
   getTerrainHorizonStorageLength,
   TERRAIN_HORIZON_UNORM16_SCALE,
@@ -37,18 +43,26 @@ import {
   validateTerrainHorizonFormat,
   validateTerrainHorizonView,
   validateTerrainIlluminationBindingSize,
+  validateTerrainIlluminationCellSize,
   validateTerrainIlluminationView,
   type GPUTerrainHorizonFormat
 } from './terrain-illumination-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  TERRAIN_PIXEL_DIRECTION_WGSL,
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection
-} from '../terrain-grid-utils';
-import {getTerrainHorizonSweepNode, TERRAIN_SWEEP_MAX_EXTENT} from './terrain-horizon-sweep';
+  getRasterGroundCellSizeWGSL,
+  RASTER_PIXEL_DIRECTION_WGSL,
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection,
+  validateRasterCellSizeMode,
+  validateRasterRowDirection,
+  writeRasterGridParameterValues
+} from '../../analysis-core/raster-grid';
+import {
+  createTerrainHorizonSweepNode,
+  createTerrainSweepSectorTable,
+  TERRAIN_SWEEP_GRID_SLOTS,
+  TERRAIN_SWEEP_MAXIMUM_EXTENT,
+  TERRAIN_SWEEP_SECTOR_WGSL
+} from './terrain-horizon-sweep';
 
 export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
 
@@ -73,11 +87,11 @@ export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
  */
 export type GPUTerrainHorizonAlgorithm = 'march' | 'sweep';
 
-/** Number of float32 values read from `GPUTerrainHorizonProps.settings`. */
+/** Number of float32 values read from `GPUTerrainHorizonProps.parameters`. */
 export const GPU_TERRAIN_HORIZON_PARAMETER_LENGTH = 8;
 
 /**
- * Number of float32 values read from `GPUTerrainHorizonProps.settings` when
+ * Number of float32 values read from `GPUTerrainHorizonProps.parameters` when
  * `anisotropicSkyViewFactor` is bound: the 8 base values plus
  * `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]`.
  */
@@ -138,15 +152,13 @@ export function unpackGPUTerrainHorizonUnorm16(
 }
 
 /** Smallest supported `GPUTerrainHorizonProps.directionCount`. */
-export const GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT = 4;
+export const GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT = 4;
 
 /** Largest supported `GPUTerrainHorizonProps.directionCount`. */
-export const GPU_TERRAIN_HORIZON_MAX_DIRECTION_COUNT = 64;
+export const GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT = 64;
 
 /** CPU-side description packed by {@link getGPUTerrainHorizonParameterValues}. */
 export type GPUTerrainHorizonSettings = {
-  /** `[x, y]` cell size: meters (uniform), equatorial Web Mercator meters, or degrees (geographic). */
-  cellSize: readonly [number, number];
   /** Elevation multiplier. Defaults to 1. */
   zFactor?: number;
   /**
@@ -154,10 +166,6 @@ export type GPUTerrainHorizonSettings = {
    * `c * d^2`. See `getGPUTerrainCurvatureCoefficient`. Defaults to 0.
    */
   curvatureCoefficient?: number;
-  /** Top edge of row 0: normalized Web Mercator y in `[0, 1]` or latitude degrees. Defaults to 0. */
-  northEdge?: number;
-  /** Bottom edge of the last row, same units as `northEdge`. Defaults to 0. */
-  southEdge?: number;
   /** Ground search radius in meters; `<= 0` searches the full pixel radius. Defaults to 0. */
   maximumDistance?: number;
   /**
@@ -187,16 +195,17 @@ export type GPUTerrainHorizonSettings = {
 
 /**
  * Packs settings into the float layout read by {@link GPUTerrainHorizon}:
- * `[cellSizeX, cellSizeY, zFactor, curvatureCoefficient, northEdge, southEdge, maximumDistance, 0]`,
- * followed by `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]` (12 values,
+ * `[cellSizeX, cellSizeY, zFactor, curvatureCoefficient, northEdge, southEdge, maximumDistance, 0]`
+ * (cell size and row-edge world y taken from `grid`), followed by `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]` (12 values,
  * see {@link GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH}) when any anisotropy field is
  * given or `target` holds at least 12 values. Otherwise exactly 8 values are written and returned.
  *
- * @throws If a cell size is not finite and positive, an anisotropy field is out of range, or
+ * @throws If the grid cell size is not finite and positive, an anisotropy field is out of range, or
  *   `target` is too short.
  */
 export function getGPUTerrainHorizonParameterValues(
   settings: GPUTerrainHorizonSettings,
+  grid: GPURasterMetadata,
   target?: Float32Array
 ): Float32Array {
   const hasAnisotropy =
@@ -204,22 +213,21 @@ export function getGPUTerrainHorizonParameterValues(
     settings.anisotropyLevel !== undefined ||
     settings.anisotropyMinimumWeight !== undefined;
   const wantsAnisotropy = hasAnisotropy || (target !== undefined && target.length >= 12);
-  const output =
+  const values =
     target ??
     new Float32Array(
       wantsAnisotropy
         ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
         : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
     );
-  if (output.length < GPU_TERRAIN_HORIZON_PARAMETER_LENGTH) {
-    throw new Error('Terrain horizon settings target must hold 8 values');
-  }
-  if (hasAnisotropy && output.length < GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH) {
-    throw new Error('Terrain horizon settings target must hold 12 values with anisotropy');
-  }
-  if (!settings.cellSize.every(size => Number.isFinite(size) && size > 0)) {
-    throw new Error('Terrain horizon cell size must be finite and positive');
-  }
+  validateTerrainIlluminationCellSize('getGPUTerrainHorizonParameterValues', grid);
+  validateParameterTarget(
+    'getGPUTerrainHorizonParameterValues',
+    values,
+    hasAnisotropy
+      ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
+      : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
+  );
   const anisotropyAzimuth =
     settings.anisotropyAzimuthDegrees ?? GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES;
   const anisotropyLevel = settings.anisotropyLevel ?? GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL;
@@ -240,20 +248,21 @@ export function getGPUTerrainHorizonParameterValues(
       throw new Error('Terrain horizon anisotropy minimum weight must be in [0, 1]');
     }
   }
-  output.set([
-    settings.cellSize[0],
-    settings.cellSize[1],
+  values.set([
+    0,
+    0,
     settings.zFactor ?? 1,
     settings.curvatureCoefficient ?? 0,
-    settings.northEdge ?? 0,
-    settings.southEdge ?? 0,
+    0,
+    0,
     settings.maximumDistance ?? 0,
     0
   ]);
+  writeRasterGridParameterValues(values, grid, TERRAIN_SWEEP_GRID_SLOTS);
   if (wantsAnisotropy) {
-    output.set([anisotropyAzimuth, anisotropyLevel, anisotropyMinimumWeight, 0], 8);
+    values.set([anisotropyAzimuth, anisotropyLevel, anisotropyMinimumWeight, 0], 8);
   }
-  return output;
+  return values;
 }
 
 /**
@@ -294,13 +303,13 @@ export function getGPUTerrainHorizonStepDistances(
  * Sector `d` of `directionCount` has azimuth `d * 360 / directionCount` degrees clockwise from
  * north. Columns increase east; rows increase south for `rowDirection: 'south'`. Components are
  * rounded to float32, and round-off below 1e-9 snaps to 0. The march kernels turn it into a pixel
- * step per row with the row's ground cell size (`getTerrainPixelDirection`), so sector azimuths are
+ * step per row with the row's ground cell size (`getRasterPixelDirection`), so sector azimuths are
  * ground azimuths on anisotropic (for example geographic) grids too.
  */
 export function getGPUTerrainHorizonDirection(
   sector: number,
   directionCount: number,
-  rowDirection: GPUTerrainRowDirection = 'south'
+  rowDirection: GPURasterRowDirection = 'south'
 ): [number, number] {
   const azimuth = (2 * Math.PI * sector) / directionCount;
   const northRowSign = rowDirection === 'south' ? -1 : 1;
@@ -310,30 +319,62 @@ export function getGPUTerrainHorizonDirection(
 }
 
 /**
+ * Caller-owned outputs of {@link GPUTerrainHorizon}; at least one is required.
+ */
+export type GPUTerrainHorizonOutput = {
+  /**
+   * Horizon angles in degrees, pixel-major: element `pixel * directionCount + sector`.
+   * `float32` format: `width * height * directionCount` values. `unorm16` format: a `uint32` view of
+   * `ceil(width * height * directionCount / 2)` words.
+   */
+  horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /** Sky-view factor per pixel in `[0, 1]`. */
+  skyViewFactor?: GraphDataView<'float32'>;
+  /** Positive openness per pixel in degrees. */
+  positiveOpenness?: GraphDataView<'float32'>;
+  /**
+   * Negative openness per pixel in degrees: `90 - mean(h_nadir)`, where `h_nadir` is the
+   * horizon of the inverted terrain (z factor negated; curvature still drops samples).
+   */
+  negativeOpenness?: GraphDataView<'float32'>;
+  /**
+   * Anisotropic sky-view factor per pixel (Kokalj and Somrak 2019, RVT `asvf`): with the
+   * sector's RVT direction angle `a = (360 - t) mod 360` for compass azimuth `t`, main direction
+   * `A` (RVT convention) and `w = (1 - wMin) * cos((a - A) / 2)^level + wMin` (signed power, as in
+   * RVT), it is `1 - sum(w * sin(max(h, 0))) / sum(w)`. Requires 12 parameter values.
+   */
+  anisotropicSkyViewFactor?: GraphDataView<'float32'>;
+  /** Per-pixel 1 where the center elevation is valid, else 0. */
+  outputValidity?: GraphDataView<'uint32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the sky-view factor. */
+  skyViewFactorTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
+
+/**
  * Properties for {@link GPUTerrainHorizon}.
  *
  * Topology: grid size, elevation format and calibration, `directionCount`, `maximumRadius`,
  * `stepGrowth`, `cellSizeMode`, `rowDirection`, `horizonFormat`, and which outputs exist.
- * Per-frame: `settings` (cell size, z factor, curvature, latitude band, maximum distance,
- * anisotropy) and elevation contents.
+ * Per-frame: `parameters` (grid cell size and latitude band, z factor, curvature, maximum
+ * distance, anisotropy) and elevation contents.
  *
- * Cell size model: `settings.cellSize` is projected meters (`'uniform'`), equatorial Web Mercator
+ * Cell size model: the grid's cell size is projected meters (`'uniform'`), equatorial Web Mercator
  * meters or degrees with a latitude-dependent spacing per row (`'web-mercator'`, `'geographic'`).
  */
 export type GPUTerrainHorizonProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-horizon'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
   /**
-   * Per-frame settings with at least 8 float32 values (12 when `anisotropicSkyViewFactor` is
-   * bound), see {@link getGPUTerrainHorizonParameterValues}.
+   * Per-frame parameters with at least 8 float32 values (12 when `output.anisotropicSkyViewFactor`
+   * is bound), see {@link getGPUTerrainHorizonParameterValues}.
    */
-  settings: GraphDataView<'float32'>;
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainHorizonOutput;
   /** Number of azimuth sectors, an integer in `[4, 64]`. Defaults to 16. */
   directionCount?: number;
   /** Search radius in pixels, a positive integer. Also the required tile halo. */
@@ -358,47 +399,26 @@ export type GPUTerrainHorizonProps = {
    */
   maximumStepsPerDispatch?: number;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: GPUTerrainRowDirection;
+  rowDirection?: GPURasterRowDirection;
   /**
-   * Storage of the `horizon` output. `'float32'` (default) stores degrees; `'unorm16'` packs two
+   * Storage of `output.horizon`. `'float32'` (default) stores degrees; `'unorm16'` packs two
    * 16-bit codes per `uint32` word (see {@link encodeGPUTerrainHorizonUnorm16}), a half-size map
    * with 0.0027 degree steps. Sky-view factor and openness sums always use the unquantised angle.
    */
   horizonFormat?: GPUTerrainHorizonFormat;
-  /**
-   * Optional horizon angles in degrees, pixel-major: element `pixel * directionCount + sector`.
-   * `float32` format: `width * height * directionCount` values. `unorm16` format: a `uint32` view of
-   * `ceil(width * height * directionCount / 2)` words.
-   */
-  horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Optional sky-view factor per pixel in `[0, 1]`. */
-  skyViewFactor?: GraphDataView<'float32'>;
-  /** Optional positive openness per pixel in degrees. */
-  positiveOpenness?: GraphDataView<'float32'>;
-  /**
-   * Optional negative openness per pixel in degrees: `90 - mean(h_nadir)`, where `h_nadir` is the
-   * horizon of the inverted terrain (z factor negated; curvature still drops samples).
-   */
-  negativeOpenness?: GraphDataView<'float32'>;
-  /**
-   * Optional anisotropic sky-view factor per pixel (Kokalj and Somrak 2019, RVT `asvf`): with the
-   * sector's RVT direction angle `a = (360 - t) mod 360` for compass azimuth `t`, main direction
-   * `A` (RVT convention) and `w = (1 - wMin) * cos((a - A) / 2)^level + wMin` (signed power, as in
-   * RVT), it is `1 - sum(w * sin(max(h, 0))) / sum(w)`. Requires 12 settings values.
-   */
-  anisotropicSkyViewFactor?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where the center elevation is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving the sky-view factor. */
-  skyViewFactorTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
 };
 
 /** Props of {@link getTerrainHorizonSectorOutput}. @internal */
 export type TerrainHorizonSectorOutputProps = {
-  /** Sector index in `[0, directionCount)`. */
+  /** Sector index in `[0, directionCount)`; ignored when {@link sectorWGSL} is set. */
   sector: number;
+  /**
+   * WGSL `u32` expression of the sector, read at run time (library rule 12: the sector index then
+   * never reaches the WGSL text). Sector 0 still assigns the sums and later sectors add.
+   */
+  sectorWGSL?: string;
   /** Number of sectors. */
   directionCount: number;
   /** Storage format of `horizon`. Defaults to `'float32'`. */
@@ -461,7 +481,12 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
   const bindings: WGSLKernelBinding[] = [];
   const statements: string[] = [];
   let declarations = '';
-  const accumulate = sector === 0 ? '=' : '+=';
+  const sectorExpression = props.sectorWGSL ? `(${props.sectorWGSL})` : `${sector}u`;
+  // Sector 0 assigns and later sectors add: `select` keeps exactly the bits of either form.
+  const accumulate = (target: string, term: string): string =>
+    props.sectorWGSL
+      ? `${target} = select(${target} + ${term}, ${term}, ${sectorExpression} == 0u);`
+      : `${target} ${sector === 0 ? '=' : '+='} ${term};`;
   if (props.horizon) {
     if (format === 'unorm16') {
       bindings.push({name: 'horizon', view: props.horizon, type: 'u32', access: 'read_write'});
@@ -471,7 +496,7 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
 }
 `;
       // One sector per dispatch and DIRECTION_COUNT >= 4, so distinct pixels never share a word.
-      statements.push(`let element = pixel * ${directionCount}u + ${sector}u;
+      statements.push(`let element = pixel * ${directionCount}u + ${sectorExpression};
   let wordIndex = horizonOffset + (element >> 1u);
   let shift = (element & 1u) * 16u;
   horizon[wordIndex] = (horizon[wordIndex] & ~(0xffffu << shift)) |
@@ -479,19 +504,22 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
     } else {
       bindings.push({name: 'horizon', view: props.horizon, type: 'f32', access: 'read_write'});
       statements.push(
-        `horizon[horizonOffset + pixel * ${directionCount}u + ${sector}u] = horizonAngle;`
+        `horizon[horizonOffset + pixel * ${directionCount}u + ${sectorExpression}] = horizonAngle;`
       );
     }
   }
   if (props.sineSum) {
     bindings.push({name: 'sineSum', view: props.sineSum, type: 'f32', access: 'read_write'});
     statements.push(
-      `sineSum[sineSumOffset + pixel] ${accumulate} sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS);`
+      accumulate(
+        'sineSum[sineSumOffset + pixel]',
+        'sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS)'
+      )
     );
   }
   if (props.angleSum) {
     bindings.push({name: 'angleSum', view: props.angleSum, type: 'f32', access: 'read_write'});
-    statements.push(`angleSum[angleSumOffset + pixel] ${accumulate} horizonAngle;`);
+    statements.push(accumulate('angleSum[angleSumOffset + pixel]', 'horizonAngle'));
   }
   if (props.anisotropicSum) {
     bindings.push({
@@ -502,13 +530,16 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
     });
     declarations += getTerrainHorizonAnisotropicWeightWGSL(directionCount);
     statements.push(
-      `anisotropicSum[anisotropicSumOffset + pixel] ${accumulate} getAnisotropicWeight(${sector}u) *
-    sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS);`
+      accumulate(
+        'anisotropicSum[anisotropicSumOffset + pixel]',
+        `getAnisotropicWeight(${sectorExpression}) *
+    sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS)`
+      )
     );
   }
   if (props.nadirSum) {
     bindings.push({name: 'nadirSum', view: props.nadirSum, type: 'f32', access: 'read_write'});
-    statements.push(`nadirSum[nadirSumOffset + pixel] ${accumulate} horizonAngle;`);
+    statements.push(accumulate('nadirSum[nadirSumOffset + pixel]', 'horizonAngle'));
   }
   if (bindings.length === 0) {
     throw new Error('Terrain horizon sector output requires at least one output');
@@ -596,7 +627,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
   readonly requiredHalo: number;
   /** Baked ray-march distances in pixels. */
   readonly stepDistances: Float32Array;
-  /** Storage format of the optional `horizon` output. */
+  /** Storage format of the optional `output.horizon`. */
   readonly horizonFormat: GPUTerrainHorizonFormat;
   /** Horizon search algorithm. */
   readonly algorithm: GPUTerrainHorizonAlgorithm;
@@ -605,12 +636,13 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-horizon';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const directionCount = props.directionCount ?? 16;
     if (
       !Number.isSafeInteger(directionCount) ||
-      directionCount < GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT ||
-      directionCount > GPU_TERRAIN_HORIZON_MAX_DIRECTION_COUNT
+      directionCount < GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT ||
+      directionCount > GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT
     ) {
       throw new Error(`${id} directionCount must be an integer in [4, 64]`);
     }
@@ -625,13 +657,13 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     }
     this.requiredHalo = props.maximumRadius;
     if (
-      !props.horizon &&
-      !props.skyViewFactor &&
-      !props.positiveOpenness &&
-      !props.negativeOpenness &&
-      !props.anisotropicSkyViewFactor &&
-      !props.validity &&
-      !props.skyViewFactorTexture
+      !output.horizon &&
+      !output.skyViewFactor &&
+      !output.positiveOpenness &&
+      !output.negativeOpenness &&
+      !output.anisotropicSkyViewFactor &&
+      !output.outputValidity &&
+      !output.skyViewFactorTexture
     ) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -645,8 +677,11 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
       if ((props.stepGrowth ?? 1) !== 1) {
         throw new Error(`${id} stepGrowth applies to the march algorithm only`);
       }
-      if (props.width > TERRAIN_SWEEP_MAX_EXTENT || props.height > TERRAIN_SWEEP_MAX_EXTENT) {
-        throw new Error(`${id} sweep supports extents up to ${TERRAIN_SWEEP_MAX_EXTENT}`);
+      if (
+        props.grid.width > TERRAIN_SWEEP_MAXIMUM_EXTENT ||
+        props.grid.height > TERRAIN_SWEEP_MAXIMUM_EXTENT
+      ) {
+        throw new Error(`${id} sweep supports extents up to ${TERRAIN_SWEEP_MAXIMUM_EXTENT}`);
       }
     }
     if (
@@ -657,69 +692,75 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     }
     validateTerrainHorizonView(
       id,
-      'horizon',
-      props.horizon,
+      'output.horizon',
+      output.horizon,
       this.horizonFormat,
       pixelCount,
       directionCount
     );
     validateTerrainIlluminationView(
       id,
-      'skyViewFactor',
-      props.skyViewFactor,
+      'output.skyViewFactor',
+      output.skyViewFactor,
       'float32',
       pixelCount
     );
     validateTerrainIlluminationView(
       id,
-      'positiveOpenness',
-      props.positiveOpenness,
+      'output.positiveOpenness',
+      output.positiveOpenness,
       'float32',
       pixelCount
     );
     validateTerrainIlluminationView(
       id,
-      'negativeOpenness',
-      props.negativeOpenness,
+      'output.negativeOpenness',
+      output.negativeOpenness,
       'float32',
       pixelCount
     );
     validateTerrainIlluminationView(
       id,
-      'anisotropicSkyViewFactor',
-      props.anisotropicSkyViewFactor,
+      'output.anisotropicSkyViewFactor',
+      output.anisotropicSkyViewFactor,
       'float32',
       pixelCount
     );
-    validateTerrainIlluminationView(id, 'validity', props.validity, 'uint32', pixelCount);
-    validateTerrainSettings(
+    validateTerrainIlluminationView(
       id,
-      props.settings,
-      props.anisotropicSkyViewFactor
+      'output.outputValidity',
+      output.outputValidity,
+      'uint32',
+      pixelCount
+    );
+    validateRasterParameters(
+      id,
+      props.parameters,
+      output.anisotropicSkyViewFactor
         ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
         : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
     );
-    validateTerrainTexture(
+    validateRasterOutputTexture(
       id,
-      'skyViewFactorTexture',
-      props.skyViewFactorTexture,
+      'output.skyViewFactorTexture',
+      output.skyViewFactorTexture,
       ['r32float', 'rgba32float'],
-      props.width,
-      props.height
+      props.grid
     );
-    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateTerrainRowDirection(id, props.rowDirection ?? 'south');
-    validateTerrainBuffersDistinct(
+    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterRowDirection(id, props.rowDirection ?? 'south');
+    validateRasterBuffersDistinct(
       id,
       [
-        props.horizon,
-        props.skyViewFactor,
-        props.positiveOpenness,
-        props.negativeOpenness,
-        props.anisotropicSkyViewFactor,
-        props.validity
+        output.horizon,
+        output.skyViewFactor,
+        output.positiveOpenness,
+        output.negativeOpenness,
+        output.anisotropicSkyViewFactor,
+        output.outputValidity
       ],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
   }
 
@@ -728,19 +769,20 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, directionCount} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, [props.skyViewFactorTexture]);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, [output.skyViewFactorTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      props.horizon,
-      props.skyViewFactor,
-      props.positiveOpenness,
-      props.negativeOpenness,
-      props.anisotropicSkyViewFactor,
-      props.validity
+      props.parameters,
+      output.horizon,
+      output.skyViewFactor,
+      output.positiveOpenness,
+      output.negativeOpenness,
+      output.anisotropicSkyViewFactor,
+      output.outputValidity
     ]);
     const pixelCount = width * height;
-    if (props.horizon) {
+    if (output.horizon) {
       validateTerrainIlluminationBindingSize(
         id,
         'horizon',
@@ -748,26 +790,26 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
         graph.device.limits.maxStorageBufferBindingSize
       );
     }
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const elevationValues = source.band.storage.values as GraphDataView<'float32'>;
     const elevationValidity = source.band.validity as GraphDataView<'uint32'>;
     const skyViewTarget =
-      props.skyViewFactor ??
-      (props.skyViewFactorTexture
+      output.skyViewFactor ??
+      (output.skyViewFactorTexture
         ? createTransientView(graph, `${id}-sky-view-factor`, 'float32', pixelCount)
         : undefined);
-    const needsSums = Boolean(skyViewTarget || props.positiveOpenness);
+    const needsSums = Boolean(skyViewTarget || output.positiveOpenness);
     const sineSum = needsSums
       ? createTransientView(graph, `${id}-sine-sum`, 'float32', pixelCount)
       : undefined;
     const angleSum = needsSums
       ? createTransientView(graph, `${id}-angle-sum`, 'float32', pixelCount)
       : undefined;
-    const anisotropicSum = props.anisotropicSkyViewFactor
+    const anisotropicSum = output.anisotropicSkyViewFactor
       ? createTransientView(graph, `${id}-anisotropic-sum`, 'float32', pixelCount)
       : undefined;
-    const nadirSum = props.negativeOpenness
+    const nadirSum = output.negativeOpenness
       ? createTransientView(graph, `${id}-nadir-sum`, 'float32', pixelCount)
       : undefined;
     const rowDirection = props.rowDirection ?? 'south';
@@ -795,10 +837,9 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
           maximumStepsPerDispatch: props.maximumStepsPerDispatch ?? FUSED_MARCH_STEP_BUDGET,
           cellSizeMode,
           elevationValues,
-          elevationValidity,
-          settings: props.settings,
+          settings: props.parameters,
           horizonFormat: this.horizonFormat,
-          horizon: props.horizon,
+          horizon: output.horizon,
           sineSum,
           angleSum,
           anisotropicSum,
@@ -806,25 +847,42 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
         })
       );
     }
+    const sectorRanges =
+      !fusedMarch && !hull
+        ? createHorizonSectorRanges<Parameters>(graph, {id, directionCount, sectorsPerRange: 1})
+        : undefined;
+    if (sectorRanges) {
+      nodes.push(sectorRanges.writeNode);
+    }
+    const sweepSectors = hull
+      ? createTerrainSweepSectorTable<Parameters>(graph, {
+          id,
+          width,
+          height,
+          directions: Array.from({length: directionCount}, (_, sector) =>
+            getGPUTerrainHorizonDirection(sector, directionCount, rowDirection)
+          )
+        })
+      : undefined;
+    if (sweepSectors) {
+      nodes.push(sweepSectors.writeNode);
+    }
     for (let sector = 0; !fusedMarch && sector < directionCount; sector++) {
-      const direction = getGPUTerrainHorizonDirection(sector, directionCount, rowDirection);
       if (hull) {
         nodes.push(
           ...getSweepSectorNodes(graph, {
             id: `${id}-horizon-${sector}`,
             width,
             height,
-            sector,
+            sectorRecord: sweepSectors!.getRecord(sector),
             directionCount,
-            direction,
             maximumRadius: props.maximumRadius,
             cellSizeMode,
             elevationValues,
-            elevationValidity,
-            settings: props.settings,
+            settings: props.parameters,
             hull,
             horizonFormat: this.horizonFormat,
-            horizon: props.horizon,
+            horizon: output.horizon,
             sineSum,
             angleSum,
             anisotropicSum,
@@ -838,17 +896,16 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
           id: `${id}-horizon-${sector}`,
           width,
           height,
-          sector,
+          sectorRange: sectorRanges!.getRange(sector),
           directionCount,
-          direction,
+          rowDirection,
           distances,
           stepCount: this.stepDistances.length,
           cellSizeMode,
           elevationValues,
-          elevationValidity,
-          settings: props.settings,
+          settings: props.parameters,
           horizonFormat: this.horizonFormat,
-          horizon: props.horizon,
+          horizon: output.horizon,
           sineSum,
           angleSum,
           anisotropicSum,
@@ -856,7 +913,7 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
         })
       );
     }
-    if (skyViewTarget || props.positiveOpenness || props.validity) {
+    if (skyViewTarget || output.positiveOpenness || output.outputValidity) {
       const bindings: WGSLKernelBinding[] = [
         {
           name: 'elevationValidity',
@@ -879,18 +936,18 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
           access: 'read_write'
         });
       }
-      if (props.positiveOpenness) {
+      if (output.positiveOpenness) {
         bindings.push({
           name: 'openness',
-          view: props.positiveOpenness,
+          view: output.positiveOpenness,
           type: 'f32',
           access: 'read_write'
         });
       }
-      if (props.validity) {
+      if (output.outputValidity) {
         bindings.push({
           name: 'validityValues',
-          view: props.validity,
+          view: output.outputValidity,
           type: 'u32',
           access: 'read_write'
         });
@@ -915,18 +972,18 @@ ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}`,
       : ''
   }
   ${
-    props.positiveOpenness
+    output.positiveOpenness
       ? `openness[opennessOffset + index] = select(invalidValue,
     90.0 - angleSum[angleSumOffset + index] / DIRECTION_COUNT, isValid);`
       : ''
   }
-  ${props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
+  ${output.outputValidity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''}`
         })
       );
     }
     if (
-      (anisotropicSum && props.anisotropicSkyViewFactor) ||
-      (nadirSum && props.negativeOpenness)
+      (anisotropicSum && output.anisotropicSkyViewFactor) ||
+      (nadirSum && output.negativeOpenness)
     ) {
       // Kept apart from the sky-view kernel so no kernel binds more than 8 storage buffers.
       const bindings: WGSLKernelBinding[] = [
@@ -934,13 +991,13 @@ ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}`,
       ];
       let validExpression = 'elevationValidity[elevationValidityOffset + index] != 0u';
       let statements = '';
-      if (anisotropicSum && props.anisotropicSkyViewFactor) {
+      if (anisotropicSum && output.anisotropicSkyViewFactor) {
         bindings.push(
-          {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+          {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'anisotropicSum', view: anisotropicSum, type: 'f32', access: 'read'},
           {
             name: 'anisotropicSkyView',
-            view: props.anisotropicSkyViewFactor,
+            view: output.anisotropicSkyViewFactor,
             type: 'f32',
             access: 'read_write'
           }
@@ -954,12 +1011,12 @@ ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}`,
     1.0 - anisotropicSum[anisotropicSumOffset + index] / weightSum, isValid);
   `;
       }
-      if (nadirSum && props.negativeOpenness) {
+      if (nadirSum && output.negativeOpenness) {
         bindings.push(
           {name: 'nadirSum', view: nadirSum, type: 'f32', access: 'read'},
           {
             name: 'negativeOpennessValues',
-            view: props.negativeOpenness,
+            view: output.negativeOpenness,
             type: 'f32',
             access: 'read_write'
           }
@@ -986,8 +1043,8 @@ ${anisotropicSum ? getTerrainHorizonAnisotropicWeightWGSL(directionCount) : ''}`
         })
       );
     }
-    if (props.skyViewFactorTexture && skyViewTarget) {
-      const texture = props.skyViewFactorTexture;
+    if (output.skyViewFactorTexture && skyViewTarget) {
+      const texture = output.skyViewFactorTexture;
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterBufferToTexture({
@@ -1014,13 +1071,12 @@ function getSweepSectorNodes<Parameters>(
     id: string;
     width: number;
     height: number;
-    sector: number;
+    /** Sector record from the contributor's {@link createTerrainSweepSectorTable}. */
+    sectorRecord: GraphDataView<'uint32'>;
     directionCount: number;
-    direction: [number, number];
     maximumRadius: number;
-    cellSizeMode: GPUTerrainCellSizeMode;
+    cellSizeMode: GPURasterCellSizeMode;
     elevationValues: GraphDataView<'float32'>;
-    elevationValidity: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
     hull: GraphDataView<'uint32'>;
     horizonFormat: GPUTerrainHorizonFormat;
@@ -1034,19 +1090,19 @@ function getSweepSectorNodes<Parameters>(
   const common = {
     width: props.width,
     height: props.height,
-    direction: props.direction,
+    geometry: {kind: 'table' as const, record: props.sectorRecord},
     maximumRadius: props.maximumRadius,
     cellSizeMode: props.cellSizeMode,
     elevationValues: props.elevationValues,
-    elevationValidity: props.elevationValidity,
     settings: props.settings,
     hull: props.hull
   };
   const nodes: GPUCommandNode<Parameters>[] = [];
-  // The sweep binds elevation values, validity, settings, and hull pointers itself.
+  // The sweep binds elevation values, settings, hull pointers, and the sector record itself.
   if (props.horizon || props.sineSum || props.angleSum || props.anisotropicSum) {
     const output = getTerrainHorizonSectorOutput({
-      sector: props.sector,
+      sector: 0,
+      sectorWGSL: TERRAIN_SWEEP_SECTOR_WGSL,
       directionCount: props.directionCount,
       horizonFormat: props.horizonFormat,
       horizon: props.horizon,
@@ -1057,7 +1113,7 @@ function getSweepSectorNodes<Parameters>(
       reservedBindingCount: 4
     });
     nodes.push(
-      getTerrainHorizonSweepNode(graph, {
+      createTerrainHorizonSweepNode(graph, {
         ...common,
         id: props.id,
         zFactorSign: 1,
@@ -1069,14 +1125,15 @@ function getSweepSectorNodes<Parameters>(
   }
   if (props.nadirSum) {
     const output = getTerrainHorizonSectorOutput({
-      sector: props.sector,
+      sector: 0,
+      sectorWGSL: TERRAIN_SWEEP_SECTOR_WGSL,
       directionCount: props.directionCount,
       nadirSum: props.nadirSum,
       mode: 'nadir',
       reservedBindingCount: 4
     });
     nodes.push(
-      getTerrainHorizonSweepNode(graph, {
+      createTerrainHorizonSweepNode(graph, {
         ...common,
         id: `${props.id}-nadir`,
         zFactorSign: -1,
@@ -1089,9 +1146,57 @@ function getSweepSectorNodes<Parameters>(
   return nodes;
 }
 
+/** Elements between sector range words: 256 bytes, so every range binds at element offset 0. */
+const SECTOR_RANGE_STRIDE = 64;
+
+/**
+ * Creates the graph-owned sector ranges of the march kernels and the one-thread node that writes
+ * them: range `r` is `[r * sectorsPerRange, min(directionCount, (r + 1) * sectorsPerRange))` at
+ * element `r * 64`. Every march kernel reads its sectors from its range word, so all of them share
+ * one WGSL source (library rule 12).
+ */
+function createHorizonSectorRanges<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; directionCount: number; sectorsPerRange: number}
+): {
+  rangeCount: number;
+  writeNode: GPUCommandNode<Parameters>;
+  getRange: (range: number) => GraphDataView<'uint32'>;
+} {
+  const {directionCount, sectorsPerRange} = props;
+  const rangeCount = Math.ceil(directionCount / sectorsPerRange);
+  const table = createTransientView(
+    graph,
+    `${props.id}-sector-range-words`,
+    'uint32',
+    rangeCount * SECTOR_RANGE_STRIDE
+  );
+  const writeNode = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-sector-ranges`,
+    operation: 'GPUTerrainHorizon',
+    variant: 'sector-ranges',
+    bindings: [{name: 'ranges', view: table, type: 'u32', access: 'read_write'}],
+    invocationCount: 1,
+    body: `for (var range = 0u; range < ${rangeCount}u; range++) {
+    let first = range * ${sectorsPerRange}u;
+    ranges[rangesOffset + range * ${SECTOR_RANGE_STRIDE}u] = first;
+    ranges[rangesOffset + range * ${SECTOR_RANGE_STRIDE}u + 1u] = min(${directionCount}u, first + ${sectorsPerRange}u);
+  }`
+  });
+  const getRange = (range: number): GraphDataView<'uint32'> =>
+    graph.createDataView(table.buffer, {
+      format: 'uint32',
+      length: 2,
+      byteOffset: table.byteOffset + range * SECTOR_RANGE_STRIDE * 4
+    });
+  return {rangeCount, writeNode, getRange};
+}
+
 /** Pixel access and bilinear sampling shared by the per-sector and the fused march kernels. */
-const HORIZON_MARCH_SAMPLE_WGSL = `fn isValidPixel(column: u32, row: u32) -> bool {
-  return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;
+const HORIZON_MARCH_SAMPLE_WGSL = `// Canonical elevation is NaN exactly where a pixel is invalid, so the march kernels need no
+// validity binding (its slot holds the sector range word).
+fn isValidPixel(column: u32, row: u32) -> bool {
+  return isFiniteValue(elevationValues[elevationValuesOffset + row * WIDTH + column]);
 }
 fn getElevation(column: u32, row: u32) -> f32 {
   return elevationValues[elevationValuesOffset + row * WIDTH + column];
@@ -1136,13 +1241,12 @@ function getFusedMarchNodes<Parameters>(
     width: number;
     height: number;
     directionCount: number;
-    rowDirection: GPUTerrainRowDirection;
+    rowDirection: GPURasterRowDirection;
     distances: string;
     stepCount: number;
     maximumStepsPerDispatch: number;
-    cellSizeMode: GPUTerrainCellSizeMode;
+    cellSizeMode: GPURasterCellSizeMode;
     elevationValues: GraphDataView<'float32'>;
-    elevationValidity: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
     horizonFormat: GPUTerrainHorizonFormat;
     horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
@@ -1159,6 +1263,7 @@ function getFusedMarchNodes<Parameters>(
   const zenithOutput = hasZenith
     ? getTerrainHorizonSectorOutput({
         sector: 0,
+        sectorWGSL: 'sector',
         directionCount,
         horizonFormat: props.horizonFormat,
         horizon: props.horizon,
@@ -1172,6 +1277,7 @@ function getFusedMarchNodes<Parameters>(
   const nadirOutput = props.nadirSum
     ? getTerrainHorizonSectorOutput({
         sector: 0,
+        sectorWGSL: 'sector',
         directionCount,
         nadirSum: props.nadirSum,
         mode: 'nadir',
@@ -1180,7 +1286,6 @@ function getFusedMarchNodes<Parameters>(
     : undefined;
   const bindings: WGSLKernelBinding[] = [
     {name: 'elevationValues', view: props.elevationValues, type: 'f32', access: 'read'},
-    {name: 'elevationValidity', view: props.elevationValidity, type: 'u32', access: 'read'},
     {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
     ...(zenithOutput?.bindings ?? []),
     ...(nadirOutput?.bindings ?? [])
@@ -1233,16 +1338,16 @@ function getFusedMarchNodes<Parameters>(
   }
   const loads = [
     props.sineSum
-      ? 'var sineAccumulator = select(0.0, sineSum[sineSumOffset + pixel], FIRST_SECTOR > 0u);'
+      ? 'var sineAccumulator = select(0.0, sineSum[sineSumOffset + pixel], firstSector > 0u);'
       : '',
     props.angleSum
-      ? 'var angleAccumulator = select(0.0, angleSum[angleSumOffset + pixel], FIRST_SECTOR > 0u);'
+      ? 'var angleAccumulator = select(0.0, angleSum[angleSumOffset + pixel], firstSector > 0u);'
       : '',
     props.anisotropicSum
-      ? 'var anisotropicAccumulator = select(0.0, anisotropicSum[anisotropicSumOffset + pixel], FIRST_SECTOR > 0u);'
+      ? 'var anisotropicAccumulator = select(0.0, anisotropicSum[anisotropicSumOffset + pixel], firstSector > 0u);'
       : '',
     props.nadirSum
-      ? 'var nadirAccumulator = select(0.0, nadirSum[nadirSumOffset + pixel], FIRST_SECTOR > 0u);'
+      ? 'var nadirAccumulator = select(0.0, nadirSum[nadirSumOffset + pixel], firstSector > 0u);'
       : ''
   ].join('\n  ');
   const stores = [
@@ -1253,33 +1358,40 @@ function getFusedMarchNodes<Parameters>(
       : '',
     props.nadirSum ? 'nadirSum[nadirSumOffset + pixel] = nadirAccumulator;' : ''
   ].join('\n  ');
-  const nodes: GPUCommandNode<Parameters>[] = [];
-  for (let first = 0, chunk = 0; first < directionCount; first += sectorsPerChunk, chunk++) {
-    const end = Math.min(directionCount, first + sectorsPerChunk);
+  const ranges = createHorizonSectorRanges<Parameters>(graph, {
+    id: props.id,
+    directionCount,
+    sectorsPerRange: sectorsPerChunk
+  });
+  const nodes: GPUCommandNode<Parameters>[] = [ranges.writeNode];
+  for (let chunk = 0; chunk < ranges.rangeCount; chunk++) {
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${props.id}-horizon-march-${chunk}`,
         operation: 'GPUTerrainHorizon',
         variant: `march-fused-${props.cellSizeMode}${nadir ? '-nadir' : ''}`,
-        bindings,
+        bindings: [
+          ...bindings,
+          {name: 'sectorRange', view: ranges.getRange(chunk), type: 'u32', access: 'read'}
+        ],
         invocationCount: pixelCount,
         declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
-const FIRST_SECTOR: u32 = ${first}u;
-const END_SECTOR: u32 = ${end}u;
 const DIRECTION_COUNT: u32 = ${directionCount}u;
 const DIRECTIONS: array<vec2<f32>, ${directionCount}> = array<vec2<f32>, ${directionCount}>(${directions});
 const STEP_COUNT: u32 = ${props.stepCount}u;
 const STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${zenithOutput?.declarations ?? ''}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
+${getRasterGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}
 ${HORIZON_MARCH_SAMPLE_WGSL}
-${TERRAIN_PIXEL_DIRECTION_WGSL}`,
+${RASTER_PIXEL_DIRECTION_WGSL}`,
         body: `let pixel = index;
+  let firstSector = sectorRange[sectorRangeOffset];
+  let endSector = sectorRange[sectorRangeOffset + 1u];
   let column = index % WIDTH;
   let row = index / WIDTH;
   let zFactor = settings[settingsOffset + 2u];
@@ -1291,7 +1403,7 @@ ${TERRAIN_PIXEL_DIRECTION_WGSL}`,
   let limit = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
   let center = vec2<f32>(f32(column), f32(row));
   ${loads}
-  for (var sector = FIRST_SECTOR; sector < END_SECTOR; sector++) {
+  for (var sector = firstSector; sector < endSector; sector++) {
     // DIRECTIONS are ground azimuths; the pixel step follows them on anisotropic cells. The ray
     // keeps this row's cell size (see GPUTerrainHorizonAlgorithm for the along-ray error).
     let direction = getPixelDirection(DIRECTIONS[sector], groundCell);
@@ -1338,21 +1450,24 @@ ${TERRAIN_PIXEL_DIRECTION_WGSL}`,
   return nodes;
 }
 
-/** Builds the ray-march kernel for one horizon sector. */
+/**
+ * Builds the ray-march kernel for one horizon sector. The sector is read from `sectorRange`, so
+ * every sector's kernel has the same WGSL (library rule 12).
+ */
 function getHorizonNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     width: number;
     height: number;
-    sector: number;
+    /** Range word `[sector, sector + 1]`, see {@link createHorizonSectorRanges}. */
+    sectorRange: GraphDataView<'uint32'>;
     directionCount: number;
-    direction: [number, number];
+    rowDirection: GPURasterRowDirection;
     distances: string;
     stepCount: number;
-    cellSizeMode: GPUTerrainCellSizeMode;
+    cellSizeMode: GPURasterCellSizeMode;
     elevationValues: GraphDataView<'float32'>;
-    elevationValidity: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
     horizonFormat: GPUTerrainHorizonFormat;
     horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
@@ -1369,18 +1484,14 @@ function getHorizonNode<Parameters>(
       type: 'f32',
       access: 'read'
     },
-    {
-      name: 'elevationValidity',
-      view: props.elevationValidity,
-      type: 'u32',
-      access: 'read'
-    },
-    {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+    {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+    {name: 'sectorRange', view: props.sectorRange, type: 'u32', access: 'read'}
   ];
   const zenithOutput =
     props.horizon || props.sineSum || props.angleSum || props.anisotropicSum
       ? getTerrainHorizonSectorOutput({
-          sector: props.sector,
+          sector: 0,
+          sectorWGSL: 'sector',
           directionCount: props.directionCount,
           horizonFormat: props.horizonFormat,
           horizon: props.horizon,
@@ -1393,7 +1504,8 @@ function getHorizonNode<Parameters>(
       : undefined;
   const nadirOutput = props.nadirSum
     ? getTerrainHorizonSectorOutput({
-        sector: props.sector,
+        sector: 0,
+        sectorWGSL: 'sector',
         directionCount: props.directionCount,
         nadirSum: props.nadirSum,
         mode: 'nadir',
@@ -1402,6 +1514,10 @@ function getHorizonNode<Parameters>(
     : undefined;
   bindings.push(...(zenithOutput?.bindings ?? []), ...(nadirOutput?.bindings ?? []));
   const nadir = Boolean(nadirOutput);
+  const directions = Array.from({length: props.directionCount}, (_, sector) => {
+    const [x, y] = getGPUTerrainHorizonDirection(sector, props.directionCount, props.rowDirection);
+    return `vec2<f32>(${getWGSLFloatLiteral(x)}, ${getWGSLFloatLiteral(y)})`;
+  }).join(', ');
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: 'GPUTerrainHorizon',
@@ -1410,27 +1526,27 @@ function getHorizonNode<Parameters>(
     invocationCount: props.width * props.height,
     declarations: `const WIDTH: u32 = ${props.width}u;
 const HEIGHT: u32 = ${props.height}u;
-const SECTOR: u32 = ${props.sector}u;
 const DIRECTION_COUNT: u32 = ${props.directionCount}u;
-const DIRECTION: vec2<f32> = vec2<f32>(${getWGSLFloatLiteral(props.direction[0])}, ${getWGSLFloatLiteral(props.direction[1])});
+const DIRECTIONS: array<vec2<f32>, ${props.directionCount}> = array<vec2<f32>, ${props.directionCount}>(${directions});
 const STEP_COUNT: u32 = ${props.stepCount}u;
 const STEP_DISTANCES: array<f32, ${props.stepCount}> = array<f32, ${props.stepCount}>(${props.distances});
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
 ${zenithOutput?.declarations ?? ''}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
+${getRasterGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}
 ${HORIZON_MARCH_SAMPLE_WGSL}
-${TERRAIN_PIXEL_DIRECTION_WGSL}`,
+${RASTER_PIXEL_DIRECTION_WGSL}`,
     body: `let pixel = index;
+  let sector = sectorRange[sectorRangeOffset];
   let column = index % WIDTH;
   let row = index / WIDTH;
   let zFactor = settings[settingsOffset + 2u];
   let curvature = settings[settingsOffset + 3u];
   let maximumDistance = settings[settingsOffset + 6u];
   let groundCell = getGroundCellSize(row);
-  let direction = getPixelDirection(DIRECTION, groundCell);
+  let direction = getPixelDirection(DIRECTIONS[sector], groundCell);
   let groundStep = length(direction * groundCell);
   var horizonAngle = getNaN(index);
   var nadirAngle = getNaN(index);

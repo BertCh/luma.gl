@@ -2,32 +2,40 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  type GPUTerrainCellSizeMode,
-  validateTerrainCellSizeMode
-} from '../terrain-grid-utils';
+  getStorageBindingElementLimit,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterGridGeoreference,
+  getRasterGroundCellSizeWGSL,
+  type GPURasterCellSizeMode,
+  validateRasterCellSizeMode,
+  writeRasterGridParameterValues
+} from '../../analysis-core/raster-grid';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateRasterBandBelongsToGraph,
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_FEATURES_DISC_WGSL,
   TERRAIN_FEATURES_WGSL_CONSTANTS,
@@ -37,7 +45,7 @@ import {
 } from './terrain-features-utils';
 
 /**
- * Status codes written to `GPUTerrainPeakSnapProps.status`, in precedence order:
+ * Status codes written to `GPUTerrainPeakSnapOutput.snapStatus`, in precedence order:
  *
  * - `unchanged` (0): the best disc pixel is the pixel nearest the candidate. The position is kept.
  * - `snapped` (1): moved to the pixel centre of the best disc pixel.
@@ -60,16 +68,26 @@ export const GPU_TERRAIN_PEAK_SNAP_STATUS = {
   outside: 6
 } as const;
 
-/** Number of float32 values read from `GPUTerrainPeakSnapProps.settings`. */
+/** Number of float32 values read from `GPUTerrainPeakSnapProps.parameters`. */
 export const GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH = 8;
 
 /**
- * CPU-side description packed by {@link getGPUTerrainPeakSnapParameterValues}.
- *
- * Cell-size model: `cellSize` and the edges follow `GPUTerrainPeakSnapProps.cellSizeMode`
- * (`uniform`: projected metres per pixel; `web-mercator`: equatorial Web Mercator metres and
- * normalized y edges; `geographic`: degrees per pixel and latitude-degree edges). `radius`,
- * `maximumMove`, and `maximumHeightChange` are ground metres or elevation units.
+ * Largest `candidates` row count of {@link GPUTerrainPeakSnap} on `device`: the kernel keeps five
+ * `uint32` result words (20 bytes) per candidate in one storage binding, so 6710886 on a default
+ * device (128 MiB bindings).
+ */
+export function getGPUTerrainPeakSnapMaximumCandidateCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 20);
+}
+
+/** Cell size and row-edge slots of the peak snap parameter layout. */
+const TERRAIN_PEAK_SNAP_GRID_SLOTS = {cellSizeIndex: 3, northEdgeIndex: 5} as const;
+
+/**
+ * CPU-side description packed by {@link getGPUTerrainPeakSnapParameterValues}. The cell size and
+ * latitude band come from the grid passed next to it and follow
+ * `GPUTerrainPeakSnapProps.cellSizeMode`. `radius`, `maximumMove`, and `maximumHeightChange` are
+ * ground metres or elevation units.
  */
 export type GPUTerrainPeakSnapSettings = {
   /** Default disc radius in ground metres, used for candidates without a radius. Defaults to 150. */
@@ -78,77 +96,94 @@ export type GPUTerrainPeakSnapSettings = {
   maximumMove?: number;
   /** Largest accepted `|best - reference|` in elevation units. Defaults to 80. */
   maximumHeightChange?: number;
-  /** `[x, y]` cell size; see the cell-size model above. Finite and positive. */
-  cellSize: readonly [number, number];
   /** Keep the candidate when the best pixel lies on the disc ring (a flank). Defaults to true. */
   interior?: boolean;
-  /** Top edge of row 0: normalized Web Mercator y or latitude degrees. Defaults to 0. */
-  northEdge?: number;
-  /** Bottom edge of the last row, same units as `northEdge`. Defaults to 0. */
-  southEdge?: number;
 };
 
 /**
  * Packs peak snap settings into
- * `[radius, maximumMove, maximumHeightChange, cellSizeX, cellSizeY, northEdge, southEdge, interior]`.
+ * `[radius, maximumMove, maximumHeightChange, cellSizeX, cellSizeY, northEdge, southEdge, interior]`,
+ * with the cell size and the row-edge world y taken from `grid`.
  *
  * @throws If a radius, move, or height limit is not finite and positive (`maximumHeightChange`
- * may be 0), the cell size is not finite and positive, or `target` is too short.
+ * may be 0), the grid cell size is not finite and positive, or `target` is too short.
  */
 export function getGPUTerrainPeakSnapParameterValues(
   settings: GPUTerrainPeakSnapSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH) {
-    throw new Error('Terrain peak snap settings target must hold 8 values');
-  }
+  const name = 'getGPUTerrainPeakSnapParameterValues';
+  validateParameterTarget(name, target, GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH);
   const radius = settings.radius ?? 150;
   const maximumMove = settings.maximumMove ?? 300;
   const maximumHeightChange = settings.maximumHeightChange ?? 80;
-  validateTerrainFeaturesScalar('Terrain peak snap', 'radius', radius, 0, true);
-  validateTerrainFeaturesScalar('Terrain peak snap', 'maximumMove', maximumMove, 0);
-  validateTerrainFeaturesScalar('Terrain peak snap', 'maximumHeightChange', maximumHeightChange, 0);
-  validateTerrainFeaturesCellSize('Terrain peak snap', settings.cellSize);
-  target.set([
-    radius,
-    maximumMove,
-    maximumHeightChange,
-    settings.cellSize[0],
-    settings.cellSize[1],
-    settings.northEdge ?? 0,
-    settings.southEdge ?? 0,
-    settings.interior === false ? 0 : 1
-  ]);
+  validateTerrainFeaturesScalar(name, 'radius', radius, 0, true);
+  validateTerrainFeaturesScalar(name, 'maximumMove', maximumMove, 0);
+  validateTerrainFeaturesScalar(name, 'maximumHeightChange', maximumHeightChange, 0);
+  validateTerrainFeaturesCellSize(name, getRasterGridGeoreference(grid).cellSize);
+  target[0] = radius;
+  target[1] = maximumMove;
+  target[2] = maximumHeightChange;
+  target[7] = settings.interior === false ? 0 : 1;
+  writeRasterGridParameterValues(target, grid, TERRAIN_PEAK_SNAP_GRID_SLOTS);
   return target;
 }
+
+/** Status words of {@link GPUTerrainPeakSnap}. */
+export type GPUTerrainPeakSnapStatus = {
+  /** One-row `uint32` set to 1 when any candidate's radius was clamped, else 0. */
+  radiusClamped?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUTerrainPeakSnap}, one row per candidate. */
+export type GPUTerrainPeakSnapOutput = {
+  /**
+   * Positions `[column, row]` per candidate: the best pixel centre when `snapStatus` is `snapped`,
+   * otherwise the original candidate position.
+   */
+  positions: GraphDataView<'float32x2'>;
+  /**
+   * DEM heights per candidate: the height of the best pixel when `snapStatus` is `snapped`,
+   * otherwise the bilinear DEM height at the candidate (NaN when the candidate is outside or any of
+   * its four surrounding pixels is invalid). The caller decides how to combine it with a catalogue
+   * elevation, for example `max(height, catalogueHeight)`.
+   */
+  heights: GraphDataView<'float32'>;
+  /** {@link GPU_TERRAIN_PEAK_SNAP_STATUS} code per candidate. */
+  snapStatus: GraphDataView<'uint32'>;
+  /** Optional move length in ground metres: positive when `snapped`, otherwise 0. */
+  snapDistance?: GraphDataView<'float32'>;
+  /** Optional status words. */
+  status?: GPUTerrainPeakSnapStatus;
+};
 
 /**
  * Properties for {@link GPUTerrainPeakSnap}.
  *
  * Topology (needs a new graph): grid size, elevation format, `cellSizeMode`,
- * `maximumRadiusPixels`, candidate count, and which optional views exist. Per-frame: `settings`,
- * candidate contents, and elevation contents.
+ * `maximumRadiusPixels`, candidate count, and which optional views exist. Per-frame:
+ * `parameters`, candidate contents, and elevation contents.
  */
 export type GPUTerrainPeakSnapProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-peak-snap'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture, canonicalised to float32 plus validity. */
   elevation: GPURasterBand;
-  /** How `settings.cellSize` becomes ground metres per pixel per row. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  /** How the grid cell size becomes ground metres per pixel per row. Defaults to `'uniform'`. */
+  cellSizeMode?: GPURasterCellSizeMode;
   /**
    * Compile-time loop bound: the disc may reach this many pixels from the candidate on each axis.
    * Integer in `[1, 64]`, default 16. A larger per-frame radius is clamped to the largest radius
-   * that fits and raises `overflow`.
+   * that fits and raises `output.status.radiusClamped`.
    */
   maximumRadiusPixels?: number;
   /**
    * Candidate positions `[column, row]` in pixel-centre index space: pixel `(c, r)` has its centre
-   * at `(c, r)`, like `GPUTerrainViewshed.observer`. Fractional values are allowed.
+   * at `(c, r)`, like `GPUTerrainViewshed.observer`. Fractional values are allowed. At most
+   * {@link getGPUTerrainPeakSnapMaximumCandidateCount} rows (6710886 on a default device).
    */
   candidates: GraphDataView<'float32x2'>;
   /**
@@ -158,32 +193,16 @@ export type GPUTerrainPeakSnapProps = {
   candidateHeights?: GraphDataView<'float32'>;
   /**
    * Optional per-candidate search radius in ground metres, one per candidate. Non-finite or
-   * non-positive entries fall back to the settings radius. A distance-dependent rule such as
+   * non-positive entries fall back to the parameters radius. A distance-dependent rule such as
    * `min(250, 60 + 0.004 * distance)` metres (60 m plus 0.4 % of the distance to the viewer,
    * capped at 250 m, used for peaks drawn from coarser tiles in the mt-image skyline renderer) is
    * a caller contributor: compute it per candidate and upload it here.
    */
   candidateRadii?: GraphDataView<'float32'>;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUTerrainPeakSnapParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /**
-   * Output positions `[column, row]` per candidate: the best pixel centre when status is `snapped`,
-   * otherwise the original candidate position.
-   */
-  positions: GraphDataView<'float32x2'>;
-  /**
-   * Output DEM heights per candidate: the height of the best pixel when status is `snapped`,
-   * otherwise the bilinear DEM height at the candidate (NaN when the candidate is outside or any of
-   * its four surrounding pixels is invalid). The caller decides how to combine it with a catalogue
-   * elevation, for example `max(height, catalogueHeight)`.
-   */
-  heights: GraphDataView<'float32'>;
-  /** Output {@link GPU_TERRAIN_PEAK_SNAP_STATUS} code per candidate. */
-  status: GraphDataView<'uint32'>;
-  /** Optional output move length in ground metres: positive when `snapped`, otherwise 0. */
-  snapDistance?: GraphDataView<'float32'>;
-  /** Optional one-row `uint32` set to 1 when any candidate's radius was clamped, else 0. */
-  overflow?: GraphDataView<'uint32'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUTerrainPeakSnapParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUTerrainPeakSnapOutput;
 };
 
 /**
@@ -224,20 +243,23 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-peak-snap';
     this.props = props;
     const {id} = this;
-    validateTerrainGrid(id, props.width, props.height);
-    validateTerrainCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    const {output} = props;
+    const radiusClamped = output.status?.radiusClamped;
+    validateRasterGrid(id, props.grid);
+    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     validateTerrainFeaturesMaximumRadiusPixels(id, props.maximumRadiusPixels);
     validatePackedView(props.candidates, ['float32x2'], `${id} candidates`);
     const candidateCount = props.candidates.length;
     if (candidateCount < 1) {
       throw new Error(`${id} candidates must contain at least one row`);
     }
-    validateTerrainSettings(id, props.settings, GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH);
+    validateRasterParameters(id, props.parameters, GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH);
     for (const [name, view] of [
       ['candidateHeights', props.candidateHeights],
       ['candidateRadii', props.candidateRadii],
-      ['heights', props.heights],
-      ['snapDistance', props.snapDistance]
+      ['output.heights', output.heights],
+      ['output.snapDistance', output.snapDistance]
     ] as const) {
       if (!view) {
         continue;
@@ -247,26 +269,26 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must contain one value per candidate`);
       }
     }
-    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length !== candidateCount) {
-      throw new Error(`${id} positions must contain one value per candidate`);
+    validatePackedView(output.positions, ['float32x2'], `${id} output.positions`);
+    if (output.positions.length !== candidateCount) {
+      throw new Error(`${id} output.positions must contain one value per candidate`);
     }
-    validatePackedUint32View(props.status, `${id} status`);
-    if (props.status.length !== candidateCount) {
-      throw new Error(`${id} status must contain one value per candidate`);
+    validatePackedView(output.snapStatus, ['uint32'], `${id} output.snapStatus`);
+    if (output.snapStatus.length !== candidateCount) {
+      throw new Error(`${id} output.snapStatus must contain one value per candidate`);
     }
-    if (props.overflow) {
-      validatePackedUint32View(props.overflow, `${id} overflow`);
-      if (props.overflow.length < 1) {
-        throw new Error(`${id} overflow must contain one uint32 row`);
+    if (radiusClamped) {
+      validatePackedView(radiusClamped, ['uint32'], `${id} output.status.radiusClamped`);
+      if (radiusClamped.length < 1) {
+        throw new Error(`${id} output.status.radiusClamped must contain one row`);
       }
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.positions, props.heights, props.status, props.snapDistance, props.overflow],
+      [output.positions, output.heights, output.snapStatus, output.snapDistance, radiusClamped],
       [
-        ...getTerrainBandViews(props.elevation),
-        props.settings,
+        ...getRasterBandViews(props.elevation),
+        props.parameters,
         props.candidates,
         props.candidateHeights,
         props.candidateRadii
@@ -279,36 +301,44 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    const {width, height} = props.grid;
+    const radiusClamped = output.status?.radiusClamped;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
+      props.parameters,
       props.candidates,
       props.candidateHeights,
       props.candidateRadii,
-      props.positions,
-      props.heights,
-      props.status,
-      props.snapDistance,
-      props.overflow
+      output.positions,
+      output.heights,
+      output.snapStatus,
+      output.snapDistance,
+      radiusClamped
     ]);
     const candidateCount = props.candidates.length;
+    validateMaximumCount(
+      id,
+      'candidates rows',
+      candidateCount,
+      getGPUTerrainPeakSnapMaximumCandidateCount(graph.device)
+    );
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
     const maximumRadiusPixels = validateTerrainFeaturesMaximumRadiusPixels(
       id,
       props.maximumRadiusPixels
     );
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const validity = source.band.validity as GraphDataView<'uint32'>;
     // Per candidate: status, position column bits, position row bits, height bits, distance bits.
     const results = createTransientView(graph, `${id}-results`, 'uint32', candidateCount * 5);
-    if (props.overflow) {
+    if (radiusClamped) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-overflow-clear`,
           operation: 'GPUTerrainPeakSnap',
-          view: props.overflow,
+          view: radiusClamped,
           type: 'u32',
           value: '0u',
           componentCount: 1
@@ -323,7 +353,7 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
         access: 'read' as const
       },
       {name: 'elevationValidity', view: validity, type: 'u32' as const, access: 'read' as const},
-      {name: 'settings', view: props.settings, type: 'f32' as const, access: 'read' as const},
+      {name: 'settings', view: props.parameters, type: 'f32' as const, access: 'read' as const},
       {
         name: 'candidates',
         view: props.candidates as GraphDataView,
@@ -351,11 +381,11 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
           ]
         : []),
       {name: 'results', view: results, type: 'u32' as const, access: 'read_write' as const},
-      ...(props.overflow
+      ...(radiusClamped
         ? [
             {
               name: 'overflowValues',
-              view: props.overflow,
+              view: radiusClamped,
               type: 'atomic<u32>' as const,
               access: 'read_write' as const
             }
@@ -394,8 +424,8 @@ const STATUS_REJECTED_HEIGHT: u32 = ${codes.rejectedHeight}u;
 const STATUS_NO_DATA: u32 = ${codes.noData}u;
 const STATUS_OUTSIDE: u32 = ${codes.outside}u;
 ${TERRAIN_FEATURES_WGSL_CONSTANTS}
-${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(cellSizeMode, {cellSizeIndex: 3, northEdgeIndex: 5})}
+${RASTER_WGSL_HELPERS}
+${getRasterGroundCellSizeWGSL(cellSizeMode, TERRAIN_PEAK_SNAP_GRID_SLOTS)}
 ${TERRAIN_FEATURES_DISC_WGSL}
 var<private> snapStatus: u32;
 var<private> snapPosition: vec2<f32>;
@@ -447,7 +477,7 @@ fn prepareSnap(index: u32, candidate: vec2<f32>, isLeader: bool) -> bool {
       isFiniteValue(requested) && requested > 0.0)) {
     return false;
   }
-  ${props.overflow ? 'if (isLeader && isRadiusClamped(requested, cell)) { atomicMax(&overflowValues[overflowValuesOffset], 1u); }' : ''}
+  ${radiusClamped ? 'if (isLeader && isRadiusClamped(requested, cell)) { atomicMax(&overflowValues[overflowValuesOffset], 1u); }' : ''}
   let radius = getEffectiveRadius(requested, cell);
   let radiusSquared = radius * radius;
   let extentX = getDiscExtent(radius, cell.x);
@@ -564,27 +594,27 @@ fn finishSnap(index: u32, candidate: vec2<f32>, bestIndex: u32, bestHeight: f32)
           {name: 'results', view: results, type: 'u32', access: 'read'},
           {
             name: 'positionValues',
-            view: props.positions as GraphDataView,
+            view: output.positions as GraphDataView,
             type: 'f32',
             access: 'read_write'
           },
           {
             name: 'heightValues',
-            view: props.heights as GraphDataView,
+            view: output.heights as GraphDataView,
             type: 'u32',
             access: 'read_write'
           },
           {
             name: 'statusValues',
-            view: props.status as GraphDataView,
+            view: output.snapStatus as GraphDataView,
             type: 'u32',
             access: 'read_write'
           },
-          ...(props.snapDistance
+          ...(output.snapDistance
             ? [
                 {
                   name: 'distanceValues',
-                  view: props.snapDistance as GraphDataView,
+                  view: output.snapDistance as GraphDataView,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -597,7 +627,7 @@ fn finishSnap(index: u32, candidate: vec2<f32>, bestIndex: u32, bestHeight: f32)
   positionValues[positionValuesOffset + 2u * index] = bitcast<f32>(results[resultBase + 1u]);
   positionValues[positionValuesOffset + 2u * index + 1u] = bitcast<f32>(results[resultBase + 2u]);
   heightValues[heightValuesOffset + index] = results[resultBase + 3u];
-  ${props.snapDistance ? 'distanceValues[distanceValuesOffset + index] = results[resultBase + 4u];' : ''}`
+  ${output.snapDistance ? 'distanceValues[distanceValuesOffset + index] = results[resultBase + 4u];' : ''}`
       })
     );
     return nodes;

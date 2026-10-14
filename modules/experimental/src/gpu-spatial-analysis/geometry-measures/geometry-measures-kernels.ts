@@ -24,9 +24,6 @@ import {
 /** Coordinate interpretation of `GPUGeometryMeasures`. */
 export type GPUGeometryCoordinateSystem = 'planar' | 'spherical' | 'wgs84' | 'geodesic';
 
-/** How `GPUGeometryMeasures` combines the rings of one polygon feature. */
-export type GPUGeometryHoleRule = 'winding' | 'first-ring-exterior';
-
 /**
  * Words per feature or group in the internal stats column:
  * `[length, signedArea, area, centroidX, centroidY, minX, minY, maxX, maxY, vertexCount, featureCount,
@@ -237,13 +234,22 @@ export type FeatureMeasuresNodeProps = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
-  ringOffsets: GraphDataView<'uint32'>;
-  featureRingOffsets?: GraphDataView<'uint32'>;
+  /** Vertex offsets per ring (or line, or multi-point). Absent: every ring is one vertex row. */
+  ringOffsets?: GraphDataView<'uint32'>;
+  /**
+   * Feature-to-ring offsets (or, with `polygonOffsets`, feature-to-polygon offsets). Absent: every
+   * ring is its own feature.
+   */
+  featureOffsets?: GraphDataView<'uint32'>;
+  /**
+   * Polygon-to-ring offsets. When present ring role is decided by position (a ring that starts a
+   * polygon is a shell, every other ring a hole), as in GeoArrow.
+   */
+  polygonOffsets?: GraphDataView<'uint32'>;
   featureCount: number;
   isPolygon: boolean;
   /** Features are point sets: no edges, centroid is the vertex mean. */
   isPoint?: boolean;
-  holeRule: GPUGeometryHoleRule;
   coordinateSystem: GPUGeometryCoordinateSystem;
   radius: number;
   /** `featureCount * GEOMETRY_STATS_STRIDE` words. */
@@ -274,13 +280,23 @@ export function createFeatureMeasuresNode<Parameters>(
   const isEllipsoidal = coordinateSystem === 'wgs84' || coordinateSystem === 'geodesic';
   const isGeodesic = coordinateSystem === 'geodesic';
   const bindings: WGSLKernelBinding[] = [
-    {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-    {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'}
+    {name: 'positions', view: props.positions, type: 'f32', access: 'read'}
   ];
-  if (props.featureRingOffsets) {
+  if (props.ringOffsets) {
+    bindings.push({name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'});
+  }
+  if (props.featureOffsets) {
     bindings.push({
-      name: 'featureRingOffsets',
-      view: props.featureRingOffsets,
+      name: 'featureOffsets',
+      view: props.featureOffsets,
+      type: 'u32',
+      access: 'read'
+    });
+  }
+  if (props.polygonOffsets) {
+    bindings.push({
+      name: 'polygonOffsets',
+      view: props.polygonOffsets,
       type: 'u32',
       access: 'read'
     });
@@ -291,11 +307,9 @@ export function createFeatureMeasuresNode<Parameters>(
     type: 'u32',
     access: 'read_write'
   });
-  const ringRange = props.featureRingOffsets
-    ? `let ringBegin = min(featureRingOffsets[featureRingOffsetsOffset + index], RING_COUNT);
-  let ringEnd = min(max(featureRingOffsets[featureRingOffsetsOffset + index + 1u], ringBegin), RING_COUNT);`
-    : `let ringBegin = index;
-  let ringEnd = index + 1u;`;
+  const ringRange = `let ringRange = getFeatureRingRange(index);
+  let ringBegin = ringRange.x;
+  let ringEnd = ringRange.y;`;
   const lengthSource = {
     planar: 'return length(b - a);',
     spherical: 'return geodesicCentralAngle(a, b) * RADIUS;',
@@ -338,10 +352,36 @@ export function createFeatureMeasuresNode<Parameters>(
     : 'let edgeCross = cross;';
   const commonDeclarations = `
 const ROW_COUNT: u32 = ${props.positions.length}u;
-const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const RING_COUNT: u32 = ${props.ringOffsets ? props.ringOffsets.length - 1 : props.positions.length}u;
 const IS_POLYGON: bool = ${props.isPolygon};
 const IS_POINT: bool = ${props.isPoint ?? false};
-const FIRST_RING_EXTERIOR: bool = ${props.holeRule === 'first-ring-exterior'};
+const FIRST_RING_EXTERIOR: bool = ${Boolean(props.polygonOffsets)};
+${
+  props.polygonOffsets
+    ? `const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
+
+// GeoArrow ring role by position: ring 'ring' is a shell when it starts a polygon (binary search
+// of polygonOffsets). A ring outside the polygonOffsets range keeps the first-ring rule.
+fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
+  if (ring < polygonOffsets[polygonOffsetsOffset] || ring >= polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT]) {
+    return isFirstRing;
+  }
+  var low = 0u;
+  var high = POLYGON_COUNT;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (polygonOffsets[polygonOffsetsOffset + middle] < ring) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return polygonOffsets[polygonOffsetsOffset + low] == ring;
+}`
+    : `fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
+  return isFirstRing;
+}`
+}
 const IS_GEOGRAPHIC: bool = ${isGeographic};
 const STATS_STRIDE: u32 = ${GEOMETRY_STATS_STRIDE}u;
 ${GEODESIC_WGSL}
@@ -440,7 +480,14 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
     );
 
   const cooperativeRingRows = props.cooperativeRingRows ?? 0;
-  const ringHelpers = getRingHelpersSource(Boolean(props.featureRingOffsets), cooperativeRingRows);
+  const ringHelpers = getRingHelpersSource(
+    {
+      hasRingOffsets: Boolean(props.ringOffsets),
+      hasFeatureOffsets: Boolean(props.featureOffsets),
+      hasPolygonOffsets: Boolean(props.polygonOffsets)
+    },
+    cooperativeRingRows
+  );
   if (props.cooperative) {
     // Every cooperative feature owns more than `cooperativeRingRows` rows, which bounds how many
     // there can be and so how many workgroups are worth launching; they stride over the features.
@@ -473,8 +520,7 @@ ${getCooperativeSource({
     variant: 'feature-measures',
     bindings,
     invocationCount: props.featureCount,
-    declarations:
-      cooperativeRingRows > 0 ? `${commonDeclarations}\n${ringHelpers}` : commonDeclarations,
+    declarations: `${commonDeclarations}\n${ringHelpers}`,
     body: /* wgsl */ `
   ${cooperativeRingRows > 0 ? 'if (isCooperativeFeature(index)) {\n    return;\n  }' : ''}
   ${ringRange}
@@ -482,8 +528,9 @@ ${getCooperativeSource({
   var origin = vec2<f32>(0.0);
   var hasVertex = false;
   for (var ring = ringBegin; ring < ringEnd; ring++) {
-    let rowBegin = min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
-    let rowEnd = min(max(ringOffsets[ringOffsetsOffset + ring + 1u], rowBegin), ROW_COUNT);
+    let ringRows = getRingRows(ring);
+    let rowBegin = ringRows.x;
+    let rowEnd = rowBegin + ringRows.y;
     if (rowEnd > rowBegin) {
       origin = getPosition(rowBegin);
       hasVertex = true;
@@ -522,8 +569,9 @@ ${getCooperativeSource({
   var invalidRings = 0u;
   var isFirstRing = true;
   for (var ring = ringBegin; ring < ringEnd; ring++) {
-    let rowBegin = min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
-    let rowEnd = min(max(ringOffsets[ringOffsetsOffset + ring + 1u], rowBegin), ROW_COUNT);
+    let ringRows = getRingRows(ring);
+    let rowBegin = ringRows.x;
+    let rowEnd = rowBegin + ringRows.y;
     let rowCount = rowEnd - rowBegin;
     if (rowCount == 0u) {
       continue;
@@ -625,7 +673,7 @@ ${getCooperativeSource({
     var ringFactor = 1.0;
     if (FIRST_RING_EXTERIOR) {
       let ringSign = select(-1.0, 1.0, getCompensated(ringArea) >= 0.0);
-      ringFactor = select(-1.0, 1.0, isFirstRing) * ringSign;
+      ringFactor = select(-1.0, 1.0, isShellRing(ring, isFirstRing)) * ringSign;
     }
     addCompensated(&areaSum, ringFactor * getCompensated(ringArea));
     addCompensated(&straightSum, ringFactor * getCompensated(ringStraightArea));
@@ -641,7 +689,6 @@ ${getTailSource('')}`
 export type GeometryMeasureColumns = {
   lengths?: GraphDataView<'float32'>;
   areas?: GraphDataView<'float32'>;
-  signedAreas?: GraphDataView<'float32'>;
   centroids?: GraphDataView<'float32x2'>;
   bounds?: GraphDataView<'float32x4'>;
   vertexCounts?: GraphDataView<'uint32'>;
@@ -681,7 +728,6 @@ export function createMeasuresScatterNode<Parameters>(
     }
   };
   addColumn('lengths', 'f32', 'lengths[lengthsOffset + index] = getStat(0u);');
-  addColumn('signedAreas', 'f32', 'signedAreas[signedAreasOffset + index] = getStat(1u);');
   addColumn('areas', 'f32', 'areas[areasOffset + index] = getStat(2u);');
   addColumn(
     'centroids',

@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,8 +12,12 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createSegmentSumNode, getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {GET_NAN_WGSL} from '../../utils/wgsl-common';
@@ -22,12 +25,15 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createSphericalCellWeightsNode,
   getRasterSphereRadius,
   validateGeographicRaster
-} from './spherical-cell-area';
+} from '../../analysis-core/spherical-cell-area';
+import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
+import type {GPUOverflowStatusPort, GPUStatusScalar} from '../../analysis-core/contracts/status';
 import {getZoneAnchorNodes} from './zone-anchor-nodes';
 import {getKeyGroupNodes, KEY_PAIR_INVALID} from '../spatial-weights/key-pair-grouping';
 import {getBoundedKeyPairSortNodes} from './bounded-key-pair-sort';
@@ -37,6 +43,26 @@ import {
 } from '../spatial-weights/spatial-weights';
 
 const OPERATION = 'GPUArealInterpolation';
+
+/**
+ * Largest grid cell count of {@link GPUArealInterpolation} on `device`: the sorted cell groups keep
+ * `cells + 1` uint32 group starts in one storage binding, so `2^25 - 1` on a default device
+ * (128 MiB bindings).
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPUArealInterpolationMaximumCellCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4, 1);
+}
+
+/**
+ * Largest pair slot count, `min(output.weights.neighbors rows, cells)`, of
+ * {@link GPUArealInterpolation} with `cellWeights`, `unweightedFastPath: false` or a
+ * longitude/latitude raster: the pair areas
+ * are sorted segment sums with one 256-thread workgroup per pair, and `slots * 256` invocations must
+ * fit one uint32 dispatch, so `2^24 - 1`.
+ */
+export const GPU_AREAL_INTERPOLATION_MAXIMUM_WEIGHTED_PAIR_COUNT = 2 ** 24 - 1;
 /** Planar coordinates, or longitude/latitude rasters weighted by spherical cell area. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
@@ -60,46 +86,97 @@ export type GPUArealInterpolationDenominators = {
   intensive?: GPUArealInterpolationDenominator;
 };
 
-/** Per-target category shares of a categorical source variable. */
+/** Categorical source variable turned into per-target category shares (`output.categoryShares`). */
 export type GPUArealCategories = {
   /** Category per source, in `[0, categoryCount)`; other values contribute to no category. */
   sourceCategories: GraphDataView<'uint32'>;
   /** Number of categories `K`. */
   categoryCount: number;
+};
+
+/** Caller-owned outputs of {@link GPUArealInterpolation}. */
+export type GPUArealInterpolationOutput = {
   /**
-   * Caller-owned `targetCount * K` shares, row-major (`output[t * K + k]`). `share(t, k)` is the
-   * overlap area of target `t` with sources of category `k`, divided by the area of `t` covered by
-   * any source, so the shares of a covered target sum to 1. Uncovered targets output 0.
+   * Output CSR with `targetZoneCount + 1` offsets: row `t` (target) lists its overlapping sources
+   * `s` as `neighbors`, ascending, with the area-share weight of `mode`. The slot capacity is
+   * `neighbors.length` and must hold the number of distinct (source, target) pairs that share at
+   * least one cell. `distances` is not written. This is a cross (target to source) weights matrix:
+   * its neighbors index sources, not rows.
    */
-  output: GraphDataView<'float32'>;
+  weights: GPUSpatialWeights;
+  /** Status words: pair overflow, the optional required pair count and the optional invalid count. */
+  status: GPUOverflowStatusPort & {
+    /** Optional one-row unclamped distinct pair count, for sizing the slot capacity. */
+    requiredPairCount?: GPUStatusScalar;
+    /**
+     * Optional one row: the number of sources with no raster area after anchoring. Their mass is
+     * lost.
+     */
+    invalidCount?: GPUStatusScalar;
+  };
+  /** Optional weights (one per slot) holding the normalization that is not `mode`. */
+  alternateWeights?: GraphDataView<'float32'>;
+  /**
+   * Optional overlap area per slot (cell count, or the sum of `cellWeights`; square meters on a
+   * longitude/latitude raster).
+   */
+  areas?: GraphDataView<'float32'>;
+  /**
+   * Optional `sourceZoneCount` rows: the whole raster area `A_s` of each source (cell count, or the
+   * sum of the cell weights; square meters on a longitude/latitude raster, after anchoring). 0 when
+   * the source rasterized to no cell.
+   */
+  sourceAreas?: GraphDataView<'float32'>;
+  /**
+   * Optional `sourceZoneCount` rows: the conservation fraction of each source, `sum_t a_st / A_s`
+   * with the extensive denominator, where `a_st` sums over targets (before `weights` slot
+   * clamping). With `'zone'`, 1 means the source lies entirely inside the target system and its
+   * extensive mass is fully transferred, and `1 - f` is the lost fraction. With `'overlap'` it is 1
+   * wherever the source overlaps any target and 0 where it does not. NaN when the source has no
+   * raster area (see `sourceAreas`).
+   */
+  sourceTransferredFractions?: GraphDataView<'float32'>;
+  /**
+   * `targetZoneCount * K` category shares, row-major (`categoryShares[t * K + k]`); required with
+   * `categories`. `share(t, k)` is the overlap area of target `t` with sources of category `k`,
+   * divided by the area of `t` covered by any source, so the shares of a covered target sum to 1.
+   * Uncovered targets output 0.
+   */
+  categoryShares?: GraphDataView<'float32'>;
 };
 
 /**
  * Properties for {@link GPUArealInterpolation}.
  *
- * Compile-time: `sourceCount`, `targetCount`, `denominator`, `mode`, `spatialContext`, `width`, view lengths
- * and the pair capacity (`weights.neighbors.length`). Per-frame: the contents of the zone rasters,
+ * Compile-time: `sourceZoneCount`, `targetZoneCount`, `denominator`, `mode`, `spatialContext`, the `grid` size,
+ * view lengths and the pair capacity (`output.weights.neighbors.length`). Per-frame: the contents of the zone rasters,
  * `cellWeights`, source values and categories.
  */
 export type GPUArealInterpolationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'areal-interpolation'`. */
   id?: string;
   /**
+   * Raster grid shared by the zone rasters (and `cellWeights`): its width and height size the
+   * kernels, and every raster holds exactly `grid.width * grid.height` rows.
+   */
+  grid: GPURasterMetadata;
+  /**
    * Source-zone raster: one cell per entry, the source feature row of each cell or any value
-   * `>= sourceCount` (such as `GPU_POLYGON_RASTERIZATION_NO_ZONE`) for no source. Typically the
-   * `zones` output of a `GPUPolygonRasterization` over the source polygons.
+   * `>= sourceZoneCount` (such as `GPU_POLYGON_RASTERIZATION_NO_ZONE`) for no source. Typically the
+   * `zones` output of a `GPUPolygonRasterization` over the source polygons. At most
+   * {@link getGPUArealInterpolationMaximumCellCount} cells (2^25 - 1 on a default device).
    */
   sourceZones: GraphDataView<'uint32'>;
   /**
-   * Target-zone raster on the same grid as `sourceZones` (same extent, width, height; same length),
+   * Target-zone raster on the same grid as `sourceZones` (same grid, same length),
    * from a `GPUPolygonRasterization` of the target polygons, or any zone raster such as H3 or
    * hexagon cells rasterized to the grid.
    */
   targetZones: GraphDataView<'uint32'>;
   /** Number of source zones `S`. */
-  sourceCount: number;
+  sourceZoneCount: number;
   /** Number of target zones `T`; also the row count of the output weights. */
-  targetCount: number;
+  targetZoneCount: number;
   /**
    * Optional dasymetric raster with one non-negative weight per cell (for example built-up
    * fraction or population density). Every area becomes a sum of these weights instead of a cell
@@ -117,7 +194,7 @@ export type GPUArealInterpolationProps = {
    *
    * Why the kinds differ. An extensive variable (counts) keeps tobler's `'zone'`: the share of a
    * source that falls outside every target is not invented onto the targets, and the lost fraction
-   * is reported in `sourceTransferredFractions`. An intensive variable (rate, mean) must not be
+   * is reported in `output.sourceTransferredFractions`. An intensive variable (rate, mean) must not be
    * diluted when a target is only partly covered by sources, so it defaults to `'overlap'` and is
    * the mean of what covers the target. Earlier versions applied `'zone'` to both.
    */
@@ -125,76 +202,38 @@ export type GPUArealInterpolationProps = {
   /**
    * Coordinate space of the zone rasters. Omitted means native planar: every area is a cell count
    * (or a sum of `cellWeights`). A `longitude-latitude` context (metric `'none'` or
-   * `'great-circle'`) means the rasters are longitude/latitude grids described by `extent` and
-   * `width`; each cell is then weighted by its spherical area in square meters,
+   * `'great-circle'`) means the rasters are longitude/latitude grids placed by `parameters`
+   * and `grid`; each cell is then weighted by its spherical area in square meters,
    * `R^2 dLon (sin(latTop) - sin(latBottom))` with `R` = `context.sphereRadius` or the WGS84
    * authalic radius, times `cellWeights` when given, so a latitude band is not over-counted.
    * Cell membership of the zones is by cell center in degrees. Other spaces throw.
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * `longitude-latitude` only: the per-frame raster placement `[originLongitude, originLatitude,
-   * cellWidth, cellHeight]` in degrees (the same view as `GPUPolygonRasterization.extent`, row 0
-   * at the smallest latitude). Required for, and only valid with, a longitude/latitude context.
+   * `longitude-latitude` only: the per-frame raster placement, the `getGPUPolygonRasterizationParameterValues(grid)`
+   * view, the same view as `GPUPolygonRasterization.parameters` (float32, at least 4 values). A
+   * negative cell height (north-up rows) is handled: cell areas follow the mirrored rows. Required
+   * for, and only valid with, a longitude/latitude context.
    */
-  extent?: GraphDataView<'float32'>;
-  /** `longitude-latitude` only: raster columns. Compile-time; must divide the cell count. */
-  width?: number;
+  parameters?: GraphDataView<'float32'>;
   /**
-   * Optional per-source fallback cell (`sourceCount` rows of cell indices; out of range means
+   * Optional per-source fallback cell (`sourceZoneCount` rows of cell indices; out of range means
    * none). A source zone that rasterized to no cell claims its anchor cell, for example the cell
    * containing the zone's label point, so its mass is not lost. The claim happens in a transient
    * copy of `sourceZones` and succeeds only if the cell belongs to no source or to a source that
    * keeps another cell; shared anchors go to the lowest source row. Sources that still have no
-   * cell are counted in `invalidCount`.
+   * cell are counted in `output.status.invalidCount`.
    */
   sourceAnchorCells?: GraphDataView<'uint32'>;
   /**
-   * Optional output, `sourceCount` rows: the whole raster area `A_s` of each source (cell count,
-   * or the sum of the cell weights; square meters on a longitude/latitude raster, after anchoring).
-   * 0 when the source rasterized to no cell.
-   */
-  sourceAreas?: GraphDataView<'float32'>;
-  /**
-   * Optional output, `sourceCount` rows: the conservation fraction of each source,
-   * `sum_t a_st / A_s` with the extensive denominator, where `a_st` sums over targets (before
-   * `weights` slot clamping). With `'zone'`, 1 means the source lies entirely inside the target
-   * system and its extensive mass is fully transferred, and `1 - f` is the lost fraction. With
-   * `'overlap'` it is 1 wherever the source overlaps any target and 0 where it does not. NaN when
-   * the source has no raster area (see `sourceAreas`).
-   */
-  sourceTransferredFractions?: GraphDataView<'float32'>;
-  /**
-   * Optional one-row output: the number of sources with no raster area after anchoring. Their mass
-   * is lost; this is the `invalidCount` of the status vocabulary.
-   */
-  invalidCount?: GraphDataView<'uint32'>;
-  /**
-   * Which normalization is written to `weights.weights`. Defaults to `'extensive'`. The other one
-   * is written to `alternateWeights` when given.
+   * Which normalization is written to `output.weights.weights`. Defaults to `'extensive'`. The
+   * other one is written to `output.alternateWeights` when given.
    */
   mode?: GPUArealInterpolationKind;
-  /**
-   * Caller-owned output CSR with `targetCount + 1` offsets: row `t` (target) lists its overlapping
-   * sources `s` as `neighbors`, ascending, with the area-share weight of `mode`. The slot capacity
-   * is `neighbors.length` and must hold the number of distinct (source, target) pairs that share
-   * at least one cell. `distances` is not written. This is a cross (target to source) weights
-   * matrix: its neighbors index sources, not rows.
-   */
-  weights: GPUSpatialWeights;
-  /** Optional caller-owned weights (one per slot) holding the normalization that is not `mode`. */
-  alternateWeights?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned overlap area per slot (cell count, or the sum of `cellWeights`; square
-   * meters on a longitude/latitude raster).
-   */
-  areas?: GraphDataView<'float32'>;
-  /** Caller-owned one-row flag: 1 when the pairs did not fit the slot capacity, else 0. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional caller-owned one-row unclamped distinct pair count, for sizing the capacity. */
-  totalPairs?: GraphDataView<'uint32'>;
-  /** Optional categorical variable to turn into per-target category shares. */
+  /** Optional categorical variable to turn into `output.categoryShares`. */
   categories?: GPUArealCategories;
+  /** Caller-owned outputs. */
+  output: GPUArealInterpolationOutput;
   /**
    * Compile-time. Without `cellWeights` every cell weighs 1, so pair areas are the lengths of the
    * sorted pair runs and zone areas are the zone cell counts; the fast path computes exactly those
@@ -222,8 +261,8 @@ export type GPUArealInterpolationProps = {
  * with the other system (`'overlap'`, which conserves mass over the shared extent). The default is
  * `'zone'` for extensive and `'overlap'` for intensive variables (see `denominator`).
  *
- * Conservation diagnostics. `sourceAreas` and `sourceTransferredFractions` report per source how
- * much of its raster area reached the targets, and `invalidCount` counts sources that rasterized
+ * Conservation diagnostics. `output.sourceAreas` and `output.sourceTransferredFractions` report
+ * per source how much of its raster area reached the targets, and `output.status.invalidCount` counts sources that rasterized
  * to no cell (a source smaller than a cell, or a polygon the cell centers all miss): their mass is
  * lost unless `sourceAnchorCells` gives them a fallback cell. Dropped mass is therefore reported,
  * never silent.
@@ -247,11 +286,11 @@ export type GPUArealInterpolationProps = {
  * rows are ordered by target and slots by source, so the CSR invariants hold exactly. Tied cells
  * keep ascending cell order.
  *
- * Outputs: the CSR `weights`, optionally the raw `areas` per slot (explain column),
- * `alternateWeights` (the other normalization) and categorical shares. Transfer variables with
- * `GPUSpatialLag` (`sourceCount` = `sourceCount`, optional `columnCount` for several variables at
- * once) over `weights`, using `alternateWeights` as its `weights.weights` for the other kind. When the
- * pairs exceed the slot capacity, `overflow` is 1, the offsets are clamped to the capacity and the
+ * Outputs: the CSR `output.weights`, optionally the raw `areas` per slot (explain column),
+ * `alternateWeights` (the other normalization) and `categoryShares`. Transfer variables with
+ * `GPUSpatialLag` (`values` with `sourceZoneCount` rows, optional `columnCount` for several
+ * variables at once) over `output.weights`, using `alternateWeights` as its `weights.weights` for the
+ * other kind. When the pairs exceed the slot capacity, `overflow` is 1, the offsets are clamped to the capacity and the
  * dropped pairs are the ones of the highest targets.
  *
  * Unweighted fast path (no `cellWeights`, `unweightedFastPath` not `false`): every cell has weight
@@ -277,29 +316,25 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
     const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    const gridCellCount = validateRasterGrid(id, props.grid);
     if (geographic) {
-      validateGeographicRaster(id, props.extent, props.width, props.sourceZones.length);
-    } else if (props.extent || props.width !== undefined) {
-      throw new Error(`${id} extent and width need a longitude-latitude spatialContext`);
+      validateGeographicRaster(id, props.parameters);
+    } else if (props.parameters) {
+      throw new Error(`${id} parameters need a longitude-latitude spatialContext`);
     }
-    const {sourceCount, targetCount} = props;
-    for (const [name, value] of [
-      ['sourceCount', sourceCount],
-      ['targetCount', targetCount]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1 || value >= 0xffffffff) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    validatePackedUint32View(props.sourceZones, `${id} sourceZones`);
-    validatePackedUint32View(props.targetZones, `${id} targetZones`);
-    if (props.sourceZones.length < 1 || props.targetZones.length !== props.sourceZones.length) {
-      throw new Error(`${id} sourceZones and targetZones must have the same nonzero length`);
+    const {sourceZoneCount: sourceCount, targetZoneCount: targetCount, output} = props;
+    // The zone IDs and the no-zone sentinel 0xffffffff share uint32, so counts stop one below it.
+    validateCapacity(id, 'sourceZoneCount', sourceCount, 1, 0xfffffffe);
+    validateCapacity(id, 'targetZoneCount', targetCount, 1, 0xfffffffe);
+    validatePackedView(props.sourceZones, ['uint32'], `${id} sourceZones`);
+    validatePackedView(props.targetZones, ['uint32'], `${id} targetZones`);
+    if (props.sourceZones.length !== gridCellCount || props.targetZones.length !== gridCellCount) {
+      throw new Error(`${id} sourceZones and targetZones must contain one row per grid cell`);
     }
     if (props.cellWeights) {
       validatePackedView(props.cellWeights, ['float32'], `${id} cellWeights`);
-      if (props.cellWeights.length !== props.sourceZones.length) {
-        throw new Error(`${id} cellWeights length must equal the raster cell count`);
+      if (props.cellWeights.length !== gridCellCount) {
+        throw new Error(`${id} cellWeights length must equal the grid cell count`);
       }
     }
     const denominators = typeof props.denominator === 'object' ? props.denominator : undefined;
@@ -315,63 +350,81 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       throw new Error(`${id} mode must be 'extensive' or 'intensive'`);
     }
     if (props.sourceAnchorCells) {
-      validatePackedUint32View(props.sourceAnchorCells, `${id} sourceAnchorCells`);
+      validatePackedView(props.sourceAnchorCells, ['uint32'], `${id} sourceAnchorCells`);
       if (props.sourceAnchorCells.length !== sourceCount) {
-        throw new Error(`${id} sourceAnchorCells must have sourceCount rows`);
+        throw new Error(`${id} sourceAnchorCells must have sourceZoneCount rows`);
       }
     }
     for (const [name, view] of [
-      ['sourceAreas', props.sourceAreas],
-      ['sourceTransferredFractions', props.sourceTransferredFractions]
+      ['output.sourceAreas', output.sourceAreas],
+      ['output.sourceTransferredFractions', output.sourceTransferredFractions]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== sourceCount) {
-          throw new Error(`${id} ${name} must have sourceCount rows`);
+          throw new Error(`${id} ${name} must have sourceZoneCount rows`);
         }
       }
     }
-    const rows = validateGPUSpatialWeights(id, props.weights);
+    const rows = validateGPUSpatialWeights(id, output.weights, 'output.weights');
     if (rows !== targetCount) {
-      throw new Error(`${id} weights.offsets length must equal targetCount + 1`);
+      throw new Error(`${id} output.weights.offsets length must equal targetZoneCount + 1`);
     }
-    const capacity = props.weights.neighbors.length;
+    const capacity = output.weights.neighbors.length;
+    if (
+      props.cellWeights ||
+      props.unweightedFastPath === false ||
+      this.spatialContext.coordinateSpace === 'longitude-latitude'
+    ) {
+      validateMaximumCount(
+        id,
+        'pair slots (output.weights.neighbors rows, cells)',
+        Math.min(capacity, props.sourceZones.length),
+        GPU_AREAL_INTERPOLATION_MAXIMUM_WEIGHTED_PAIR_COUNT
+      );
+    }
     for (const [name, view] of [
-      ['alternateWeights', props.alternateWeights],
-      ['areas', props.areas]
+      ['output.alternateWeights', output.alternateWeights],
+      ['output.areas', output.areas]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
         if (view.length !== capacity) {
-          throw new Error(`${id} ${name} length must equal weights.neighbors length`);
+          throw new Error(`${id} ${name} length must equal output.weights.neighbors length`);
         }
       }
     }
     for (const [name, view] of [
-      ['overflow', props.overflow],
-      ['totalPairs', props.totalPairs],
-      ['invalidCount', props.invalidCount]
+      ['output.status.overflow', output.status.overflow],
+      ['output.status.requiredPairCount', output.status.requiredPairCount],
+      ['output.status.invalidCount', output.status.invalidCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must hold one uint32`);
         }
       }
     }
     if (props.categories) {
-      const {sourceCategories, categoryCount, output} = props.categories;
-      validatePackedUint32View(sourceCategories, `${id} categories.sourceCategories`);
-      validatePackedView(output, ['float32'], `${id} categories.output`);
-      if (!Number.isSafeInteger(categoryCount) || categoryCount < 1) {
-        throw new Error(`${id} categories.categoryCount must be a positive integer`);
-      }
+      const {sourceCategories, categoryCount} = props.categories;
+      const {categoryShares} = output;
+      validatePackedView(sourceCategories, ['uint32'], `${id} categories.sourceCategories`);
+      validateCapacity(id, 'categories.categoryCount', categoryCount);
       if (sourceCategories.length !== sourceCount) {
-        throw new Error(`${id} categories.sourceCategories must have sourceCount rows`);
+        throw new Error(`${id} categories.sourceCategories must have sourceZoneCount rows`);
       }
-      if (output.length !== targetCount * categoryCount) {
-        throw new Error(`${id} categories.output must have targetCount * categoryCount rows`);
+      if (!categoryShares) {
+        throw new Error(`${id} categories needs output.categoryShares`);
       }
+      validatePackedView(categoryShares, ['float32'], `${id} output.categoryShares`);
+      if (categoryShares.length !== targetCount * categoryCount) {
+        throw new Error(
+          `${id} output.categoryShares must have targetZoneCount * categoryCount rows`
+        );
+      }
+    } else if (output.categoryShares) {
+      throw new Error(`${id} output.categoryShares needs categories`);
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
@@ -382,27 +435,27 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       props.sourceZones,
       props.targetZones,
       props.cellWeights,
-      props.extent,
+      props.parameters,
       props.sourceAnchorCells,
       props.categories?.sourceCategories
     ];
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {props} = this;
+    const {output} = this.props;
     return [
-      props.weights.offsets,
-      props.weights.neighbors,
-      props.weights.weights,
-      props.weights.distances,
-      props.alternateWeights,
-      props.areas,
-      props.overflow,
-      props.totalPairs,
-      props.invalidCount,
-      props.sourceAreas,
-      props.sourceTransferredFractions,
-      props.categories?.output
+      output.weights.offsets,
+      output.weights.neighbors,
+      output.weights.weights,
+      output.weights.distances,
+      output.alternateWeights,
+      output.areas,
+      output.status.overflow,
+      output.status.requiredPairCount,
+      output.status.invalidCount,
+      output.sourceAreas,
+      output.sourceTransferredFractions,
+      output.categoryShares
     ];
   }
 
@@ -412,7 +465,14 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    const {targetZones, sourceCount, targetCount, weights} = props;
+    validateMaximumCount(
+      id,
+      'sourceZones rows',
+      props.sourceZones.length,
+      getGPUArealInterpolationMaximumCellCount(graph.device)
+    );
+    const {targetZones, sourceZoneCount: sourceCount, targetZoneCount: targetCount, output} = props;
+    const {weights} = output;
     const cellCount = props.sourceZones.length;
     const capacity = weights.neighbors.length;
     const slotCount = Math.min(capacity, cellCount);
@@ -420,7 +480,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const extensiveOverlap = this.extensiveDenominator === 'overlap';
     const intensiveOverlap = this.intensiveDenominator === 'overlap';
-    const needSourceKey = extensiveOverlap || Boolean(props.sourceTransferredFractions);
+    const needSourceKey = extensiveOverlap || Boolean(output.sourceTransferredFractions);
     const needTargetKey = intensiveOverlap;
     const needOverlapKeys = needSourceKey || needTargetKey;
 
@@ -449,9 +509,10 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
           id: `${id}-area-weights`,
           operation: OPERATION,
           cellCount,
-          width: props.width!,
+          width: props.grid.width,
+          height: props.grid.height,
           radius: getRasterSphereRadius(this.spatialContext),
-          extent: props.extent!,
+          extent: props.parameters!,
           cellWeights,
           output: areaWeights
         })
@@ -568,7 +629,7 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
     );
     nodes.push(...sort.nodes, ...groups.nodes);
 
-    const areas = props.areas ?? createTransientView(graph, `${id}-areas`, 'float32', capacity);
+    const areas = output.areas ?? createTransientView(graph, `${id}-areas`, 'float32', capacity);
     if (cellMask) {
       const sortedMask = createTransientView(graph, `${id}-sorted-mask`, 'float32', cellCount);
       nodes.push(
@@ -689,7 +750,8 @@ const CHUNK: u32 = ${ZONE_COUNT_CHUNK}u;`,
     );
 
     // Conservation diagnostics per source.
-    const {sourceAreas, sourceTransferredFractions, invalidCount} = props;
+    const {sourceAreas, sourceTransferredFractions} = output;
+    const {invalidCount} = output.status;
     if (sourceAreas || sourceTransferredFractions || invalidCount) {
       const zoneAreas = extensiveOverlap
         ? zoneTotals('source-zone', sourceZones, sourceCount)
@@ -844,12 +906,12 @@ const CHUNK: u32 = ${ZONE_COUNT_CHUNK}u;`,
           {name: 'groupIndex', view: groups.groupIndex, type: 'u32', access: 'read'},
           {name: 'keyHigh', view: keyHigh, type: 'u32', access: 'read'},
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
-          ...(props.totalPairs
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...(output.status.requiredPairCount
             ? [
                 {
                   name: 'totalPairs',
-                  view: props.totalPairs,
+                  view: output.status.requiredPairCount,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -876,13 +938,13 @@ const CAPACITY: u32 = ${capacity}u;`,
   offsets[offsetsOffset + index] = min(low, CAPACITY);
   if (index == ROWS) {
     overflow[overflowOffset] = select(0u, 1u, low > CAPACITY);
-    ${props.totalPairs ? 'totalPairs[totalPairsOffset] = low;' : ''}
+    ${output.status.requiredPairCount ? 'totalPairs[totalPairsOffset] = low;' : ''}
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-weights`,
         operation: OPERATION,
-        variant: `weights-${mode}${props.alternateWeights ? '-both' : ''}`,
+        variant: `weights-${mode}${output.alternateWeights ? '-both' : ''}`,
         bindings: [
           {name: 'areas', view: areas, type: 'f32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
@@ -890,11 +952,11 @@ const CAPACITY: u32 = ${capacity}u;`,
           {name: 'sourceTotals', view: sourceTotals, type: 'f32', access: 'read'},
           {name: 'targetTotals', view: targetTotals, type: 'f32', access: 'read'},
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read_write'},
-          ...(props.alternateWeights
+          ...(output.alternateWeights
             ? [
                 {
                   name: 'alternateWeights',
-                  view: props.alternateWeights,
+                  view: output.alternateWeights,
                   type: 'f32' as const,
                   access: 'read_write' as const
                 }
@@ -917,15 +979,15 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
   }
   weights[weightsOffset + index] = ${mode === 'extensive' ? 'extensive' : 'intensive'};
   ${
-    props.alternateWeights
+    output.alternateWeights
       ? `alternateWeights[alternateWeightsOffset + index] = ${mode === 'extensive' ? 'intensive' : 'extensive'};`
       : ''
   }`
       })
     );
 
-    if (props.categories) {
-      const {sourceCategories, categoryCount, output} = props.categories;
+    if (props.categories && output.categoryShares) {
+      const {sourceCategories, categoryCount} = props.categories;
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-category-shares`,
@@ -936,7 +998,7 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
             {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
             {name: 'areas', view: areas, type: 'f32', access: 'read'},
             {name: 'sourceCategories', view: sourceCategories, type: 'u32', access: 'read'},
-            {name: 'output', view: output, type: 'f32', access: 'read_write'}
+            {name: 'output', view: output.categoryShares, type: 'f32', access: 'read_write'}
           ],
           invocationCount: targetCount * categoryCount,
           declarations: `const SOURCE_COUNT: u32 = ${sourceCount}u;

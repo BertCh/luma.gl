@@ -2,21 +2,33 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {Device} from '@luma.gl/core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {GPUSegmentIntersection} from '../segment-intersection/index';
-import type {GPUSpatialJoinLines} from '../spatial-join/index';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getGPUSegmentIntersectionMaximumVertexCount,
+  GPUSegmentIntersection
+} from '../segment-intersection/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUSharedPaths';
 
@@ -25,6 +37,15 @@ const SPAN_STRIDE = 12;
 
 /** Number of `u32` words per run-table row. */
 const RUN_STRIDE = 4;
+
+/**
+ * Largest `intersectionCapacity` of {@link GPUSharedPaths} on `device`: the span table holds 12
+ * `u32` words, 48 bytes, per intersection in one storage binding, so 2796202 on a default device
+ * (128 MiB bindings).
+ */
+export function getGPUSharedPathsMaximumIntersectionCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 48);
+}
 
 /** Value written to `runs.leftLineIds` and `runs.rightLineIds` slots that hold no run. */
 export const GPU_SHARED_PATHS_NONE = 0xffffffff;
@@ -51,16 +72,27 @@ export type GPUSharedPathsRuns = {
   offsets: GraphDataView<'uint32'>;
   /** Vertices of all runs. Capacity is the length. */
   positions: GraphDataView<'float32x2'>;
-  /** One-row scalar receiving the number of complete runs written. */
-  count: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the number of vertices written. */
-  vertexCount?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving `1` when any capacity was exceeded. */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of runs. */
-  requiredCount?: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of vertices. */
-  requiredVertexCount?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUSharedPaths}. */
+export type GPUSharedPathsOutput = {
+  /** Output runs. */
+  runs: GPUSharedPathsRuns;
+  /** Status scalars, one uint32 row each. */
+  status: {
+    /** One-row scalar receiving the number of complete runs written. */
+    count: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the number of vertices written. */
+    vertexCount?: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving `1` when any capacity was exceeded. */
+    overflow?: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped number of runs. */
+    requiredCount?: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped number of vertices. */
+    requiredVertexCount?: GraphDataView<'uint32'>;
+    /** Optional one-row count of segment pairs the intersection predicates could not certify. */
+    uncertainCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -80,23 +112,24 @@ export type GPUSharedPathsProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Left linestrings. */
-  left: GPUSpatialJoinLines;
+  left: GPUPackedGeometryPort<GPULineGeometryPort>;
   /** Right linestrings, indexed by a BVH. */
-  right: GPUSpatialJoinLines;
+  right: GPUPackedGeometryPort<GPULineGeometryPort>;
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list (one row per intersecting segment
    * pair, not only the shared ones). When it overflows, runs are produced from the sorted prefix
-   * and `runs.overflow` is set.
+   * and `output.status.overflow` is set. At most
+   * {@link getGPUSharedPathsMaximumIntersectionCapacity} (2796202 on a default device);
+   * `left.positions` and `right.positions` have at most
+   * {@link getGPUSegmentIntersectionMaximumVertexCount} rows each.
    */
   intersectionCapacity: number;
-  /** Output runs. */
-  runs: GPUSharedPathsRuns;
+  /** Output runs and status. */
+  output: GPUSharedPathsOutput;
   /** Passed to `GPUSegmentIntersection`. */
   spatialSort?: boolean;
   /** Passed to `GPUSegmentIntersection`. */
   leafCapacity?: number;
-  /** Optional one-row count of segment pairs the intersection predicates could not certify. */
-  uncertainCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -116,7 +149,7 @@ export type GPUSharedPathsProps = {
  * by the pair of right segments. A closed left line is cut at its first vertex, so a fully shared
  * ring is one run starting there. Two coincident right segments report a run each. Overlap is
  * decided with exact predicates; a point shared by two lines is not a path and yields no run.
- * Runs beyond the capacities are dropped as a suffix and `runs.overflow` is set. Nothing is read
+ * Runs beyond the capacities are dropped as a suffix and `output.status.overflow` is set. Nothing is read
  * back.
  */
 export class GPUSharedPaths implements GPUCommandNodeProducer {
@@ -138,7 +171,7 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
-    const {runs} = props;
+    const {runs, status} = props.output;
     for (const [name, lines] of [
       ['left', props.left],
       ['right', props.right]
@@ -147,29 +180,27 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must be linestring geometry`);
       }
       validatePackedView(lines.positions, ['float32x2'], `${id} ${name}.positions`);
-      validatePackedUint32View(lines.lineOffsets, `${id} ${name}.lineOffsets`);
+      validatePackedView(lines.lineOffsets, ['uint32'], `${id} ${name}.lineOffsets`);
       if (lines.lineOffsets.length < 2) {
         throw new Error(
           `${id} ${name}.lineOffsets requires at least one line and a terminal entry`
         );
       }
-      if (lines.positions.length < 1 || lines.positions.length >= 0x80000000) {
-        throw new Error(`${id} ${name}.positions must hold between 1 and 2^31 - 1 vertices`);
+      if (lines.positions.length < 1) {
+        throw new Error(`${id} ${name}.positions must hold at least one vertex`);
       }
     }
-    if (!Number.isSafeInteger(props.intersectionCapacity) || props.intersectionCapacity < 1) {
-      throw new Error(`${id} intersectionCapacity must be a positive integer`);
-    }
+    validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     this.leftVertexCount = props.left.positions.length;
     for (const [name, view] of [
-      ['runs.leftLineIds', runs.leftLineIds],
-      ['runs.rightLineIds', runs.rightLineIds],
-      ['runs.forward', runs.forward],
-      ['runs.offsets', runs.offsets]
+      ['output.runs.leftLineIds', runs.leftLineIds],
+      ['output.runs.rightLineIds', runs.rightLineIds],
+      ['output.runs.forward', runs.forward],
+      ['output.runs.offsets', runs.offsets]
     ] as const) {
-      validatePackedUint32View(view, `${id} ${name}`);
+      validatePackedView(view, ['uint32'], `${id} ${name}`);
     }
-    validatePackedView(runs.positions, ['float32x2'], `${id} runs.positions`);
+    validatePackedView(runs.positions, ['float32x2'], `${id} output.runs.positions`);
     this.runCapacity = runs.leftLineIds.length;
     this.vertexCapacity = runs.positions.length;
     if (
@@ -177,26 +208,26 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
       runs.rightLineIds.length !== this.runCapacity ||
       runs.forward.length !== this.runCapacity
     ) {
-      throw new Error(`${id} runs.leftLineIds, rightLineIds and forward need equal nonzero length`);
+      throw new Error(`${id} output.runs ids need equal nonzero length`);
     }
     if (runs.offsets.length !== this.runCapacity + 1) {
-      throw new Error(`${id} runs.offsets length must be runs.leftLineIds.length + 1`);
+      throw new Error(`${id} output.runs.offsets needs capacity + 1 rows`);
     }
     if (this.vertexCapacity < 1) {
-      throw new Error(`${id} runs.positions must be non-empty`);
+      throw new Error(`${id} output.runs.positions must be non-empty`);
     }
     for (const [name, view] of [
-      ['count', runs.count],
-      ['vertexCount', runs.vertexCount],
-      ['overflow', runs.overflow],
-      ['requiredCount', runs.requiredCount],
-      ['requiredVertexCount', runs.requiredVertexCount],
-      ['uncertainCount', props.uncertainCount]
+      ['count', status.count],
+      ['vertexCount', status.vertexCount],
+      ['overflow', status.overflow],
+      ['requiredCount', status.requiredCount],
+      ['requiredVertexCount', status.requiredVertexCount],
+      ['uncertainCount', status.uncertainCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
         if (view.length < 1) {
-          throw new Error(`${id} ${name} must contain one uint32 row`);
+          throw new Error(`${id} output.status.${name} needs one row`);
         }
       }
     }
@@ -207,7 +238,8 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, runCapacity, vertexCapacity} = this;
-    const {left, right, runs} = props;
+    const {left, right} = props;
+    const {runs, status} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       left.positions,
       left.lineOffsets,
@@ -218,13 +250,32 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
       runs.forward,
       runs.offsets,
       runs.positions,
-      runs.count,
-      runs.vertexCount,
-      runs.overflow,
-      runs.requiredCount,
-      runs.requiredVertexCount,
-      props.uncertainCount
+      status.count,
+      status.vertexCount,
+      status.overflow,
+      status.requiredCount,
+      status.requiredVertexCount,
+      status.uncertainCount
     ]);
+    // Both sides feed the segment tables of the internal segment intersection.
+    for (const [name, lines] of [
+      ['left', props.left],
+      ['right', props.right]
+    ] as const) {
+      validateMaximumCount(
+        id,
+        `${name}.positions rows`,
+        lines.positions.length,
+        getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+      );
+    }
+    validateCapacity(
+      id,
+      'intersectionCapacity',
+      props.intersectionCapacity,
+      1,
+      getGPUSharedPathsMaximumIntersectionCapacity(graph.device)
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     const pairCapacity = props.intersectionCapacity;
     const T = <Format extends 'uint32' | 'float32x2'>(
@@ -250,18 +301,19 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
         right,
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
-        pairs: {
-          leftIds: pairLeft,
-          rightIds: pairRight,
-          count: pairCount,
-          overflow: pairOverflow
-        },
-        uncertainCount: props.uncertainCount,
-        kinds,
-        points,
-        endPoints,
-        leftRings,
-        rightRings
+        output: {
+          pairs: {
+            leftIds: pairLeft,
+            rightIds: pairRight,
+            status: {count: pairCount, overflow: pairOverflow}
+          },
+          status: {uncertainCount: status.uncertainCount},
+          kinds,
+          points,
+          endPoints,
+          leftRings,
+          rightRings
+        }
       }).getCommandNodes(graph)
     );
 
@@ -409,6 +461,9 @@ fn lowerBound(value: u32) -> u32 {
     const runRanks = T('run-ranks', 'uint32', pairCapacity);
     const vertexCounts = T('vertex-counts', 'uint32', pairCapacity);
     const vertexStarts = T('vertex-starts', 'uint32', pairCapacity);
+    // Repeated overlaps can start several runs that share a tail, so their summed vertex counts
+    // can exceed uint32 even though the run count is bounded by pairCapacity.
+    const vertexTotal = T('vertex-total', 'uint32', 1);
     const chainWGSL = `${spanAccessWGSL}
 fn startsRun(span: u32) -> bool { return isSpan(span) && spanWord(span, 2u) == 0u; }
 // Whether the end of span is a vertex of the run: not when the chain goes on in the same segment.
@@ -452,7 +507,15 @@ fn emitsEnd(span: u32) -> bool {
         input: vertexCounts,
         output: vertexStarts,
         mode: 'exclusive'
-      }).getCommandNodes(graph)
+      }).getCommandNodes(graph),
+      ...createSaturatedScanTotalNodes<Parameters>(graph, {
+        id: `${id}-vertex`,
+        operation: OPERATION,
+        counts: vertexCounts,
+        offsets: vertexStarts,
+        rowCount: pairCapacity,
+        total: vertexTotal
+      })
     );
 
     // 5. Run table, capacity clamp and outputs.
@@ -486,8 +549,7 @@ fn emitsEnd(span: u32) -> bool {
         bindings: [
           {name: 'runFlags', view: runFlags, type: 'u32', access: 'read'},
           {name: 'runRanks', view: runRanks, type: 'u32', access: 'read'},
-          {name: 'vertexCounts', view: vertexCounts, type: 'u32', access: 'read'},
-          {name: 'vertexStarts', view: vertexStarts, type: 'u32', access: 'read'},
+          {name: 'vertexTotal', view: vertexTotal, type: 'u32', access: 'read'},
           {name: 'runTable', view: runTable, type: 'u32', access: 'read'},
           {name: 'pairOverflow', view: pairOverflow, type: 'u32', access: 'read'},
           {name: 'state', view: state, type: 'u32', access: 'read_write'}
@@ -497,7 +559,7 @@ fn emitsEnd(span: u32) -> bool {
 const RUN_CAPACITY: u32 = ${runCapacity}u;
 const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
         body: `let totalRuns = runRanks[runRanksOffset + LAST] + runFlags[runFlagsOffset + LAST];
-  let totalVertices = vertexStarts[vertexStartsOffset + LAST] + vertexCounts[vertexCountsOffset + LAST];
+  let totalVertices = vertexTotal[vertexTotalOffset];
   var low = 0u;
   var high = min(totalRuns, RUN_CAPACITY);
   while (low < high) {
@@ -512,7 +574,7 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
   state[stateOffset + 1u] = written;
   state[stateOffset + 2u] = totalRuns;
   state[stateOffset + 3u] = totalVertices;
-  state[stateOffset + 4u] = select(0u, 1u, low < totalRuns || pairOverflow[pairOverflowOffset] != 0u);`
+  state[stateOffset + 4u] = select(0u, 1u, low < totalRuns || totalVertices > VERTEX_CAPACITY || pairOverflow[pairOverflowOffset] != 0u);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-runs`,
@@ -580,11 +642,11 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
       {name: 'state', view: state, type: 'u32', access: 'read'}
     ];
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
-      ['count', runs.count, 0],
-      ['vertexCount', runs.vertexCount, 1],
-      ['requiredCount', runs.requiredCount, 2],
-      ['requiredVertexCount', runs.requiredVertexCount, 3],
-      ['overflow', runs.overflow, 4]
+      ['count', status.count, 0],
+      ['vertexCount', status.vertexCount, 1],
+      ['requiredCount', status.requiredCount, 2],
+      ['requiredVertexCount', status.requiredVertexCount, 3],
+      ['overflow', status.overflow, 4]
     ];
     for (const [name, view] of scalars) {
       if (view) {

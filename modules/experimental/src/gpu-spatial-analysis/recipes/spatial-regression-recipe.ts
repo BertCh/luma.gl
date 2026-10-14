@@ -8,8 +8,16 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {GPULocalMoran} from '../spatial-autocorrelation/index';
+import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
+import {GPUParameterBuffer} from '../../utils/gpu-contributor-utils';
+import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {
+  getGPUSpatialAutocorrelationParameterValues,
+  GPULocalMoran,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA,
+  type GPUSpatialAutocorrelationSettings
+} from '../spatial-autocorrelation/index';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR,
@@ -107,14 +115,24 @@ export function getSpatialRegressionSpecification(
     : GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_ERROR;
 }
 
-/** Single-invocation GPU evaluation of {@link getSpatialRegressionSpecification}. @internal */
+/** Word of the significance level in the spatial autocorrelation parameters. */
+const SIGNIFICANCE_LEVEL_WORD = GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA.fields.find(
+  field => field.name === 'significanceLevel'
+)!.wordOffset;
+
+/**
+ * Single-invocation GPU evaluation of {@link getSpatialRegressionSpecification}. The significance
+ * level is read per frame from the spatial autocorrelation `parameters` (the same word the residual
+ * local Moran reads), never baked into the kernel.
+ * @internal
+ */
 class SpatialRegressionSpecificationSearch implements GPUCommandNodeProducer<never> {
   constructor(
     readonly props: {
       id: string;
       tests: GraphDataView<'float32'>;
       status: GraphDataView<'uint32'>;
-      significanceLevel: number;
+      parameters: GraphDataView<'float32'>;
       decision: GraphDataView<'uint32'>;
     }
   ) {}
@@ -134,12 +152,13 @@ class SpatialRegressionSpecificationSearch implements GPUCommandNodeProducer<nev
         bindings: [
           {name: 'tests', view: props.tests, type: 'f32', access: 'read'},
           {name: 'diagnosticsStatus', view: props.status, type: 'u32', access: 'read'},
+          {name: 'searchParameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'decisionOut', view: props.decision, type: 'u32', access: 'read_write'}
         ],
         invocationCount: 1,
-        declarations: `const ALPHA: f32 = ${getWGSLFloatLiteral(props.significanceLevel)};
-fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }`,
-        body: `${row('lag', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG)}
+        declarations: `fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }`,
+        body: `let ALPHA = searchParameters[searchParametersOffset + ${SIGNIFICANCE_LEVEL_WORD}u];
+  ${row('lag', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_LAG)}
   ${row('error', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_ERROR)}
   ${row('robustLag', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG)}
   ${row('robustError', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_ERROR)}
@@ -201,14 +220,16 @@ export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
       standardErrors?: GraphDataView<'float32'>;
       tStatistics?: GraphDataView<'float32'>;
       summary?: GraphDataView<'float32'>;
-      status?: GraphDataView<'uint32'>;
+      /** Solver `code` (0 on success). */
+      status?: {code?: GraphDataView<'uint32'>};
       residuals?: GraphDataView<'float32'>;
       fitted?: GraphDataView<'float32'>;
     };
     diagnostics?: {
       tests?: GraphDataView<'float32'>;
       summary?: GraphDataView<'float32'>;
-      status?: GraphDataView<'uint32'>;
+      /** Diagnostics `code` (0 on success). */
+      status?: {code?: GraphDataView<'uint32'>};
     };
     specification?: {decision?: GraphDataView<'uint32'>};
     residualMoran?: {
@@ -244,11 +265,7 @@ export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
    * false). Use it after masking when `weights` were row-standardized.
    */
   restandardizeRows?: boolean;
-  /**
-   * Significance level of the specification search (default 0.05); a compile-time constant of the
-   * generated kernel.
-   */
-  significanceLevel?: number;
+
   /** Number of predictor columns. At most 15 for the OLS and diagnostics, 7 with `localFits`. */
   predictorCount: number;
   /**
@@ -258,8 +275,18 @@ export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
    * contributor in the same graph.
    */
   weights: GPUSpatialWeights;
-  /** `getGPUSpatialAutocorrelationParameterValues` view for the residual local Moran. */
-  parameters: GraphDataView<'float32'>;
+  /**
+   * Per-frame settings: `significanceLevel` (default 0.05) of both the specification search and
+   * the residual local Moran, optional fixed moments of the latter. The recipe packs them into
+   * `parameters` and derives `result.inference` from the same object; change them per frame with
+   * `result.setSettings`.
+   */
+  settings?: GPUSpatialRegressionRecipeSettings;
+  /**
+   * A `GPUParameterBuffer` of at least `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` float32
+   * values that the recipe fills from `settings`.
+   */
+  parameters: GPUParameterBuffer<'float32'>;
   /** Optional OLS ridge parameters (`getGPUOrdinaryLeastSquaresParameterValues`). */
   olsParameters?: GraphDataView<'float32'>;
   /** Rows per tile of the OLS and diagnostics reductions. */
@@ -267,6 +294,9 @@ export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
   /** Geographically weighted local fits; skipped when absent. */
   localFits?: GPUSpatialRegressionLocalFitOptions;
 };
+
+/** Per-frame settings of {@link addSpatialRegressionRecipe} (the spatial autocorrelation settings). */
+export type GPUSpatialRegressionRecipeSettings = GPUSpatialAutocorrelationSettings;
 
 /** Named outputs of {@link addSpatialRegressionRecipe}. */
 export type GPUSpatialRegressionRecipeResult = GPURecipeResult & {
@@ -276,14 +306,16 @@ export type GPUSpatialRegressionRecipeResult = GPURecipeResult & {
     standardErrors: GraphDataView<'float32'>;
     tStatistics: GraphDataView<'float32'>;
     summary: GraphDataView<'float32'>;
-    status: GraphDataView<'uint32'>;
+    /** Solver `code` (0 on success). */
+    status: {code: GraphDataView<'uint32'>};
     residuals: GraphDataView<'float32'>;
     fitted: GraphDataView<'float32'>;
   };
   diagnostics: {
     tests: GraphDataView<'float32'>;
     summary: GraphDataView<'float32'>;
-    status: GraphDataView<'uint32'>;
+    /** Diagnostics `code` (0 on success). */
+    status: {code: GraphDataView<'uint32'>};
   };
   residualMoran: {
     zScores: GraphDataView<'float32'>;
@@ -296,6 +328,13 @@ export type GPUSpatialRegressionRecipeResult = GPURecipeResult & {
    * `GPU_SPATIAL_REGRESSION_SPECIFICATION_*` constants, from {@link getSpatialRegressionSpecification}.
    */
   specification: {decision: GraphDataView<'uint32'>};
+  /** How the residual local Moran p-values and quadrants were produced, from the packed settings. */
+  inference: GPUInferenceMetadata;
+  /**
+   * Writes `settings` into `parameters` for the next submitted encoding and updates `inference`.
+   * Throws, writing nothing, on invalid settings.
+   */
+  setSettings: (settings: GPUSpatialRegressionRecipeSettings) => void;
   /** Present when `localFits` was requested. */
   localFits?: {
     coefficients: GraphDataView<'float32'>;
@@ -336,6 +375,12 @@ export function addSpatialRegressionRecipe<Parameters>(
     props.predictors.length === rowCount * predictorCount,
     'predictors must hold rowCount * predictorCount values'
   );
+  assertRecipe(
+    'addSpatialRegressionRecipe',
+    props.parameters.length >= GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+    `parameters needs ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} values`
+  );
+  const parameters = props.parameters.importToGraph(graph, `${id}-parameters`);
 
   const olsInput = outputOverrides.ols ?? {};
   const ols = {
@@ -367,7 +412,7 @@ export function addSpatialRegressionRecipe<Parameters>(
       GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
       olsInput.summary
     ),
-    status: getOrCreateView(graph, `${id}-ols-status`, 'uint32', 1, olsInput.status),
+    status: {code: getOrCreateView(graph, `${id}-ols-status`, 'uint32', 1, olsInput.status?.code)},
     residuals: getOrCreateView(graph, `${id}-residuals`, 'float32', rowCount, olsInput.residuals),
     fitted: getOrCreateView(graph, `${id}-fitted`, 'float32', rowCount, olsInput.fitted)
   };
@@ -400,7 +445,15 @@ export function addSpatialRegressionRecipe<Parameters>(
       GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
       diagnosticsInput.summary
     ),
-    status: getOrCreateView(graph, `${id}-diagnostics-status`, 'uint32', 1, diagnosticsInput.status)
+    status: {
+      code: getOrCreateView(
+        graph,
+        `${id}-diagnostics-status`,
+        'uint32',
+        1,
+        diagnosticsInput.status?.code
+      )
+    }
   };
   builder.add(
     new GPUSpatialRegressionDiagnostics({
@@ -430,8 +483,8 @@ export function addSpatialRegressionRecipe<Parameters>(
     new SpatialRegressionSpecificationSearch({
       id,
       tests: diagnostics.tests,
-      status: diagnostics.status,
-      significanceLevel: props.significanceLevel ?? 0.05,
+      status: diagnostics.status.code,
+      parameters,
       decision: specification.decision
     }) as unknown as GPUCommandNodeProducer<Parameters>
   );
@@ -449,16 +502,24 @@ export function addSpatialRegressionRecipe<Parameters>(
     ),
     pValues: getOrCreateView(graph, `${id}-moran-p`, 'float32', rowCount, moranInput.pValues)
   };
-  builder.add(
+  const localMoran = builder.add(
     new GPULocalMoran({
       id: `${id}-residual-moran`,
       weights: props.weights,
       values: ols.residuals,
       mask: props.mask,
-      parameters: props.parameters,
-      ...residualMoran
+      parameters,
+      output: residualMoran
     })
   );
+  // One source of truth (rule 19): one packed significance level drives the specification search
+  // and the residual Moran, and the metadata is derived from the same settings.
+  const writeSettings = (settings: GPUSpatialRegressionRecipeSettings): GPUInferenceMetadata => {
+    const values = getGPUSpatialAutocorrelationParameterValues(settings);
+    const metadata = localMoran.getInferenceMetadata(settings);
+    props.parameters.write(values);
+    return metadata;
+  };
 
   const result: GPUSpatialRegressionRecipeResult = {
     contributors: builder.contributors,
@@ -467,12 +528,16 @@ export function addSpatialRegressionRecipe<Parameters>(
     diagnostics,
     residualMoran,
     specification,
+    inference: writeSettings(props.settings ?? {}),
+    setSettings: settings => {
+      result.inference = writeSettings(settings);
+    },
     outputs: {ols, diagnostics, specification, residualMoran},
     intermediates: {},
     status: {
       stages: [
-        {stage: 'ordinary-least-squares', status: {invalidCount: ols.status}},
-        {stage: 'spatial-diagnostics', status: {invalidCount: diagnostics.status}}
+        {stage: 'ordinary-least-squares', status: {invalidCount: ols.status.code}},
+        {stage: 'spatial-diagnostics', status: {invalidCount: diagnostics.status.code}}
       ]
     }
   };

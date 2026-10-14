@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer} from '@luma.gl/core';
+import {assert} from '@luma.gl/core';
 import {
   getBoundedDispatchLayout,
   type GPUBoundedDispatchLayout,
@@ -12,8 +12,13 @@ import {
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import type {GPURasterCellSizeMode} from '../../analysis-core/raster-grid';
+import {
+  createWGSLDispatchGate,
+  createWGSLKernelNode,
+  type WGSLDispatchGate,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {createContributorTransientView, getRasterGridWGSL} from './raster-grid-utils';
 
 /** Largest accepted compile-time iteration count for GPU-gated raster iterations. */
@@ -45,13 +50,22 @@ export function validateRasterIterations(id: string, name: string, iterations: n
  *
  * @internal
  */
-export type RasterIterationState = {
+export type RasterIterationState<Parameters> = {
   status: GraphDataView<'uint32'>;
+  /** Indirect dispatch triple of the gated kernel, the view of {@link gate}. */
   dispatch: GraphDataView<'uint32'>;
+  /** Dispatch gate that owns `dispatch`: its one slot holds `layout`. */
+  gate: WGSLDispatchGate<Parameters>;
   /** Bounded dispatch layout of the gated kernel. */
   layout: GPUBoundedDispatchLayout;
   /** Linear invocation count of the gated kernel. */
   invocationCount: number;
+  /**
+   * Status word that holds the iteration count at which the current execution stops. Set only for
+   * continued relaxations, whose cumulative `iterationCount` carries over between executions, so
+   * `maxIterations` is a budget per execution and not a bound on the count.
+   */
+  limitWord?: number;
 };
 
 /**
@@ -65,26 +79,26 @@ export function createRasterIterationState<Parameters>(
   id: string,
   operation: string,
   invocationCount: number,
-  contributorId: string = id
-): RasterIterationState {
+  contributorId: string = id,
+  options: {
+    /** Caller-owned status view (at least 4 words) used instead of a graph transient. */
+    status?: GraphDataView<'uint32'>;
+    /** See {@link RasterIterationState.limitWord}. */
+    limitWord?: number;
+  } = {}
+): RasterIterationState<Parameters> {
+  const gate = createWGSLDispatchGate(graph, {
+    id: `${id}-dispatch`,
+    operation,
+    shapes: [[invocationCount, WORKGROUP_SIZE]]
+  });
   return {
-    status: createContributorTransientView(
-      graph,
-      operation,
-      contributorId,
-      `${id}-status`,
-      'uint32',
-      4
-    ),
-    dispatch: createContributorTransientView(
-      graph,
-      operation,
-      contributorId,
-      `${id}-dispatch`,
-      'uint32',
-      3,
-      Buffer.STORAGE | Buffer.INDIRECT
-    ),
+    status:
+      options.status ??
+      createContributorTransientView(graph, operation, contributorId, `${id}-status`, 'uint32', 4),
+    limitWord: options.limitWord,
+    dispatch: gate.view,
+    gate,
     layout: getBoundedDispatchLayout(
       operation,
       Math.max(invocationCount, 1),
@@ -97,43 +111,32 @@ export function createRasterIterationState<Parameters>(
 
 /** Returns the indirect GPU condition and resource use that gate one kernel on `state`. @internal */
 export function getRasterIterationCondition<Parameters>(
-  state: RasterIterationState,
+  state: RasterIterationState<Parameters>,
   nodeId: string
 ): {condition: GPUCommandGraphNodeCondition<Parameters>; extraResources: GraphBufferUse[]} {
-  return {
-    condition: {
-      id: `${nodeId}-gate`,
-      source: 'gpu',
-      mode: 'indirect',
-      buffer: state.dispatch.buffer,
-      byteOffset: state.dispatch.byteOffset
-    },
-    extraResources: [{buffer: state.dispatch, usage: 'indirect'}]
-  };
+  const {condition, extraResources} = state.gate.getGate(0);
+  return {condition: {...condition, id: `${nodeId}-gate`}, extraResources};
 }
 
 /** Returns a one-thread node that enables the loop and arms the indirect dispatch. @internal */
 export function createRasterIterationResetNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: {id: string; operation: string; state: RasterIterationState}
+  props: {id: string; operation: string; state: RasterIterationState<Parameters>}
 ): GPUCommandNode<Parameters> {
-  const {x, y, z} = props.state.layout;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'iteration-reset',
     bindings: [
       {name: 'status', view: props.state.status, type: 'u32', access: 'read_write'},
-      {name: 'dispatch', view: props.state.dispatch, type: 'u32', access: 'read_write'}
+      props.state.gate.binding
     ],
     invocationCount: 1,
     body: `status[statusOffset + 0u] = 0u;
   status[statusOffset + 1u] = 1u;
   status[statusOffset + 2u] = 0u;
   status[statusOffset + 3u] = 0u;
-  dispatch[dispatchOffset + 0u] = ${x}u;
-  dispatch[dispatchOffset + 1u] = ${y}u;
-  dispatch[dispatchOffset + 2u] = ${z}u;`
+  ${props.state.gate.armWGSL}`
   });
 }
 
@@ -147,7 +150,12 @@ export function createRasterIterationResetNode<Parameters>(
  */
 export function createRasterIterationGateNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: {id: string; operation: string; state: RasterIterationState; maxIterations: number}
+  props: {
+    id: string;
+    operation: string;
+    state: RasterIterationState<Parameters>;
+    maxIterations: number;
+  }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -155,7 +163,7 @@ export function createRasterIterationGateNode<Parameters>(
     variant: 'iteration-gate',
     bindings: [
       {name: 'status', view: props.state.status, type: 'u32', access: 'read_write'},
-      {name: 'dispatch', view: props.state.dispatch, type: 'u32', access: 'read_write'}
+      props.state.gate.binding
     ],
     invocationCount: 1,
     body: `if (status[statusOffset + 1u] == 0u) { return; }
@@ -166,12 +174,12 @@ export function createRasterIterationGateNode<Parameters>(
   if (changed == 0u) {
     status[statusOffset + 1u] = 0u;
     status[statusOffset + 3u] = 1u;
-    dispatch[dispatchOffset] = 0u;
+    ${props.state.gate.disarmWGSL}
     return;
   }
   if (iterationCount >= ${props.maxIterations}u) {
     status[statusOffset + 1u] = 0u;
-    dispatch[dispatchOffset] = 0u;
+    ${props.state.gate.disarmWGSL}
   }`
   });
 }
@@ -179,14 +187,88 @@ export function createRasterIterationGateNode<Parameters>(
 /** Default number of unrolled iterations that share one gate node. @internal */
 export const RASTER_GATE_INTERVAL = 4;
 
+/** Largest gate group: one status bit per iteration of the group. @internal */
+export const RASTER_GATE_MAXIMUM_GROUP_SIZE = 32;
+
 /**
- * Returns a one-thread gate that closes `groupSize` consecutive gated iterations.
+ * Elements between consecutive words of a {@link RasterGateSlotTable}: 256 bytes, the storage
+ * binding alignment, so every slot sub-view binds at element offset 0 and the WGSL of every round
+ * is the same text.
+ */
+const RASTER_GATE_SLOT_STRIDE = 64;
+
+/**
+ * Graph-owned table of gate-group positions, written once per encoding.
  *
- * Iteration `k` of the group records a change with `atomicOr(&status[0], 1u << k)`. The gate counts
+ * Word `k` (at element `k * 64`) holds `k`. Round `k` of a gate group binds the one-word sub-view
+ * {@link getSlot}`(k)` and reads its position from it, and the gate of a group of `n` rounds binds
+ * `getSlot(n)` to read its size. So the position is data, never WGSL text (library rule 12), and
+ * every round of a loop shares one pipeline.
+ *
+ * @internal
+ */
+export type RasterGateSlotTable<Parameters> = {
+  /** Largest group size the table covers. */
+  groupSize: number;
+  /** One-thread-per-word node that writes the table; schedule it before the first round. */
+  writeNode: GPUCommandNode<Parameters>;
+  /** Returns the one-word view holding `slot`, for `slot` in `[0, groupSize]`. */
+  getSlot: (slot: number) => GraphDataView<'uint32'>;
+};
+
+/** Creates a {@link RasterGateSlotTable} for groups of up to `groupSize` rounds. @internal */
+export function createRasterGateSlotTable<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {id: string; operation: string; contributorId?: string; groupSize: number}
+): RasterGateSlotTable<Parameters> {
+  const {groupSize} = props;
+  if (
+    !Number.isSafeInteger(groupSize) ||
+    groupSize < 1 ||
+    groupSize > RASTER_GATE_MAXIMUM_GROUP_SIZE
+  ) {
+    throw new Error(
+      `${props.operation}: gate group size must be an integer in [1, ${RASTER_GATE_MAXIMUM_GROUP_SIZE}]`
+    );
+  }
+  const table = createContributorTransientView(
+    graph,
+    props.operation,
+    props.contributorId ?? props.id,
+    `${props.id}-slots`,
+    'uint32',
+    (groupSize + 1) * RASTER_GATE_SLOT_STRIDE
+  );
+  const writeNode = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-slots-write`,
+    operation: props.operation,
+    variant: 'gate-slot-table',
+    bindings: [{name: 'slotTable', view: table, type: 'u32', access: 'read_write'}],
+    invocationCount: groupSize + 1,
+    body: `slotTable[slotTableOffset + index * ${RASTER_GATE_SLOT_STRIDE}u] = index;`
+  });
+  const getSlot = (slot: number): GraphDataView<'uint32'> => {
+    // Callers only ask for positions inside a group or for a group size, both within the table.
+    assert(Number.isSafeInteger(slot) && slot >= 0 && slot <= groupSize);
+    return graph.createDataView(table.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: table.byteOffset + slot * RASTER_GATE_SLOT_STRIDE * 4
+    });
+  };
+  return {groupSize, writeNode, getSlot};
+}
+
+/**
+ * Returns a one-thread gate that closes a group of consecutive gated iterations.
+ *
+ * Iteration `k` of the group records a change with `atomicOr(&status[0], 1u << k)`, reading `k`
+ * from its slot word. The gate reads the group size from `groupSize` (a slot-table word), counts
  * the iterations up to and including the first unchanged one (or the whole group), publishes
  * convergence, and zeroes the indirect dispatch once converged or `maxIterations` ran. Iterations
  * of a group that follow a converged one only re-run an idempotent fixpoint step, so results and
- * counts match one gate per iteration while the graph needs one gate node per group.
+ * counts match one gate per iteration while the graph needs one gate node per group. The WGSL
+ * depends on neither the group index nor its size, so every gate of a loop shares one pipeline.
  *
  * @internal
  */
@@ -195,9 +277,10 @@ export function createRasterIterationGroupGateNode<Parameters>(
   props: {
     id: string;
     operation: string;
-    state: RasterIterationState;
+    state: RasterIterationState<Parameters>;
     maxIterations: number;
-    groupSize: number;
+    /** One-word view holding the number of iterations in this group, see {@link RasterGateSlotTable}. */
+    groupSize: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -206,15 +289,17 @@ export function createRasterIterationGroupGateNode<Parameters>(
     variant: 'iteration-group-gate',
     bindings: [
       {name: 'status', view: props.state.status, type: 'u32', access: 'read_write'},
-      {name: 'dispatch', view: props.state.dispatch, type: 'u32', access: 'read_write'}
+      props.state.gate.binding,
+      {name: 'groupSize', view: props.groupSize, type: 'u32', access: 'read'}
     ],
     invocationCount: 1,
     body: `if (status[statusOffset + 1u] == 0u) { return; }
   let changedBits = status[statusOffset + 0u];
   status[statusOffset + 0u] = 0u;
-  var executed = ${props.groupSize}u;
+  let size = groupSize[groupSizeOffset];
+  var executed = size;
   var converged = false;
-  for (var round = 0u; round < ${props.groupSize}u; round++) {
+  for (var round = 0u; round < size; round++) {
     if (((changedBits >> round) & 1u) == 0u) {
       executed = round + 1u;
       converged = true;
@@ -226,12 +311,16 @@ export function createRasterIterationGroupGateNode<Parameters>(
   if (converged) {
     status[statusOffset + 1u] = 0u;
     status[statusOffset + 3u] = 1u;
-    dispatch[dispatchOffset] = 0u;
+    ${props.state.gate.disarmWGSL}
     return;
   }
-  if (iterationCount >= ${props.maxIterations}u) {
+  if (iterationCount >= ${
+    props.state.limitWord === undefined
+      ? `${props.maxIterations}u`
+      : `status[statusOffset + ${props.state.limitWord}u]`
+  }) {
     status[statusOffset + 1u] = 0u;
-    dispatch[dispatchOffset] = 0u;
+    ${props.state.gate.disarmWGSL}
   }`
   });
 }
@@ -240,10 +329,18 @@ export function createRasterIterationGroupGateNode<Parameters>(
 export type RasterGatedRound<Parameters> = {
   /** Unique node ID of this iteration's kernel. */
   nodeId: string;
-  /** Zero-based unrolled iteration index. */
+  /**
+   * Zero-based unrolled iteration index, for choosing among a fixed set of kernel variants only.
+   * It must never reach WGSL text or an override constant (library rule 12).
+   */
   iteration: number;
-  /** Position inside the gate group; also the status bit this iteration owns. */
-  groupOffset: number;
+  /**
+   * Binding of this iteration's slot word (its position inside the gate group). The round kernel
+   * must declare it; {@link markChangedWGSL} and {@link roundSlotWGSL} read it.
+   */
+  slotBinding: WGSLKernelBinding;
+  /** WGSL `u32` expression of this iteration's position inside its gate group. */
+  roundSlotWGSL: string;
   /** WGSL statement that records "something changed" for this iteration. */
   markChangedWGSL: string;
   /** Indirect GPU condition gating the kernel. */
@@ -255,9 +352,11 @@ export type RasterGatedRound<Parameters> = {
 /**
  * Unrolls `maxIterations` gated iterations with one gate node per `groupSize` iterations.
  *
- * `createRound` builds each iteration's kernel and must call `markChangedWGSL` whenever the
- * iteration changed anything. The node count is `maxIterations + ceil(maxIterations / groupSize)`
- * instead of `2 * maxIterations`.
+ * `createRound` builds each iteration's kernel, must declare `slotBinding`, and must run
+ * `markChangedWGSL` whenever the iteration changed anything. The first node,
+ * `${gateId}-slots-write`, writes the gate slot table, so the node count is `1 + maxIterations + ceil(maxIterations / groupSize)` instead of
+ * `2 * maxIterations`. The group position comes from a slot word, so rounds with the same kernel
+ * variant share one pipeline whatever their index.
  *
  * @internal
  */
@@ -269,14 +368,24 @@ export function createRasterGatedLoopNodes<Parameters>(
     /** Prefix of the gate node IDs; the gate after round `i` is `${gateId}-${i}`. Defaults to `${id}-gate`. */
     gateId?: string;
     operation: string;
-    state: RasterIterationState;
+    state: RasterIterationState<Parameters>;
     maxIterations: number;
     groupSize?: number;
     createRound: (round: RasterGatedRound<Parameters>) => GPUCommandNode<Parameters>;
   }
 ): GPUCommandNode<Parameters>[] {
-  const groupSize = Math.min(props.groupSize ?? RASTER_GATE_INTERVAL, 32);
-  const nodes: GPUCommandNode<Parameters>[] = [];
+  const groupSize = Math.min(
+    props.groupSize ?? RASTER_GATE_INTERVAL,
+    RASTER_GATE_MAXIMUM_GROUP_SIZE,
+    Math.max(props.maxIterations, 1)
+  );
+  const gateId = props.gateId ?? `${props.id}-gate`;
+  const slotTable = createRasterGateSlotTable<Parameters>(graph, {
+    id: gateId,
+    operation: props.operation,
+    groupSize
+  });
+  const nodes: GPUCommandNode<Parameters>[] = [slotTable.writeNode];
   for (let start = 0; start < props.maxIterations; start += groupSize) {
     const size = Math.min(groupSize, props.maxIterations - start);
     for (let groupOffset = 0; groupOffset < size; groupOffset++) {
@@ -290,8 +399,14 @@ export function createRasterGatedLoopNodes<Parameters>(
         props.createRound({
           nodeId,
           iteration,
-          groupOffset,
-          markChangedWGSL: `atomicOr(&status[statusOffset], ${1 << groupOffset}u);`,
+          slotBinding: {
+            name: 'roundSlot',
+            view: slotTable.getSlot(groupOffset),
+            type: 'u32',
+            access: 'read'
+          },
+          roundSlotWGSL: 'roundSlot[roundSlotOffset]',
+          markChangedWGSL: 'atomicOr(&status[statusOffset], 1u << roundSlot[roundSlotOffset]);',
           condition,
           extraResources
         })
@@ -299,11 +414,11 @@ export function createRasterGatedLoopNodes<Parameters>(
     }
     nodes.push(
       createRasterIterationGroupGateNode<Parameters>(graph, {
-        id: `${props.gateId ?? `${props.id}-gate`}-${start}`,
+        id: `${gateId}-${start}`,
         operation: props.operation,
         state: props.state,
         maxIterations: props.maxIterations,
-        groupSize: size
+        groupSize: slotTable.getSlot(size)
       })
     );
   }
@@ -316,7 +431,7 @@ export function createRasterIterationFinalizeNode<Parameters>(
   props: {
     id: string;
     operation: string;
-    state: RasterIterationState;
+    state: RasterIterationState<Parameters>;
     converged?: GraphDataView<'uint32'>;
     iterationCount?: GraphDataView<'uint32'>;
   }
@@ -346,10 +461,63 @@ export function createRasterIterationFinalizeNode<Parameters>(
   });
 }
 
+/** Element offset of the tile stamps inside a continuation state: 256 bytes, the binding alignment. */
+const CONTINUATION_STAMP_OFFSET = 64;
+
+/** State word holding the iteration count at which the current execution stops. */
+const CONTINUATION_LIMIT_WORD = 4;
+
+/**
+ * Index of the restart word inside a continuation state. A caller sets it to a nonzero value
+ * before an execution that must start from scratch (inputs changed); the GPU clears it when the
+ * execution has consumed it.
+ */
+export const GPU_RASTER_RELAXATION_RESTART_WORD = 5;
+
+/**
+ * Returns the word count of the caller-owned state that lets a tiled relaxation of a `grid`-sized
+ * raster continue across executions: `[changed, enabled, iterationCount, converged, limit,
+ * restart]` padded to 256 bytes, then one stamp per 16x16 tile. A zero-filled state means "no
+ * previous execution", so the first execution starts from scratch.
+ */
+export function getGPURasterRelaxationContinuationStateLength(grid: {
+  width: number;
+  height: number;
+}): number {
+  const tileCount =
+    Math.ceil(grid.width / RASTER_RELAXATION_TILE_SIZE) *
+    Math.ceil(grid.height / RASTER_RELAXATION_TILE_SIZE);
+  return CONTINUATION_STAMP_OFFSET + tileCount;
+}
+
+/**
+ * Continuation of a tiled relaxation across executions, see {@link RasterTiledRelaxationProps}.
+ *
+ * @internal
+ */
+export type RasterTiledRelaxationContinuation = {
+  /**
+   * Caller-owned state of {@link getGPURasterRelaxationContinuationStateLength} words. It must
+   * outlive an execution (an imported buffer, never a graph transient, which the lifetime planner
+   * may alias).
+   */
+  state: GraphDataView<'uint32'>;
+  /** Keep a completed stage frozen until an explicit restart (dependent multi-stage consumers). */
+  retainConverged?: boolean;
+  /** Optional preceding relaxation state; run only after its converged word is set. */
+  prerequisite?: GraphDataView<'uint32'>;
+
+  /**
+   * `[invocationCount, workgroupSize?]` of the consumer kernels that must run only on a restart
+   * (value initialization, seeding). Shape `i` is gated by `getRestartGate(i, ...)`.
+   */
+  restartShapes?: readonly (readonly [invocationCount: number, workgroupSize?: number])[];
+};
+
 /** Graph-owned state of one tiled min-relaxation. @internal */
-export type RasterTiledRelaxation = {
+export type RasterTiledRelaxation<Parameters> = {
   /** Gated-loop state; the gated kernel runs one workgroup per tile. */
-  state: RasterIterationState;
+  state: RasterIterationState<Parameters>;
   /**
    * Per-tile activity stamps. A tile is processed in iteration `i` when it or one of its eight
    * neighbor tiles holds a stamp `>= i + 1`. Seeds mark a tile with `atomicMax(&stamp, 1u)`.
@@ -359,6 +527,17 @@ export type RasterTiledRelaxation = {
   tilesX: number;
   /** Tile count. */
   tileCount: number;
+  /** Present for a continued relaxation. */
+  continuation?: {
+    /**
+     * Returns the indirect condition and resource use that run a consumer kernel only when this
+     * execution restarts (shape `shapeIndex` of `restartShapes`, named `nodeId`'s gate).
+     */
+    getRestartGate: (
+      shapeIndex: number,
+      nodeId: string
+    ) => {condition: GPUCommandGraphNodeCondition<Parameters>; extraResources: GraphBufferUse[]};
+  };
 };
 
 /** Properties for {@link createRasterTiledRelaxation}. @internal */
@@ -369,8 +548,21 @@ export type RasterTiledRelaxationProps = {
   operation: string;
   width: number;
   height: number;
-  cellSizeMode: GPUTerrainCellSizeMode;
+  cellSizeMode: GPURasterCellSizeMode;
+  /**
+   * Unrolled iterations per execution. With `continuation` this is a budget per submission and
+   * the iteration count accumulates across executions.
+   */
   maxIterations: number;
+  /**
+   * Opt-in continuation. An execution then resumes the previous one (no reset, no consumer
+   * initialization) when the state says that one stopped unconverged and its restart word is 0,
+   * and otherwise restarts from scratch. The working values must be caller-owned too: they carry
+   * the progress. Callers that change any input must set the restart word. The schedule (plain
+   * tiled passes, then sweeps from `sweepAfterIteration`) follows the cumulative iteration count,
+   * so a continued run takes the trajectory of one long execution.
+   */
+  continuation?: RasterTiledRelaxationContinuation;
 };
 
 /**
@@ -387,10 +579,14 @@ export function createRasterTiledRelaxation<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: RasterTiledRelaxationProps,
   activateAllTiles: boolean
-): {relaxation: RasterTiledRelaxation; resetNodes: GPUCommandNode<Parameters>[]} {
+): {relaxation: RasterTiledRelaxation<Parameters>; resetNodes: GPUCommandNode<Parameters>[]} {
   const tilesX = Math.ceil(props.width / RASTER_RELAXATION_TILE_SIZE);
   const tilesY = Math.ceil(props.height / RASTER_RELAXATION_TILE_SIZE);
   const tileCount = tilesX * tilesY;
+  const {continuation} = props;
+  if (continuation) {
+    return createContinuedRelaxation(graph, props, continuation, activateAllTiles);
+  }
   const state = createRasterIterationState(
     graph,
     `${props.id}-relax`,
@@ -424,6 +620,109 @@ export function createRasterTiledRelaxation<Parameters>(
   return {relaxation: {state, tileStamps, tilesX, tileCount}, resetNodes};
 }
 
+/** WGSL that decides whether this execution resumes; shared by the nodes that read the decision. */
+const CONTINUATION_RESUME_WGSL = `// Resume only a previous execution that stopped unconverged, unless the caller asked to restart.
+  let canResume = state[stateOffset + ${GPU_RASTER_RELAXATION_RESTART_WORD}u] == 0u &&
+    state[stateOffset + 3u] == 0u && state[stateOffset + 2u] > 0u;`;
+
+function createContinuedRelaxation<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: RasterTiledRelaxationProps,
+  continuation: RasterTiledRelaxationContinuation,
+  activateAllTiles: boolean
+): {relaxation: RasterTiledRelaxation<Parameters>; resetNodes: GPUCommandNode<Parameters>[]} {
+  const tilesX = Math.ceil(props.width / RASTER_RELAXATION_TILE_SIZE);
+  const tilesY = Math.ceil(props.height / RASTER_RELAXATION_TILE_SIZE);
+  const tileCount = tilesX * tilesY;
+  const {state: stateView} = continuation;
+  if (stateView.length !== getGPURasterRelaxationContinuationStateLength(props)) {
+    throw new Error(`${props.operation} "${props.id}": continuation state has the wrong length`);
+  }
+  const state = createRasterIterationState(
+    graph,
+    `${props.id}-relax`,
+    props.operation,
+    tileCount * WORKGROUP_SIZE,
+    props.id,
+    {status: stateView, limitWord: CONTINUATION_LIMIT_WORD}
+  );
+  // A sub-view of the caller's state; the relaxation kernels address it through `status`.
+  const tileStamps = graph.createDataView(stateView.buffer, {
+    format: 'uint32',
+    length: tileCount,
+    byteOffset: stateView.byteOffset + CONTINUATION_STAMP_OFFSET * 4
+  });
+  const restartGate = createWGSLDispatchGate(graph, {
+    id: `${props.id}-restart`,
+    operation: props.operation,
+    shapes: [[tileCount], ...(continuation.restartShapes ?? [])]
+  });
+  const getRestartGate = (shapeIndex: number, nodeId: string) => {
+    const {condition, extraResources} = restartGate.getGate(shapeIndex + 1);
+    return {condition: {...condition, id: `${nodeId}-gate`}, extraResources};
+  };
+  const tileReset = getRestartGate(-1, `${props.id}-tile-reset`);
+  const prerequisiteBindings: WGSLKernelBinding[] = continuation.prerequisite
+    ? [{name: 'prerequisite', view: continuation.prerequisite, type: 'u32', access: 'read'}]
+    : [];
+  const skipWGSL = `let skipStage = ${continuation.prerequisite ? 'prerequisite[prerequisiteOffset + 3u] == 0u || ' : ''}${continuation.retainConverged ? `(state[stateOffset + 3u] != 0u && state[stateOffset + ${GPU_RASTER_RELAXATION_RESTART_WORD}u] == 0u)` : 'false'};`;
+  const resetNodes = [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-restart-gate`,
+      operation: props.operation,
+      variant: 'continuation-gate',
+      bindings: [
+        ...prerequisiteBindings,
+        {name: 'state', view: stateView, type: 'u32', access: 'read'},
+        restartGate.binding
+      ],
+      invocationCount: 1,
+      body: `${CONTINUATION_RESUME_WGSL}
+  ${skipWGSL}
+  if (canResume || skipStage) {
+    ${restartGate.disarmWGSL}
+  } else {
+    ${restartGate.armWGSL}
+  }`
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-relax-reset`,
+      operation: props.operation,
+      variant: 'continuation-arm',
+      bindings: [
+        ...prerequisiteBindings,
+        {name: 'state', view: stateView, type: 'u32', access: 'read_write'},
+        state.gate.binding
+      ],
+      invocationCount: 1,
+      body: `${CONTINUATION_RESUME_WGSL}
+  ${skipWGSL}
+  if (skipStage) { ${state.gate.disarmWGSL} return; }
+  state[stateOffset + ${GPU_RASTER_RELAXATION_RESTART_WORD}u] = 0u;
+  state[stateOffset + 0u] = 0u;
+  state[stateOffset + 1u] = 1u;
+  state[stateOffset + 3u] = 0u;
+  if (!canResume) { state[stateOffset + 2u] = 0u; }
+  state[stateOffset + ${CONTINUATION_LIMIT_WORD}u] = state[stateOffset + 2u] + ${props.maxIterations}u;
+  ${state.gate.armWGSL}`
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${props.id}-tile-reset`,
+      operation: props.operation,
+      variant: 'tile-reset',
+      bindings: [{name: 'tileStamps', view: tileStamps, type: 'u32', access: 'read_write'}],
+      invocationCount: tileCount,
+      body: `tileStamps[tileStampsOffset + index] = ${activateAllTiles ? 1 : 0}u;`,
+      condition: tileReset.condition,
+      extraResources: tileReset.extraResources
+    })
+  ];
+  return {
+    relaxation: {state, tileStamps, tilesX, tileCount, continuation: {getRestartGate}},
+    resetNodes
+  };
+}
+
 /** Returns WGSL `getRelaxationTile(cell) -> u32` for seed kernels that mark tiles. @internal */
 export function getRasterRelaxationTileWGSL(width: number): string {
   const tilesX = Math.ceil(width / RASTER_RELAXATION_TILE_SIZE);
@@ -455,7 +754,7 @@ fn getRelaxationTile(cell: u32) -> u32 {
 export function createRasterTiledRelaxationNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: RasterTiledRelaxationProps & {
-    relaxation: RasterTiledRelaxation;
+    relaxation: RasterTiledRelaxation<Parameters>;
     /** Working values, bound as `atomic<u32>` float bits and updated in place. */
     values: GraphDataView<'float32'>;
     /** Per-cell auxiliary input such as friction or elevation; NaN excludes a cell. */
@@ -497,6 +796,12 @@ export function createRasterTiledRelaxationNodes<Parameters>(
   const tilesX = relaxation.tilesX;
   const innerIterations = props.innerIterations ?? 2 * tileSize;
   const additiveEdgeCosts = props.additiveEdgeCosts ?? false;
+  const continued = Boolean(relaxation.continuation);
+  // A continued relaxation addresses the stamps through the one binding of the caller's state.
+  const getStampWGSL = (index: string) =>
+    continued
+      ? `status[statusOffset + ${CONTINUATION_STAMP_OFFSET}u + ${index}]`
+      : `tileStamps[tileStampsOffset + ${index}]`;
   const declarations = `${getRasterGridWGSL(props)}
 const TILE_SIZE: u32 = ${tileSize}u;
 const HALO_SIZE: u32 = ${haloSize}u;
@@ -510,13 +815,15 @@ var<workgroup> haloAuxiliary: array<f32, ${haloSize * haloSize}>;
 var<workgroup> tileActive: u32;
 var<workgroup> tileChanged: u32;
 var<workgroup> tileChangedAtomic: atomic<u32>;
+${continued ? 'var<workgroup> roundPhase: u32;' : ''}
 ${props.declarations}`;
   const relaxTileFunction = /* wgsl */ `
 fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   let tileColumn = tileIndex % TILES_X;
   let tileRow = tileIndex / TILES_X;
-  // The gate adds each group's executed iterations to status[2]; GROUP_OFFSET is this round's place in the group.
-  let iteration = atomicLoad(&status[statusOffset + 2u]) + GROUP_OFFSET;
+  // The gate adds each group's executed iterations to status[2]; roundSlot is this round's place in the group.
+  let roundSlotValue = roundSlot[roundSlotOffset];
+  let iteration = atomicLoad(&status[statusOffset + 2u]) + roundSlotValue;
   if (localInvocationIndex == 0u) {
     var anyActive = 0u;
     for (var rowDelta = -1; rowDelta <= 1; rowDelta++) {
@@ -527,7 +834,7 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
           continue;
         }
         let neighborTile = u32(neighborRow) * TILES_X + u32(neighborColumn);
-        if (atomicLoad(&tileStamps[tileStampsOffset + neighborTile]) >= iteration + 1u) {
+        if (atomicLoad(&${getStampWGSL('neighborTile')}) >= iteration + 1u) {
           anyActive = 1u;
         }
       }
@@ -612,8 +919,8 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   }
   workgroupBarrier();
   if (localInvocationIndex == 0u && atomicLoad(&tileChangedAtomic) != 0u) {
-    atomicMax(&tileStamps[tileStampsOffset + tileIndex], iteration + 2u);
-    atomicOr(&status[statusOffset], 1u << GROUP_OFFSET);
+    atomicMax(&${getStampWGSL('tileIndex')}, iteration + 2u);
+    atomicOr(&status[statusOffset], 1u << roundSlotValue);
   }
 }`;
   const tiledBody = /* wgsl */ `
@@ -626,6 +933,38 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
   for (var step = 0u; step < stepCount; step++) {
     let position = ${reverse ? 'stepCount - 1u - step' : 'step'};
     let tileIndex = ${vertical ? 'position * TILES_X + workgroupIndex' : 'workgroupIndex * TILES_X + position'};
+    relaxTile(tileIndex, localInvocationIndex);
+    // Publish this tile's cells to the next tile's halo load within the workgroup.
+    storageBarrier();
+    workgroupBarrier();
+  }`;
+  // One kernel for every pass: the pass of a round comes from the cumulative iteration count in the
+  // GPU state, so a resumed execution continues the schedule instead of restarting it.
+  const sweepAfter = props.sweepAfterIteration;
+  const continuedBody = /* wgsl */ `
+  if (localInvocationIndex == 0u) {
+    let iteration = atomicLoad(&status[statusOffset + 2u]) + roundSlot[roundSlotOffset];
+    roundPhase = ${
+      sweepAfter === undefined
+        ? '0u'
+        : `select(0u, (iteration - ${sweepAfter}u) % 5u, iteration >= ${sweepAfter}u)`
+    };
+  }
+  // 0 tiled; 1 right, 2 left, 3 down, 4 up.
+  let phase = workgroupUniformLoad(&roundPhase);
+  if (phase == 0u) {
+    if (workgroupIndex >= TILE_COUNT) { return; }
+    relaxTile(workgroupIndex, localInvocationIndex);
+    return;
+  }
+  let vertical = phase >= 3u;
+  let reverse = (phase & 1u) == 0u;
+  let lineCount = select(TILES_Y, TILES_X, vertical);
+  let stepCount = select(TILES_X, TILES_Y, vertical);
+  if (workgroupIndex >= lineCount) { return; }
+  for (var step = 0u; step < stepCount; step++) {
+    let position = select(step, stepCount - 1u - step, reverse);
+    let tileIndex = select(workgroupIndex * TILES_X + position, position * TILES_X + workgroupIndex, vertical);
     relaxTile(tileIndex, localInvocationIndex);
     // Publish this tile's cells to the next tile's halo load within the workgroup.
     storageBarrier();
@@ -646,14 +985,15 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
       state,
       maxIterations: props.maxIterations,
       groupSize: props.gateInterval,
-      createRound: ({nodeId, iteration, groupOffset, condition, extraResources}) => {
+      createRound: ({nodeId, iteration, slotBinding, condition, extraResources}) => {
         // After the plain phase the schedule cycles tiled, right, left, down, up.
         const cycleIndex =
           props.sweepAfterIteration === undefined || iteration < props.sweepAfterIteration
             ? 0
             : (iteration - props.sweepAfterIteration) % (sweepPasses.length + 1);
-        const pass =
-          cycleIndex === 0
+        const pass = continued
+          ? {variant: 'continued-relax', body: continuedBody}
+          : cycleIndex === 0
             ? {variant: 'tiled-relax', body: tiledBody}
             : sweepPasses[cycleIndex - 1];
         return createWGSLKernelNode<Parameters>(graph, {
@@ -664,18 +1004,23 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
             {name: 'values', view: props.values, type: 'atomic<u32>', access: 'read_write'},
             {name: 'auxiliary', view: props.auxiliary, type: 'f32', access: 'read'},
             {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
-            {
-              name: 'tileStamps',
-              view: relaxation.tileStamps,
-              type: 'atomic<u32>',
-              access: 'read_write'
-            },
-            {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
+            ...(continued
+              ? []
+              : [
+                  {
+                    name: 'tileStamps',
+                    view: relaxation.tileStamps,
+                    type: 'atomic<u32>' as const,
+                    access: 'read_write' as const
+                  }
+                ]),
+            {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'},
+            slotBinding
           ],
           invocationCount: state.invocationCount,
           workgroupSize: WORKGROUP_SIZE,
           guardIndex: false,
-          declarations: `const GROUP_OFFSET: u32 = ${groupOffset}u;\n${declarations}\n${relaxTileFunction}`,
+          declarations: `${declarations}\n${relaxTileFunction}`,
           body: pass.body,
           condition,
           extraResources

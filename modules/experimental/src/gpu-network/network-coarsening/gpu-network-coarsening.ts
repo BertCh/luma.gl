@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -20,12 +20,26 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateMaximumCount,
+  validatePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validatePowerOfTwo
 } from '../../utils/gpu-contributor-utils';
+import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
+import {
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology
+} from '../../analysis-core/network-topology';
 import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-common';
+import {
+  getWorkgroupCounterKernelSource,
+  WORKGROUP_COUNTER_WORKGROUP_SIZE
+} from '../network-workgroup-counters';
 
 /**
  * Largest supported `groupCapacity`. A superedge key `source * groupCapacity + target` must stay
@@ -33,15 +47,24 @@ import {DECODE_ORDERED_KEY_WGSL, GET_ORDERED_KEY_WGSL} from '../../utils/wgsl-co
  */
 export const GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY = 65535;
 
+/**
+ * Largest superedge capacity (`output.edges.ids` rows) of {@link GPUNetworkCoarsening} with
+ * `output.edgeWeights` on `device`: the 64-bit fixed-point weight accumulators hold 8 bytes per
+ * superedge slot in one storage binding, so 16777216 on a default device (128 MiB bindings).
+ */
+export function getGPUNetworkCoarseningMaximumWeightedEdgeCapacity(device: Device): number {
+  return getStorageBindingElementLimit(device, 8);
+}
+
 /** Number of words of the optional `summary` view. */
 export const GPU_NETWORK_COARSENING_SUMMARY_LENGTH = 8;
 
 /** Word indices of the `summary` view. */
 export const GPU_NETWORK_COARSENING_SUMMARY_WORD = {
-  /** Live vertices, including vertices whose label is `>= groupCapacity`. */
-  liveVertexCount: 0,
-  /** Live vertices whose label is `>= groupCapacity`; they are excluded from every group. */
-  overflowedVertexCount: 1,
+  /** Live nodes, including nodes whose label is `>= groupCapacity`. */
+  liveNodeCount: 0,
+  /** Live nodes whose label is `>= groupCapacity`; they are excluded from every group. */
+  overflowedNodeCount: 1,
   /** Counted live edges (directed: live slots; undirected: live slots `u -> v` with `u <= v`). */
   countedEdgeCount: 2,
   /** Counted edges dropped because an endpoint label is `>= groupCapacity`. */
@@ -50,7 +73,7 @@ export const GPU_NETWORK_COARSENING_SUMMARY_WORD = {
   intraEdgeCount: 4,
   /** Counted edges between two distinct valid groups; the sum of every superedge count. */
   interEdgeCount: 5,
-  /** Groups with at least one live vertex. */
+  /** Groups with at least one live node. */
   groupCount: 6,
   /** Distinct superedges, before clamping to the superedge capacity. */
   superedgeCount: 7
@@ -58,8 +81,8 @@ export const GPU_NETWORK_COARSENING_SUMMARY_WORD = {
 
 /** Decoded `summary` words. */
 export type GPUNetworkCoarseningSummary = {
-  liveVertexCount: number;
-  overflowedVertexCount: number;
+  liveNodeCount: number;
+  overflowedNodeCount: number;
   countedEdgeCount: number;
   droppedEdgeCount: number;
   intraEdgeCount: number;
@@ -77,8 +100,8 @@ export function decodeGPUNetworkCoarseningSummary(
   }
   const word = GPU_NETWORK_COARSENING_SUMMARY_WORD;
   return {
-    liveVertexCount: words[word.liveVertexCount],
-    overflowedVertexCount: words[word.overflowedVertexCount],
+    liveNodeCount: words[word.liveNodeCount],
+    overflowedNodeCount: words[word.overflowedNodeCount],
     countedEdgeCount: words[word.countedEdgeCount],
     droppedEdgeCount: words[word.droppedEdgeCount],
     intraEdgeCount: words[word.intraEdgeCount],
@@ -91,44 +114,42 @@ export function decodeGPUNetworkCoarseningSummary(
 /**
  * Properties for {@link GPUNetworkCoarsening}.
  *
- * Compile-time: vertex and slot counts, `directed`, `groupCapacity`, `fixedPointScale`, which
+ * Compile-time: node and slot counts, `directed`, `groupCapacity`, `fixedPointScale`, which
  * optional views exist and every output capacity. Per-frame: the contents of every input view, so
  * re-labelling or filtering a live network changes the summary on the next encoding.
  */
 export type GPUNetworkCoarseningProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'network-coarsening'`. */
   id?: string;
-  /** Forward CSR row offsets with `nodeCount + 1` rows. */
-  offsets: GraphDataView<'uint32'>;
-  /** Forward CSR destination per slot. Indices `>= nodeCount` are dead slots. At least one slot. */
-  neighbors: GraphDataView<'uint32'>;
+  /**
+   * Forward CSR network with at least one slot. Neighbor indices `>= nodeCount` are dead slots.
+   * Optional `weights` are summed per superedge (missing weights are 1); optional `nodePositions`
+   * (finite values) feed centroids and bounds.
+   */
+  topology: GPUNetworkAdjacency;
   /**
    * Treat slots as directed edges. Default false: the CSR lists each undirected edge in both
    * directions (a self-loop once), like `GPUNetworkStatistics`, and only the slot `u -> v` with
    * `u <= v` is counted, so each edge counts once. An undirected `edgeMask` should be symmetric.
    */
   directed?: boolean;
-  /** Optional per-vertex mask, nonzero = live. */
-  vertexMask?: GraphDataView<'uint32'>;
+  /** Optional per-node mask, nonzero = live. */
+  nodeMask?: GraphDataView<'uint32'>;
   /**
-   * Optional per-slot mask aligned with `neighbors`, nonzero = live. A slot `u -> v` is live iff
-   * this mask (if any) is nonzero, both endpoints are live and `v < nodeCount`.
+   * Optional per-slot mask aligned with `topology.neighbors`, nonzero = live. A slot `u -> v` is
+   * live iff this mask (if any) is nonzero, both endpoints are live and `v < nodeCount`.
    */
   edgeMask?: GraphDataView<'uint32'>;
-  /** Optional per-slot `float32` edge weights aligned with `neighbors`. Missing weights are 1. */
-  weights?: GraphDataView<'float32'>;
   /**
-   * Group label per vertex (one `uint32` row per vertex), for example a community from label
+   * Group label per node (one `uint32` row per node), for example a community from label
    * propagation, a component or a spatial cell. Dense labels `< groupCapacity` are the group IDs.
    */
   labels: GraphDataView<'uint32'>;
-  /** Optional per-vertex positions (finite values) for centroids and bounds. */
-  positions?: GraphDataView<'float32x2'>;
-  /** Optional per-vertex finite `float32` value column summed per group. */
-  vertexValues?: GraphDataView<'float32'>;
+  /** Optional per-node finite `float32` value column summed per group. */
+  nodeValues?: GraphDataView<'float32'>;
   /**
    * Compile-time number of dense groups, `1..65535`. Every `groupXxx` output has exactly this many
-   * rows. A live vertex with a label at or above it is excluded and raises `edges.overflow`.
+   * rows. A live node with a label at or above it is excluded and raises `output.edges.overflow`.
    */
   groupCapacity: number;
   /**
@@ -136,17 +157,23 @@ export type GPUNetworkCoarseningProps = {
    * sums. Default 65536. Each addend is rounded to a multiple of `1 / fixedPointScale`.
    */
   fixedPointScale?: number;
-  /** Exact-size (`groupCapacity` rows) per-group live vertex count. */
-  groupVertexCount: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUNetworkCoarseningOutput;
+};
+
+/** GPU-written outputs of {@link GPUNetworkCoarsening}. */
+export type GPUNetworkCoarseningOutput = {
+  /** Exact-size (`groupCapacity` rows) per-group live node count. */
+  groupNodeCount: GraphDataView<'uint32'>;
   /** Optional per-group count of intra-group counted edges (self-loops included). */
   groupIntraEdgeCount?: GraphDataView<'uint32'>;
   /** Optional per-group sum of intra-group edge weights. */
   groupIntraWeight?: GraphDataView<'float32'>;
-  /** Optional per-group centroid `sum / count`; requires `positions`. Empty groups are 0. */
+  /** Optional per-group centroid `sum / count`; requires `topology.nodePositions`. Empty groups are 0. */
   groupCentroid?: GraphDataView<'float32x2'>;
-  /** Optional per-group `[minX, minY, maxX, maxY]`; requires `positions`. Empty groups are 0. */
+  /** Optional per-group `[minX, minY, maxX, maxY]`; requires `topology.nodePositions`. Empty groups are 0. */
   groupBounds?: GraphDataView<'float32x4'>;
-  /** Optional per-group sum of `vertexValues`; requires `vertexValues`. */
+  /** Optional per-group sum of `nodeValues`; requires `nodeValues`. */
   groupValueSum?: GraphDataView<'float32'>;
   /**
    * Bounded superedge list: `ids` is the source group. The capacity is `ids.length`. Rows are
@@ -156,7 +183,7 @@ export type GPUNetworkCoarseningProps = {
    */
   edges: GPUCompactOutput;
   /** Target group per superedge row, `edges.ids.length` rows. */
-  edgeTargets: GraphDataView<'uint32'>;
+  edgeTargetGroups: GraphDataView<'uint32'>;
   /** Edge count per superedge row, `edges.ids.length` rows. */
   edgeCounts: GraphDataView<'uint32'>;
   /** Optional summed weight per superedge row, `edges.ids.length` rows. */
@@ -212,12 +239,12 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
 }
 
 /**
- * Coarsens a CSR network by a vertex group label into a summary graph for zoomed-out compound
- * nodes: per-group vertex counts, centroids, bounds, value sums and intra-group edge statistics,
+ * Coarsens a CSR network by a node group label into a summary graph for zoomed-out compound
+ * nodes: per-group node counts, centroids, bounds, value sums and intra-group edge statistics,
  * plus a bounded list of superedges (source group, target group, edge count, summed weight).
  *
  * Labels. Labels are arbitrary `uint32`, but the group ID is the label itself and must be below
- * the compile-time `groupCapacity` (at most 65535). A live vertex with a larger label is excluded
+ * the compile-time `groupCapacity` (at most 65535). A live node with a larger label is excluded
  * from every group and superedge, edges touching it are counted in `droppedEdgeCount`, and
  * `edges.overflow` is set. A GPU-side dense relabel was rejected: first-come hash slot assignment
  * is nondeterministic across runs, and a deterministic rank needs a sort of the vertices plus a
@@ -225,7 +252,7 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  * components below `nodeCount`, spatial cells indexed by the caller). Remap sparse labels first,
  * for example with a caller-owned lookup table.
  *
- * Exactness. Vertex, intra and edge counts are `u32` atomics, so they are integer exact. Every sum
+ * Exactness. Node, intra and edge counts are `u32` atomics, so they are integer exact. Every sum
  * (weights, positions, values) is accumulated as a two-word signed 64-bit fixed-point integer
  * (`round(value * fixedPointScale)`, carry propagated between two `atomicAdd`s). Integer addition
  * is order independent, so sums are bitwise reproducible; they differ from an exact real sum only
@@ -248,7 +275,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkCoarseningProps;
-  /** Number of vertices, `offsets.length - 1`. */
+  /** Number of nodes, `topology.offsets.length - 1`. */
   readonly nodeCount: number;
   /** Number of dense groups. */
   readonly groupCapacity: number;
@@ -259,45 +286,36 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     this.id = props.id ?? 'network-coarsening';
     this.props = props;
     const {id} = this;
-    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
-    validatePackedView(props.neighbors, ['uint32'], `${id} neighbors`);
+    const {output} = props;
+    const topologyShape = validateGPUNetworkTopology(id, props.topology);
     validatePackedView(props.labels, ['uint32'], `${id} labels`);
-    this.nodeCount = props.offsets.length - 1;
+    this.nodeCount = topologyShape.nodeCount;
     const {nodeCount} = this;
-    if (nodeCount < 1) {
-      throw new Error(`${id} offsets must contain at least two rows`);
-    }
-    if (props.neighbors.length < 1) {
-      throw new Error(`${id} neighbors must contain at least one slot`);
+    if (topologyShape.edgeCount < 1) {
+      throw new Error(`${id} topology.neighbors must contain at least one slot`);
     }
     this.groupCapacity = props.groupCapacity;
     const groupCapacity = this.groupCapacity;
-    if (
-      !Number.isSafeInteger(groupCapacity) ||
-      groupCapacity < 1 ||
-      groupCapacity > GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY
-    ) {
-      throw new Error(
-        `${id} groupCapacity must be an integer between 1 and ${GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY}`
-      );
-    }
+    validateCapacity(
+      id,
+      'groupCapacity',
+      groupCapacity,
+      1,
+      GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY
+    );
     const scale = props.fixedPointScale ?? 65536;
-    if (!Number.isInteger(Math.log2(scale)) || scale < 1 || scale > 2 ** 24) {
-      throw new Error(`${id} fixedPointScale must be a power of two between 1 and 2^24`);
-    }
+    validatePowerOfTwo(id, 'fixedPointScale', scale, 1, 2 ** 24);
     const rowChecks: [string, GraphDataView | undefined, number, readonly string[]][] = [
-      ['vertexMask', props.vertexMask, nodeCount, ['uint32']],
+      ['nodeMask', props.nodeMask, nodeCount, ['uint32']],
       ['labels', props.labels, nodeCount, ['uint32']],
-      ['positions', props.positions, nodeCount, ['float32x2']],
-      ['vertexValues', props.vertexValues, nodeCount, ['float32']],
-      ['edgeMask', props.edgeMask, props.neighbors.length, ['uint32']],
-      ['weights', props.weights, props.neighbors.length, ['float32']],
-      ['groupVertexCount', props.groupVertexCount, groupCapacity, ['uint32']],
-      ['groupIntraEdgeCount', props.groupIntraEdgeCount, groupCapacity, ['uint32']],
-      ['groupIntraWeight', props.groupIntraWeight, groupCapacity, ['float32']],
-      ['groupCentroid', props.groupCentroid, groupCapacity, ['float32x2']],
-      ['groupBounds', props.groupBounds, groupCapacity, ['float32x4']],
-      ['groupValueSum', props.groupValueSum, groupCapacity, ['float32']]
+      ['nodeValues', props.nodeValues, nodeCount, ['float32']],
+      ['edgeMask', props.edgeMask, props.topology.neighbors.length, ['uint32']],
+      ['output.groupNodeCount', output.groupNodeCount, groupCapacity, ['uint32']],
+      ['output.groupIntraEdgeCount', output.groupIntraEdgeCount, groupCapacity, ['uint32']],
+      ['output.groupIntraWeight', output.groupIntraWeight, groupCapacity, ['float32']],
+      ['output.groupCentroid', output.groupCentroid, groupCapacity, ['float32x2']],
+      ['output.groupBounds', output.groupBounds, groupCapacity, ['float32x4']],
+      ['output.groupValueSum', output.groupValueSum, groupCapacity, ['float32']]
     ];
     for (const [name, view, length, formats] of rowChecks) {
       if (!view) {
@@ -308,35 +326,37 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} must contain exactly ${length} rows`);
       }
     }
-    if ((props.groupCentroid || props.groupBounds) && !props.positions) {
-      throw new Error(`${id} groupCentroid and groupBounds require positions`);
+    if ((output.groupCentroid || output.groupBounds) && !props.topology.nodePositions) {
+      throw new Error(
+        `${id} output.groupCentroid and output.groupBounds require topology.nodePositions`
+      );
     }
-    if (props.groupValueSum && !props.vertexValues) {
-      throw new Error(`${id} groupValueSum requires vertexValues`);
+    if (output.groupValueSum && !props.nodeValues) {
+      throw new Error(`${id} output.groupValueSum requires nodeValues`);
     }
-    validateCompactOutput(id, props.edges);
-    this.edgeCapacity = props.edges.ids.length;
+    validateCompactOutput(id, output.edges);
+    this.edgeCapacity = output.edges.ids.length;
     if (this.edgeCapacity < 1) {
-      throw new Error(`${id} edges.ids must contain at least one row`);
+      throw new Error(`${id} output.edges.ids must contain at least one row`);
     }
     for (const [name, view, formats] of [
-      ['edgeTargets', props.edgeTargets, ['uint32']],
-      ['edgeCounts', props.edgeCounts, ['uint32']],
-      ['edgeWeights', props.edgeWeights, ['float32']]
+      ['output.edgeTargetGroups', output.edgeTargetGroups, ['uint32']],
+      ['output.edgeCounts', output.edgeCounts, ['uint32']],
+      ['output.edgeWeights', output.edgeWeights, ['float32']]
     ] as const) {
       if (!view) {
         continue;
       }
       validatePackedView(view, formats as any, `${id} ${name}`);
       if (view.length !== this.edgeCapacity) {
-        throw new Error(`${id} ${name} must match edges.ids length`);
+        throw new Error(`${id} ${name} must match output.edges.ids length`);
       }
     }
-    if (props.summary) {
-      validatePackedView(props.summary, ['uint32'], `${id} summary`);
-      if (props.summary.length !== GPU_NETWORK_COARSENING_SUMMARY_LENGTH) {
+    if (props.output.summary) {
+      validatePackedView(props.output.summary, ['uint32'], `${id} output.summary`);
+      if (props.output.summary.length !== GPU_NETWORK_COARSENING_SUMMARY_LENGTH) {
         throw new Error(
-          `${id} summary must contain exactly ${GPU_NETWORK_COARSENING_SUMMARY_LENGTH} rows`
+          `${id} output.summary must contain exactly ${GPU_NETWORK_COARSENING_SUMMARY_LENGTH} rows`
         );
       }
     }
@@ -346,34 +366,31 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   private getInputs(): (GraphDataView | undefined)[] {
     const {props} = this;
     return [
-      props.offsets,
-      props.neighbors,
-      props.vertexMask,
+      ...getGPUNetworkTopologyViews(props.topology),
+      props.nodeMask,
       props.edgeMask,
-      props.weights,
       props.labels,
-      props.positions,
-      props.vertexValues
+      props.nodeValues
     ];
   }
 
   private getOutputs(): (GraphDataView | undefined)[] {
-    const {props} = this;
+    const {output} = this.props;
     return [
-      props.groupVertexCount,
-      props.groupIntraEdgeCount,
-      props.groupIntraWeight,
-      props.groupCentroid,
-      props.groupBounds,
-      props.groupValueSum,
-      props.edges.ids,
-      props.edges.count,
-      props.edges.overflow,
-      props.edges.requiredCount,
-      props.edgeTargets,
-      props.edgeCounts,
-      props.edgeWeights,
-      props.summary
+      output.groupNodeCount,
+      output.groupIntraEdgeCount,
+      output.groupIntraWeight,
+      output.groupCentroid,
+      output.groupBounds,
+      output.groupValueSum,
+      output.edges.ids,
+      output.edges.status.count,
+      output.edges.status.overflow,
+      output.edges.status.requiredCount,
+      output.edgeTargetGroups,
+      output.edgeCounts,
+      output.edgeWeights,
+      output.summary
     ];
   }
 
@@ -382,14 +399,22 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, groupCapacity, edgeCapacity} = this;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputs(), ...this.getOutputs()]);
-    const slotCount = props.neighbors.length;
+    if (props.output.edgeWeights) {
+      validateMaximumCount(
+        id,
+        'output.edges.ids rows with output.edgeWeights',
+        edgeCapacity,
+        getGPUNetworkCoarseningMaximumWeightedEdgeCapacity(graph.device)
+      );
+    }
+    const slotCount = props.topology.neighbors.length;
     const directed = Boolean(props.directed);
     const scale = props.fixedPointScale ?? 65536;
     const sentinelKey = groupCapacity * groupCapacity;
-    const hasPositions = Boolean(props.positions);
-    const hasValues = Boolean(props.vertexValues);
-    const hasIntra = Boolean(props.groupIntraEdgeCount || props.groupIntraWeight);
-    const hasIntraWeight = Boolean(props.groupIntraWeight);
+    const hasPositions = Boolean(props.topology.nodePositions);
+    const hasValues = Boolean(props.nodeValues);
+    const hasIntra = Boolean(props.output.groupIntraEdgeCount || props.output.groupIntraWeight);
+    const hasIntraWeight = Boolean(props.output.groupIntraWeight);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
@@ -397,7 +422,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const effectiveLabels = u32('effective-labels', nodeCount);
     const groupAcc = u32('group-acc', groupCapacity * GROUP_ACC_STRIDE);
     const intraAcc = hasIntra ? u32('intra-acc', groupCapacity * 3) : undefined;
-    const stats = props.summary ?? u32('stats', GPU_NETWORK_COARSENING_SUMMARY_LENGTH);
+    const stats = props.output.summary ?? u32('stats', GPU_NETWORK_COARSENING_SUMMARY_LENGTH);
     const sortKeys = u32('sort-keys', slotCount);
     const sortIndices = u32('sort-indices', slotCount);
     const sortedKeys = u32('sorted-keys', slotCount);
@@ -406,7 +431,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const segmentScan = u32('segment-scan', slotCount);
     const segmentTotal = u32('segment-total', 1);
     const overflowFlag = u32('overflow-flag', 1);
-    const segmentWeightAcc = props.edgeWeights
+    const segmentWeightAcc = props.output.edgeWeights
       ? u32('segment-weight-acc', edgeCapacity * 2)
       : undefined;
 
@@ -429,12 +454,16 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       }
     };
     fill('zero-stats', stats);
-    fill('zero-group-counts', props.groupVertexCount);
+    fill('zero-group-counts', props.output.groupNodeCount);
     fill('zero-intra', intraAcc);
-    fill('zero-edge-ids', props.edges.ids);
-    fill('zero-edge-targets', props.edgeTargets);
-    fill('zero-edge-counts', props.edgeCounts);
+    fill('zero-edge-ids', props.output.edges.ids);
+    fill('zero-edge-targets', props.output.edgeTargetGroups);
+    fill('zero-edge-counts', props.output.edgeCounts);
     fill('zero-edge-weight-acc', segmentWeightAcc);
+    // Slots past offsets[NODE_COUNT] belong to no row, so the per-row slots pass never writes them.
+    // They take the sentinel key and sort last; otherwise stale words (transients alias) would
+    // enter the sort as superedges (review B-09, library rule 11).
+    fill('clear-sort-keys', sortKeys, 'u32', `${sentinelKey}u`);
 
     // Initialise the per-group accumulator: sums are 0, bound minima are the largest ordered key.
     nodes.push(
@@ -466,26 +495,26 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const vertexBindings: WGSLKernelBinding[] = [
       {name: 'labels', view: props.labels, type: 'u32', access: 'read'}
     ];
-    if (props.vertexMask) {
+    if (props.nodeMask) {
       vertexBindings.push({
         name: 'vertexMask',
-        view: props.vertexMask,
+        view: props.nodeMask,
         type: 'u32',
         access: 'read'
       });
     }
-    if (props.positions) {
+    if (props.topology.nodePositions) {
       vertexBindings.push({
         name: 'positions',
-        view: props.positions,
+        view: props.topology.nodePositions,
         type: 'f32',
         access: 'read'
       });
     }
-    if (props.vertexValues) {
+    if (props.nodeValues) {
       vertexBindings.push({
         name: 'values',
-        view: props.vertexValues,
+        view: props.nodeValues,
         type: 'f32',
         access: 'read'
       });
@@ -499,7 +528,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       },
       {
         name: 'groupCounts',
-        view: props.groupVertexCount,
+        view: props.output.groupNodeCount,
         type: 'atomic<u32>',
         access: 'read_write'
       },
@@ -511,32 +540,29 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       },
       {name: 'stats', view: stats, type: 'atomic<u32>', access: 'read_write'}
     );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-vertices`,
-        operation: OPERATION,
-        variant: 'vertices',
-        bindings: vertexBindings,
-        invocationCount: nodeCount,
-        declarations: `const GROUP_CAPACITY: u32 = ${groupCapacity}u;
-const DEAD: u32 = 0xffffffffu;
-const OVERFLOWED: u32 = 0xfffffffeu;
-${getFixedPointSource(scale)}`,
-        body: `${props.vertexMask ? 'if (vertexMask[vertexMaskOffset + index] == 0u) {' : 'if (false) {'}
+    // Summary counters fold per workgroup, one global atomic per word per workgroup (rule 14).
+    const vertexCounters = getWorkgroupCounterKernelSource({
+      counters: [
+        {target: 'stats', word: WORD.liveNodeCount},
+        {target: 'stats', word: WORD.overflowedNodeCount},
+        {target: 'stats', word: WORD.groupCount}
+      ],
+      rowCount: 'NODE_COUNT',
+      rowSource: `${props.nodeMask ? 'if (vertexMask[vertexMaskOffset + index] == 0u) {' : 'if (false) {'}
     effectiveLabels[effectiveLabelsOffset + index] = DEAD;
     return;
   }
-  atomicAdd(&stats[statsOffset + ${WORD.liveVertexCount}u], 1u);
+  addCounter(0u, 1u);
   let label = labels[labelsOffset + index];
   if (label >= GROUP_CAPACITY) {
     effectiveLabels[effectiveLabelsOffset + index] = OVERFLOWED;
-    atomicAdd(&stats[statsOffset + ${WORD.overflowedVertexCount}u], 1u);
+    addCounter(1u, 1u);
     return;
   }
   effectiveLabels[effectiveLabelsOffset + index] = label;
   let previous = atomicAdd(&groupCounts[groupCountsOffset + label], 1u);
   if (previous == 0u) {
-    atomicAdd(&stats[statsOffset + ${WORD.groupCount}u], 1u);
+    addCounter(2u, 1u);
   }
   let base = label * ${GROUP_ACC_STRIDE}u;
   ${
@@ -558,13 +584,29 @@ ${getFixedPointSource(scale)}`,
   ${getFixedPointAddSource('groupAcc', 'groupAccOffset + base + 4u', 'quantizedValue')}`
       : ''
   }`
+    });
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-vertices`,
+        operation: OPERATION,
+        variant: 'vertices',
+        bindings: vertexBindings,
+        invocationCount: nodeCount,
+        workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const GROUP_CAPACITY: u32 = ${groupCapacity}u;
+const DEAD: u32 = 0xffffffffu;
+const OVERFLOWED: u32 = 0xfffffffeu;
+${getFixedPointSource(scale)}
+${vertexCounters.declarations}`,
+        body: vertexCounters.body
       })
     );
-
     // Slots: classify each counted slot, count intra-group edges and emit inter-group keys.
     const slotBindings: WGSLKernelBinding[] = [
-      {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-      {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
+      {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
       {
         name: 'effectiveLabels',
         view: effectiveLabels,
@@ -580,10 +622,10 @@ ${getFixedPointSource(scale)}`,
         access: 'read'
       });
     }
-    if (props.weights && hasIntraWeight) {
+    if (props.topology.weights && hasIntraWeight) {
       slotBindings.push({
         name: 'weights',
-        view: props.weights,
+        view: props.topology.weights,
         type: 'f32',
         access: 'read'
       });
@@ -611,22 +653,17 @@ ${getFixedPointSource(scale)}`,
     const pairKey = directed
       ? 'sourceLabel * GROUP_CAPACITY + targetLabel'
       : 'min(sourceLabel, targetLabel) * GROUP_CAPACITY + max(sourceLabel, targetLabel)';
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-slots`,
-        operation: OPERATION,
-        variant: 'slots',
-        bindings: slotBindings,
-        invocationCount: nodeCount,
-        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
-const GROUP_CAPACITY: u32 = ${groupCapacity}u;
-const SENTINEL_KEY: u32 = ${sentinelKey}u;
-const DEAD: u32 = 0xffffffffu;
-const OVERFLOWED: u32 = 0xfffffffeu;
-${getFixedPointSource(scale)}`,
-        body: `let sourceLabel = effectiveLabels[effectiveLabelsOffset + index];
-  let rowBegin = offsets[offsetsOffset + index];
-  let rowEnd = offsets[offsetsOffset + index + 1u];
+    const slotCounters = getWorkgroupCounterKernelSource({
+      counters: [
+        {target: 'stats', word: WORD.countedEdgeCount},
+        {target: 'stats', word: WORD.droppedEdgeCount},
+        {target: 'stats', word: WORD.intraEdgeCount},
+        {target: 'stats', word: WORD.interEdgeCount}
+      ],
+      rowCount: 'NODE_COUNT',
+      rowSource: `let sourceLabel = effectiveLabels[effectiveLabelsOffset + index];
+  let rowEnd = min(offsets[offsetsOffset + index + 1u], SLOT_COUNT);
+  let rowBegin = min(offsets[offsetsOffset + index], rowEnd);
   var counted = 0u;
   var dropped = 0u;
   var intra = 0u;
@@ -649,7 +686,7 @@ ${getFixedPointSource(scale)}`,
           intra++;
           ${
             hasIntraWeight
-              ? `let quantizedWeight = quantize(${props.weights ? 'weights[weightsOffset + slot]' : '1.0'});
+              ? `let quantizedWeight = quantize(${props.topology.weights ? 'weights[weightsOffset + slot]' : '1.0'});
           let previousLow = intraWeightLow;
           intraWeightLow += quantizedWeight.x;
           intraWeightHigh += quantizedWeight.y + select(0u, 1u, intraWeightLow < previousLow);`
@@ -680,13 +717,31 @@ ${getFixedPointSource(scale)}`,
   }`
       : ''
   }
-  if (counted > 0u) { atomicAdd(&stats[statsOffset + ${WORD.countedEdgeCount}u], counted); }
-  if (dropped > 0u) { atomicAdd(&stats[statsOffset + ${WORD.droppedEdgeCount}u], dropped); }
-  if (intra > 0u) { atomicAdd(&stats[statsOffset + ${WORD.intraEdgeCount}u], intra); }
-  if (inter > 0u) { atomicAdd(&stats[statsOffset + ${WORD.interEdgeCount}u], inter); }`
+  addCounter(0u, counted);
+  addCounter(1u, dropped);
+  addCounter(2u, intra);
+  addCounter(3u, inter);`
+    });
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-slots`,
+        operation: OPERATION,
+        variant: 'slots',
+        bindings: slotBindings,
+        invocationCount: nodeCount,
+        workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const SLOT_COUNT: u32 = ${slotCount}u;
+const GROUP_CAPACITY: u32 = ${groupCapacity}u;
+const SENTINEL_KEY: u32 = ${sentinelKey}u;
+const DEAD: u32 = 0xffffffffu;
+const OVERFLOWED: u32 = 0xfffffffeu;
+${getFixedPointSource(scale)}
+${slotCounters.declarations}`,
+        body: slotCounters.body
       })
     );
-
     // Superedges: stable sort of (key, slot), segment numbering, then per-segment accumulation.
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -773,7 +828,7 @@ ${getFixedPointSource(scale)}`,
         body: `let total = segmentScan[segmentScanOffset + ${slotCount - 1}u] + flags[flagsOffset + ${slotCount - 1}u];
   totalOut[totalOutOffset] = total;
   stats[statsOffset + ${WORD.superedgeCount}u] = total;
-  let labelOverflow = stats[statsOffset + ${WORD.overflowedVertexCount}u] > 0u ||
+  let labelOverflow = stats[statsOffset + ${WORD.overflowedNodeCount}u] > 0u ||
     stats[statsOffset + ${WORD.droppedEdgeCount}u] > 0u;
   overflowOut[overflowOutOffset] = select(0u, 1u, labelOverflow);`
       })
@@ -783,19 +838,19 @@ ${getFixedPointSource(scale)}`,
       {name: 'segmentScan', view: segmentScan, type: 'u32', access: 'read'},
       {
         name: 'edgeIds',
-        view: props.edges.ids,
+        view: props.output.edges.ids,
         type: 'u32',
         access: 'read_write'
       },
       {
         name: 'edgeTargets',
-        view: props.edgeTargets,
+        view: props.output.edgeTargetGroups,
         type: 'u32',
         access: 'read_write'
       },
       {
         name: 'edgeCounts',
-        view: props.edgeCounts,
+        view: props.output.edgeCounts,
         type: 'atomic<u32>',
         access: 'read_write'
       }
@@ -815,10 +870,10 @@ ${getFixedPointSource(scale)}`,
           access: 'read_write'
         }
       );
-      if (props.weights) {
+      if (props.topology.weights) {
         segmentBindings.push({
           name: 'weights',
-          view: props.weights,
+          view: props.topology.weights,
           type: 'f32',
           access: 'read'
         });
@@ -882,7 +937,7 @@ ${getFixedPointSource(scale)}`,
     runCount++;
     ${
       segmentWeightAcc
-        ? `let quantizedWeight = quantize(${props.weights ? 'weights[weightsOffset + sortedIndices[sortedIndicesOffset + position]]' : '1.0'});
+        ? `let quantizedWeight = quantize(${props.topology.weights ? 'weights[weightsOffset + sortedIndices[sortedIndicesOffset + position]]' : '1.0'});
     let previousLow = runWeightLow;
     runWeightLow += quantizedWeight.x;
     runWeightHigh += quantizedWeight.y + select(0u, 1u, runWeightLow < previousLow);`
@@ -892,7 +947,7 @@ ${getFixedPointSource(scale)}`,
   ${flushRun}`
       })
     );
-    if (segmentWeightAcc && props.edgeWeights) {
+    if (segmentWeightAcc && props.output.edgeWeights) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-edge-weights`,
@@ -907,7 +962,7 @@ ${getFixedPointSource(scale)}`,
             },
             {
               name: 'edgeWeights',
-              view: props.edgeWeights,
+              view: props.output.edgeWeights,
               type: 'f32',
               access: 'read_write'
             }
@@ -925,27 +980,27 @@ ${getFixedPointSource(scale)}`,
     const finishBindings: WGSLKernelBinding[] = [
       {
         name: 'groupCounts',
-        view: props.groupVertexCount,
+        view: props.output.groupNodeCount,
         type: 'u32',
         access: 'read'
       },
       {name: 'groupAcc', view: groupAcc, type: 'u32', access: 'read'}
     ];
     const finishStatements: string[] = [];
-    if (props.groupCentroid) {
+    if (props.output.groupCentroid) {
       finishBindings.push({
         name: 'centroidOut',
-        view: props.groupCentroid,
+        view: props.output.groupCentroid,
         type: 'f32',
         access: 'read_write'
       });
       finishStatements.push(`centroidOut[centroidOutOffset + 2u * index] = select(0.0, dequantize(groupAcc[groupAccOffset + base], groupAcc[groupAccOffset + base + 1u]) / f32(count), count > 0u);
   centroidOut[centroidOutOffset + 2u * index + 1u] = select(0.0, dequantize(groupAcc[groupAccOffset + base + 2u], groupAcc[groupAccOffset + base + 3u]) / f32(count), count > 0u);`);
     }
-    if (props.groupBounds) {
+    if (props.output.groupBounds) {
       finishBindings.push({
         name: 'boundsOut',
-        view: props.groupBounds,
+        view: props.output.groupBounds,
         type: 'f32',
         access: 'read_write'
       });
@@ -954,10 +1009,10 @@ ${getFixedPointSource(scale)}`,
   boundsOut[boundsOutOffset + 4u * index + 2u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 8u]), count > 0u);
   boundsOut[boundsOutOffset + 4u * index + 3u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 9u]), count > 0u);`);
     }
-    if (props.groupValueSum) {
+    if (props.output.groupValueSum) {
       finishBindings.push({
         name: 'valueOut',
-        view: props.groupValueSum,
+        view: props.output.groupValueSum,
         type: 'f32',
         access: 'read_write'
       });
@@ -972,10 +1027,10 @@ ${getFixedPointSource(scale)}`,
         type: 'u32',
         access: 'read'
       });
-      if (props.groupIntraEdgeCount) {
+      if (props.output.groupIntraEdgeCount) {
         finishBindings.push({
           name: 'intraCountOut',
-          view: props.groupIntraEdgeCount,
+          view: props.output.groupIntraEdgeCount,
           type: 'u32',
           access: 'read_write'
         });
@@ -983,10 +1038,10 @@ ${getFixedPointSource(scale)}`,
           'intraCountOut[intraCountOutOffset + index] = intraAcc[intraAccOffset + 3u * index];'
         );
       }
-      if (props.groupIntraWeight) {
+      if (props.output.groupIntraWeight) {
         finishBindings.push({
           name: 'intraWeightOut',
-          view: props.groupIntraWeight,
+          view: props.output.groupIntraWeight,
           type: 'f32',
           access: 'read_write'
         });
@@ -1016,7 +1071,7 @@ ${getFixedPointSource(scale)}`,
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: segmentTotal,
-        output: props.edges,
+        output: props.output.edges,
         overflowSources: [overflowFlag]
       })
     );

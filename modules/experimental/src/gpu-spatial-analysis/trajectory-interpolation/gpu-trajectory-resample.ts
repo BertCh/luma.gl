@@ -3,43 +3,65 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
-import {
-  getTrajectoryGeodesicRadius,
-  resolveTrajectorySpatialContext
-} from '../trajectory-analysis/trajectory-spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} from './trajectory-clock-parameters';
 import {
   createTrajectoryArcLengthNode,
   createTrajectoryResampleNode
 } from './trajectory-interpolation-kernels';
+import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 
 /** How {@link GPUTrajectoryResample} spaces samples along each track. */
 export type GPUTrajectoryResampleSpacing = 'time' | 'arc-length' | 'clock';
 
 /**
- * Properties for {@link GPUTrajectoryResample}.
+ * Caller-owned dense outputs of {@link GPUTrajectoryResample}.
+ */
+export type GPUTrajectoryResampleOutput = {
+  /** Dense `[trackCount × sampleCount]` positions, row `track * sampleCount + k`. */
+  samples: GraphDataView<'float32x2'>;
+  /** Optional dense elevations aligned with `samples`. Requires `elevations`. */
+  sampleElevations?: GraphDataView<'float32'>;
+  /**
+   * Optional dense sample times, in the timestamps' unit: relative to each track's first timestamp,
+   * or with `spacing: 'clock'` relative to the clock start (`k * step`). Requires `timestamps`.
+   */
+  sampleTimes?: GraphDataView<'float32'>;
+};
+
+/**
+ * Properties for {@link GPUTrajectoryResample}: the trajectory layout
+ * ({@link GPUTrajectoryGeometryFields}: `positions`, `trackOffsets`, and `timestamps`, which is
+ * optional here) plus the options below.
+ *
+ * `positions` are packed rows (planar, or longitude/latitude degrees), sorted by track and then
+ * time. `timestamps` are `float32` relative or `uint32x2` Int64 words, non-decreasing inside each
+ * track, and are required for `spacing: 'time'` and for `output.sampleTimes`. `trackOffsets` are
+ * `trackCount + 1` monotonic row offsets, the same layout as `GPUTrajectoryMetrics`.
  *
  * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
  * track count, `sampleCount`, `spacing`, the time format, and which optional views are present.
  */
-export type GPUTrajectoryResampleProps = {
+export type GPUTrajectoryResampleProps = Omit<GPUTrajectoryGeometryFields, 'timestamps'> & {
   /** Prefix for generated node and transient IDs. Defaults to `'trajectory-resample'`. */
   id?: string;
-  /** Packed positions (planar, or longitude/latitude degrees), one row per sample, sorted by track and then time. */
-  positions: GraphDataView<'float32x2'>;
   /**
    * Coordinate space and metric of `positions`. Omitted means native planar coordinates, linear
    * interpolation and planar arc length. `{coordinateSpace: 'longitude-latitude', metric:
@@ -49,15 +71,10 @@ export type GPUTrajectoryResampleProps = {
    * Other contexts throw.
    */
   spatialContext?: GPUSpatialContext;
-  /** Optional packed elevation (z) per sample. Required for `sampleElevations`. */
+  /** Optional packed elevation (z) per sample. Required for `output.sampleElevations`. */
   elevations?: GraphDataView<'float32'>;
-  /**
-   * Packed sample times (`float32` relative or `uint32x2` Int64 words), non-decreasing inside each
-   * track. Required for `spacing: 'time'` and for `sampleTimes`.
-   */
-  timestamps?: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
-  /** `trackCount + 1` monotonic row offsets, the same layout as `GPUTrajectoryMetrics`. */
-  trackOffsets: GraphDataView<'uint32'>;
+  /** Packed sample times, see above. Required for `spacing: 'time'` and `output.sampleTimes`. */
+  timestamps?: GPUTrajectoryGeometryFields['timestamps'];
   /** Samples per track, at least 1. Sample `k` targets `k / (sampleCount - 1)` of the track. */
   sampleCount: number;
   /**
@@ -73,15 +90,8 @@ export type GPUTrajectoryResampleProps = {
    * only rewrites this buffer; the compiled graph is reused.
    */
   clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Dense `[trackCount × sampleCount]` positions, row `track * sampleCount + k`. */
-  samples: GraphDataView<'float32x2'>;
-  /** Optional dense elevations aligned with `samples`. Requires `elevations`. */
-  sampleElevations?: GraphDataView<'float32'>;
-  /**
-   * Optional dense sample times, in the timestamps' unit: relative to each track's first timestamp,
-   * or with `spacing: 'clock'` relative to the clock start (`k * step`). Requires `timestamps`.
-   */
-  sampleTimes?: GraphDataView<'float32'>;
+  /** Caller-owned output views. */
+  output: GPUTrajectoryResampleOutput;
 };
 
 /**
@@ -125,12 +135,17 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
   constructor(props: GPUTrajectoryResampleProps) {
     this.id = props.id ?? 'trajectory-resample';
     this.props = props;
-    this.spatialContext = resolveTrajectorySpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
     this.spacing = props.spacing ?? 'time';
     const id = this.id;
+    const {output} = props;
     const rowCount = props.positions.length;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedUint32View(props.trackOffsets, `${id} trackOffsets`);
+    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     if (props.trackOffsets.length < 2) {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
@@ -154,15 +169,13 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     } else if (props.clock) {
       throw new Error(`${id} clock requires spacing 'clock'`);
     }
-    if (!Number.isInteger(props.sampleCount) || props.sampleCount < 1) {
-      throw new Error(`${id} sampleCount must be a positive integer`);
-    }
+    validateCapacity(id, 'sampleCount', props.sampleCount);
     if (props.timestamps) {
       validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
       if (props.timestamps.length !== rowCount) {
         throw new Error(`${id} timestamps length must equal positions length`);
       }
-    } else if (this.spacing === 'time' || props.sampleTimes) {
+    } else if (this.spacing === 'time' || output.sampleTimes) {
       throw new Error(`${id} timestamps are required for time spacing and sampleTimes`);
     }
     if (props.elevations) {
@@ -171,7 +184,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         throw new Error(`${id} elevations length must equal positions length`);
       }
     }
-    if (props.sampleElevations && !props.elevations) {
+    if (output.sampleElevations && !props.elevations) {
       throw new Error(`${id} sampleElevations requires elevations`);
     }
     const trackCount = props.trackOffsets.length - 1;
@@ -180,9 +193,9 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
       throw new Error(`${id} trackCount * sampleCount must fit in 32 bits`);
     }
     for (const [name, view, format] of [
-      ['samples', props.samples, 'float32x2'],
-      ['sampleElevations', props.sampleElevations, 'float32'],
-      ['sampleTimes', props.sampleTimes, 'float32']
+      ['samples', output.samples, 'float32x2'],
+      ['sampleElevations', output.sampleElevations, 'float32'],
+      ['sampleTimes', output.sampleTimes, 'float32']
     ] as const) {
       if (!view) {
         continue;
@@ -194,7 +207,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.samples, props.sampleElevations, props.sampleTimes],
+      [output.samples, output.sampleElevations, output.sampleTimes],
       [props.positions, props.elevations, props.timestamps, props.trackOffsets, props.clock]
     );
   }
@@ -204,20 +217,21 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.elevations,
       props.timestamps,
       props.trackOffsets,
       props.clock,
-      props.samples,
-      props.sampleElevations,
-      props.sampleTimes
+      output.samples,
+      output.sampleElevations,
+      output.sampleTimes
     ]);
     const rowCount = props.positions.length;
     const trackCount = props.trackOffsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
-    const geodesicRadius = getTrajectoryGeodesicRadius(this.spatialContext);
+    const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
     let cumulativeLengths: GraphDataView<'float32'> | undefined;
     if (this.spacing === 'arc-length') {
       cumulativeLengths = createTransientView(
@@ -244,13 +258,13 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         positions: props.positions,
         elevations: props.elevations,
         timestamps:
-          this.spacing !== 'arc-length' || props.sampleTimes ? props.timestamps : undefined,
+          this.spacing !== 'arc-length' || output.sampleTimes ? props.timestamps : undefined,
         clock: props.clock,
         trackOffsets: props.trackOffsets,
         cumulativeLengths,
-        samples: props.samples,
-        sampleElevations: props.sampleElevations,
-        sampleTimes: props.sampleTimes,
+        samples: output.samples,
+        sampleElevations: output.sampleElevations,
+        sampleTimes: output.sampleTimes,
         geodesicRadius,
         rowCount,
         trackCount,

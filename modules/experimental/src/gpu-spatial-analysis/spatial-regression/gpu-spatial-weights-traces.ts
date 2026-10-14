@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -13,8 +11,15 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  createProbeBatches,
+  getAlignedSubView,
+  padToAlignedElementCount
+} from './spatial-maximum-likelihood-nodes';
+import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPUSpatialWeightsTranspose,
@@ -27,17 +32,17 @@ import {
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH,
   GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
   GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER,
+  GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialWeightsTracesProbeWGSL,
   GPU_SPATIAL_WEIGHTS_TRACES_SCRATCH_ELEMENT_LIMIT,
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
+import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUSpatialWeightsTraces';
 const TILE_WORKGROUP_SIZE = 64;
 const MINIMUM_DEFAULT_TILE_ROWS = 32;
 const DEFAULT_TILE_COUNT = 1024;
-/** Sentinel row of the probe-merge kernels meaning "this slot is not reduced". */
-const NOT_USED = 0xffffffff;
 
 /** Caller-owned outputs of {@link GPUSpatialWeightsTraces}. */
 export type GPUSpatialWeightsTracesOutput = {
@@ -51,8 +56,11 @@ export type GPUSpatialWeightsTracesOutput = {
    * when `includeGramTraces` is true.
    */
   gramTraces?: GraphDataView<'float32'>;
-  /** One uint32 scalar: 1 when the traces are stochastic estimates, 0 when exact. */
-  approximation?: GraphDataView<'uint32'>;
+  /** Optional status words. */
+  status?: {
+    /** One uint32 scalar: 1 when the traces are stochastic estimates, 0 when exact. */
+    approximation?: GPUStatusScalar;
+  };
   /**
    * At least one float32 value: `s = ||W||_inf`, the largest absolute row sum (1 when `W` has no
    * links). `powerTraces` and `powerSums` are the traces and sums of `(W / s)^q`; consumers need
@@ -67,7 +75,7 @@ export type GPUSpatialWeightsTracesOutput = {
  *
  * Topology (needs a new graph): the weights views, `maximumPower`, `mode`, `probeCount`,
  * `includeGramTraces`, `tileRowCount` and which outputs are present. Per-frame: the weights'
- * contents; `seed` is baked into the shaders, so changing it needs a new graph.
+ * contents and of `parameters` (the probe seed).
  */
 export type GPUSpatialWeightsTracesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-weights-traces'`. */
@@ -88,8 +96,12 @@ export type GPUSpatialWeightsTracesProps = {
   mode?: GPUSpatialWeightsTracesMode;
   /** Probes of the stochastic mode. Defaults to 64. */
   probeCount?: number;
-  /** Philox seed of the stochastic probes (uint32). Defaults to 0. */
-  seed?: number;
+  /**
+   * Optional per-frame uint32 view of at least `GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH` words
+   * written with `getGPUSpatialWeightsTracesParameterValues({seed})`: the Philox seed of the
+   * stochastic probes, read on the GPU. Omitted means seed 0.
+   */
+  parameters?: GraphDataView<'uint32'>;
   /** Also compute `output.gramTraces`. Defaults to whether `output.gramTraces` is present. */
   includeGramTraces?: boolean;
   /**
@@ -107,7 +119,26 @@ export type GPUSpatialWeightsTracesProps = {
   output: GPUSpatialWeightsTracesOutput;
 };
 
-type Batch = {start: number; count: number};
+/**
+ * Validates an optional per-frame trace parameters view (`[seed]`, see
+ * `getGPUSpatialWeightsTracesParameterValues`).
+ * @internal
+ */
+export function validateGPUSpatialWeightsTracesParameters(
+  id: string,
+  name: string,
+  view: GraphDataView<'uint32'> | undefined
+): void {
+  if (!view) {
+    return;
+  }
+  validatePackedView(view, ['uint32'], `${id} ${name}`);
+  if (view.length < GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH) {
+    throw new Error(
+      `${id} ${name} must hold ${GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH} uint32`
+    );
+  }
+}
 
 /**
  * Powers of a spatial weights matrix: the traces `tr(W^q)` and the sums `1' W^q 1` for
@@ -135,7 +166,11 @@ type Batch = {start: number; count: number};
  * Probes run in batches sized so the two ping-pong vectors stay within 64 MiB
  * (`max(1, floor(8M / rows))` probes per batch). Every dot product is a fixed-order tile sum
  * followed by a Kahan merge, so results are deterministic and no float atomics are used. Nothing
- * is read back. Cost: `ceil(probes / batch) * (Q + 2)` dispatches of `batch * rows * nnz / rows`
+ * is read back. The shaders do not depend on the power, the batch or the probe index (rule 12):
+ * per-power and per-batch tables are 64-element aligned sub-views, and a uint32 batch table holds
+ * each batch's first probe and probe count, so the pipeline count is independent of
+ * `maximumPower` and of the number of batches (the short last batch runs the full lane count
+ * behind a guard). Cost: `ceil(probes / batch) * (Q + 2)` dispatches of `batch * rows * nnz / rows`
  * work; see `GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT` for the exact-mode default limit.
  *
  */
@@ -165,15 +200,7 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
     this.props = props;
     const {output, maximumPower} = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
-    if (
-      !Number.isInteger(maximumPower) ||
-      maximumPower < 1 ||
-      maximumPower > GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
-    ) {
-      throw new Error(
-        `${id} maximumPower must be an integer in [1, ${GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER}]`
-      );
-    }
+    validateCapacity(id, 'maximumPower', maximumPower, 1, GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER);
     if (props.mode !== undefined && props.mode !== 'exact' && props.mode !== 'stochastic') {
       throw new Error(`${id} mode must be 'exact' or 'stochastic'`);
     }
@@ -186,17 +213,10 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
       );
     }
     const probeCount = props.probeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT;
-    if (!Number.isInteger(probeCount) || probeCount < 1) {
-      throw new Error(`${id} probeCount must be a positive integer`);
-    }
-    const seed = props.seed ?? 0;
-    if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-      throw new Error(`${id} seed must be an integer in [0, 2^32)`);
-    }
+    validateCapacity(id, 'probeCount', probeCount);
+    validateGPUSpatialWeightsTracesParameters(id, 'parameters', props.parameters);
     if (props.tileRowCount !== undefined) {
-      if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
-        throw new Error(`${id} tileRowCount must be a positive integer`);
-      }
+      validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     validatePackedView(output.powerTraces, ['float32'], `${id} output.powerTraces`);
     if (output.powerTraces.length < maximumPower) {
@@ -222,10 +242,14 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
         throw new Error(`${id} output.infinityNorm must hold one float32 value`);
       }
     }
-    if (output.approximation) {
-      validatePackedUint32View(output.approximation, `${id} output.approximation`);
-      if (output.approximation.length < 1) {
-        throw new Error(`${id} output.approximation must hold one uint32 row`);
+    if (output.status?.approximation) {
+      validatePackedView(
+        output.status.approximation,
+        ['uint32'],
+        `${id} output.status.approximation`
+      );
+      if (output.status.approximation.length < 1) {
+        throw new Error(`${id} output.status.approximation must hold one uint32 row`);
       }
     }
     this.rowCount = rows;
@@ -233,9 +257,7 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
     this.includeGramTraces = includeGram;
     this.probeTotal = mode === 'exact' ? rows : probeCount;
     if (props.probeBatchSize !== undefined) {
-      if (!Number.isInteger(props.probeBatchSize) || props.probeBatchSize < 1) {
-        throw new Error(`${id} probeBatchSize must be a positive integer`);
-      }
+      validateCapacity(id, 'probeBatchSize', props.probeBatchSize);
     }
     this.batchProbeCount = Math.min(
       this.probeTotal,
@@ -252,18 +274,18 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
         output.powerTraces,
         output.powerSums,
         output.gramTraces,
-        output.approximation,
+        output.status?.approximation,
         output.infinityNorm
       ],
-      [props.weights.offsets, props.weights.neighbors, props.weights.weights]
+      [props.weights.offsets, props.weights.neighbors, props.weights.weights, props.parameters]
     );
   }
 
   /**
    * Returns the command nodes in dependency order: the ones-vector chain for `powerSums`, the
-   * Gram transpose and exact moments (when requested), the probe batches (per step one
-   * matrix-vector tile pass and, when a dot product is needed, one per-probe Kahan merge), and the
-   * final probe merge that writes `powerTraces` and `gramTraces`.
+   * Gram transpose and exact moments (when requested), the batch table, the probe batches (per
+   * step one matrix-vector tile pass and, per target row of the dot table, one per-probe Kahan
+   * merge), and the final probe merge that writes `powerTraces` and `gramTraces`.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -279,26 +301,31 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
       output.powerTraces,
       output.powerSums,
       output.gramTraces,
-      output.approximation,
-      output.infinityNorm
+      output.status?.approximation,
+      output.infinityNorm,
+      props.parameters
     ]);
-    const seed = (props.seed ?? 0) >>> 0;
     // Steps run to 2 when the Gram traces need `W W z` even if `maximumPower` is 1.
     const stepCount = includeGram ? Math.max(maximumPower, 2) : maximumPower;
     const powerRowCount = stepCount;
     const gramPairRow = powerRowCount;
     const gramSquareRow = powerRowCount + 1;
     const dotRowCount = powerRowCount + (includeGram ? 2 : 0);
-    const partialStride = batchProbeCount * tileCount;
-    const needsPartial = stochastic || includeGram;
+    const batches = createProbeBatches(
+      graph,
+      id,
+      OPERATION,
+      probeTotal,
+      batchProbeCount,
+      props.parameters
+    );
+    const sumsStride = padToAlignedElementCount(tileCount);
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const constants = `const ROWS: u32 = ${rowCount}u;
 const TILE_ROWS: u32 = ${tileRowCount}u;
 const TILE_COUNT: u32 = ${tileCount}u;
-const PROBE_TOTAL: u32 = ${probeTotal}u;
-const PARTIAL_STRIDE: u32 = ${partialStride}u;
-const NOT_USED: u32 = ${NOT_USED}u;`;
+const PROBE_TOTAL: u32 = ${probeTotal}u;`;
     const f32 = (name: string, view: GraphDataView, access: 'read' | 'read_write') =>
       ({name, view, type: 'f32', access}) as WGSLKernelBinding;
     const u32 = (name: string, view: GraphDataView, access: 'read' | 'read_write') =>
@@ -335,8 +362,7 @@ const NOT_USED: u32 = ${NOT_USED}u;`;
       source: string,
       indexExpression: string,
       stride: string,
-      count: string,
-      scale = ''
+      count: string
     ) => `var sum = 0.0;
   var compensation = 0.0;
   for (var item = 0u; item < ${count}; item++) {
@@ -344,7 +370,7 @@ const NOT_USED: u32 = ${NOT_USED}u;`;
     let next = sum + term;
     compensation = (next - sum) - term;
     sum = next;
-  }${scale}`;
+  }`;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const weightBindings = csrBindings('', weights);
 
@@ -406,7 +432,8 @@ const NOT_USED: u32 = ${NOT_USED}u;`;
     });
 
     // ---- powerSums: one chain from the ones vector, tile partial sums then a Kahan merge. ----
-    const sumsPartial = transient('sums-partial', maximumPower * tileCount);
+    // One 64-element aligned row per power, so each step binds its own row as a sub-view.
+    const sumsPartial = transient('sums-partial', maximumPower * sumsStride);
     const onesVectors = [transient('ones-a', rowCount), transient('ones-b', rowCount)];
     for (let power = 1; power <= maximumPower; power++) {
       const source = onesVectors[(power - 2 + 2) % 2];
@@ -419,11 +446,14 @@ const NOT_USED: u32 = ${NOT_USED}u;`;
             ...scaledBindings,
             ...(first ? [] : [f32('vectorIn', source, 'read')]),
             f32('vectorOut', target, 'read_write'),
-            f32('sumsPartial', sumsPartial, 'read_write')
+            f32(
+              'sumsPartial',
+              getAlignedSubView(graph, sumsPartial, (power - 1) * sumsStride, tileCount),
+              'read_write'
+            )
           ],
           tileCount,
-          `${constants}
-override PARTIAL_ROW: u32;`,
+          constants,
           `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
   var tileSum = 0.0;
@@ -439,8 +469,8 @@ override PARTIAL_ROW: u32;`,
     vectorOut[vectorOutOffset + row] = sum;
     tileSum += sum;
   }
-  sumsPartial[sumsPartialOffset + PARTIAL_ROW * TILE_COUNT + index] = tileSum;`,
-          {PARTIAL_ROW: power - 1},
+  sumsPartial[sumsPartialOffset + index] = tileSum;`,
+          undefined,
           TILE_WORKGROUP_SIZE
         )
       );
@@ -450,8 +480,9 @@ override PARTIAL_ROW: u32;`,
         'sums-merge',
         [f32('sumsPartial', sumsPartial, 'read'), f32('powerSums', output.powerSums, 'read_write')],
         maximumPower,
-        constants,
-        `${kahanLoop('sumsPartial', 'index * TILE_COUNT', '1u', 'TILE_COUNT')}
+        `${constants}
+const SUMS_STRIDE: u32 = ${sumsStride}u;`,
+        `${kahanLoop('sumsPartial', 'index * SUMS_STRIDE', '1u', 'TILE_COUNT')}
   powerSums[powerSumsOffset + index] = sum;`
       )
     );
@@ -522,45 +553,58 @@ override PARTIAL_ROW: u32;`,
     }
 
     // ---- Probe batches. ----
-    const dots = transient('dots', dotRowCount * probeTotal);
-    const partial = needsPartial ? transient('partial', 2 * partialStride) : undefined;
+    // The dot table has one row per dot product; a row holds one 64-element aligned block per batch.
+    const dotsRowStride = batches.batchCount * batches.blockStride;
+    const dots = transient('dots', dotRowCount * dotsRowStride);
+    const getDotsBlock = (row: number, batchIndex: number) =>
+      batches.getBlock(
+        getAlignedSubView(graph, dots, row * dotsRowStride, dotsRowStride),
+        batchIndex
+      );
+    // Tile partials of the power dots and of the Gram dots (the latter hold the pair dot in step 2
+    // and the squared norm of W' (W z) from the gram-square pass).
+    const partialPower = stochastic
+      ? transient('partial-power', batchProbeCount * tileCount)
+      : undefined;
+    const partialGram = includeGram
+      ? transient('partial-gram', batchProbeCount * tileCount)
+      : undefined;
     const scratch = [
       transient('scratch-a', batchProbeCount * rowCount),
       transient('scratch-b', batchProbeCount * rowCount)
     ];
-    const batches: Batch[] = [];
-    for (let start = 0; start < probeTotal; start += batchProbeCount) {
-      batches.push({start, count: Math.min(batchProbeCount, probeTotal - start)});
-    }
-    const probeDeclarations = getSpatialWeightsTracesProbeWGSL(stochastic, seed);
+    nodes.push(batches.node);
+    const probeDeclarations = getSpatialWeightsTracesProbeWGSL(stochastic);
+    // Reduces the tile partials of every probe of a batch into one aligned block of one dot row.
     const mergeNode = (
       name: string,
-      batch: Batch,
-      firstRow: number,
-      secondRow: number
+      batchIndex: number,
+      partial: GraphDataView,
+      dotRow: number
     ): GPUCommandNode<Parameters> =>
       kernel(
         name,
-        [f32('partial', partial as GraphDataView, 'read'), f32('dots', dots, 'read_write')],
-        batch.count,
-        `${constants}
-override BATCH_START: u32;
-override ROW0: u32;
-override ROW1: u32;`,
-        `let globalProbe = BATCH_START + index;
-  if (ROW0 != NOT_USED) {
-    ${kahanLoop('partial', 'index * TILE_COUNT', '1u', 'TILE_COUNT')}
-    dots[dotsOffset + ROW0 * PROBE_TOTAL + globalProbe] = sum;
+        [
+          f32('partial', partial, 'read'),
+          f32('dots', getDotsBlock(dotRow, batchIndex), 'read_write'),
+          u32('batchInformation', batches.getBatchInformation(batchIndex), 'read')
+        ],
+        batchProbeCount,
+        constants,
+        `if (index >= batchInformation[batchInformationOffset + 1u]) {
+    return;
   }
-  if (ROW1 != NOT_USED) {
-    ${kahanLoop('partial', 'PARTIAL_STRIDE + index * TILE_COUNT', '1u', 'TILE_COUNT')}
-    dots[dotsOffset + ROW1 * PROBE_TOTAL + globalProbe] = sum;
-  }`,
-        {BATCH_START: batch.start, ROW0: firstRow, ROW1: secondRow},
+  ${kahanLoop('partial', 'index * TILE_COUNT', '1u', 'TILE_COUNT')}
+  dots[dotsOffset + index] = sum;`,
+        undefined,
         TILE_WORKGROUP_SIZE
       );
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
+    for (let batchIndex = 0; batchIndex < batches.batchCount; batchIndex++) {
+      const batchInformation = u32(
+        'batchInformation',
+        batches.getBatchInformation(batchIndex),
+        'read'
+      );
       for (let step = 1; step <= stepCount; step++) {
         const first = step === 1;
         const gramStep = includeGram && step === 2;
@@ -576,23 +620,28 @@ override ROW1: u32;`,
           ...scaledBindings,
           ...(first ? [] : [f32('vectorIn', source, 'read')]),
           f32('vectorOut', target, 'read_write'),
-          ...(writesPartial ? [f32('partial', partial as GraphDataView, 'read_write')] : []),
-          ...(exactDiagonal ? [f32('dots', dots, 'read_write')] : [])
+          ...(powerDot ? [f32('partialPower', partialPower as GraphDataView, 'read_write')] : []),
+          ...(gramStep ? [f32('partialGram', partialGram as GraphDataView, 'read_write')] : []),
+          ...(exactDiagonal ? [f32('dots', getDotsBlock(step - 1, batchIndex), 'read_write')] : []),
+          batchInformation
         ];
         const value = first
-          ? 'getProbeValue(globalProbe, neighbor)'
+          ? 'getProbeValue(probeSeed, globalProbe, neighbor)'
           : 'vectorIn[vectorInOffset + base + neighbor]';
         nodes.push(
           kernel(
             `step-${variant}-${batchIndex}-${step}`,
             bindings,
-            batch.count * tileCount,
+            batchProbeCount * tileCount,
             `${constants}
-${probeDeclarations}
-override BATCH_START: u32;${exactDiagonal ? '\noverride STEP_ROW: u32;' : ''}`,
+${probeDeclarations}`,
             `let probe = index / TILE_COUNT;
+  if (probe >= batchInformation[batchInformationOffset + 1u]) {
+    return;
+  }
   let tile = index % TILE_COUNT;
-  let globalProbe = BATCH_START + probe;
+  let globalProbe = batchInformation[batchInformationOffset] + probe;
+  let probeSeed = batchInformation[batchInformationOffset + 2u];
   let base = probe * ROWS;
   let firstRow = tile * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
@@ -611,27 +660,40 @@ override BATCH_START: u32;${exactDiagonal ? '\noverride STEP_ROW: u32;' : ''}`,
 ${
   exactDiagonal
     ? `    if (row == globalProbe) {
-      dots[dotsOffset + STEP_ROW * PROBE_TOTAL + globalProbe] = sum;
+      dots[dotsOffset + probe] = sum;
     }
 `
     : ''
-}${powerDot ? '    powerDot += getProbeValue(globalProbe, row) * sum;\n' : ''}${
+}${powerDot ? '    powerDot += getProbeValue(probeSeed, globalProbe, row) * sum;\n' : ''}${
   gramStep ? '    gramDot += vectorIn[vectorInOffset + base + row] * sum;\n' : ''
 }  }
-${powerDot ? '  partial[partialOffset + probe * TILE_COUNT + tile] = powerDot;\n' : ''}${
-  gramStep
-    ? '  partial[partialOffset + PARTIAL_STRIDE + probe * TILE_COUNT + tile] = gramDot;\n'
-    : ''
+${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = powerDot;\n' : ''}${
+  gramStep ? '  partialGram[partialGramOffset + probe * TILE_COUNT + tile] = gramDot;\n' : ''
 }  _ = powerDot;
   _ = gramDot;`,
-            {BATCH_START: batch.start, ...(exactDiagonal ? {STEP_ROW: step - 1} : {})},
+            undefined,
             TILE_WORKGROUP_SIZE
           )
         );
-        const powerRow = powerDot ? step - 1 : NOT_USED;
-        const pairRow = gramStep ? gramPairRow : NOT_USED;
-        if (powerRow !== NOT_USED || pairRow !== NOT_USED) {
-          nodes.push(mergeNode(`probe-merge-${batchIndex}-${step}`, batch, powerRow, pairRow));
+        if (powerDot) {
+          nodes.push(
+            mergeNode(
+              `probe-merge-${batchIndex}-${step}`,
+              batchIndex,
+              partialPower as GraphDataView,
+              step - 1
+            )
+          );
+        }
+        if (gramStep) {
+          nodes.push(
+            mergeNode(
+              `probe-merge-pair-${batchIndex}`,
+              batchIndex,
+              partialGram as GraphDataView,
+              gramPairRow
+            )
+          );
         }
         if (gramStep && transposed) {
           // W' (W z) from the first-step vector, still held by the source buffer.
@@ -641,12 +703,15 @@ ${powerDot ? '  partial[partialOffset + probe * TILE_COUNT + tile] = powerDot;\n
               [
                 ...csrBindings('transposed', transposed),
                 f32('vectorIn', source, 'read'),
-                f32('partial', partial as GraphDataView, 'read_write')
+                f32('partialGram', partialGram as GraphDataView, 'read_write'),
+                batchInformation
               ],
-              batch.count * tileCount,
-              `${constants}
-`,
+              batchProbeCount * tileCount,
+              constants,
               `let probe = index / TILE_COUNT;
+  if (probe >= batchInformation[batchInformationOffset + 1u]) {
+    return;
+  }
   let tile = index % TILE_COUNT;
   let base = probe * ROWS;
   let firstRow = tile * TILE_ROWS;
@@ -663,12 +728,19 @@ ${powerDot ? '  partial[partialOffset + probe * TILE_COUNT + tile] = powerDot;\n
     }
     squareSum += sum * sum;
   }
-  partial[partialOffset + PARTIAL_STRIDE + probe * TILE_COUNT + tile] = squareSum;`,
+  partialGram[partialGramOffset + probe * TILE_COUNT + tile] = squareSum;`,
               undefined,
               TILE_WORKGROUP_SIZE
             )
           );
-          nodes.push(mergeNode(`probe-merge-square-${batchIndex}`, batch, NOT_USED, gramSquareRow));
+          nodes.push(
+            mergeNode(
+              `probe-merge-square-${batchIndex}`,
+              batchIndex,
+              partialGram as GraphDataView,
+              gramSquareRow
+            )
+          );
         }
       }
     }
@@ -692,7 +764,7 @@ const POWER_COUNT: u32 = ${maximumPower}u;
 const DOT_ROWS: u32 = ${dotRowCount}u;
 const POWER_ROWS: u32 = ${powerRowCount}u;`,
         `if (index < DOT_ROWS) {
-    ${kahanLoop('dots', 'index * PROBE_TOTAL', '1u', 'PROBE_TOTAL')}
+    ${batches.getSumWGSL('dots', 'sum', `index * ${dotsRowStride}u`)}
     let value = sum * ${scale};
     if (index < POWER_COUNT) {
       powerTraces[powerTracesOffset + index] = value;
@@ -719,11 +791,11 @@ const POWER_ROWS: u32 = ${powerRowCount}u;`,
   }`
       )
     );
-    if (output.approximation) {
+    if (output.status?.approximation) {
       nodes.push(
         kernel(
           'approximation',
-          [u32('approximation', output.approximation, 'read_write')],
+          [u32('approximation', output.status.approximation, 'read_write')],
           1,
           '',
           `approximation[approximationOffset] = ${stochastic ? '1u' : '0u'};`

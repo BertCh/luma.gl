@@ -11,6 +11,7 @@ export type {
 export {
   getGPUColumnProfileParameterLength,
   getGPUColumnProfileParameterValues,
+  getGPUColumnProfileMaximumCategoryTotal,
   GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT,
   GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT,
   GPU_COLUMN_PROFILE_NULL_CATEGORY,

@@ -5,6 +5,12 @@
 /** Radially symmetric 2D kernel of {@link GPUKernelDensity}. */
 export type GPUKernelDensityKernel = 'gaussian' | 'quartic' | 'epanechnikov';
 
+/**
+ * Normal-reference bandwidth rule computed on the GPU by {@link GPUKernelDensity}. Both rules of
+ * `scipy.stats.gaussian_kde` reduce to the same factor `n_eff^(-1/6)` in two dimensions.
+ */
+export type GPUKernelDensityBandwidthRule = 'scott' | 'silverman';
+
 /** Window of the edge correction, `[minX, minY, maxX, maxY]` in position units. */
 export type GPUKernelDensityWindow = readonly [number, number, number, number];
 
@@ -170,116 +176,89 @@ export function getGPUKernelDensityWindowMass(
   );
 }
 
-/** Per-axis and isotropic bandwidth from a rule of thumb. */
-export type GPUKernelDensityBandwidth = {
-  /** Bandwidth along x, `factor * standard deviation of x`. */
-  x: number;
-  /** Bandwidth along y. */
-  y: number;
-  /**
-   * Single bandwidth for the radially symmetric kernels of {@link GPUKernelDensity}:
-   * `factor * sqrt((variance x + variance y) / 2)` (pooled standard deviation).
-   */
-  isotropic: number;
-  /** Rule factor: `n_eff^(-1/6)`, the shared two-dimensional value of Scott's and Silverman's rules. */
-  factor: number;
-  /** Effective sample size `(sum w)^2 / sum w^2` (the row count without weights). */
-  effectiveSampleSize: number;
-};
-
-function getRuleOfThumbBandwidth(
-  positions: ArrayLike<number>,
-  weights?: ArrayLike<number>
-): GPUKernelDensityBandwidth {
-  const rowCount = Math.floor(positions.length / 2);
-  const isIncluded = (row: number): boolean =>
-    Number.isFinite(positions[2 * row]) &&
-    Number.isFinite(positions[2 * row + 1]) &&
-    (!weights || (Number.isFinite(weights[row]) && weights[row] >= 0));
-  let weightSum = 0;
-  let weightSquareSum = 0;
-  let includedCount = 0;
-  for (let row = 0; row < rowCount; row++) {
-    if (isIncluded(row)) {
-      const weight = weights ? weights[row] : 1;
-      weightSum += weight;
-      weightSquareSum += weight * weight;
-      includedCount++;
-    }
-  }
-  if (includedCount < 2 || !(weightSum > 0)) {
-    throw new Error('Bandwidth rules need at least two included positions with positive weight');
-  }
-  const effectiveSampleSize = (weightSum * weightSum) / weightSquareSum;
-  if (!(effectiveSampleSize > 1)) {
-    throw new Error('Bandwidth rules need an effective sample size above one');
-  }
-  let meanX = 0;
-  let meanY = 0;
-  for (let row = 0; row < rowCount; row++) {
-    if (isIncluded(row)) {
-      const weight = weights ? weights[row] : 1;
-      meanX += (weight * positions[2 * row]) / weightSum;
-      meanY += (weight * positions[2 * row + 1]) / weightSum;
-    }
-  }
-  let spreadX = 0;
-  let spreadY = 0;
-  for (let row = 0; row < rowCount; row++) {
-    if (isIncluded(row)) {
-      const weight = weights ? weights[row] : 1;
-      spreadX += (weight * (positions[2 * row] - meanX) ** 2) / weightSum;
-      spreadY += (weight * (positions[2 * row + 1] - meanY) ** 2) / weightSum;
-    }
-  }
-  // Unbiased weighted covariance, numpy.cov(aweights=w): divide by 1 - sum(w_n^2).
-  const correction = 1 - weightSquareSum / (weightSum * weightSum);
-  const varianceX = spreadX / correction;
-  const varianceY = spreadY / correction;
-  // scipy: scotts_factor = n_eff^(-1/(d+4)); silverman_factor = (n_eff * (d + 2) / 4)^(-1/(d+4)).
-  // For d = 2 the two rules coincide.
-  const factor = effectiveSampleSize ** (-1 / 6);
-  return {
-    x: factor * Math.sqrt(varianceX),
-    y: factor * Math.sqrt(varianceY),
-    isotropic: factor * Math.sqrt((varianceX + varianceY) / 2),
-    factor,
-    effectiveSampleSize
-  };
-}
+/**
+ * Evaluation method of {@link GPUKernelDensity}. `'exact'` gathers the points inside the kernel
+ * support for every cell; `'binned'` bins the points onto the grid and blurs the bins with an
+ * almost-gaussian filter whose cost does not depend on the bandwidth; `'auto'` picks one on the
+ * GPU every encoding from the bandwidth.
+ */
+export type GPUKernelDensityMethod = 'exact' | 'binned' | 'auto';
 
 /**
- * Scott's (1992, Multivariate Density Estimation, eq. 6.42) rule of thumb for a 2D normal-reference
- * bandwidth, `h_i = n_eff^(-1/6) * sigma_i`, matching `scipy.stats.gaussian_kde(bw_method='scott')`
- * (`sigma_i` from the unbiased weighted covariance). Rows with a non-finite position, or a
- * non-finite or negative weight, are skipped, as the estimator does. `isotropic` is the pooled
- * single bandwidth for the radial kernels. A normal-reference rule oversmooths clustered or
- * multimodal data: treat it as a starting point, not an optimum.
- *
- * @param positions Interleaved `[x0, y0, x1, y1, ...]` read-back positions.
- * @param weights Optional per-row weights.
- * @throws If fewer than two rows are included or the effective sample size is not above one.
+ * `'auto'` evaluates exactly while the gaussian support radius (`5 h`) is at most this many cells
+ * (the larger of the two axes) and with the binned blur above it.
  */
-export function getScottBandwidth(
-  positions: ArrayLike<number>,
-  weights?: ArrayLike<number>
-): GPUKernelDensityBandwidth {
-  return getRuleOfThumbBandwidth(positions, weights);
-}
+export const GPU_KERNEL_DENSITY_AUTO_SUPPORT_CELLS = 32;
+
+/** Box blurs per axis of the binned method. Together with one two-sided exponential pass. */
+export const GPU_KERNEL_DENSITY_BINNED_BOX_PASS_COUNT = 3;
 
 /**
- * Silverman's (1986, Density Estimation, eq. 4.14) d-dimensional rule of thumb,
- * `h_i = (4 / (n_eff * (d + 2)))^(1 / (d + 4)) * sigma_i`, matching
- * `scipy.stats.gaussian_kde(bw_method='silverman')`. For d = 2 the factor `n_eff^(-1/6)` equals
- * Scott's, so both rules return the same bandwidths in two dimensions. Inputs, skipped rows, and
- * errors are those of {@link getScottBandwidth}.
- *
- * @param positions Interleaved `[x0, y0, x1, y1, ...]` read-back positions.
- * @param weights Optional per-row weights.
+ * Share of the blur variance (`(h / cell)^2` per axis) carried by the two-sided exponential pass
+ * of the binned method; the three box blurs carry the rest equally. Boxes have a negative excess
+ * kurtosis (`-6/5` each) and the exponential a positive one (`+3`), so this share cancels the
+ * fourth cumulant of the cascade: `3 * 1.2 * v_box^2 = 3 * v_exp^2` gives `v_exp = 1.095 v_box`, so
+ * `v_exp / (3 v_box + v_exp) = 0.267`; 0.32 is the share that minimised the worst kernel error
+ * over bandwidths of 3 to 200 cells in a sweep (0.30 to 0.34 are within 15% of it).
  */
-export function getSilvermanBandwidth(
-  positions: ArrayLike<number>,
-  weights?: ArrayLike<number>
-): GPUKernelDensityBandwidth {
-  return getRuleOfThumbBandwidth(positions, weights);
+export const GPU_KERNEL_DENSITY_BINNED_EXPONENTIAL_VARIANCE_SHARE = 0.32;
+
+/**
+ * Largest kernel-shape error of the binned filter relative to the gaussian kernel peak, for
+ * bandwidths of at least {@link GPU_KERNEL_DENSITY_BINNED_MINIMUM_BANDWIDTH_CELLS} cells. One axis
+ * measures at most 0.0076 (sup norm of the 1D filter minus the sampled gaussian, divided by the
+ * gaussian peak); the product of two axes then differs from the 2D gaussian by at most
+ * `2 * 0.0076 + 0.0076^2`, which is rounded up to 0.016.
+ */
+export const GPU_KERNEL_DENSITY_BINNED_SHAPE_ERROR = 0.016;
+
+/**
+ * Margin, in bandwidths (`h / cell` cells each), that the binned grid needs on every side of the
+ * cells whose values you read. The blur is a cascade of separate passes and each pass drops the
+ * mass that leaves the array, whereas the exact kernel would let it return; the box passes spread
+ * at most `3 * 0.48 h = 1.43 h` and the exponential tail is shorter than the remaining margin.
+ * Measured against the same filter on a margin of `7 h`, the difference in units of `W K_h(0)` is
+ * 8e-4 at `1.5 h`, 3e-5 at `2 h` and below 1e-11 at `2.5 h` (bandwidths of 3 to 24 cells, points
+ * on the grid corners and edges); with less margin the estimate near the edges drops, by 27% of
+ * `W K_h(0)` with none. `GPUKernelDensity` runs the binned path only at `2.5 h` or more.
+ */
+export const GPU_KERNEL_DENSITY_BINNED_MARGIN_BANDWIDTHS = 2.5;
+
+/** Smallest `h / cell` for which {@link getGPUKernelDensityBinnedErrorBound} holds. */
+export const GPU_KERNEL_DENSITY_BINNED_MINIMUM_BANDWIDTH_CELLS = 3;
+
+/** float32 unit roundoff, `2^-24`. */
+const FLOAT32_UNIT_ROUNDOFF = 2 ** -24;
+
+/**
+ * Bound on `|binned - exact|` of one cell in units of `W * K_h(0)`, where `W` is the sum of the
+ * included weights and `K_h(0) = 1 / (2 pi h^2)` is the gaussian peak, for `method: 'binned'`
+ * with every point inside the binned region (see `binnedPadding`). Because the kernel difference
+ * of one point is at most the bound times the peak, the sum over points is at most `W` times it.
+ * The terms add:
+ *
+ * - linear (cloud-in-cell) binning: bilinear interpolation of `K_h(u - x)` between cell centers
+ *   errs by at most `(cellX^2 / 8) max|d2K/dx2| + (cellY^2 / 8) max|d2K/dy2|` and `max|d2K/dx2| =
+ *   K_h(0) / h^2`, so `(r^2 / 4) K_h(0)` for `r = max(cellX, cellY) / h`;
+ * - the filter shape: {@link GPU_KERNEL_DENSITY_BINNED_SHAPE_ERROR};
+ * - the 5-bandwidth truncation of the exact estimate, `exp(-12.5)`, 3.7e-6 (rounded to 4e-6);
+ * - float32 filtering, worst case: with `s = 1 / r` the box passes carry running-sum chains of at
+ *   most `2R + 3` plus the refresh interval terms (`R = 0.476 s`) and the exponential passes
+ *   `1 / (1 - a) = 0.4 s` terms of roundoff, `u * (13 s + 210)` in total for `u = 2^-24`, an
+ *   upper bound that real data stays far below (errors do not align);
+ * - the cascade's dropped mass at the array edge, below 1e-5 once the margin is at least
+ *   {@link GPU_KERNEL_DENSITY_BINNED_MARGIN_BANDWIDTHS} bandwidths.
+ *
+ * Valid for `h / cell >= 3` (smaller bandwidths have a much larger shape error: use `'exact'`).
+ *
+ * @param cellOverBandwidth `r`, the larger cell size over the bandwidth.
+ */
+export function getGPUKernelDensityBinnedErrorBound(cellOverBandwidth: number): number {
+  const r = cellOverBandwidth;
+  return (
+    (r * r) / 4 +
+    GPU_KERNEL_DENSITY_BINNED_SHAPE_ERROR +
+    1.4e-5 +
+    FLOAT32_UNIT_ROUNDOFF * (13 / r + 210)
+  );
 }

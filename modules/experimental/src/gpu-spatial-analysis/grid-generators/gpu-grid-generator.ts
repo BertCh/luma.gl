@@ -3,20 +3,27 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
-import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 
 const OPERATION = 'GPUGridGenerator';
 
@@ -35,8 +42,8 @@ export const GPU_GRID_GENERATOR_PARAMETER_LENGTH = 4;
  */
 export type GPUGridType = 'square' | 'hex' | 'triangle' | 'point';
 
-/** CPU description of the per-frame parameters of {@link GPUGridGenerator}. */
-export type GPUGridGeneratorParameters = {
+/** CPU settings of the per-frame parameters of {@link GPUGridGenerator}. */
+export type GPUGridGeneratorSettings = {
   /** X of the lower-left corner of the grid. */
   minX: number;
   /** Y of the lower-left corner of the grid. */
@@ -55,16 +62,16 @@ export type GPUGridGeneratorParameters = {
 };
 
 /**
- * Packs {@link GPUGridGeneratorParameters} into the 4-element float32 layout
+ * Packs {@link GPUGridGeneratorSettings} into the 4-element float32 layout
  * `[minX, minY, cellWidth, cellHeight]`. Write the result into a `GPUParameterBuffer` between
  * encodings to pan or zoom the grid without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If a value is not finite, a cell size is not positive, or `target` is too short.
  */
 export function getGPUGridGeneratorParameterValues(
-  parameters: GPUGridGeneratorParameters,
+  settings: GPUGridGeneratorSettings,
   target: Float32Array = new Float32Array(GPU_GRID_GENERATOR_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_GRID_GENERATOR_PARAMETER_LENGTH) {
@@ -72,10 +79,10 @@ export function getGPUGridGeneratorParameterValues(
       `Grid generator target must hold ${GPU_GRID_GENERATOR_PARAMETER_LENGTH} elements`
     );
   }
-  const {minX, minY, cellWidth, cellHeight} = parameters;
+  const {minX, minY, cellWidth, cellHeight} = settings;
   for (const value of [minX, minY, cellWidth, cellHeight]) {
     if (!Number.isFinite(value)) {
-      throw new Error('Grid generator parameters must be finite');
+      throw new Error('Grid generator settings must be finite');
     }
   }
   if (cellWidth <= 0 || cellHeight <= 0) {
@@ -143,20 +150,6 @@ export type GPUGridGeneratorOutput = {
 };
 
 /**
- * Polygon geometry that the cell and corner intersection outputs test against, the
- * `intersect=True` filter of GeoPandas `make_grid`.
- *
- * All rings are combined with the even-odd rule, so holes and multi-polygons work as long as the
- * rings do not cross. A ring may repeat its first vertex or not; it is closed implicitly.
- */
-export type GPUGridGeneratorExtent = {
-  /** Ring vertices, concatenated. */
-  positions: GraphDataView<'float32x2'>;
-  /** Ring-to-vertex offsets with `ringCount + 1` rows. */
-  ringOffsets: GraphDataView<'uint32'>;
-};
-
-/**
  * Properties for {@link GPUGridGenerator}.
  *
  * Per-frame (no recompile): the contents of `parameters` (origin and cell size). Compile-time:
@@ -183,8 +176,15 @@ export type GPUGridGeneratorProps = {
    * context throws; project first or use a discrete global grid (`GPUPointToCell`).
    */
   spatialContext?: GPUSpatialContext;
-  /** Polygon the optional cell and corner intersection masks are computed against. Compile time. */
-  extent?: GPUGridGeneratorExtent;
+  /**
+   * Polygon geometry the optional cell and corner intersection masks are computed against, the
+   * `intersect=True` filter of GeoPandas `make_grid`. Compile time.
+   *
+   * The four-level layout is validated, but the test combines all rings with the even-odd rule, so
+   * holes and multi-polygons work as long as the rings do not cross (for valid polygons this equals
+   * the shell/hole rule). A ring may repeat its first vertex or not; it is closed implicitly.
+   */
+  extent?: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /** Per-frame packed float32 view written with {@link getGPUGridGeneratorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Output geometry. */
@@ -252,22 +252,8 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     this.verticesPerCell = getGPUGridVerticesPerCell(props.gridType);
-    for (const [name, view] of Object.entries({
-      parameters: props.parameters,
-      ...props.output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
-    for (const [name, value] of [
-      ['columns', props.columns],
-      ['rows', props.rows]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    validateCapacity(id, 'columns', props.columns, 1, Number.MAX_SAFE_INTEGER);
+    validateCapacity(id, 'rows', props.rows, 1, Number.MAX_SAFE_INTEGER);
     this.cellCount = getGPUGridCellCount(props.gridType, props.columns, props.rows);
     this.cornerCount =
       props.gridType === 'square' || props.gridType === 'hex'
@@ -343,6 +329,8 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
         validatePackedView(intersects, ['uint32'], `${id} output.intersects`);
       }
       validatePackedView(extent.positions, ['float32x2'], `${id} extent.positions`);
+      validatePackedView(extent.featureOffsets, ['uint32'], `${id} extent.featureOffsets`);
+      validatePackedView(extent.polygonOffsets, ['uint32'], `${id} extent.polygonOffsets`);
       validatePackedView(extent.ringOffsets, ['uint32'], `${id} extent.ringOffsets`);
       if (intersects && intersects.length !== this.cellCount) {
         throw new Error(`${id} output.intersects must hold ${this.cellCount} rows`);
@@ -357,7 +345,13 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [positions, centers, corners, intersects, cornerIntersects],
-      [props.parameters, extent?.positions, extent?.ringOffsets]
+      [
+        props.parameters,
+        extent?.positions,
+        extent?.featureOffsets,
+        extent?.polygonOffsets,
+        extent?.ringOffsets
+      ]
     );
   }
 
@@ -377,6 +371,8 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       cornerIntersects,
       intersects,
       extent?.positions,
+      extent?.featureOffsets,
+      extent?.polygonOffsets,
       extent?.ringOffsets
     ]);
     const isFlatHex = props.gridType === 'hex' && props.hexOrientation === 'flat';

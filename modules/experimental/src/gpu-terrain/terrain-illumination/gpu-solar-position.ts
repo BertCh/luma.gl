@@ -3,25 +3,28 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {getSolarTimeParameter} from './solar-position';
 import {
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
   validateTerrainIlluminationView
 } from './terrain-illumination-utils';
 
-/** Number of float32 values read from `GPUSolarPositionProps.settings`. */
+/** Number of float32 values read from `GPUSolarPositionProps.parameters`. */
 export const GPU_SOLAR_POSITION_PARAMETER_LENGTH = 4;
 
 /** Geometric sun-center altitude at sunrise and sunset (refraction plus solar radius), degrees. */
@@ -47,9 +50,11 @@ export function getGPUSolarPositionParameterValues(
   settings: GPUSolarPositionSettings,
   target: Float32Array = new Float32Array(GPU_SOLAR_POSITION_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_SOLAR_POSITION_PARAMETER_LENGTH) {
-    throw new Error('Solar position settings target must hold 4 values');
-  }
+  validateParameterTarget(
+    'getGPUSolarPositionParameterValues',
+    target,
+    GPU_SOLAR_POSITION_PARAMETER_LENGTH
+  );
   const {dayNumber, dayFraction} = getSolarTimeParameter(settings.timestamp);
   target.set([
     dayNumber,
@@ -60,10 +65,20 @@ export function getGPUSolarPositionParameterValues(
   return target;
 }
 
+/** Caller-owned outputs of {@link GPUSolarPosition}; at least one is required. */
+export type GPUSolarPositionOutput = {
+  /** Sun azimuth per row, degrees clockwise from north in `[0, 360)`. */
+  azimuth?: GraphDataView<'float32'>;
+  /** Sun altitude per row in degrees (refracted when `refraction` is true). */
+  altitude?: GraphDataView<'float32'>;
+  /** 1 when the geometric altitude exceeds the parameters threshold, else 0. */
+  daylight?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUSolarPosition}.
  *
- * Topology: row count, `refraction`, and which outputs exist. Per-frame: `settings` (time and
+ * Topology: row count, `refraction`, and which outputs exist. Per-frame: `parameters` (time and
  * daylight threshold) and position contents.
  */
 export type GPUSolarPositionProps = {
@@ -71,14 +86,10 @@ export type GPUSolarPositionProps = {
   id?: string;
   /** Packed `[longitude, latitude]` degrees per row. */
   positions: GraphDataView<'float32x2'>;
-  /** Per-frame settings with at least 4 float32 values, see {@link getGPUSolarPositionParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Optional sun azimuth per row, degrees clockwise from north in `[0, 360)`. */
-  azimuth?: GraphDataView<'float32'>;
-  /** Optional sun altitude per row in degrees (refracted when `refraction` is true). */
-  altitude?: GraphDataView<'float32'>;
-  /** Optional 1 when the geometric altitude exceeds the settings threshold, else 0. */
-  daylight?: GraphDataView<'uint32'>;
+  /** Per-frame parameters with at least 4 float32 values, see {@link getGPUSolarPositionParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUSolarPositionOutput;
   /** Apply the NOAA refraction approximation to `altitude`. Defaults to true. */
   refraction?: boolean;
 };
@@ -102,19 +113,20 @@ export class GPUSolarPosition implements GPUCommandNodeProducer {
     this.id = props.id ?? 'solar-position';
     this.props = props;
     const {id} = this;
+    const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
-    if (!props.azimuth && !props.altitude && !props.daylight) {
+    if (!output.azimuth && !output.altitude && !output.daylight) {
       throw new Error(`${id} requires at least one output`);
     }
-    validateTerrainIlluminationView(id, 'azimuth', props.azimuth, 'float32', rowCount);
-    validateTerrainIlluminationView(id, 'altitude', props.altitude, 'float32', rowCount);
-    validateTerrainIlluminationView(id, 'daylight', props.daylight, 'uint32', rowCount);
-    validateTerrainSettings(id, props.settings, GPU_SOLAR_POSITION_PARAMETER_LENGTH);
-    validateTerrainBuffersDistinct(
+    validateTerrainIlluminationView(id, 'azimuth', output.azimuth, 'float32', rowCount);
+    validateTerrainIlluminationView(id, 'altitude', output.altitude, 'float32', rowCount);
+    validateTerrainIlluminationView(id, 'daylight', output.daylight, 'uint32', rowCount);
+    validateRasterParameters(id, props.parameters, GPU_SOLAR_POSITION_PARAMETER_LENGTH);
+    validateRasterBuffersDistinct(
       id,
-      [props.azimuth, props.altitude, props.daylight],
-      [props.positions, props.settings]
+      [output.azimuth, output.altitude, output.daylight],
+      [props.positions, props.parameters]
     );
   }
 
@@ -123,37 +135,38 @@ export class GPUSolarPosition implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.settings,
-      props.azimuth,
-      props.altitude,
-      props.daylight
+      props.parameters,
+      output.azimuth,
+      output.altitude,
+      output.daylight
     ]);
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
-    if (props.azimuth) {
+    if (output.azimuth) {
       bindings.push({
         name: 'azimuthValues',
-        view: props.azimuth,
+        view: output.azimuth,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.altitude) {
+    if (output.altitude) {
       bindings.push({
         name: 'altitudeValues',
-        view: props.altitude,
+        view: output.altitude,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.daylight) {
+    if (output.daylight) {
       bindings.push({
         name: 'daylightValues',
-        view: props.daylight,
+        view: output.daylight,
         type: 'u32',
         access: 'read_write'
       });
@@ -231,10 +244,10 @@ fn getRefractionDegrees(elevation: f32) -> f32 {
     cos(hourAngle) * sin(latitudeRadians) - tan(declination) * cos(latitudeRadians)) *
     RADIANS_TO_DEGREES + 180.0, 360.0);
   let invalidValue = getNaN(index);
-  ${props.azimuth ? 'azimuthValues[azimuthValuesOffset + index] = select(invalidValue, azimuth, isValid);' : ''}
-  ${props.altitude ? 'altitudeValues[altitudeValuesOffset + index] = select(invalidValue, altitude, isValid);' : ''}
+  ${output.azimuth ? 'azimuthValues[azimuthValuesOffset + index] = select(invalidValue, azimuth, isValid);' : ''}
+  ${output.altitude ? 'altitudeValues[altitudeValuesOffset + index] = select(invalidValue, altitude, isValid);' : ''}
   ${
-    props.daylight
+    output.daylight
       ? 'daylightValues[daylightValuesOffset + index] = select(0u, 1u, isValid && geometricAltitude > settings[settingsOffset + 2u]);'
       : ''
   }`

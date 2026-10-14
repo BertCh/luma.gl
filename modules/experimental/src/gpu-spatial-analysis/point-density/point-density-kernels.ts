@@ -9,6 +9,12 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+import {
+  FIXED_POINT_WGSL,
+  FIXED_POINT_WORD_COUNT,
+  getFixedPointAtomicAddWGSL,
+  getFixedPointHeadroomBits
+} from '../../utils/fixed-point-accumulator';
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from './point-density-hexagon';
 
 const OPERATION = 'GPUPointDensity';
@@ -298,31 +304,17 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   });
 }
 
-/** Sets every float sum cell to zero. @internal */
-export function createPointDensityClearSumsNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  id: string,
-  sums: GraphDataView<'float32'>
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id,
-    operation: OPERATION,
-    variant: 'clear-sums',
-    bindings: [{name: 'sums', view: sums, type: 'atomic<u32>', access: 'read_write'}],
-    invocationCount: sums.length,
-    body: 'atomicStore(&sums[sumsOffset + index], 0u);'
-  });
-}
-
 /**
- * Adds one chunk of weights into per-cell float sums with workgroup-local pre-aggregation.
+ * Adds one chunk of weights into per-cell fixed-point sums (`utils/fixed-point-accumulator`,
+ * three words per cell) with workgroup-local pre-aggregation.
  *
- * Each 256-thread workgroup stages its rows in shared memory; every row sums the rows that
- * share its key (in row order) and only the first row of each key issues one compare-exchange
- * float add. Rows that share a cell collapse by up to 256x before reaching global memory, so hotspot
- * cells no longer serialize one compare-exchange loop per point. Rows with key at or above
- * `cellCount` or a non-finite weight contribute nothing. `sums` must be cleared beforehand. The
- * add order across workgroups is nondeterministic.
+ * Every weight is quantized to the data-derived unit of `scale` first, so all arithmetic after
+ * that is integer and the sums are bitwise reproducible across runs, chunkings, row orders and
+ * atomic interleavings. Each 256-thread workgroup stages its rows in shared memory; every row
+ * sums the rows that share its key and only the first row of each key issues one fixed-point
+ * atomic add, so hotspot cells collapse by up to 256x before reaching global memory. Rows with
+ * key at or above `cellCount` or a non-finite weight contribute nothing. `fixedPointSums` must be
+ * cleared beforehand.
  *
  * @internal
  */
@@ -334,7 +326,12 @@ export function createPointDensityWorkgroupSumNode<Parameters>(
     keys: GraphDataView<'uint32'>;
     /** Row of `keys` matching the first weight of this chunk. */
     keyStart: number;
-    sums: GraphDataView<'float32'>;
+    /** `cellCount * FIXED_POINT_WORD_COUNT` words. */
+    fixedPointSums: GraphDataView<'uint32'>;
+    /** Scale word from `createFixedPointScaleNodes` over every weight. */
+    scale: GraphDataView<'uint32'>;
+    /** Total weight rows, the term bound of the unit. */
+    rowCount: number;
   }
 ): GPUCommandNode<Parameters> {
   const size = POINT_DENSITY_WORKGROUP_SUM_SIZE;
@@ -345,52 +342,49 @@ export function createPointDensityWorkgroupSumNode<Parameters>(
     bindings: [
       {name: 'weights', view: props.weights, type: 'f32', access: 'read'},
       {name: 'keys', view: props.keys, type: 'u32', access: 'read'},
-      {name: 'sums', view: props.sums, type: 'atomic<u32>', access: 'read_write'}
+      {name: 'scale', view: props.scale, type: 'u32', access: 'read'},
+      {name: 'sums', view: props.fixedPointSums, type: 'atomic<u32>', access: 'read_write'}
     ],
     workgroupSize: size,
     invocationCount: props.weights.length,
     guardIndex: false,
     declarations: `const KEY_START: u32 = ${props.keyStart}u;
-const CELL_COUNT: u32 = ${props.sums.length}u;
+const CELL_COUNT: u32 = ${props.fixedPointSums.length / FIXED_POINT_WORD_COUNT}u;
+override HEADROOM_BITS: u32;
 ${IS_FINITE_BITS_WGSL}
+${FIXED_POINT_WGSL}
+${getFixedPointAtomicAddWGSL('sums')}
 var<workgroup> sortKeys: array<u32, ${size}>;
-var<workgroup> sortValues: array<f32, ${size}>;
-fn atomicAddFloat(destination: ptr<storage, atomic<u32>, read_write>, value: f32) {
-  var oldBits = atomicLoad(destination);
-  loop {
-    let newBits = bitcast<u32>(bitcast<f32>(oldBits) + value);
-    let result = atomicCompareExchangeWeak(destination, oldBits, newBits);
-    if (result.exchanged) { break; }
-    oldBits = result.old_value;
-  }
-}`,
+var<workgroup> sortValues: array<vec3<u32>, ${size}>;`,
+    constants: {HEADROOM_BITS: getFixedPointHeadroomBits(props.rowCount)},
     // No early return: every invocation of a workgroup must reach the barriers.
     body: `let lane = localInvocationIndex;
+  let unitExponent = getFixedPointUnitExponent(scale[scaleOffset], HEADROOM_BITS);
   var key = 0xffffffffu;
-  var value = 0.0;
+  var value = vec3<u32>(0u);
   if (index < INVOCATION_COUNT) {
     let weight = weights[weightsOffset + index];
     let rowKey = keys[keysOffset + KEY_START + index];
     if (isFiniteBits(weight) && rowKey < CELL_COUNT) {
       key = rowKey;
-      value = weight;
+      value = quantizeFixedPoint(weight, unitExponent);
     }
   }
   sortKeys[lane] = key;
   sortValues[lane] = value;
   workgroupBarrier();
-  // Every row sums the rows of its workgroup that share its key, in row order. Only the first
-  // row of each key issues the global add, so no sort or scan is needed.
-  var runSum = 0.0;
+  // Every row sums the rows of its workgroup that share its key (exact integer adds). Only the
+  // first row of each key issues the global add, so no sort or scan is needed.
+  var runSum = vec3<u32>(0u);
   var isFirst = true;
   for (var other = 0u; other < ${size}u; other = other + 1u) {
     if (sortKeys[other] == key) {
-      runSum = runSum + sortValues[other];
+      runSum = addFixedPoint(runSum, sortValues[other]);
       isFirst = isFirst && other >= lane;
     }
   }
   if (isFirst && key < CELL_COUNT) {
-    atomicAddFloat(&sums[sumsOffset + key], runSum);
+    addFixedPointToSums(key, runSum);
   }`
   });
 }

@@ -6,21 +6,23 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {
-  GPUSegmentGeometry,
-  GPUSegmentIntersectionColumns,
-  GPUSegmentIntersectionPairs
-} from './segment-intersection-types';
+import {createScanCarryNode} from '../../utils/scan-total';
+import {
+  validateGraphViewsBelongToGraph,
+  validatePackedView,
+  validateMaximumCount,
+  validatePowerOfTwo
+} from '../../utils/gpu-contributor-utils';
+import type {GPUSegmentGeometry, GPUSegmentIntersectionOutput} from './segment-intersection-types';
 import {
   getSegmentTableAccessorsWGSL,
+  getGPUSegmentIntersectionMaximumVertexCount,
   SEGMENT_PREDICATES_WGSL,
   SEGMENT_TABLE_STRIDE
 } from './segment-intersection-wgsl';
@@ -28,7 +30,10 @@ import {getSegmentBVHNodes} from './segment-bvh';
 import {createSegmentTableNode, getSegmentSlotCount} from './segment-table';
 import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUSegmentIntersection';
 
@@ -41,7 +46,7 @@ const SPATIAL_SORT_MINIMUM_SLOTS = 1024;
  * Per-frame: the contents of every input buffer. Topology: view lengths, `sameFeatureOnly`,
  * `leafCapacity`, whether `right` is given, and which optional views exist.
  */
-export type GPUSegmentIntersectionProps = GPUSegmentIntersectionColumns & {
+export type GPUSegmentIntersectionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'segment-intersection'`. */
   id?: string;
   /**
@@ -51,7 +56,11 @@ export type GPUSegmentIntersectionProps = GPUSegmentIntersectionColumns & {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
-  /** Left segments. Output rows are left segment IDs (start-vertex indices of `left`). */
+  /**
+   * Left segments. Output rows are left segment IDs (start-vertex indices of `left`). Each side has
+   * at most {@link getGPUSegmentIntersectionMaximumVertexCount} `positions` rows (4194304 on a default
+   * device).
+   */
   left: GPUSegmentGeometry;
   /**
    * Right segments, indexed by a BVH. Omit for self mode, where `left` is intersected with itself.
@@ -76,16 +85,13 @@ export type GPUSegmentIntersectionProps = GPUSegmentIntersectionColumns & {
   /** Power-of-two BVH leaf slots over the right segments. Defaults to the next power of two of its vertex count. */
   leafCapacity?: number;
   /**
-   * Caller-owned `(left, right)` segment pairs, sorted by left then right segment ID, with the
-   * capacity `pairs.leftIds.length`. `count` is `min(total, capacity)`; `overflow` is 1 when the
-   * total exceeded the capacity, in which case the output holds the sorted prefix of the pairs.
+   * Caller-owned outputs. `output.pairs` holds the `(left, right)` segment pairs, sorted by left
+   * then right segment ID, with the capacity `pairs.leftIds.length`. `pairs.count` is
+   * `min(total, capacity)`; `pairs.overflow` is 1 when the total exceeded the capacity, in which
+   * case the output holds the sorted prefix of the pairs. The optional per-pair columns and
+   * `status.uncertainCount` are described by {@link GPUSegmentIntersectionOutput}.
    */
-  pairs: GPUSegmentIntersectionPairs;
-  /**
-   * Optional one-row count of pairs within the capacity that were classified `uncertain`. Those
-   * pairs are listed in the output with the `uncertain` kind; none are silently dropped.
-   */
-  uncertainCount?: GraphDataView<'uint32'>;
+  output: GPUSegmentIntersectionOutput;
 };
 
 /**
@@ -173,9 +179,6 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       if (geometry.positions.length < 1) {
         throw new Error(`${id} ${name} must contain at least one vertex`);
       }
-      if (geometry.positions.length >= 0x80000000) {
-        throw new Error(`${id} ${name} has too many vertices`);
-      }
     }
     if (props.sameFeatureOnly && !this.isSelfMode) {
       throw new Error(`${id} sameFeatureOnly requires self mode (omit right)`);
@@ -184,14 +187,8 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
     this.rightSlotCount = getSegmentSlotCount(props.right ?? props.left);
     this.spatialSort = props.spatialSort ?? this.rightSlotCount >= SPATIAL_SORT_MINIMUM_SLOTS;
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(this.rightSlotCount);
-    if (
-      !Number.isSafeInteger(this.leafCapacity) ||
-      this.leafCapacity < 1 ||
-      (this.leafCapacity & (this.leafCapacity - 1)) !== 0
-    ) {
-      throw new Error(`${id} leafCapacity must be a positive power of two`);
-    }
-    const {pairs} = props;
+    validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
+    const {pairs} = props.output;
     validatePackedUint32View(pairs.leftIds, `${id} pairs.leftIds`);
     validatePackedUint32View(pairs.rightIds, `${id} pairs.rightIds`);
     this.pairCapacity = pairs.leftIds.length;
@@ -199,10 +196,10 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       throw new Error(`${id} pairs.leftIds and pairs.rightIds must have equal nonzero length`);
     }
     for (const [name, view] of [
-      ['count', pairs.count],
-      ['overflow', pairs.overflow],
-      ['requiredCount', pairs.requiredCount],
-      ['uncertainCount', props.uncertainCount]
+      ['count', pairs.status.count],
+      ['overflow', pairs.status.overflow],
+      ['requiredCount', pairs.status.requiredCount],
+      ['status.uncertainCount', props.output.status?.uncertainCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -212,11 +209,11 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       }
     }
     for (const [name, view] of [
-      ['kinds', props.kinds],
-      ['leftFeatures', props.leftFeatures],
-      ['rightFeatures', props.rightFeatures],
-      ['leftRings', props.leftRings],
-      ['rightRings', props.rightRings]
+      ['kinds', props.output.kinds],
+      ['leftFeatures', props.output.leftFeatures],
+      ['rightFeatures', props.output.rightFeatures],
+      ['leftRings', props.output.leftRings],
+      ['rightRings', props.output.rightRings]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -226,8 +223,8 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       }
     }
     for (const [name, view] of [
-      ['points', props.points],
-      ['endPoints', props.endPoints]
+      ['points', props.output.points],
+      ['endPoints', props.output.endPoints]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32x2'], `${id} ${name}`);
@@ -255,21 +252,22 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {pairs, uncertainCount} = this.props;
+    const {pairs, status, ...columns} = this.props.output;
+    const uncertainCount = status?.uncertainCount;
     return [
       pairs.leftIds,
       pairs.rightIds,
-      pairs.count,
-      pairs.overflow,
-      pairs.requiredCount,
+      pairs.status.count,
+      pairs.status.overflow,
+      pairs.status.requiredCount,
       uncertainCount,
-      this.props.kinds,
-      this.props.points,
-      this.props.endPoints,
-      this.props.leftFeatures,
-      this.props.rightFeatures,
-      this.props.leftRings,
-      this.props.rightRings
+      columns.kinds,
+      columns.points,
+      columns.endPoints,
+      columns.leftFeatures,
+      columns.rightFeatures,
+      columns.leftRings,
+      columns.rightRings
     ];
   }
 
@@ -278,8 +276,21 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, isSelfMode, leftSlotCount, rightSlotCount, pairCapacity} = this;
-    const {pairs} = props;
+    const {pairs} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    for (const [name, geometry] of [
+      ['left', props.left],
+      ['right', props.right]
+    ] as const) {
+      if (geometry) {
+        validateMaximumCount(
+          id,
+          `${name}.positions rows`,
+          geometry.positions.length,
+          getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+        );
+      }
+    }
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     // Segment tables, with bounds for the indexed (right) side.
@@ -457,6 +468,17 @@ ${NODE_OVERLAPS_WGSL}`;
         body: `state[stateOffset] = offsets[offsetsOffset + ${leftSlotCount - 1}u] + counts[countsOffset + ${leftSlotCount - 1}u];`
       })
     );
+    // A pair total of 2^32 or more wraps in the uint32 scan; saturate it so overflow is reported (S-8).
+    nodes.push(
+      createScanCarryNode<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        counts,
+        offsets,
+        rowCount: leftSlotCount,
+        total: state
+      })
+    );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write`,
@@ -522,7 +544,8 @@ const GAPS = array<u32, 8>(701u, 301u, 132u, 57u, 23u, 10u, 4u, 1u);`,
     }
 
     // Per-pair classification columns.
-    const {kinds, points, endPoints, uncertainCount} = props;
+    const {kinds, points, endPoints} = props.output;
+    const uncertainCount = props.output.status?.uncertainCount;
     if (kinds || points || endPoints || uncertainCount) {
       const bindings: WGSLKernelBinding[] = [
         {name: 'pairLeft', view: pairs.leftIds, type: 'u32', access: 'read'},
@@ -558,8 +581,8 @@ const GAPS = array<u32, 8>(701u, 301u, 132u, 57u, 23u, 10u, 4u, 1u);`,
       );
     }
     for (const [side, ids, table, featureColumn, ringColumn] of [
-      ['left', pairs.leftIds, leftTable, props.leftFeatures, props.leftRings],
-      ['right', pairs.rightIds, rightTable, props.rightFeatures, props.rightRings]
+      ['left', pairs.leftIds, leftTable, props.output.leftFeatures, props.output.leftRings],
+      ['right', pairs.rightIds, rightTable, props.output.rightFeatures, props.output.rightRings]
     ] as const) {
       if (!featureColumn && !ringColumn) {
         continue;
@@ -604,9 +627,9 @@ ${getSegmentTableAccessorsWGSL(side)}`,
       {name: 'bvhOverflow', view: bvh.overflow, type: 'u32', access: 'read'}
     ];
     const scalars: [string, GraphDataView<'uint32'> | undefined][] = [
-      ['count', pairs.count],
-      ['overflow', pairs.overflow],
-      ['requiredCount', pairs.requiredCount],
+      ['count', pairs.status.count],
+      ['overflow', pairs.status.overflow],
+      ['requiredCount', pairs.status.requiredCount],
       ['uncertainCount', uncertainCount]
     ];
     for (const [name, view] of scalars) {

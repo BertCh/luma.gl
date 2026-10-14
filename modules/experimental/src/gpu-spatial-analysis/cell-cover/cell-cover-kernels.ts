@@ -4,7 +4,8 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {dggs} from '@luma.gl/shadertools';
-import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../../utils/exact-geometry-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 import {CELL_KEY_WGSL, QUADBIN_TILE_WGSL, getCellKeyLayout} from '../cell-aggregation/cell-keys';
 import {H3_INDEX_WGSL} from '../cell-indexing/h3-index-wgsl';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
@@ -14,9 +15,20 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  getPolygonEdgeSlabBindings,
+  getPolygonEdgeSlabLoopWGSL,
+  getPolygonEdgeSlabQueryWGSL,
+  type PolygonEdgeSlabs
+} from '../spatial-join/polygon-edge-slabs';
+import {
   CELL_COVER_H3_LATTICE_SPACING_DEGREES,
   CELL_COVER_H3_MAXIMUM_LATITUDE
 } from './cell-cover-h3-constants';
+import {
+  CELL_COVER_SCANLINE_RANGE_STRIDE,
+  getCellCoverScanlineDecodeWGSL,
+  type CellCoverScanlineSettings
+} from './cell-cover-scanline';
 
 const OPERATION = 'GPUCellCover';
 
@@ -36,25 +48,12 @@ export const CELL_COVER_CORE_MARGIN_DEGREES = 2e-4;
 /**
  * Number of `uint32` words per feature in the candidate range table. @internal
  *
- * Words 0 to 4 hold the candidate lattice (family specific). With edge slabs, words 5 to 10 hold
- * the slab count (0 when the feature is not slabbed), the first slab's index, the slab origin and
- * scale (f32 bits) and the feature's first and last vertex.
+ * Words 0 to 4 hold the candidate lattice (family specific).
  */
-export const CELL_COVER_RANGE_STRIDE = 12;
+export const CELL_COVER_RANGE_STRIDE = 5;
 
 /** Features with fewer candidates than this skip the edge slabs (the build would cost more). @internal */
 export const CELL_COVER_MINIMUM_SLAB_CANDIDATES = 16;
-
-/** Most slabs of one feature. @internal */
-export const CELL_COVER_MAXIMUM_SLABS = 4096;
-
-/** Slab and entry capacities of the optional edge-slab index. @internal */
-export type CellCoverEdgeSlabs = {
-  /** Slab slots over all features; the slab count of a feature is at most its vertex count / 4. */
-  slabCapacity: number;
-  /** Edge-slab entries (one per edge and slab it spans) over all features. */
-  entryCapacity: number;
-};
 
 /** Common description of a cover kernel family. @internal */
 export type CellCoverKernelContext = {
@@ -66,17 +65,24 @@ export type CellCoverKernelContext = {
   computeCore: boolean;
   featureCount: number;
   candidateCapacity: number;
-  /** Capacities of the edge-slab index, or `undefined` to test every edge of the feature. */
-  edgeSlabs?: CellCoverEdgeSlabs;
-  polygonPositions: GraphDataView<'float32x2'>;
+  /** The built edge-slab index (per-feature owners), or `undefined` to test every edge of the feature. */
+  edgeSlabs?: PolygonEdgeSlabs;
+  /** Scanline enumeration settings, or `undefined` when only the bounding-box enumeration is built. */
+  scanline?: CellCoverScanlineSettings;
+  positions: GraphDataView<'float32x2'>;
   featureOffsets: GraphDataView<'uint32'>;
   polygonOffsets: GraphDataView<'uint32'>;
   ringOffsets: GraphDataView<'uint32'>;
 };
 
+/** Words per feature of the range table: the lattice, plus flags and run words with the scanline stage. */
+function getRangeStride(context: CellCoverKernelContext): number {
+  return context.scanline ? CELL_COVER_SCANLINE_RANGE_STRIDE : CELL_COVER_RANGE_STRIDE;
+}
+
 function getPolygonBindings(context: CellCoverKernelContext): WGSLKernelBinding[] {
   return [
-    {name: 'polygonPositions', view: context.polygonPositions, type: 'f32', access: 'read'},
+    {name: 'positions', view: context.positions, type: 'f32', access: 'read'},
     {name: 'featureOffsets', view: context.featureOffsets, type: 'u32', access: 'read'},
     {name: 'polygonOffsets', view: context.polygonOffsets, type: 'u32', access: 'read'},
     {name: 'ringOffsets', view: context.ringOffsets, type: 'u32', access: 'read'}
@@ -84,19 +90,23 @@ function getPolygonBindings(context: CellCoverKernelContext): WGSLKernelBinding[
 }
 
 /**
- * WGSL polygon helpers over the bindings `polygonPositions` (f32 pairs), `featureOffsets`,
- * `polygonOffsets` and `ringOffsets`. Predicates use plain f32 operations in a fixed order so the
- * CPU oracle can mirror them with `Math.fround`.
+ * WGSL polygon helpers over the bindings `positions` (f32 pairs), `featureOffsets`,
+ * `polygonOffsets` and `ringOffsets`. Containment is exact: the shared point-in-ring rule of
+ * `utils/exact-geometry-wgsl.ts` (exact orientation signs, Simulation-of-Simplicity ties, so a cell
+ * centre exactly on an edge is decided consistently). The rectangle test uses plain f32 operations
+ * in a fixed order so the CPU oracle can mirror it with `Math.fround`. A kernel calls
+ * `coverContains` from one site (the exact helpers inline a large integer fallback).
  *
  * - `coverGetFeatureInfo(feature)`: bounds `(minX, minY, maxX, maxY)` over finite vertices (`minX > maxX` when
  *   none), vertex count, first and last vertex and whether any vertex is non-finite.
  * - `coverContains(feature, p)`: even-odd containment over every ring of every polygon.
  * - `coverEdgesHitRect(feature, lo, hi)`: whether any ring edge meets the OPEN rectangle `(lo, hi)`.
  */
-const COMMON_WGSL = /* wgsl */ `${IS_FINITE_BITS_WGSL}
+const COMMON_WGSL = /* wgsl */ `${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
 fn coverGetVertex(vertex: u32) -> vec2f {
-  let rangeBase = polygonPositionsOffset + 2u * vertex;
-  return vec2f(polygonPositions[rangeBase], polygonPositions[rangeBase + 1u]);
+  let rangeBase = positionsOffset + 2u * vertex;
+  return vec2f(positions[rangeBase], positions[rangeBase + 1u]);
 }
 
 fn coverIsFinite(p: vec2f) -> bool {
@@ -105,6 +115,7 @@ fn coverIsFinite(p: vec2f) -> bool {
 
 /** Whether the closed segment a-b meets the open rectangle (lo, hi). */
 fn coverSegmentHitsRect(a: vec2f, b: vec2f, lo: vec2f, hi: vec2f) -> bool {
+  if (!coverIsFinite(a) || !coverIsFinite(b)) { return false; }
   var lower = -1e30;
   var upper = 1e30;
   let d = b - a;
@@ -169,8 +180,11 @@ fn coverGetFeatureInfo(feature: u32) -> CoverFeatureInfo {
   return info;
 }
 
+${getExactRingWindingWGSL('coverGetRingWinding', 'coverGetVertex')}
+// Even-odd containment of the SoS-perturbed point p over every ring of the feature.
 fn coverContains(feature: u32, p: vec2f) -> bool {
-  var inside = false;
+  let probe = ExactProbe(p, p, p, EXACT_PROBE_POINT);
+  var winding = 0;
   let firstPolygon = featureOffsets[featureOffsetsOffset + feature];
   let endPolygon = featureOffsets[featureOffsetsOffset + feature + 1u];
   for (var polygon = firstPolygon; polygon < endPolygon; polygon++) {
@@ -179,18 +193,11 @@ fn coverContains(feature: u32, p: vec2f) -> bool {
     for (var ring = firstRing; ring < endRing; ring++) {
       let firstVertex = ringOffsets[ringOffsetsOffset + ring];
       let endVertex = ringOffsets[ringOffsetsOffset + ring + 1u];
-      for (var vertex = firstVertex; vertex < endVertex; vertex++) {
-        let a = coverGetVertex(vertex);
-        let b = coverGetVertex(select(vertex + 1u, firstVertex, vertex + 1u == endVertex));
-        if ((a.y > p.y) != (b.y > p.y)) {
-          if (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) {
-            inside = !inside;
-          }
-        }
-      }
+      // Rings of two vertices or fewer enclose nothing (the helper returns 0 for them).
+      winding += coverGetRingWinding(probe, firstVertex, endVertex).x;
     }
   }
-  return inside;
+  return (winding & 1) != 0;
 }
 
 fn coverEdgesHitRect(feature: u32, lo: vec2f, hi: vec2f) -> bool {
@@ -210,110 +217,41 @@ fn coverEdgesHitRect(feature: u32, lo: vec2f, hi: vec2f) -> bool {
     }
   }
   return false;
-}
-`;
-
-/**
- * Edge-slab helpers. Each slabbed feature splits its y-range into `n` equal slabs; an edge is listed
- * in every slab from `slabOf(min y)` to `slabOf(max y)`. `slabOf` is a monotone f32 expression
- * (subtract, multiply, floor, clamp), so for `a.y <= p.y <= b.y` the slab of `p.y` lies between the
- * slabs of the two endpoints: every edge that straddles or touches a query height is listed in the
- * query's slab, and the predicates then see exactly the edges the brute-force walk would have
- * accepted. Needs `ranges` and `RANGE_STRIDE`.
- */
-const SLAB_COMMON_WGSL = /* wgsl */ `
-const NO_VERTEX: u32 = 0xffffffffu;
-const SLAB_COUNT_WORD: u32 = 5u;
-const SLAB_BASE_WORD: u32 = 6u;
-const SLAB_ORIGIN_WORD: u32 = 7u;
-const SLAB_SCALE_WORD: u32 = 8u;
-const VERTEX_BEGIN_WORD: u32 = 9u;
-const VERTEX_END_WORD: u32 = 10u;
-
-fn coverSlabOf(y: f32, slabCount: u32, origin: f32, scale: f32) -> u32 {
-  if (slabCount <= 1u) { return 0u; }
-  return u32(clamp(floor((y - origin) * scale), 0.0, f32(slabCount - 1u)));
 }
 `;
 
 /**
  * Edge-slab versions of `coverContains` and `coverEdgesHitRect` with the signatures of the
- * brute-force ones. A feature without slabs (too few candidates or vertices, non-finite vertices,
- * or entries beyond the entry capacity) walks its vertex range `[vertexBegin, vertexEnd)` through
- * `nextVertex`, the same edges as the ring walk. Needs `polygonPositions`, `ranges`, `slabOffsets`,
- * `slabEntries` and `nextVertex`.
+ * brute-force ones, over the polygon edge-slab index (`spatial-join/polygon-edge-slabs.ts`, owner =
+ * feature). A feature without slabs (too few candidates or vertices, non-finite vertices, or
+ * entries beyond the entry capacity) walks all its edges, the same edges as the ring walk. Needs
+ * `positions` and the three edge-slab bindings.
  */
-function getSlabQueryWGSL(entryCapacity: number): string {
-  return /* wgsl */ `${COMMON_WGSL}${SLAB_COMMON_WGSL}
-const ENTRY_CAPACITY: u32 = ${entryCapacity}u;
-
-fn coverIsSlabbed(rangeBase: u32) -> bool {
-  let slabCount = ranges[rangeBase + SLAB_COUNT_WORD];
-  return slabCount != 0u &&
-    slabOffsets[slabOffsetsOffset + ranges[rangeBase + SLAB_BASE_WORD] + slabCount] <= ENTRY_CAPACITY;
-}
-
-fn coverSlabOfHeight(rangeBase: u32, y: f32) -> u32 {
-  return coverSlabOf(
-    y,
-    ranges[rangeBase + SLAB_COUNT_WORD],
-    bitcast<f32>(ranges[rangeBase + SLAB_ORIGIN_WORD]),
-    bitcast<f32>(ranges[rangeBase + SLAB_SCALE_WORD])
-  );
-}
-
-fn coverCrosses(a: vec2f, b: vec2f, p: vec2f) -> bool {
-  if ((a.y > p.y) != (b.y > p.y)) {
-    return p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x;
-  }
-  return false;
-}
-
+function getSlabQueryWGSL(edgeSlabs: PolygonEdgeSlabs): string {
+  return /* wgsl */ `${COMMON_WGSL}${getPolygonEdgeSlabQueryWGSL(edgeSlabs)}
+// Even-odd containment of the SoS-perturbed point p. Slabbed and walked features share one edge
+// loop, so the exact crossing helper has a single call site.
 fn coverContains(feature: u32, p: vec2f) -> bool {
-  let rangeBase = rangesOffset + feature * RANGE_STRIDE;
-  var inside = false;
-  if (coverIsSlabbed(rangeBase)) {
-    let slabIndex = ranges[rangeBase + SLAB_BASE_WORD] + coverSlabOfHeight(rangeBase, p.y);
-    let end = slabOffsets[slabOffsetsOffset + slabIndex + 1u];
-    for (var entry = slabOffsets[slabOffsetsOffset + slabIndex]; entry < end; entry++) {
-      let a = coverGetVertex(slabEntries[slabEntriesOffset + 2u * entry]);
-      let b = coverGetVertex(slabEntries[slabEntriesOffset + 2u * entry + 1u]);
-      if (coverCrosses(a, b, p)) {
-        inside = !inside;
-      }
-    }
-  } else {
-    for (var vertex = ranges[rangeBase + VERTEX_BEGIN_WORD]; vertex < ranges[rangeBase + VERTEX_END_WORD]; vertex++) {
-      let next = nextVertex[nextVertexOffset + vertex];
-      if (next != NO_VERTEX && coverCrosses(coverGetVertex(vertex), coverGetVertex(next), p)) {
-        inside = !inside;
-      }
-    }
-  }
-  return inside;
+  let probe = ExactProbe(p, p, p, EXACT_PROBE_POINT);
+  var winding = 0;
+  ${getPolygonEdgeSlabLoopWGSL({
+    owner: 'feature',
+    lowY: 'p.y',
+    highY: 'p.y',
+    getVertex: 'coverGetVertex',
+    body: 'winding += exactProbeCrossing(probe, a, b).x;'
+  })}
+  return (winding & 1) != 0;
 }
 
 fn coverEdgesHitRect(feature: u32, lo: vec2f, hi: vec2f) -> bool {
-  let rangeBase = rangesOffset + feature * RANGE_STRIDE;
-  if (coverIsSlabbed(rangeBase)) {
-    let base = ranges[rangeBase + SLAB_BASE_WORD];
-    let lastSlab = coverSlabOfHeight(rangeBase, hi.y);
-    for (var slab = coverSlabOfHeight(rangeBase, lo.y); slab <= lastSlab; slab++) {
-      let end = slabOffsets[slabOffsetsOffset + base + slab + 1u];
-      for (var entry = slabOffsets[slabOffsetsOffset + base + slab]; entry < end; entry++) {
-        let a = coverGetVertex(slabEntries[slabEntriesOffset + 2u * entry]);
-        let b = coverGetVertex(slabEntries[slabEntriesOffset + 2u * entry + 1u]);
-        if (coverSegmentHitsRect(a, b, lo, hi)) { return true; }
-      }
-    }
-  } else {
-    for (var vertex = ranges[rangeBase + VERTEX_BEGIN_WORD]; vertex < ranges[rangeBase + VERTEX_END_WORD]; vertex++) {
-      let next = nextVertex[nextVertexOffset + vertex];
-      if (next != NO_VERTEX && coverSegmentHitsRect(coverGetVertex(vertex), coverGetVertex(next), lo, hi)) {
-        return true;
-      }
-    }
-  }
+  ${getPolygonEdgeSlabLoopWGSL({
+    owner: 'feature',
+    lowY: 'lo.y',
+    highY: 'hi.y',
+    getVertex: 'coverGetVertex',
+    body: 'if (coverSegmentHitsRect(a, b, lo, hi)) { return true; }'
+  })}
   return false;
 }
 `;
@@ -350,42 +288,11 @@ const PI: f32 = 3.14159265358979;
 `;
 }
 
-/**
- * Tail of the count kernel with edge slabs: picks the slab count (about one slab per four edges,
- * capped, and none for features with few candidates, few edges, non-finite vertices or no height),
- * and records the slab lattice and the feature's vertex range for the later passes.
- */
-const SLAB_PARAMETERS_BODY = `
-  var slabCount = 0u;
-  var slabScale = 0.0;
-  if (count >= ${CELL_COVER_MINIMUM_SLAB_CANDIDATES}u && !info.hasNonFinite && info.vertexCount >= 8u) {
-    let wanted = min(info.vertexCount / 4u, ${CELL_COVER_MAXIMUM_SLABS}u);
-    let scale = f32(wanted) / (bounds.w - bounds.y);
-    if (scale > 0.0 && scale < 1e30) {
-      slabCount = wanted;
-      slabScale = scale;
-    }
-  }
-  ranges[rangeBase + SLAB_COUNT_WORD] = slabCount;
-  ranges[rangeBase + SLAB_ORIGIN_WORD] = bitcast<u32>(bounds.y);
-  ranges[rangeBase + SLAB_SCALE_WORD] = bitcast<u32>(slabScale);
-  ranges[rangeBase + VERTEX_BEGIN_WORD] = info.vertexBegin;
-  ranges[rangeBase + VERTEX_END_WORD] = info.vertexEnd;
-  slabNumbers[slabNumbersOffset + index] = slabCount;`;
-
-/** Candidate counting node: one thread per feature (plus one trailing zero count). @internal */
-export function createCoverCountNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  context: CellCoverKernelContext,
-  counts: GraphDataView<'uint32'>,
-  ranges: GraphDataView<'uint32'>,
-  slabNumbers?: GraphDataView<'uint32'>,
-  status: {
-    invalidCount?: GraphDataView<'uint32'>;
-    uncertainCount?: GraphDataView<'uint32'>;
-  } = {}
-): GPUCommandNode<Parameters> {
-  const {resolution, candidateCapacity, family} = context;
+/** Per-feature status counter updates over `bounds`; defines `isAntimeridian`. */
+function getCoverStatusSource(
+  family: CellCoverKernelContext['family'],
+  status: {invalidCount?: GraphDataView<'uint32'>; uncertainCount?: GraphDataView<'uint32'>}
+): string {
   // A feature wider than 180 degrees of longitude is an antimeridian crossing in planar
   // longitude/latitude (or a world-spanning ring): it gets no candidates and is counted invalid.
   // A feature reaching the latitudes the lattice clamps to loses polar cells: counted uncertain.
@@ -396,13 +303,42 @@ export function createCoverCountNode<Parameters>(
   const uncertainStatement = status.uncertainCount
     ? `if (!isAntimeridian && bounds.x <= bounds.z && (bounds.w > ${getWGSLFloatLiteral(polarLatitude)} || bounds.y < -${getWGSLFloatLiteral(polarLatitude)})) { atomicAdd(&uncertainCount[uncertainCountOffset], 1u); }`
     : '';
-  const antimeridianSource = `let isAntimeridian = bounds.x <= bounds.z && (bounds.z - bounds.x) > 180.0;
+  return `let isAntimeridian = bounds.x <= bounds.z && (bounds.z - bounds.x) > 180.0;
   ${invalidStatement}
   ${uncertainStatement}`;
+}
+
+function getCoverStatusBindings(status: {
+  invalidCount?: GraphDataView<'uint32'>;
+  uncertainCount?: GraphDataView<'uint32'>;
+}): WGSLKernelBinding[] {
+  return (['invalidCount', 'uncertainCount'] as const).flatMap(name => {
+    const view = status[name];
+    return view ? [{name, view, type: 'atomic<u32>', access: 'read_write'} as const] : [];
+  });
+}
+
+/** Candidate counting node: one thread per feature (plus one trailing zero count). @internal */
+export function createCoverCountNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  context: CellCoverKernelContext,
+  counts: GraphDataView<'uint32'>,
+  ranges: GraphDataView<'uint32'>,
+  status: {
+    invalidCount?: GraphDataView<'uint32'>;
+    uncertainCount?: GraphDataView<'uint32'>;
+  } = {}
+): GPUCommandNode<Parameters> {
+  const {resolution, candidateCapacity, family} = context;
+  const antimeridianSource = getCoverStatusSource(family, status);
   const capacityPlusOne = candidateCapacity + 1;
+  // Flag word 5 of the scanline range table: bit 0 marks a non-finite vertex (bounding box only).
+  const nonFiniteSource = context.scanline
+    ? 'ranges[rangeBase + 5u] = select(0u, 1u, info.hasNonFinite);'
+    : '';
   let declarations = `${POLYGON_WGSL}
 const CAPACITY_PLUS_ONE: u32 = ${capacityPlusOne}u;
-const RANGE_STRIDE: u32 = ${CELL_COVER_RANGE_STRIDE}u;
+const RANGE_STRIDE: u32 = ${getRangeStride(context)}u;
 fn coverClampCount(width: u32, height: u32) -> u32 {
   if (width == 0u || height == 0u) { return 0u; }
   if (width > CAPACITY_PLUS_ONE || height > CAPACITY_PLUS_ONE) { return CAPACITY_PLUS_ONE; }
@@ -413,11 +349,12 @@ fn coverClampCount(width: u32, height: u32) -> u32 {
   let body: string;
   if (family === 'quadbin') {
     declarations += `${CELL_KEY_WGSL}${QUADBIN_TILE_WGSL}const RESOLUTION: u32 = ${resolution}u;`;
-    body = `if (index == FEATURE_COUNT) { counts[countsOffset + index] = 0u;${slabNumbers ? ' slabNumbers[slabNumbersOffset + index] = 0u;' : ''} return; }
+    body = `if (index == FEATURE_COUNT) { counts[countsOffset + index] = 0u; return; }
   let info = coverGetFeatureInfo(index);
   let bounds = info.bounds;
   let rangeBase = rangesOffset + index * RANGE_STRIDE;
   var count = 0u;
+  ${nonFiniteSource}
   ${antimeridianSource}
   if (!isAntimeridian && bounds.x <= bounds.z && bounds.y <= bounds.w) {
     let x0 = quadbinGetTileX(bounds.x, RESOLUTION);
@@ -432,7 +369,7 @@ fn coverClampCount(width: u32, height: u32) -> u32 {
       count = coverClampCount(x1 - x0 + 1u, y1 - y0 + 1u);
     }
   }
-  counts[countsOffset + index] = count;${slabNumbers ? SLAB_PARAMETERS_BODY : ''}`;
+  counts[countsOffset + index] = count;`;
   } else {
     const spacing = CELL_COVER_H3_LATTICE_SPACING_DEGREES[resolution];
     declarations += `const LATTICE_SPACING: f32 = ${getWGSLFloatLiteral(spacing)};
@@ -441,11 +378,12 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
 fn coverToCount(value: f32) -> u32 {
   return u32(clamp(value, 1.0, 4.0e9));
 }`;
-    body = `if (index == FEATURE_COUNT) { counts[countsOffset + index] = 0u;${slabNumbers ? ' slabNumbers[slabNumbersOffset + index] = 0u;' : ''} return; }
+    body = `if (index == FEATURE_COUNT) { counts[countsOffset + index] = 0u; return; }
   let info = coverGetFeatureInfo(index);
   let bounds = info.bounds;
   let rangeBase = rangesOffset + index * RANGE_STRIDE;
   var count = 0u;
+  ${nonFiniteSource}
   let originLat = max(bounds.y - LATTICE_SPACING, -MAXIMUM_LATITUDE);
   let endLat = min(bounds.w + LATTICE_SPACING, MAXIMUM_LATITUDE);
   ${antimeridianSource}
@@ -465,43 +403,18 @@ fn coverToCount(value: f32) -> u32 {
     ranges[rangeBase + 4u] = bitcast<u32>(spacingLng);
     count = coverClampCount(width, height);
   }
-  counts[countsOffset + index] = count;${slabNumbers ? SLAB_PARAMETERS_BODY : ''}`;
+  counts[countsOffset + index] = count;`;
   }
   declarations += `const FEATURE_COUNT: u32 = ${context.featureCount}u;`;
-  if (slabNumbers) {
-    declarations += SLAB_COMMON_WGSL;
-  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: `${context.id}-count`,
     operation: OPERATION,
-    variant: slabNumbers ? 'count-slabs' : 'count',
+    variant: 'count',
     bindings: [
       ...getPolygonBindings(context),
       {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
       {name: 'ranges', view: ranges, type: 'u32', access: 'read_write'},
-      ...(slabNumbers
-        ? [{name: 'slabNumbers', view: slabNumbers, type: 'u32', access: 'read_write'} as const]
-        : []),
-      ...(status.invalidCount
-        ? [
-            {
-              name: 'invalidCount',
-              view: status.invalidCount,
-              type: 'atomic<u32>',
-              access: 'read_write'
-            } as const
-          ]
-        : []),
-      ...(status.uncertainCount
-        ? [
-            {
-              name: 'uncertainCount',
-              view: status.uncertainCount,
-              type: 'atomic<u32>',
-              access: 'read_write'
-            } as const
-          ]
-        : [])
+      ...getCoverStatusBindings(status)
     ],
     invocationCount: context.featureCount + 1,
     declarations,
@@ -521,25 +434,20 @@ export function createCoverTestNode<Parameters>(
     starts: GraphDataView<'uint32'>;
     flags: GraphDataView<'uint32'>;
     candidateCells: GraphDataView<'uint32x2'>;
-    /** Edge-slab index views, present exactly when `context.edgeSlabs` is. */
-    slabOffsets?: GraphDataView<'uint32'>;
-    slabEntries?: GraphDataView<'uint32x2'>;
-    nextVertex?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const {family, resolution, candidateCapacity, edgeSlabs} = context;
   const mode = CELL_COVER_MODE_CODES[context.containment];
-  const slabBindings: WGSLKernelBinding[] =
-    edgeSlabs && views.slabOffsets && views.slabEntries && views.nextVertex
-      ? [
-          {name: 'slabOffsets', view: views.slabOffsets, type: 'u32', access: 'read'},
-          {name: 'slabEntries', view: views.slabEntries, type: 'u32', access: 'read'},
-          {name: 'nextVertex', view: views.nextVertex, type: 'u32', access: 'read'}
-        ]
-      : [];
-  let declarations = `${edgeSlabs ? getSlabQueryWGSL(edgeSlabs.entryCapacity) : POLYGON_WGSL}${getFindFeatureWGSL(context.featureCount)}
+  // Lattice `column` and `row` of the candidate: bounding-box features decode the row-major index,
+  // scanline features look up their run (see cell-cover-scanline.ts).
+  const decodeSource = context.scanline
+    ? getCellCoverScanlineDecodeWGSL(context.featureCount, 'width')
+    : `let column = candidateLocal % width;
+  let row = candidateLocal / width;`;
+  const slabBindings: WGSLKernelBinding[] = edgeSlabs ? getPolygonEdgeSlabBindings(edgeSlabs) : [];
+  let declarations = `${edgeSlabs ? getSlabQueryWGSL(edgeSlabs) : POLYGON_WGSL}${getFindFeatureWGSL(context.featureCount)}
 const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
-const RANGE_STRIDE: u32 = ${CELL_COVER_RANGE_STRIDE}u;
+const RANGE_STRIDE: u32 = ${getRangeStride(context)}u;
 const MODE: u32 = ${mode}u;
 const RESOLUTION: u32 = ${resolution}u;
 const CORE_BIT: u32 = ${CELL_COVER_CORE_BIT}u;
@@ -555,22 +463,25 @@ fn coverTileLatitude(row: f32) -> f32 {
 }
 `;
     evaluation = `let width = ranges[rangeBase + 2u];
-  let x = ranges[rangeBase] + candidateLocal % width;
-  let y = ranges[rangeBase + 1u] + candidateLocal / width;
+  ${decodeSource}
+  let x = ranges[rangeBase] + column;
+  let y = ranges[rangeBase + 1u] + row;
   let lng0 = f32(x) * TILE_WIDTH - 180.0;
   let lng1 = f32(x + 1u) * TILE_WIDTH - 180.0;
   let latNorth = coverTileLatitude(f32(y));
   let latSouth = coverTileLatitude(f32(y + 1u));
   let centre = vec2f((f32(x) + 0.5) * TILE_WIDTH - 180.0, coverTileLatitude(f32(y) + 0.5));
+  // One call site for the exact containment test (see COMMON_WGSL).
+  let centreInside = coverContains(feature, centre);
   var accepted = false;
   if (MODE == 0u) {
-    accepted = coverContains(feature, centre);
+    accepted = centreInside;
   } else {
     let hit = coverEdgesHitRect(feature, vec2f(lng0, latSouth), vec2f(lng1, latNorth));
     if (MODE == 1u) {
-      accepted = !hit && coverContains(feature, centre);
+      accepted = !hit && centreInside;
     } else {
-      accepted = hit || coverContains(feature, centre);
+      accepted = hit || centreInside;
     }
   }
   var key = vec2u(0u);
@@ -580,7 +491,7 @@ fn coverTileLatitude(row: f32) -> f32 {
       context.computeCore
         ? `// Core: the centre is inside and no polygon edge enters the cell grown by a safety margin.
     let slack = vec2f(CORE_MARGIN + 0.001 * (lng1 - lng0));
-    if (coverContains(feature, centre) && !coverEdgesHitRect(feature, vec2f(lng0, latSouth) - slack, vec2f(lng1, latNorth) + slack)) {
+    if (centreInside && !coverEdgesHitRect(feature, vec2f(lng0, latSouth) - slack, vec2f(lng1, latNorth) + slack)) {
       key.x = key.x | CORE_BIT;
     }`
         : ''
@@ -593,8 +504,7 @@ fn coverTileLatitude(row: f32) -> f32 {
   let originLat = bitcast<f32>(ranges[rangeBase + 3u]);
   let spacingLng = bitcast<f32>(ranges[rangeBase + 4u]);
   let spacingLat = ${getWGSLFloatLiteral(CELL_COVER_H3_LATTICE_SPACING_DEGREES[resolution])};
-  let column = candidateLocal % width;
-  let row = candidateLocal / width;
+  ${decodeSource}
   let point = vec2f(originLng + f32(column) * spacingLng, originLat + f32(row) * spacingLat);
   var key = vec2u(0u);
   let cell = cellIndexH3FromLngLat(point, RESOLUTION);
@@ -637,8 +547,8 @@ fn coverTileLatitude(row: f32) -> f32 {
       ...(edgeSlabs
         ? [
             {
-              name: 'polygonPositions',
-              view: context.polygonPositions,
+              name: 'positions',
+              view: context.positions,
               type: 'f32',
               access: 'read'
             } as WGSLKernelBinding
@@ -664,216 +574,6 @@ fn coverTileLatitude(row: f32) -> f32 {
   flags[flagsOffset + index] = select(0u, 1u, accepted);
   candidateCells[candidateCellsOffset + 2u * index] = key.y;
   candidateCells[candidateCellsOffset + 2u * index + 1u] = key.x;`
-  });
-}
-
-/**
- * Writes each slabbed feature's first slab index into the range table and drops the slabs of
- * features that no longer fit the slab capacity (they fall back to the vertex-range walk).
- * @internal
- */
-export function createCoverSlabBasesNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  context: CellCoverKernelContext,
-  views: {ranges: GraphDataView<'uint32'>; slabStarts: GraphDataView<'uint32'>}
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: `${context.id}-slab-bases`,
-    operation: OPERATION,
-    variant: 'slab-bases',
-    bindings: [
-      {name: 'ranges', view: views.ranges, type: 'u32', access: 'read_write'},
-      {name: 'slabStarts', view: views.slabStarts, type: 'u32', access: 'read'}
-    ],
-    invocationCount: context.featureCount,
-    declarations: `const RANGE_STRIDE: u32 = ${CELL_COVER_RANGE_STRIDE}u;
-const SLAB_CAPACITY: u32 = ${context.edgeSlabs!.slabCapacity}u;${SLAB_COMMON_WGSL}`,
-    body: `let rangeBase = rangesOffset + index * RANGE_STRIDE;
-  let base = slabStarts[slabStartsOffset + index];
-  if (ranges[rangeBase + SLAB_COUNT_WORD] != 0u && base + ranges[rangeBase + SLAB_COUNT_WORD] > SLAB_CAPACITY) {
-    ranges[rangeBase + SLAB_COUNT_WORD] = 0u;
-  }
-  ranges[rangeBase + SLAB_BASE_WORD] = base;`
-  });
-}
-
-/**
- * One thread per ring: the feature that owns the ring (`featureOffsets` over `polygonOffsets`
- * over `ringOffsets`, by binary search), or `0xffffffff` for rings outside every feature.
- * @internal
- */
-export function createCoverRingFeatureNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  context: CellCoverKernelContext,
-  ringFeature: GraphDataView<'uint32'>
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: `${context.id}-ring-feature`,
-    operation: OPERATION,
-    variant: 'ring-feature',
-    bindings: [
-      {name: 'featureOffsets', view: context.featureOffsets, type: 'u32', access: 'read'},
-      {name: 'polygonOffsets', view: context.polygonOffsets, type: 'u32', access: 'read'},
-      {name: 'ringFeature', view: ringFeature, type: 'u32', access: 'read_write'}
-    ],
-    invocationCount: context.ringOffsets.length - 1,
-    declarations: `const FEATURE_COUNT: u32 = ${context.featureCount}u;
-const POLYGON_COUNT: u32 = ${context.polygonOffsets.length - 1}u;
-const NO_FEATURE: u32 = 0xffffffffu;`,
-    body: `var polygon = 0u;
-  var high = POLYGON_COUNT;
-  while (polygon + 1u < high) {
-    let middle = (polygon + high) / 2u;
-    if (polygonOffsets[polygonOffsetsOffset + middle] <= index) {
-      polygon = middle;
-    } else {
-      high = middle;
-    }
-  }
-  var feature = NO_FEATURE;
-  if (POLYGON_COUNT > 0u && index >= polygonOffsets[polygonOffsetsOffset + polygon] &&
-      index < polygonOffsets[polygonOffsetsOffset + polygon + 1u]) {
-    var low = 0u;
-    high = FEATURE_COUNT;
-    while (low + 1u < high) {
-      let middle = (low + high) / 2u;
-      if (featureOffsets[featureOffsetsOffset + middle] <= polygon) {
-        low = middle;
-      } else {
-        high = middle;
-      }
-    }
-    if (polygon >= featureOffsets[featureOffsetsOffset + low] &&
-        polygon < featureOffsets[featureOffsetsOffset + low + 1u]) {
-      feature = low;
-    }
-  }
-  ringFeature[ringFeatureOffset + index] = feature;`
-  });
-}
-
-/**
- * Vertex-parallel edge-slab construction. With `phase: 'count'` every edge of a slabbed feature
- * adds one to each slab it spans (and the kernel writes `nextVertex` and `vertexFeature`); with
- * `phase: 'fill'` each edge claims a position in every slab it spans through a per-slab cursor and
- * stores its two vertices. Entries within a slab are unordered, which does not matter: every
- * predicate over them is a parity or an any-hit test. @internal
- */
-export function createCoverSlabEdgesNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  context: CellCoverKernelContext,
-  phase: 'count' | 'fill',
-  views: {
-    ranges: GraphDataView<'uint32'>;
-    nextVertex: GraphDataView<'uint32'>;
-    vertexFeature: GraphDataView<'uint32'>;
-    /** `'count'`: ring owner per ring. */
-    ringFeature?: GraphDataView<'uint32'>;
-    /** Per-slab counters (`'count'`) or cursors (`'fill'`), zero on entry. */
-    slabCounters: GraphDataView<'uint32'>;
-    /** `'fill'`: exclusive scan of the final per-slab counts. */
-    slabOffsets?: GraphDataView<'uint32'>;
-    /** `'fill'`: (first vertex, second vertex) per entry. */
-    slabEntries?: GraphDataView<'uint32x2'>;
-  }
-): GPUCommandNode<Parameters> {
-  const isCount = phase === 'count';
-  const edgeSlabs = context.edgeSlabs!;
-  const declarations = `${COMMON_WGSL}${SLAB_COMMON_WGSL}
-const RANGE_STRIDE: u32 = ${CELL_COVER_RANGE_STRIDE}u;
-const RING_COUNT: u32 = ${context.ringOffsets.length - 1}u;
-const ENTRY_CAPACITY: u32 = ${edgeSlabs.entryCapacity}u;
-
-/** Slab range [first, last] of the edge a-b and the feature's first slab index. */
-fn coverGetEdgeSlabs(rangeBase: u32, a: vec2f, b: vec2f) -> vec2u {
-  let slabCount = ranges[rangeBase + SLAB_COUNT_WORD];
-  let origin = bitcast<f32>(ranges[rangeBase + SLAB_ORIGIN_WORD]);
-  let scale = bitcast<f32>(ranges[rangeBase + SLAB_SCALE_WORD]);
-  return vec2u(
-    coverSlabOf(min(a.y, b.y), slabCount, origin, scale),
-    coverSlabOf(max(a.y, b.y), slabCount, origin, scale)
-  );
-}`;
-  const body = isCount
-    ? `var ring = 0u;
-  var high = RING_COUNT;
-  while (ring + 1u < high) {
-    let middle = (ring + high) / 2u;
-    if (ringOffsets[ringOffsetsOffset + middle] <= index) {
-      ring = middle;
-    } else {
-      high = middle;
-    }
-  }
-  let ringBegin = ringOffsets[ringOffsetsOffset + ring];
-  let ringEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
-  var feature = NO_VERTEX;
-  var next = NO_VERTEX;
-  if (index >= ringBegin && index < ringEnd) {
-    feature = ringFeature[ringFeatureOffset + ring];
-    if (feature != NO_VERTEX) {
-      next = select(index + 1u, ringBegin, index + 1u == ringEnd);
-    }
-  }
-  nextVertex[nextVertexOffset + index] = next;
-  vertexFeature[vertexFeatureOffset + index] = select(NO_VERTEX, feature, next != NO_VERTEX);
-  if (next == NO_VERTEX) { return; }
-  let rangeBase = rangesOffset + feature * RANGE_STRIDE;
-  if (ranges[rangeBase + SLAB_COUNT_WORD] == 0u) { return; }
-  let slabs = coverGetEdgeSlabs(rangeBase, coverGetVertex(index), coverGetVertex(next));
-  let base = ranges[rangeBase + SLAB_BASE_WORD];
-  for (var slab = slabs.x; slab <= slabs.y; slab++) {
-    atomicAdd(&slabCounters[slabCountersOffset + base + slab], 1u);
-  }`
-    : `let feature = vertexFeature[vertexFeatureOffset + index];
-  if (feature == NO_VERTEX) { return; }
-  let rangeBase = rangesOffset + feature * RANGE_STRIDE;
-  if (ranges[rangeBase + SLAB_COUNT_WORD] == 0u) { return; }
-  let next = nextVertex[nextVertexOffset + index];
-  let slabs = coverGetEdgeSlabs(rangeBase, coverGetVertex(index), coverGetVertex(next));
-  let base = ranges[rangeBase + SLAB_BASE_WORD];
-  for (var slab = slabs.x; slab <= slabs.y; slab++) {
-    let slabIndex = base + slab;
-    let position = slabOffsets[slabOffsetsOffset + slabIndex] +
-      atomicAdd(&slabCounters[slabCountersOffset + slabIndex], 1u);
-    if (position < ENTRY_CAPACITY) {
-      slabEntries[slabEntriesOffset + 2u * position] = index;
-      slabEntries[slabEntriesOffset + 2u * position + 1u] = next;
-    }
-  }`;
-  const bindings: WGSLKernelBinding[] = [
-    {name: 'polygonPositions', view: context.polygonPositions, type: 'f32', access: 'read'},
-    {name: 'ranges', view: views.ranges, type: 'u32', access: 'read'}
-  ];
-  if (isCount) {
-    bindings.push(
-      {name: 'ringOffsets', view: context.ringOffsets, type: 'u32', access: 'read'},
-      {name: 'ringFeature', view: views.ringFeature!, type: 'u32', access: 'read'},
-      {name: 'nextVertex', view: views.nextVertex, type: 'u32', access: 'read_write'},
-      {name: 'vertexFeature', view: views.vertexFeature, type: 'u32', access: 'read_write'}
-    );
-  } else {
-    bindings.push(
-      {name: 'vertexFeature', view: views.vertexFeature, type: 'u32', access: 'read'},
-      {name: 'nextVertex', view: views.nextVertex, type: 'u32', access: 'read'},
-      {name: 'slabOffsets', view: views.slabOffsets!, type: 'u32', access: 'read'},
-      {name: 'slabEntries', view: views.slabEntries!, type: 'u32', access: 'read_write'}
-    );
-  }
-  bindings.push({
-    name: 'slabCounters',
-    view: views.slabCounters,
-    type: 'atomic<u32>',
-    access: 'read_write'
-  });
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: `${context.id}-slab-edges-${phase}`,
-    operation: OPERATION,
-    variant: `slab-edges-${phase}`,
-    bindings,
-    invocationCount: context.polygonPositions.length,
-    declarations,
-    body
   });
 }
 
@@ -932,7 +632,7 @@ const CORE_BIT: u32 = ${CELL_COVER_CORE_BIT}u;`,
   });
 }
 
-/** Writes the unclamped accepted total and the candidate overflow flag. @internal */
+/** Writes the unclamped accepted total, the candidate overflow flag and the optional candidate count. @internal */
 export function createCoverFinalizeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   context: CellCoverKernelContext,
@@ -941,6 +641,7 @@ export function createCoverFinalizeNode<Parameters>(
     accepted: GraphDataView<'uint32'>;
     total: GraphDataView<'uint32'>;
     candidateOverflow: GraphDataView<'uint32'>;
+    candidateCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -951,13 +652,24 @@ export function createCoverFinalizeNode<Parameters>(
       {name: 'starts', view: views.starts, type: 'u32', access: 'read'},
       {name: 'accepted', view: views.accepted, type: 'u32', access: 'read'},
       {name: 'total', view: views.total, type: 'u32', access: 'read_write'},
-      {name: 'candidateOverflow', view: views.candidateOverflow, type: 'u32', access: 'read_write'}
+      {name: 'candidateOverflow', view: views.candidateOverflow, type: 'u32', access: 'read_write'},
+      ...(views.candidateCount
+        ? [
+            {
+              name: 'candidateCount',
+              view: views.candidateCount,
+              type: 'u32',
+              access: 'read_write'
+            } as WGSLKernelBinding
+          ]
+        : [])
     ],
     invocationCount: 1,
     declarations: `const FEATURE_COUNT: u32 = ${context.featureCount}u;
 const CANDIDATE_CAPACITY: u32 = ${context.candidateCapacity}u;`,
     body: `total[totalOffset] = accepted[acceptedOffset + CANDIDATE_CAPACITY - 1u];
   candidateOverflow[candidateOverflowOffset] =
-    select(0u, 1u, starts[startsOffset + FEATURE_COUNT] > CANDIDATE_CAPACITY);`
+    select(0u, 1u, starts[startsOffset + FEATURE_COUNT] > CANDIDATE_CAPACITY);
+  ${views.candidateCount ? 'candidateCount[candidateCountOffset] = starts[startsOffset + FEATURE_COUNT];' : ''}`
   });
 }

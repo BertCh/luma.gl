@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-algebra/raster-algebra-utils';
+import {validateParameterTarget} from '../raster-band-utils';
 
 /** float32 elements in a {@link GPURasterStretch} parameter view. */
 export const GPU_RASTER_STRETCH_PARAMETER_LENGTH = 16;
@@ -14,14 +14,14 @@ export const GPU_RASTER_STRETCH_MAXIMUM_EXTENT = 1 << 24;
 export const GPU_RASTER_STRETCH_STATISTICS_LENGTH = 8;
 
 /**
- * Row indices of the `statistics` output: `[domainMin, domainMax, lo, hi, validCount, binWidth, 0, 0]`.
+ * Row indices of the `statistics` output: `[domainMinimum, domainMaximum, lo, hi, validCount, binWidth, 0, 0]`.
  *
- * With an automatic domain and no included cell, `domainMin`, `domainMax`, `lo`, `hi` and
+ * With an automatic domain and no included cell, `domainMinimum`, `domainMaximum`, `lo`, `hi` and
  * `binWidth` are NaN and `validCount` is 0. `validCount` is float32, so it is exact up to 2^24.
  */
 export const GPU_RASTER_STRETCH_STATISTICS_INDEX = {
-  domainMin: 0,
-  domainMax: 1,
+  domainMinimum: 0,
+  domainMaximum: 1,
   lo: 2,
   hi: 3,
   validCount: 4,
@@ -51,7 +51,11 @@ export type GPURasterStretchSettings = {
   mode?: GPURasterStretchMode;
   /** Percentile mode: `[low, high]` in percent, `0 <= low <= high <= 100`. Defaults to `[2, 98]`. */
   percentiles?: readonly [number, number];
-  /** Applies `t' = t ** gamma` after the mode. Positive, defaults to 1. */
+  /**
+   * Display gamma: applies `t' = t ** (1 / gamma)` after the mode, as rio-color and GIMP levels do,
+   * so `gamma > 1` brightens and `gamma < 1` darkens. Finite and positive, defaults to 1. GDAL has
+   * no gamma; its `-exponent e` (`gdal_translate`, VRT) is `t ** e`, so it equals `gamma: 1 / e`.
+   */
   gamma?: number;
   /**
    * Sigmoidal contrast (rio-color / ImageMagick style) applied after gamma, normalised so 0 maps to
@@ -66,7 +70,7 @@ export type GPURasterStretchSettings = {
 
 function getWindowValue(value: number, name: string): number {
   if (!Number.isFinite(value)) {
-    throw new Error(`Raster stretch window ${name} must be finite`);
+    throw new Error(`getGPURasterStretchParameterValues window ${name} must be finite`);
   }
   return Math.min(Math.max(Math.floor(value), 0), GPU_RASTER_STRETCH_MAXIMUM_EXTENT);
 }
@@ -74,7 +78,7 @@ function getWindowValue(value: number, name: string): number {
 /**
  * Packs per-frame {@link GPURasterStretch} parameters.
  *
- * Layout (float32): `[column0, row0, column1, row1, explicitDomain, domainMin, domainMax, mode,
+ * Layout (float32): `[column0, row0, column1, row1, explicitDomain, domainMinimum, domainMaximum, mode,
  * percentileLow, percentileHigh, gamma, sigmoidContrast, sigmoidMidpoint, linearPalette, 0, 0]`
  * with `mode` 0 (linear), 1 (percentile), 2 (equalize) and percentiles as fractions. Window values
  * are floored and clamped to `[0, 2^24]` (the kernel clamps them to the raster).
@@ -87,7 +91,11 @@ export function getGPURasterStretchParameterValues(
   settings: GPURasterStretchSettings = {},
   target: Float32Array = new Float32Array(GPU_RASTER_STRETCH_PARAMETER_LENGTH)
 ): Float32Array {
-  validateParameterTarget('Raster stretch', target, GPU_RASTER_STRETCH_PARAMETER_LENGTH);
+  validateParameterTarget(
+    'getGPURasterStretchParameterValues',
+    target,
+    GPU_RASTER_STRETCH_PARAMETER_LENGTH
+  );
   target.fill(0, 0, GPU_RASTER_STRETCH_PARAMETER_LENGTH);
   const window = settings.window ?? [
     0,
@@ -103,10 +111,10 @@ export function getGPURasterStretchParameterValues(
   if (domain !== 'auto') {
     const [minimum, maximum] = domain;
     if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum > maximum) {
-      throw new Error('Raster stretch domain must be finite with min <= max');
+      throw new Error('getGPURasterStretchParameterValues domain must be finite with min <= max');
     }
     if (!Number.isFinite(Math.fround(maximum - minimum)) && Number.isFinite(maximum - minimum)) {
-      throw new Error('Raster stretch domain range must fit in float32');
+      throw new Error('getGPURasterStretchParameterValues domain range must fit in float32');
     }
     target[4] = 1;
     target[5] = minimum;
@@ -114,7 +122,7 @@ export function getGPURasterStretchParameterValues(
   }
   const mode = settings.mode ?? 'linear';
   if (mode !== 'linear' && mode !== 'percentile' && mode !== 'equalize') {
-    throw new Error(`Raster stretch mode ${String(mode)} is not supported`);
+    throw new Error(`getGPURasterStretchParameterValues mode ${String(mode)} is not supported`);
   }
   target[7] = mode === 'linear' ? 0 : mode === 'percentile' ? 1 : 2;
   const [percentileLow, percentileHigh] = settings.percentiles ?? [2, 98];
@@ -125,29 +133,31 @@ export function getGPURasterStretchParameterValues(
     percentileHigh > 100 ||
     percentileLow > percentileHigh
   ) {
-    throw new Error('Raster stretch percentiles must satisfy 0 <= low <= high <= 100');
+    throw new Error(
+      'getGPURasterStretchParameterValues percentiles must satisfy 0 <= low <= high <= 100'
+    );
   }
   target[8] = percentileLow / 100;
   target[9] = percentileHigh / 100;
   const gamma = settings.gamma ?? 1;
   if (!Number.isFinite(gamma) || gamma <= 0) {
-    throw new Error('Raster stretch gamma must be positive and finite');
+    throw new Error('getGPURasterStretchParameterValues gamma must be positive and finite');
   }
   target[10] = gamma;
   const contrast = settings.sigmoidContrast ?? 0;
   if (!Number.isFinite(contrast) || contrast < 0 || contrast > 80) {
-    throw new Error('Raster stretch sigmoidContrast must be in [0, 80]');
+    throw new Error('getGPURasterStretchParameterValues sigmoidContrast must be in [0, 80]');
   }
   target[11] = contrast;
   const midpoint = settings.sigmoidMidpoint ?? 0.5;
   if (!Number.isFinite(midpoint) || midpoint <= 0 || midpoint >= 1) {
-    throw new Error('Raster stretch sigmoidMidpoint must be in (0, 1)');
+    throw new Error('getGPURasterStretchParameterValues sigmoidMidpoint must be in (0, 1)');
   }
   target[12] = midpoint;
   const interpolation = settings.paletteInterpolation ?? 'nearest';
   if (interpolation !== 'nearest' && interpolation !== 'linear') {
     throw new Error(
-      `Raster stretch paletteInterpolation ${String(interpolation)} is not supported`
+      `getGPURasterStretchParameterValues paletteInterpolation ${String(interpolation)} is not supported`
     );
   }
   target[13] = interpolation === 'linear' ? 1 : 0;

@@ -8,36 +8,49 @@ export {
   getGPUTerrainDerivativesParameterValues
 } from './gpu-terrain-derivatives';
 export type {
-  GPUTerrainCellSizeMode,
+  GPUTerrainDerivativesOutput,
   GPUTerrainDerivativesProps,
   GPUTerrainDerivativesSettings,
   GPUTerrainSlopeUnits
 } from './gpu-terrain-derivatives';
 export {GPUTerrainContours} from './gpu-terrain-contours';
-export type {GPUTerrainContourLevel, GPUTerrainContoursProps} from './gpu-terrain-contours';
+export type {
+  GPUTerrainContourLevel,
+  GPUTerrainContoursOutput,
+  GPUTerrainContoursProps,
+  GPUTerrainContoursStatus
+} from './gpu-terrain-contours';
 export {
   getGPUTerrainCurvatureCoefficient,
   GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH,
   GPU_TERRAIN_VISIBILITY,
-  GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH,
+  GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH,
   GPUTerrainViewshed,
   getGPUTerrainViewshedParameterValues,
-  getGPUTerrainVisibilityToleranceParameterValues
+  getGPUTerrainViewshedToleranceParameterValues
 } from './gpu-terrain-viewshed';
 export type {
+  GPUTerrainViewshedOutput,
   GPUTerrainViewshedProps,
   GPUTerrainViewshedSettings,
-  GPUTerrainVisibilityToleranceSettings
+  GPUTerrainViewshedToleranceSettings
 } from './gpu-terrain-viewshed';
 export type {GPUTerrainSightLineTraversal} from './terrain-sight-line';
 export {
-  GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH,
+  GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH,
   GPUTerrainLineOfSight,
-  getGPUTerrainSightLineParameterValues
+  getGPUTerrainLineOfSightParameterValues
 } from './gpu-terrain-line-of-sight';
 export type {
+  GPUTerrainLineOfSightOutput,
   GPUTerrainLineOfSightProps,
-  GPUTerrainSightLineSettings
+  GPUTerrainLineOfSightSettings
 } from './gpu-terrain-line-of-sight';
-export {GPUTerrainCumulativeViewshed} from './gpu-terrain-cumulative-viewshed';
-export type {GPUTerrainCumulativeViewshedProps} from './gpu-terrain-cumulative-viewshed';
+export {
+  GPUTerrainCumulativeViewshed,
+  GPU_TERRAIN_CUMULATIVE_VIEWSHED_SAMPLES_PER_DISPATCH
+} from './gpu-terrain-cumulative-viewshed';
+export type {
+  GPUTerrainCumulativeViewshedOutput,
+  GPUTerrainCumulativeViewshedProps
+} from './gpu-terrain-cumulative-viewshed';

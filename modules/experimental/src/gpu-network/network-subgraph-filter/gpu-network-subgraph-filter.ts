@@ -5,7 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,11 +18,21 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validatePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
+import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
+import {
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology
+} from '../../analysis-core/network-topology';
 import {TIME_WORDS_WGSL} from '../../gpu-dataframe/time-window-filter/time-words';
+import {
+  getWorkgroupCounterKernelSource,
+  WORKGROUP_COUNTER_WORKGROUP_SIZE
+} from '../network-workgroup-counters';
 import {
   getGPUNetworkSubgraphFilterParameterLength,
   GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH,
@@ -31,63 +40,68 @@ import {
   GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE
 } from './network-subgraph-filter-parameters';
 
-/** Number of words of the `timeWordParameters` view, see `getGPUTimeWindowWordParameterValues`. */
+/** Number of words of the `uint32Parameters` view, see `getGPUTimeWindowFilterWordParameterValues`. */
 const TIME_WORD_PARAMETER_LENGTH = 8;
 /** Columns per kernel: the 8-storage-binding limit minus the mask and the parameter view. */
 const COLUMNS_PER_KERNEL = 6;
 const OPERATION = 'GPUNetworkSubgraphFilter';
 
 /**
- * Plain caller-owned induced CSR over the original vertex ids.
+ * Plain caller-owned induced CSR over the original node ids.
  *
- * Row `v` of `offsets`/`neighbors` holds the live slots of vertex `v` in their original order;
- * dead vertices and dead slots have no entries. `offsets` is exact (`nodeCount + 1` rows) even when
- * `neighbors` overflows. Bind the views to another contributor as its forward CSR.
+ * Row `v` of `offsets`/`neighbors` holds the live slots of node `v` in their original order;
+ * dead nodes and dead slots have no entries. `offsets` is exact (`nodeCount + 1` rows) even when
+ * `neighbors` overflows. Bind `offsets` and `neighbors` to another contributor's `topology`.
  */
-export type GPUNetworkSubgraphFilterInducedCSR = {
+export type GPUNetworkSubgraphFilterInducedTopology = {
   /** `nodeCount + 1` rows. Row `nodeCount` is the live slot total. */
   offsets: GraphDataView<'uint32'>;
-  /** Capacity for the live slots; at most `neighbors.length` are written. */
+  /**
+   * Capacity for the live slots; at most `neighbors.length` are written. Rows past the live slot
+   * total hold `0xffffffff`.
+   */
   neighbors: GraphDataView<'uint32'>;
-  /** Optional original CSR slot id of every induced slot, aligned with `neighbors`. */
+  /** Optional original CSR slot id of every induced slot, aligned with `neighbors` (`0xffffffff` past the live total). */
   sourceSlots?: GraphDataView<'uint32'>;
-  /** One row receiving 1 when the live slot total exceeds `neighbors.length`, else 0. */
-  overflow: GraphDataView<'uint32'>;
+  /** GPU-written status words. */
+  status: {
+    /** One row receiving 1 when the live slot total exceeds `neighbors.length`, else 0. */
+    overflow: GraphDataView<'uint32'>;
+  };
 };
 
 /** Caller-owned outputs of {@link GPUNetworkSubgraphFilter}. */
 export type GPUNetworkSubgraphFilterOutput = {
-  /** One `uint32` per vertex: 1 live, 0 dead. Feeds `GPUNetworkStatistics.vertexMask` and `filterMask`. */
-  vertexMask: GraphDataView<'uint32'>;
+  /** One `uint32` per node: 1 live, 0 dead. Feeds `GPUNetworkStatistics.nodeMask` and `filterMask`. */
+  nodeMask: GraphDataView<'uint32'>;
   /** One `uint32` per CSR slot: 1 live, 0 dead. Feeds `GPUNetworkStatistics.edgeMask` and `filterMask`. */
   edgeMask: GraphDataView<'uint32'>;
   /** Optional four-word counts, see {@link GPU_NETWORK_SUBGRAPH_FILTER_COUNT_WORD}. */
   counts?: GraphDataView<'uint32'>;
-  /** Optional compact live vertex ids in ascending order, for indirect draws. */
-  liveVertices?: GPUCompactOutput;
+  /** Optional compact live node ids in ascending order, for indirect draws. */
+  liveNodes?: GPUCompactOutput;
   /** Optional compact live CSR slot ids in ascending order, for indirect draws. */
   liveEdgeSlots?: GPUCompactOutput;
   /** Optional compacted induced CSR. */
-  inducedCSR?: GPUNetworkSubgraphFilterInducedCSR;
+  inducedTopology?: GPUNetworkSubgraphFilterInducedTopology;
 };
 
 /**
  * Properties for {@link GPUNetworkSubgraphFilter}.
  *
  * Compile-time: node count, `directed`, `dropIsolated`, the number of columns, which optional views
- * exist and the output capacities. Per-frame: every range in `parameters`, the time-word window, the
+ * exist and the output capacities. Per-frame: every range in `parameters`, `uint32Parameters`, the
  * column, CSR and mask contents.
  */
 export type GPUNetworkSubgraphFilterProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'network-subgraph-filter'`. */
   id?: string;
-  /** Forward CSR row offsets with `nodeCount + 1` rows. */
-  offsets: GraphDataView<'uint32'>;
   /**
-   * Forward CSR destination per slot. Indices `>= nodeCount` are dead slots. Undirected graphs list
-   * each edge in both directions (a self-loop once), like `GPUNetworkStatistics`.
+   * Forward CSR network; `weights` are not read. Neighbor indices `>= nodeCount` are dead slots.
+   * Undirected graphs list each edge in both directions (a self-loop once), like
+   * `GPUNetworkStatistics`.
    */
-  neighbors: GraphDataView<'uint32'>;
+  topology: GPUNetworkAdjacency;
   /**
    * Treat slots as directed edges. Undirected (default) graphs list each edge in both slots; this
    * affects `counts.liveEdgeCount` and `pairUndirectedSlots`.
@@ -102,12 +116,12 @@ export type GPUNetworkSubgraphFilterProps = {
    * columns are already symmetric pass false to skip it. Ignored when `directed`.
    */
   pairUndirectedSlots?: boolean;
-  /** Optional caller vertex mask, nonzero = live, ANDed with the vertex predicates. */
-  vertexMask?: GraphDataView<'uint32'>;
+  /** Optional caller node mask, nonzero = live, ANDed with the node predicates. */
+  nodeMask?: GraphDataView<'uint32'>;
   /** Optional caller per-slot mask, nonzero = live, ANDed with the edge predicates. */
   edgeMask?: GraphDataView<'uint32'>;
-  /** Float32 vertex columns, one row per vertex. At most 64 together with the edge columns. */
-  vertexColumns?: readonly GraphDataView<'float32'>[];
+  /** Float32 node columns, one row per node. At most 64 together with the edge columns. */
+  nodeColumns?: readonly GraphDataView<'float32'>[];
   /** Float32 edge columns, one row per CSR slot. */
   edgeColumns?: readonly GraphDataView<'float32'>[];
   /** Optional float32 time per CSR slot, gated by the closed `edgeTimeWindow` record. */
@@ -115,18 +129,18 @@ export type GPUNetworkSubgraphFilterProps = {
   /** Optional exact Int64 time per CSR slot as `uint32x2` `(low, high)` words. */
   edgeTimeWords?: GraphDataView<'uint32x2'>;
   /**
-   * Per-frame `float32` ranges, required with any vertex column, edge column or `edgeTimes`; see
+   * Per-frame `float32` ranges, required with any node column, edge column or `edgeTimes`; see
    * {@link getGPUNetworkSubgraphFilterParameterValues} for the layout and range rules.
    */
   parameters?: GraphDataView<'float32'>;
   /**
    * Per-frame closed window over `edgeTimeWords`, eight `uint32` words packed by
-   * `getGPUTimeWindowWordParameterValues`. Required with `edgeTimeWords`.
+   * `getGPUTimeWindowFilterWordParameterValues`. Required with `edgeTimeWords`.
    */
-  timeWordParameters?: GraphDataView<'uint32'>;
+  uint32Parameters?: GraphDataView<'uint32'>;
   /**
-   * Also kill vertices left with no live incident slot (in or out, a self-loop counts), judged
-   * after the edge predicates and endpoint rule. Vertices that were already dead stay dead. Default
+   * Also kill nodes left with no live incident slot (in or out, a self-loop counts), judged
+   * after the edge predicates and endpoint rule. Nodes that were already dead stay dead. Default
    * false.
    */
   dropIsolated?: boolean;
@@ -135,9 +149,9 @@ export type GPUNetworkSubgraphFilterProps = {
 };
 
 /**
- * Turns attribute and time predicates on vertex and edge rows into a consistent induced subgraph.
+ * Turns attribute and time predicates on node and edge rows into a consistent induced subgraph.
  *
- * Vertex `v` is live when its caller mask (if any) is nonzero and every enabled vertex range
+ * Node `v` is live when its caller mask (if any) is nonzero and every enabled node range
  * accepts its column value. Slot `u -> v` is live when its caller mask (if any) is nonzero, every
  * enabled edge range and time gate accepts it, `v < nodeCount`, and both `u` and `v` are live. With
  * `dropIsolated`, vertices with no live incident slot are then killed; this never kills a live
@@ -146,11 +160,11 @@ export type GPUNetworkSubgraphFilterProps = {
  *
  * Undirected graphs list each edge in both slots and, by default, an edge is live only if both slots
  * pass (see `pairUndirectedSlots`), so `edgeMask` is always symmetric. With pairing off, slots agree
- * only if the caller's columns and masks do. The vertex rule is symmetric by construction.
+ * only if the caller's columns and masks do. The node rule is symmetric by construction.
  *
  * Ranges live in a float32 `parameters` view and never recompile (see
  * {@link getGPUNetworkSubgraphFilterParameterValues}); all arithmetic is integer or comparison, so
- * results are exact and deterministic. Optional outputs: counts, compact live vertex and slot ids
+ * results are exact and deterministic. Optional outputs: counts, compact live node and slot ids
  * (stable ascending, via `GPUScan`), and an induced CSR from the same prefix sum over the live-slot mask.
  *
  * Add the contributor to one graph at a time. It owns no GPU resources.
@@ -160,42 +174,38 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkSubgraphFilterProps;
-  /** Number of nodes, `offsets.length - 1`. */
+  /** Number of nodes, `topology.offsets.length - 1`. */
   readonly nodeCount: number;
-  /** Number of CSR slots, `neighbors.length`. */
+  /** Number of CSR slots, `topology.neighbors.length`. */
   readonly slotCount: number;
 
   constructor(props: GPUNetworkSubgraphFilterProps) {
     this.id = props.id ?? 'network-subgraph-filter';
     this.props = props;
     const {id} = this;
-    validatePackedView(props.offsets, ['uint32'], `${id} offsets`);
-    validatePackedView(props.neighbors, ['uint32'], `${id} neighbors`);
-    this.nodeCount = props.offsets.length - 1;
-    this.slotCount = props.neighbors.length;
+    const shape = validateGPUNetworkTopology(id, props.topology);
+    this.nodeCount = shape.nodeCount;
+    this.slotCount = shape.edgeCount;
     const {nodeCount, slotCount} = this;
-    if (nodeCount < 1) {
-      throw new Error(`${id} offsets must contain at least two rows`);
-    }
     if (slotCount < 1) {
-      throw new Error(`${id} neighbors must contain at least one row`);
+      throw new Error(`${id} topology.neighbors must contain at least one row`);
     }
-    const vertexColumns = props.vertexColumns ?? [];
+    const vertexColumns = props.nodeColumns ?? [];
     const edgeColumns = props.edgeColumns ?? [];
     if (vertexColumns.length + edgeColumns.length > 64) {
       throw new Error(`${id} supports at most 64 columns`);
     }
     const lengthChecks: [string, GraphDataView | undefined, number, string][] = [
-      ['vertexMask', props.vertexMask, nodeCount, 'node'],
+      ['nodeMask', props.nodeMask, nodeCount, 'node'],
       ['edgeMask', props.edgeMask, slotCount, 'neighbor slot'],
       ['edgeTimes', props.edgeTimes, slotCount, 'neighbor slot'],
       ['edgeTimeWords', props.edgeTimeWords, slotCount, 'neighbor slot'],
-      ['output.vertexMask', props.output.vertexMask, nodeCount, 'node'],
+      ['output.nodeMask', props.output.nodeMask, nodeCount, 'node'],
       ['output.edgeMask', props.output.edgeMask, slotCount, 'neighbor slot']
     ];
     for (const [index, column] of vertexColumns.entries()) {
-      validatePackedView(column, ['float32'], `${id} vertexColumns[${index}]`);
-      lengthChecks.push([`vertexColumns[${index}]`, column, nodeCount, 'node']);
+      validatePackedView(column, ['float32'], `${id} nodeColumns[${index}]`);
+      lengthChecks.push([`nodeColumns[${index}]`, column, nodeCount, 'node']);
     }
     for (const [index, column] of edgeColumns.entries()) {
       validatePackedView(column, ['float32'], `${id} edgeColumns[${index}]`);
@@ -207,7 +217,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
         validatePackedView(view, ['uint32x2'], `${id} ${name}`);
       } else if (name === 'edgeTimes') {
         validatePackedView(view, ['float32'], `${id} ${name}`);
-      } else if (!name.startsWith('vertexColumns') && !name.startsWith('edgeColumns')) {
+      } else if (!name.startsWith('nodeColumns') && !name.startsWith('edgeColumns')) {
         validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
       if (view.length !== length) {
@@ -215,7 +225,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       }
     }
     const parameterLength = getGPUNetworkSubgraphFilterParameterLength({
-      vertexColumnCount: vertexColumns.length,
+      nodeColumnCount: vertexColumns.length,
       edgeColumnCount: edgeColumns.length,
       hasEdgeTimes: Boolean(props.edgeTimes)
     });
@@ -229,12 +239,12 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       }
     }
     if (props.edgeTimeWords) {
-      if (!props.timeWordParameters) {
-        throw new Error(`${id} timeWordParameters are required with edgeTimeWords`);
+      if (!props.uint32Parameters) {
+        throw new Error(`${id} uint32Parameters are required with edgeTimeWords`);
       }
-      validatePackedView(props.timeWordParameters, ['uint32'], `${id} timeWordParameters`);
-      if (props.timeWordParameters.length < TIME_WORD_PARAMETER_LENGTH) {
-        throw new Error(`${id} timeWordParameters must contain at least 8 uint32 rows`);
+      validatePackedView(props.uint32Parameters, ['uint32'], `${id} uint32Parameters`);
+      if (props.uint32Parameters.length < TIME_WORD_PARAMETER_LENGTH) {
+        throw new Error(`${id} uint32Parameters must contain at least 8 uint32 rows`);
       }
     }
     const {output} = props;
@@ -245,28 +255,34 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       }
     }
     for (const [name, compact] of [
-      ['liveVertices', output.liveVertices],
+      ['liveNodes', output.liveNodes],
       ['liveEdgeSlots', output.liveEdgeSlots]
     ] as const) {
       if (compact) {
         validateCompactOutput(`${id} output.${name}`, compact);
       }
     }
-    const csr = output.inducedCSR;
+    const csr = output.inducedTopology;
     if (csr) {
-      validatePackedView(csr.offsets, ['uint32'], `${id} output.inducedCSR.offsets`);
-      validatePackedView(csr.neighbors, ['uint32'], `${id} output.inducedCSR.neighbors`);
-      validatePackedView(csr.overflow, ['uint32'], `${id} output.inducedCSR.overflow`);
+      validatePackedView(csr.offsets, ['uint32'], `${id} output.inducedTopology.offsets`);
+      validatePackedView(csr.neighbors, ['uint32'], `${id} output.inducedTopology.neighbors`);
+      validatePackedView(
+        csr.status.overflow,
+        ['uint32'],
+        `${id} output.inducedTopology.status.overflow`
+      );
       if (csr.offsets.length !== nodeCount + 1) {
-        throw new Error(`${id} output.inducedCSR.offsets must contain nodeCount + 1 rows`);
+        throw new Error(`${id} output.inducedTopology.offsets must contain nodeCount + 1 rows`);
       }
-      if (csr.overflow.length < 1) {
-        throw new Error(`${id} output.inducedCSR.overflow must contain one uint32 row`);
+      if (csr.status.overflow.length < 1) {
+        throw new Error(`${id} output.inducedTopology.status.overflow must contain one uint32 row`);
       }
       if (csr.sourceSlots) {
-        validatePackedView(csr.sourceSlots, ['uint32'], `${id} output.inducedCSR.sourceSlots`);
+        validatePackedView(csr.sourceSlots, ['uint32'], `${id} output.inducedTopology.sourceSlots`);
         if (csr.sourceSlots.length !== csr.neighbors.length) {
-          throw new Error(`${id} output.inducedCSR.sourceSlots must match neighbors in length`);
+          throw new Error(
+            `${id} output.inducedTopology.sourceSlots must match neighbors in length`
+          );
         }
       }
     }
@@ -276,37 +292,36 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
   private getInputViews(): (GraphDataView | undefined)[] {
     const {props} = this;
     return [
-      props.offsets,
-      props.neighbors,
-      props.vertexMask,
+      ...getGPUNetworkTopologyViews(props.topology),
+      props.nodeMask,
       props.edgeMask,
-      ...(props.vertexColumns ?? []),
+      ...(props.nodeColumns ?? []),
       ...(props.edgeColumns ?? []),
       props.edgeTimes,
       props.edgeTimeWords,
       props.parameters,
-      props.timeWordParameters
+      props.uint32Parameters
     ];
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
     const {output} = this.props;
     return [
-      output.vertexMask,
+      output.nodeMask,
       output.edgeMask,
       output.counts,
-      output.liveVertices?.ids,
-      output.liveVertices?.count,
-      output.liveVertices?.overflow,
-      output.liveVertices?.requiredCount,
+      output.liveNodes?.ids,
+      output.liveNodes?.status.count,
+      output.liveNodes?.status.overflow,
+      output.liveNodes?.status.requiredCount,
       output.liveEdgeSlots?.ids,
-      output.liveEdgeSlots?.count,
-      output.liveEdgeSlots?.overflow,
-      output.liveEdgeSlots?.requiredCount,
-      output.inducedCSR?.offsets,
-      output.inducedCSR?.neighbors,
-      output.inducedCSR?.sourceSlots,
-      output.inducedCSR?.overflow
+      output.liveEdgeSlots?.status.count,
+      output.liveEdgeSlots?.status.overflow,
+      output.liveEdgeSlots?.status.requiredCount,
+      output.inducedTopology?.offsets,
+      output.inducedTopology?.neighbors,
+      output.inducedTopology?.sourceSlots,
+      output.inducedTopology?.status.overflow
     ];
   }
 
@@ -316,7 +331,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
     const {id, props, nodeCount, slotCount} = this;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const {output} = props;
-    const vertexColumns = props.vertexColumns ?? [];
+    const vertexColumns = props.nodeColumns ?? [];
     const edgeColumns = props.edgeColumns ?? [];
     const nodes: GPUCommandNode<Parameters>[] = [];
     const word = GPU_NETWORK_SUBGRAPH_FILTER_COUNT_WORD;
@@ -398,15 +413,15 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       [
         {
           name: 'maskOut',
-          view: output.vertexMask,
+          view: output.nodeMask,
           type: 'u32',
           access: 'read_write'
         },
-        ...(props.vertexMask
+        ...(props.nodeMask
           ? [
               {
                 name: 'maskIn',
-                view: props.vertexMask,
+                view: props.nodeMask,
                 type: 'u32' as const,
                 access: 'read' as const
               }
@@ -414,11 +429,11 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           : [])
       ],
       nodeCount,
-      props.vertexMask
+      props.nodeMask
         ? 'maskOut[maskOutOffset + index] = select(0u, 1u, maskIn[maskInOffset + index] != 0u);'
         : 'maskOut[maskOutOffset + index] = 1u;'
     );
-    addRangeNodes('vertex', output.vertexMask, vertexColumns, 0, nodeCount);
+    addRangeNodes('vertex', output.nodeMask, vertexColumns, 0, nodeCount);
 
     // Edge predicates run on `ownMask`: the output itself, or a scratch copy when undirected slots
     // are paired (a pair reads the other slot's own result, so nothing may be overwritten early).
@@ -498,7 +513,7 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           },
           {
             name: 'timeWindow',
-            view: props.timeWordParameters!,
+            view: props.uint32Parameters!,
             type: 'u32',
             access: 'read'
           },
@@ -557,16 +572,16 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       'edge-endpoints',
       'edge-endpoints',
       [
-        {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+        {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
         {
           name: 'neighbors',
-          view: props.neighbors,
+          view: props.topology.neighbors,
           type: 'u32',
           access: 'read'
         },
         {
           name: 'vertexMask',
-          view: output.vertexMask,
+          view: output.nodeMask,
           type: 'u32',
           access: 'read'
         },
@@ -604,6 +619,9 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
   let rowBegin = offsets[offsetsOffset + row];
   let rowEnd = min(offsets[offsetsOffset + row + 1u], SLOT_COUNT);
   if (slot < rowBegin || slot >= rowEnd) {
+    // A slot past offsets[NODE_COUNT] belongs to no row. The edge-init pass wrote 1 there (or the
+    // caller's mask), so it must be cleared here or it reads as a live edge (review B-09).
+    edgeMask[edgeMaskOffset + slot] = 0u;
     return;
   }
   let sourceLive = vertexMask[vertexMaskOffset + row] != 0u;
@@ -632,10 +650,10 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
         'mark-incident',
         'mark-incident',
         [
-          {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+          {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
           {
             name: 'neighbors',
-            view: props.neighbors,
+            view: props.topology.neighbors,
             type: 'u32',
             access: 'read'
           },
@@ -669,7 +687,7 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
         [
           {
             name: 'vertexMask',
-            view: output.vertexMask,
+            view: output.nodeMask,
             type: 'u32',
             access: 'read_write'
           },
@@ -694,42 +712,20 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
           componentCount: GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH
         })
       );
-      kernel(
-        'counts',
-        'counts',
-        [
-          {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-          {
-            name: 'neighbors',
-            view: props.neighbors,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'vertexMask',
-            view: output.vertexMask,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'edgeMask',
-            view: output.edgeMask,
-            type: 'u32',
-            access: 'read'
-          },
-          {
-            name: 'counts',
-            view: output.counts,
-            type: 'atomic<u32>',
-            access: 'read_write'
-          }
+      // Rows fold their counts into workgroup counters, one global atomic per word per workgroup
+      // (rule 14).
+      const countsSource = getWorkgroupCounterKernelSource({
+        counters: [
+          {target: 'counts', word: word.liveNodeCount},
+          {target: 'counts', word: word.liveSlotCount},
+          {target: 'counts', word: word.selfLoopSlotCount}
         ],
-        nodeCount,
-        `if (vertexMask[vertexMaskOffset + index] != 0u) {
-    atomicAdd(&counts[countsOffset + ${word.liveVertexCount}u], 1u);
+        rowCount: 'NODE_COUNT',
+        rowSource: `if (vertexMask[vertexMaskOffset + index] != 0u) {
+    addCounter(0u, 1u);
   }
-  let rowBegin = offsets[offsetsOffset + index];
   let rowEnd = min(offsets[offsetsOffset + index + 1u], SLOT_COUNT);
+  let rowBegin = min(offsets[offsetsOffset + index], rowEnd);
   var liveCount = 0u;
   var selfCount = 0u;
   for (var slot = rowBegin; slot < rowEnd; slot++) {
@@ -740,13 +736,49 @@ const SLOT_COUNT: u32 = ${slotCount}u;`
       }
     }
   }
-  if (liveCount > 0u) {
-    atomicAdd(&counts[countsOffset + ${word.liveSlotCount}u], liveCount);
-  }
-  if (selfCount > 0u) {
-    atomicAdd(&counts[countsOffset + ${word.selfLoopSlotCount}u], selfCount);
-  }`,
-        `const SLOT_COUNT: u32 = ${slotCount}u;`
+  addCounter(1u, liveCount);
+  addCounter(2u, selfCount);`
+      });
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-counts`,
+          operation: OPERATION,
+          variant: 'counts',
+          bindings: [
+            {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
+            {
+              name: 'neighbors',
+              view: props.topology.neighbors,
+              type: 'u32',
+              access: 'read'
+            },
+            {
+              name: 'vertexMask',
+              view: output.nodeMask,
+              type: 'u32',
+              access: 'read'
+            },
+            {
+              name: 'edgeMask',
+              view: output.edgeMask,
+              type: 'u32',
+              access: 'read'
+            },
+            {
+              name: 'counts',
+              view: output.counts,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: nodeCount,
+          workgroupSize: WORKGROUP_COUNTER_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
+const SLOT_COUNT: u32 = ${slotCount}u;
+${countsSource.declarations}`,
+          body: countsSource.body
+        })
       );
       kernel(
         'counts-finish',
@@ -823,11 +855,11 @@ const ROW_COUNT: u32 = ${rowCount}u;`
         })
       );
     };
-    if (output.liveVertices) addCompaction('live-vertices', output.vertexMask, output.liveVertices);
+    if (output.liveNodes) addCompaction('live-vertices', output.nodeMask, output.liveNodes);
     // The slot prefix sum is shared by the live-slot list and the induced CSR, which is the classic
     // mask -> scan -> compact pipeline and keeps every pass balanced over slots, not rows.
     const slotPrefix =
-      output.liveEdgeSlots || output.inducedCSR
+      output.liveEdgeSlots || output.inducedTopology
         ? createTransientView(graph, `${id}-live-slots-offsets`, 'uint32', slotCount)
         : undefined;
     if (output.liveEdgeSlots) {
@@ -844,7 +876,7 @@ const ROW_COUNT: u32 = ${rowCount}u;`
 
     // Induced CSR: row offsets are the slot prefix at each row start, and every live slot scatters
     // to its prefix position (a row's live slots stay contiguous and in order).
-    const csr = output.inducedCSR;
+    const csr = output.inducedTopology;
     if (csr && slotPrefix) {
       const prefixSource = `fn getPrefix(slot: u32) -> u32 {
   if (slot >= SLOT_COUNT) {
@@ -856,7 +888,7 @@ const ROW_COUNT: u32 = ${rowCount}u;`
         'induced-offsets',
         'induced-offsets',
         [
-          {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+          {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
           {name: 'edgeMask', view: output.edgeMask, type: 'u32', access: 'read'},
           {name: 'slotPrefix', view: slotPrefix, type: 'u32', access: 'read'},
           {
@@ -867,7 +899,7 @@ const ROW_COUNT: u32 = ${rowCount}u;`
           },
           {
             name: 'overflowOut',
-            view: csr.overflow,
+            view: csr.status.overflow,
             type: 'u32',
             access: 'read_write'
           }
@@ -885,10 +917,10 @@ const CAPACITY: u32 = ${csr.neighbors.length}u;
 ${prefixSource}`
       );
       const scatterBindings: WGSLKernelBinding[] = [
-        {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+        {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
         {
           name: 'neighbors',
-          view: props.neighbors,
+          view: props.topology.neighbors,
           type: 'u32',
           access: 'read'
         },
@@ -906,6 +938,24 @@ ${prefixSource}`
           access: 'read_write'
         }
       ];
+      // Rows of the induced CSR past its live slot total keep 0xffffffff (an out-of-range node and
+      // slot), so the output is fully written every frame (library rule 11).
+      for (const [step, view] of [
+        ['clear-induced-neighbors', csr.neighbors],
+        ['clear-induced-slots', csr.sourceSlots]
+      ] as const) {
+        if (view) {
+          nodes.push(
+            createFillNode<Parameters>(graph, {
+              id: `${id}-${step}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0xffffffffu'
+            })
+          );
+        }
+      }
       if (csr.sourceSlots) {
         scatterBindings.push({
           name: 'inducedSlots',

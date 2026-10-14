@@ -10,6 +10,7 @@ export {
 export type {
   GPUHotSpotAnalysisRecipeProps,
   GPUHotSpotAnalysisRecipeResult,
+  GPUHotSpotAnalysisRecipeSettings,
   GPUHotSpotColorOptions,
   GPUHotSpotLatticeSource,
   GPUHotSpotPermutationOptions,
@@ -27,6 +28,7 @@ export {
 export type {
   GPURateClusterMapRecipeProps,
   GPURateClusterMapRecipeResult,
+  GPURateClusterMapRecipeSettings,
   GPURateClusterMapRate
 } from './rate-cluster-map-recipe';
 export {
@@ -41,6 +43,7 @@ export {
 export type {
   GPUSpatialRegressionRecipeProps,
   GPUSpatialRegressionRecipeResult,
+  GPUSpatialRegressionRecipeSettings,
   GPUSpatialRegressionLocalFitOptions
 } from './spatial-regression-recipe';
 export {
@@ -52,6 +55,7 @@ export {
 export type {
   GPUSpaceTimeHotSpotsRecipeProps,
   GPUSpaceTimeHotSpotsRecipeResult,
+  GPUSpaceTimeHotSpotsRecipeSettings,
   GPUSpaceTimeSlices,
   GPUSpaceTimeCellIds,
   GPUSpaceTimeLattice,
@@ -84,18 +88,6 @@ export type {
   GPUChangeOfSupportRecipeResult,
   GPUChangeOfSupportZones
 } from './change-of-support-recipe';
-export {
-  addDriveTimeCatchmentRecipe,
-  GPU_DRIVE_TIME_CATCHMENT_NO_BAND,
-  GPU_DRIVE_TIME_CATCHMENT_SPATIAL_CONTEXT_SUPPORT
-} from './drive-time-catchment-recipe';
-export type {
-  GPUDriveTimeCatchmentRecipeProps,
-  GPUDriveTimeCatchmentRecipeResult,
-  GPUDriveTimeIsochroneJoinOptions,
-  GPUDriveTimeIsochroneOptions,
-  GPUDriveTimeNetwork
-} from './drive-time-catchment-recipe';
 export {addStraightLineCatchmentsRecipe} from './straight-line-catchments-recipe';
 export type {
   GPUStraightLineCatchmentsRecipeProps,
@@ -106,6 +98,7 @@ export type {
   GPUFleetDwellPolygonZones,
   GPUFleetDwellRecipeProps,
   GPUFleetDwellRecipeResult,
+  GPUFleetDwellTrajectories,
   GPUFleetDwellZoneEventsRecipeProps,
   GPUFleetDwellZoneEventsRecipeResult,
   GPUFleetDwellZoneTable,

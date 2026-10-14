@@ -3,31 +3,46 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import {type Binding, Buffer} from '@luma.gl/core';
+import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../utils/exact-geometry-wgsl';
+import {EXACT_ORIENTATION_WGSL} from '../utils/exact-orientation-wgsl';
+import {Buffer} from '@luma.gl/core';
 import {Computation, DynamicBuffer} from '@luma.gl/engine';
-import {GPUCommandGraph, type GraphBufferUse, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createGPUComputeCommandNode,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphBufferUse,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUGridIndexBounds, GPUGridIndexSize} from '@luma.gl/gpgpu/gpu-core';
 import {
   createTransientView,
-  getViewBinding,
   getViewBindingRange,
-  getViewElementOffset,
-  validatePackedUint32View,
-  validatePackedView
+  getViewElementOffset
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   GEOSPATIAL_INTEGER_FP64_ARITHMETIC_MODULE,
   getFloat32Literal,
   type GeospatialDispatchLayout
 } from './geospatial-utils';
-import type {GPUSpatialQueryOutput} from './gpu-spatial-query-types';
+import type {GPUCompactOutput} from '../utils/gpu-contributor-types';
+import {
+  validateCompactOutput,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../utils/gpu-contributor-utils';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../gpu-spatial-analysis/contracts/spatial-context';
+} from '../analysis-core/contracts/spatial-context';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+
+// Kept for existing importers; the helper now lives in `utils/wgsl-kernel-nodes`.
+export {createChangedBindingResolver};
 
 /**
  * Spatial contexts of the metric-free `bounds` and `polygon` predicates: planar coordinates, or
@@ -93,16 +108,20 @@ export type GPUPointSpatialQueryProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Mutable query values.
+   * Per-frame query values.
    *
    * Bounds and polygon queries use `[minimum..., maximum...]`; radius queries use
    * `[center..., radius]`.
    */
-  query: GraphDataView<'float32'>;
-  /** Polygon rings required for `polygon`; their conservative bounds are supplied in `query`. */
+  parameters: GraphDataView<'float32'>;
+  /** Polygon rings required for `polygon`; their conservative bounds are supplied in `parameters`. */
   polygon?: GPUPointSpatialQueryPolygon;
-  /** Caller-owned compact query output. */
-  output: GPUSpatialQueryOutput;
+  /** Caller-owned compact query output and optional diagnostics. */
+  output: GPUPointSpatialQueryOutput;
+};
+
+/** Caller-owned outputs of {@link GPUPointSpatialQuery}: the compact IDs plus optional diagnostics. */
+export type GPUPointSpatialQueryOutput = GPUCompactOutput & {
   /**
    * Optional packed scalar receiving the exact number of indexed cells dispatched for refinement.
    *
@@ -134,17 +153,15 @@ export type GPUPointSpatialQueryProps = {
  * Polygon tests use f32 even/odd fill semantics and include points on a ring boundary; they do not
  * provide a robust-topology or four-state classification result.
  */
-export class GPUPointSpatialQuery {
+export class GPUPointSpatialQuery implements GPUCommandNodeProducer {
   readonly id: string;
   readonly positions: GraphDataView<'float32x2'> | GraphDataView<'float32x3'>;
   readonly sourceIds?: GraphDataView<'uint32'>;
   readonly index?: GPUGridIndexView;
   readonly kind: GPUPointSpatialQueryKind;
-  readonly query: GraphDataView<'float32'>;
+  readonly parameters: GraphDataView<'float32'>;
   readonly polygon?: GPUPointSpatialQueryPolygon;
-  readonly output: GPUSpatialQueryOutput;
-  readonly intersectedCellCount?: GraphDataView<'uint32'>;
-  readonly candidateCount?: GraphDataView<'uint32'>;
+  readonly output: GPUPointSpatialQueryOutput;
   readonly dimension: 2 | 3;
   /** Resolved coordinate space. */
   readonly spatialContext: GPUSpatialContext;
@@ -161,40 +178,38 @@ export class GPUPointSpatialQuery {
       props.spatialContext,
       this.kind === 'radius' ? GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT : POINT_QUERY_SELECTION_SUPPORT
     );
-    this.query = props.query;
+    this.parameters = props.parameters;
     this.polygon = props.polygon;
     this.output = props.output;
-    this.intersectedCellCount = props.intersectedCellCount;
-    this.candidateCount = props.candidateCount;
     this.dimension = this.positions.format === 'float32x2' ? 2 : 3;
 
     validatePackedView(this.positions, ['float32x2', 'float32x3'], `${this.id} positions`);
     if (this.sourceIds) {
-      validatePackedUint32View(this.sourceIds, `${this.id} sourceIds`);
+      validatePackedView(this.sourceIds, ['uint32'], `${this.id} sourceIds`);
       if (this.sourceIds.length !== this.positions.length) {
         throw new Error(`${this.id} sourceIds.length must equal positions.length`);
       }
     }
-    validatePackedView(this.query, ['float32'], `${this.id} query`);
-    validateQueryOutput(this.id, this.output);
-    if (this.intersectedCellCount) {
-      validateQueryDiagnostic(this.id, 'intersectedCellCount', this.intersectedCellCount);
+    validatePackedView(this.parameters, ['float32'], `${this.id} parameters`);
+    validateCompactOutput(this.id, this.output);
+    if (this.output.intersectedCellCount) {
+      validateQueryDiagnostic(this.id, 'intersectedCellCount', this.output.intersectedCellCount);
     }
-    if (this.candidateCount) {
-      validateQueryDiagnostic(this.id, 'candidateCount', this.candidateCount);
+    if (this.output.candidateCount) {
+      validateQueryDiagnostic(this.id, 'candidateCount', this.output.candidateCount);
     }
     if (this.index) validateIndexView(this.id, this.index, this.dimension);
 
     const expectedQueryLength = this.kind === 'radius' ? this.dimension + 1 : this.dimension * 2;
-    if (this.query.length !== expectedQueryLength) {
-      throw new Error(`${this.id} ${this.kind} query must contain ${expectedQueryLength} floats`);
+    if (this.parameters.length !== expectedQueryLength) {
+      throw new Error(`${this.id} ${this.kind} parameters must hold ${expectedQueryLength} floats`);
     }
     if (this.kind === 'polygon') {
       if (this.dimension !== 2 || !this.polygon) {
         throw new Error(`${this.id} polygon queries require two-dimensional polygon data`);
       }
       validatePackedView(this.polygon.positions, ['float32x2'], `${this.id} polygon positions`);
-      validatePackedUint32View(this.polygon.ringOffsets, `${this.id} polygon ringOffsets`);
+      validatePackedView(this.polygon.ringOffsets, ['uint32'], `${this.id} polygon ringOffsets`);
       if (this.polygon.ringOffsets.length < 2) {
         throw new Error(`${this.id} polygon ringOffsets must contain at least two offsets`);
       }
@@ -204,26 +219,26 @@ export class GPUPointSpatialQuery {
     validateDisjointQueryViews(this.id, this);
   }
 
-  /** Adds query preparation, indirect refinement, and count finalization to the target graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns query preparation, indirect refinement and count finalization, for `graph.add`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const views = [
       this.positions,
       ...(this.sourceIds ? [this.sourceIds] : []),
-      this.query,
+      this.parameters,
       this.output.ids,
-      this.output.count,
-      this.output.overflow,
-      ...(this.output.requiredCount ? [this.output.requiredCount] : []),
-      ...(this.intersectedCellCount ? [this.intersectedCellCount] : []),
-      ...(this.candidateCount ? [this.candidateCount] : []),
+      this.output.status.count,
+      this.output.status.overflow,
+      ...(this.output.status.requiredCount ? [this.output.status.requiredCount] : []),
+      ...(this.output.intersectedCellCount ? [this.output.intersectedCellCount] : []),
+      ...(this.output.candidateCount ? [this.output.candidateCount] : []),
       ...(this.index
         ? [this.index.cellOffsets, this.index.rowIndices, this.index.count, this.index.overflow]
         : []),
       ...(this.polygon ? [this.polygon.positions, this.polygon.ringOffsets] : [])
     ];
-    if (views.some(view => view.buffer.graph !== graph)) {
-      throw new Error(`${this.id} views must belong to the target graph`);
-    }
+    validateGraphViewsBelongToGraph(this.id, graph, views);
 
     const queryStateBuffer = graph.createTransientBuffer({
       id: `${this.id}-state`,
@@ -238,20 +253,21 @@ export class GPUPointSpatialQuery {
       graph,
       `${this.id}-result-state`,
       'uint32',
-      this.candidateCount ? 3 : 2
+      this.output.candidateCount ? 3 : 2
     );
-    addPreparePass(graph, this, queryState, resultState);
-    addRefinementPass(graph, this, queryState, resultState);
-    addFinalizePass(graph, this, queryState, resultState);
+    return [
+      createPrepareNode(this, queryState, resultState),
+      createRefinementNode(this, queryState, resultState),
+      createFinalizeNode(this, queryState, resultState)
+    ];
   }
 }
 
-function addPreparePass<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
+function createPrepareNode<Parameters>(
   query: GPUPointSpatialQuery,
   queryState: GraphDataView<'uint32'>,
   resultState: GraphDataView<'uint32'>
-): void {
+): GPUCommandNode<Parameters> {
   const index = query.index;
   const width = index?.gridSize[0] ?? 1;
   const height = index?.gridSize[1] ?? 1;
@@ -284,13 +300,13 @@ function addPreparePass<Parameters>(
   const initialOverflow = index
     ? `min(indexOverflow[${getViewElementOffset(index.overflow)}u], 1u)`
     : '0u';
-  const candidateCountInitialization = query.candidateCount
+  const candidateCountInitialization = query.output.candidateCount
     ? `resultState[RESULT_OFFSET + 2u] = ${
         index ? '0u' : `select(0u, ${query.positions.length}u, valid)`
       };`
     : '';
   const source = /* wgsl */ `
-const QUERY_OFFSET: u32 = ${getViewElementOffset(query.query)}u;
+const QUERY_OFFSET: u32 = ${getViewElementOffset(query.parameters)}u;
 const STATE_OFFSET: u32 = ${getViewElementOffset(queryState)}u;
 const RESULT_OFFSET: u32 = ${getViewElementOffset(resultState)}u;
 const WIDTH: u32 = ${width}u;
@@ -364,16 +380,16 @@ fn divideRoundUp(value: u32, divisor: u32) -> u32 {
   ${candidateCountInitialization}
 }`;
   const bindings: Record<string, GraphDataView> = {
-    queryValues: query.query,
+    queryValues: query.parameters,
     queryState,
     resultState,
     ...(index ? {indexOverflow: index.overflow} : {})
   };
-  addComputationPass(graph, {
+  return createComputationNode<Parameters>({
     id: `${query.id}-prepare`,
     source,
     resources: [
-      {buffer: query.query, usage: 'storage-read'},
+      {buffer: query.parameters, usage: 'storage-read'},
       {buffer: queryState, usage: 'storage-write'},
       {buffer: resultState, usage: 'storage-write'},
       ...(index ? ([{buffer: index.overflow, usage: 'storage-read'}] as GraphBufferUse[]) : [])
@@ -383,12 +399,11 @@ fn divideRoundUp(value: u32, divisor: u32) -> u32 {
   });
 }
 
-function addRefinementPass<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
+function createRefinementNode<Parameters>(
   query: GPUPointSpatialQuery,
   queryState: GraphDataView<'uint32'>,
   resultState: GraphDataView<'uint32'>
-): void {
+): GPUCommandNode<Parameters> {
   const index = query.index;
   let nextBinding = 1;
   const queryValuesBinding = query.kind === 'polygon' ? undefined : nextBinding++;
@@ -422,7 +437,7 @@ const POLYGON_POSITION_COUNT: u32 = ${query.polygon.positions.length}u;
 const RING_OFFSETS_OFFSET: u32 = ${getViewElementOffset(query.polygon.ringOffsets)}u;
 const RING_COUNT: u32 = ${query.polygon.ringOffsets.length - 1}u;`
     : '';
-  const indexedCandidateCount = query.candidateCount
+  const indexedCandidateCount = query.output.candidateCount
     ? 'if (localId.x == 0u) { atomicAdd(&resultState[RESULT_OFFSET + 2u], cellEnd - cellStart); }'
     : '';
   const rowSelection = index
@@ -475,7 +490,7 @@ const RING_COUNT: u32 = ${query.polygon.ringOffsets.length - 1}u;`
   const source = /* wgsl */ `
 const POSITION_COUNT: u32 = ${query.positions.length}u;
 const POSITIONS_OFFSET: u32 = ${getViewElementOffset(query.positions)}u;
-const QUERY_OFFSET: u32 = ${getViewElementOffset(query.query)}u;
+const QUERY_OFFSET: u32 = ${getViewElementOffset(query.parameters)}u;
 const RESULT_OFFSET: u32 = ${getViewElementOffset(resultState)}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(query.output.ids)}u;
 const OUTPUT_CAPACITY: u32 = ${query.output.ids.length}u;
@@ -522,7 +537,7 @@ fn testRow(rowIndex: u32) {
 }`;
   const bindings: Record<string, GraphDataView> = {
     positions: query.positions,
-    ...(queryValuesBinding === undefined ? {} : {queryValues: query.query}),
+    ...(queryValuesBinding === undefined ? {} : {queryValues: query.parameters}),
     queryState,
     ...(index
       ? {
@@ -540,13 +555,13 @@ fn testRow(rowIndex: u32) {
         }
       : {})
   };
-  graph.addComputePass({
+  return createGPUComputeCommandNode<Parameters>({
     id: `${query.id}-refine`,
     resources: [
       {buffer: query.positions, usage: 'storage-read'},
       ...(queryValuesBinding === undefined
         ? []
-        : ([{buffer: query.query, usage: 'storage-read'}] as GraphBufferUse[])),
+        : ([{buffer: query.parameters, usage: 'storage-read'}] as GraphBufferUse[])),
       {buffer: queryState, usage: 'uniform'},
       {buffer: queryState, usage: 'indirect'},
       ...(index
@@ -581,13 +596,11 @@ fn testRow(rowIndex: u32) {
           )
         }
       });
+      const resolveChangedBindings = createChangedBindingResolver(bindings);
       return {
         encode: ({computePass, getBuffer}) => {
-          const resolvedBindings: Record<string, Binding> = {};
-          for (const [name, view] of Object.entries(bindings)) {
-            resolvedBindings[name] = getViewBinding(view, getBuffer);
-          }
-          computation.setBindings(resolvedBindings);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           computation.dispatchIndirect(computePass, getBuffer(queryState), queryState.byteOffset);
         },
         destroy: () => computation.destroy()
@@ -596,51 +609,50 @@ fn testRow(rowIndex: u32) {
   });
 }
 
-function addFinalizePass<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
+function createFinalizeNode<Parameters>(
   query: GPUPointSpatialQuery,
   queryState: GraphDataView<'uint32'>,
   resultState: GraphDataView<'uint32'>
-): void {
+): GPUCommandNode<Parameters> {
   let nextBinding = 3;
-  const totalCountBinding = query.output.requiredCount ? nextBinding++ : undefined;
-  const readsQueryState = Boolean(query.intersectedCellCount && query.index);
+  const totalCountBinding = query.output.status.requiredCount ? nextBinding++ : undefined;
+  const readsQueryState = Boolean(query.output.intersectedCellCount && query.index);
   const queryStateBinding = readsQueryState ? nextBinding++ : undefined;
-  const intersectedCellCountBinding = query.intersectedCellCount ? nextBinding++ : undefined;
-  const candidateCountBinding = query.candidateCount ? nextBinding++ : undefined;
-  const totalCountDeclaration = query.output.requiredCount
-    ? `const TOTAL_OFFSET: u32 = ${getViewElementOffset(query.output.requiredCount)}u;
+  const intersectedCellCountBinding = query.output.intersectedCellCount ? nextBinding++ : undefined;
+  const candidateCountBinding = query.output.candidateCount ? nextBinding++ : undefined;
+  const totalCountDeclaration = query.output.status.requiredCount
+    ? `const TOTAL_OFFSET: u32 = ${getViewElementOffset(query.output.status.requiredCount)}u;
 @group(0) @binding(${totalCountBinding}) var<storage, read_write> outputTotalCount: array<u32>;`
     : '';
-  const totalCountWrite = query.output.requiredCount
+  const totalCountWrite = query.output.status.requiredCount
     ? 'outputTotalCount[TOTAL_OFFSET] = total;'
     : '';
-  const intersectedCellCountDeclaration = query.intersectedCellCount
+  const intersectedCellCountDeclaration = query.output.intersectedCellCount
     ? `${
         readsQueryState
           ? `const STATE_OFFSET: u32 = ${getViewElementOffset(queryState)}u;
 @group(0) @binding(${queryStateBinding}) var<storage, read> queryState: array<u32>;`
           : ''
       }
-const INTERSECTED_CELL_COUNT_OFFSET: u32 = ${getViewElementOffset(query.intersectedCellCount)}u;
+const INTERSECTED_CELL_COUNT_OFFSET: u32 = ${getViewElementOffset(query.output.intersectedCellCount)}u;
 @group(0) @binding(${intersectedCellCountBinding}) var<storage, read_write> outputIntersectedCellCount: array<u32>;`
     : '';
-  const intersectedCellCountWrite = query.intersectedCellCount
+  const intersectedCellCountWrite = query.output.intersectedCellCount
     ? `outputIntersectedCellCount[INTERSECTED_CELL_COUNT_OFFSET] = ${
         query.index ? 'queryState[STATE_OFFSET + 9u]' : '0u'
       };`
     : '';
-  const candidateCountDeclaration = query.candidateCount
-    ? `const CANDIDATE_COUNT_OFFSET: u32 = ${getViewElementOffset(query.candidateCount)}u;
+  const candidateCountDeclaration = query.output.candidateCount
+    ? `const CANDIDATE_COUNT_OFFSET: u32 = ${getViewElementOffset(query.output.candidateCount)}u;
 @group(0) @binding(${candidateCountBinding}) var<storage, read_write> outputCandidateCount: array<u32>;`
     : '';
-  const candidateCountWrite = query.candidateCount
+  const candidateCountWrite = query.output.candidateCount
     ? 'outputCandidateCount[CANDIDATE_COUNT_OFFSET] = resultState[RESULT_OFFSET + 2u];'
     : '';
   const source = /* wgsl */ `
 const RESULT_OFFSET: u32 = ${getViewElementOffset(resultState)}u;
-const COUNT_OFFSET: u32 = ${getViewElementOffset(query.output.count)}u;
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(query.output.overflow)}u;
+const COUNT_OFFSET: u32 = ${getViewElementOffset(query.output.status.count)}u;
+const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(query.output.status.overflow)}u;
 const OUTPUT_CAPACITY: u32 = ${query.output.ids.length}u;
 @group(0) @binding(0) var<storage, read> resultState: array<u32>;
 @group(0) @binding(1) var<storage, read_write> outputCount: array<u32>;
@@ -659,38 +671,42 @@ ${candidateCountDeclaration}
   ${intersectedCellCountWrite}
   ${candidateCountWrite}
 }`;
-  addComputationPass(graph, {
+  return createComputationNode<Parameters>({
     id: `${query.id}-finalize`,
     source,
     resources: [
       {buffer: resultState, usage: 'storage-read'},
-      {buffer: query.output.count, usage: 'storage-write'},
-      {buffer: query.output.overflow, usage: 'storage-write'},
-      ...(query.output.requiredCount
-        ? ([{buffer: query.output.requiredCount, usage: 'storage-write'}] as GraphBufferUse[])
-        : []),
-      ...(query.intersectedCellCount
+      {buffer: query.output.status.count, usage: 'storage-write'},
+      {buffer: query.output.status.overflow, usage: 'storage-write'},
+      ...(query.output.status.requiredCount
         ? ([
-            ...(readsQueryState ? [{buffer: queryState, usage: 'storage-read'}] : []),
-            {buffer: query.intersectedCellCount, usage: 'storage-write'}
+            {buffer: query.output.status.requiredCount, usage: 'storage-write'}
           ] as GraphBufferUse[])
         : []),
-      ...(query.candidateCount
-        ? ([{buffer: query.candidateCount, usage: 'storage-write'}] as GraphBufferUse[])
+      ...(query.output.intersectedCellCount
+        ? ([
+            ...(readsQueryState ? [{buffer: queryState, usage: 'storage-read'}] : []),
+            {buffer: query.output.intersectedCellCount, usage: 'storage-write'}
+          ] as GraphBufferUse[])
+        : []),
+      ...(query.output.candidateCount
+        ? ([{buffer: query.output.candidateCount, usage: 'storage-write'}] as GraphBufferUse[])
         : [])
     ],
     bindings: {
       resultState,
-      outputCount: query.output.count,
-      outputOverflow: query.output.overflow,
-      ...(query.output.requiredCount ? {outputTotalCount: query.output.requiredCount} : {}),
-      ...(query.intersectedCellCount
+      outputCount: query.output.status.count,
+      outputOverflow: query.output.status.overflow,
+      ...(query.output.status.requiredCount
+        ? {outputTotalCount: query.output.status.requiredCount}
+        : {}),
+      ...(query.output.intersectedCellCount
         ? {
             ...(readsQueryState ? {queryState} : {}),
-            outputIntersectedCellCount: query.intersectedCellCount
+            outputIntersectedCellCount: query.output.intersectedCellCount
           }
         : {}),
-      ...(query.candidateCount ? {outputCandidateCount: query.candidateCount} : {})
+      ...(query.output.candidateCount ? {outputCandidateCount: query.output.candidateCount} : {})
     },
     dispatchCount: 1
   });
@@ -829,54 +845,31 @@ fn readPolygonPosition(index: u32) -> vec2<f32> {
   return vec2<f32>(polygonPositions[offset], polygonPositions[offset + 1u]);
 }
 
-fn pointOnSegment(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -> bool {
-  let segment = end - start;
-  let relative = point - start;
-  let leftProduct = segment.x * relative.y;
-  let rightProduct = segment.y * relative.x;
-  let crossProduct = leftProduct - rightProduct;
-  let tolerance = max(1.0e-12, (abs(leftProduct) + abs(rightProduct)) * 9.5367431640625e-7);
-  return abs(crossProduct) <= tolerance &&
-    dot(relative, point - end) <= 0.0;
-}
+${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getExactRingWindingWGSL('getPolygonRingWinding', 'readPolygonPosition')}
 
+// Exact even-odd membership (library rule 1): the winding parity of the SoS-perturbed point over
+// every ring, with points exactly on an edge inside. A non-finite vertex rejects the point.
 fn pointInPolygon(point: vec2<f32>) -> bool {
-  var inside = false;
+  let probe = ExactProbe(point, point, point, EXACT_PROBE_POINT);
+  var winding = 0;
+  var flags = 0;
   for (var ring = 0u; ring < RING_COUNT; ring++) {
     let first = min(ringOffsets[RING_OFFSETS_OFFSET + ring], POLYGON_POSITION_COUNT);
     let end = min(ringOffsets[RING_OFFSETS_OFFSET + ring + 1u], POLYGON_POSITION_COUNT);
-    if (end <= first) { continue; }
-    var previous = readPolygonPosition(end - 1u);
-    if (!isFiniteValue(previous.x) || !isFiniteValue(previous.y)) { return false; }
     for (var vertexIndex = first; vertexIndex < end; vertexIndex++) {
-      let current = readPolygonPosition(vertexIndex);
-      if (!isFiniteValue(current.x) || !isFiniteValue(current.y)) { return false; }
-      if (pointOnSegment(point, previous, current)) { return true; }
-      if ((current.y > point.y) != (previous.y > point.y)) {
-        let intersectionX = (previous.x - current.x) * (point.y - current.y) /
-          (previous.y - current.y) + current.x;
-        if (point.x < intersectionX) { inside = !inside; }
-      }
-      previous = current;
+      let vertex = readPolygonPosition(vertexIndex);
+      if (!isFiniteValue(vertex.x) || !isFiniteValue(vertex.y)) { return false; }
     }
+    // The only call site of the exact crossing helpers (one orientSign inlining).
+    let ringWinding = getPolygonRingWinding(probe, first, end);
+    winding += ringWinding.x;
+    flags = flags | ringWinding.y;
   }
-  return inside;
+  if ((u32(flags) & EXACT_FLAG_BOUNDARY) != 0u) { return true; }
+  return (winding & 1) != 0;
 }`;
-}
-
-function validateQueryOutput(id: string, output: GPUSpatialQueryOutput): void {
-  validatePackedUint32View(output.ids, `${id} output ids`);
-  validatePackedUint32View(output.count, `${id} output count`);
-  validatePackedUint32View(output.overflow, `${id} output overflow`);
-  if (output.requiredCount)
-    validatePackedUint32View(output.requiredCount, `${id} output requiredCount`);
-  if (
-    output.count.length < 1 ||
-    output.overflow.length < 1 ||
-    (output.requiredCount && output.requiredCount.length < 1)
-  ) {
-    throw new Error(`${id} output count, overflow, and requiredCount must contain one uint32 row`);
-  }
 }
 
 function validateQueryDiagnostic(
@@ -884,7 +877,7 @@ function validateQueryDiagnostic(
   name: 'intersectedCellCount' | 'candidateCount',
   view: GraphDataView<'uint32'>
 ): void {
-  validatePackedUint32View(view, `${id} ${name}`);
+  validatePackedView(view, ['uint32'], `${id} ${name}`);
   if (view.length !== 1) {
     throw new Error(`${id} ${name} must be one packed uint32 scalar`);
   }
@@ -894,7 +887,7 @@ function validateDisjointQueryViews(id: string, query: GPUPointSpatialQuery): vo
   const inputs: [string, GraphDataView][] = [
     ['positions', query.positions],
     ...(query.sourceIds ? ([['sourceIds', query.sourceIds]] as [string, GraphDataView][]) : []),
-    ['query', query.query],
+    ['parameters', query.parameters],
     ...(query.index
       ? ([
           ['index cellOffsets', query.index.cellOffsets],
@@ -912,16 +905,16 @@ function validateDisjointQueryViews(id: string, query: GPUPointSpatialQuery): vo
   ];
   const outputs = [
     ['ids', query.output.ids],
-    ['count', query.output.count],
-    ['overflow', query.output.overflow],
-    ...(query.output.requiredCount
-      ? ([['requiredCount', query.output.requiredCount]] as [string, GraphDataView][])
+    ['status.count', query.output.status.count],
+    ['status.overflow', query.output.status.overflow],
+    ...(query.output.status.requiredCount
+      ? ([['status.requiredCount', query.output.status.requiredCount]] as [string, GraphDataView][])
       : []),
-    ...(query.intersectedCellCount
-      ? ([['intersectedCellCount', query.intersectedCellCount]] as [string, GraphDataView][])
+    ...(query.output.intersectedCellCount
+      ? ([['intersectedCellCount', query.output.intersectedCellCount]] as [string, GraphDataView][])
       : []),
-    ...(query.candidateCount
-      ? ([['candidateCount', query.candidateCount]] as [string, GraphDataView][])
+    ...(query.output.candidateCount
+      ? ([['candidateCount', query.output.candidateCount]] as [string, GraphDataView][])
       : [])
   ] as [string, GraphDataView][];
   for (let outputIndex = 0; outputIndex < outputs.length; outputIndex++) {
@@ -994,7 +987,7 @@ function validateIndexView(id: string, index: GPUGridIndexView, dimension: 2 | 3
     ['count', index.count],
     ['overflow', index.overflow]
   ] as const) {
-    validatePackedUint32View(view, `${id} index ${name}`);
+    validatePackedView(view, ['uint32'], `${id} index ${name}`);
   }
   if (index.cellOffsets.length !== cellCount + 1) {
     throw new Error(`${id} index cellOffsets.length must equal cellCount + 1`);
@@ -1004,17 +997,14 @@ function validateIndexView(id: string, index: GPUGridIndexView, dimension: 2 | 3
   }
 }
 
-function addComputationPass<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    source: string;
-    resources: GraphBufferUse[];
-    bindings: Record<string, GraphDataView>;
-    dispatchCount: number | GeospatialDispatchLayout;
-  }
-): void {
-  graph.addComputePass({
+function createComputationNode<Parameters>(props: {
+  id: string;
+  source: string;
+  resources: GraphBufferUse[];
+  bindings: Record<string, GraphDataView>;
+  dispatchCount: number | GeospatialDispatchLayout;
+}): GPUCommandNode<Parameters> {
+  return createGPUComputeCommandNode<Parameters>({
     id: props.id,
     resources: props.resources,
     compile: ({device}) => {
@@ -1030,13 +1020,11 @@ function addComputationPass<Parameters>(
           }))
         }
       });
+      const resolveChangedBindings = createChangedBindingResolver(props.bindings);
       return {
         encode: ({computePass, getBuffer}) => {
-          const bindings: Record<string, Binding> = {};
-          for (const [name, view] of Object.entries(props.bindings)) {
-            bindings[name] = getViewBinding(view, getBuffer);
-          }
-          computation.setBindings(bindings);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           if (typeof props.dispatchCount === 'number') {
             computation.dispatch(computePass, props.dispatchCount);
           } else {

@@ -17,7 +17,8 @@ import {
   getOrCreateView,
   RecipeBuilder,
   type GPURecipeOverrides,
-  type GPURecipeResult
+  type GPURecipeResult,
+  type ProvidedCellTable
 } from './recipe-utils';
 
 const ID = 'addPeriodComparisonRecipe';
@@ -45,15 +46,17 @@ export type GPUPeriodComparisonVariable = 'delta' | 'ratio' | 'percentChange' | 
 export type GPUPeriodComparisonRecipeProps = GPURecipeOverrides<
   Record<never, never>,
   {
-    comparison?: Partial<GPUCellTableCompareOutput>;
+    comparison?: Omit<Partial<GPUCellTableCompareOutput>, 'status'> & {
+      status?: Partial<GPUCellTableCompareOutput['status']>;
+    };
     breaks?: GraphDataView<'float32'>;
     classCount?: GraphDataView<'uint32'>;
     colors?: GraphDataView<'uint32'>;
     classIndices?: GraphDataView<'uint32'>;
   },
   {
-    before?: Partial<GPUCellTable>;
-    after?: Partial<GPUCellTable>;
+    before?: ProvidedCellTable;
+    after?: ProvidedCellTable;
     mask?: GraphDataView<'uint32'>;
   }
 > & {
@@ -118,7 +121,7 @@ export type GPUPeriodComparisonRecipeResult = GPURecipeResult & {
   unionCapacity: number;
   before: GPUCellTable;
   after: GPUCellTable;
-  /** Union table: cells ascending, then the compare columns; `count` rows are occupied. */
+  /** Union table: cells ascending, then the compare columns; `status.count` rows are occupied. */
   comparison: GPUCellTableCompareOutput;
   /** 1 for occupied union rows, 0 for the empty tail. */
   mask: GraphDataView<'uint32'>;
@@ -142,6 +145,9 @@ export type GPUPeriodComparisonRecipeResult = GPURecipeResult & {
  * significance. A zero score for a zero denominator is written by `GPUCellTableCompare` (see its
  * documentation); with `measure: 'count'` every union cell has `before + after > 0`, so the
  * Poisson denominator is never zero.
+ *
+ * Status: stages `before-aggregation`, `after-aggregation` and `comparison`, each with count,
+ * overflow and the unclamped required count.
  */
 export function addPeriodComparisonRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -188,8 +194,23 @@ export function addPeriodComparisonRecipe<Parameters>(
       sums: rows.values
         ? getOrCreateView(graph, `${id}-${period}-sums`, 'uint32x2', tableCapacity, provided.sums)
         : provided.sums,
-      count: getOrCreateView(graph, `${id}-${period}-count`, 'uint32', 1, provided.count),
-      overflow: getOrCreateView(graph, `${id}-${period}-overflow`, 'uint32', 1, provided.overflow)
+      status: {
+        count: getOrCreateView(graph, `${id}-${period}-count`, 'uint32', 1, provided.status?.count),
+        overflow: getOrCreateView(
+          graph,
+          `${id}-${period}-overflow`,
+          'uint32',
+          1,
+          provided.status?.overflow
+        ),
+        requiredCount: getOrCreateView(
+          graph,
+          `${id}-${period}-required-count`,
+          'uint32',
+          1,
+          provided.status?.requiredCount
+        )
+      }
     };
     builder.add(
       new GPUCellAggregation({
@@ -217,9 +238,17 @@ export function addPeriodComparisonRecipe<Parameters>(
     ratio: given.ratio,
     percentChange: given.percentChange,
     zScore: given.zScore,
-    count: getOrCreateView(graph, `${id}-union-count`, 'uint32', 1, given.count),
-    overflow: getOrCreateView(graph, `${id}-union-overflow`, 'uint32', 1, given.overflow),
-    requiredCount: given.requiredCount
+    status: {
+      count: getOrCreateView(graph, `${id}-union-count`, 'uint32', 1, given.status?.count),
+      overflow: getOrCreateView(graph, `${id}-union-overflow`, 'uint32', 1, given.status?.overflow),
+      requiredCount: getOrCreateView(
+        graph,
+        `${id}-union-required-count`,
+        'uint32',
+        1,
+        given.status?.requiredCount
+      )
+    }
   };
   if (classify === 'ratio') {
     comparison.ratio = getOrCreateView(graph, `${id}-ratio`, 'float32', unionCapacity, given.ratio);
@@ -311,15 +340,17 @@ export function addPeriodComparisonRecipe<Parameters>(
     intermediates: {before, after, mask},
     status: {
       stages: [
-        {stage: 'before-aggregation', status: {count: before.count, overflow: before.overflow}},
-        {stage: 'after-aggregation', status: {count: after.count, overflow: after.overflow}},
+        {
+          stage: 'before-aggregation',
+          status: before.status
+        },
+        {
+          stage: 'after-aggregation',
+          status: after.status
+        },
         {
           stage: 'comparison',
-          status: {
-            count: comparison.count,
-            requiredCount: comparison.requiredCount,
-            overflow: comparison.overflow
-          }
+          status: comparison.status
         }
       ]
     }

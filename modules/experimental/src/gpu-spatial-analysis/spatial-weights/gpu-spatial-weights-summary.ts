@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -14,7 +12,8 @@ import {
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getSlotGroupingNodes} from './slot-grouping';
 import {
@@ -49,18 +48,24 @@ export const GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT = {
   }
 } as const;
 
-/** Properties for {@link GPUSpatialWeightsSummary}. */
-export type GPUSpatialWeightsSummaryProps = {
-  /** Prefix for generated node IDs. Defaults to `'spatial-weights-summary'`. */
-  id?: string;
-  /** Square weights to summarize. */
-  weights: GPUSpatialWeights;
+/** Caller-owned outputs of {@link GPUSpatialWeightsSummary}. */
+export type GPUSpatialWeightsSummaryOutput = {
   /** Float32 output of at least 3 values, see {@link GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT}. */
   statistics: GraphDataView<'float32'>;
   /** Uint32 output of at least 6 values, see {@link GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT}. */
   counts: GraphDataView<'uint32'>;
   /** Optional per-row cardinality (active neighbor count), one uint32 per row. */
   cardinality?: GraphDataView<'uint32'>;
+};
+
+/** Properties for {@link GPUSpatialWeightsSummary}. */
+export type GPUSpatialWeightsSummaryProps = {
+  /** Prefix for generated node IDs. Defaults to `'spatial-weights-summary'`. */
+  id?: string;
+  /** Square weights to summarize. */
+  weights: GPUSpatialWeights;
+  /** Caller-owned outputs. */
+  output: GPUSpatialWeightsSummaryOutput;
   /**
    * Absolute tolerance for calling `w_ij` and `w_ji` equal when counting asymmetric slots.
    * Defaults to 0 (exact).
@@ -104,17 +109,17 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
-    validatePackedView(props.statistics, ['float32'], `${id} statistics`);
-    if (props.statistics.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.statistics.length) {
+    validatePackedView(props.output.statistics, ['float32'], `${id} statistics`);
+    if (props.output.statistics.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.statistics.length) {
       throw new Error(`${id} statistics must hold at least 3 values`);
     }
-    validatePackedUint32View(props.counts, `${id} counts`);
-    if (props.counts.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length) {
+    validatePackedView(props.output.counts, ['uint32'], `${id} counts`);
+    if (props.output.counts.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length) {
       throw new Error(`${id} counts must hold at least 6 values`);
     }
-    if (props.cardinality) {
-      validatePackedUint32View(props.cardinality, `${id} cardinality`);
-      if (props.cardinality.length !== rows) {
+    if (props.output.cardinality) {
+      validatePackedView(props.output.cardinality, ['uint32'], `${id} cardinality`);
+      if (props.output.cardinality.length !== rows) {
         throw new Error(`${id} cardinality length must equal the weights row count`);
       }
     }
@@ -122,11 +127,11 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
       props.symmetryTolerance !== undefined &&
       !(Number.isFinite(props.symmetryTolerance) && props.symmetryTolerance >= 0)
     ) {
-      throw new Error(`${id} symmetryTolerance must be a non-negative finite number`);
+      throw new Error(`${id} symmetryTolerance must be finite and >= 0`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.statistics, props.counts, props.cardinality],
+      [props.output.statistics, props.output.counts, props.output.cardinality],
       [props.weights.offsets, props.weights.neighbors, props.weights.weights]
     );
   }
@@ -136,14 +141,15 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, statistics, counts} = props;
+    const {weights} = props;
+    const {statistics, counts} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,
       weights.neighbors,
       weights.weights,
       statistics,
       counts,
-      props.cardinality
+      props.output.cardinality
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
@@ -162,7 +168,7 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     const s2Partials = view('s2-partials', 'float32', rows);
     const asymmetric = view('asymmetric', 'uint32', rows);
     const isolates = view('isolates', 'uint32', rows);
-    const cardinality = props.cardinality ?? view('cardinality', 'uint32', rows);
+    const cardinality = props.output.cardinality ?? view('cardinality', 'uint32', rows);
     const constants = `const ROWS: u32 = ${rows}u;`;
     const grouping = getSlotGroupingNodes<Parameters>(graph, {
       id: `${id}-columns`,

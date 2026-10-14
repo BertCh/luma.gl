@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,18 +12,21 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../gpu-spatial-analysis/contracts/spatial-context';
-import {PHILOX_WGSL} from '../../utils/philox-random';
+} from '../../analysis-core/contracts/spatial-context';
+import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../utils/philox-random';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GPURipley} from './gpu-ripley';
 import {
   getPairStatisticsSharedWGSL,
   PAIR_STATISTICS_FLOAT_WGSL,
-  validatePairStatisticsInputs
+  validatePairStatisticsInputs,
+  validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {
   GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH,
@@ -43,9 +45,6 @@ const MAXIMUM_RADIUS_COUNT = 256;
  */
 export const GPU_RIPLEY_ENVELOPE_MAXIMUM_SIMULATION_COUNT = 199;
 
-/** Second Philox key word, the ASCII bytes `RIPF`, so seeds do not collide with other streams. */
-const PHILOX_KEY_TAG = 0x52495046;
-
 /** Scale of the statistic an envelope is reported in. */
 export type GPURipleyEnvelopeStatistic = 'k' | 'l' | 'l-minus-r';
 
@@ -55,13 +54,32 @@ const STATISTIC_CODES: Record<GPURipleyEnvelopeStatistic, number> = {
   'l-minus-r': 2
 };
 
+/** Caller-owned output views of {@link GPURipleyEnvelope}. */
+export type GPURipleyEnvelopeOutput = {
+  /** Optional caller-owned pointwise lower envelope: the `rank`-th smallest simulated value. */
+  lower?: GraphDataView<'float32'>;
+  /** Optional caller-owned pointwise upper envelope: the `rank`-th largest simulated value. */
+  upper?: GraphDataView<'float32'>;
+  /** Optional caller-owned global (simultaneous) lower envelope, `theoretical - criticalDeviation`. */
+  globalLower?: GraphDataView<'float32'>;
+  /** Optional caller-owned global (simultaneous) upper envelope, `theoretical + criticalDeviation`. */
+  globalUpper?: GraphDataView<'float32'>;
+  /** Optional caller-owned theoretical CSR value per radius on the chosen scale. */
+  theoretical?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned summary `[n, validSimulationCount, observedMaximumDeviation,
+   * criticalMaximumDeviation, pValue, rank]` (`GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH` rows).
+   */
+  statistics?: GraphDataView<'float32'>;
+};
+
 /**
  * Properties for {@link GPURipleyEnvelope}.
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask`, `parameters` (window
  * bounds, maximum distance, edge correction and the Monte Carlo `seed`) and `observedK`.
  * Compile-time: the row count, `gridSize`, `radiusCount`, `simulationCount`, `rank`, `statistic`
- * and which outputs are present.
+ * and which `output` views are present.
  */
 export type GPURipleyEnvelopeProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley-envelope'`. */
@@ -107,21 +125,8 @@ export type GPURipleyEnvelopeProps = {
    * the same parameters). It enables the maximum-deviation test statistic and Monte Carlo p-value.
    */
   observedK?: GraphDataView<'float32'>;
-  /** Optional caller-owned pointwise lower envelope: the `rank`-th smallest simulated value. */
-  lower?: GraphDataView<'float32'>;
-  /** Optional caller-owned pointwise upper envelope: the `rank`-th largest simulated value. */
-  upper?: GraphDataView<'float32'>;
-  /** Optional caller-owned global (simultaneous) lower envelope, `theoretical - criticalDeviation`. */
-  globalLower?: GraphDataView<'float32'>;
-  /** Optional caller-owned global (simultaneous) upper envelope, `theoretical + criticalDeviation`. */
-  globalUpper?: GraphDataView<'float32'>;
-  /** Optional caller-owned theoretical CSR value per radius on the chosen scale. */
-  theoretical?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned summary `[n, validSimulationCount, observedMaximumDeviation,
-   * criticalMaximumDeviation, pValue, rank]` (`GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH` rows).
-   */
-  statistics?: GraphDataView<'float32'>;
+  /** Caller-owned output views. At least one is required. */
+  output: GPURipleyEnvelopeOutput;
 };
 
 /**
@@ -133,7 +138,8 @@ export type GPURipleyEnvelopeProps = {
  * - `n` is the observed included row count (nonzero mask, finite position inside the window, the
  *   `GPURipley` inclusion rule), counted on the GPU. Each of the `simulationCount` simulations is a
  *   binomial CSR pattern: `n` independent uniform points in the window (conditional on `n`), drawn
- *   with Philox4x32-10 keyed by the per-frame `seed` with counter `(row, simulationIndex, 0, 1)`;
+ *   with Philox4x32-10 keyed by the per-frame uint32 `seed` with counter `(row, simulationIndex, 0, 0)`
+ *   (the simulation index is a GPU counter word, so every simulation shares one set of pipelines);
  *   word `x` gives the x coordinate and `y` the y coordinate. Draws are a pure function of
  *   `(seed, simulationIndex, row)` and reproduce exactly (CPU mirror: `getPhilox4x32`).
  * - `K_j(r)` of each simulation is computed by a full {@link GPURipley} pass over the simulated
@@ -181,34 +187,28 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {...props, parameterLength: GPU_RIPLEY_PARAMETER_LENGTH});
-    const {radiusCount, simulationCount} = props;
-    if (!Number.isInteger(radiusCount) || radiusCount < 1 || radiusCount > MAXIMUM_RADIUS_COUNT) {
-      throw new Error(`${id} radiusCount must be an integer in [1, ${MAXIMUM_RADIUS_COUNT}]`);
-    }
+    const {radiusCount, simulationCount, output} = props;
+    validateCapacity(id, 'radiusCount', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
     this.rank = props.rank ?? 1;
-    if (!Number.isInteger(this.rank) || this.rank < 1) {
-      throw new Error(`${id} rank must be a positive integer`);
-    }
-    if (
-      !Number.isInteger(simulationCount) ||
-      simulationCount < 2 * this.rank ||
-      simulationCount > GPU_RIPLEY_ENVELOPE_MAXIMUM_SIMULATION_COUNT
-    ) {
-      throw new Error(
-        `${id} simulationCount must be an integer in [2 * rank, ${GPU_RIPLEY_ENVELOPE_MAXIMUM_SIMULATION_COUNT}]`
-      );
-    }
+    validateCapacity(id, 'rank', this.rank);
+    validateCapacity(
+      id,
+      'simulationCount',
+      simulationCount,
+      2 * this.rank,
+      GPU_RIPLEY_ENVELOPE_MAXIMUM_SIMULATION_COUNT
+    );
     this.statistic = props.statistic ?? 'l-minus-r';
     if (!Object.prototype.hasOwnProperty.call(STATISTIC_CODES, this.statistic)) {
       throw new Error(`${id} statistic must be 'k', 'l' or 'l-minus-r'`);
     }
     const radiusOutputs = [
       ['observedK', props.observedK],
-      ['lower', props.lower],
-      ['upper', props.upper],
-      ['globalLower', props.globalLower],
-      ['globalUpper', props.globalUpper],
-      ['theoretical', props.theoretical]
+      ['output.lower', output.lower],
+      ['output.upper', output.upper],
+      ['output.globalLower', output.globalLower],
+      ['output.globalUpper', output.globalUpper],
+      ['output.theoretical', output.theoretical]
     ] as const;
     for (const [name, view] of radiusOutputs) {
       if (view) {
@@ -218,31 +218,33 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
         }
       }
     }
-    if (props.statistics) {
-      validatePackedView(props.statistics, ['float32'], `${id} statistics`);
-      if (props.statistics.length < GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH) {
-        throw new Error(`${id} statistics must hold ${GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH} rows`);
+    if (output.statistics) {
+      validatePackedView(output.statistics, ['float32'], `${id} output.statistics`);
+      if (output.statistics.length < GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH) {
+        throw new Error(
+          `${id} output.statistics must hold ${GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH} rows`
+        );
       }
     }
     if (
-      !props.lower &&
-      !props.upper &&
-      !props.globalLower &&
-      !props.globalUpper &&
-      !props.theoretical &&
-      !props.statistics
+      !output.lower &&
+      !output.upper &&
+      !output.globalLower &&
+      !output.globalUpper &&
+      !output.theoretical &&
+      !output.statistics
     ) {
-      throw new Error(`${id} needs at least one output`);
+      throw new Error(`${id} output needs at least one view`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.lower,
-        props.upper,
-        props.globalLower,
-        props.globalUpper,
-        props.theoretical,
-        props.statistics
+        output.lower,
+        output.upper,
+        output.globalLower,
+        output.globalUpper,
+        output.theoretical,
+        output.statistics
       ],
       [props.positions, props.parameters, props.mask, props.observedK]
     );
@@ -253,18 +255,19 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rank, statistic} = this;
-    const {positions, parameters, gridSize, radiusCount, simulationCount} = props;
+    const {positions, parameters, gridSize, radiusCount, simulationCount, output} = props;
+    validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
       props.mask,
       props.observedK,
-      props.lower,
-      props.upper,
-      props.globalLower,
-      props.globalUpper,
-      props.theoretical,
-      props.statistics
+      output.lower,
+      output.upper,
+      output.globalLower,
+      output.globalUpper,
+      output.theoretical,
+      output.statistics
     ]);
     const rows = positions.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -303,14 +306,25 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
       })
     );
 
-    // Every simulation's K goes into one row of allK, copied by a kernel whose row is a pipeline
-    // override, so all simulations share one shader module (a view offset would be baked into the
-    // source and compile one module per simulation).
+    // Every simulation's K goes into one row of allK. The simulation index is a GPU counter word,
+    // not WGSL text or an override (rule 12: an override still compiles one pipeline per value), so
+    // every simulation shares the same pipelines. The counter is reset here and advanced by each
+    // simulation's single-workgroup gather kernel after it has read it.
     const allK = createTransientView(
       graph,
       `${id}-all-k`,
       'float32',
       simulationCount * radiusCount
+    );
+    const simulationCounter = createTransientView(graph, `${id}-simulation-index`, 'uint32', 1);
+    nodes.push(
+      createFillNode<Parameters>(graph, {
+        id: `${id}-simulation-index-clear`,
+        operation: OPERATION,
+        view: simulationCounter,
+        type: 'u32',
+        value: '0u'
+      })
     );
     for (let simulation = 0; simulation < simulationCount; simulation++) {
       const simulatedPositions = createTransientView(
@@ -337,29 +351,31 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
           operation: OPERATION,
           variant: 'simulate',
           bindings: [
-            {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+            // Read as words: the seed slot holds uint32 bits, the other slots float32 bits.
+            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
             {name: 'count', view: count, type: 'u32', access: 'read'},
+            {name: 'simulationIndex', view: simulationCounter, type: 'u32', access: 'read'},
             {name: 'positions', view: simulatedPositions, type: 'f32', access: 'read_write'},
             {name: 'mask', view: simulatedMask, type: 'u32', access: 'read_write'}
           ],
           invocationCount: rows,
-          constants: {SIMULATION_INDEX: simulation},
           declarations: /* wgsl */ `${PHILOX_WGSL}
-override SIMULATION_INDEX: u32;
 const SEED_SLOT: u32 = ${GPU_RIPLEY_SEED_SLOT}u;
-const KEY_TAG: u32 = ${PHILOX_KEY_TAG}u;`,
+const PURPOSE: u32 = ${PHILOX_PURPOSES.ripleyEnvelopeSimulation.id}u;`,
           body: `let inside = index < count[countOffset];
   var x = 0.0;
   var y = 0.0;
   if (inside) {
     let words = philox4x32(
-      vec4<u32>(index, SIMULATION_INDEX, 0u, 1u),
-      vec2<u32>(u32(parameters[parametersOffset + SEED_SLOT]), KEY_TAG)
+      vec4<u32>(index, simulationIndex[simulationIndexOffset], 0u, 0u),
+      vec2<u32>(parameters[parametersOffset + SEED_SLOT], PURPOSE)
     );
-    let minimumX = parameters[parametersOffset];
-    let minimumY = parameters[parametersOffset + 1u];
-    x = minimumX + philoxUnitFloat(words.x) * (parameters[parametersOffset + 2u] - minimumX);
-    y = minimumY + philoxUnitFloat(words.y) * (parameters[parametersOffset + 3u] - minimumY);
+    let minimumX = bitcast<f32>(parameters[parametersOffset]);
+    let minimumY = bitcast<f32>(parameters[parametersOffset + 1u]);
+    let maximumX = bitcast<f32>(parameters[parametersOffset + 2u]);
+    let maximumY = bitcast<f32>(parameters[parametersOffset + 3u]);
+    x = minimumX + philoxUnitFloat(words.x) * (maximumX - minimumX);
+    y = minimumY + philoxUnitFloat(words.y) * (maximumY - minimumY);
   }
   positions[positionsOffset + index * 2u] = x;
   positions[positionsOffset + index * 2u + 1u] = y;
@@ -372,21 +388,34 @@ const KEY_TAG: u32 = ${PHILOX_KEY_TAG}u;`,
           gridSize,
           radiusCount,
           mask: simulatedMask,
-          k: simulatedK
+          output: {k: simulatedK}
         }).getCommandNodes(graph),
+        // One workgroup (radiusCount <= 256): local 0 reads the counter, broadcasts it, and
+        // advances it after every invocation has its copy, so the update is race free.
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-sim-${simulation}-gather`,
           operation: OPERATION,
           variant: 'gather',
           bindings: [
             {name: 'simulatedK', view: simulatedK, type: 'f32', access: 'read'},
+            {name: 'simulationIndex', view: simulationCounter, type: 'u32', access: 'read_write'},
             {name: 'allK', view: allK, type: 'f32', access: 'read_write'}
           ],
-          invocationCount: radiusCount,
-          constants: {SIMULATION_INDEX: simulation},
-          declarations: `override SIMULATION_INDEX: u32;
-const RADIUS_COUNT: u32 = ${radiusCount}u;`,
-          body: `allK[allKOffset + SIMULATION_INDEX * RADIUS_COUNT + index] = simulatedK[simulatedKOffset + index];`
+          invocationCount: MAXIMUM_RADIUS_COUNT,
+          workgroupSize: MAXIMUM_RADIUS_COUNT,
+          guardIndex: false,
+          declarations: `const RADIUS_COUNT: u32 = ${radiusCount}u;
+var<workgroup> sharedSimulationIndex: u32;`,
+          body: `if (localInvocationIndex == 0u) {
+    sharedSimulationIndex = simulationIndex[simulationIndexOffset];
+  }
+  let currentSimulation = workgroupUniformLoad(&sharedSimulationIndex);
+  if (index < RADIUS_COUNT) {
+    allK[allKOffset + currentSimulation * RADIUS_COUNT + index] = simulatedK[simulatedKOffset + index];
+  }
+  if (localInvocationIndex == 0u) {
+    simulationIndex[simulationIndexOffset] = currentSimulation + 1u;
+  }`
         })
       );
     }
@@ -447,7 +476,7 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
     );
 
     // One thread: critical deviation (rank-th largest T_j), observed T and Monte Carlo p-value.
-    const summary = props.statistics ?? createTransientView(graph, `${id}-summary`, 'float32', 6);
+    const summary = output.statistics ?? createTransientView(graph, `${id}-summary`, 'float32', 6);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
@@ -526,11 +555,11 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
 
     // One thread per radius: pointwise ranks and the global band.
     const outputs = [
-      ['lower', props.lower],
-      ['upper', props.upper],
-      ['globalLower', props.globalLower],
-      ['globalUpper', props.globalUpper],
-      ['theoretical', props.theoretical]
+      ['lower', output.lower],
+      ['upper', output.upper],
+      ['globalLower', output.globalLower],
+      ['globalUpper', output.globalUpper],
+      ['theoretical', output.theoretical]
     ] as const;
     if (outputs.some(([, view]) => view)) {
       nodes.push(
@@ -551,19 +580,19 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
           body: `let nan = getQuietNaN(index);
   let radius = getRadius(index);
   let critical = summary[summaryOffset + 3u];
-  ${props.theoretical ? 'theoretical[theoreticalOffset + index] = fromL(radius, radius);' : ''}
+  ${output.theoretical ? 'theoretical[theoreticalOffset + index] = fromL(radius, radius);' : ''}
   ${
-    props.globalLower
+    output.globalLower
       ? `globalLower[globalLowerOffset + index] = select(nan, fromL(radius - critical, radius), isFiniteFloat(critical));`
       : ''
   }
   ${
-    props.globalUpper
+    output.globalUpper
       ? `globalUpper[globalUpperOffset + index] = select(nan, fromL(radius + critical, radius), isFiniteFloat(critical));`
       : ''
   }
   ${
-    props.lower || props.upper
+    output.lower || output.upper
       ? `var validCount = 0u;
   for (var simulation = 0u; simulation < SIMULATION_COUNT; simulation++) {
     if (isFiniteFloat(allK[allKOffset + simulation * RADIUS_COUNT + index])) { validCount++; }
@@ -586,8 +615,8 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
       if (below == validCount - RANK) { upperValue = value; }
     }
   }
-  ${props.lower ? 'lower[lowerOffset + index] = select(nan, fromK(lowerValue, radius), isFiniteFloat(lowerValue));' : ''}
-  ${props.upper ? 'upper[upperOffset + index] = select(nan, fromK(upperValue, radius), isFiniteFloat(upperValue));' : ''}`
+  ${output.lower ? 'lower[lowerOffset + index] = select(nan, fromK(lowerValue, radius), isFiniteFloat(lowerValue));' : ''}
+  ${output.upper ? 'upper[upperOffset + index] = select(nan, fromK(upperValue, radius), isFiniteFloat(upperValue));' : ''}`
       : ''
   }`
         })

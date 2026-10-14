@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,17 +17,44 @@ import {
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
   GPU_POLYGON_RASTERIZATION_NO_ZONE,
   POLYGON_RASTER_EXTENT_WGSL
 } from './polygon-rasterization-parameters';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURasterJoin';
+
+/**
+ * Largest `zoneCount` of {@link GPURasterJoin} without `output.sums` on `device`: each per-zone
+ * column holds 4 bytes per zone in one storage binding, so 33554432 on a default device (128 MiB
+ * bindings).
+ */
+export function getGPURasterJoinMaximumZoneCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
+/**
+ * Largest `zoneCount` of {@link GPURasterJoin} with `output.sums` on `device`: the sorted reduction
+ * sums each zone with one 256-invocation workgroup, and the total invocation count must fit a
+ * uint32 (`floor((2^32 - 1) / 256)`); its `zoneCount + 1` uint32 segment offsets must also fit one
+ * storage binding. 16777215 on a default device (128 MiB bindings).
+ */
+export function getGPURasterJoinMaximumSummedZoneCount(device: Device): number {
+  return Math.min(Math.floor(0xffffffff / 256), getStorageBindingElementLimit(device, 4, 1));
+}
+
+/** Workgroup size of the aggregate kernel, which reduces its tallies per workgroup. */
+const AGGREGATE_WORKGROUP_SIZE = 256;
 
 /**
  * Caller-owned outputs of {@link GPURasterJoin}, rewritten on every encoding. At least one is
@@ -70,30 +96,32 @@ export type GPURasterJoinOutput = {
 /**
  * Properties for {@link GPURasterJoin}.
  *
- * Per-frame (no recompile): the contents of `extent`, `points`, `values`, `zones`, and
- * `boundary`. Topology: `width`, `height`, `zoneCount`, view lengths, and which views exist.
+ * Per-frame (no recompile): the contents of `parameters`, `points`, `values`, `zones`, and
+ * `boundary`. Topology: the `grid` size, `zoneCount`, view lengths, and which views exist.
  */
 export type GPURasterJoinProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'raster-join'`. */
   id?: string;
-  /** Raster width in cells. Compile-time. */
-  width: number;
-  /** Raster height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
-   * Per-frame raster placement `[originX, originY, cellWidth, cellHeight]`, the same view the
-   * zone raster was built with (see `getGPUPolygonRasterizationExtentValues`).
+   * Per-frame raster placement, the same view the zone raster was built with (see
+   * `getGPUPolygonRasterizationParameterValues`).
    */
-  extent: GraphDataView<'float32'>;
-  /** Packed planar points in the coordinate system of the extent. */
+  parameters: GraphDataView<'float32'>;
+  /** Packed planar points in the coordinate system of the raster. */
   points: GraphDataView<'float32x2'>;
   /** Optional per-point values for `sums`. */
   values?: GraphDataView<'float32'>;
-  /** Packed row-major zone raster (`width * height`), for example from `GPUPolygonRasterization`. */
+  /** Packed row-major zone raster (`grid.width * grid.height`), for example from `GPUPolygonRasterization`. */
   zones: GraphDataView<'uint32'>;
-  /** Optional boundary flags (`width * height`), for example from `GPUPolygonRasterization`. */
+  /** Optional boundary flags (`grid.width * grid.height`), for example from `GPUPolygonRasterization`. */
   boundary?: GraphDataView<'uint32'>;
-  /** Number of dense zones. Zone IDs at or above it join no zone. Compile-time. */
+  /**
+   * Number of dense zones. Zone IDs at or above it join no zone. Compile-time. At most
+   * {@link getGPURasterJoinMaximumZoneCount} (33554432 on a default device), or
+   * {@link getGPURasterJoinMaximumSummedZoneCount} (16777215) with `output.sums`.
+   */
   zoneCount: number;
   /** Result views. */
   output: GPURasterJoinOutput;
@@ -126,18 +154,8 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-join';
     this.props = props;
     const {id} = this;
-    const {width, height, output} = props;
-    for (const [name, value] of [
-      ['width', width],
-      ['height', height]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    if (width * height > 0xffffffff) {
-      throw new Error(`${id} width * height must fit in uint32`);
-    }
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
     if (
       !Number.isSafeInteger(props.zoneCount) ||
       props.zoneCount < 1 ||
@@ -145,12 +163,7 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} zoneCount must be a positive integer below the no-zone sentinel`);
     }
-    validatePackedView(props.extent, ['float32'], `${id} extent`);
-    if (props.extent.length < GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH) {
-      throw new Error(
-        `${id} extent must contain ${GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH} float32 rows`
-      );
-    }
+    validateRasterParameters(id, props.parameters, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH);
     validatePackedView(props.points, ['float32x2'], `${id} points`);
     const pointCount = props.points.length;
     if (pointCount < 1) {
@@ -162,15 +175,14 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
         throw new Error(`${id} values must contain one row per point`);
       }
     }
-    const cellCount = width * height;
     for (const [name, view] of [
       ['zones', props.zones],
       ['boundary', props.boundary]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== cellCount) {
-          throw new Error(`${id} ${name} must contain width * height rows`);
+          throw new Error(`${id} ${name} must contain one row per cell`);
         }
       }
     }
@@ -198,19 +210,19 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validatePackedUint32View(view, `${id} ${name}`);
+      validatePackedView(view, ['uint32'], `${id} output.${name}`);
       if (view.length !== length) {
-        throw new Error(`${id} ${name} must contain ${length} uint32 rows`);
+        throw new Error(`${id} output.${name} must contain ${length} uint32 rows`);
       }
     }
     if (output.sums) {
-      validatePackedView(output.sums, ['float32'], `${id} sums`);
+      validatePackedView(output.sums, ['float32'], `${id} output.sums`);
       if (output.sums.length !== props.zoneCount) {
-        throw new Error(`${id} sums must contain zoneCount rows`);
+        throw new Error(`${id} output.sums must contain zoneCount rows`);
       }
     }
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
-      props.extent,
+      props.parameters,
       props.points,
       props.values,
       props.zones,
@@ -223,15 +235,26 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, zoneCount, output, boundary} = props;
+    const {zoneCount, output, boundary} = props;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.extent,
+      props.parameters,
       props.points,
       props.values,
       props.zones,
       boundary,
       ...Object.values(output)
     ]);
+    // The sorted sums add one 256-invocation workgroup per zone, which lowers the maximum.
+    validateCapacity(
+      id,
+      'zoneCount',
+      zoneCount,
+      1,
+      output.sums
+        ? getGPURasterJoinMaximumSummedZoneCount(graph.device)
+        : getGPURasterJoinMaximumZoneCount(graph.device)
+    );
     const pointCount = props.points.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const declarations = `const WIDTH: u32 = ${width}u;
@@ -249,7 +272,7 @@ const STATUS_OUTSIDE: u32 = 2u;`;
     const pointStatus = createTransientView(graph, `${id}-point-status`, 'uint32', pointCount);
     const lookupBindings: WGSLKernelBinding[] = [
       {name: 'points', view: props.points, type: 'f32', access: 'read'},
-      {name: 'extent', view: props.extent, type: 'f32', access: 'read'},
+      {name: 'extent', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'zones', view: props.zones, type: 'u32', access: 'read'},
       {name: 'pointZones', view: pointZones, type: 'u32', access: 'read_write'},
       {name: 'pointStatus', view: pointStatus, type: 'u32', access: 'read_write'}
@@ -281,7 +304,7 @@ ${POLYGON_RASTER_EXTENT_WGSL}`,
   if (rasterExtent.valid && isFiniteValue(position.x) && isFiniteValue(position.y)) {
     let cell = floor((position - rasterExtent.origin) / rasterExtent.cellSize);
     if (cell.x >= 0.0 && cell.y >= 0.0 && cell.x < f32(WIDTH) && cell.y < f32(HEIGHT)) {
-      let cellIndex = u32(cell.y) * WIDTH + u32(cell.x);
+      let cellIndex = getStoredRow(u32(cell.y), rasterExtent) * WIDTH + u32(cell.x);
       zone = zones[zonesOffset + cellIndex];
       if (zone >= ZONE_COUNT) {
         zone = NO_ZONE;
@@ -333,20 +356,42 @@ ${POLYGON_RASTER_EXTENT_WGSL}`,
           variant: 'aggregate',
           bindings: aggregateBindings,
           invocationCount: pointCount,
-          declarations,
-          body: `let zone = pointZones[pointZonesOffset + index];
-  let status = pointStatus[pointStatusOffset + index];
-  if (zone != NO_ZONE) {
-    ${counts ? 'atomicAdd(&counts[countsOffset + zone], 1u);' : ''}
-    ${output.boundaryCounts ? 'if (status == STATUS_BOUNDARY) {\n      atomicAdd(&boundaryCounts[boundaryCountsOffset + zone], 1u);\n    }' : ''}
+          // The two tallies are reduced per workgroup first (library rule 14): one global atomic
+          // per workgroup and tally instead of one per point on the same two words.
+          workgroupSize: AGGREGATE_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `${declarations}
+${tallies ? 'var<workgroup> workgroupTallies: array<atomic<u32>, 2>;' : ''}`,
+          body: `${
+            tallies
+              ? `if (localInvocationIndex < 2u) { atomicStore(&workgroupTallies[localInvocationIndex], 0u); }
+  workgroupBarrier();`
+              : ''
+          }
+  if (index < INVOCATION_COUNT) {
+    let zone = pointZones[pointZonesOffset + index];
+    let status = pointStatus[pointStatusOffset + index];
+    if (zone != NO_ZONE) {
+      ${counts ? 'atomicAdd(&counts[countsOffset + zone], 1u);' : ''}
+      ${output.boundaryCounts ? 'if (status == STATUS_BOUNDARY) {\n        atomicAdd(&boundaryCounts[boundaryCountsOffset + zone], 1u);\n      }' : ''}
+    }
+    ${
+      tallies
+        ? `if (zone == NO_ZONE && status == STATUS_BOUNDARY) {
+      atomicAdd(&workgroupTallies[0], 1u);
+    }
+    if (status == STATUS_OUTSIDE) {
+      atomicAdd(&workgroupTallies[1], 1u);
+    }`
+        : ''
+    }
   }
   ${
     tallies
-      ? `if (zone == NO_ZONE && status == STATUS_BOUNDARY) {
-    atomicAdd(&tallies[talliesOffset], 1u);
-  }
-  if (status == STATUS_OUTSIDE) {
-    atomicAdd(&tallies[talliesOffset + 1u], 1u);
+      ? `workgroupBarrier();
+  if (localInvocationIndex < 2u) {
+    let tally = atomicLoad(&workgroupTallies[localInvocationIndex]);
+    if (tally > 0u) { atomicAdd(&tallies[talliesOffset + localInvocationIndex], tally); }
   }`
       : ''
   }`

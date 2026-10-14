@@ -2,11 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../utils/philox-random';
+
 /** Number of float32 elements in a {@link GPUParticleAdvection} parameter view. */
 export const GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH = 12;
 
-/** Number of uint32 elements in a {@link GPUParticleAdvection} word parameter view. */
-export const GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH = 4;
+/** Number of uint32 elements in a {@link GPUParticleAdvection} uint32 parameter view. */
+export const GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH = 4;
+
+/** Philox key word 1 of the respawn position and staggered-age stream, shared by GPU and CPU. @internal */
+export const PARTICLE_ADVECTION_SPAWN_PURPOSE = PHILOX_PURPOSES.particleAdvectionSpawn.id;
+/** Philox key word 1 of the per-frame drop test stream, shared by GPU and CPU. @internal */
+export const PARTICLE_ADVECTION_DROP_PURPOSE = PHILOX_PURPOSES.particleAdvectionDrop.id;
 
 /** Per-frame float settings of {@link GPUParticleAdvection}. */
 export type GPUParticleAdvectionSettings = {
@@ -31,7 +38,7 @@ export type GPUParticleAdvectionSettings = {
 };
 
 /** Per-frame integer settings of {@link GPUParticleAdvection}. */
-export type GPUParticleAdvectionWordSettings = {
+export type GPUParticleAdvectionUint32Settings = {
   /** Random seed. Every random decision is a pure function of the seed and particle counters. */
   seed: number;
   /** Frame counter. Keys the per-frame drop test and selects the trail ring slot `frame % L`. */
@@ -95,15 +102,15 @@ export function getGPUParticleAdvectionParameterValues(
  * Layout: `[seed, frame, maximumAge, reset]` as uint32.
  *
  * @param settings Per-frame integer settings.
- * @param target Optional destination of at least {@link GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH} elements.
+ * @param target Optional destination of at least {@link GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH} elements.
  */
-export function getGPUParticleAdvectionWordParameterValues(
-  settings: GPUParticleAdvectionWordSettings,
-  target: Uint32Array = new Uint32Array(GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH)
+export function getGPUParticleAdvectionUint32ParameterValues(
+  settings: GPUParticleAdvectionUint32Settings,
+  target: Uint32Array = new Uint32Array(GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH)
 ): Uint32Array {
-  if (target.length < GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH) {
+  if (target.length < GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH) {
     throw new Error(
-      `Particle advection word parameter target must hold ${GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH} elements`
+      `Particle advection uint32 parameter target must hold ${GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH} elements`
     );
   }
   for (const [name, value] of [

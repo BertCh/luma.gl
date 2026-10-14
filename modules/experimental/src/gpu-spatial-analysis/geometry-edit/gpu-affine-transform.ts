@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,12 +11,16 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GPUGeometryMeasures} from '../geometry-measures/gpu-geometry-measures';
-import type {GPUGeometryHoleRule} from '../geometry-measures/geometry-measures-kernels';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {createAffineTransformNode} from './geometry-edit-kernels';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUAffineTransform';
 
@@ -29,8 +30,8 @@ export const GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH = 12;
 /** Per-feature origin kinds that {@link GPUAffineTransform} can compute on the GPU. */
 export type GPUAffineTransformOrigin = 'center' | 'centroid';
 
-/** CPU description of the per-frame parameters of `GPUAffineTransform`. */
-export type GPUAffineTransformParameters = {
+/** CPU description of the per-frame settings of `GPUAffineTransform`. */
+export type GPUAffineTransformSettings = {
   /** Rotation angle, counter-clockwise in a y-up system. Degrees unless `useRadians`. Default 0. */
   rotate?: number;
   /** Interpret `rotate`, `skew` as radians. Default false (degrees, as shapely). */
@@ -51,7 +52,7 @@ export type GPUAffineTransformParameters = {
 };
 
 /**
- * Packs `GPUAffineTransform` parameters into the 12-element float32 layout
+ * Packs `GPUAffineTransform` settings into the 12-element float32 layout
  * `[a, b, d, e, translateX, translateY, originX, originY, originMode, 0, 0, 0]` where
  * `originMode` is 0 (point), 1 (`'center'`) or 2 (`'centroid'`), and every vertex maps to
  * `[a b; d e] * (p - origin) + origin + translate`. The matrix is the composition shapely applies
@@ -59,12 +60,12 @@ export type GPUAffineTransformParameters = {
  * `R * K * S` with `S = diag(scale)`, `K = [1 tan(xs); tan(ys) 1]`, `R = [cos -sin; sin cos]`,
  * evaluated in f64 before narrowing to f32.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 12 elements.
  * @throws If a number is not finite, or `target` is too short.
  */
-export function getGPUAffineTransformParameters(
-  parameters: GPUAffineTransformParameters = {},
+export function getGPUAffineTransformParameterValues(
+  settings: GPUAffineTransformSettings = {},
   target: Float32Array = new Float32Array(GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH) {
@@ -72,13 +73,13 @@ export function getGPUAffineTransformParameters(
       `Affine transform target must hold ${GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH} elements`
     );
   }
-  const angleScale = parameters.useRadians ? 1 : Math.PI / 180;
-  const rotate = (parameters.rotate ?? 0) * angleScale;
-  const scale = parameters.scale ?? 1;
+  const angleScale = settings.useRadians ? 1 : Math.PI / 180;
+  const rotate = (settings.rotate ?? 0) * angleScale;
+  const scale = settings.scale ?? 1;
   const [scaleX, scaleY] = typeof scale === 'number' ? [scale, scale] : scale;
-  const [skewX, skewY] = parameters.skew ?? [0, 0];
-  const [translateX, translateY] = parameters.translate ?? [0, 0];
-  const origin = parameters.origin ?? [0, 0];
+  const [skewX, skewY] = settings.skew ?? [0, 0];
+  const [translateX, translateY] = settings.translate ?? [0, 0];
+  const origin = settings.origin ?? [0, 0];
   const originPoint = typeof origin === 'string' ? [0, 0] : origin;
   const originMode = origin === 'center' ? 1 : origin === 'centroid' ? 2 : 0;
   if (
@@ -120,14 +121,8 @@ export type GPUAffineTransformOutput = {
   positions: GraphDataView<'float32x2'>;
 };
 
-/**
- * Properties for {@link GPUAffineTransform}.
- *
- * Per-frame (no recompile): the contents of `parameters` or `featureTransforms` and of every
- * input buffer. Compile-time: view lengths, `geometryType`, `holeRule`, `origins`, and which of
- * `parameters` or `featureTransforms` is used.
- */
-export type GPUAffineTransformProps = {
+/** Props shared by every geometry type of {@link GPUAffineTransform}. */
+type GPUAffineTransformSharedProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'affine-transform'`. */
   id?: string;
   /**
@@ -139,29 +134,12 @@ export type GPUAffineTransformProps = {
   spatialContext?: GPUSpatialContext;
   /** Packed planar vertex positions. */
   positions: GraphDataView<'float32x2'>;
-  /**
-   * Optional `ringCount + 1` monotonic vertex offsets. Required with `featureTransforms` and with
-   * per-feature `origins`; ring `r` owns `[ringOffsets[r], ringOffsets[r + 1])`.
-   */
-  ringOffsets?: GraphDataView<'uint32'>;
-  /**
-   * Optional `featureCount + 1` monotonic ring offsets; when omitted every ring is its own
-   * feature. Requires `ringOffsets`.
-   */
-  featureRingOffsets?: GraphDataView<'uint32'>;
-  /**
-   * Geometry type used for `'centroid'` origins (length-weighted for lines, area-weighted for
-   * polygons). `'points'` supports only the `'center'` origin. Default `'lines'`.
-   */
-  geometryType?: 'points' | 'lines' | 'polygons';
-  /** How polygon rings combine for the centroid, see `GPUGeometryMeasures`. Default `'winding'`. */
-  holeRule?: GPUGeometryHoleRule;
   /** Per-feature origins that `parameters` may select. Default none. */
   origins?: readonly GPUAffineTransformOrigin[];
   /**
    * Per-frame packed float32 view of at least {@link GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH}
-   * elements written with {@link getGPUAffineTransformParameters}: one matrix for every feature.
-   * Exactly one of `parameters` and `featureTransforms` is required.
+   * elements written with {@link getGPUAffineTransformParameterValues}: one matrix for every
+   * feature. Exactly one of `parameters` and `featureTransforms` is required.
    */
   parameters?: GraphDataView<'float32'>;
   /**
@@ -173,6 +151,32 @@ export type GPUAffineTransformProps = {
   /** Output view. */
   output: GPUAffineTransformOutput;
 };
+
+/**
+ * Properties for {@link GPUAffineTransform}, discriminated by `geometryType`.
+ *
+ * - `'polygons'`: the four-level layout of {@link GPUPolygonGeometryFields}, one row per feature.
+ * - `'lines'` (default): `lineOffsets`, `lineCount + 1` monotonic vertex offsets, optional for a
+ *   global transform with no per-feature origin; and optional `featureOffsets`, `featureCount + 1`
+ *   monotonic line offsets so a feature owns several lines. Required with `featureTransforms` and
+ *   with per-feature `origins`. Without `featureOffsets` every line is its own feature.
+ * - `'points'`: optional `featureOffsets`, `featureCount + 1` monotonic point offsets (multi-points);
+ *   without it every point is its own feature. Supports only the `'center'` origin.
+ *
+ * Per-frame (no recompile): the contents of `parameters` or `featureTransforms` and of every
+ * input buffer. Compile-time: view lengths, `geometryType`, `origins`, and which of `parameters`
+ * or `featureTransforms` is used.
+ */
+export type GPUAffineTransformProps = GPUAffineTransformSharedProps &
+  (
+    | ({geometryType: 'polygons'} & GPUPolygonGeometryFields)
+    | {
+        geometryType?: 'lines';
+        lineOffsets?: GraphDataView<'uint32'>;
+        featureOffsets?: GraphDataView<'uint32'>;
+      }
+    | {geometryType: 'points'; featureOffsets?: GraphDataView<'uint32'>}
+  );
 
 /**
  * Applies 2D affine transforms to many features at once on the GPU (`shapely.affinity.affine_transform`,
@@ -215,20 +219,6 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
     this.geometryType = props.geometryType ?? 'lines';
     this.origins = props.origins ?? [];
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      ringOffsets: props.ringOffsets,
-      featureRingOffsets: props.featureRingOffsets,
-      parameters: props.parameters,
-      featureTransforms: props.featureTransforms,
-      ...Object.fromEntries(
-        Object.entries(props.output).map(([key, view]) => [`output.${key}`, view])
-      )
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     if (!['points', 'lines', 'polygons'].includes(this.geometryType)) {
       throw new Error(`${id} geometryType must be 'points', 'lines' or 'polygons'`);
     }
@@ -250,28 +240,26 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    if (props.ringOffsets) {
-      validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
-      if (props.ringOffsets.length < 2) {
-        throw new Error(`${id} ringOffsets must contain at least two rows`);
+    const layout = getAffineLayout(props);
+    for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
+      const view = layout[name];
+      if (view) {
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
+        if (view.length < 2) {
+          throw new Error(`${id} ${name} must contain at least two rows`);
+        }
       }
     }
-    if (props.featureRingOffsets) {
-      if (!props.ringOffsets) {
-        throw new Error(`${id} featureRingOffsets requires ringOffsets`);
-      }
-      validatePackedUint32View(props.featureRingOffsets, `${id} featureRingOffsets`);
-      if (props.featureRingOffsets.length < 2) {
-        throw new Error(`${id} featureRingOffsets must contain at least two rows`);
-      }
+    if (props.geometryType === 'lines' && layout.featureOffsets && !layout.ringOffsets) {
+      throw new Error(`${id} featureOffsets requires lineOffsets`);
     }
-    this.featureCount = props.featureRingOffsets
-      ? props.featureRingOffsets.length - 1
-      : props.ringOffsets
-        ? props.ringOffsets.length - 1
+    this.featureCount = layout.featureOffsets
+      ? layout.featureOffsets.length - 1
+      : layout.ringOffsets
+        ? layout.ringOffsets.length - 1
         : 0;
-    if ((props.featureTransforms || this.origins.length > 0) && !props.ringOffsets) {
-      throw new Error(`${id} per-feature transforms and origins require ringOffsets`);
+    if ((props.featureTransforms || this.origins.length > 0) && !layout.ringOffsets) {
+      throw new Error(`${id} per-feature transforms and origins require offsets`);
     }
     if (props.parameters) {
       validatePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -296,8 +284,9 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
       [props.output.positions],
       [
         props.positions,
-        props.ringOffsets,
-        props.featureRingOffsets,
+        layout.ringOffsets,
+        layout.featureOffsets,
+        layout.polygonOffsets,
         props.parameters,
         props.featureTransforms
       ]
@@ -309,10 +298,12 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, featureCount, origins} = this;
+    const layout = getAffineLayout(props);
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.ringOffsets,
-      props.featureRingOffsets,
+      layout.ringOffsets,
+      layout.featureOffsets,
+      layout.polygonOffsets,
       props.parameters,
       props.featureTransforms,
       props.output.positions
@@ -335,10 +326,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
           spatialContext: {...this.spatialContext, metric: 'native', units: 'native'},
           id: `${id}-measures`,
           positions: props.positions,
-          geometryType: this.geometryType === 'polygons' ? 'polygons' : 'lines',
-          ringOffsets: props.ringOffsets!,
-          featureRingOffsets: props.featureRingOffsets,
-          holeRule: props.holeRule,
+          ...getAffineMeasuresLayout(props),
           output: {bounds, centroids}
         }).getCommandNodes(graph)
       );
@@ -348,8 +336,9 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
         id: `${id}-transform`,
         operation: OPERATION,
         positions: props.positions,
-        ringOffsets: props.ringOffsets,
-        featureRingOffsets: props.featureRingOffsets,
+        ringOffsets: layout.ringOffsets,
+        featureOffsets: layout.featureOffsets,
+        polygonOffsets: layout.polygonOffsets,
         parameters: props.parameters,
         featureTransforms: props.featureTransforms,
         bounds,
@@ -359,5 +348,51 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
       })
     );
     return nodes;
+  }
+}
+
+/**
+ * Maps the public layout to the transform kernel: polygons keep the four levels; lines use
+ * `lineOffsets` as ring offsets and `featureOffsets` as feature-to-ring; a point feature is one
+ * ring spanning its points, so `featureOffsets` doubles as the ring offsets.
+ */
+function getAffineLayout(props: GPUAffineTransformProps): {
+  ringOffsets?: GraphDataView<'uint32'>;
+  featureOffsets?: GraphDataView<'uint32'>;
+  polygonOffsets?: GraphDataView<'uint32'>;
+} {
+  switch (props.geometryType) {
+    case 'polygons':
+      return {
+        ringOffsets: props.ringOffsets,
+        featureOffsets: props.featureOffsets,
+        polygonOffsets: props.polygonOffsets
+      };
+    case 'points':
+      return {ringOffsets: props.featureOffsets};
+    default:
+      return {ringOffsets: props.lineOffsets, featureOffsets: props.featureOffsets};
+  }
+}
+
+/** The geometry fields `GPUGeometryMeasures` needs to measure the transformed geometry. */
+function getAffineMeasuresLayout(props: GPUAffineTransformProps) {
+  switch (props.geometryType) {
+    case 'polygons':
+      return {
+        geometryType: 'polygons' as const,
+        ringOffsets: props.ringOffsets,
+        featureOffsets: props.featureOffsets,
+        polygonOffsets: props.polygonOffsets
+      };
+    case 'points':
+      return {geometryType: 'points' as const, featureOffsets: props.featureOffsets};
+    default:
+      // Origins need the offsets (validated by the constructor).
+      return {
+        geometryType: 'lines' as const,
+        lineOffsets: props.lineOffsets as GraphDataView<'uint32'>,
+        featureOffsets: props.featureOffsets
+      };
   }
 }

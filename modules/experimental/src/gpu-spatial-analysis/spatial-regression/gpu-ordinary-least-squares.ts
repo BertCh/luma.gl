@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,8 +15,10 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
@@ -44,8 +43,8 @@ import {
   getSymmetricEigenvalueRangeWGSL,
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
 } from './spatial-regression-solve';
-import type {GPUSolverStatusPort} from '../contracts/index';
-import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../contracts/model-result';
+import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
@@ -54,7 +53,10 @@ const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
 
 /** Caller-owned outputs of {@link GPUOrdinaryLeastSquares}. */
-export type GPUOrdinaryLeastSquaresOutput = GPUSolverStatusPort & {
+export type GPUOrdinaryLeastSquaresOutput = {
+  /** One-row solver `code` (0 on success; see the class documentation for failure codes). */
+  status: Pick<GPUSolverStatusPort, 'code'>;
+
   /** `predictorCount + 1` coefficients, intercept first, then one per predictor column. */
   coefficients: GraphDataView<'float32'>;
   /** Coefficient standard errors, same layout as `coefficients`. */
@@ -186,25 +188,13 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {predictorCount, output} = props;
-    if (
-      !Number.isInteger(predictorCount) ||
-      predictorCount < 1 ||
-      predictorCount > SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
-    ) {
-      throw new Error(
-        `${id} predictorCount must be an integer in [1, ${SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1}]`
-      );
-    }
-    for (const [name, view] of [
-      ['predictors', props.predictors],
-      ['response', props.response],
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'predictorCount',
+      predictorCount,
+      1,
+      SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
+    );
     validatePackedView(props.predictors, ['float32'], `${id} predictors`);
     validatePackedView(props.response, ['float32'], `${id} response`);
     const rows = props.response.length;
@@ -215,7 +205,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       throw new Error(`${id} predictors length must equal response length * predictorCount`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal response length`);
       }
@@ -241,9 +231,9 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         `${id} output.summary must hold ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedUint32View(output.status, `${id} output.status`);
-    if (output.status.length < 1) {
-      throw new Error(`${id} output.status must hold one uint32 row`);
+    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    if (output.status.code.length < 1) {
+      throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     for (const name of ['residuals', 'fitted'] as const) {
       const view = output[name];
@@ -255,9 +245,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       }
     }
     if (props.tileRowCount !== undefined) {
-      if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
-        throw new Error(`${id} tileRowCount must be a positive integer`);
-      }
+      validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
     this.tileRowCount =
@@ -271,7 +259,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         output.standardErrors,
         output.tStatistics,
         output.summary,
-        output.status,
+        output.status.code,
         output.residuals,
         output.fitted
       ],
@@ -299,7 +287,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       output.standardErrors,
       output.tStatistics,
       output.summary,
-      output.status,
+      output.status.code,
       output.residuals,
       output.fitted
     ]);
@@ -449,7 +437,7 @@ const TILE_COUNT: u32 = ${tileCount}u;`,
           write('standardErrorsOut', output.standardErrors, 'f32'),
           write('tStatisticsOut', output.tStatistics, 'f32'),
           write('summaryOut', output.summary, 'f32'),
-          write('statusOut', output.status, 'u32')
+          write('statusOut', output.status.code, 'u32')
         ],
         invocationCount: 1,
         declarations: `${getSharedWGSL(layout, false)}

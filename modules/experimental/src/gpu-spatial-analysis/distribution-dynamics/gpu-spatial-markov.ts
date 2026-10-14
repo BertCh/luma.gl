@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,52 +13,61 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {GPUClassBreaks} from '../../gpu-dataframe/column-classification/gpu-class-breaks';
 import type {GPUClassBreaksMethod} from '../../gpu-dataframe/column-classification/class-breaks-parameters';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {GPUSpatialLag} from '../spatial-weights/gpu-spatial-lag';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
-import type {GPUInferenceMetadata} from '../contracts/index';
+import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 import {GPUClassAssignment} from './gpu-class-assignment';
 import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
-import {getPeriodView} from './period-views';
+import {
+  createPeriodPackNode,
+  createPeriodUnpackNode,
+  getPaddedPeriodStride,
+  getPeriodView
+} from './period-views';
 
 /** Caller-owned outputs of {@link GPUSpatialMarkov}. */
 export type GPUSpatialMarkovOutput = GPUTransitionMatrixOutput & {
   /**
-   * Pooled class edges of the spatial lag, `lagMaximumClassCount + 1` rows (see
+   * Pooled class edges of the spatial lag, `maximumLagClassCount + 1` rows (see
    * `GPUClassBreaks.output.breaks`). One legend for every period.
    */
   lagBreaks: GraphDataView<'float32'>;
   /** One row receiving the produced lag class count (`GPUClassBreaks.output.classCount`). */
   lagClassCount: GraphDataView<'uint32'>;
-  /** Optional spatial lag per row and period, period-major (`rows * periods` entries). */
+  /** Optional spatial lag per row and period, period-major (`rowCount * periodCount` entries). */
   lagValues?: GraphDataView<'float32'>;
-  /** Optional lag class per row and period, period-major (`rows * periods` entries). */
+  /** Optional lag class per row and period, period-major (`rowCount * periodCount` entries). */
   lagClasses?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUSpatialMarkov}.
  *
- * Topology: `rows`, `periods`, `classCount`, `lagMaximumClassCount`, `lagMethods`, `periodLag`,
+ * Topology: `rows`, `periods`, `classCount`, `maximumLagClassCount`, `lagMethods`, `periodLag`,
  * `normalize` and which optional views exist. Per-frame: every view's contents, including
  * `lagParameters` (lag classification method and class count).
  */
 export type GPUSpatialMarkovProps = {
   /** Prefix for generated node IDs. Defaults to `'spatial-markov'`. */
   id?: string;
-  /** Analysis values per row and period, period-major (`rows * periods` entries). */
+  /** Analysis values per row and period, period-major (`rowCount * periodCount` entries). */
   values: GraphDataView<'float32'>;
   /** Class of `values` per row and period, same layout, for example from {@link GPUClassAssignment}. */
   classes: GraphDataView<'uint32'>;
   /** Number of classes `K` of `classes`, 1 to 64. */
   classCount: number;
-  /** Square self-join weights over the `rows` locations, constant across periods. */
+  /** Square self-join weights over the `rowCount` locations, constant across periods. */
   weights: GPUSpatialWeights;
   /** Number of periods. */
-  periods: number;
+  periodCount: number;
   /** Periods between the two ends of a transition. Defaults to 1. */
   periodLag?: number;
   /**
@@ -68,12 +76,12 @@ export type GPUSpatialMarkovProps = {
    */
   normalize?: boolean;
   /** Compile-time class capacity of the lag classification, 1 to 64. Also the condition count. */
-  lagMaximumClassCount: number;
+  maximumLagClassCount: number;
   /** `GPUClassBreaks` per-frame parameters for the lag (`getGPUClassBreaksParameterValues`). */
   lagParameters: GraphDataView<'float32'>;
   /** Methods compiled into the lag classification. Defaults to `['quantile']`. */
   lagMethods?: readonly GPUClassBreaksMethod[];
-  /** Optional row selection (`rows` entries) applied to every period. */
+  /** Optional row selection (`rowCount` entries) applied to every period. */
   mask?: GraphDataView<'uint32'>;
   /**
    * Compile-time. A `(lag class, from)` state with fewer transitions than this is counted in
@@ -88,10 +96,10 @@ export type GPUSpatialMarkovProps = {
  * Spatial Markov (Rey 2001, giddy `Spatial_Markov`): transition counts of a variable's classes
  * conditioned on the class of the spatial lag at the start of each transition.
  *
- * Chain: one `GPUSpatialLag` per period, then a single `GPUClassBreaks` over the pooled lag column
+ * Chain: a pack kernel into a 64-aligned period stride, one `GPUSpatialLag` per period, an unpack kernel back to the contiguous lag column, then a single `GPUClassBreaks` over the pooled lag column
  * of all periods (so the lag legend is one set of edges), a `GPUClassAssignment` of the lag, and a
  * `GPUTransitionMatrix` with the lag class as condition. The counts tensor is
- * `lagMaximumClassCount * classCount * classCount`; condition `c` is the `c`th lag class, so slices
+ * `maximumLagClassCount * classCount * classCount`; condition `c` is the `c`th lag class, so slices
  * past the produced `lagClassCount` stay zero. Counts are exact integers. The lag values and edges
  * are f32 (fixed-order sums), so a lag within f32 rounding of an edge may fall in the neighboring
  * lag class compared with a double-precision evaluation.
@@ -119,33 +127,31 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUSpatialMarkovProps;
   /** Rows per period. */
-  readonly rows: number;
+  readonly rowCount: number;
 
   constructor(props: GPUSpatialMarkovProps) {
     const id = props.id ?? 'spatial-markov';
     this.id = id;
     this.props = props;
-    this.rows = validateGPUSpatialWeights(id, props.weights);
-    const total = this.rows * props.periods;
+    this.rowCount = validateGPUSpatialWeights(id, props.weights);
+    const total = this.rowCount * props.periodCount;
     validatePackedView(props.values, ['float32'], `${id} values`);
     validatePackedUint32View(props.classes, `${id} classes`);
-    if (!Number.isInteger(props.periods) || props.periods < 2) {
-      throw new Error(`${id} periods must be an integer of at least 2`);
-    }
+    validateCapacity(id, 'periodCount', props.periodCount, 2);
     if (props.values.length !== total || props.classes.length !== total) {
-      throw new Error(`${id} values and classes length must equal rows * periods`);
+      throw new Error(`${id} values and classes length must equal rowCount * periodCount`);
     }
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
-      if (props.mask.length !== this.rows) {
+      if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
     }
     if (props.output.lagValues && props.output.lagValues.length !== total) {
-      throw new Error(`${id} output.lagValues length must equal rows * periods`);
+      throw new Error(`${id} output.lagValues length must equal rowCount * periodCount`);
     }
     if (props.output.lagClasses && props.output.lagClasses.length !== total) {
-      throw new Error(`${id} output.lagClasses length must equal rows * periods`);
+      throw new Error(`${id} output.lagClasses length must equal rowCount * periodCount`);
     }
   }
 
@@ -164,12 +170,12 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
     };
   }
 
-  /** Returns the lag, pooled-breaks, assignment and transition nodes in order. */
+  /** Returns the pack, per-period lag, unpack, pooled-breaks, assignment and transition nodes in order. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, rows} = this;
-    const {output, weights, periods, mask} = props;
+    const {id, props, rowCount: rows} = this;
+    const {output, weights, periodCount: periods, mask} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.classes,
@@ -196,19 +202,54 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       output.lagValues ?? createTransientView(graph, `${id}-lag-values`, 'float32', total);
     const lagClasses =
       output.lagClasses ?? createTransientView(graph, `${id}-lag-classes`, 'uint32', total);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    // The per-period lag chains read and write 64-aligned padded transients so every period view
+    // has the same offset residue and the period loop adds no pipelines (rule 12); one pack and
+    // one unpack kernel convert from and to the contiguous period-major layout.
+    const stride = getPaddedPeriodStride(rows);
+    const paddedValues = createTransientView(
+      graph,
+      `${id}-padded-values`,
+      'float32',
+      stride * periods
+    );
+    const paddedLagValues = createTransientView(
+      graph,
+      `${id}-padded-lag-values`,
+      'float32',
+      stride * periods
+    );
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createPeriodPackNode<Parameters>(graph, {
+        id: `${id}-pack-values`,
+        operation: 'GPUSpatialMarkov',
+        source: props.values,
+        padded: paddedValues,
+        rows,
+        periods
+      })
+    ];
     for (let period = 0; period < periods; period++) {
       nodes.push(
         ...new GPUSpatialLag({
           id: `${id}-lag-${period}`,
-          values: getPeriodView(graph, props.values, period, rows),
+          values: getPeriodView(graph, paddedValues, period, rows, stride),
           weights,
           mask,
           normalize: props.normalize ?? true,
-          output: getPeriodView(graph, lagValues, period, rows)
+          output: getPeriodView(graph, paddedLagValues, period, rows, stride)
         }).getCommandNodes(graph)
       );
     }
+    nodes.push(
+      createPeriodUnpackNode<Parameters>(graph, {
+        id: `${id}-unpack-lag-values`,
+        operation: 'GPUSpatialMarkov',
+        padded: paddedLagValues,
+        output: lagValues,
+        rows,
+        periods
+      })
+    );
     let pooledMask: GraphDataView<'uint32'> | undefined;
     if (mask) {
       pooledMask = createTransientView(graph, `${id}-pooled-mask`, 'uint32', total);
@@ -232,7 +273,7 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
         values: lagValues,
         mask: pooledMask,
         parameters: props.lagParameters,
-        maximumClassCount: props.lagMaximumClassCount,
+        maximumClassCount: props.maximumLagClassCount,
         methods: props.lagMethods ?? ['quantile'],
         output: {breaks: output.lagBreaks, classCount: output.lagClassCount}
       }).getCommandNodes(graph),
@@ -247,12 +288,11 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       ...new GPUTransitionMatrix({
         id: `${id}-transitions`,
         classes: props.classes,
-        rows,
-        periods,
+        periodCount: periods,
         classCount: props.classCount,
         periodLag: props.periodLag,
         conditionClasses: lagClasses,
-        conditionCount: props.lagMaximumClassCount,
+        conditionCount: props.maximumLagClassCount,
         mask,
         minimumTransitions: props.minimumTransitions,
         output: {

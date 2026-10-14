@@ -5,7 +5,6 @@
 import {
   createTransientView,
   GPUCompaction,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -27,23 +26,51 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCapacity,
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {TERRAIN_WGSL_HELPERS} from '../terrain-analysis/terrain-analysis-utils';
+import {RASTER_WGSL_HELPERS, validateParameterTarget} from '../../gpu-raster/raster-band-utils';
 
 const OPERATION = 'GPUProfilePeaks';
 
-/** Number of float32 values read from `GPUProfilePeaksProps.settings`. */
+/** Number of float32 values read from `GPUProfilePeaksProps.parameters`. */
 export const GPU_PROFILE_PEAKS_PARAMETER_LENGTH = 1;
 
-/** Default compile-time cap on suppression rounds. */
-export const GPU_PROFILE_PEAKS_DEFAULT_NMS_ROUNDS = 16;
+/** Default compile-time cap on non-maximum suppression rounds. */
+export const GPU_PROFILE_PEAKS_DEFAULT_MAXIMUM_SUPPRESSION_ITERATIONS = 16;
 
-/** Largest accepted `window` and (rounded up) `nms`, in samples. Bounds the per-sample loops. */
+/**
+ * Largest accepted `window` and (rounded up) `suppressionRadius`, in samples. Bounds the
+ * per-sample loops.
+ */
 export const GPU_PROFILE_PEAKS_MAXIMUM_RADIUS = 4096;
 
-/** Largest accepted `nmsRounds`. */
-export const GPU_PROFILE_PEAKS_MAXIMUM_NMS_ROUNDS = 1024;
+/** Largest accepted `maximumSuppressionIterations`. */
+export const GPU_PROFILE_PEAKS_SUPPRESSION_ITERATION_LIMIT = 1024;
+
+/**
+ * Word written to `output.peakMask` at a candidate that suppression left undecided
+ * (`maximumSuppressionIterations` rounds were not enough). A converged run only writes 0 or 1.
+ */
+export const GPU_PROFILE_PEAKS_UNRESOLVED_MASK = 0xffffffff;
+
+/**
+ * Value written to `output.prominence`, `output.refinedIndex` and `output.refinedValue` at a
+ * candidate that suppression
+ * left undecided: `+Infinity`. A converged run writes finite values at kept peaks and NaN
+ * elsewhere, and a prominence or refined value is a difference of finite samples, so it never
+ * produces `+Infinity`. Compare with `value === Infinity`, not `Number.isNaN`.
+ */
+export const GPU_PROFILE_PEAKS_UNRESOLVED_VALUE = Number.POSITIVE_INFINITY;
+
+/**
+ * Bit set in `output.peaks.overflow` when suppression left candidates undecided, so the compact
+ * list of peaks is incomplete. Bit 0 (value 1) keeps its meaning, a full `output.peaks.ids`; the
+ * flag is the OR of both and reads 0 only for a complete result. A converged run never sets this
+ * bit.
+ */
+export const GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED = 2;
 
 /**
  * CPU-side description packed by {@link getGPUProfilePeaksParameterValues}.
@@ -54,36 +81,84 @@ export const GPU_PROFILE_PEAKS_MAXIMUM_NMS_ROUNDS = 1024;
  */
 export type GPUProfilePeaksSettings = {
   /**
-   * Minimum prominence, in profile-value units. A candidate with `prominence < minProminence` is
-   * rejected. Must not be NaN; a value at or below zero accepts every candidate.
+   * Minimum prominence, in profile-value units. A candidate with
+   * `prominence < minimumProminence` is rejected. Must not be NaN; a value at or below zero accepts
+   * every candidate.
    */
-  minProminence: number;
+  minimumProminence: number;
 };
 
 /**
- * Packs profile-peak settings into `[minProminence]`.
+ * Packs profile-peak settings into `[minimumProminence]`.
  *
- * @throws If `minProminence` is NaN or `target` is too short.
+ * @throws If `minimumProminence` is NaN or `target` is too short.
  */
 export function getGPUProfilePeaksParameterValues(
   settings: GPUProfilePeaksSettings,
   target: Float32Array = new Float32Array(GPU_PROFILE_PEAKS_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_PROFILE_PEAKS_PARAMETER_LENGTH) {
-    throw new Error('Profile peaks settings target must hold 1 value');
+  validateParameterTarget(
+    'getGPUProfilePeaksParameterValues',
+    target,
+    GPU_PROFILE_PEAKS_PARAMETER_LENGTH
+  );
+  if (Number.isNaN(settings.minimumProminence)) {
+    throw new Error('getGPUProfilePeaksParameterValues minimumProminence must not be NaN');
   }
-  if (Number.isNaN(settings.minProminence)) {
-    throw new Error('Profile peaks minProminence must not be NaN');
-  }
-  target[0] = settings.minProminence;
+  target[0] = settings.minimumProminence;
   return target;
 }
+
+/** Status words of {@link GPUProfilePeaks}. */
+export type GPUProfilePeaksStatus = {
+  /**
+   * One-row scalar: 1 when suppression converged within `maximumSuppressionIterations` rounds,
+   * otherwise 0. Optional because the data carries the answer: when 0, undecided candidates are
+   * marked with the `GPU_PROFILE_PEAKS_UNRESOLVED_*` sentinels and the overflow bit, never reported
+   * as kept or as absent.
+   */
+  converged?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUProfilePeaks}; at least one is required. */
+export type GPUProfilePeaksOutput = {
+  /**
+   * Per-sample prominence of kept peaks, NaN elsewhere, and
+   * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at undecided candidates.
+   */
+  prominence?: GraphDataView<'float32'>;
+  /**
+   * Per-sample refined fractional index of kept peaks inside their own profile (`0` is the
+   * profile's first sample), NaN elsewhere, {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at
+   * undecided candidates.
+   */
+  refinedIndex?: GraphDataView<'float32'>;
+  /**
+   * Per-sample parabola-refined value of kept peaks, NaN elsewhere,
+   * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at undecided candidates.
+   */
+  refinedValue?: GraphDataView<'float32'>;
+  /**
+   * Per-sample mask: 1 on a kept peak's sample row, otherwise 0, and
+   * {@link GPU_PROFILE_PEAKS_UNRESOLVED_MASK} at undecided candidates.
+   */
+  peakMask?: GraphDataView<'uint32'>;
+  /**
+   * Compact result: sample row IDs (indices into `values`) of kept peaks in ascending order, with
+   * a clamped count and an overflow flag. Undecided candidates are not listed; `overflow` then has
+   * {@link GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED} set.
+   */
+  peaks?: GPUCompactOutput;
+  /** Optional status words. */
+  status?: GPUProfilePeaksStatus;
+};
 
 /**
  * Properties for {@link GPUProfilePeaks}.
  *
- * Topology (compile time): `window`, `minSide`, `nms`, `wrap`, `nmsRounds`, which views exist and
- * their lengths. Per-frame: `settings` and the contents of `values`, `validity` and `offsets`.
+ * Topology (compile time): `window`, `minimumSide`, `suppressionRadius`, `wrap`,
+ * `maximumSuppressionIterations`, which views exist and their lengths. Per-frame: `parameters`
+ * and the contents of `values`, `validity` and `offsets`.
  * Every distance is in profile samples and every value in profile-value units, so the contributor is
  * cell-size independent.
  */
@@ -105,50 +180,31 @@ export type GPUProfilePeaksProps = {
    * `p` owns samples `[offsets[p], offsets[p + 1])`. Offsets must be non-decreasing and at most
    * `values.length`; empty profiles are allowed. Samples outside `[offsets[0], offsets[last])`
    * belong to no profile and are never reported. This is the layout of
-   * `GPURasterProfile.pathSampleOffsets`.
+   * `GPURasterProfile.lineSampleOffsets`.
    */
   offsets: GraphDataView<'uint32'>;
-  /** Per-frame settings with at least 1 float32 value, see {@link getGPUProfilePeaksParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 1 float32 value, see {@link getGPUProfilePeaksParameterValues}. */
+  parameters: GraphDataView<'float32'>;
   /** Half-window, in samples, of the prominence walk. Integer in `[1, 4096]`. */
   window: number;
   /**
    * Minimum number of valid samples counted on each side of a candidate. Integer `>= 0`. Default 4.
    */
-  minSide?: number;
+  minimumSide?: number;
   /**
    * Non-maximum suppression radius in samples, measured between refined (fractional) positions.
    * Finite, in `[0, 4096]`. Default `max(2, round(window / 4))`.
    */
-  nms?: number;
+  suppressionRadius?: number;
   /**
    * Treat each profile as circular (a 360 degree horizon). Default false. See
    * {@link GPUProfilePeaks} for the exact semantics.
    */
   wrap?: boolean;
   /** Compile-time cap on suppression rounds, in `[0, 1024]`. Default 16. */
-  nmsRounds?: number;
-  /** Optional per-sample prominence of kept peaks, NaN elsewhere. */
-  prominence?: GraphDataView<'float32'>;
-  /**
-   * Optional per-sample refined fractional index of kept peaks inside their own profile (`0` is
-   * the profile's first sample), NaN elsewhere.
-   */
-  refinedIndex?: GraphDataView<'float32'>;
-  /** Optional per-sample parabola-refined value of kept peaks, NaN elsewhere. */
-  refinedValue?: GraphDataView<'float32'>;
-  /** Optional per-sample mask: 1 on a kept peak's sample row, otherwise 0. */
-  peakMask?: GraphDataView<'uint32'>;
-  /**
-   * Optional compact result: sample row IDs (indices into `values`) of kept peaks in ascending
-   * order, with a clamped count and an overflow flag.
-   */
-  output?: GPUCompactOutput;
-  /**
-   * Optional one-row scalar: 1 when suppression converged within `nmsRounds` rounds, otherwise 0.
-   * When 0, undecided candidates are not reported (fail closed).
-   */
-  converged?: GraphDataView<'uint32'>;
+  maximumSuppressionIterations?: number;
+  /** Caller-owned outputs. */
+  output: GPUProfilePeaksOutput;
 };
 
 // Per-candidate state codes of the suppression phase.
@@ -162,7 +218,7 @@ const STATE_SUPPRESSED = 3;
  * refinement and non-maximum suppression.
  *
  * Works on any profiles stored as CSR (compressed sparse row) spans, for example the
- * `sampleValues` and `pathSampleOffsets` of `GPURasterProfile`, or the apparent-horizon elevation
+ * `sampleValues` and `lineSampleOffsets` of `GPURasterProfile`, or the apparent-horizon elevation
  * per azimuth. It ports the reference `profilePeaks` of mt-image, quirks included:
  *
  * - **Gaps.** A gap is a non-finite value or a zero validity word. A gap's value is never read or
@@ -174,7 +230,8 @@ const STATE_SUPPRESSED = 3;
  * - **Prominence.** For each side, `lo = v`, `valid = 0`; for `k = 1..window` step to
  *   `j = i +- k`, stop at the profile end or a gap, `valid++`, stop if `w > v` (that higher sample
  *   is counted in `valid` but not in `lo`), else `lo = min(lo, w)`. Reject if either side has
- *   `valid < minSide`. `prominence = v - max(loLeft, loRight)`; reject if below `minProminence`.
+ *   `valid < minimumSide`. `prominence = v - max(loLeft, loRight)`; reject if below
+ *   `minimumProminence`.
  *   The prominence is one f32 subtraction of two f32 values, so a CPU oracle using `Math.fround`
  *   reproduces it bit for bit.
  * - **Refinement.** With both neighbours valid, `den = a - 2v + c`; if `den < 0`,
@@ -183,7 +240,7 @@ const STATE_SUPPRESSED = 3;
  *   on GPUs, so expect a few ULP against a float64 oracle.
  * - **Suppression.** Candidates are ranked by prominence descending, ties by ascending sample
  *   index. A candidate is kept iff no higher-ranked KEPT candidate of the same profile lies within
- *   `nms` samples (`|refined position difference| <= nms` suppresses; strictly greater keeps).
+ *   `suppressionRadius` samples (`|refined position difference| <= suppressionRadius` suppresses; strictly greater keeps).
  *
  * **Wrap mode** (`wrap: true`, no counterpart in mt-image) treats each profile as a circle: every
  * sample is a candidate, neighbour indices are taken modulo `n` (a neighbour that is the sample
@@ -194,23 +251,25 @@ const STATE_SUPPRESSED = 3;
  * lacks an equal predecessor within 2.
  *
  * **Parallel exact suppression.** Greedy suppression is sequential, but its result is the unique
- * fixed point of: `p` is kept iff no kept candidate of higher rank lies within `nms`. The GPU
+ * fixed point of: `p` is kept iff no kept candidate of higher rank lies within `suppressionRadius`. The GPU
  * computes that fixed point in rounds over a per-candidate state (undecided, kept, suppressed). In
- * a round an undecided `p` becomes suppressed if any higher-ranked candidate within `nms` is kept,
- * becomes kept if every higher-ranked candidate within `nms` is suppressed, and otherwise stays
+ * a round an undecided `p` becomes suppressed if any higher-ranked candidate within `suppressionRadius` is kept,
+ * becomes kept if every higher-ranked candidate within `suppressionRadius` is suppressed, and otherwise stays
  * undecided. Equivalence with greedy, by induction on rank: assume every candidate of rank below
  * `r` has the greedy decision whenever it is decided. A candidate `p` of rank `r` has greedy
- * decision "kept" iff all higher-ranked candidates within `nms` were rejected by greedy, and
+ * decision "kept" iff all higher-ranked candidates within `suppressionRadius` were rejected by greedy, and
  * "suppressed" iff one was kept; the round rule applies exactly these two tests to decided
  * higher-ranked neighbours, so it only ever decides `p` in agreement with greedy, and it decides
  * `p` as soon as the highest-ranked relevant neighbours are decided (the top-ranked candidate of
  * a profile has no higher neighbour and is kept in round 1). Decisions are monotone and never
  * revisited, and a decided state is final truth, so racing in-place updates are safe: a reader
  * sees either the old undecided state (and merely waits one more round) or the final decision.
- * State words are atomics, so no torn or speculative value is observable. Candidates within `nms`
- * in refined position lie within `floor(nms) + 1` raw samples because `|di| <= 0.5`, which bounds
- * the scan. If `nmsRounds` rounds do not decide every candidate (a chain of mutually suppressing
- * candidates longer than the cap), `converged` reads 0 and undecided candidates are not reported.
+ * State words are atomics, so no torn or speculative value is observable. Candidates within `suppressionRadius`
+ * in refined position lie within `floor(suppressionRadius) + 1` raw samples because `|di| <= 0.5`, which bounds
+ * the scan. If `maximumSuppressionIterations` rounds do not decide every candidate (a chain of mutually suppressing
+ * candidates longer than the cap), `output.status.converged` reads 0, undecided candidates carry the unresolved sentinels (see
+ * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE}, {@link GPU_PROFILE_PEAKS_UNRESOLVED_MASK}) and the
+ * compact list sets {@link GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED}.
  *
  * Offsets must be non-decreasing; each sample finds its profile by binary search. All work is in
  * sample space and profile-value units, independent of any cell size. Chunked views are not
@@ -222,22 +281,26 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUProfilePeaksProps;
   /** Minimum valid samples per side. */
-  readonly minSide: number;
+  readonly minimumSide: number;
   /** Non-maximum suppression radius in samples. */
-  readonly nms: number;
+  readonly suppressionRadius: number;
   /** Whether profiles are circular. */
   readonly wrap: boolean;
   /** Compile-time cap on suppression rounds. */
-  readonly nmsRounds: number;
+  readonly maximumSuppressionIterations: number;
 
   constructor(props: GPUProfilePeaksProps) {
     this.id = props.id ?? 'profile-peaks';
     this.props = props;
-    this.minSide = props.minSide ?? 4;
-    this.nms = props.nms ?? Math.max(2, Math.round(props.window / 4));
+    this.minimumSide = props.minimumSide ?? 4;
+    this.suppressionRadius = props.suppressionRadius ?? Math.max(2, Math.round(props.window / 4));
     this.wrap = props.wrap ?? false;
-    this.nmsRounds = props.nmsRounds ?? GPU_PROFILE_PEAKS_DEFAULT_NMS_ROUNDS;
+    this.maximumSuppressionIterations =
+      props.maximumSuppressionIterations ??
+      GPU_PROFILE_PEAKS_DEFAULT_MAXIMUM_SUPPRESSION_ITERATIONS;
     const {id} = this;
+    const {output} = props;
+    const converged = output.status?.converged;
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length < 1) {
       throw new Error(`${id} values must contain at least one sample`);
@@ -253,9 +316,9 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
     if (props.offsets.length < 1) {
       throw new Error(`${id} offsets must contain profileCount + 1 rows`);
     }
-    validatePackedView(props.settings, ['float32'], `${id} settings`);
-    if (props.settings.length < GPU_PROFILE_PEAKS_PARAMETER_LENGTH) {
-      throw new Error(`${id} settings must contain at least 1 float32 value`);
+    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
+    if (props.parameters.length < GPU_PROFILE_PEAKS_PARAMETER_LENGTH) {
+      throw new Error(`${id} parameters must contain at least 1 value`);
     }
     if (
       !Number.isInteger(props.window) ||
@@ -266,68 +329,70 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
         `${id} window must be an integer in [1, ${GPU_PROFILE_PEAKS_MAXIMUM_RADIUS}]`
       );
     }
-    if (!Number.isInteger(this.minSide) || this.minSide < 0) {
-      throw new Error(`${id} minSide must be an integer >= 0`);
-    }
-    if (!Number.isFinite(this.nms) || this.nms < 0 || this.nms > GPU_PROFILE_PEAKS_MAXIMUM_RADIUS) {
-      throw new Error(`${id} nms must be in [0, ${GPU_PROFILE_PEAKS_MAXIMUM_RADIUS}]`);
-    }
+    validateCapacity(id, 'minimumSide', this.minimumSide, 0, Number.MAX_SAFE_INTEGER);
     if (
-      !Number.isInteger(this.nmsRounds) ||
-      this.nmsRounds < 0 ||
-      this.nmsRounds > GPU_PROFILE_PEAKS_MAXIMUM_NMS_ROUNDS
+      !Number.isFinite(this.suppressionRadius) ||
+      this.suppressionRadius < 0 ||
+      this.suppressionRadius > GPU_PROFILE_PEAKS_MAXIMUM_RADIUS
     ) {
       throw new Error(
-        `${id} nmsRounds must be an integer in [0, ${GPU_PROFILE_PEAKS_MAXIMUM_NMS_ROUNDS}]`
+        `${id} suppressionRadius must be in [0, ${GPU_PROFILE_PEAKS_MAXIMUM_RADIUS}]`
       );
     }
+    validateCapacity(
+      id,
+      'maximumSuppressionIterations',
+      this.maximumSuppressionIterations,
+      0,
+      GPU_PROFILE_PEAKS_SUPPRESSION_ITERATION_LIMIT
+    );
     if (
-      !props.prominence &&
-      !props.refinedIndex &&
-      !props.refinedValue &&
-      !props.peakMask &&
-      !props.output &&
-      !props.converged
+      !output.prominence &&
+      !output.refinedIndex &&
+      !output.refinedValue &&
+      !output.peakMask &&
+      !output.peaks &&
+      !converged
     ) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view, format] of [
-      ['prominence', props.prominence, 'float32'],
-      ['refinedIndex', props.refinedIndex, 'float32'],
-      ['refinedValue', props.refinedValue, 'float32'],
-      ['peakMask', props.peakMask, 'uint32']
+      ['prominence', output.prominence, 'float32'],
+      ['refinedIndex', output.refinedIndex, 'float32'],
+      ['refinedValue', output.refinedValue, 'float32'],
+      ['peakMask', output.peakMask, 'uint32']
     ] as const) {
       if (!view) {
         continue;
       }
-      validatePackedView(view, [format], `${id} ${name}`);
+      validatePackedView(view, [format], `${id} output.${name}`);
       if (view.length !== sampleCount) {
-        throw new Error(`${id} ${name} must contain one value per sample`);
+        throw new Error(`${id} output.${name} must contain one value per sample`);
       }
     }
-    if (props.output) {
-      validateCompactOutput(id, props.output);
+    if (output.peaks) {
+      validateCompactOutput(id, output.peaks);
     }
-    if (props.converged) {
-      validatePackedView(props.converged, ['uint32'], `${id} converged`);
-      if (props.converged.length < 1) {
-        throw new Error(`${id} converged must contain one uint32 row`);
+    if (converged) {
+      validatePackedView(converged, ['uint32'], `${id} output.status.converged`);
+      if (converged.length < 1) {
+        throw new Error(`${id} output.status.converged must contain one row`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.prominence,
-        props.refinedIndex,
-        props.refinedValue,
-        props.peakMask,
-        props.converged,
-        props.output?.ids,
-        props.output?.count,
-        props.output?.overflow,
-        props.output?.requiredCount
+        output.prominence,
+        output.refinedIndex,
+        output.refinedValue,
+        output.peakMask,
+        converged,
+        output.peaks?.ids,
+        output.peaks?.status.count,
+        output.peaks?.status.overflow,
+        output.peaks?.status.requiredCount
       ],
-      [props.values, props.validity, props.offsets, props.settings]
+      [props.values, props.validity, props.offsets, props.parameters]
     );
   }
 
@@ -335,21 +400,23 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, minSide, nms, wrap, nmsRounds} = this;
+    const {id, props, minimumSide, suppressionRadius, wrap, maximumSuppressionIterations} = this;
+    const {output} = props;
+    const converged = output.status?.converged;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.validity,
       props.offsets,
-      props.settings,
-      props.prominence,
-      props.refinedIndex,
-      props.refinedValue,
-      props.peakMask,
-      props.converged,
-      props.output?.ids,
-      props.output?.count,
-      props.output?.overflow,
-      props.output?.requiredCount
+      props.parameters,
+      output.prominence,
+      output.refinedIndex,
+      output.refinedValue,
+      output.peakMask,
+      converged,
+      output.peaks?.ids,
+      output.peaks?.status.count,
+      output.peaks?.status.overflow,
+      output.peaks?.status.requiredCount
     ]);
     const sampleCount = props.values.length;
     const profileCount = props.offsets.length - 1;
@@ -394,7 +461,7 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
     }
     candidateBindings.push(
       {name: 'profileOffsets', view: props.offsets, type: 'u32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'candidateProminence', view: candidateProminence, type: 'f32', access: 'read_write'},
       {name: 'candidateDelta', view: candidateDelta, type: 'f32', access: 'read_write'},
       {name: 'candidateValue', view: candidateValue, type: 'f32', access: 'read_write'},
@@ -408,9 +475,9 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
         bindings: candidateBindings,
         invocationCount: sampleCount,
         declarations: `${common}
-${TERRAIN_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}
 const WINDOW: u32 = ${props.window}u;
-const MIN_SIDE: u32 = ${minSide}u;
+const MIN_SIDE: u32 = ${minimumSide}u;
 const STATE_INERT: u32 = ${STATE_INERT}u;
 const STATE_UNDECIDED: u32 = ${STATE_UNDECIDED}u;
 ${getNanFunction()}
@@ -493,9 +560,9 @@ fn walkSide(start: u32, count: u32, local: u32, peak: f32, direction: i32) -> Si
 
     // Phase 2: suppression rounds. The rounds are GPU-gated: once a round decides no candidate the
     // remaining unrolled rounds are skipped by their indirect dispatch instead of re-scanning all
-    // samples, so dense profiles pay for the rounds they need rather than for `nmsRounds`.
-    const scanRadius = Math.floor(nms) + 1;
-    if (nmsRounds > 0) {
+    // samples, so dense profiles pay for the rounds they need rather than for `maximumSuppressionIterations`.
+    const scanRadius = Math.floor(suppressionRadius) + 1;
+    if (maximumSuppressionIterations > 0) {
       const suppression = createRasterIterationState(graph, `${id}-nms`, OPERATION, sampleCount);
       nodes.push(
         createRasterIterationResetNode<Parameters>(graph, {
@@ -508,8 +575,8 @@ fn walkSide(start: u32, count: u32, local: u32, peak: f32, direction: i32) -> Si
           gateId: `${id}-nms-gate`,
           operation: OPERATION,
           state: suppression,
-          maxIterations: nmsRounds,
-          createRound: ({nodeId, markChangedWGSL, condition, extraResources}) =>
+          maxIterations: maximumSuppressionIterations,
+          createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
             createWGSLKernelNode<Parameters>(graph, {
               id: nodeId,
               operation: OPERATION,
@@ -534,13 +601,14 @@ fn walkSide(start: u32, count: u32, local: u32, peak: f32, direction: i32) -> Si
                   view: suppression.status,
                   type: 'atomic<u32>',
                   access: 'read_write'
-                }
+                },
+                slotBinding
               ],
               invocationCount: sampleCount,
               condition,
               extraResources,
               declarations: `${common}
-const NMS_RADIUS: f32 = ${getWGSLFloatLiteral(nms)};
+const NMS_RADIUS: f32 = ${getWGSLFloatLiteral(suppressionRadius)};
 const SCAN_RADIUS: u32 = ${scanRadius}u;
 const STATE_UNDECIDED: u32 = ${STATE_UNDECIDED}u;
 const STATE_KEPT: u32 = ${STATE_KEPT}u;
@@ -588,12 +656,12 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
     }
 
     // Phase 3: convergence flag.
-    if (props.converged) {
+    if (converged) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-converged-reset`,
           operation: OPERATION,
-          view: props.converged,
+          view: converged,
           type: 'u32',
           value: '1u',
           componentCount: 1
@@ -604,7 +672,7 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
           variant: 'converged',
           bindings: [
             {name: 'candidateState', view: candidateState, type: 'u32', access: 'read'},
-            {name: 'convergedOut', view: props.converged, type: 'atomic<u32>', access: 'read_write'}
+            {name: 'convergedOut', view: converged, type: 'atomic<u32>', access: 'read_write'}
           ],
           invocationCount: sampleCount,
           body: `if (candidateState[candidateStateOffset + index] == ${STATE_UNDECIDED}u) {
@@ -614,38 +682,49 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
       );
     }
 
-    // Phase 4: outputs.
-    const needsMask = Boolean(props.peakMask || props.output);
+    // Phase 4: outputs. An undecided candidate (suppression hit maximumSuppressionIterations) writes the unresolved
+    // sentinels, never "not a peak"; a converged run has no undecided candidate.
+    // The compaction flags are separate from a caller's peakMask because that mask can hold the
+    // unresolved word, which compaction would select.
     const peakMask =
-      props.peakMask ??
-      (props.output
+      output.peakMask ??
+      (output.peaks
         ? createTransientView(graph, `${id}-peak-mask`, 'uint32', sampleCount)
         : undefined);
-    const rowIds = props.output
+    const compactFlags =
+      output.peaks && output.peakMask
+        ? createTransientView(graph, `${id}-peak-flags`, 'uint32', sampleCount)
+        : peakMask;
+    const rowIds = output.peaks
       ? createTransientView(graph, `${id}-row-ids`, 'uint32', sampleCount)
       : undefined;
-    if (props.prominence || props.refinedValue || needsMask) {
+    if (output.prominence || output.refinedValue || peakMask) {
       const bindings: WGSLKernelBinding[] = [
         {name: 'candidateState', view: candidateState, type: 'u32', access: 'read'}
       ];
-      if (props.prominence) {
+      if (output.prominence) {
         bindings.push(
           {name: 'candidateProminence', view: candidateProminence, type: 'f32', access: 'read'},
-          {name: 'prominenceOut', view: props.prominence, type: 'f32', access: 'read_write'}
+          {name: 'prominenceOut', view: output.prominence, type: 'f32', access: 'read_write'}
         );
       }
-      if (props.refinedValue) {
+      if (output.refinedValue) {
         bindings.push(
           {name: 'candidateValue', view: candidateValue, type: 'f32', access: 'read'},
-          {name: 'refinedValueOut', view: props.refinedValue, type: 'f32', access: 'read_write'}
+          {name: 'refinedValueOut', view: output.refinedValue, type: 'f32', access: 'read_write'}
         );
       }
       if (peakMask) {
         bindings.push({name: 'peakMaskOut', view: peakMask, type: 'u32', access: 'read_write'});
       }
+      if (compactFlags && compactFlags !== peakMask) {
+        bindings.push({name: 'flagsOut', view: compactFlags, type: 'u32', access: 'read_write'});
+      }
       if (rowIds) {
         bindings.push({name: 'rowIdsOut', view: rowIds, type: 'u32', access: 'read_write'});
       }
+      // A mask that only feeds the compaction never carries the sentinel.
+      const maskMarksUnresolved = Boolean(output.peakMask);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-outputs`,
@@ -653,24 +732,34 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
           variant: 'outputs',
           bindings,
           invocationCount: sampleCount,
-          declarations: getNanFunction(),
-          body: `let kept = candidateState[candidateStateOffset + index] == ${STATE_KEPT}u;
+          declarations: `${getNanFunction()}
+${getInfinityFunction()}`,
+          body: `let state = candidateState[candidateStateOffset + index];
+  let kept = state == ${STATE_KEPT}u;
+  let unresolved = state == ${STATE_UNDECIDED}u;
   ${
-    props.prominence
-      ? `prominenceOut[prominenceOutOffset + index] = select(getNan(), candidateProminence[candidateProminenceOffset + index], kept);`
+    output.prominence
+      ? `prominenceOut[prominenceOutOffset + index] = select(select(getNan(), candidateProminence[candidateProminenceOffset + index], kept), getInfinity(), unresolved);`
       : ''
   }
   ${
-    props.refinedValue
-      ? `refinedValueOut[refinedValueOutOffset + index] = select(getNan(), candidateValue[candidateValueOffset + index], kept);`
+    output.refinedValue
+      ? `refinedValueOut[refinedValueOutOffset + index] = select(select(getNan(), candidateValue[candidateValueOffset + index], kept), getInfinity(), unresolved);`
       : ''
   }
-  ${peakMask ? 'peakMaskOut[peakMaskOutOffset + index] = select(0u, 1u, kept);' : ''}
+  ${
+    peakMask
+      ? maskMarksUnresolved
+        ? `peakMaskOut[peakMaskOutOffset + index] = select(select(0u, 1u, kept), ${GPU_PROFILE_PEAKS_UNRESOLVED_MASK}u, unresolved);`
+        : 'peakMaskOut[peakMaskOutOffset + index] = select(0u, 1u, kept);'
+      : ''
+  }
+  ${compactFlags && compactFlags !== peakMask ? 'flagsOut[flagsOutOffset + index] = select(0u, 1u, kept);' : ''}
   ${rowIds ? 'rowIdsOut[rowIdsOutOffset + index] = index;' : ''}`
         })
       );
     }
-    if (props.refinedIndex) {
+    if (output.refinedIndex) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-refined-index`,
@@ -680,13 +769,16 @@ const STATE_SUPPRESSED: u32 = ${STATE_SUPPRESSED}u;`,
             {name: 'profileOffsets', view: props.offsets, type: 'u32', access: 'read'},
             {name: 'candidateDelta', view: candidateDelta, type: 'f32', access: 'read'},
             {name: 'candidateState', view: candidateState, type: 'u32', access: 'read'},
-            {name: 'refinedIndexOut', view: props.refinedIndex, type: 'f32', access: 'read_write'}
+            {name: 'refinedIndexOut', view: output.refinedIndex, type: 'f32', access: 'read_write'}
           ],
           invocationCount: sampleCount,
           declarations: `${common}
-${getNanFunction()}`,
-          body: `if (candidateState[candidateStateOffset + index] != ${STATE_KEPT}u) {
-    refinedIndexOut[refinedIndexOutOffset + index] = getNan();
+${getNanFunction()}
+${getInfinityFunction()}`,
+          body: `let state = candidateState[candidateStateOffset + index];
+  if (state != ${STATE_KEPT}u) {
+    refinedIndexOut[refinedIndexOutOffset + index] =
+      select(getNan(), getInfinity(), state == ${STATE_UNDECIDED}u);
     return;
   }
   let range = findProfile(index);
@@ -700,14 +792,15 @@ ${getNanFunction()}`,
         })
       );
     }
-    if (props.output && peakMask && rowIds) {
+    if (output.peaks && compactFlags && rowIds) {
       const compactRows = createTransientView(graph, `${id}-compact-rows`, 'uint32', sampleCount);
       const requiredCount = createTransientView(graph, `${id}-peak-total`, 'uint32', 1);
+      const incomplete = createTransientView(graph, `${id}-incomplete`, 'uint32', 1);
       nodes.push(
         ...new GPUCompaction({
           id: `${id}-compaction`,
           input: rowIds,
-          flags: peakMask,
+          flags: compactFlags,
           output: compactRows,
           count: requiredCount
         }).getCommandNodes(graph),
@@ -716,12 +809,60 @@ ${getNanFunction()}`,
           operation: OPERATION,
           requiredCount,
           compactIds: compactRows,
-          output: props.output
+          output: output.peaks
+        }),
+        // Publish only knows capacity overflow; add the unconverged bit when any candidate is
+        // still undecided.
+        createFillNode<Parameters>(graph, {
+          id: `${id}-incomplete-clear`,
+          operation: OPERATION,
+          view: incomplete,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-incomplete`,
+          operation: OPERATION,
+          variant: 'incomplete',
+          bindings: [
+            {name: 'candidateState', view: candidateState, type: 'u32', access: 'read'},
+            {name: 'incomplete', view: incomplete, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: sampleCount,
+          body: `if (candidateState[candidateStateOffset + index] == ${STATE_UNDECIDED}u) {
+    atomicStore(&incomplete[incompleteOffset], 1u);
+  }`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-unconverged`,
+          operation: OPERATION,
+          variant: 'publish-unconverged',
+          bindings: [
+            {name: 'incomplete', view: incomplete, type: 'u32', access: 'read'},
+            {
+              name: 'overflowOut',
+              view: output.peaks.status.overflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: 1,
+          body: `overflowOut[overflowOutOffset] = overflowOut[overflowOutOffset] |
+    select(0u, ${GPU_PROFILE_PEAKS_OVERFLOW_UNCONVERGED}u, incomplete[incompleteOffset] != 0u);`
         })
       );
     }
     return nodes;
   }
+}
+
+/** WGSL for `+Infinity`, built from a variable so it is not constant-evaluated. */
+function getInfinityFunction(): string {
+  return `fn getInfinity() -> f32 {
+  var bits = 0x7f800000u;
+  return bitcast<f32>(bits);
+}`;
 }
 
 /** WGSL for the canonical NaN, built from a variable so it is not constant-evaluated. */

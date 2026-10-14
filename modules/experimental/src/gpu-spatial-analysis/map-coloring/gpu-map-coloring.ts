@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,7 +12,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createRasterIterationFinalizeNode,
@@ -27,20 +27,85 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUMapColoring';
+
+/** Degree comparison of the largest-degree-first order, placed before the hash comparison. */
+const DEGREE_COMPARISON_WGSL = `
+  if (otherDegree != rowDegree) {
+    return otherDegree > rowDegree;
+  }`;
 
 /** Color value of a row that was not colored (only when `converged` is 0). */
 export const GPU_MAP_COLORING_UNCOLORED = 0xffffffff;
 
 /** Default compile-time cap on coloring rounds. */
-export const GPU_MAP_COLORING_DEFAULT_MAXIMUM_ROUNDS = 64;
+export const GPU_MAP_COLORING_DEFAULT_MAXIMUM_ITERATIONS = 64;
+
+/** Number of `uint32` words in the per-frame `parameters` view of {@link GPUMapColoring}. */
+export const GPU_MAP_COLORING_PARAMETER_LENGTH = 1;
+
+/**
+ * Order in which rows claim colors.
+ *
+ * - `'largest-degree-first'`: rows with more neighbors go first (Welsh-Powell order inside
+ *   Jones-Plassmann). Ties break by the seeded hash, then by lower row ID.
+ * - `'random'`: seeded hash only, then lower row ID.
+ */
+export type GPUMapColoringPriority = 'largest-degree-first' | 'random';
+
+/** Per-frame settings of {@link GPUMapColoring}, packed by {@link getGPUMapColoringParameterValues}. */
+export type GPUMapColoringSettings = {
+  /**
+   * Seed of the hashed priorities, a uint32. Default 0. Different seeds give different valid
+   * colorings (with `'largest-degree-first'` the seed only orders rows of equal degree).
+   */
+  seed?: number;
+};
+
+/**
+ * Packs {@link GPUMapColoringSettings} into the {@link GPU_MAP_COLORING_PARAMETER_LENGTH} `uint32`
+ * words of the `parameters` view: `[seed]`.
+ *
+ * @throws If `seed` is not an integer in `[0, 2^32 - 1]`.
+ */
+export function getGPUMapColoringParameterValues(
+  settings: GPUMapColoringSettings = {}
+): Uint32Array {
+  const seed = settings.seed ?? 0;
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new Error('GPUMapColoring seed must be a uint32');
+  }
+  return Uint32Array.of(seed);
+}
+
+/** Caller-owned outputs of {@link GPUMapColoring}. */
+export type GPUMapColoringOutput = {
+  /**
+   * Color index per row, from 0. A row that did not finish within `maximumIterations` holds
+   * {@link GPU_MAP_COLORING_UNCOLORED}.
+   */
+  colors: GraphDataView<'uint32'>;
+  /** Optional one-row output: number of colors used (largest color plus one). */
+  colorCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row output: number of neighbor pairs `(i, j)` with `j > i` whose rows share a
+   * color. 0 means the coloring is proper (for a symmetric pattern). Uncolored rows never conflict.
+   */
+  conflictCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional status words: `converged` is 1 when every row was colored within
+   * `maximumIterations`, else 0; `iterationCount` is the number of rounds that ran.
+   */
+  status?: Pick<GPUIterationStatusPort, 'converged' | 'iterationCount'>;
+};
 
 /**
  * Properties for {@link GPUMapColoring}.
  *
- * Compile-time (needs a new graph): view lengths, `seed`, `maximumRounds` and which optional
- * outputs are present. Per-frame: the contents of `weights`.
+ * Compile-time (needs a new graph): view lengths, `maximumIterations` and which optional outputs
+ * are present. Per-frame: the contents of `weights` and `parameters` (the seed).
  */
 export type GPUMapColoringProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'map-coloring'`. */
@@ -53,49 +118,49 @@ export type GPUMapColoringProps = {
    */
   weights: GPUSpatialWeights;
   /**
-   * Caller-owned output: color index per row, from 0. A row that did not finish within
-   * `maximumRounds` holds {@link GPU_MAP_COLORING_UNCOLORED}.
+   * Per-frame settings: {@link GPU_MAP_COLORING_PARAMETER_LENGTH} `uint32` words written with
+   * {@link getGPUMapColoringParameterValues}.
    */
-  colors: GraphDataView<'uint32'>;
-  /** Optional one-row output: number of colors used (largest color plus one). */
-  colorCount?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row output: number of neighbor pairs `(i, j)` with `j > i` whose rows share a
-   * color. 0 means the coloring is proper (for a symmetric pattern). Uncolored rows never conflict.
-   */
-  conflictCount?: GraphDataView<'uint32'>;
-  /** Optional one-row output: 1 when every row was colored within `maximumRounds`, else 0. */
-  converged?: GraphDataView<'uint32'>;
-  /** Optional one-row output: rounds that ran. */
-  roundCount?: GraphDataView<'uint32'>;
-  /** Seed of the hashed priorities. Default 0. Different seeds give different valid colorings. */
-  seed?: number;
+  parameters: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUMapColoringOutput;
   /**
    * Compile-time cap on rounds, in `[1, 1024]`. Default 64. Each round adds two nodes, and
    * rounds after convergence are skipped on the GPU. Hashed priorities need about `O(log n)` rounds
-   * on map graphs; the longest decreasing-priority chain bounds the count.
+   * on map graphs; the longest decreasing-priority chain bounds the count. Largest-degree-first
+   * chains are a short run per distinct degree, so planar maps need a few rounds more than
+   * `'random'`; the default is still ample.
    */
-  maximumRounds?: number;
+  maximumIterations?: number;
+  /**
+   * Compile-time row order, `'largest-degree-first'` (default) or `'random'`. The result is a
+   * proper, seed-deterministic coloring equal to sequential greedy in that order. Largest-degree-first
+   * usually needs fewer colors. The degree of a row is its CSR row length, so self loops and
+   * duplicate entries count (a contiguity pattern has neither); the order stays a strict total
+   * order, so correctness never depends on the degree being exact.
+   */
+  priority?: GPUMapColoringPriority;
 };
 
 /**
- * Greedy parallel graph coloring of polygon contiguity (Jones-Plassmann), so adjacent polygons
+ * Greedy parallel graph coloring of polygon contiguity (Jones-Plassmann, largest degree first), so adjacent polygons
  * never share a color: the classic "map coloring" for choropleth-free categorical maps.
  *
- * **Algorithm.** Every row gets a priority from a seeded integer hash of its ID; ties between equal
- * hashes go to the lowest ID. In each round every uncolored row whose priority is higher than
+ * **Algorithm.** Rows are ordered by priority: by default descending degree (CSR row length), ties
+ * broken by a seeded integer hash of the row ID, then by the lowest ID (`priority: 'random'` uses
+ * the hash and ID only). In each round every uncolored row whose priority is higher than
  * every uncolored neighbor takes the lowest color not used by its colored neighbors (first free
  * slot of 32-color bit windows). Such rows are never adjacent. Each round is one fused pass that
  * reads and writes colors with atomics (see the kernel comment); the result equals sequential greedy coloring in priority order and is deterministic for a given
- * `seed`.
+ * seed.
  *
  * **Quality.** The color count is not minimal: greedy coloring uses at most `maxDegree + 1`
- * colors, and the four-color theorem's bound is not targeted. Expect about 4 to 6 colors on typical
- * planar subdivisions. Try several seeds (graphs per seed) and keep the one with the fewest colors
- * if that matters.
+ * colors, and the four-color theorem's bound is not targeted. Largest-degree-first typically saves
+ * a color over random order; expect about 4 to 5 colors on typical planar subdivisions. Try several
+ * seeds (graphs per seed) and keep the one with the fewest colors if that matters.
  *
  * **Verification.** `conflictCount` counts neighbor pairs that share a color; it is 0 for a symmetric
- * pattern. `converged` reports whether every row finished within `maximumRounds`.
+ * pattern. `output.status.converged` reports whether every row finished within `maximumIterations`.
  *
  * Consumes a contiguity (adjacency) pattern only, so it takes no `spatialContext`.
  */
@@ -105,83 +170,90 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUMapColoringProps;
   /** Compile-time round cap. */
-  readonly maximumRounds: number;
+  readonly maximumIterations: number;
+  /** Row order. */
+  readonly priority: GPUMapColoringPriority;
 
   constructor(props: GPUMapColoringProps) {
     const id = props.id ?? 'map-coloring';
     this.id = id;
     this.props = props;
-    this.maximumRounds = props.maximumRounds ?? GPU_MAP_COLORING_DEFAULT_MAXIMUM_ROUNDS;
-    validateRasterIterations(id, 'maximumRounds', this.maximumRounds);
-    if (
-      props.seed !== undefined &&
-      (!Number.isInteger(props.seed) || props.seed < 0 || props.seed > 0xffffffff)
-    ) {
-      throw new Error(`${id} seed must be an integer in [0, 2^32 - 1]`);
+    this.maximumIterations = props.maximumIterations ?? GPU_MAP_COLORING_DEFAULT_MAXIMUM_ITERATIONS;
+    validateRasterIterations(id, 'maximumIterations', this.maximumIterations);
+    this.priority = props.priority ?? 'largest-degree-first';
+    if (this.priority !== 'largest-degree-first' && this.priority !== 'random') {
+      throw new Error(`${id} priority must be 'largest-degree-first' or 'random'`);
     }
     const rows = validateGPUSpatialWeights(id, props.weights);
-    validatePackedUint32View(props.colors, `${id} colors`);
-    if (props.colors.length !== rows) {
-      throw new Error(`${id} colors length must equal the weights row count`);
+    const {output} = props;
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    if (props.parameters.length < GPU_MAP_COLORING_PARAMETER_LENGTH) {
+      throw new Error(`${id} parameters must hold ${GPU_MAP_COLORING_PARAMETER_LENGTH} uint32`);
+    }
+    validatePackedView(output.colors, ['uint32'], `${id} output.colors`);
+    if (output.colors.length !== rows) {
+      throw new Error(`${id} output.colors length must equal the weights row count`);
     }
     for (const [name, view] of [
-      ['colorCount', props.colorCount],
-      ['conflictCount', props.conflictCount],
-      ['converged', props.converged],
-      ['roundCount', props.roundCount]
+      ['colorCount', output.colorCount],
+      ['conflictCount', output.conflictCount],
+      ['status.converged', output.status?.converged],
+      ['status.iterationCount', output.status?.iterationCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < 1) {
-          throw new Error(`${id} ${name} must hold one uint32`);
+          throw new Error(`${id} output.${name} must hold one uint32`);
         }
       }
     }
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [props.colors, props.colorCount, props.conflictCount, props.converged, props.roundCount],
-      [
-        props.weights.offsets,
-        props.weights.neighbors,
-        props.weights.weights,
-        props.weights.distances
-      ]
-    );
+    validateGraphOutputsDisjointFromInputs(id, getOutputs(output), [
+      props.weights.offsets,
+      props.weights.neighbors,
+      props.weights.weights,
+      props.weights.distances,
+      props.parameters
+    ]);
   }
 
   /** Returns the clear, gated round, and verification nodes in dependency order. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maximumRounds} = this;
-    const {weights, colors} = props;
+    const {id, props, maximumIterations, priority} = this;
+    const {weights, parameters, output} = props;
+    const {colors} = output;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,
       weights.neighbors,
       weights.weights,
       weights.distances,
-      colors,
-      props.colorCount,
-      props.conflictCount,
-      props.converged,
-      props.roundCount
+      parameters,
+      ...getOutputs(output)
     ]);
     const rows = colors.length;
-    const seed = props.seed ?? 0;
     const state = createRasterIterationState(graph, `${id}-rounds`, OPERATION, rows, id);
     const colorCount =
-      props.colorCount ?? createTransientView(graph, `${id}-color-count`, 'uint32', 1);
-    const priorityWGSL = `const SEED: u32 = ${seed}u;
-const UNCOLORED: u32 = ${GPU_MAP_COLORING_UNCOLORED}u;
+      output.colorCount ?? createTransientView(graph, `${id}-color-count`, 'uint32', 1);
+    // The seed is read per frame from `parameters`, so the source is the same for every seed.
+    const degreeFirst = priority === 'largest-degree-first';
+    const priorityWGSL = `const UNCOLORED: u32 = ${GPU_MAP_COLORING_UNCOLORED}u;
 
-fn priorityHash(value: u32) -> u32 {
-  var h = value ^ SEED;
+fn priorityHash(value: u32, seed: u32) -> u32 {
+  var h = value ^ seed;
   h = h ^ (h >> 16u);
   h = h * 0x7feb352du;
   h = h ^ (h >> 15u);
   h = h * 0x846ca68bu;
   h = h ^ (h >> 16u);
   return h;
+}
+
+// True when row 'other' is claimed before row 'index' (a strict total order: no two rows tie).
+fn outranks(other: u32, otherDegree: u32, index: u32, rowDegree: u32, seed: u32) -> bool {${degreeFirst ? DEGREE_COMPARISON_WGSL : ''}
+  let otherHash = priorityHash(other, seed);
+  let rowHash = priorityHash(index, seed);
+  return otherHash > rowHash || (otherHash == rowHash && other < index);
 }`;
 
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -206,7 +278,7 @@ fn priorityHash(value: u32) -> u32 {
         state
       })
     ];
-    for (let round = 0; round < maximumRounds; round++) {
+    for (let round = 0; round < maximumIterations; round++) {
       const roundId = `${id}-round-${round}`;
       const gate = getRasterIterationCondition<Parameters>(state, roundId);
       nodes.push(
@@ -224,6 +296,7 @@ fn priorityHash(value: u32) -> u32 {
           bindings: [
             {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
             {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
             {name: 'colors', view: colors, type: 'atomic<u32>', access: 'read_write'},
             {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'},
             {name: 'colorCount', view: colorCount, type: 'atomic<u32>', access: 'read_write'}
@@ -235,7 +308,8 @@ fn priorityHash(value: u32) -> u32 {
   }
   let begin = offsets[offsetsOffset + index];
   let end = offsets[offsetsOffset + index + 1u];
-  let rowHash = priorityHash(index);
+  let seed = parameters[parametersOffset];
+  let rowDegree = ${degreeFirst ? 'end - begin' : '0u'};
   // One neighbor pass finds both a blocking (uncolored, higher-priority) neighbor and the used
   // colors of the first 32-color window.
   var used = 0u;
@@ -247,8 +321,8 @@ fn priorityHash(value: u32) -> u32 {
     }
     let color = atomicLoad(&colors[colorsOffset + other]);
     if (color == UNCOLORED) {
-      let otherHash = priorityHash(other);
-      if (otherHash > rowHash || (otherHash == rowHash && other < index)) {
+      let otherDegree = ${degreeFirst ? 'offsets[offsetsOffset + other + 1u] - offsets[offsetsOffset + other]' : '0u'};
+      if (outranks(other, otherDegree, index, rowDegree, seed)) {
         blocked = true;
         break;
       }
@@ -293,27 +367,27 @@ fn priorityHash(value: u32) -> u32 {
           id: `${roundId}-gate`,
           operation: OPERATION,
           state,
-          maxIterations: maximumRounds
+          maxIterations: maximumIterations
         })
       );
     }
-    if (props.converged || props.roundCount) {
+    if (output.status?.converged || output.status?.iterationCount) {
       nodes.push(
         createRasterIterationFinalizeNode<Parameters>(graph, {
           id: `${id}-status`,
           operation: OPERATION,
           state,
-          converged: props.converged,
-          iterationCount: props.roundCount
+          converged: output.status?.converged,
+          iterationCount: output.status?.iterationCount
         })
       );
     }
-    if (props.conflictCount) {
+    if (output.conflictCount) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-conflicts-clear`,
           operation: OPERATION,
-          view: props.conflictCount,
+          view: output.conflictCount,
           type: 'u32',
           value: '0u',
           componentCount: 1
@@ -328,7 +402,7 @@ fn priorityHash(value: u32) -> u32 {
             {name: 'colors', view: colors, type: 'u32', access: 'read'},
             {
               name: 'conflictCount',
-              view: props.conflictCount,
+              view: output.conflictCount,
               type: 'atomic<u32>',
               access: 'read_write'
             }
@@ -352,4 +426,15 @@ fn priorityHash(value: u32) -> u32 {
     }
     return nodes;
   }
+}
+
+/** Returns every caller-owned output view of a map-coloring contributor. */
+function getOutputs(output: GPUMapColoringOutput): (GraphDataView | undefined)[] {
+  return [
+    output.colors,
+    output.colorCount,
+    output.conflictCount,
+    output.status?.converged,
+    output.status?.iterationCount
+  ];
 }

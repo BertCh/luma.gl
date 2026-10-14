@@ -8,17 +8,18 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../index';
+import type {GPURasterBand, GPURasterMetadata} from '../types';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../raster-band-utils';
 
 /**
  * Value of a maximum cell whose footprint holds no valid pixel (-FLT_MAX).
@@ -96,17 +97,17 @@ export type GPURasterExtremaPyramidLayoutOptions = {
  * Computes the level layout of a min/max pyramid.
  *
  * Level `L` has block size `firstBlockSize * 2^L` and `ceil(width / block) x ceil(height / block)`
- * cells. The default level count runs until a level is `1 x 1`, inclusive.
+ * cells, with `width` and `height` taken from `grid`. The default level count runs until a level is `1 x 1`, inclusive.
  *
  * @throws On a non-positive size, a `firstBlockSize` that is not a power of two in [1, 256], a
  *   `levelCount` that is not an integer >= 1, or an unknown footprint.
  */
 export function getGPURasterExtremaPyramidLayout(
-  width: number,
-  height: number,
+  grid: GPURasterMetadata,
   options: GPURasterExtremaPyramidLayoutOptions = {}
 ): GPURasterExtremaPyramidLayout {
-  validateTerrainGrid('GPURasterExtremaPyramid', width, height);
+  validateRasterGrid('GPURasterExtremaPyramid', grid);
+  const {width, height} = grid;
   const firstBlockSize = options.firstBlockSize ?? 4;
   if (
     !Number.isInteger(firstBlockSize) ||
@@ -146,12 +147,19 @@ export function getGPURasterExtremaPyramidLayout(
 export type GPURasterExtremaPyramidProps = GPURasterExtremaPyramidLayoutOptions & {
   /** Prefix for node and transient IDs. Defaults to `'raster-extrema-pyramid'`. */
   id?: string;
-  /** Raster width in pixels. Cells are in pixel index space, so no cell-size model applies. */
-  width: number;
-  /** Raster height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. Cells are in pixel index space, so no cell-size model applies. */
+  grid: GPURasterMetadata;
   /** Raster band, buffer or texture. Calibration, no-data and validity are applied. */
   input: GPURasterBand;
+  /** Caller-owned pyramid views; at least one member is required. */
+  output: GPURasterExtremaPyramidViews;
+};
+
+/**
+ * Caller-owned output views of {@link GPURasterExtremaPyramid}. This is the props bag; the built
+ * pyramid that consumers read is {@link GPURasterExtremaPyramidOutput}.
+ */
+export type GPURasterExtremaPyramidViews = {
   /** Receives per-cell maxima; `length === layout.length`. */
   maximum?: GraphDataView<'float32'>;
   /** Receives per-cell minima; `length === layout.length`. */
@@ -185,17 +193,17 @@ export type GPURasterExtremaPyramidOutput = {
 /**
  * Validates a caller-supplied pyramid against the grid a consumer works on.
  *
- * @throws If the layout is not a `'bilinear'`-footprint pyramid over exactly `width x height`, or
+ * @throws If the layout is not a `'bilinear'`-footprint pyramid over exactly the grid size, or
  *   `combined` is not a float32 view of `2 * layout.length` values.
  * @internal
  */
 export function validateRasterExtremaPyramidOutput(
   id: string,
   pyramid: GPURasterExtremaPyramidOutput,
-  width: number,
-  height: number
+  grid: GPURasterMetadata
 ): GPURasterExtremaPyramidLayout {
   const {layout, combined} = pyramid;
+  const {width, height} = grid;
   if (!layout || !combined) {
     throw new Error(`${id} pyramid must provide a layout and a combined view`);
   }
@@ -269,32 +277,33 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-extrema-pyramid';
     this.props = props;
     const {id} = this;
-    validateTerrainGrid(id, props.width, props.height);
-    this.layout = getGPURasterExtremaPyramidLayout(props.width, props.height, props);
-    if (props.combined && (props.maximum || props.minimum)) {
-      throw new Error(`${id} combined cannot be used together with maximum or minimum`);
+    validateRasterGrid(id, props.grid);
+    this.layout = getGPURasterExtremaPyramidLayout(props.grid, props);
+    const {maximum, minimum, combined} = props.output;
+    if (combined && (maximum || minimum)) {
+      throw new Error(`${id} output.combined cannot be used together with maximum or minimum`);
     }
-    if (!props.maximum && !props.minimum && !props.combined) {
+    if (!maximum && !minimum && !combined) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view] of [
-      ['maximum', props.maximum],
-      ['minimum', props.minimum]
+      ['maximum', maximum],
+      ['minimum', minimum]
     ] as const) {
       if (view) {
-        validateViewLength(id, name, view, this.layout.length);
+        validateViewLength(id, `output.${name}`, view, this.layout.length);
       }
     }
-    if (props.combined) {
-      validateViewLength(id, 'combined', props.combined, 2 * this.layout.length);
+    if (combined) {
+      validateViewLength(id, 'output.combined', combined, 2 * this.layout.length);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.maximum, props.minimum, props.combined],
-      getTerrainBandViews(props.input)
+      [maximum, minimum, combined],
+      getRasterBandViews(props.input)
     );
-    if (props.combined) {
-      this.output = {layout: this.layout, combined: props.combined};
+    if (combined) {
+      this.output = {layout: this.layout, combined};
     }
   }
 
@@ -303,16 +312,10 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, layout} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.input, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.maximum, props.minimum, props.combined]);
-    const source = getTerrainElevationNodes(
-      graph,
-      id,
-      props.input,
-      props.width,
-      props.height,
-      true
-    );
+    validateRasterBandBelongsToGraph(id, graph, props.input, []);
+    const {maximum, minimum, combined} = props.output;
+    validateGraphViewsBelongToGraph(id, graph, [maximum, minimum, combined]);
+    const source = getRasterBufferBandNodes(graph, id, props.input, props.grid, 'reuse-canonical');
     return [
       ...source.nodes,
       ...createRasterExtremaPyramidNodes(graph, {
@@ -320,9 +323,9 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
         layout,
         values: source.band.storage.values as GraphDataView<'float32'>,
         validity: source.band.validity as GraphDataView<'uint32'>,
-        maximum: props.maximum,
-        minimum: props.minimum,
-        combined: props.combined
+        maximum,
+        minimum,
+        combined
       })
     ];
   }
@@ -425,7 +428,8 @@ const EMPTY_MINIMUM: f32 = ${emptyMinimum};`;
 const HEIGHT: u32 = ${layout.height}u;
 const BLOCK_SIZE: u32 = ${level.blockSize}u;
 const FOOTPRINT_EXTRA: u32 = ${extraPixels}u;
-${header}`,
+${header}
+${IS_FINITE_VALUE_WGSL}`,
           body: `let cellColumn = index % LEVEL_WIDTH;
   let cellRow = index / LEVEL_WIDTH;
   let x0 = cellColumn * BLOCK_SIZE;
@@ -439,8 +443,10 @@ ${header}`,
       let pixel = y * WIDTH + x;
       if (validity[validityOffset + pixel] != 0u) {
         let value = values[valuesOffset + pixel];
-        if (value > maximumValue) { maximumValue = value; }
-        if (value < minimumValue) { minimumValue = value; }
+        if (isFiniteValue(value)) {
+          if (value > maximumValue) { maximumValue = value; }
+          if (value < minimumValue) { minimumValue = value; }
+        }
       }
     }
   }

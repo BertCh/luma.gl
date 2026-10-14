@@ -6,8 +6,6 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -20,9 +18,15 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUCardinalityPort, GPULineGeometryFields} from '../../analysis-core/contracts/index';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPULineMerge';
 
@@ -37,14 +41,14 @@ export const GPU_LINE_MERGE_NONE = 0xffffffff;
  */
 export type GPULineMergeOutput = {
   /**
-   * Chain `c` owns `positions[chainOffsets[c] .. chainOffsets[c + 1])`. Rows past `count` repeat
+   * Chain `c` owns `positions[chainOffsets[c] .. chainOffsets[c + 1])`. Rows past `status.count` repeat
    * the final offset. Length `lineCount + 1`.
    */
   chainOffsets: GraphDataView<'uint32'>;
   /** Chain vertices in chain order. Rows past the last chain are left untouched. */
   positions: GraphDataView<'float32x2'>;
-  /** One-row scalar receiving the number of chains. */
-  count: GraphDataView<'uint32'>;
+  /** One-row status scalars; `count` receives the number of chains. */
+  status: GPUCardinalityPort;
   /** Optional chain index per input line, or {@link GPU_LINE_MERGE_NONE} for lines with under two vertices. */
   lineChains?: GraphDataView<'uint32'>;
   /** Optional position of each input line within its chain (0 for the first line). */
@@ -54,7 +58,7 @@ export type GPULineMergeOutput = {
 };
 
 /** Properties for {@link GPULineMerge}. */
-export type GPULineMergeProps = {
+export type GPULineMergeProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-merge'`. */
   id?: string;
   /**
@@ -64,10 +68,6 @@ export type GPULineMergeProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
-  /** Vertices of every input linestring, concatenated. */
-  positions: GraphDataView<'float32x2'>;
-  /** Line-to-vertex offsets with `lineCount + 1` rows (GeoArrow layout). */
-  lineOffsets: GraphDataView<'uint32'>;
   /**
    * Respect line direction, like `shapely.line_merge(directed=True)`. Defaults to `false`.
    *
@@ -91,9 +91,11 @@ export type GPULineMergeProps = {
  * are ignored.
  *
  * Endpoints are grouped by two stable radix sorts (y then x bits), the join partner of each end is
- * read from its neighbours in the sorted order, and one thread per chain walks the chain. Paths
- * are found from their ends; closed cycles of several lines are found by their lowest line index.
- * Walking is serial per chain, so a chain of `n` lines costs `n` steps in one thread.
+ * read from its neighbours in the sorted order, and chains are ranked by list ranking (Wyllie
+ * pointer jumping) over line traversals: `ceil(log2(lineCount))` fixed rounds find cycles and their
+ * leaders, and as many rounds again give each traversal its chain head and vertex prefix, so a
+ * chain of `n` lines costs `O(log n)` dispatches and no thread walks a chain. Paths are found from
+ * their ends; closed cycles of several lines are found by their lowest line index.
  *
  * With `directed: true` only an end that meets a start joins (Shapely `directed=True`); chains then
  * always follow the input direction.
@@ -125,13 +127,13 @@ export class GPULineMerge implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['lineOffsets', props.lineOffsets],
       ['output.chainOffsets', output.chainOffsets],
-      ['output.count', output.count],
+      ['output.status.count', output.status.count],
       ['output.lineChains', output.lineChains],
       ['output.lineOrders', output.lineOrders],
       ['output.lineReversed', output.lineReversed]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     if (props.lineOffsets.length < 2) {
@@ -144,8 +146,8 @@ export class GPULineMerge implements GPUCommandNodeProducer {
     if (output.positions.length < props.positions.length) {
       throw new Error(`${id} output.positions must hold at least the input vertex count`);
     }
-    if (output.count.length !== 1) {
-      throw new Error(`${id} output.count must contain exactly one row`);
+    if (output.status.count.length !== 1) {
+      throw new Error(`${id} output.status.count must contain exactly one row`);
     }
     for (const [name, view] of [
       ['lineChains', output.lineChains],
@@ -247,7 +249,7 @@ ${declarations}`,
     let vertex = select(first, last - 1u, (index & 1u) == 1u);
     x = positions[positionsOffset + vertex * 2u];
     y = positions[positionsOffset + vertex * 2u + 1u];
-    valid = abs(x) < 3.0e38 && abs(y) < 3.0e38;
+    valid = isFiniteBits(x) && isFiniteBits(y);
   }
   if (valid) {
     x = select(x, 0.0, x == 0.0);
@@ -257,7 +259,8 @@ ${declarations}`,
   } else {
     keyX[keyXOffset + index] = INVALID_KEY;
     keyY[keyYOffset + index] = INVALID_KEY;
-  }`
+  }`,
+        IS_FINITE_BITS_WGSL
       ),
       ...new GPUSort({
         id: `${id}-sort-y`,
@@ -555,7 +558,7 @@ fn vertexCount(line: u32) -> u32 {
           read('flagScan', flagScan),
           read('vertexScan', vertexScan),
           write('chainOffsets', output.chainOffsets),
-          write('count', output.count)
+          write('count', output.status.count)
         ],
         lineCount + 1,
         `let chainCount = flagScan[flagScanOffset + LINE_COUNT - 1u];
@@ -666,7 +669,7 @@ function getOutputs(props: GPULineMergeProps): (GraphDataView | undefined)[] {
   return [
     output.chainOffsets,
     output.positions,
-    output.count,
+    output.status.count,
     output.lineChains,
     output.lineOrders,
     output.lineReversed

@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,19 +13,27 @@ import {createFillNode, createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology,
+  type GPUNetworkTopology
+} from '../../analysis-core/network-topology';
 import {
   createPathEdgeLengthsNode,
   createPathMeasureNode,
+  createPathStatusNode,
   createPathResolveEdgesNode,
   createPathTotalsNode,
   createPathWriteLinksNode,
   createPathWriteNodesNode
 } from './network-path-extraction-passes';
 
-/** Largest accepted compile-time `maxPathLength`. */
+/** Largest accepted compile-time `maximumPathLength`. */
 export const GPU_NETWORK_PATH_MAXIMUM_LENGTH = 65536;
 
 /** Edge slot value when no CSR edge matches a predecessor link. */
@@ -40,33 +46,40 @@ const OPERATION = 'GPUNetworkPathExtraction';
  * Optional edge extraction of {@link GPUNetworkPathExtractionProps}.
  *
  * Compile-time: the presence of this object, its view lengths, and `output` capacity. Per-frame:
- * the CSR contents and `edgeIds`.
+ * the topology contents and `edgeIds`.
  */
 export type GPUNetworkPathExtractionEdges = {
-  /** Forward CSR row offsets with `nodeCount + 1` rows, from the CSR that produced `costs`. */
-  offsets: GraphDataView<'uint32'>;
-  /** CSR destination node per edge. */
-  neighbors: GraphDataView<'uint32'>;
-  /** CSR edge cost, with the same length as `neighbors`. */
-  weights: GraphDataView<'float32'>;
-  /** Optional stable edge IDs aligned with `neighbors`; output is `edgeIds[edge]` instead of the CSR index. */
+  /** The network that produced `costs`; `offsets` has `nodeCount + 1` rows. */
+  topology: GPUNetworkTopology;
+  /** Optional stable edge IDs aligned with `topology.neighbors`; output is `edgeIds[edge]` instead of the CSR index. */
   edgeIds?: GraphDataView<'uint32'>;
   /**
    * Concatenated edge lists in target-row order. A path with `n` nodes contributes
    * `max(n - 1, 0)` edges ordered source to target. Slots with no matching CSR edge hold
    * {@link GPU_NETWORK_PATH_NO_EDGE}. Its overflow also reports truncated paths.
    */
-  output: GPUCompactOutput;
-  /** Optional `targets.length + 1` rows: unclamped start of each path in `output.ids`, then the total. */
-  pathOffsets?: GraphDataView<'uint32'>;
+  output: GPUCompactOutput & {
+    /** Optional `targets.length + 1` rows: unclamped start of each path in `ids`, then the total. */
+    lineOffsets?: GraphDataView<'uint32'>;
+  };
+};
+
+/** Views written by {@link GPUNetworkPathExtraction}. */
+export type GPUNetworkPathExtractionOutput = GPUCompactOutput & {
+  /** Optional `targets.length + 1` rows: unclamped start of each path in `ids`, then the total. */
+  lineOffsets?: GraphDataView<'uint32'>;
+  /** Optional per-target `costs[target]` when found, `+Infinity` otherwise. */
+  pathCosts?: GraphDataView<'float32'>;
+  /** Optional per-target flag: 1 when a complete path was found, otherwise 0. */
+  pathFound?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUNetworkPathExtraction}.
  *
- * Compile-time: node count, target capacity, `maxPathLength`, output capacities, and which
- * optional views exist. Per-frame: the contents of `predecessors`, `costs`, `targets`,
- * `targetCount`, `nodeIds`, and the CSR.
+ * Compile-time: node count, target capacity, a numeric `targetCount`, `maximumPathLength`, output
+ * capacities, and which optional views exist. Per-frame: the contents of `predecessors`, `costs`,
+ * `targets`, a `targetCount` view, `nodeIds`, and the edge topology.
  */
 export type GPUNetworkPathExtractionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'network-path-extraction'`. */
@@ -77,25 +90,31 @@ export type GPUNetworkPathExtractionProps = {
   costs: GraphDataView<'float32'>;
   /** Target node indices. Capacity is compile-time, contents are per-frame. May have zero rows. */
   targets: GraphDataView<'uint32'>;
-  /** Optional one-row active target count; rows at or after it are inactive. Per-frame. */
-  targetCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional active target count; rows at or after it are inactive. A number is a compile-time
+   * constant in `[0, targets.length]`; a one-row view is read per frame. Defaults to every row.
+   */
+  targetCount?: number | GraphDataView<'uint32'>;
+  /**
+   * Optional one-row flag read from the search that wrote `predecessors`: 1 when that search
+   * converged, for example `GPUNetworkReachabilityOutput.status.converged`. A chain ending at
+   * `GPU_NETWORK_REACHABILITY_NONE` is a start only when that search finished; when this flag is 0
+   * such an ending may be a node the truncated search never linked, so no target is reported found
+   * (empty paths, `pathFound` 0, `pathCosts` `+Infinity`) instead of a partial path that looks
+   * complete (review B-24). It is an input, so it is not under `output.status`.
+   */
+  predecessorsComplete?: GraphDataView<'uint32'>;
   /** Compile-time bound on nodes per path, 1 to 65536. Defaults to 1024. */
-  maxPathLength?: number;
+  maximumPathLength?: number;
   /** Optional stable node IDs with one row per node; output IDs are `nodeIds[node]` instead of `node`. */
   nodeIds?: GraphDataView<'uint32'>;
   /**
-   * Concatenated node paths in target-row order, each ordered source to target. `count` is
+   * Concatenated node paths in target-row order, each ordered start to target. `count` is
    * clamped to `ids.length`; `overflow` is set when the total exceeds capacity or any walk was
-   * truncated by `maxPathLength`.
+   * truncated by `maximumPathLength`.
    */
-  output: GPUCompactOutput;
-  /** Optional `targets.length + 1` rows: unclamped start of each path in `output.ids`, then the total. */
-  pathOffsets?: GraphDataView<'uint32'>;
-  /** Optional per-target `costs[target]` when found, `+Infinity` otherwise. */
-  pathCosts?: GraphDataView<'float32'>;
-  /** Optional per-target flag: 1 when a complete path was found, otherwise 0. */
-  pathFound?: GraphDataView<'uint32'>;
-  /** Optional edge extraction. Requires the CSR that produced `costs`. */
+  output: GPUNetworkPathExtractionOutput;
+  /** Optional edge extraction. Requires the topology that produced `costs`. */
   edges?: GPUNetworkPathExtractionEdges;
 };
 
@@ -103,7 +122,7 @@ export type GPUNetworkPathExtractionProps = {
  * Extracts ordered source-to-target node and edge lists from a shortest-path predecessor array
  * on the GPU, ready for a path layer or highlight.
  *
- * Each active target walks its predecessor chain, bounded by `maxPathLength`, so cycles and
+ * Each active target walks its predecessor chain, bounded by `maximumPathLength`, so cycles and
  * garbage predecessors terminate: such a target reports not found, and a too-long walk also sets
  * the overflow flag. A found target that is itself a root yields a one-node path. Target rows that
  * are out of range, unreached (non-finite cost) or inactive yield empty paths. Path lengths are
@@ -121,34 +140,36 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUNetworkPathExtractionProps;
   /** Resolved compile-time walk bound. */
-  readonly maxPathLength: number;
+  readonly maximumPathLength: number;
 
+  /**
+   * @throws If a view has the wrong format or length, `maximumPathLength` or a numeric
+   * `targetCount` is out of range, or an output shares a buffer with an input or another output.
+   */
   constructor(props: GPUNetworkPathExtractionProps) {
     this.id = props.id ?? 'network-path-extraction';
     this.props = props;
-    this.maxPathLength = props.maxPathLength ?? DEFAULT_MAXIMUM_PATH_LENGTH;
+    this.maximumPathLength = props.maximumPathLength ?? DEFAULT_MAXIMUM_PATH_LENGTH;
     const {id} = this;
-    const {edges} = props;
+    const {edges, output} = props;
     for (const [name, view] of [
       ['predecessors', props.predecessors],
       ['targets', props.targets],
-      ['targetCount', props.targetCount],
+      ['targetCount', typeof props.targetCount === 'object' ? props.targetCount : undefined],
+      ['predecessorsComplete', props.predecessorsComplete],
       ['nodeIds', props.nodeIds],
-      ['pathOffsets', props.pathOffsets],
-      ['pathFound', props.pathFound],
-      ['edges.offsets', edges?.offsets],
-      ['edges.neighbors', edges?.neighbors],
+      ['output.lineOffsets', output.lineOffsets],
+      ['output.pathFound', output.pathFound],
       ['edges.edgeIds', edges?.edgeIds],
-      ['edges.pathOffsets', edges?.pathOffsets]
+      ['edges.output.lineOffsets', edges?.output.lineOffsets]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
       ['costs', props.costs],
-      ['pathCosts', props.pathCosts],
-      ['edges.weights', edges?.weights]
+      ['output.pathCosts', output.pathCosts]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -165,60 +186,61 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
     if (props.nodeIds && props.nodeIds.length !== nodeCount) {
       throw new Error(`${id} nodeIds length must equal the node count`);
     }
-    if (props.targetCount && props.targetCount.length !== 1) {
+    if (typeof props.targetCount === 'number') {
+      validateCapacity(id, 'targetCount', props.targetCount, 0, targetCapacity);
+    } else if (props.targetCount && props.targetCount.length !== 1) {
       throw new Error(`${id} targetCount must contain exactly one row`);
     }
+    if (props.predecessorsComplete && props.predecessorsComplete.length !== 1) {
+      throw new Error(`${id} predecessorsComplete must contain exactly one row`);
+    }
     for (const [name, view] of [
-      ['pathCosts', props.pathCosts],
-      ['pathFound', props.pathFound]
+      ['output.pathCosts', output.pathCosts],
+      ['output.pathFound', output.pathFound]
     ] as const) {
       if (view && view.length !== targetCapacity) {
         throw new Error(`${id} ${name} length must equal targets length`);
       }
     }
     for (const [name, view] of [
-      ['pathOffsets', props.pathOffsets],
-      ['edges.pathOffsets', edges?.pathOffsets]
+      ['output.lineOffsets', output.lineOffsets],
+      ['edges.output.lineOffsets', edges?.output.lineOffsets]
     ] as const) {
       if (view && view.length !== targetCapacity + 1) {
         throw new Error(`${id} ${name} must contain one more row than targets`);
       }
     }
     if (edges) {
-      if (edges.offsets.length !== nodeCount + 1) {
-        throw new Error(`${id} edges.offsets must contain one more row than predecessors`);
+      const edgeShape = validateGPUNetworkTopology(`${id} edges`, edges.topology, {weights: true});
+      if (edgeShape.nodeCount !== nodeCount) {
+        throw new Error(`${id} edges.topology must contain one node per predecessors row`);
       }
-      if (edges.weights.length !== edges.neighbors.length) {
-        throw new Error(`${id} edges.weights length must equal neighbors length`);
-      }
-      if (edges.edgeIds && edges.edgeIds.length !== edges.neighbors.length) {
-        throw new Error(`${id} edges.edgeIds length must equal neighbors length`);
+      if (edges.edgeIds && edges.edgeIds.length !== edgeShape.edgeCount) {
+        throw new Error(`${id} edges.edgeIds length must equal topology.neighbors length`);
       }
       validateCompactOutput(`${id} edges`, edges.output);
     }
-    if (
-      !Number.isSafeInteger(this.maxPathLength) ||
-      this.maxPathLength < 1 ||
-      this.maxPathLength > GPU_NETWORK_PATH_MAXIMUM_LENGTH
-    ) {
-      throw new Error(
-        `${id} maxPathLength must be an integer in [1, ${GPU_NETWORK_PATH_MAXIMUM_LENGTH}]`
-      );
-    }
-    validateCompactOutput(id, props.output);
+    validateCapacity(
+      id,
+      'maximumPathLength',
+      this.maximumPathLength,
+      1,
+      GPU_NETWORK_PATH_MAXIMUM_LENGTH
+    );
+    validateCompactOutput(id, output);
     const outputs = [
-      props.output.ids,
-      props.output.count,
-      props.output.overflow,
-      props.output.requiredCount,
-      props.pathOffsets,
-      props.pathCosts,
-      props.pathFound,
+      output.ids,
+      output.status.count,
+      output.status.overflow,
+      output.status.requiredCount,
+      output.lineOffsets,
+      output.pathCosts,
+      output.pathFound,
       edges?.output.ids,
-      edges?.output.count,
-      edges?.output.overflow,
-      edges?.output.requiredCount,
-      edges?.pathOffsets
+      edges?.output.status.count,
+      edges?.output.status.overflow,
+      edges?.output.status.requiredCount,
+      edges?.output.lineOffsets
     ]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
@@ -226,11 +248,10 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       props.predecessors,
       props.costs,
       props.targets,
-      props.targetCount,
+      typeof props.targetCount === 'object' ? props.targetCount : undefined,
+      props.predecessorsComplete,
       props.nodeIds,
-      edges?.offsets,
-      edges?.neighbors,
-      edges?.weights,
+      ...(edges ? getGPUNetworkTopologyViews(edges.topology) : []),
       edges?.edgeIds
     ]
       .filter(view => view !== undefined)
@@ -247,8 +268,8 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maxPathLength} = this;
-    const {edges} = props;
+    const {id, props, maximumPathLength} = this;
+    const {edges, output} = props;
     validateGraphViewsBelongToGraph(id, graph, getViews(props));
     const nodeCount = props.predecessors.length;
     const targetCapacity = props.targets.length;
@@ -263,14 +284,17 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         createPathTotalsNode<Parameters>(graph, {
           id: `${id}-totals`,
           targetCapacity,
-          nodes: {total: nodeTotal, pathOffsets: props.pathOffsets},
-          edges: edges && edgeTotal ? {total: edgeTotal, pathOffsets: edges.pathOffsets} : undefined
+          nodes: {total: nodeTotal, pathOffsets: output.lineOffsets},
+          edges:
+            edges && edgeTotal
+              ? {total: edgeTotal, pathOffsets: edges.output.lineOffsets}
+              : undefined
         }),
         createPublishNode<Parameters>(graph, {
           id: `${id}-publish`,
           operation: OPERATION,
           requiredCount: nodeTotal,
-          output: props.output
+          output: output
         })
       );
       if (edges && edgeTotal) {
@@ -286,29 +310,29 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       return nodes;
     }
 
-    const status = createTransientView(graph, `${id}-status`, 'uint32', 1);
+    // Word 0: a walk was truncated (ORed into the output overflow). Word 1: the search that wrote
+    // the predecessors converged, so a NONE predecessor is a source.
+    const status = createTransientView(graph, `${id}-status`, 'uint32', 2);
     const nodeLengths = createTransientView(graph, `${id}-node-lengths`, 'uint32', targetCapacity);
     const nodeStarts = createTransientView(graph, `${id}-node-starts`, 'uint32', targetCapacity);
     nodes.push(
-      createFillNode<Parameters>(graph, {
+      createPathStatusNode<Parameters>(graph, {
         id: `${id}-clear`,
-        operation: OPERATION,
-        view: status,
-        type: 'u32',
-        value: '0u'
+        status,
+        converged: props.predecessorsComplete
       }),
       createPathMeasureNode<Parameters>(graph, {
         id: `${id}-measure`,
         nodeCount,
-        maxPathLength,
+        maxPathLength: maximumPathLength,
         predecessors: props.predecessors,
         costs: props.costs,
         targets: props.targets,
         targetCount: props.targetCount,
         nodeLengths,
         status,
-        pathFound: props.pathFound,
-        pathCosts: props.pathCosts
+        pathFound: output.pathFound,
+        pathCosts: output.pathCosts
       }),
       ...new GPUScan({
         id: `${id}-node-scan`,
@@ -342,7 +366,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
           lengths: nodeLengths,
           starts: nodeStarts,
           total: nodeTotal,
-          pathOffsets: props.pathOffsets
+          pathOffsets: output.lineOffsets
         },
         edges:
           edges && edgeTotal
@@ -350,22 +374,22 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
                 lengths: edgeLengths,
                 starts: edgeStarts,
                 total: edgeTotal,
-                pathOffsets: edges.pathOffsets
+                pathOffsets: edges.output.lineOffsets
               }
             : undefined
       })
     );
-    if (props.output.ids.length > 0) {
+    if (output.ids.length > 0) {
       nodes.push(
         createPathWriteNodesNode<Parameters>(graph, {
           id: `${id}-write-nodes`,
-          capacity: props.output.ids.length,
+          capacity: output.ids.length,
           predecessors: props.predecessors,
           targets: props.targets,
           nodeLengths,
           nodeStarts,
           nodeIds: props.nodeIds,
-          ids: props.output.ids
+          ids: output.ids
         })
       );
     }
@@ -374,7 +398,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: nodeTotal,
-        output: props.output,
+        output: output,
         overflowSources: [status]
       })
     );
@@ -404,13 +428,13 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
           createPathResolveEdgesNode<Parameters>(graph, {
             id: `${id}-write-edges`,
             nodeCount,
-            edgeCount: edges.neighbors.length,
+            edgeCount: edges.topology.neighbors.length,
             linkTails,
             linkHeads,
             costs: props.costs,
-            offsets: edges.offsets,
-            neighbors: edges.neighbors,
-            weights: edges.weights,
+            offsets: edges.topology.offsets,
+            neighbors: edges.topology.neighbors,
+            weights: edges.topology.weights,
             edgeIds: edges.edgeIds,
             ids: edges.output.ids
           })
@@ -432,28 +456,27 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
 
 /** Returns every view referenced by the props. */
 function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefined)[] {
-  const {edges} = props;
+  const {edges, output} = props;
   return [
     props.predecessors,
     props.costs,
     props.targets,
-    props.targetCount,
+    typeof props.targetCount === 'object' ? props.targetCount : undefined,
+    props.predecessorsComplete,
     props.nodeIds,
-    props.output.ids,
-    props.output.count,
-    props.output.overflow,
-    props.output.requiredCount,
-    props.pathOffsets,
-    props.pathCosts,
-    props.pathFound,
-    edges?.offsets,
-    edges?.neighbors,
-    edges?.weights,
+    output.ids,
+    output.status.count,
+    output.status.overflow,
+    output.status.requiredCount,
+    output.lineOffsets,
+    output.pathCosts,
+    output.pathFound,
+    ...(edges ? getGPUNetworkTopologyViews(edges.topology) : []),
     edges?.edgeIds,
     edges?.output.ids,
-    edges?.output.count,
-    edges?.output.overflow,
-    edges?.output.requiredCount,
-    edges?.pathOffsets
+    edges?.output.status.count,
+    edges?.output.status.overflow,
+    edges?.output.status.requiredCount,
+    edges?.output.lineOffsets
   ];
 }

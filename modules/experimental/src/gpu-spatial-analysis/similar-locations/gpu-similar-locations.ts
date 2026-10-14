@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -15,18 +13,41 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   getGPUSimilarLocationsParameterLength,
   GPU_SIMILAR_LOCATIONS_CONTROL_LENGTH
 } from './similar-locations-parameters';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import type {GPUCardinalityPort} from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUSimilarLocations';
 /** Lanes of the column-reduction workgroups (one workgroup per attribute). */
 const REDUCTION_LANES = 256;
+
+/**
+ * Largest `columnCount`: a reduction kernel runs one 256-lane workgroup per column, and the
+ * dispatch holds at most `2^32 - 1` invocations, so `floor((2^32 - 1) / 256)`.
+ */
+export const GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT = Math.floor(0xffffffff / REDUCTION_LANES);
+
+/**
+ * Largest `values` length (`rowCount * columnCount`) of {@link GPUSimilarLocations} on `device`: the
+ * attribute matrix and its standardized copy hold 4 bytes per entry in one storage binding, so
+ * 33554432 on a default device (128 MiB bindings).
+ *
+ * @param device Device whose `maxStorageBufferBindingSize` applies.
+ */
+export function getGPUSimilarLocationsMaximumValueCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 4);
+}
+
 /**
  * Row count from which `'rank'` standardization sorts each column (O(n log n)) instead of the
  * all-pairs count (O(n^2) per column). Below it the single all-pairs dispatch per column is
@@ -95,30 +116,34 @@ export type GPUSimilarLocationsOutput = {
   distances: GraphDataView<'float32'>;
   /**
    * Row IDs of the best `min(resultCount, eligible rows)` rows in rank order, at least
-   * `maximumResultCount` uint32 rows; unused rows hold `GPU_SIMILAR_LOCATIONS_NO_RANK`.
+   * `resultCapacity` uint32 rows; unused rows hold `GPU_SIMILAR_LOCATIONS_NO_RANK`.
    */
   topIds: GraphDataView<'uint32'>;
-  /** Single uint32 row: the number of valid entries of `topIds`. */
-  count: GraphDataView<'uint32'>;
+  /** Status words: `count` is the number of valid entries of `topIds`. */
+  status: Pick<GPUCardinalityPort, 'count'>;
 };
 
 /**
  * Properties for {@link GPUSimilarLocations}.
  *
- * Per-frame (no recompile): the contents of `parameters`, `selection`, `mask` and `attributes`.
- * Topology (needs a new graph): `rowCount`, `attributeCount`, `standardization` and
- * `maximumResultCount`, and whether `mask` is present.
+ * Per-frame (no recompile): the contents of `parameters`, `referenceMask`, `mask` and `values`.
+ * Topology (needs a new graph): `rowCount`, `columnCount`, `standardization` and
+ * `resultCapacity`, and whether `mask` is present.
  */
 export type GPUSimilarLocationsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'similar-locations'`. */
   id?: string;
   /**
-   * Row-major packed float32 attribute matrix, `rowCount * attributeCount` elements. A row with
-   * any non-finite attribute is invalid and is neither ranked nor used in the statistics.
+   * Row-major packed float32 attribute matrix, `rowCount * columnCount` elements. A row with
+   * any non-finite attribute is invalid and is neither ranked nor used in the statistics. At most
+   * {@link getGPUSimilarLocationsMaximumValueCount} elements (33554432 on a default device).
    */
-  attributes: GraphDataView<'float32'>;
-  /** Number of attribute columns, at least 1. */
-  attributeCount: number;
+  values: GraphDataView<'float32'>;
+  /**
+   * Number of attribute columns, at least 1 and at most
+   * {@link GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT}.
+   */
+  columnCount: number;
   /** Optional packed `uint32` row mask; zero makes the row invalid. */
   mask?: GraphDataView<'uint32'>;
   /**
@@ -126,13 +151,13 @@ export type GPUSimilarLocationsProps = {
    * reference vector is the mean of their standardized attributes, so a single selected row
    * compares everything to that row. With no valid selected row every row is unranked.
    */
-  selection: GraphDataView<'uint32'>;
+  referenceMask: GraphDataView<'uint32'>;
   /** Per-frame float32 view written with `getGPUSimilarLocationsParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Standardization of the attribute columns. Defaults to `'zscore'`. */
   standardization?: GPUSimilarLocationsStandardization;
   /** Compile-time capacity of `output.topIds`, at most `rowCount`. Defaults to `min(rowCount, 32)`. */
-  maximumResultCount?: number;
+  resultCapacity?: number;
   /** Caller-owned outputs. */
   output: GPUSimilarLocationsOutput;
 };
@@ -158,83 +183,67 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
   /** Number of rows. */
   readonly rowCount: number;
   /** Capacity of `output.topIds`. */
-  readonly maximumResultCount: number;
+  readonly resultCapacity: number;
 
   constructor(props: GPUSimilarLocationsProps) {
     this.id = props.id ?? 'similar-locations';
     this.props = props;
     const {id} = this;
-    if (!Number.isSafeInteger(props.attributeCount) || props.attributeCount < 1) {
-      throw new Error(`${id} attributeCount must be a positive integer`);
+    validateCapacity(
+      id,
+      'columnCount',
+      props.columnCount,
+      1,
+      GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT
+    );
+    validatePackedView(props.values, ['float32'], `${id} values`);
+    if (props.values.length % props.columnCount !== 0) {
+      throw new Error(`${id} values length must be a multiple of columnCount`);
     }
-    for (const [name, view] of [
-      ['attributes', props.attributes],
-      ['mask', props.mask],
-      ['selection', props.selection],
-      ['parameters', props.parameters],
-      ['output.ranks', props.output.ranks],
-      ['output.distances', props.output.distances],
-      ['output.topIds', props.output.topIds],
-      ['output.count', props.output.count]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
-    validatePackedView(props.attributes, ['float32'], `${id} attributes`);
-    if (props.attributes.length % props.attributeCount !== 0) {
-      throw new Error(`${id} attributes length must be a multiple of attributeCount`);
-    }
-    this.rowCount = props.attributes.length / props.attributeCount;
+    this.rowCount = props.values.length / props.columnCount;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.standardization && !['zscore', 'rank'].includes(props.standardization)) {
       throw new Error(`${id} standardization must be 'zscore' or 'rank'`);
     }
-    this.maximumResultCount = props.maximumResultCount ?? Math.min(this.rowCount, 32);
-    if (
-      !Number.isSafeInteger(this.maximumResultCount) ||
-      this.maximumResultCount < 1 ||
-      this.maximumResultCount > this.rowCount
-    ) {
-      throw new Error(`${id} maximumResultCount must be an integer in [1, rowCount]`);
-    }
+    this.resultCapacity = props.resultCapacity ?? Math.min(this.rowCount, 32);
+    validateCapacity(id, 'resultCapacity', this.resultCapacity, 1, this.rowCount);
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    validatePackedUint32View(props.selection, `${id} selection`);
-    if (props.selection.length !== this.rowCount) {
-      throw new Error(`${id} selection length must equal the row count`);
+    validatePackedView(props.referenceMask, ['uint32'], `${id} referenceMask`);
+    if (props.referenceMask.length !== this.rowCount) {
+      throw new Error(`${id} referenceMask length must equal the row count`);
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
-    const parameterLength = getGPUSimilarLocationsParameterLength(props.attributeCount);
+    const parameterLength = getGPUSimilarLocationsParameterLength(props.columnCount);
     if (props.parameters.length < parameterLength) {
       throw new Error(`${id} parameters must hold ${parameterLength} float32 values`);
     }
-    validatePackedUint32View(props.output.ranks, `${id} output.ranks`);
+    validatePackedView(props.output.ranks, ['uint32'], `${id} output.ranks`);
     validatePackedView(props.output.distances, ['float32'], `${id} output.distances`);
-    validatePackedUint32View(props.output.topIds, `${id} output.topIds`);
-    validatePackedUint32View(props.output.count, `${id} output.count`);
+    validatePackedView(props.output.topIds, ['uint32'], `${id} output.topIds`);
+    validatePackedView(props.output.status.count, ['uint32'], `${id} output.status.count`);
     if (
       props.output.ranks.length < this.rowCount ||
       props.output.distances.length < this.rowCount
     ) {
       throw new Error(`${id} output.ranks and output.distances must hold one row per input row`);
     }
-    if (props.output.topIds.length < this.maximumResultCount) {
-      throw new Error(`${id} output.topIds must hold maximumResultCount rows`);
+    if (props.output.topIds.length < this.resultCapacity) {
+      throw new Error(`${id} output.topIds must hold resultCapacity rows`);
     }
-    if (props.output.count.length < 1) {
-      throw new Error(`${id} output.count must hold one row`);
+    if (props.output.status.count.length < 1) {
+      throw new Error(`${id} output.status.count must hold one row`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.output.ranks, props.output.distances, props.output.topIds, props.output.count],
-      [props.attributes, props.mask, props.selection, props.parameters]
+      [props.output.ranks, props.output.distances, props.output.topIds, props.output.status.count],
+      [props.values, props.mask, props.referenceMask, props.parameters]
     );
   }
 
@@ -242,18 +251,24 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, rowCount, maximumResultCount} = this;
-    const {output, attributeCount} = props;
+    const {id, props, rowCount, resultCapacity} = this;
+    const {output, columnCount: attributeCount} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.attributes,
+      props.values,
       props.mask,
-      props.selection,
+      props.referenceMask,
       props.parameters,
       output.ranks,
       output.distances,
       output.topIds,
-      output.count
+      output.status.count
     ]);
+    validateMaximumCount(
+      id,
+      'values rows',
+      props.values.length,
+      getGPUSimilarLocationsMaximumValueCount(graph.device)
+    );
     const isRank = props.standardization === 'rank';
     const matrixLength = rowCount * attributeCount;
     const validity = createTransientView(graph, `${id}-validity`, 'uint32', rowCount);
@@ -265,7 +280,7 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
     const sortedIds = createTransientView(graph, `${id}-sorted-ids`, 'uint32', rowCount);
     const declarations = `const ROW_COUNT: u32 = ${rowCount}u;
 const ATTRIBUTE_COUNT: u32 = ${attributeCount}u;
-const MAX_RESULTS: u32 = ${maximumResultCount}u;
+const MAX_RESULTS: u32 = ${resultCapacity}u;
 const NO_RANK: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}`;
@@ -307,7 +322,7 @@ ${GET_NAN_WGSL}`;
     kernel(
       'validate',
       [
-        read('attributes', props.attributes, 'f32'),
+        read('attributes', props.values, 'f32'),
         ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
         write('validity', validity, 'u32')
       ],
@@ -324,7 +339,7 @@ ${GET_NAN_WGSL}`;
       kernel(
         'standardize-rank',
         [
-          read('attributes', props.attributes, 'f32'),
+          read('attributes', props.values, 'f32'),
           read('validity', validity, 'u32'),
           write('standardized', standardized, 'f32')
         ],
@@ -364,17 +379,37 @@ ${GET_NAN_WGSL}`;
         rowCount
       );
       const rankSortedIds = createTransientView(graph, `${id}-rank-sorted-ids`, 'uint32', rowCount);
+      // Column cursor: a one-thread node advances it before each column, so the column index never
+      // reaches the WGSL text and every column shares one pipeline per kernel (rule 12).
+      const rankColumn = createTransientView(graph, `${id}-rank-column`, 'uint32', 1);
+      kernel(
+        'rank-column-clear',
+        [write('rankColumn', rankColumn, 'u32')],
+        1,
+        'rankColumn[rankColumnOffset] = 0xffffffffu;'
+      );
       for (let channel = 0; channel < attributeCount; channel++) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-rank-column-${channel}`,
+            operation: OPERATION,
+            variant: 'rank-column',
+            bindings: [write('rankColumn', rankColumn, 'u32')],
+            invocationCount: 1,
+            body: 'rankColumn[rankColumnOffset] = rankColumn[rankColumnOffset] + 1u;'
+          })
+        );
         kernel(
           `rank-keys-${channel}`,
           [
-            read('attributes', props.attributes, 'f32'),
+            read('attributes', props.values, 'f32'),
             read('validity', validity, 'u32'),
             write('rankKeys', rankKeys, 'u32'),
-            write('rankRowIds', rankRowIds, 'u32')
+            write('rankRowIds', rankRowIds, 'u32'),
+            read('rankColumn', rankColumn, 'u32')
           ],
           rowCount,
-          `let value = attributes[attributesOffset + index * ATTRIBUTE_COUNT + ${channel}u];
+          `let value = attributes[attributesOffset + index * ATTRIBUTE_COUNT + rankColumn[rankColumnOffset]];
   rankKeys[rankKeysOffset + index] =
     select(INVALID_KEY, getOrderedKey(value), validity[validityOffset + index] != 0u);
   rankRowIds[rankRowIdsOffset + index] = index;`,
@@ -395,20 +430,22 @@ ${GET_NAN_WGSL}`;
           [
             read('sortedKeys', rankSortedKeys, 'u32'),
             read('sortedIds', rankSortedIds, 'u32'),
-            write('standardized', standardized, 'f32')
+            write('standardized', standardized, 'f32'),
+            read('rankColumn', rankColumn, 'u32')
           ],
           rowCount,
           `let key = sortedKeys[sortedKeysOffset + index];
   let row = sortedIds[sortedIdsOffset + index];
+  let column = rankColumn[rankColumnOffset];
   if (key == INVALID_KEY) {
-    standardized[standardizedOffset + row * ATTRIBUTE_COUNT + ${channel}u] = getNaN();
+    standardized[standardizedOffset + row * ATTRIBUTE_COUNT + column] = getNaN();
     return;
   }
   let below = lowerBound(key);
   let notAbove = lowerBound(key + 1u);
   let valid = lowerBound(INVALID_KEY);
   let denominator = max(f32(valid) - 1.0, 1.0);
-  standardized[standardizedOffset + row * ATTRIBUTE_COUNT + ${channel}u] =
+  standardized[standardizedOffset + row * ATTRIBUTE_COUNT + column] =
     (f32(below) + 0.5 * (f32(notAbove - below) - 1.0)) / denominator;`,
           {
             declarations: `${RANK_KEY_WGSL}
@@ -433,7 +470,7 @@ fn lowerBound(bound: u32) -> u32 {
       kernel(
         'column-statistics',
         [
-          read('attributes', props.attributes, 'f32'),
+          read('attributes', props.values, 'f32'),
           read('validity', validity, 'u32'),
           write('stats', stats, 'f32')
         ],
@@ -468,7 +505,7 @@ fn lowerBound(bound: u32) -> u32 {
       kernel(
         'standardize-zscore',
         [
-          read('attributes', props.attributes, 'f32'),
+          read('attributes', props.values, 'f32'),
           read('validity', validity, 'u32'),
           read('stats', stats, 'f32'),
           write('standardized', standardized, 'f32')
@@ -491,7 +528,7 @@ fn lowerBound(bound: u32) -> u32 {
       [
         read('standardized', standardized, 'f32'),
         read('validity', validity, 'u32'),
-        read('selection', props.selection, 'u32'),
+        read('selection', props.referenceMask, 'u32'),
         write('reference', reference, 'f32')
       ],
       attributeCount,
@@ -518,7 +555,7 @@ fn lowerBound(bound: u32) -> u32 {
       [
         read('standardized', standardized, 'f32'),
         read('validity', validity, 'u32'),
-        read('selection', props.selection, 'u32'),
+        read('selection', props.referenceMask, 'u32'),
         read('reference', reference, 'f32'),
         read('params', props.parameters, 'f32'),
         write('keys', keys, 'u32'),
@@ -565,7 +602,7 @@ fn lowerBound(bound: u32) -> u32 {
         read('params', props.parameters, 'f32'),
         write('ranks', output.ranks, 'u32'),
         write('topIds', output.topIds, 'u32'),
-        write('resultCount', output.count, 'u32')
+        write('resultCount', output.status.count, 'u32')
       ],
       rowCount,
       `let key = sortedKeys[sortedKeysOffset + index];

@@ -4,25 +4,27 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture} from '../index';
+import {GPURasterBufferToTexture} from '../gpu-raster-buffer-to-texture';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {
-  createDistanceFieldColumnNode,
+  createDistanceFieldColumnNodes,
   createDistanceFieldFinalizeNode,
   createDistanceFieldJumpFloodNodes,
-  createDistanceFieldRowNode,
+  createDistanceFieldRowNodes,
+  getDistanceFieldBandLayout,
   createDistanceFieldSeedNodes
 } from './distance-field-kernels';
 import {
@@ -33,7 +35,10 @@ import {
 /**
  * Distance-field algorithm.
  *
- * - `'exact'`: separable Felzenszwalb-Huttenlocher lower envelopes, exact nearest seed per cell.
+ * - `'exact'`: separable Felzenszwalb-Huttenlocher lower envelopes, exact nearest seed per cell on
+ *   isotropic grids (equal cell width and height). With unequal cell sizes the candidate keys are
+ *   f32, so envelope crossings and tie order can differ from a brute-force search by one cell near
+ *   ties.
  * - `'jump-flood'`: jump flooding, an approximate preview in `ceil(log2(max(width, height)))`
  *   full-grid passes plus refinement passes.
  */
@@ -43,14 +48,14 @@ export type GPUDistanceFieldMode = 'exact' | 'jump-flood';
 export type GPUDistanceFieldOutput = {
   /**
    * Ground distance from each cell center to the center of its nearest seed cell, `+Infinity`
-   * when there is no seed or the nearest seed is beyond `maxDistance`.
+   * when there is no seed or the nearest seed is beyond `maximumDistance`.
    */
   distances: GraphDataView<'float32'>;
   /** Optional ID of the nearest seed (Euclidean allocation / Voronoi zones); ties take the smallest ID. */
   allocation?: GraphDataView<'uint32'>;
   /** Optional row-major cell index of the nearest seed, or `GPU_DISTANCE_FIELD_NONE`. */
   nearestCells?: GraphDataView<'uint32'>;
-  /** Optional mask: `1` when a seed lies within `maxDistance`, otherwise `0`. */
+  /** Optional mask: `1` when a seed lies within `maximumDistance`, otherwise `0`. */
   withinDistance?: GraphDataView<'uint32'>;
   /** Optional `r32float` texture copy of `distances` with `width x height` texels. */
   texture?: GraphTextureView<'r32float'>;
@@ -59,22 +64,20 @@ export type GPUDistanceFieldOutput = {
 /**
  * Properties for {@link GPUDistanceField}.
  *
- * Compile-time: `width`, `height`, `mode`, `jumpFloodRefinementPasses`, the seed capacity
+ * Compile-time: `grid` size, `mode`, `jumpFloodRefinementIterationCount`, the seed capacity
  * (`seedPositions.length`), and which optional views exist. Per-frame: the contents of
- * `settings` (origin, cell size, `maxDistance`), `seedPositions`, `seedIds`, `seedCount`, and
+ * `parameters` (grid origin and cell size, `maximumDistance`), `seedPositions`, `seedIds`, `seedCount`, and
  * `seedMask`.
  */
 export type GPUDistanceFieldProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'distance-field'`. */
   id?: string;
-  /** Grid width in cells, 1 to 32768. Compile-time. */
-  width: number;
-  /** Grid height in cells, 1 to 32768. Compile-time. Row 0 is the minimum-y edge. */
-  height: number;
-  /** Per-frame settings with at least 8 float32 values, see `getGPUDistanceFieldParameterValues`. */
-  settings: GraphDataView<'float32'>;
+  /** Raster grid: its width and height (1 to 32768 cells) size the kernels. */
+  grid: GPURasterMetadata;
+  /** Per-frame parameters with at least 8 float32 values, see `getGPUDistanceFieldParameterValues`. */
+  parameters: GraphDataView<'float32'>;
   /**
-   * Optional seed points in ground coordinates relative to the settings' `localOrigin`. Each
+   * Optional seed points in ground coordinates relative to the parameters' `localOrigin`. Each
    * point snaps to the cell that contains it; points outside the grid or with non-finite
    * coordinates are ignored. The length is the compile-time seed capacity; contents are per-frame.
    */
@@ -90,8 +93,11 @@ export type GPUDistanceFieldProps = {
   seedMask?: GraphDataView<'uint32'>;
   /** Algorithm. Compile-time. Defaults to `'exact'`. */
   mode?: GPUDistanceFieldMode;
-  /** Extra jump-flood passes after the step-1 pass: `0`, `1` (JFA+1, default), or `2` (JFA+2). */
-  jumpFloodRefinementPasses?: 0 | 1 | 2;
+  /**
+   * Exact number of extra jump-flood passes after the step-1 pass: `0`, `1` (JFA+1, default), or
+   * `2` (JFA+2). Not a cap: every encoding runs exactly this many.
+   */
+  jumpFloodRefinementIterationCount?: 0 | 1 | 2;
   /** Caller-owned results. */
   output: GPUDistanceFieldOutput;
 };
@@ -100,13 +106,17 @@ export type GPUDistanceFieldProps = {
  * Computes a Euclidean distance transform and nearest-seed allocation (Voronoi zones) on a
  * raster grid, from seed points snapped to cells and/or a seed raster.
  *
- * The exact mode is the separable Felzenszwalb-Huttenlocher transform: one invocation per column
- * finds the nearest seed row, then one invocation per row builds the discrete lower envelope of
- * those candidates. Candidates are ordered by squared ground distance (exact `u32` integer keys
+ * The exact mode is the separable Felzenszwalb-Huttenlocher transform, banded as in the Parallel
+ * Banding Algorithm (Cao, Tang, Mitra and Tan 2010) so every pass has `width * height / 32`-way
+ * parallelism instead of one invocation per row or column: banded column scans find the nearest
+ * seed row, then banded lower envelopes of those candidates are merged pairwise per row and
+ * colored by a banded running maximum. The result is bit-identical to one sequential envelope per
+ * row. Candidates are ordered by squared ground distance (exact `u32` integer keys
  * with equal cell sizes, f32 keys otherwise), then by the smaller seed ID, so allocation is
- * deterministic and ties resolve to the smallest ID. The jump-flood mode is a cheaper
+ * deterministic and ties resolve to the smallest ID. `'exact'` is exact on isotropic grids only:
+ * anisotropic f32 keys can misorder near-ties by up to a cell. The jump-flood mode is a cheaper
  * approximate preview with the same outputs. Every encoding recomputes from scratch, and
- * rewriting seeds or settings never recompiles the graph.
+ * rewriting seeds or parameters never recompiles the graph.
  *
  * Distances are between cell centers; a seed point's position inside its cell is not used.
  * Non-goals: cost-weighted (non-Euclidean) allocation, which `GPUCostDistance` covers, geodesic
@@ -114,7 +124,7 @@ export type GPUDistanceFieldProps = {
  * `seedMask`).
  *
  * Precision: seeds snap to cells with `floor((position - origin) * (1 / cellSize))` in float32,
- * with `position` and `origin` relative to the settings' `localOrigin`. Absolute seeds (the default
+ * with `position` and `origin` relative to the `localOrigin` packed into the parameters. Absolute seeds (the default
  * origin `[0, 0]`) are quantized to the float32 ulp, 0.5 m at a UTM northing of 4.6e6 m (2 m at
  * 2e7 m in EPSG:3857), so seeds that close to a cell edge can snap to the neighbouring cell. Set
  * `localOrigin` to the raster or tile corner and upload seeds relative to it; they then keep about
@@ -129,7 +139,7 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
   /** Resolved algorithm. */
   readonly mode: GPUDistanceFieldMode;
   /** Resolved jump-flood refinement pass count. */
-  readonly jumpFloodRefinementPasses: 0 | 1 | 2;
+  readonly jumpFloodRefinementIterationCount: 0 | 1 | 2;
   /** `width * height`. */
   readonly cellCount: number;
 
@@ -137,32 +147,28 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
     this.id = props.id ?? 'distance-field';
     this.props = props;
     this.mode = props.mode ?? 'exact';
-    this.jumpFloodRefinementPasses = props.jumpFloodRefinementPasses ?? 1;
+    this.jumpFloodRefinementIterationCount = props.jumpFloodRefinementIterationCount ?? 1;
     const {id} = this;
-    const {width, height, output} = props;
+    const {output} = props;
+    this.cellCount = validateRasterGrid(id, props.grid);
+    const {width, height} = props.grid;
     for (const [name, size] of [
       ['width', width],
       ['height', height]
     ] as const) {
-      if (!Number.isSafeInteger(size) || size < 1 || size > GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION) {
+      if (size > GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION) {
         throw new Error(
-          `${id} ${name} must be an integer from 1 to ${GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION}`
+          `${id} grid ${name} must be an integer from 1 to ${GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION}`
         );
       }
     }
-    this.cellCount = width * height;
     if (!['exact', 'jump-flood'].includes(this.mode)) {
       throw new Error(`${id} mode must be exact or jump-flood`);
     }
-    if (![0, 1, 2].includes(this.jumpFloodRefinementPasses)) {
-      throw new Error(`${id} jumpFloodRefinementPasses must be 0, 1, or 2`);
+    if (![0, 1, 2].includes(this.jumpFloodRefinementIterationCount)) {
+      throw new Error(`${id} jumpFloodRefinementIterationCount must be 0, 1, or 2`);
     }
-    validatePackedView(props.settings, ['float32'], `${id} settings`);
-    if (props.settings.length < GPU_DISTANCE_FIELD_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} settings must contain ${GPU_DISTANCE_FIELD_PARAMETER_LENGTH} float32 values`
-      );
-    }
+    validateRasterParameters(id, props.parameters, GPU_DISTANCE_FIELD_PARAMETER_LENGTH);
     if (!props.seedPositions && !props.seedMask) {
       throw new Error(`${id} requires seedPositions or seedMask`);
     }
@@ -181,7 +187,7 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
       ['output.withinDistance', output.withinDistance]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     validatePackedView(output.distances, ['float32'], `${id} output.distances`);
@@ -217,7 +223,7 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
       output.withinDistance
     ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [
-      props.settings,
+      props.parameters,
       props.seedPositions,
       props.seedIds,
       props.seedCount,
@@ -234,8 +240,8 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, cellCount} = this;
-    const {output, settings} = props;
-    const grid = {width: props.width, height: props.height};
+    const {output, parameters: settings} = props;
+    const grid = {width: props.grid.width, height: props.grid.height};
     validateGraphViewsBelongToGraph(id, graph, [
       settings,
       props.seedPositions,
@@ -274,22 +280,41 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
         cells: createScratch('nearest-cells'),
         ids: createScratch('nearest-ids')
       };
+      const bands = getDistanceFieldBandLayout(grid);
+      const createBandScratch = (name: string, length: number) =>
+        createTransientView(graph, `${id}-${name}`, 'uint32', length);
       nodes.push(
-        createDistanceFieldColumnNode<Parameters>(graph, {
+        ...createDistanceFieldColumnNodes<Parameters>(graph, {
           id,
           grid,
           cellSeeds,
           columnRows,
-          columnIds
+          columnIds,
+          scratch: {
+            bandSeeds: createBandScratch(
+              'column-band-seeds',
+              4 * bands.columnBandCount * grid.width
+            ),
+            bandCarries: createBandScratch(
+              'column-band-carries',
+              4 * bands.columnBandCount * grid.width
+            )
+          }
         }),
-        createDistanceFieldRowNode<Parameters>(graph, {
+        ...createDistanceFieldRowNodes<Parameters>(graph, {
           id,
           grid,
           settings,
           columnRows,
           columnIds,
-          stackColumns: createScratch('stack-columns'),
-          stackStarts: createScratch('stack-starts'),
+          scratch: {
+            entryNext: createScratch('entry-next'),
+            entryPrevious: createScratch('entry-previous'),
+            entryStarts: createScratch('entry-starts'),
+            blockEnds: createBandScratch('block-ends', 2 * bands.rowBandCount * grid.height),
+            startMarkers: createScratch('start-markers'),
+            bandMarkers: createBandScratch('band-markers', bands.rowBandCount * grid.height)
+          },
           nearestCells: nearest.cells,
           nearestIds: nearest.ids
         })
@@ -310,7 +335,7 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
             ids: createScratch('jump-flood-ids-1')
           }
         ],
-        refinementPasses: this.jumpFloodRefinementPasses
+        refinementIterationCount: this.jumpFloodRefinementIterationCount
       });
       nodes.push(...jumpFlood.nodes);
       nearest = jumpFlood.result;

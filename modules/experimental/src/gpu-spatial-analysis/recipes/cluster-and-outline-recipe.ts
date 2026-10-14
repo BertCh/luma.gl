@@ -3,12 +3,19 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import type {GPUSpatialContext} from '../contracts/index';
+import type {
+  GPUPackedGeometryPort,
+  GPUPointGeometryPort,
+  GPURecipeStatusPort,
+  GPUStatusScalar,
+  GPUSpatialContext
+} from '../../analysis-core/contracts/index';
 import {GPUGeometryMeasures} from '../geometry-measures/index';
 import {GPUGroupConvexHull, GPUGroupGeometry} from '../group-geometry/index';
 import {GPUSpatialClustering} from '../spatial-clustering/index';
 import {
   assertRecipe,
+  createIdentityOffsetsNode,
   getOrCreateView,
   RecipeBuilder,
   type GPURecipeOverrides,
@@ -23,13 +30,18 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
   {
     labels?: GraphDataView<'uint32'>;
     clusterCount?: GraphDataView<'uint32'>;
-    clusterOverflow?: GraphDataView<'uint32'>;
     hullPositions?: GraphDataView<'float32x2'>;
     hullOffsets?: GraphDataView<'uint32'>;
-    hullOverflow?: GraphDataView<'uint32'>;
     areas?: GraphDataView<'float32'>;
     perimeters?: GraphDataView<'float32'>;
     centroids?: GraphDataView<'float32x2'>;
+    /** Mirrors `result.status`. */
+    status?: {
+      clusterOverflow?: GPUStatusScalar;
+      hullOverflow?: GPUStatusScalar;
+      /** One-row count of hulls rejected by `GPUGeometryMeasures` (stage `hull-measures`). */
+      invalidCount?: GPUStatusScalar;
+    };
   },
   {
     clusterIds?: GraphDataView<'uint32'>;
@@ -43,10 +55,13 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'cluster-outline-recipe'`. */
   id?: string;
-  /** Point coordinates interpreted by `spatialContext`. */
-  positions: GraphDataView<'float32x2'>;
   /**
-   * Canonical coordinate and metric contract of `positions`, used by the clustering and by hull
+   * Points in the coordinates of `spatialContext`; optional `sourceIds` become the cluster
+   * provenance IDs of `GPUSpatialClustering`.
+   */
+  points: GPUPackedGeometryPort<GPUPointGeometryPort>;
+  /**
+   * Canonical coordinate and metric contract of `points`, used by the clustering and by hull
    * measurement. Planar contexts cluster with a Euclidean `epsilon`; a longitude/latitude
    * great-circle context clusters with `epsilon` in meters (see `GPUSpatialClustering`, including
    * its antimeridian rule). Other metrics throw at graph construction.
@@ -82,10 +97,22 @@ export type GPUClusterAndOutlineRecipeResult = GPURecipeResult & {
   hullPositions: GraphDataView<'float32x2'>;
   hullOffsets: GraphDataView<'uint32'>;
   hullCounts: GraphDataView<'uint32'>;
-  hullOverflow: GraphDataView<'uint32'>;
   areas: GraphDataView<'float32'>;
   perimeters: GraphDataView<'float32'>;
   centroids: GraphDataView<'float32x2'>;
+  /** Status words next to the per-stage `stages`. */
+  status: {
+    /** One-row flag: 1 when the cluster summary list was incomplete. Stage `clustering`. */
+    clusterOverflow: GPUStatusScalar;
+    /** One-row flag: 1 when the shared hull vertex list overflowed. Stage `convex-hull`. */
+    hullOverflow: GPUStatusScalar;
+    /**
+     * One-row count of hull polygons the measurement rejected (geographic hulls enclosing a pole
+     * or spanning 180 degrees of longitude); their area and centroid are NaN. Stage
+     * `hull-measures`.
+     */
+    invalidCount: GPUStatusScalar;
+  } & GPURecipeStatusPort;
 };
 
 /**
@@ -93,16 +120,20 @@ export type GPUClusterAndOutlineRecipeResult = GPURecipeResult & {
  * area, perimeter and centroid.
  *
  * Chain: `GPUSpatialClustering` -> `GPUGroupGeometry` (counts, bounds, mean centers) and
- * `GPUGroupConvexHull` -> `GPUGeometryMeasures` with each hull as one polygon ring (the hull's
- * `offsets` is the ring offset list, so no adapter is needed). With `minimumPoints = 1` the
+ * `GPUGroupConvexHull` -> `GPUGeometryMeasures` with each hull as one single-ring polygon feature
+ * (the hull's `offsets` is the ring offset list; feature and polygon offsets are the identity). With `minimumPoints = 1` the
  * clusters are PostGIS `ST_ClusterWithin` groups.
+ *
+ * Status: `status.stages` reports `clustering`, `convex-hull` and `hull-measures` (`status.invalidCount`
+ * of rejected hull polygons).
  */
 export function addClusterAndOutlineRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUClusterAndOutlineRecipeProps
 ): GPUClusterAndOutlineRecipeResult {
   const id = props.id ?? 'cluster-outline-recipe';
-  const pointCount = props.positions.length;
+  const positions = props.points.positions;
+  const pointCount = positions.length;
   const groupCount = props.maximumClusterCount;
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
@@ -135,18 +166,24 @@ export function addClusterAndOutlineRecipe<Parameters>(
     `${id}-cluster-overflow`,
     'uint32',
     1,
-    outputs.clusterOverflow
+    outputs.status?.clusterOverflow
   );
   builder.add(
     new GPUSpatialClustering({
       id: `${id}-clustering`,
       spatialContext: props.spatialContext,
-      positions: props.positions,
+      positions,
+      sourceIds: props.points.sourceIds,
       parameters: props.clusteringParameters,
       gridSize: props.gridSize,
-      labels,
-      clusterCount,
-      clusters: {ids: clusterIds, count: clusterBoundCount, overflow: clusterOverflow}
+      output: {
+        labels,
+        clusterCount,
+        clusters: {
+          ids: clusterIds,
+          status: {count: clusterBoundCount, overflow: clusterOverflow}
+        }
+      }
     })
   );
 
@@ -162,7 +199,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
   builder.add(
     new GPUGroupGeometry({
       id: `${id}-group-geometry`,
-      positions: props.positions,
+      positions,
       labels,
       groupCount,
       parameters: props.geometryParameters,
@@ -203,22 +240,22 @@ export function addClusterAndOutlineRecipe<Parameters>(
     `${id}-hull-overflow`,
     'uint32',
     1,
-    outputs.hullOverflow
+    outputs.status?.hullOverflow
   );
   builder.add(
     new GPUGroupConvexHull({
       id: `${id}-convex-hull`,
-      positions: props.positions,
+      positions,
       labels,
       groupCount,
       maximumVerticesPerGroup: props.maximumVerticesPerHull,
-      totalCapacity: props.hullCapacity,
+      vertexCapacity: props.hullCapacity,
       output: {
         vertexIndices: hullVertexIndices,
         vertexPositions: hullPositions,
         offsets: hullOffsets,
         counts: hullCounts,
-        overflow: hullOverflow
+        status: {overflow: hullOverflow}
       }
     })
   );
@@ -238,15 +275,25 @@ export function addClusterAndOutlineRecipe<Parameters>(
     groupCount,
     outputs.centroids
   );
+  const invalidCount = getOrCreateView(
+    graph,
+    `${id}-invalid-count`,
+    'uint32',
+    1,
+    outputs.status?.invalidCount
+  );
+  // Each hull is one feature with one polygon of one ring: identity feature and polygon offsets.
+  const identityOffsets = createIdentityOffsetsNode(graph, `${id}-hull-identity`, groupCount);
   builder.add(
     new GPUGeometryMeasures({
       spatialContext: props.spatialContext,
       id: `${id}-hull-measures`,
-      positions: hullPositions,
       geometryType: 'polygons',
+      positions: hullPositions,
+      featureOffsets: identityOffsets,
+      polygonOffsets: identityOffsets,
       ringOffsets: hullOffsets,
-
-      output: {areas, lengths: perimeters, centroids}
+      output: {areas, lengths: perimeters, centroids, status: {invalidCount}}
     })
   );
 
@@ -262,19 +309,22 @@ export function addClusterAndOutlineRecipe<Parameters>(
     hullPositions,
     hullOffsets,
     hullCounts,
-    hullOverflow,
     areas,
     perimeters,
     centroids,
     outputs: {labels, clusterCount, hullPositions, hullOffsets, areas, perimeters, centroids},
     intermediates: {counts, bounds, meanCenters, hullVertexIndices, hullCounts},
     status: {
+      clusterOverflow,
+      hullOverflow,
+      invalidCount,
       stages: [
         {
           stage: 'clustering',
           status: {count: clusterBoundCount, requiredCount: clusterCount, overflow: clusterOverflow}
         },
-        {stage: 'convex-hull', status: {overflow: hullOverflow}}
+        {stage: 'convex-hull', status: {overflow: hullOverflow}},
+        {stage: 'hull-measures', status: {invalidCount}}
       ]
     }
   };

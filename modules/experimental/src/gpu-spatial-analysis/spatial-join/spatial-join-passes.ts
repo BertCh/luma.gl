@@ -14,9 +14,14 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {createScanCarryNode} from '../../utils/scan-total';
 import type {GPUCompactOutput, GPUUint32Rows} from '../../utils/gpu-contributor-types';
 import {getGraphViewChunks, getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL, NODE_OVERLAPS_WGSL, SPREAD_BITS_WGSL} from '../../utils/wgsl-common';
+import type {
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 export {getNextPowerOfTwo};
 
 /** Shared WGSL constants and helpers for spatial-join kernels. @internal */
@@ -24,11 +29,6 @@ export const SPATIAL_JOIN_WGSL_HELPERS = /* wgsl */ `
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const NO_FEATURE: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}`;
-
-/** Returns whether `value` is a positive power of two. @internal */
-export function isPowerOfTwo(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= 1 && (value & (value - 1)) === 0;
-}
 
 /** Throws unless `view` has the same chunk lengths as `reference`. @internal */
 export function validateMatchingChunks(
@@ -94,6 +94,17 @@ export type SpatialJoinBVHStorage = {
 };
 
 /**
+ * Bytes of the BVH storage {@link getFeatureBVHNodes} allocates for `leafCapacity` leaves:
+ * `2 * leafCapacity - 1` nodes of minimum, maximum (`float32x2` each) and children (`uint32x2`),
+ * one `uint32` leaf row per leaf, and the one-row count and overflow scalars. About 52 bytes per
+ * leaf. Keep it in step with the views allocated below; a node spec compares the two. @internal
+ */
+export function getSpatialJoinBVHByteLength(leafCapacity: number): number {
+  const nodeCount = 2 * leafCapacity - 1;
+  return nodeCount * (8 + 8 + 8) + leafCapacity * 4 + 2 * 4;
+}
+
+/**
  * Creates BVH storage over feature bounds and returns the BVH and its nodes. @internal
  *
  * Storage is graph transient unless `storage` is given.
@@ -130,6 +141,42 @@ export function getFeatureBVHNodes<Parameters>(
   });
   return {bvh, nodes: bvh.getCommandNodes(graph)};
 }
+
+/**
+ * Quantizes `value` within `[minimum, maximum]` to a 16-bit cell (0 for an empty or non-finite
+ * extent). Shared by the feature sort and the query order. @internal
+ */
+export const QUANTIZE_AXIS_WGSL = /* wgsl */ `fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
+  let extent = maximum - minimum;
+  if (!(extent > 0.0) || !isFiniteValue(extent)) { return 0u; }
+  let normalized = clamp((value - minimum) / extent, 0.0, 1.0);
+  return min(u32(normalized * 65535.0 + 0.5), 65535u);
+}`;
+
+/**
+ * Classic xy2d on the 65536 x 65536 grid (same curve as GPUHilbertKeys at order 16), shared by the
+ * feature sort and the query order. @internal
+ */
+export const HILBERT_INDEX_WGSL = /* wgsl */ `fn getHilbertIndex(cellX: u32, cellY: u32) -> u32 {
+  var x = cellX;
+  var y = cellY;
+  var key = 0u;
+  for (var s = 32768u; s > 0u; s = s >> 1u) {
+    let rx = select(0u, 1u, (x & s) != 0u);
+    let ry = select(0u, 1u, (y & s) != 0u);
+    key += s * s * ((3u * rx) ^ ry);
+    if (ry == 0u) {
+      if (rx == 1u) {
+        x = 65535u - x;
+        y = 65535u - y;
+      }
+      let swap = x;
+      x = y;
+      y = swap;
+    }
+  }
+  return key;
+}`;
 
 /** Feature count from which `spatialSort` defaults to on (see {@link getDefaultSpatialSort}). @internal */
 export const SPATIAL_SORT_MINIMUM_FEATURES = 256;
@@ -279,33 +326,8 @@ var<workgroup> sharedMaxima: array<vec2f, 256>;`,
       invocationCount: featureCount,
       declarations: `${validFeatureDeclarations}
 ${SPREAD_BITS_WGSL}
-fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
-  let extent = maximum - minimum;
-  if (!(extent > 0.0) || !isFiniteValue(extent)) { return 0u; }
-  let normalized = clamp((value - minimum) / extent, 0.0, 1.0);
-  return min(u32(normalized * 65535.0 + 0.5), 65535u);
-}
-// Classic xy2d on the 65536 x 65536 grid (same curve as GPUHilbertKeys at order 16).
-fn getHilbertIndex(cellX: u32, cellY: u32) -> u32 {
-  var x = cellX;
-  var y = cellY;
-  var key = 0u;
-  for (var s = 32768u; s > 0u; s = s >> 1u) {
-    let rx = select(0u, 1u, (x & s) != 0u);
-    let ry = select(0u, 1u, (y & s) != 0u);
-    key += s * s * ((3u * rx) ^ ry);
-    if (ry == 0u) {
-      if (rx == 1u) {
-        x = 65535u - x;
-        y = 65535u - y;
-      }
-      let swap = x;
-      x = y;
-      y = swap;
-    }
-  }
-  return key;
-}`,
+${QUANTIZE_AXIS_WGSL}
+${HILBERT_INDEX_WGSL}`,
       body: `sortRows[sortRowsOffset + index] = index;
   let center = readFeatureCenter(index);
   var key = 0xffffffffu;
@@ -364,15 +386,99 @@ fn getHilbertIndex(cellX: u32, cellY: u32) -> u32 {
   return {bvh, nodes};
 }
 
+/** Query count from which `querySort` defaults to on (see {@link getDefaultQuerySort}). @internal */
+export const QUERY_SORT_MINIMUM_QUERIES = 4096;
+
+/**
+ * Default of `querySort`: on from {@link QUERY_SORT_MINIMUM_QUERIES} queries and
+ * {@link SPATIAL_SORT_MINIMUM_FEATURES} features. The sort costs one key pass and a 32-bit radix
+ * sort of the queries, and it pays back only when neighboring invocations then walk the same BVH
+ * nodes: that needs enough queries to fill many workgroups, and a tree deep enough that the nodes
+ * do not all stay in cache (the same reason `spatialSort` waits for 256 features). The threshold is
+ * a provisional round number; `spatial-join-query-order.spec.ts` carries the A/B harness that
+ * should refine it.
+ *
+ * @internal
+ */
+export function getDefaultQuerySort(queryCount: number, featureCount: number): boolean {
+  return queryCount >= QUERY_SORT_MINIMUM_QUERIES && featureCount >= SPATIAL_SORT_MINIMUM_FEATURES;
+}
+
+/**
+ * Creates the Hilbert processing order of one chunk of query points: nodes plus a
+ * `GraphDataView<'uint32'>` whose entry `i` is the chunk-local row that invocation `i` should
+ * handle. Neighboring invocations then traverse neighboring BVH subtrees.
+ *
+ * Each point is quantized on the 65536 x 65536 grid over the BVH root bounds (node 0 of
+ * `nodeMinima` and `nodeMaxima`, already on the GPU, so no extra reduction); points outside the
+ * root box clamp to its border, and points with a non-finite coordinate get key `0xffffffff`.
+ * The (key, row) pairs are sorted by the stable radix sort, so equal keys keep row order and the
+ * order is deterministic. The order is a permutation of `[0, points.length)`.
+ *
+ * Callers must read and write per-query results at the original row, so every output equals the
+ * unordered result. Needs at least two points; nothing is read back.
+ *
+ * @internal
+ */
+export function getHilbertQueryOrderNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    /** One chunk of query points. */
+    points: GraphDataView<'float32x2'>;
+    bvh: Pick<GPUBVH, 'nodeMinima' | 'nodeMaxima'>;
+  }
+): {nodes: GPUCommandNode<Parameters>[]; order: GraphDataView<'uint32'>} {
+  const {id, operation, points, bvh} = props;
+  const pointCount = points.length;
+  const keys = createTransientView(graph, `${id}-keys`, 'uint32', pointCount);
+  const rows = createTransientView(graph, `${id}-rows`, 'uint32', pointCount);
+  const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', pointCount);
+  const order = createTransientView(graph, `${id}-order`, 'uint32', pointCount);
+  const nodes: GPUCommandNode<Parameters>[] = [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-keys`,
+      operation,
+      variant: 'query-keys-hilbert',
+      bindings: [
+        {name: 'points', view: points, type: 'f32', access: 'read'},
+        {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
+        {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
+        {name: 'sortKeys', view: keys, type: 'u32', access: 'read_write'},
+        {name: 'sortRows', view: rows, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: pointCount,
+      declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
+${QUANTIZE_AXIS_WGSL}
+${HILBERT_INDEX_WGSL}`,
+      body: `sortRows[sortRowsOffset + index] = index;
+  let point = vec2f(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
+  var key = 0xffffffffu;
+  if (isFiniteValue(point.x) && isFiniteValue(point.y)) {
+    let quantizedX = quantizeAxis(point.x, nodeMinima[nodeMinimaOffset], nodeMaxima[nodeMaximaOffset]);
+    let quantizedY = quantizeAxis(point.y, nodeMinima[nodeMinimaOffset + 1u], nodeMaxima[nodeMaximaOffset + 1u]);
+    key = getHilbertIndex(quantizedX, quantizedY);
+  }
+  sortKeys[sortKeysOffset + index] = key;`
+    })
+  ];
+  nodes.push(
+    ...new GPUSort({
+      id: `${id}-sort`,
+      keys,
+      values: rows,
+      outputKeys: sortedKeys,
+      outputValues: order,
+      algorithm: 'radix'
+    }).getCommandNodes(graph)
+  );
+  return {nodes, order};
+}
+
 /** Feature geometry used to compute per-feature bounds. @internal */
 export type SpatialJoinBoundsSource =
-  | {
-      kind: 'polygons';
-      polygonPositions: GraphDataView<'float32x2'>;
-      featureOffsets: GraphDataView<'uint32'>;
-      polygonOffsets: GraphDataView<'uint32'>;
-      ringOffsets: GraphDataView<'uint32'>;
-    }
+  | GPUPackedGeometryPort<GPUPolygonGeometryPort>
   | {kind: 'points'; positions: GraphDataView<'float32x2'>}
   | {kind: 'segments'; starts: GraphDataView<'float32x2'>; ends: GraphDataView<'float32x2'>};
 
@@ -394,7 +500,7 @@ export function createSpatialJoinBoundsNode<Parameters>(
   let body: string;
   if (source.kind === 'polygons') {
     bindings.push(
-      {name: 'polygonPositions', view: source.polygonPositions, type: 'f32', access: 'read'},
+      {name: 'polygonPositions', view: source.positions, type: 'f32', access: 'read'},
       {name: 'featureOffsets', view: source.featureOffsets, type: 'u32', access: 'read'},
       {name: 'polygonOffsets', view: source.polygonOffsets, type: 'u32', access: 'read'},
       {name: 'ringOffsets', view: source.ringOffsets, type: 'u32', access: 'read'}
@@ -402,7 +508,7 @@ export function createSpatialJoinBoundsNode<Parameters>(
     declarations += `
 const POLYGON_COUNT: u32 = ${source.polygonOffsets.length - 1}u;
 const RING_COUNT: u32 = ${source.ringOffsets.length - 1}u;
-const VERTEX_COUNT: u32 = ${source.polygonPositions.length}u;`;
+const VERTEX_COUNT: u32 = ${source.positions.length}u;`;
     body = `var minimum = vec2f(FLOAT32_MAXIMUM);
   var maximum = vec2f(-FLOAT32_MAXIMUM);
   let polygonStart = featureOffsets[featureOffsetsOffset + index];
@@ -569,11 +675,29 @@ export function getSpatialJoinProbeNodes<Parameters>(
     candidateCapacity: number;
     state: GraphDataView<'uint32'>;
     candidatePairs: GraphDataView<'uint32x2'>;
-    /** Destination of the candidate point, at row `slot * pointRowScale + pointRowOffset`. */
-    candidatePoints: GraphDataView<'float32x2'>;
+    /**
+     * Destination of the candidate point, at row `slot * pointRowScale + pointRowOffset`. Ignored
+     * (and may be omitted) with `packedCandidates`.
+     */
+    candidatePoints?: GraphDataView<'float32x2'>;
+    /**
+     * Write four words per slot into `candidatePairs` (which then needs `4 * candidateCapacity`
+     * words): `[pointRow, featureRow, bitcast(point.x), bitcast(point.y)]`. This drops the
+     * `candidatePoints` binding of the write pass and lets a consumer read a candidate from one
+     * binding.
+     */
+    packedCandidates?: boolean;
     pointRowScale: number;
     pointRowOffset: number;
     radius?: GraphDataView<'float32'>;
+    /**
+     * Process each point chunk in Hilbert order of its points (see
+     * {@link getHilbertQueryOrderNodes}). Per-point counts, slots and candidate pairs stay
+     * addressed by the original row, so every output equals the unordered one, including which
+     * pairs a candidate overflow drops. With `radius` the write pass stays in row order: its
+     * eight bindings are full. Needs `bvh.nodeMinima` and `bvh.nodeMaxima`.
+     */
+    querySort?: boolean;
   }
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -592,7 +716,8 @@ export function getSpatialJoinProbeNodes<Parameters>(
   );
   const getBindings = (
     chunk: GraphDataView<'float32x2'>,
-    extra: WGSLKernelBinding[]
+    extra: WGSLKernelBinding[],
+    order?: GraphDataView<'uint32'>
   ): WGSLKernelBinding[] => [
     {name: 'points', view: chunk, type: 'f32', access: 'read'},
     {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
@@ -601,6 +726,7 @@ export function getSpatialJoinProbeNodes<Parameters>(
     ...(props.radius
       ? [{name: 'radius', view: props.radius, type: 'f32', access: 'read'} as const]
       : []),
+    ...(order ? [{name: 'queryOrder', view: order, type: 'u32', access: 'read'} as const] : []),
     ...extra
   ];
   const declarations = (chunkFirstRow: number) => `${SPATIAL_JOIN_WGSL_HELPERS}
@@ -616,14 +742,17 @@ ${NODE_OVERLAPS_WGSL}`;
   let queryMaximum = point + vec2f(searchRadius);`
     : `let queryMinimum = point;
   let queryMaximum = point;`;
-  const probeBody = (
-    leaf: string,
-    prologue: string,
-    epilogue: string
-  ) => `let row = CHUNK_FIRST_ROW + index;
+  // With a query order, invocation `index` handles chunk-local row `queryOrder[index]`; results stay
+  // addressed by that row.
+  const probeBody = (leaf: string, prologue: string, epilogue: string, ordered: boolean) => `${
+    ordered
+      ? `let localRow = queryOrder[queryOrderOffset + index];
+  let row = CHUNK_FIRST_ROW + localRow;`
+      : 'let row = CHUNK_FIRST_ROW + index;'
+  }
   ${prologue}
   var found = 0u;
-  let point = vec2f(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
+  let point = vec2f(points[pointsOffset + ${ordered ? 'localRow' : 'index'} * 2u], points[pointsOffset + ${ordered ? 'localRow' : 'index'} * 2u + 1u]);
   if (!isFiniteValue(point.x) || !isFiniteValue(point.y)) { return; }
   ${query}
   var node = 0u;
@@ -652,23 +781,43 @@ ${NODE_OVERLAPS_WGSL}`;
     return nodes;
   }
 
+  // One order per sorted point chunk, built once and read by both passes.
+  const orders = new Map<number, GraphDataView<'uint32'>>();
+  if (props.querySort) {
+    for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
+      if (chunk.length >= 2) {
+        const ordered = getHilbertQueryOrderNodes<Parameters>(graph, {
+          id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-order`,
+          operation: props.operation,
+          points: chunk,
+          bvh
+        });
+        nodes.push(...ordered.nodes);
+        orders.set(chunkIndex, ordered.order);
+      }
+    }
+  }
   let chunkFirstRow = 0;
   for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
     if (chunk.length > 0) {
+      const order = orders.get(chunkIndex);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: getChunkNodeId(props.id, props.points, chunkIndex),
           operation: props.operation,
-          variant: 'probe-count',
-          bindings: getBindings(chunk, [
-            {name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read_write'}
-          ]),
+          variant: order ? 'probe-count-ordered' : 'probe-count',
+          bindings: getBindings(
+            chunk,
+            [{name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read_write'}],
+            order
+          ),
           invocationCount: chunk.length,
           declarations: declarations(chunkFirstRow),
           body: probeBody(
             'found = found + 1u;',
             'pointCounts[pointCountsOffset + row] = 0u;',
-            'pointCounts[pointCountsOffset + row] = found;'
+            'pointCounts[pointCountsOffset + row] = found;',
+            Boolean(order)
           )
         })
       );
@@ -697,33 +846,62 @@ ${NODE_OVERLAPS_WGSL}`;
       body: `state[stateOffset] = pointOffsets[pointOffsetsOffset + ${props.points.length - 1}u] + pointCounts[pointCountsOffset + ${props.points.length - 1}u];`
     })
   );
+  // A probe total of 2^32 or more wraps in the uint32 scan; saturate it (S-8).
+  nodes.push(
+    createScanCarryNode<Parameters>(graph, {
+      id: props.id,
+      operation: props.operation,
+      counts: pointCounts,
+      offsets: pointOffsets,
+      rowCount: props.points.length,
+      total: props.state
+    })
+  );
   chunkFirstRow = 0;
   for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
     if (chunk.length > 0) {
+      // The write pass binds eight buffers with a radius, so it cannot also read the order.
+      const order = props.radius ? undefined : orders.get(chunkIndex);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-write`,
           operation: props.operation,
-          variant: 'probe-write',
-          bindings: getBindings(chunk, [
-            {name: 'pointOffsets', view: pointOffsets, type: 'u32', access: 'read'},
-            {
-              name: 'candidatePairs',
-              view: props.candidatePairs,
-              type: 'u32',
-              access: 'read_write'
-            },
-            {
-              name: 'candidatePoints',
-              view: props.candidatePoints,
-              type: 'f32',
-              access: 'read_write'
-            }
-          ]),
+          variant: order ? 'probe-write-ordered' : 'probe-write',
+          bindings: getBindings(
+            chunk,
+            [
+              {name: 'pointOffsets', view: pointOffsets, type: 'u32', access: 'read'},
+              {
+                name: 'candidatePairs',
+                view: props.candidatePairs,
+                type: 'u32',
+                access: 'read_write'
+              },
+              ...(props.packedCandidates
+                ? []
+                : [
+                    {
+                      name: 'candidatePoints',
+                      view: props.candidatePoints!,
+                      type: 'f32',
+                      access: 'read_write'
+                    } as const
+                  ])
+            ],
+            order
+          ),
           invocationCount: chunk.length,
           declarations: declarations(chunkFirstRow),
           body: probeBody(
-            `let slot = slotStart + found;
+            props.packedCandidates
+              ? `let slot = slotStart + found;
+        candidatePairs[candidatePairsOffset + slot * 4u] = row;
+        candidatePairs[candidatePairsOffset + slot * 4u + 1u] = featureRow;
+        candidatePairs[candidatePairsOffset + slot * 4u + 2u] = bitcast<u32>(point.x);
+        candidatePairs[candidatePairsOffset + slot * 4u + 3u] = bitcast<u32>(point.y);
+        found = found + 1u;
+        if (slot + 1u >= slotEnd) { break; }`
+              : `let slot = slotStart + found;
         candidatePairs[candidatePairsOffset + slot * 2u] = row;
         candidatePairs[candidatePairsOffset + slot * 2u + 1u] = featureRow;
         let pointRow = slot * ${props.pointRowScale}u + ${props.pointRowOffset}u;
@@ -740,7 +918,8 @@ ${NODE_OVERLAPS_WGSL}`;
     slotEnd = min(pointOffsets[pointOffsetsOffset + row + 1u], CANDIDATE_CAPACITY);
   }
   if (slotStart >= slotEnd) { return; }`,
-            ''
+            '',
+            Boolean(order)
           )
         })
       );
@@ -968,13 +1147,13 @@ export function createSpatialJoinFinalizeNode<Parameters>(
   }
   if (matches) {
     bindings.push(
-      {name: 'matchCount', view: matches.count, type: 'u32', access: 'read_write'},
-      {name: 'matchOverflow', view: matches.overflow, type: 'u32', access: 'read_write'}
+      {name: 'matchCount', view: matches.status.count, type: 'u32', access: 'read_write'},
+      {name: 'matchOverflow', view: matches.status.overflow, type: 'u32', access: 'read_write'}
     );
-    if (matches.requiredCount) {
+    if (matches.status.requiredCount) {
       bindings.push({
         name: 'matchTotalCount',
-        view: matches.requiredCount,
+        view: matches.status.requiredCount,
         type: 'u32',
         access: 'read_write'
       });
@@ -1002,8 +1181,157 @@ const MATCH_CAPACITY: u32 = ${matchCapacity}u;`,
     matches
       ? `matchCount[matchCountOffset] = min(matchTotal, MATCH_CAPACITY);
   matchOverflow[matchOverflowOffset] = overflowValue;
-  ${matches.requiredCount ? 'matchTotalCount[matchTotalCountOffset] = matchTotal;' : ''}`
+  ${matches.status.requiredCount ? 'matchTotalCount[matchTotalCountOffset] = matchTotal;' : ''}`
       : ''
   }`
   });
+}
+
+/** Vertices of the polygon side from which `edgeSlabs` can default on (see {@link getDefaultEdgeSlabs}). @internal */
+export const EDGE_SLABS_MINIMUM_WORK = 4_000_000;
+
+/**
+ * Default of `edgeSlabs` in `GPUPointInPolygonJoin`: on when the refine loop is long. The unslabbed
+ * refine walks every edge of the candidate feature, so its work is bounded by
+ * `vertexCount * candidateCapacity` edge tests; the slab index replaces that by the edges of one
+ * y-slab. The index costs a few passes over the vertices, so it defaults on from
+ * {@link EDGE_SLABS_MINIMUM_WORK} (the same threshold as polygon cell cover) and only when features
+ * average at least 8 vertices, below which the slab module leaves features unslabbed anyway.
+ * Provisional: `spatial-join-edge-slabs.spec.ts` carries the A/B harness that should refine it.
+ *
+ * @internal
+ */
+export function getDefaultEdgeSlabs(
+  vertexCount: number,
+  candidateCapacity: number,
+  featureCount: number
+): boolean {
+  return (
+    vertexCount * candidateCapacity >= EDGE_SLABS_MINIMUM_WORK &&
+    vertexCount >= 8 * Math.max(featureCount, 1)
+  );
+}
+
+/** Word marking a malformed feature in {@link getPolygonEdgeLayoutNodes}. @internal */
+export const EDGE_LAYOUT_MALFORMED = 0xffffffff;
+
+/**
+ * Number of `uint32` words of the edge layout: one valid-ring bit per vertex, then
+ * `[partStart, partEnd]` per feature. @internal
+ */
+export function getPolygonEdgeLayoutLength(vertexCount: number, featureCount: number): number {
+  return Math.max(Math.ceil(vertexCount / 32), 1) + 2 * featureCount;
+}
+
+/**
+ * Builds the edge layout that the slab-based point-in-polygon refine reads through ONE binding
+ * (named `edgeLayout`): a bit per vertex that is set when the vertex starts an edge of a usable
+ * ring (at least 3 vertices, as the unslabbed walk skips smaller rings), then per feature its
+ * polygon part range `[partStart, partEnd)` or `[0xffffffff, partEnd]` when the offsets of the
+ * feature are malformed (the same checks, in the same terms, as the unslabbed walk, which answers
+ * UNCERTAIN for the whole feature). Two parallel passes, no host iteration.
+ *
+ * @internal
+ */
+export function getPolygonEdgeLayoutNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    polygons: Pick<GPUPolygonGeometryPort, 'featureOffsets' | 'polygonOffsets' | 'ringOffsets'> & {
+      positions: GraphDataView<'float32x2'>;
+    };
+    /** Destination, `getPolygonEdgeLayoutLength` words; transient when omitted. */
+    layout?: GraphDataView<'uint32'>;
+  }
+): {nodes: GPUCommandNode<Parameters>[]; layout: GraphDataView<'uint32'>} {
+  const {id, operation, polygons} = props;
+  const vertexCount = polygons.positions.length;
+  const featureCount = polygons.featureOffsets.length - 1;
+  const wordCount = Math.max(Math.ceil(vertexCount / 32), 1);
+  const layout =
+    props.layout ??
+    createTransientView(
+      graph,
+      `${id}-edge-layout`,
+      'uint32',
+      getPolygonEdgeLayoutLength(vertexCount, featureCount)
+    );
+  const ringCount = polygons.ringOffsets.length - 1;
+  const nodes: GPUCommandNode<Parameters>[] = [
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-edge-layout-bits`,
+      operation,
+      variant: 'edge-layout-bits',
+      bindings: [
+        {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'edgeLayout', view: layout, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: wordCount,
+      declarations: `const VERTEX_COUNT: u32 = ${vertexCount}u;
+const RING_COUNT: u32 = ${ringCount}u;`,
+      body: `let first = index * 32u;
+  let last = min(first + 32u, VERTEX_COUNT);
+  var bits = 0u;
+  if (RING_COUNT > 0u) {
+    // Ring that contains \`first\`: the last ring that starts at or before it.
+    var low = 0u;
+    var high = RING_COUNT;
+    while (low + 1u < high) {
+      let middle = (low + high) / 2u;
+      if (ringOffsets[ringOffsetsOffset + middle] <= first) { low = middle; } else { high = middle; }
+    }
+    var ring = low;
+    var ringBegin = ringOffsets[ringOffsetsOffset + ring];
+    var ringEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
+    for (var vertex = first; vertex < last; vertex++) {
+      loop {
+        if (vertex < ringEnd || ring + 1u >= RING_COUNT) { break; }
+        ring = ring + 1u;
+        ringBegin = ringOffsets[ringOffsetsOffset + ring];
+        ringEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
+      }
+      let usable = vertex >= ringBegin && vertex < ringEnd && ringEnd >= ringBegin + 3u && ringEnd <= VERTEX_COUNT;
+      bits = bits | select(0u, 1u << (vertex - first), usable);
+    }
+  }
+  edgeLayout[edgeLayoutOffset + index] = bits;`
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-edge-layout-features`,
+      operation,
+      variant: 'edge-layout-features',
+      bindings: [
+        {name: 'featureOffsets', view: polygons.featureOffsets, type: 'u32', access: 'read'},
+        {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
+        {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'edgeLayout', view: layout, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: Math.max(featureCount, 1),
+      declarations: `const FEATURE_COUNT: u32 = ${featureCount}u;
+const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;
+const RING_COUNT: u32 = ${ringCount}u;
+const VERTEX_COUNT: u32 = ${vertexCount}u;
+const FEATURE_BASE: u32 = ${wordCount}u;`,
+      body: `if (index >= FEATURE_COUNT) { return; }
+  let partStart = featureOffsets[featureOffsetsOffset + index];
+  let partEnd = featureOffsets[featureOffsetsOffset + index + 1u];
+  var wellFormed = partStart <= partEnd && partEnd <= POLYGON_COUNT;
+  if (wellFormed) {
+    for (var part = partStart; part < partEnd && wellFormed; part++) {
+      let ringStart = polygonOffsets[polygonOffsetsOffset + part];
+      let ringEnd = polygonOffsets[polygonOffsetsOffset + part + 1u];
+      if (ringStart > ringEnd || ringEnd > RING_COUNT) { wellFormed = false; }
+      for (var ring = ringStart; ring < ringEnd && wellFormed; ring++) {
+        let vertexStart = ringOffsets[ringOffsetsOffset + ring];
+        let vertexEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
+        if (vertexEnd < vertexStart || vertexEnd > VERTEX_COUNT) { wellFormed = false; }
+      }
+    }
+  }
+  edgeLayout[edgeLayoutOffset + FEATURE_BASE + index * 2u] = select(0xffffffffu, partStart, wellFormed);
+  edgeLayout[edgeLayoutOffset + FEATURE_BASE + index * 2u + 1u] = partEnd;`
+    })
+  ];
+  return {nodes, layout};
 }

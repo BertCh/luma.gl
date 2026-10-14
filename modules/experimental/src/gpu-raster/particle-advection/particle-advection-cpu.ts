@@ -4,11 +4,10 @@
 
 import {sampleFieldOnCPU, type FieldRaster} from '../vector-field-common/vector-field-sampling';
 import {getPhilox4x32, getPhiloxUnitFloat} from '../../utils/philox-random';
-
-/** Philox key word 1 of the respawn position and staggered-age stream. */
-export const PARTICLE_ADVECTION_SPAWN_PURPOSE = 1;
-/** Philox key word 1 of the per-frame drop test stream. */
-export const PARTICLE_ADVECTION_DROP_PURPOSE = 2;
+import {
+  PARTICLE_ADVECTION_DROP_PURPOSE,
+  PARTICLE_ADVECTION_SPAWN_PURPOSE
+} from './particle-advection-parameters';
 
 /** Mutable CPU particle state, laid out like the GPU views. */
 export type ParticleAdvectionCPUState = {

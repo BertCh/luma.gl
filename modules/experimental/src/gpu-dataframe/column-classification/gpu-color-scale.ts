@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,8 +11,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
@@ -129,29 +128,8 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {output, maximumDomainCount, maximumPaletteCount} = props;
-    for (const [name, count] of [
-      ['maximumDomainCount', maximumDomainCount],
-      ['maximumPaletteCount', maximumPaletteCount]
-    ] as const) {
-      if (!Number.isInteger(count) || count < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    for (const [name, view] of [
-      ['values', props.values],
-      ['mask', props.mask],
-      ['domain', props.domain],
-      ['domainCount', props.domainCount],
-      ['palette', props.palette],
-      ['parameters', props.parameters],
-      ['output.colors', output.colors],
-      ['output.classIndices', output.classIndices],
-      ['output.classCounts', output.classCounts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(id, 'maximumDomainCount', maximumDomainCount);
+    validateCapacity(id, 'maximumPaletteCount', maximumPaletteCount);
     if (!output.colors && !output.classIndices && !output.classCounts) {
       throw new Error(`${id} needs at least one output (colors, classIndices, or classCounts)`);
     }
@@ -167,10 +145,10 @@ export class GPUColorScale implements GPUCommandNodeProducer {
       throw new Error(`${id} integerValues must be 'ordinal' or 'numeric'`);
     }
     validatePackedView(props.domain, ['float32'], `${id} domain`);
-    validatePackedUint32View(props.palette, `${id} palette`);
+    validatePackedView(props.palette, ['uint32'], `${id} palette`);
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -187,7 +165,7 @@ export class GPUColorScale implements GPUCommandNodeProducer {
       );
     }
     if (props.domainCount) {
-      validatePackedUint32View(props.domainCount, `${id} domainCount`);
+      validatePackedView(props.domainCount, ['uint32'], `${id} domainCount`);
       if (props.domainCount.length < 1) {
         throw new Error(`${id} domainCount must contain one uint32 row`);
       }
@@ -195,14 +173,14 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     for (const name of ['colors', 'classIndices'] as const) {
       const view = output[name];
       if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per value`);
         }
       }
     }
     if (output.classCounts) {
-      validatePackedUint32View(output.classCounts, `${id} output.classCounts`);
+      validatePackedView(output.classCounts, ['uint32'], `${id} output.classCounts`);
       if (output.classCounts.length < maximumPaletteCount) {
         throw new Error(`${id} output.classCounts must hold maximumPaletteCount rows`);
       }

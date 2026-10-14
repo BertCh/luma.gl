@@ -8,7 +8,8 @@ export {
   GPUBoundsFilter
 } from './gpu-bounds-filter';
 export type {
-  GPUBoundsFilterBox,
   GPUBoundsFilterMode,
-  GPUBoundsFilterProps
+  GPUBoundsFilterOutput,
+  GPUBoundsFilterProps,
+  GPUBoundsFilterSettings
 } from './gpu-bounds-filter';

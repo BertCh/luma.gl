@@ -4,9 +4,6 @@
 
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedView,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,8 +15,10 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
@@ -42,8 +41,8 @@ import {
   getCholeskyWGSL,
   getSymmetricEigenvalueRangeWGSL
 } from './spatial-regression-solve';
-import type {GPUSolverStatusPort} from '../contracts/index';
-import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../contracts/model-result';
+import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {ERFC_VALUE_WGSL, GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialTwoStageLeastSquares';
@@ -56,7 +55,10 @@ const RESIDUAL_SUM_COUNT = 4;
 const ANSELIN_KELEJIAN_FIXED_SUM_COUNT = 5;
 
 /** Caller-owned outputs of {@link GPUSpatialTwoStageLeastSquares}. */
-export type GPUSpatialTwoStageLeastSquaresOutput = GPUSolverStatusPort & {
+export type GPUSpatialTwoStageLeastSquaresOutput = {
+  /** One-row solver `code` (0 on success; see the class documentation for failure codes). */
+  status: Pick<GPUSolverStatusPort, 'code'>;
+
   /**
    * `(predictorCount + 2) * 4` float32 values: one row per coefficient in spreg order (intercept,
    * one per predictor, then the spatial lag `rho` of the response last), each row holding the
@@ -191,14 +193,6 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         `${id} predictorCount must be an integer in [1, ${maximumPredictorCount}] with instrumentOrder ${instrumentOrder}`
       );
     }
-    for (const [name, view] of [
-      ['predictors', props.predictors],
-      ['response', props.response]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     const rows = validateGPUSpatialWeights(id, props.weights);
     validatePackedView(props.predictors, ['float32'], `${id} predictors`);
     validatePackedView(props.response, ['float32'], `${id} response`);
@@ -221,9 +215,9 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         `${id} output.summary must hold ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH} float32 values`
       );
     }
-    validatePackedUint32View(output.status, `${id} output.status`);
-    if (output.status.length < 1) {
-      throw new Error(`${id} output.status must hold one uint32 row`);
+    validatePackedView(output.status.code, ['uint32'], `${id} output.status.code`);
+    if (output.status.code.length < 1) {
+      throw new Error(`${id} output.status.code must hold one uint32 row`);
     }
     if (output.residuals) {
       validatePackedView(output.residuals, ['float32'], `${id} output.residuals`);
@@ -233,9 +227,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
     }
     this.instrumentOrder = instrumentOrder;
     if (props.tileRowCount !== undefined) {
-      if (!Number.isInteger(props.tileRowCount) || props.tileRowCount < 1) {
-        throw new Error(`${id} tileRowCount must be a positive integer`);
-      }
+      validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
     this.tileRowCount =
@@ -244,7 +236,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
     this.tileCount = Math.ceil(rows / this.tileRowCount);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.table, output.summary, output.status, output.residuals],
+      [output.table, output.summary, output.status.code, output.residuals],
       [
         props.predictors,
         props.response,
@@ -273,7 +265,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       weights.weights,
       output.table,
       output.summary,
-      output.status,
+      output.status.code,
       output.residuals
     ]);
     const m = (instrumentOrder + 1) * k;
@@ -656,7 +648,7 @@ ${getSolveWGSL(m, q)}`,
           f32('akSums', akSums, 'read'),
           f32('tableOut', output.table, 'read_write'),
           f32('summaryOut', output.summary, 'read_write'),
-          {name: 'statusOut', view: output.status, type: 'u32', access: 'read_write'}
+          {name: 'statusOut', view: output.status.code, type: 'u32', access: 'read_write'}
         ],
         1,
         `${constants}

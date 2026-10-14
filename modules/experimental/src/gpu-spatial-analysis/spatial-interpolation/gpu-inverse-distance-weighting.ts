@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUGridIndex,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,13 +16,19 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  getGPUGridIndexMaximumCellCount,
+  validateCapacity,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
+import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
 import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
-import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
-import type {GPUSpatialContext} from '../contracts/index';
+import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL, IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {
   getSeparationWGSL,
   resolveInterpolationSeparation,
@@ -39,8 +42,9 @@ const MAXIMUM_NEIGHBOR_CAPACITY = 64;
 /** Caller-owned row-major raster outputs of {@link GPUInverseDistanceWeighting}. */
 export type GPUInverseDistanceWeightingOutput = {
   /**
-   * Interpolated value per output cell, at least `width * height` float32 rows, row `y * width +
-   * x`. Nodata cells (no exact hit and fewer than `max(minimumNeighborCount, 1)` contributing
+   * Interpolated value per output cell, at least `grid.width * grid.height` float32 rows, row
+   * `y * grid.width + x` in the grid's row order (row 0 is the grid's first row: the top row of a
+   * north-up grid, `minY` when rows advance north). Nodata cells (no exact hit and fewer than `max(minimumNeighborCount, 1)` contributing
    * samples) are NaN, which `GPUTerrainContours` and `GPURasterContours` treat as invalid.
    */
   values: GraphDataView<'float32'>;
@@ -51,9 +55,9 @@ export type GPUInverseDistanceWeightingOutput = {
 /**
  * Properties for {@link GPUInverseDistanceWeighting}.
  *
- * Per-frame (no recompile): the contents of `parameters` (output extent, search radius, power,
- * neighbor limit, minimum neighbor count) and of every input buffer. Topology (needs a new graph):
- * `width`, `height`, sample count, `indexGridSize`, `indexBounds`, `maximumNeighborCount`, and
+ * Per-frame (no recompile): the contents of `parameters` (search radius, power, neighbor limit,
+ * minimum neighbor count) and of every input buffer. Topology (needs a new graph): the `grid`
+ * size, sample count, `indexGridSize`, `indexBounds`, `maximumNeighborCount`, and
  * whether `mask` and `output.counts` are present.
  */
 export type GPUInverseDistanceWeightingProps = {
@@ -65,14 +69,14 @@ export type GPUInverseDistanceWeightingProps = {
    *
    * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` uses haversine distances on
    * a sphere (`sphereRadius`, else the IUGG mean Earth radius): positions are absolute
-   * `[longitude, latitude]` degrees, the grid index and output extent stay in degrees, and the
+   * `[longitude, latitude]` degrees, the grid index and output grid stay in degrees, and the
    * search radius is in meters (kilometers with `units: 'kilometers'`). Neighbors and radius tests
    * use the haversine term; f32 absolute lon/lat limits accuracy to about 1 m at Earth scale. The
    * query box is conservative and does not wrap the antimeridian, and the nearest-k limit scans
    * the whole box (no early stop). Other longitude/latitude metrics throw.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed sample positions in the same units as the extent and search radius. */
+  /** Packed sample positions in the same units as the grid and search radius. */
   positions: GraphDataView<'float32x2'>;
   /** Packed float32 sample values. NaN values are skipped. */
   values: GraphDataView<'float32'>;
@@ -80,13 +84,15 @@ export type GPUInverseDistanceWeightingProps = {
   mask?: GraphDataView<'uint32'>;
   /** Per-frame float32 view of at least 9 values written with `getGPUInverseDistanceWeightingParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Output raster width in cells. */
-  width: number;
-  /** Output raster height in cells. */
-  height: number;
+  /**
+   * Output raster grid: axis-aligned, its width and height size the kernels, and its cell centers
+   * are sampled. Pack the matching placement with `getGPUInverseDistanceWeightingParameterValues`.
+   */
+  grid: GPURasterMetadata;
   /**
    * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the samples. Aim for a few
-   * samples per index cell: the in-cell sort is quadratic in the cell population.
+   * samples per index cell: the in-cell sort is quadratic in the cell population. At most
+   * {@link getGPUGridIndexMaximumCellCount} cells (2^25 - 1 on a default device).
    */
   indexGridSize: readonly [number, number];
   /**
@@ -116,7 +122,7 @@ export type GPUInverseDistanceWeightingProps = {
  * `minimumNeighborCount` defaults to 1, so a single distant sample inside the radius paints a
  * constant plateau equal to its value; raise it (3 or more) to turn sparse cells into nodata.
  * Positions are planar (see `spatialContext`), and distances are computed from offsets relative
- * to the extent minimum so large absolute coordinates (UTM northings) do not quantize them.
+ * to the grid's first corner so large absolute coordinates (UTM northings) do not quantize them.
  *
  *
  * Gather form, one invocation per output cell, so no atomics touch values. Every encoding rebuilds
@@ -132,8 +138,10 @@ export type GPUInverseDistanceWeightingProps = {
  * `(d^2, row)` order is total. Weights are accumulated in log space with a running maximum
  * (`exp2(log2 w - max)`), so tiny distances and large powers do not overflow f32.
  *
- * Output cell `(x, y)` samples its center `extentMin + (x + 0.5, y + 0.5) * cellSize`, with row 0
- * at `minY`. Nodata is NaN. Results are deterministic for a given device; they match a float64
+ * Output cell `(x, y)` samples its center `gridStart + (x + 0.5, y + 0.5) * cellSize`, where
+ * `gridStart` is the outer corner of cell (0, 0) and `cellSize` is signed, so output rows follow
+ * the grid's row order (row 0 at the top of a north-up grid, at `minY` when rows advance north).
+ * Nodata is NaN. Results are deterministic for a given device; they match a float64
  * CPU oracle to f32 rounding, not bitwise.
  */
 export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
@@ -141,7 +149,7 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUInverseDistanceWeightingProps;
-  /** `width * height`. */
+  /** `grid.width * grid.height`. */
   readonly cellCount: number;
   /** Resolved spatial context; native planar when none was given. */
   readonly spatialContext: GPUSpatialContext;
@@ -155,22 +163,15 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     const {id} = this;
     this.separation = resolveInterpolationSeparation(id, props.spatialContext);
     this.spatialContext = this.separation.context;
+    this.cellCount = validateRasterGrid(id, props.grid);
+    if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
+      throw new Error(`${id} needs an axis-aligned grid`);
+    }
     for (const [name, size] of [
-      ['width', props.width],
-      ['height', props.height],
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
     ] as const) {
-      if (!Number.isSafeInteger(size) || size < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    this.cellCount = props.width * props.height;
-    if (
-      this.cellCount > 0xffffffff ||
-      props.indexGridSize[0] * props.indexGridSize[1] >= 0xffffffff
-    ) {
-      throw new Error(`${id} raster and index cell counts must fit in uint32`);
+      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
     if (
@@ -182,27 +183,13 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       throw new Error(`${id} indexBounds must be finite and ordered`);
     }
     this.maximumNeighborCount = props.maximumNeighborCount ?? 0;
-    if (
-      !Number.isSafeInteger(this.maximumNeighborCount) ||
-      this.maximumNeighborCount < 0 ||
-      this.maximumNeighborCount > MAXIMUM_NEIGHBOR_CAPACITY
-    ) {
-      throw new Error(
-        `${id} maximumNeighborCount must be an integer in [0, ${MAXIMUM_NEIGHBOR_CAPACITY}]`
-      );
-    }
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['values', props.values],
-      ['mask', props.mask],
-      ['parameters', props.parameters],
-      ['output.values', props.output.values],
-      ['output.counts', props.output.counts]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'maximumNeighborCount',
+      this.maximumNeighborCount,
+      0,
+      MAXIMUM_NEIGHBOR_CAPACITY
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
@@ -213,7 +200,7 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       throw new Error(`${id} positions length must equal values length`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== sampleCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -226,12 +213,12 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     }
     validatePackedView(props.output.values, ['float32'], `${id} output.values`);
     if (props.output.values.length < this.cellCount) {
-      throw new Error(`${id} output.values must hold width * height rows`);
+      throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
     }
     if (props.output.counts) {
-      validatePackedUint32View(props.output.counts, `${id} output.counts`);
+      validatePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
       if (props.output.counts.length < this.cellCount) {
-        throw new Error(`${id} output.counts must hold width * height rows`);
+        throw new Error(`${id} output.counts must hold grid.width * grid.height rows`);
       }
       if (props.output.counts.buffer === props.output.values.buffer) {
         throw new Error(`${id} outputs must not share buffers`);
@@ -249,7 +236,8 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, cellCount, maximumNeighborCount} = this;
-    const {output, width, height, indexGridSize, indexBounds} = props;
+    const {output, grid, indexGridSize, indexBounds} = props;
+    const {width, height} = grid;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.values,
@@ -258,6 +246,12 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       output.values,
       output.counts
     ]);
+    validateMaximumCount(
+      id,
+      'indexGridSize cells',
+      indexGridSize[0] * indexGridSize[1],
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
     const sampleCount = props.values.length;
     const indexCellCount = indexGridSize[0] * indexGridSize[1];
     const cellOffsets = createTransientView(
@@ -401,8 +395,7 @@ ${WEIGHT_ACCUMULATOR_WGSL}`,
 /** Same cell mapping as `GPUGridIndex`, plus finiteness and NaN helpers. */
 export const GRID_COORDINATE_WGSL = /* wgsl */ `
 ${IS_FINITE_VALUE_WGSL}
-fn isNanValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
-// WGSL rejects NaN constants, so build one from a runtime bit pattern.
+${IS_NAN_BITS_WGSL}// WGSL rejects NaN constants, so build one from a runtime bit pattern.
 ${GET_NAN_WGSL}
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }
@@ -512,7 +505,7 @@ function getGatherBody(
   }`
     : '';
   const visit = `let value = sampleValues[sampleValuesOffset + sample];
-        if (isNanValue(value)) {
+        if (isNanBits(value)) {
           continue;
         }
         ${hasMask ? 'if (sampleMask[sampleMaskOffset + sample] == 0u) {\n          continue;\n        }' : ''}
@@ -528,21 +521,21 @@ function getGatherBody(
         ${contribute}`;
   return `let column = index % WIDTH;
   let rasterRow = index / WIDTH;
-  let extentMin = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
-  let extentMax = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+  let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
   let radius = params[paramsOffset + 4u];
   let power = params[paramsOffset + 5u];
   let neighborLimitValue = params[paramsOffset + 6u];
   let minimumNeighborValue = params[paramsOffset + 7u];
   let neighborLimit = u32(clamp(select(0.0, neighborLimitValue, isFiniteValue(neighborLimitValue)), 0.0, f32(MAX_NEIGHBORS)));
   let minimumNeighbors = max(u32(clamp(select(1.0, minimumNeighborValue, isFiniteValue(minimumNeighborValue)), 0.0, 4294967040.0)), 1u);
-  let cellSize = (extentMax - extentMin) / vec2f(f32(WIDTH), f32(HEIGHT));
-  // Distances are differences of offsets from the extent minimum, so they stay accurate at large
+  let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
+  // Distances are differences of offsets from the grid start corner, so they stay accurate at large
   // absolute coordinates; center (absolute) is used only to find index cells.
   let cellOffset = (vec2f(f32(column), f32(rasterRow)) + vec2f(0.5)) * cellSize;
-  let center = extentMin + cellOffset;
+  let center = gridStart + cellOffset;
   // Great-circle distances take absolute lon/lat, so the origin is zero there.
-  let origin = ${geographic ? 'vec2f(0.0)' : 'extentMin'};
+  let origin = ${geographic ? 'vec2f(0.0)' : 'gridStart'};
   let localCenter = ${geographic ? 'center' : 'cellOffset'};
   let useTaper = params[paramsOffset + 8u] > 0.5;
   let radiusSquared = getRadiusKey(radius);

@@ -6,8 +6,18 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUCalendarBuckets} from '../../gpu-dataframe/calendar-buckets/index';
 import {GPUColorScale} from '../../gpu-dataframe/column-classification/index';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
-import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/inference';
-import {GPU_EMERGING_HOT_SPOT_CATEGORIES, GPUEmergingHotSpots} from '../emerging-hot-spots/index';
+import type {
+  GPUInferenceMetadata,
+  GPUMultipleTestingMethod
+} from '../../analysis-core/contracts/inference';
+import {
+  GPU_EMERGING_HOT_SPOTS_CATEGORIES,
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+  GPUEmergingHotSpots,
+  type GPUEmergingHotSpotsSettings
+} from '../emerging-hot-spots/index';
+import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
+import {GPUParameterBuffer} from '../../utils/gpu-contributor-utils';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -147,6 +157,15 @@ export type GPUSpaceTimeLattice = {
   maximumRadius?: number;
 };
 
+/**
+ * Per-frame settings of {@link addSpaceTimeHotSpotsRecipe}: the `GPUEmergingHotSpots` settings
+ * without `multipleTesting`, which the recipe takes as a compile-time prop.
+ */
+export type GPUSpaceTimeHotSpotsRecipeSettings = Omit<
+  GPUEmergingHotSpotsSettings,
+  'multipleTesting'
+>;
+
 /** Properties for {@link addSpaceTimeHotSpotsRecipe}. */
 export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   Record<never, never>,
@@ -165,14 +184,22 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
     adjustedPValues?: GraphDataView<'float32'>;
     /** Per-cell last finite slice index (`0xffffffff` for none). */
     lastValidSlice?: GraphDataView<'uint32'>;
-    /**
-     * One-row count of events that have a valid cell and time but fall before `slices.origin` or
-     * past the last slice. It is the `invalidCount` of the `slice-range` status stage.
-     */
-    skippedEventCount?: GraphDataView<'uint32'>;
     colors?: GraphDataView<'uint32'>;
-    /** Group-statistics overflow flag; setting it selects the sorted counting path. */
-    groupOverflow?: GraphDataView<'uint32'>;
+    /** Status words of the `slice-range` and `cube-counts` stages. */
+    status?: {
+      /**
+       * One-row count of events that have a valid cell and time but fall before `slices.origin` or
+       * past the last slice. It is the `invalidCount` of the `slice-range` status stage.
+       */
+      skippedEventCount?: GPUStatusScalar;
+      /** Group-statistics overflow flag; setting it selects the sorted counting path. */
+      groupOverflow?: GPUStatusScalar;
+      /**
+       * Group-statistics unclamped distinct key count (stage `cube-counts`). Only written on the
+       * sorted counting path; unlike `groupOverflow` it does not select that path.
+       */
+      groupRequiredCount?: GPUStatusScalar;
+    };
   },
   {
     /** Calendar columns the step needs (year always; month, day of month and hour as needed). */
@@ -210,10 +237,17 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   /** Optional per-cell mask (one row per cell). */
   cellMask?: GraphDataView<'uint32'>;
   /**
-   * `getGPUEmergingHotSpotParameterValues` view. Write it with the same `multipleTesting` as this
-   * recipe so `criticalZ` is only combined with `'none'`.
+   * Per-frame emerging hot spot settings (`temporalWindow`, `radius`, `confidenceLevel` or
+   * `criticalZ`, `trendSignificanceLevel`). The recipe packs them into `parameters` and derives
+   * `result.inference` from the same object; change them per frame with `result.setSettings`.
+   * `multipleTesting` is the recipe's compile-time prop, so it is not part of the settings.
    */
-  parameters: GraphDataView<'float32'>;
+  settings: GPUSpaceTimeHotSpotsRecipeSettings;
+  /**
+   * A `GPUParameterBuffer` of at least `GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH` float32 values
+   * that the recipe fills from `settings`.
+   */
+  parameters: GPUParameterBuffer<'float32'>;
   /**
    * Multiple-testing correction of the hot and cold decision, passed to `GPUEmergingHotSpots`.
    * Defaults to `'benjamini-hochberg'`; `'benjamini-yekutieli'` is valid under the dependence of
@@ -251,8 +285,16 @@ export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
   lastValidSlice?: GraphDataView<'uint32'>;
   /** Present when `color` was requested. */
   colors?: GraphDataView<'uint32'>;
-  /** How the hot and cold bins were decided, for building a legend (a plain object). */
+  /**
+   * How the hot and cold bins were decided, for building a legend (a plain object), derived from
+   * the packed `settings`.
+   */
   inference: GPUInferenceMetadata;
+  /**
+   * Writes `settings` into `parameters` for the next submitted encoding and updates `inference`
+   * from the same object. Throws, writing nothing, on invalid settings.
+   */
+  setSettings: (settings: GPUSpaceTimeHotSpotsRecipeSettings) => void;
 };
 
 /**
@@ -270,7 +312,7 @@ export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
  * `inference` object (`GPUInferenceMetadata`).
  *
  * Passing any of `scratch.keys`, `scratch.keyMask`, `scratch.groupKeys`, `scratch.groupCounts`,
- * `scratch.groupCount` or `outputs.groupOverflow` selects the sorted path instead: an adapter
+ * `scratch.groupCount` or `outputs.status.groupOverflow` selects the sorted path instead: an adapter
  * writes the key per event, `GPUGroupStatistics` counts the events per key, and an adapter
  * scatters the sparse counts into the cube. Only that path fills those views, adds the
  * `GPUGroupStatistics` contributor and reports the `cube-counts` status stage. Both paths produce
@@ -437,7 +479,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     `${id}-skipped-count`,
     'uint32',
     1,
-    outputOverrides.skippedEventCount
+    outputOverrides.status?.skippedEventCount
   );
   graph.add(
     createFillNode<Parameters>(graph, {
@@ -482,7 +524,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   // Every cube value is an integer count, so a `u32` atomic increment per event builds the cube
   // exactly and deterministically (integer addition commutes), with no sort. The sorted
   // `GPUGroupStatistics` path runs only when the caller asks for its intermediates (keys, key
-  // mask, group keys, counts or count) or for `outputs.groupOverflow`. Both paths write identical
+  // mask, group keys, counts or count) or for `outputs.status.groupOverflow`. Both paths write identical
   // cubes: counts never exceed `eventCount`, which is far below 2^32. `GPUEmergingHotSpots` reads
   // a count as `f32(count)`, exact below 2^24 events per bin, the same in both paths.
   const useGroupStatistics =
@@ -491,7 +533,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     scratch.groupKeys !== undefined ||
     scratch.groupCounts !== undefined ||
     scratch.groupCount !== undefined ||
-    outputOverrides.groupOverflow !== undefined;
+    outputOverrides.status?.groupOverflow !== undefined;
   let intermediates: GPUSpaceTimeHotSpotsRecipeResult['intermediates'] = {
     calendarYear,
     ...(calendarMonth ? {calendarMonth} : {}),
@@ -561,7 +603,14 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       `${id}-group-overflow`,
       'uint32',
       1,
-      outputOverrides.groupOverflow
+      outputOverrides.status?.groupOverflow
+    );
+    const groupRequiredCount = getOrCreateView(
+      graph,
+      `${id}-group-required-count`,
+      'uint32',
+      1,
+      outputOverrides.status?.groupRequiredCount
     );
     builder.add(
       new GPUGroupStatistics({
@@ -569,7 +618,11 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
         keys,
         mask: keyMask,
         columns: [],
-        output: {keys: groupKeys, counts: groupCounts, count: groupCount, overflow: groupOverflow}
+        output: {
+          keys: groupKeys,
+          counts: groupCounts,
+          status: {count: groupCount, overflow: groupOverflow, requiredCount: groupRequiredCount}
+        }
       })
     );
     graph.add(
@@ -597,12 +650,21 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     status = {
       stages: [
         ...status.stages,
-        {stage: 'cube-counts', status: {count: groupCount, overflow: groupOverflow}}
+        {
+          stage: 'cube-counts',
+          status: {count: groupCount, overflow: groupOverflow, requiredCount: groupRequiredCount}
+        }
       ]
     };
   }
 
   // 4. Emerging hot spots.
+  assertRecipe(
+    ID,
+    props.parameters.length >= GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+    `parameters needs ${GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH} values`
+  );
+  const parameterView = props.parameters.importToGraph(graph, `${id}-parameters`);
   const outputs = {
     giZScores: getOrCreateView(
       graph,
@@ -654,13 +716,20 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
           }),
       sliceCount,
       mask: props.cellMask,
-      parameters: props.parameters,
+      parameters: parameterView,
       multipleTesting: props.multipleTesting,
       finalSlice: props.finalSlice,
-      ...outputs,
-      ...optionalOutputs
+      output: {...outputs, ...optionalOutputs}
     })
   );
+  // One source of truth (rule 19): the recipe packs `settings` and derives the metadata from the
+  // same object; both validate before anything is written.
+  const writeSettings = (settings: GPUSpaceTimeHotSpotsRecipeSettings): GPUInferenceMetadata => {
+    const values = emerging.getParameterValues(settings);
+    const metadata = emerging.getInferenceMetadata(settings);
+    props.parameters.write(values);
+    return metadata;
+  };
 
   const result: GPUSpaceTimeHotSpotsRecipeResult = {
     contributors: builder.contributors,
@@ -672,14 +741,17 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     outputs: {cube, ...outputs, ...optionalOutputs},
     intermediates,
     status,
-    inference: emerging.getInferenceMetadata()
+    inference: writeSettings(props.settings),
+    setSettings: settings => {
+      result.inference = writeSettings(settings);
+    }
   };
 
   // 5. Category colors (ordinal scale).
   if (props.color) {
     const {color} = props;
     const maximumPaletteCount =
-      color.maximumPaletteCount ?? Object.keys(GPU_EMERGING_HOT_SPOT_CATEGORIES).length;
+      color.maximumPaletteCount ?? Object.keys(GPU_EMERGING_HOT_SPOTS_CATEGORIES).length;
     const colors = getOrCreateView(
       graph,
       `${id}-colors`,

@@ -6,16 +6,23 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {GPUSegmentIntersection, type GPUSegmentGeometry} from '../segment-intersection/index';
+import {
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getGPUSegmentIntersectionMaximumVertexCount,
+  GPUSegmentIntersection,
+  type GPUSegmentGeometry
+} from '../segment-intersection/index';
 import {SEGMENT_PREDICATES_WGSL} from '../segment-intersection/segment-intersection-wgsl';
 import type {GPUSpatialJoinGeometry} from '../spatial-join/index';
 import {
@@ -25,36 +32,18 @@ import {
   getPredicateGeometryWGSL
 } from './geometry-predicates-access';
 import {GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH} from './geometry-predicates-parameters';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUGeometryPredicates';
 
 /** Value written to the pair layout count when two features differ in structure. */
 const STRUCTURE_MISMATCH = 0xffffffff;
 
-/**
- * Properties for {@link GPUGeometryPredicates}.
- *
- * Per-frame: the contents of every input buffer and of `parameters` (the `equalsExact`
- * tolerance). Topology: view lengths, geometry kinds, `intersectionCapacity`, `leafCapacity`, and
- * which optional output views exist.
- */
-export type GPUGeometryPredicatesProps = {
-  /** Prefix for generated node and transient IDs. Defaults to `'geometry-predicates'`. */
-  id?: string;
-  /**
-   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
-   * construction: project positions to a planar frame first, for example with
-   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
-   * (`geometry-measures`), and pass the frame's context.
-   */
-  spatialContext?: GPUSpatialContext;
-  /**
-   * Point, linestring or polygon/multipolygon features in the GeoArrow layout of
-   * `GPUSpatialPredicateJoin`. Each output column has one `uint32` row per feature, holding `0` or
-   * `1` for the boolean columns.
-   */
-  geometry: GPUSpatialJoinGeometry;
+/** Caller-owned outputs of {@link GPUGeometryPredicates}; every column is optional. */
+export type GPUGeometryPredicatesOutput = {
   /**
    * Shapely `is_simple`: 1 when the feature has no self-intersection. Linestrings use
    * {@link GPUSegmentIntersection} in self mode (a closed linestring may meet itself only at its
@@ -87,24 +76,6 @@ export type GPUGeometryPredicatesProps = {
    * points and linestrings.
    */
   numGeometries?: GraphDataView<'uint32'>;
-  /** Capacity of the internal list of same-feature segment intersections. Required with `isSimple` or `isRing`. */
-  intersectionCapacity?: number;
-  /** One-row flag set to 1 when the intersection list or BVH overflowed; `isSimple` may then be 1 for some non-simple features. Required with `isSimple` or `isRing`. */
-  overflow?: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped number of same-feature segment intersections, for sizing `intersectionCapacity`. */
-  intersectionCount?: GraphDataView<'uint32'>;
-  /** Power-of-two BVH leaf slots over segments. Defaults to the next power of two of the vertex count. */
-  leafCapacity?: number;
-  /**
-   * Second geometry for element-wise comparison: feature `i` of `geometry` against feature `i` of
-   * `other`. Must have the same kind and feature count. Used by `equalsExact` and `equalsIdentical`.
-   */
-  other?: GPUSpatialJoinGeometry;
-  /**
-   * Per-frame packed float32 view of at least {@link GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH}
-   * elements written with `getGPUGeometryPredicatesParameterValues`. Required with `equalsExact`.
-   */
-  parameters?: GraphDataView<'float32'>;
   /**
    * Shapely `equals_exact(a, b, tolerance)` per feature pair: same structure (polygon, ring and
    * vertex counts) and every vertex pair within the tolerance. NaN coordinates never match. Needs
@@ -128,6 +99,58 @@ export type GPUGeometryPredicatesProps = {
    * Required with `uniquePositions`.
    */
   uniqueOffsets?: GraphDataView<'uint32'>;
+  /** Completeness scalars; `overflow` is required with `isSimple` or `isRing`. */
+  status?: {
+    /** One-row flag set to 1 when the intersection list or BVH overflowed; `isSimple` may then be 1 for some non-simple features. */
+    overflow?: GraphDataView<'uint32'>;
+    /** Optional one-row unclamped number of same-feature segment intersections, for sizing `intersectionCapacity`. */
+    intersectionCount?: GraphDataView<'uint32'>;
+  };
+};
+
+/**
+ * Properties for {@link GPUGeometryPredicates}.
+ *
+ * Per-frame: the contents of every input buffer and of `parameters` (the `equalsExact`
+ * tolerance). Topology: view lengths, geometry kinds, `intersectionCapacity`, `leafCapacity`, and
+ * which optional output views exist.
+ */
+export type GPUGeometryPredicatesProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'geometry-predicates'`. */
+  id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Point, linestring or polygon/multipolygon features in the GeoArrow layout of
+   * `GPUSpatialPredicateJoin`. Each output column has one `uint32` row per feature, holding `0` or
+   * `1` for the boolean columns.
+   */
+  geometry: GPUSpatialJoinGeometry;
+  /**
+   * Capacity of the internal list of same-feature segment intersections. With `isSimple` or
+   * `isRing`, `geometry.positions` has at most
+   * {@link getGPUSegmentIntersectionMaximumVertexCount} rows (4194304 on a default device). Required with `output.isSimple` or `output.isRing`.
+   */
+  intersectionCapacity?: number;
+  /** Power-of-two BVH leaf slots over segments. Defaults to the next power of two of the vertex count. */
+  leafCapacity?: number;
+  /**
+   * Second geometry for element-wise comparison: feature `i` of `geometry` against feature `i` of
+   * `other`. Must have the same kind and feature count. Used by `output.equalsExact` and `output.equalsIdentical`.
+   */
+  other?: GPUSpatialJoinGeometry;
+  /**
+   * Per-frame packed float32 view of at least {@link GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH}
+   * elements written with `getGPUGeometryPredicatesParameterValues`. Required with `output.equalsExact`.
+   */
+  parameters?: GraphDataView<'float32'>;
+  /** Caller-owned output columns and status. */
+  output: GPUGeometryPredicatesOutput;
 };
 
 /**
@@ -177,44 +200,44 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       throw new Error(`${id} geometry must contain at least one vertex`);
     }
     for (const [name, view] of [
-      ['isSimple', props.isSimple],
-      ['isRing', props.isRing],
-      ['isClosed', props.isClosed],
-      ['isCcw', props.isCcw],
-      ['numPoints', props.numPoints],
-      ['numCoordinates', props.numCoordinates],
-      ['numInteriorRings', props.numInteriorRings],
-      ['numGeometries', props.numGeometries],
-      ['equalsExact', props.equalsExact],
-      ['equalsIdentical', props.equalsIdentical]
+      ['isSimple', props.output.isSimple],
+      ['isRing', props.output.isRing],
+      ['isClosed', props.output.isClosed],
+      ['isCcw', props.output.isCcw],
+      ['numPoints', props.output.numPoints],
+      ['numCoordinates', props.output.numCoordinates],
+      ['numInteriorRings', props.output.numInteriorRings],
+      ['numGeometries', props.output.numGeometries],
+      ['equalsExact', props.output.equalsExact],
+      ['equalsIdentical', props.output.equalsIdentical]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== this.featureCount) {
           throw new Error(`${id} ${name} length must equal the feature count`);
         }
       }
     }
-    if (props.isSimple || props.isRing) {
-      if (!props.overflow || !props.intersectionCapacity) {
-        throw new Error(`${id} isSimple and isRing require overflow and intersectionCapacity`);
+    if (props.output.isSimple || props.output.isRing) {
+      if (!props.output.status?.overflow || !props.intersectionCapacity) {
+        throw new Error(
+          `${id} isSimple and isRing require status.overflow and intersectionCapacity`
+        );
       }
-      if (!Number.isSafeInteger(props.intersectionCapacity) || props.intersectionCapacity < 1) {
-        throw new Error(`${id} intersectionCapacity must be a positive integer`);
-      }
+      validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     }
     for (const [name, view] of [
-      ['overflow', props.overflow],
-      ['intersectionCount', props.intersectionCount]
+      ['overflow', props.output.status?.overflow],
+      ['intersectionCount', props.output.status?.intersectionCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must contain one uint32 row`);
         }
       }
     }
-    if (props.equalsExact || props.equalsIdentical) {
+    if (props.output.equalsExact || props.output.equalsIdentical) {
       const {other} = props;
       if (!other) {
         throw new Error(`${id} equalsExact and equalsIdentical require other`);
@@ -224,7 +247,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         throw new Error(`${id} other must have the kind and feature count of geometry`);
       }
     }
-    if (props.equalsExact) {
+    if (props.output.equalsExact) {
       if (!props.parameters) {
         throw new Error(`${id} equalsExact requires parameters`);
       }
@@ -235,16 +258,16 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         );
       }
     }
-    if (props.uniquePositions || props.uniqueOffsets) {
-      if (!props.uniquePositions || !props.uniqueOffsets) {
+    if (props.output.uniquePositions || props.output.uniqueOffsets) {
+      if (!props.output.uniquePositions || !props.output.uniqueOffsets) {
         throw new Error(`${id} uniquePositions and uniqueOffsets must be given together`);
       }
-      validatePackedView(props.uniquePositions, ['float32x2'], `${id} uniquePositions`);
-      validatePackedUint32View(props.uniqueOffsets, `${id} uniqueOffsets`);
-      if (props.uniquePositions.length < this.vertexCount) {
+      validatePackedView(props.output.uniquePositions, ['float32x2'], `${id} uniquePositions`);
+      validatePackedView(props.output.uniqueOffsets, ['uint32'], `${id} uniqueOffsets`);
+      if (props.output.uniquePositions.length < this.vertexCount) {
         throw new Error(`${id} uniquePositions must hold at least the vertex count`);
       }
-      if (props.uniqueOffsets.length !== this.featureCount + 1) {
+      if (props.output.uniqueOffsets.length !== this.featureCount + 1) {
         throw new Error(`${id} uniqueOffsets must have featureCount + 1 rows`);
       }
     }
@@ -254,7 +277,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     const {id} = this;
     validatePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
     for (const view of getPredicateGeometryViews(geometry).slice(1)) {
-      validatePackedUint32View(view, `${id} ${name} offsets`);
+      validatePackedView(view, ['uint32'], `${id} ${name} offsets`);
       if (view.length < 1) {
         throw new Error(`${id} ${name} offsets require a terminal entry`);
       }
@@ -266,21 +289,21 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     return [
       ...getPredicateGeometryViews(props.geometry),
       ...(props.other ? getPredicateGeometryViews(props.other) : []),
-      props.isSimple,
-      props.isRing,
-      props.isClosed,
-      props.isCcw,
-      props.numPoints,
-      props.numCoordinates,
-      props.numInteriorRings,
-      props.numGeometries,
-      props.overflow,
-      props.intersectionCount,
+      props.output.isSimple,
+      props.output.isRing,
+      props.output.isClosed,
+      props.output.isCcw,
+      props.output.numPoints,
+      props.output.numCoordinates,
+      props.output.numInteriorRings,
+      props.output.numGeometries,
+      props.output.status?.overflow,
+      props.output.status?.intersectionCount,
       props.parameters,
-      props.equalsExact,
-      props.equalsIdentical,
-      props.uniquePositions,
-      props.uniqueOffsets
+      props.output.equalsExact,
+      props.output.equalsIdentical,
+      props.output.uniquePositions,
+      props.output.uniqueOffsets
     ];
   }
 
@@ -290,6 +313,15 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, featureCount} = this;
     validateGraphViewsBelongToGraph(id, graph, this.getViews());
+    if (props.output.isSimple || props.output.isRing) {
+      // The simplicity and ring tests build a segment table over every vertex.
+      validateMaximumCount(
+        id,
+        'geometry.positions rows',
+        this.vertexCount,
+        getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+      );
+    }
     const {geometry} = props;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const geometryBindings = getPredicateGeometryBindings('g', geometry);
@@ -330,31 +362,31 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   let end = gVertexStart(index + 1u);`;
     const write = (expression: string) => `output[outputOffset + index] = ${expression};`;
 
-    if (props.isClosed) {
+    if (props.output.isClosed) {
       addColumn(
         'is-closed',
-        props.isClosed,
+        props.output.isClosed,
         isLines ? `${vertexRange}\n  ${write(CLOSED_EXPRESSION)}` : write('0u')
       );
     }
-    if (props.numPoints) {
+    if (props.output.numPoints) {
       addColumn(
         'num-points',
-        props.numPoints,
+        props.output.numPoints,
         isLines ? `${vertexRange}\n  ${write('end - start')}` : write('0u')
       );
     }
-    if (props.numCoordinates) {
+    if (props.output.numCoordinates) {
       addColumn(
         'num-coordinates',
-        props.numCoordinates,
+        props.output.numCoordinates,
         `${vertexRange}\n  ${write('end - start')}`
       );
     }
-    if (props.numInteriorRings) {
+    if (props.output.numInteriorRings) {
       addColumn(
         'num-interior-rings',
-        props.numInteriorRings,
+        props.output.numInteriorRings,
         geometry.kind === 'polygons'
           ? `let firstPolygon = gFeatureOffsets[gFeatureOffsetsOffset + index];
   let polygonCount = gFeatureOffsets[gFeatureOffsetsOffset + index + 1u] - firstPolygon;
@@ -367,10 +399,10 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
           : write('0u')
       );
     }
-    if (props.numGeometries) {
+    if (props.output.numGeometries) {
       addColumn(
         'num-geometries',
-        props.numGeometries,
+        props.output.numGeometries,
         geometry.kind === 'polygons'
           ? write(
               'gFeatureOffsets[gFeatureOffsetsOffset + index + 1u] - gFeatureOffsets[gFeatureOffsetsOffset + index]'
@@ -378,24 +410,24 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
           : write('1u')
       );
     }
-    if (props.isCcw) {
+    if (props.output.isCcw) {
       addColumn(
         'is-ccw',
-        props.isCcw,
+        props.output.isCcw,
         isLines ? `${vertexRange}\n  ${write('getLineIsCcw(start, end - start)')}` : write('0u'),
         {declarations: `${SEGMENT_PREDICATES_WGSL}\n${CCW_WGSL}`}
       );
     }
 
     // Simplicity: segment intersections within each feature, folded into an AND per feature.
-    if ((props.isSimple || props.isRing) && geometry.kind !== 'points') {
+    if ((props.output.isSimple || props.output.isRing) && geometry.kind !== 'points') {
       const simple =
-        props.isSimple ?? createTransientView(graph, `${id}-simple`, 'uint32', featureCount);
+        props.output.isSimple ?? createTransientView(graph, `${id}-simple`, 'uint32', featureCount);
       nodes.push(...this.getSimplicityNodes(graph, geometry, simple));
-      if (props.isRing) {
+      if (props.output.isRing) {
         addColumn(
           'is-ring',
-          props.isRing,
+          props.output.isRing,
           isLines
             ? `${vertexRange}\n  ${write(`select(0u, simple[simpleOffset + index], ${CLOSED_EXPRESSION} == 1u)`)}`
             : write('0u'),
@@ -403,18 +435,18 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         );
       }
     } else {
-      if (props.isSimple) {
-        addColumn('is-simple', props.isSimple, write('1u'));
+      if (props.output.isSimple) {
+        addColumn('is-simple', props.output.isSimple, write('1u'));
       }
-      if (props.isRing) {
-        addColumn('is-ring', props.isRing, write('0u'));
+      if (props.output.isRing) {
+        addColumn('is-ring', props.output.isRing, write('0u'));
       }
     }
 
-    if (props.equalsExact || props.equalsIdentical) {
+    if (props.output.equalsExact || props.output.equalsIdentical) {
       nodes.push(...this.getPairNodes(graph));
     }
-    if (props.uniquePositions && props.uniqueOffsets) {
+    if (props.output.uniquePositions && props.output.uniqueOffsets) {
       nodes.push(...this.getUniquePointNodes(graph, geometryBindings, geometryWGSL));
     }
     return nodes;
@@ -450,16 +482,20 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         left: geometry,
         sameFeatureOnly: true,
         leafCapacity: props.leafCapacity,
-        pairs: {
-          leftIds: pairLeft,
-          rightIds: pairRight,
-          count: pairCount,
-          overflow: props.overflow as GraphDataView<'uint32'>,
-          requiredCount: props.intersectionCount
-        },
-        leftFeatures,
-        leftRings,
-        rightRings
+        output: {
+          pairs: {
+            leftIds: pairLeft,
+            rightIds: pairRight,
+            status: {
+              count: pairCount,
+              overflow: props.output.status?.overflow as GraphDataView<'uint32'>,
+              requiredCount: props.output.status?.intersectionCount
+            }
+          },
+          leftFeatures,
+          leftRings,
+          rightRings
+        }
       }).getCommandNodes(graph)
     );
     nodes.push(
@@ -537,7 +573,8 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   pairLayout[pairLayoutOffset + index * 3u + 2u] = select(STRUCTURE_MISMATCH, aVertexStart(index + 1u) - startA, matches);`
       })
     );
-    const {equalsExact, equalsIdentical, parameters} = props;
+    const {parameters} = props;
+    const {equalsExact, equalsIdentical} = props.output;
     const bindings: WGSLKernelBinding[] = [
       {name: 'aPositions', view: geometry.positions, type: 'f32', access: 'read'},
       {name: 'bPositions', view: other.positions, type: 'f32', access: 'read'},
@@ -598,8 +635,8 @@ fn readB(vertex: u32) -> vec2f { return vec2f(bPositions[bPositionsOffset + vert
     geometryWGSL: string
   ): GPUCommandNode<Parameters>[] {
     const {id, props, featureCount, vertexCount} = this;
-    const uniquePositions = props.uniquePositions as GraphDataView<'float32x2'>;
-    const uniqueOffsets = props.uniqueOffsets as GraphDataView<'uint32'>;
+    const uniquePositions = props.output.uniquePositions as GraphDataView<'float32x2'>;
+    const uniqueOffsets = props.output.uniqueOffsets as GraphDataView<'uint32'>;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const rows = (name: string) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', vertexCount);

@@ -2,36 +2,38 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer} from '@luma.gl/core';
+import {Buffer, type Device} from '@luma.gl/core';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUGraphConnectedComponents} from '@luma.gl/gpgpu/gpu-graph';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
+  getStorageBindingElementLimit,
   importGraphBuffer,
-  validateGraphViewsBelongToGraph
+  validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   createNetworkAnalyticsTopology,
   getGraphViewGPUVector
-} from '../../gpu-network/network-analysis/network-analytics-topology';
+} from '../../analysis-core/network-topology';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 
 /** Word indices of the optional `statistics` output of {@link GPUTerrainSpikeRepair}. */
 export const GPU_TERRAIN_SPIKE_REPAIR_STATISTICS = {
@@ -43,18 +45,37 @@ export const GPU_TERRAIN_SPIKE_REPAIR_STATISTICS = {
   shiftedComponentCount: 2,
   /** Jump pairs remaining after repair (equals `jumpCount` when nothing was repaired). */
   remainingJumpCount: 3,
-  /** 1 when component labelling reached a fixed point, 0 when repair failed closed. */
+  /** 1 when component labelling reached a fixed point, 0 when the outputs carry the unresolved markers. */
   converged: 4
 } as const;
 
-/** Number of `uint32` words written to `GPUTerrainSpikeRepairProps.statistics`. */
+/**
+ * Value of every `output.labels` word and every `output.outputValidity` word of a valid pixel when
+ * component labelling did not converge (`maximumComponentIterations` too small). `output.values` of
+ * those pixels hold `+Infinity`. A
+ * converged run never produces any of them: labels are pixel indices, validity is 0 or 1 and valid
+ * heights are finite. Invalid pixels keep NaN, validity 0 and their own label.
+ */
+export const GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED = 0xffffffff;
+
+/** Number of `uint32` words written to `GPUTerrainSpikeRepairOutput.statistics`. */
 export const GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH = 5;
 
 /**
- * Default `componentIterations`. Each iteration is one relaxation plus pointer-jumping round of
- * `GPUGraphConnectedComponents`; see {@link GPUTerrainSpikeRepairProps.componentIterations}.
+ * Default `maximumComponentIterations`. Each iteration is one relaxation plus pointer-jumping round
+ * of `GPUGraphConnectedComponents`; see
+ * {@link GPUTerrainSpikeRepairProps.maximumComponentIterations}.
  */
-export const GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_COMPONENT_ITERATIONS = 32;
+export const GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_MAXIMUM_COMPONENT_ITERATIONS = 32;
+
+/**
+ * Largest `grid` cell count (`width * height`) of {@link GPUTerrainSpikeRepair} on `device`: the
+ * per-component vote bit counts hold eight `uint32` words (32 bytes) per cell in one storage
+ * binding, so 4194304 (2048 x 2048) on a default device (128 MiB bindings).
+ */
+export function getGPUTerrainSpikeRepairMaximumCellCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 32);
+}
 
 /** Largest magnitude of the Terrarium-step multiple `k` that is voted on. */
 const MAXIMUM_STEP_MULTIPLE = 127;
@@ -68,20 +89,36 @@ const SCALAR_VALID_COUNT = 2;
 const SCALAR_LENGTH = 4;
 const NO_VERTEX = '0xffffffffu';
 
+/** Caller-owned outputs of {@link GPUTerrainSpikeRepair}. */
+export type GPUTerrainSpikeRepairOutput = {
+  /**
+   * Repaired heights, one float32 per pixel. Invalid pixels hold canonical NaN; valid pixels hold
+   * `+Infinity` when labelling did not converge.
+   */
+  values: GraphDataView<'float32'>;
+  /**
+   * Validity (0 or 1) per pixel, copied from the canonical input; valid pixels hold
+   * {@link GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED} when labelling did not converge.
+   */
+  outputValidity: GraphDataView<'uint32'>;
+  /** Optional component label per pixel: the lowest pixel index of its component. Invalid pixels label themselves. Valid pixels hold {@link GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED} when labelling did not converge. */
+  labels?: GraphDataView<'uint32'>;
+  /** Optional `uint32` view of at least 5 words, see {@link GPU_TERRAIN_SPIKE_REPAIR_STATISTICS}. */
+  statistics?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUTerrainSpikeRepair}.
  *
  * The contributor is cell-size independent: it compares heights only, never horizontal distances.
  * Topology: grid size, `elevation` format and every numeric setting (all baked into WGSL),
- * `componentIterations`, and which optional outputs exist. Per-frame: elevation contents.
+ * `maximumComponentIterations`, and which optional outputs exist. Per-frame: elevation contents.
  */
 export type GPUTerrainSpikeRepairProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-spike-repair'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. At most {@link getGPUTerrainSpikeRepairMaximumCellCount} cells (4194304 on a default device). */
+  grid: GPURasterMetadata;
   /**
    * Decoded full-resolution heights. Canonicalised with calibration and nodata applied; non-finite
    * values are nodata. Invalid pixels are never repaired and never contribute a height.
@@ -105,18 +142,16 @@ export type GPUTerrainSpikeRepairProps = {
   maximumComponentFraction?: number;
   /**
    * Compiled `GPUGraphConnectedComponents` iterations (1 to 1024). Default
-   * {@link GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_COMPONENT_ITERATIONS}. If labelling has not converged
-   * the repair fails closed: the input is copied unchanged and `converged` is 0.
+   * {@link GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_MAXIMUM_COMPONENT_ITERATIONS}. If labelling has not
+   * converged nothing is repaired and the outputs are marked instead of copied, because an
+   * unchanged copy reads as "nothing to repair": `output.values` of valid pixels hold `+Infinity`,
+   * their `output.outputValidity` and `output.labels` words
+   * {@link GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}, and `statistics.converged` is 0.
+   * `statistics.remainingJumpCount` still equals `jumpCount`.
    */
-  componentIterations?: number;
-  /** Repaired heights, one float32 per pixel. Invalid pixels hold canonical NaN. */
-  values: GraphDataView<'float32'>;
-  /** Validity (0 or 1) per pixel, copied from the canonical input. */
-  validity: GraphDataView<'uint32'>;
-  /** Optional component label per pixel: the lowest pixel index of its component. Invalid pixels label themselves. */
-  labels?: GraphDataView<'uint32'>;
-  /** Optional `uint32` view of at least 5 words, see {@link GPU_TERRAIN_SPIKE_REPAIR_STATISTICS}. */
-  statistics?: GraphDataView<'uint32'>;
+  maximumComponentIterations?: number;
+  /** Caller-owned outputs. */
+  output: GPUTerrainSpikeRepairOutput;
 };
 
 /** Returns `value * 100` when it is a whole number of hundredths, otherwise `undefined`. */
@@ -181,7 +216,8 @@ function getHundredths(value: number | undefined, fallback: number): number | un
  * change a vote when `|dh - step * k|` is within about 1e-3 m of `tolerance`.
  *
  * Memory: the per-component bit counts need `8 * width * height` words in one storage binding, so
- * tiles are limited by `maxStorageBufferBindingSize` (2048 x 2048 at 128 MiB).
+ * `grid` holds at most {@link getGPUTerrainSpikeRepairMaximumCellCount} cells (2048 x 2048 on a default
+ * device).
  *
  * Owns a CSR, label buffer and small scalars released by {@link destroy}, created on first use.
  * Add the contributor to one graph at a time; destroy compiled graphs first.
@@ -191,8 +227,8 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTerrainSpikeRepairProps;
-  /** Component iterations in effect. */
-  readonly componentIterations: number;
+  /** Component iteration cap in effect. */
+  readonly maximumComponentIterations: number;
   private readonly agreementPercent: number;
   private readonly maximumComponentPercent: number;
   private ownedBuffers?: {
@@ -207,7 +243,8 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-spike-repair';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const step = props.step ?? 256;
     const jump = props.jump ?? 200;
     const tolerance = props.tolerance ?? 40;
@@ -230,43 +267,34 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
     }
     this.agreementPercent = agreementPercent;
     this.maximumComponentPercent = maximumPercent;
-    this.componentIterations =
-      props.componentIterations ?? GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_COMPONENT_ITERATIONS;
-    if (
-      !Number.isSafeInteger(this.componentIterations) ||
-      this.componentIterations < 1 ||
-      this.componentIterations > 1024
-    ) {
-      throw new Error(`${id} componentIterations must be an integer between 1 and 1024`);
-    }
-    validatePackedView(props.values, ['float32'], `${id} values`);
-    validatePackedUint32View(props.validity, `${id} validity`);
-    for (const [name, view] of [
-      ['values', props.values],
-      ['validity', props.validity],
-      ['labels', props.labels]
+    this.maximumComponentIterations =
+      props.maximumComponentIterations ??
+      GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_MAXIMUM_COMPONENT_ITERATIONS;
+    validateCapacity(id, 'maximumComponentIterations', this.maximumComponentIterations, 1, 1024);
+    for (const [name, view, format] of [
+      ['values', output.values, 'float32'],
+      ['outputValidity', output.outputValidity, 'uint32'],
+      ['labels', output.labels, 'uint32']
     ] as const) {
       if (view) {
-        if (name === 'labels') {
-          validatePackedUint32View(view, `${id} labels`);
-        }
+        validatePackedView(view, [format], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    if (props.statistics) {
-      validatePackedUint32View(props.statistics, `${id} statistics`);
-      if (props.statistics.length < GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH) {
+    if (output.statistics) {
+      validatePackedView(output.statistics, ['uint32'], `${id} output.statistics`);
+      if (output.statistics.length < GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH) {
         throw new Error(
-          `${id} statistics must contain at least ${GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH} uint32 rows`
+          `${id} output.statistics must contain at least ${GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH} rows`
         );
       }
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.values, props.validity, props.labels, props.statistics],
-      getTerrainBandViews(props.elevation)
+      [output.values, output.outputValidity, output.labels, output.statistics],
+      getRasterBandViews(props.elevation)
     );
   }
 
@@ -275,22 +303,23 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     const pixelCount = width * height;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
-      props.validity,
-      props.labels,
-      props.statistics
+      output.values,
+      output.outputValidity,
+      output.labels,
+      output.statistics
     ]);
-    const limits = graph.device.limits;
+    validateMaximumCount(
+      id,
+      'grid cells',
+      pixelCount,
+      getGPUTerrainSpikeRepairMaximumCellCount(graph.device)
+    );
     const bitWords = COMPONENT_BIT_COUNT * pixelCount;
-    if (bitWords * 4 > limits.maxStorageBufferBindingSize) {
-      throw new Error(
-        `${id} needs a ${bitWords * 4} byte vote buffer, more than the device storage binding limit`
-      );
-    }
     const operation = 'GPUTerrainSpikeRepair';
     const step = props.step ?? 256;
     const jump = props.jump ?? 200;
@@ -326,7 +355,7 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
     const labels = importGraphBuffer(graph, `${id}-labels`, owned.labels, 'uint32', pixelCount);
     const converged = importGraphBuffer(graph, `${id}-converged`, owned.converged, 'uint32', 1);
 
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const sourceValues = source.band.storage.values as GraphDataView<'float32'>;
     const sourceValidity = source.band.validity as GraphDataView<'uint32'>;
@@ -341,7 +370,7 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
     const scalars = transient('scalars', SCALAR_LENGTH);
     const shiftKey = transient('shift-key', pixelCount);
     const statistics =
-      props.statistics ?? transient('statistics', GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH);
+      output.statistics ?? transient('statistics', GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH);
     const word = GPU_TERRAIN_SPIKE_REPAIR_STATISTICS;
 
     const declarations = /* wgsl */ `const WIDTH: u32 = ${width}u;
@@ -353,7 +382,7 @@ const STEP: f32 = ${getWGSLFloatLiteral(step)};
 const INVERSE_STEP: f32 = ${getWGSLFloatLiteral(1 / step)};
 const TOLERANCE: f32 = ${getWGSLFloatLiteral(tolerance)};
 const BIT_COUNT: u32 = ${COMPONENT_BIT_COUNT}u;
-${TERRAIN_WGSL_HELPERS}`;
+${RASTER_WGSL_HELPERS}`;
     const pixelHelpers = /* wgsl */ `
 fn isValidPixel(pixel: u32) -> bool {
   return validity[validityOffset + pixel] != 0u && isFiniteValue(values[valuesOffset + pixel]);
@@ -451,7 +480,7 @@ fn getEdge(pixel: u32, direction: u32) -> u32 {
           id: `${id}-components`,
           topology,
           output: getGraphViewGPUVector(id, 'component labels', labels),
-          iterations: this.componentIterations,
+          iterations: this.maximumComponentIterations,
           converged: getGraphViewGPUVector(id, 'component converged', converged)
         }).addToGraph(graph);
       })
@@ -743,15 +772,27 @@ const RUN_LENGTH: u32 = ${SIZE_RUN_LENGTH}u;`,
         declarations: `const PIXEL_COUNT: u32 = ${pixelCount}u;
 const BIT_COUNT: u32 = ${COMPONENT_BIT_COUNT}u;
 const AGREEMENT_PERCENT: u32 = ${this.agreementPercent}u;
-const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candidateHelper}`,
+const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candidateHelper}
+// Exact 64-bit product of a u32 and a factor below 2^16, as (low, high) words: the percentage
+// tests below would wrap in u32 for components or valid counts above about 42.9 million pixels.
+fn getWideProduct(value: u32, factor: u32) -> vec2<u32> {
+  let low = (value & 0xffffu) * factor;
+  let high = (value >> 16u) * factor;
+  let lowWord = low + (high << 16u);
+  return vec2<u32>(lowWord, (high >> 16u) + select(0u, 1u, lowWord < low));
+}
+fn isWideLessOrEqual(left: vec2<u32>, right: vec2<u32>) -> bool {
+  return left.y < right.y || (left.y == right.y && left.x <= right.x);
+}`,
         body: `let size = componentSize[componentSizeOffset + index];
   let seams = seamCount[seamCountOffset + index];
   let key = getCandidateKey(index);
   let validCount = scalars[scalarsOffset + ${SCALAR_VALID_COUNT}u];
   let mainLabel = scalars[scalarsOffset + ${SCALAR_MAIN_LABEL}u];
   let shift = converged[convergedOffset] != 0u && size > 0u && index != mainLabel &&
-    size * 100u <= validCount * MAXIMUM_COMPONENT_PERCENT && seams > 0u && key != 0u &&
-    agreeCount[agreeCountOffset + index] * 100u >= seams * AGREEMENT_PERCENT;
+    isWideLessOrEqual(getWideProduct(size, 100u), getWideProduct(validCount, MAXIMUM_COMPONENT_PERCENT)) &&
+    seams > 0u && key != 0u &&
+    isWideLessOrEqual(getWideProduct(seams, AGREEMENT_PERCENT), getWideProduct(agreeCount[agreeCountOffset + index], 100u));
   shiftKey[shiftKeyOffset + index] = select(0u, key, shift);`
       })
     );
@@ -768,8 +809,8 @@ const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candid
           {name: 'labels', view: labels, type: 'u32', access: 'read'},
           {name: 'shiftKey', view: shiftKey, type: 'u32', access: 'read'},
           {name: 'converged', view: converged, type: 'u32', access: 'read'},
-          {name: 'valuesOut', view: props.values, type: 'f32', access: 'read_write'},
-          {name: 'validityOut', view: props.validity, type: 'u32', access: 'read_write'},
+          {name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'},
+          {name: 'validityOut', view: output.outputValidity, type: 'u32', access: 'read_write'},
           {name: 'statistics', view: statistics, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: pixelCount,
@@ -781,6 +822,13 @@ const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candid
   if (!isValidPixel(index)) {
     valuesOut[valuesOutOffset + index] = bitcast<f32>(0x7fc00000u | (index & 0u));
     validityOut[validityOutOffset + index] = 0u;
+    return;
+  }
+  if (converged[convergedOffset] == 0u) {
+    // Labelling stopped early: nothing is repaired and the pixel is marked, not copied.
+    var infinityBits = 0x7f800000u;
+    valuesOut[valuesOutOffset + index] = bitcast<f32>(infinityBits);
+    validityOut[validityOutOffset + index] = ${GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}u;
     return;
   }
   validityOut[validityOutOffset + index] = 1u;
@@ -801,18 +849,24 @@ const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candid
       })
     );
 
-    if (props.labels) {
+    if (output.labels) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-publish-labels`,
           operation,
           variant: 'labels',
           bindings: [
+            {name: 'values', view: sourceValues, type: 'f32', access: 'read'},
+            {name: 'validity', view: sourceValidity, type: 'u32', access: 'read'},
             {name: 'labels', view: labels, type: 'u32', access: 'read'},
-            {name: 'labelsOut', view: props.labels, type: 'u32', access: 'read_write'}
+            {name: 'converged', view: converged, type: 'u32', access: 'read'},
+            {name: 'labelsOut', view: output.labels, type: 'u32', access: 'read_write'}
           ],
           invocationCount: pixelCount,
-          body: 'labelsOut[labelsOutOffset + index] = labels[labelsOffset + index];'
+          declarations: `${declarations}${pixelHelpers}`,
+          body: `let unresolved = converged[convergedOffset] == 0u && isValidPixel(index);
+  labelsOut[labelsOutOffset + index] =
+    select(labels[labelsOffset + index], ${GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}u, unresolved);`
         })
       );
     }
@@ -824,8 +878,8 @@ const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candid
         operation,
         variant: 'recount',
         bindings: [
-          {name: 'values', view: props.values, type: 'f32', access: 'read'},
-          {name: 'validity', view: props.validity, type: 'u32', access: 'read'},
+          {name: 'values', view: output.values, type: 'f32', access: 'read'},
+          {name: 'validity', view: output.outputValidity, type: 'u32', access: 'read'},
           {name: 'statistics', view: statistics, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: pixelCount,
@@ -844,6 +898,24 @@ const MAXIMUM_COMPONENT_PERCENT: u32 = ${this.maximumComponentPercent}u;${candid
   }
   if (count > 0u) {
     atomicAdd(&statistics[statisticsOffset + ${word.remainingJumpCount}u], count);
+  }`
+      })
+    );
+    // Unresolved outputs hold no finite heights to recount; nothing was repaired, so the remaining
+    // jumps are the original ones.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-recount-unresolved`,
+        operation,
+        variant: 'recount-unresolved',
+        bindings: [
+          {name: 'converged', view: converged, type: 'u32', access: 'read'},
+          {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        body: `if (converged[convergedOffset] == 0u) {
+    statistics[statisticsOffset + ${word.remainingJumpCount}u] =
+      statistics[statisticsOffset + ${word.jumpCount}u];
   }`
       })
     );

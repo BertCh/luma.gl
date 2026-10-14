@@ -16,15 +16,20 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/index';
-import {GPUMultipleTestingAdjustment} from '../multiple-testing/index';
+import type {
+  GPUInferenceMetadata,
+  GPUMultipleTestingMethod
+} from '../../analysis-core/contracts/index';
+import {
+  GPUMultipleTestingAdjustment,
+  resolveGPUMultipleTestingMethod
+} from '../multiple-testing/index';
 import {
   getSpatialAutocorrelationConstantsWGSL,
   getSpatialAutocorrelationInputNodes,
   getSpatialAutocorrelationSharedWGSL,
   getSpatialWeightsNeighborLoopWGSL,
   resolveSpatialAutocorrelationMinimumNeighbors,
-  resolveSpatialAutocorrelationMultipleTesting,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
@@ -34,7 +39,12 @@ import {
   type GPUIslandPolicy,
   type GPUSpatialWeights
 } from '../spatial-weights/index';
-import {GPU_LOCAL_MORAN_QUADRANT} from './spatial-autocorrelation-parameters';
+import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
+import {
+  getGPUSpatialAutocorrelationParameterValues,
+  GPU_LOCAL_MORAN_QUADRANT,
+  type GPUSpatialAutocorrelationSettings
+} from './spatial-autocorrelation-parameters';
 
 const OPERATION = 'GPULocalMoran';
 
@@ -44,6 +54,42 @@ const OPERATION = 'GPULocalMoran';
  * it for every included row.
  */
 export type GPULocalMoranQuadrantGating = 'analytic' | 'none';
+
+/** Caller-owned outputs of {@link GPULocalMoran}. */
+export type GPULocalMoranOutput = {
+  /** Caller-owned analytic z-score of local Moran's I per row; quiet NaN when undefined. */
+  zScores: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned local Moran's I per row; quiet NaN for excluded rows (and for islands
+   * under `'exclude'`), 0 for islands under `'keep'`, NaN for every row when the values are
+   * constant (zero sum of squares).
+   */
+  localI?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned spatial lag per row: `sum_j w_ij (x_j - X)` over active neighbors
+   * with the weights as given (re-standardized when the weights are row-standardized, so the
+   * weighted mean of the neighbors), the y axis of a Moran scatterplot. 0 for islands that
+   * are kept, NaN if excluded.
+   */
+  spatialLag?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned quadrant per row (`GPU_LOCAL_MORAN_QUADRANT`): 1 HH, 2 LH, 3 LL, 4 HL
+   * when the (adjusted) p-value is at most the per-frame `significanceLevel`, otherwise 0. The
+   * quadrant is the sign of the centered value and of the lag, whatever the correction method.
+   */
+  quadrants?: GraphDataView<'uint32'>;
+  /** Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN. */
+  pValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned p-value adjusted by `multipleTesting` (equal to `pValues` for `'none'`);
+   * quiet NaN where z is NaN. The test family is every row with a defined z-score, never a viewport.
+   */
+  adjustedPValues?: GraphDataView<'float32'>;
+  /** Optional caller-owned count of active neighbors per row (the row itself excluded); 0 for rows outside the analysis. */
+  neighborCounts?: GraphDataView<'uint32'>;
+  /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
+  globalStatistics?: GraphDataView<'float32'>;
+};
 
 /**
  * Properties for {@link GPULocalMoran}.
@@ -58,15 +104,18 @@ export type GPULocalMoranProps = {
   /**
    * Square self-join spatial weights, one row per observation (for example from
    * `GPUNeighborSearch`, optionally transformed). Used as given, except that when
-   * `weights.info.transform` is `'row'` each row's weights are re-standardized over the neighbors
+   * `weights.information.transform` is `'row'` each row's weights are re-standardized over the neighbors
    * that remain after masking, so a row still sums to 1 instead of shrinking toward 0. Row-standardized
    * weights reproduce esda's default `Moran_Local(transform='r')`; binary weights give the `'b'`
    * variant. Fewer than 2^24 rows. A neighbor is a slot with a positive weight that points at
    * another included row. If `weights.status.overflow` is nonzero every output is NaN.
    */
   weights: GPUSpatialWeights;
-  /** Packed analysis values, one per row. Rows with a non-finite value are excluded. */
-  values: GraphDataView<'float32'>;
+  /**
+   * Packed analysis values, one per row, `float32` or `uint32` (for example counts; converted to
+   * f32 by one node, exact below 2^24). Rows with a non-finite value are excluded.
+   */
+  values: GPUFloat32OrUint32Values;
   /**
    * Per-frame parameters: packed float32 view of at least
    * `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` elements written with
@@ -94,37 +143,8 @@ export type GPULocalMoranProps = {
    * of at least 1.
    */
   minimumNeighbors?: number;
-  /** Caller-owned analytic z-score of local Moran's I per row; quiet NaN when undefined. */
-  zScores: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned local Moran's I per row; quiet NaN for excluded rows (and for islands
-   * under `'exclude'`), 0 for islands under `'keep'`.
-   */
-  localI?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned spatial lag per row: `sum_j w_ij (x_j - X)` over active neighbors
-   * with the weights as given (re-standardized when the weights are row-standardized, so the
-   * weighted mean of the neighbors), the y axis of a Moran scatterplot. 0 for islands that
-   * are kept, NaN if excluded.
-   */
-  spatialLag?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned quadrant per row (`GPU_LOCAL_MORAN_QUADRANT`): 1 HH, 2 LH, 3 LL, 4 HL
-   * when the (adjusted) p-value is at most the per-frame `significanceLevel`, otherwise 0. The
-   * quadrant is the sign of the centered value and of the lag, whatever the correction method.
-   */
-  quadrants?: GraphDataView<'uint32'>;
-  /** Optional caller-owned unadjusted two-sided normal p-value per row; quiet NaN where z is NaN. */
-  pValues?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned p-value adjusted by `multipleTesting` (equal to `pValues` for `'none'`);
-   * quiet NaN where z is NaN. The test family is every row with a defined z-score, never a viewport.
-   */
-  adjustedPValues?: GraphDataView<'float32'>;
-  /** Optional caller-owned count of active neighbors per row (the row itself excluded); 0 for rows outside the analysis. */
-  neighborCounts?: GraphDataView<'uint32'>;
-  /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
-  globalStatistics?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPULocalMoranOutput;
   /**
    * Compile-time. `'analytic'` (default) writes `quadrants` only where the analytic test is
    * significant. `'none'` writes the ungated quadrant (the signs of the centered value and the
@@ -142,12 +162,6 @@ export type GPULocalMoranProps = {
    * defined z-score.
    */
   multipleTesting?: GPUMultipleTestingMethod;
-  /**
-   * Compile-time.
-   * @deprecated Use `multipleTesting: 'benjamini-hochberg'`. `true` is that value and `false` is
-   * `'none'`; giving both with different meanings throws.
-   */
-  falseDiscoveryRate?: boolean;
 };
 
 /**
@@ -161,7 +175,7 @@ export type GPULocalMoranProps = {
  *   `M2 = sum c^2` over the analysis rows.
  * - Weights `w_ij` are the CSR entries of row `i` with a positive weight pointing at analysis
  *   rows other than `i`. They are used as given, or divided by their sum when the weights are
- *   row-standardized (`weights.info.transform === 'row'`), so masked neighbors cannot shrink the
+ *   row-standardized (`weights.information.transform === 'row'`), so masked neighbors cannot shrink the
  *   lag. `k_i` is their count, `W_i = sum_j w_ij`, `S1_i = sum_j w_ij^2` and `L_i = sum_j w_ij c_j`
  *   (the spatial lag).
  * - `I_i = (n - 1) * c_i * L_i / M2`, matching esda's `Moran_Local` scaling for the weights given
@@ -210,39 +224,39 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       id,
       props.minimumNeighbors
     );
-    this.multipleTesting = resolveSpatialAutocorrelationMultipleTesting(
+    this.multipleTesting = resolveGPUMultipleTestingMethod(id, props.multipleTesting);
+    const rows = validateSpatialAutocorrelationInputs({
+      ...props,
       id,
-      props.multipleTesting,
-      props.falseDiscoveryRate
-    );
-    const rows = validateSpatialAutocorrelationInputs({...props, id});
+      globalStatistics: props.output.globalStatistics
+    });
     for (const [name, view] of [
-      ['zScores', props.zScores],
-      ['localI', props.localI],
-      ['spatialLag', props.spatialLag],
-      ['pValues', props.pValues],
-      ['adjustedPValues', props.adjustedPValues]
+      ['zScores', props.output.zScores],
+      ['localI', props.output.localI],
+      ['spatialLag', props.output.spatialLag],
+      ['pValues', props.output.pValues],
+      ['adjustedPValues', props.output.adjustedPValues]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
-      ['quadrants', props.quadrants],
-      ['neighborCounts', props.neighborCounts]
+      ['quadrants', props.output.quadrants],
+      ['neighborCounts', props.output.neighborCounts]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
       }
     }
     for (const [name, view] of [
-      ['zScores', props.zScores],
-      ['localI', props.localI],
-      ['spatialLag', props.spatialLag],
-      ['quadrants', props.quadrants],
-      ['pValues', props.pValues],
-      ['adjustedPValues', props.adjustedPValues],
-      ['neighborCounts', props.neighborCounts]
+      ['zScores', props.output.zScores],
+      ['localI', props.output.localI],
+      ['spatialLag', props.output.spatialLag],
+      ['quadrants', props.output.quadrants],
+      ['pValues', props.output.pValues],
+      ['adjustedPValues', props.output.adjustedPValues],
+      ['neighborCounts', props.output.neighborCounts]
     ] as const) {
       if (view && view.length !== rows) {
         throw new Error(`${id} ${name} length must equal the weights row count`);
@@ -254,14 +268,14 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.zScores,
-        props.localI,
-        props.spatialLag,
-        props.quadrants,
-        props.pValues,
-        props.adjustedPValues,
-        props.neighborCounts,
-        props.globalStatistics
+        props.output.zScores,
+        props.output.localI,
+        props.output.spatialLag,
+        props.output.quadrants,
+        props.output.pValues,
+        props.output.adjustedPValues,
+        props.output.neighborCounts,
+        props.output.globalStatistics
       ],
       [
         props.weights.offsets,
@@ -276,13 +290,17 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
   }
 
   /**
-   * Describes how the p-values were produced, for building a legend: two-sided analytic normal
-   * p-values (conditional randomization moments), the correction method, and the tested family.
+   * Describes how the p-values of a run with `settings` were produced, for building a legend:
+   * two-sided analytic normal p-values (conditional randomization moments), the correction method,
+   * the significance level of the quadrants and the tested family.
    *
-   * @param significanceLevel Level used for the quadrants; match the per-frame parameter.
-   * Defaults to 0.05.
+   * @param settings The settings packed into `parameters` with
+   * `getGPUSpatialAutocorrelationParameterValues`; validated the same way.
    */
-  getInferenceMetadata(significanceLevel = 0.05): GPUInferenceMetadata {
+  getInferenceMetadata(settings: GPUSpatialAutocorrelationSettings = {}): GPUInferenceMetadata {
+    // Packing performs the canonical validation of the settings.
+    getGPUSpatialAutocorrelationParameterValues(settings);
+    const significanceLevel = settings.significanceLevel ?? 0.05;
     return {
       alternative: 'two-sided',
       permutationCount: 0,
@@ -299,7 +317,8 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {weights, parameters, zScores} = props;
+    const {weights, parameters} = props;
+    const {zScores} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,
       weights.neighbors,
@@ -309,17 +328,18 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       parameters,
       props.mask,
       zScores,
-      props.localI,
-      props.spatialLag,
-      props.quadrants,
-      props.pValues,
-      props.adjustedPValues,
-      props.neighborCounts,
-      props.globalStatistics
+      props.output.localI,
+      props.output.spatialLag,
+      props.output.quadrants,
+      props.output.pValues,
+      props.output.adjustedPValues,
+      props.output.neighborCounts,
+      props.output.globalStatistics
     ]);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
       ...props,
+      globalStatistics: props.output.globalStatistics,
       id,
       islands: this.islands,
       operation: OPERATION
@@ -336,20 +356,24 @@ ${constantsWGSL}`;
     const {HIGH_HIGH, LOW_HIGH, LOW_LOW, HIGH_LOW, NOT_SIGNIFICANT} = GPU_LOCAL_MORAN_QUADRANT;
     const hasCorrection = this.multipleTesting !== 'none';
     // Quadrant gating 'none' is rejected with a correction, so a correction implies analytic gating.
-    const wantsClassify = Boolean(props.quadrants || props.pValues || props.adjustedPValues);
+    const wantsClassify = Boolean(
+      props.output.quadrants || props.output.pValues || props.output.adjustedPValues
+    );
     const isAdjusting =
-      hasCorrection && Boolean(props.adjustedPValues || props.quadrants) && wantsClassify;
+      hasCorrection &&
+      Boolean(props.output.adjustedPValues || props.output.quadrants) &&
+      wantsClassify;
     // With a correction the neighbor kernel writes the unadjusted p-values and a later kernel
     // classifies from the adjusted ones.
     const unadjustedPValues = isAdjusting
-      ? (props.pValues ?? createTransientView(graph, `${id}-p-values`, 'float32', rows))
+      ? (props.output.pValues ?? createTransientView(graph, `${id}-p-values`, 'float32', rows))
       : undefined;
     const adjustedPValues = isAdjusting
-      ? (props.adjustedPValues ??
+      ? (props.output.adjustedPValues ??
         createTransientView(graph, `${id}-adjusted-p-values`, 'float32', rows))
       : undefined;
     const needsClassifyKernel = (fuseClassify: boolean) =>
-      wantsClassify && !fuseClassify && (!isAdjusting || Boolean(props.quadrants));
+      wantsClassify && !fuseClassify && (!isAdjusting || Boolean(props.output.quadrants));
 
     // The per-row epilogues (local I, quadrant and p-value) are pure functions of values the
     // neighbor kernel already holds, so they are fused into it when its bindings still fit the
@@ -359,39 +383,41 @@ ${constantsWGSL}`;
     const storageBufferLimit = graph.device.limits.maxStorageBuffersPerShaderStage;
     const getBindingCount = (fuseLocalI: boolean, fuseClassify: boolean) => {
       const storesLag =
-        Boolean(props.spatialLag) ||
-        (Boolean(props.localI) && !fuseLocalI) ||
+        Boolean(props.output.spatialLag) ||
+        (Boolean(props.output.localI) && !fuseLocalI) ||
         needsClassifyKernel(fuseClassify);
       return (
         5 +
         (storesLag ? 1 : 0) +
-        (props.neighborCounts ? 1 : 0) +
-        (props.localI && fuseLocalI ? 1 : 0) +
+        (props.output.neighborCounts ? 1 : 0) +
+        (props.output.localI && fuseLocalI ? 1 : 0) +
         (isAdjusting ? 1 : 0) +
         (fuseClassify
           ? 1 +
-            (props.quadrants ? 1 : 0) +
-            (props.pValues ? 1 : 0) +
-            (props.adjustedPValues ? 1 : 0)
+            (props.output.quadrants ? 1 : 0) +
+            (props.output.pValues ? 1 : 0) +
+            (props.output.adjustedPValues ? 1 : 0)
           : 0)
       );
     };
     const canFuseClassify = wantsClassify && !isAdjusting;
-    let fuseLocalI = Boolean(props.localI);
+    let fuseLocalI = Boolean(props.output.localI);
     let fuseClassify = canFuseClassify;
     if (getBindingCount(fuseLocalI, fuseClassify) > storageBufferLimit) {
       fuseLocalI = false;
     }
     if (getBindingCount(fuseLocalI, fuseClassify) > storageBufferLimit) {
       fuseClassify = false;
-      fuseLocalI = Boolean(props.localI) && getBindingCount(true, false) <= storageBufferLimit;
+      fuseLocalI =
+        Boolean(props.output.localI) && getBindingCount(true, false) <= storageBufferLimit;
     }
     const storesLag =
-      Boolean(props.spatialLag) ||
-      (Boolean(props.localI) && !fuseLocalI) ||
+      Boolean(props.output.spatialLag) ||
+      (Boolean(props.output.localI) && !fuseLocalI) ||
       needsClassifyKernel(fuseClassify);
     const spatialLag = storesLag
-      ? (props.spatialLag ?? createTransientView(graph, `${id}-spatial-lag`, 'float32', rows))
+      ? (props.output.spatialLag ??
+        createTransientView(graph, `${id}-spatial-lag`, 'float32', rows))
       : undefined;
 
     const quadrantWGSL = (centeredName: string, lagName: string, significant: string) => `
@@ -414,7 +440,7 @@ ${constantsWGSL}`;
       lagName: string
     ) => `let pValue = select(getQuietNaN(index), getTwoSidedPValue(${zScoreName}), isFiniteFloat(${zScoreName}));
   ${
-    props.quadrants
+    props.output.quadrants
       ? quadrantWGSL(
           centeredName,
           lagName,
@@ -424,8 +450,8 @@ ${constantsWGSL}`;
         )
       : ''
   }
-  ${props.pValues ? 'pValues[pValuesOffset + index] = pValue;' : ''}
-  ${props.adjustedPValues ? 'adjustedPValues[adjustedPValuesOffset + index] = pValue;' : ''}`;
+  ${props.output.pValues ? 'pValues[pValuesOffset + index] = pValue;' : ''}
+  ${props.output.adjustedPValues ? 'adjustedPValues[adjustedPValuesOffset + index] = pValue;' : ''}`;
 
     const neighborBindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
@@ -442,18 +468,18 @@ ${constantsWGSL}`;
         access: 'read_write'
       });
     }
-    if (props.neighborCounts) {
+    if (props.output.neighborCounts) {
       neighborBindings.push({
         name: 'neighborCounts',
-        view: props.neighborCounts,
+        view: props.output.neighborCounts,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (props.localI && fuseLocalI) {
+    if (props.output.localI && fuseLocalI) {
       neighborBindings.push({
         name: 'localI',
-        view: props.localI,
+        view: props.output.localI,
         type: 'f32',
         access: 'read_write'
       });
@@ -468,26 +494,26 @@ ${constantsWGSL}`;
     }
     if (fuseClassify) {
       neighborBindings.push({name: 'parameters', view: parameters, type: 'f32', access: 'read'});
-      if (props.quadrants) {
+      if (props.output.quadrants) {
         neighborBindings.push({
           name: 'quadrants',
-          view: props.quadrants,
+          view: props.output.quadrants,
           type: 'u32',
           access: 'read_write'
         });
       }
-      if (props.pValues) {
+      if (props.output.pValues) {
         neighborBindings.push({
           name: 'pValues',
-          view: props.pValues,
+          view: props.output.pValues,
           type: 'f32',
           access: 'read_write'
         });
       }
-      if (props.adjustedPValues) {
+      if (props.output.adjustedPValues) {
         neighborBindings.push({
           name: 'adjustedPValues',
-          view: props.adjustedPValues,
+          view: props.output.adjustedPValues,
           type: 'f32',
           access: 'read_write'
         });
@@ -498,7 +524,7 @@ ${constantsWGSL}`;
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-neighbors`,
         operation: OPERATION,
-        variant: `local-moran${props.localI && fuseLocalI ? '-local-i' : ''}${fuseClassify ? '-classify' : ''}${isAdjusting ? '-p-value' : ''}`,
+        variant: `local-moran${props.output.localI && fuseLocalI ? '-local-i' : ''}${fuseClassify ? '-classify' : ''}${isAdjusting ? '-p-value' : ''}`,
         bindings: neighborBindings,
         invocationCount: rows,
         declarations: fuseClassify ? parameterWGSL : floatWGSL,
@@ -534,14 +560,16 @@ ${constantsWGSL}`;
   }
   zScores[zScoresOffset + index] = zScore;
   ${spatialLag ? 'spatialLag[spatialLagOffset + index] = lag;' : ''}
-  ${props.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
+  ${props.output.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
   ${unadjustedPValues ? 'pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteFloat(zScore));' : ''}
   ${
-    props.localI && fuseLocalI
+    props.output.localI && fuseLocalI
       ? `{
-    let scale = (statistics[statisticsOffset + MOMENTS] - 1.0) / statistics[statisticsOffset + MOMENTS + 3u];
+    let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
+    // Constant values (M2 = 0) leave I undefined: NaN, not the 0 of a kept island.
+    let scale = select(getQuietNaN(index), (statistics[statisticsOffset + MOMENTS] - 1.0) / sumOfSquares, sumOfSquares > 0.0);
     // Excluded rows keep their NaN centered value; kept islands have a zero lag and so I = 0.
-    localI[localIOffset + index] = select(select(centered * lag * scale, 0.0, lag == 0.0), getQuietNaN(index), !isFiniteFloat(centered));
+    localI[localIOffset + index] = select(select(centered * lag * scale, 0.0, lag == 0.0 && isFiniteFloat(scale)), getQuietNaN(index), !isFiniteFloat(centered));
   }`
       : ''
   }
@@ -549,7 +577,7 @@ ${constantsWGSL}`;
       })
     );
 
-    if (props.localI && !fuseLocalI) {
+    if (props.output.localI && !fuseLocalI) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-local-i`,
@@ -558,15 +586,17 @@ ${constantsWGSL}`;
           bindings: [
             {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
             {name: 'spatialLag', view: spatialLag!, type: 'f32', access: 'read'},
-            {name: 'localI', view: props.localI, type: 'f32', access: 'read_write'}
+            {name: 'localI', view: props.output.localI, type: 'f32', access: 'read_write'}
           ],
           invocationCount: rows,
           declarations: floatWGSL,
           body: `let centered = statistics[statisticsOffset + index];
   let lag = spatialLag[spatialLagOffset + index];
-  let scale = (statistics[statisticsOffset + MOMENTS] - 1.0) / statistics[statisticsOffset + MOMENTS + 3u];
+  let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
+  // Constant values (M2 = 0) leave I undefined: NaN, not the 0 of a kept island.
+  let scale = select(getQuietNaN(index), (statistics[statisticsOffset + MOMENTS] - 1.0) / sumOfSquares, sumOfSquares > 0.0);
   // Excluded rows keep their NaN centered value; kept islands have a zero lag and so I = 0.
-  localI[localIOffset + index] = select(select(centered * lag * scale, 0.0, lag == 0.0), getQuietNaN(index), !isFiniteFloat(centered));`
+  localI[localIOffset + index] = select(select(centered * lag * scale, 0.0, lag == 0.0 && isFiniteFloat(scale)), getQuietNaN(index), !isFiniteFloat(centered));`
         })
       );
     }
@@ -577,7 +607,7 @@ ${constantsWGSL}`;
           id: `${id}-multiple-testing`,
           pValues: unadjustedPValues!,
           method: this.multipleTesting,
-          adjustedPValues: adjustedPValues!
+          output: {adjustedPValues: adjustedPValues!}
         }).getCommandNodes(graph)
       );
     }
@@ -598,26 +628,26 @@ ${constantsWGSL}`;
         access: 'read'
       });
     }
-    if (props.quadrants) {
+    if (props.output.quadrants) {
       classifyBindings.push({
         name: 'quadrants',
-        view: props.quadrants,
+        view: props.output.quadrants,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (!isAdjusting && props.pValues) {
+    if (!isAdjusting && props.output.pValues) {
       classifyBindings.push({
         name: 'pValues',
-        view: props.pValues,
+        view: props.output.pValues,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (!isAdjusting && props.adjustedPValues) {
+    if (!isAdjusting && props.output.adjustedPValues) {
       classifyBindings.push({
         name: 'adjustedPValues',
-        view: props.adjustedPValues,
+        view: props.output.adjustedPValues,
         type: 'f32',
         access: 'read_write'
       });

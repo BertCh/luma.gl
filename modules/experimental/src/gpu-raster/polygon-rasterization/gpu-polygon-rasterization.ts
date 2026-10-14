@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,11 +16,14 @@ import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
+import type {GPURasterMetadata} from '../types';
 import {
   getOffsetRangeSearchSource,
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
   GPU_POLYGON_RASTERIZATION_NO_ZONE,
   POLYGON_RASTER_EXTENT_WGSL
 } from './polygon-rasterization-parameters';
@@ -30,27 +32,56 @@ const OPERATION = 'GPUPolygonRasterization';
 const NO_EDGE = '0xffffffffu';
 
 /**
+ * One-row status words of {@link GPUPolygonRasterization}, rewritten on every encoding.
+ */
+export type GPUPolygonRasterizationStatus = {
+  /**
+   * One-row flag: 1 when the crossings exceed `crossingCapacity`. The zone raster is then left at
+   * `GPU_POLYGON_RASTERIZATION_NO_ZONE` everywhere rather than partially filled; `boundary` is
+   * still complete.
+   */
+  overflow: GraphDataView<'uint32'>;
+  /** Optional one-row unclamped crossing count, for sizing `crossingCapacity`. */
+  crossingCount?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUPolygonRasterization}, rewritten on every encoding. */
+export type GPUPolygonRasterizationOutput = {
+  /**
+   * Packed row-major zone raster, `grid.width * grid.height` rows. Each cell holds the smallest
+   * feature row whose polygon contains the cell center, or `GPU_POLYGON_RASTERIZATION_NO_ZONE`.
+   */
+  zones: GraphDataView<'uint32'>;
+  /**
+   * Optional `grid.width * grid.height` flags, 1 where any polygon edge touches the closed cell
+   * (conservatively), otherwise 0. Cells without the flag are entirely inside or outside every
+   * polygon, so points in them join exactly like their cell center.
+   */
+  boundary?: GraphDataView<'uint32'>;
+  /** One-row status words. */
+  status: GPUPolygonRasterizationStatus;
+};
+
+/**
  * Properties for {@link GPUPolygonRasterization}.
  *
- * Per-frame (no recompile): the contents of `extent` and of every polygon buffer. Topology (needs
- * a new graph): `width`, `height`, `crossingCapacity`, every view length, and whether `boundary`
- * and `crossingCount` are present.
+ * Per-frame (no recompile): the contents of `parameters` and of every polygon buffer. Topology
+ * (needs a new graph): the `grid` size, `crossingCapacity`, every view length, and whether
+ * `output.boundary` and `output.status.crossingCount` are present.
  */
 export type GPUPolygonRasterizationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'polygon-rasterization'`. */
   id?: string;
-  /** Raster width in cells. Compile-time. */
-  width: number;
-  /** Raster height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
-   * Per-frame raster placement `[originX, originY, cellWidth, cellHeight]` (float32, at least 4
-   * rows), for example a `GPUParameterBuffer` filled with
-   * `getGPUPolygonRasterizationExtentValues`. Row 0 is the row with the smallest y.
+   * Per-frame raster placement (float32, at least 4 values), for example a `GPUParameterBuffer`
+   * filled with `getGPUPolygonRasterizationParameterValues`, which reads the origin, cell size and
+   * row direction from the grid.
    */
-  extent: GraphDataView<'float32'>;
+  parameters: GraphDataView<'float32'>;
   /** Flattened polygon vertices (GeoArrow layout, as `GPUPointInPolygonJoin`). */
-  polygonPositions: GraphDataView<'float32x2'>;
+  positions: GraphDataView<'float32x2'>;
   /** Feature-to-polygon offsets with `featureCount + 1` entries, first 0. */
   featureOffsets: GraphDataView<'uint32'>;
   /** Polygon-to-ring offsets with a terminal entry. Ring 0 is the shell; others are holes. */
@@ -60,29 +91,11 @@ export type GPUPolygonRasterizationProps = {
   /**
    * Maximum (edge, raster row) crossings per encoding. A ring crosses each row its interior covers
    * at least twice, so a safe size is about `2 * (rows spanned) * (rings per row)` summed over
-   * polygons; read `crossingCount` to size it. Compile-time.
+   * polygons; read `output.status.crossingCount` to size it. Compile-time.
    */
   crossingCapacity: number;
-  /**
-   * Output: packed row-major zone raster, `width * height` rows, rewritten on every encoding. Each
-   * cell holds the smallest feature row whose polygon contains the cell center, or
-   * `GPU_POLYGON_RASTERIZATION_NO_ZONE`.
-   */
-  zones: GraphDataView<'uint32'>;
-  /**
-   * Optional output: `width * height` flags, 1 where any polygon edge touches the closed cell
-   * (conservatively), otherwise 0. Cells without the flag are entirely inside or outside every
-   * polygon, so points in them join exactly like their cell center.
-   */
-  boundary?: GraphDataView<'uint32'>;
-  /**
-   * One-row flag: 1 when the crossings exceed `crossingCapacity`. The zone raster is then left at
-   * `GPU_POLYGON_RASTERIZATION_NO_ZONE` everywhere rather than partially filled; `boundary` is
-   * still complete.
-   */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped crossing count, for sizing `crossingCapacity`. */
-  crossingCount?: GraphDataView<'uint32'>;
+  /** Caller-owned outputs. */
+  output: GPUPolygonRasterizationOutput;
 };
 
 /**
@@ -120,7 +133,7 @@ export type GPUPolygonRasterizationProps = {
  * span (up to `width` cells). The boundary pass costs O(cells touched by edges + rows spanned).
  * Every sort and scan always runs over the full capacity, so oversizing it costs time.
  *
- * Precision: coordinates and the extent are float32. Use extent-local or tile-local coordinates.
+ * Precision: coordinates and the raster placement are float32. Use raster-local or tile-local coordinates.
  * A non-finite vertex drops its two edges, which can corrupt only the rows of its own polygon.
  */
 export class GPUPolygonRasterization implements GPUCommandNodeProducer {
@@ -141,34 +154,23 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
     this.id = props.id ?? 'polygon-rasterization';
     this.props = props;
     const {id} = this;
-    const {width, height} = props;
-    for (const [name, value] of [
-      ['width', width],
-      ['height', height]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
+    const {width, height} = props.grid;
     if (height * (width + 1) > 0xffffffff) {
       throw new Error(`${id} height * (width + 1) must fit in uint32`);
     }
-    validatePackedView(props.extent, ['float32'], `${id} extent`);
-    if (props.extent.length < GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH) {
-      throw new Error(
-        `${id} extent must contain ${GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH} float32 rows`
-      );
-    }
-    validatePackedView(props.polygonPositions, ['float32x2'], `${id} polygonPositions`);
-    if (props.polygonPositions.length < 1) {
-      throw new Error(`${id} polygonPositions must not be empty`);
+    validateRasterParameters(id, props.parameters, GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH);
+    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    if (props.positions.length < 1) {
+      throw new Error(`${id} positions must not be empty`);
     }
     for (const [name, view] of [
       ['featureOffsets', props.featureOffsets],
       ['polygonOffsets', props.polygonOffsets],
       ['ringOffsets', props.ringOffsets]
     ] as const) {
-      validatePackedUint32View(view, `${id} ${name}`);
+      validatePackedView(view, ['uint32'], `${id} ${name}`);
       if (view.length < 2) {
         throw new Error(`${id} ${name} requires at least one range and a terminal entry`);
       }
@@ -186,27 +188,26 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} crossingCapacity must be an integer of at least 2`);
     }
-    const cellCount = width * height;
     for (const [name, view, length] of [
-      ['zones', props.zones, cellCount],
-      ['boundary', props.boundary, cellCount],
-      ['overflow', props.overflow, 1],
-      ['crossingCount', props.crossingCount, 1]
+      ['zones', output.zones, cellCount],
+      ['boundary', output.boundary, cellCount],
+      ['status.overflow', output.status.overflow, 1],
+      ['status.crossingCount', output.status.crossingCount, 1]
     ] as const) {
       if (!view) {
         continue;
       }
-      validatePackedUint32View(view, `${id} ${name}`);
+      validatePackedView(view, ['uint32'], `${id} output.${name}`);
       if (view.length !== length) {
-        throw new Error(`${id} ${name} must contain ${length} uint32 rows`);
+        throw new Error(`${id} output.${name} must contain ${length} uint32 rows`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.zones, props.boundary, props.overflow, props.crossingCount],
+      [output.zones, output.boundary, output.status.overflow, output.status.crossingCount],
       [
-        props.extent,
-        props.polygonPositions,
+        props.parameters,
+        props.positions,
         props.featureOffsets,
         props.polygonOffsets,
         props.ringOffsets
@@ -221,7 +222,10 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, polygonCount, ringCount, featureCount, singleSort} = this;
-    const {width, height, extent, polygonPositions, zones, boundary, overflow} = props;
+    const {parameters: extent, positions: polygonPositions, output} = props;
+    const {zones, boundary} = output;
+    const {overflow, crossingCount} = output.status;
+    const {width, height} = props.grid;
     validateGraphViewsBelongToGraph(id, graph, [
       extent,
       polygonPositions,
@@ -231,7 +235,7 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
       zones,
       boundary,
       overflow,
-      props.crossingCount
+      crossingCount
     ]);
     const vertexCount = polygonPositions.length;
     const capacity = props.crossingCapacity;
@@ -365,32 +369,37 @@ ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
     );
     const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
     const totalBindings: WGSLKernelBinding[] = [
-      {name: 'edgeCounts', view: edgeCounts, type: 'u32', access: 'read'},
-      {name: 'edgeOffsets', view: edgeOffsets, type: 'u32', access: 'read'},
-      {name: 'totalOut', view: total, type: 'u32', access: 'read_write'},
+      {name: 'total', view: total, type: 'u32', access: 'read'},
       {name: 'overflowOut', view: overflow, type: 'u32', access: 'read_write'}
     ];
-    if (props.crossingCount) {
+    if (crossingCount) {
       totalBindings.push({
         name: 'crossingCountOut',
-        view: props.crossingCount,
+        view: crossingCount,
         type: 'u32',
         access: 'read_write'
       });
     }
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-total`,
+      ...createSaturatedScanTotalNodes<Parameters>(graph, {
+        id: id,
         operation: OPERATION,
-        variant: 'total',
+        counts: edgeCounts,
+        offsets: edgeOffsets,
+        rowCount: vertexCount,
+        total: total
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-publish`,
+        operation: OPERATION,
+        variant: 'publish',
         bindings: totalBindings,
         invocationCount: 1,
         declarations: `const LAST_EDGE: u32 = ${vertexCount - 1}u;
 const CAPACITY: u32 = ${capacity}u;`,
-        body: `let crossings = edgeOffsets[edgeOffsetsOffset + LAST_EDGE] + edgeCounts[edgeCountsOffset + LAST_EDGE];
-  totalOut[totalOutOffset] = crossings;
+        body: `let crossings = total[totalOffset];
   overflowOut[overflowOutOffset] = select(0u, 1u, crossings > CAPACITY);
-  ${props.crossingCount ? 'crossingCountOut[crossingCountOutOffset] = crossings;' : ''}`
+  ${crossingCount ? 'crossingCountOut[crossingCountOutOffset] = crossings;' : ''}`
       })
     );
     nodes.push(
@@ -547,10 +556,12 @@ ${recordSource}`,
           {name: 'ranks', view: ranks, type: 'u32', access: 'read'},
           {name: 'featureOffsets', view: props.featureOffsets, type: 'u32', access: 'read'},
           {name: 'total', view: total, type: 'u32', access: 'read'},
+          {name: 'extent', view: extent, type: 'f32', access: 'read'},
           {name: 'zonesOut', view: zones, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: capacity - 1,
         declarations: `${declarations}
+${POLYGON_RASTER_EXTENT_WGSL}
 ${recordSource}
 ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
         body: `if (total[totalOffset] > CAPACITY || (ranks[ranksOffset + index] & 1u) != 0u) {
@@ -567,7 +578,7 @@ ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
     return;
   }
   let feature = findFeature(polygon);
-  let rowBase = row * WIDTH;
+  let rowBase = getStoredRow(row, getRasterExtent()) * WIDTH;
   for (var column = start % ROW_STRIDE; column < end % ROW_STRIDE; column++) {
     atomicMin(&zonesOut[zonesOutOffset + rowBase + column], feature);
   }`
@@ -628,7 +639,7 @@ fn clampCell(value: f32, limit: u32) -> i32 {
     let firstColumn = max(clampCell(min(slabX.x, slabX.y) - padding, WIDTH), 0);
     let lastColumn = min(clampCell(max(slabX.x, slabX.y) + padding, WIDTH), i32(WIDTH) - 1);
     for (var column = firstColumn; column <= lastColumn; column++) {
-      atomicStore(&boundaryOut[boundaryOutOffset + u32(row) * WIDTH + u32(column)], 1u);
+      atomicStore(&boundaryOut[boundaryOutOffset + getStoredRow(u32(row), rasterExtent) * WIDTH + u32(column)], 1u);
     }
   }`
         })

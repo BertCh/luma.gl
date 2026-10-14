@@ -11,6 +11,7 @@ import {
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {GPUGroupConvexHull} from '../group-geometry/gpu-group-convex-hull';
 import {
+  getPositionDeclarations,
   getRingBindings,
   getRingDeclarations,
   type FeatureRingInputs
@@ -83,12 +84,12 @@ fn getFeatureRowEnd(feature: u32) -> u32 { return max(getRingRowStart(getRingEnd
       groupCount: featureCount,
       // A hull never has more vertices than the rows it was built from, so neither cap can trip.
       maximumVerticesPerGroup: Math.max(3, rowCount),
-      totalCapacity: rowCount,
+      vertexCapacity: rowCount,
       output: {
         vertexIndices: hullIndices,
         offsets: hullOffsets,
         counts: hullCounts,
-        overflow: hullOverflow
+        status: {overflow: hullOverflow}
       }
     }).getCommandNodes(graph),
     createWGSLKernelNode<Parameters>(graph, {
@@ -96,7 +97,7 @@ fn getFeatureRowEnd(feature: u32) -> u32 { return max(getRingRowStart(getRingEnd
       operation,
       variant: 'convexity-area',
       bindings: [
-        ...getRingBindings(props),
+        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
         {name: 'areas', view: props.areas, type: 'f32', access: 'read'},
         {name: 'hullIndices', view: hullIndices, type: 'u32', access: 'read'},
         {name: 'hullOffsets', view: hullOffsets, type: 'u32', access: 'read'},
@@ -104,18 +105,16 @@ fn getFeatureRowEnd(feature: u32) -> u32 { return max(getRingRowStart(getRingEnd
         {name: 'convexities', view: props.convexities, type: 'f32', access: 'read_write'}
       ],
       invocationCount: featureCount,
-      declarations: getRingDeclarations(props),
-      body: `let ringStart = getRingStart(index);
-  let ringEnd = max(getRingEnd(index), ringStart);
-  let rowStart = getRingRowStart(ringStart);
-  let rowEnd = max(getRingRowStart(ringEnd), rowStart);
-  let area = areas[areasOffset + index];
+      declarations: getPositionDeclarations(rowCount),
+      // A hull of three or more vertices implies three or more rows, so the feature's row range is
+      // not needed (the kernel is at the 8-binding limit with the offset views).
+      body: `let area = areas[areasOffset + index];
   let hullStart = hullOffsets[hullOffsetsOffset + index];
   let hullCount = hullCounts[hullCountsOffset + index];
   var hullArea = 0.0;
-  if (rowEnd - rowStart >= 3u && area > 0.0 && hullCount >= 3u) {
-    // Shoelace over the counter-clockwise hull, relative to the first vertex for f32 accuracy.
-    let origin = getPosition(rowStart);
+  if (area > 0.0 && hullCount >= 3u) {
+    // Shoelace over the counter-clockwise hull, relative to its first vertex for f32 accuracy.
+    let origin = getPosition(hullIndices[hullIndicesOffset + hullStart]);
     var previous = getPosition(hullIndices[hullIndicesOffset + hullStart + hullCount - 1u]) - origin;
     var twiceArea = 0.0;
     for (var vertex = 0u; vertex < hullCount; vertex++) {

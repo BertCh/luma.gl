@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUInferenceMetadata} from '../contracts/index';
+import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
 
 /** Number of uint32 elements in a space-time test parameter view. */
 export const GPU_SPACE_TIME_PARAMETER_LENGTH = 4;
@@ -46,12 +47,12 @@ export const GPU_SPACE_TIME_SUMMARY = {
   zScore: 11
 } as const;
 
-/** Per-frame parameters of `GPUKnoxTest` and `GPUMantelTest`. */
-export type GPUSpaceTimeParameters = {
+/** Per-frame settings of `GPUKnoxTest` and `GPUMantelTest`, packed by {@link getGPUSpaceTimeParameterValues}. */
+export type GPUSpaceTimeSettings = {
   /** Random seed, an integer in `[0, 2^53)`. The result is a pure function of the seed and inputs. */
   seed: number;
-  /** Number of time permutations `P`, at most the contributor's `maximumPermutations`. */
-  permutations: number;
+  /** Number of time permutations `P`, clamped to the contributor's `maximumPermutations`. */
+  permutationCount: number;
   /**
    * Knox only: two rows are close in time when `|t_i - t_j| <= timeThreshold` (f32), in the same
    * units as the relative `times` (see `getGPUSpaceTimeRelativeTimes`). Ignored by
@@ -61,25 +62,23 @@ export type GPUSpaceTimeParameters = {
 };
 
 /**
- * Packs {@link GPUSpaceTimeParameters} into the uint32 layout read by the kernels:
- * `[seedLow, seedHigh, permutations, float32 bits of timeThreshold]`.
+ * Packs {@link GPUSpaceTimeSettings} into the uint32 layout read by the kernels:
+ * `[seedLow, seedHigh, permutationCount, float32 bits of timeThreshold]`.
  */
-export function getGPUSpaceTimeParameterValues(parameters: GPUSpaceTimeParameters): Uint32Array {
-  const {seed, permutations} = parameters;
+export function getGPUSpaceTimeParameterValues(settings: GPUSpaceTimeSettings): Uint32Array {
+  const {seed, permutationCount} = settings;
   if (!Number.isSafeInteger(seed) || seed < 0) {
     throw new Error('space-time seed must be a non-negative safe integer');
   }
-  if (!Number.isInteger(permutations) || permutations < 1 || permutations >= 2 ** 31) {
-    throw new Error('space-time permutations must be a positive integer below 2^31');
-  }
-  const timeThreshold = parameters.timeThreshold ?? 0;
+  validateCapacity('space-time', 'permutationCount', permutationCount, 1, 2 ** 31 - 1);
+  const timeThreshold = settings.timeThreshold ?? 0;
   if (Number.isNaN(timeThreshold) || timeThreshold < 0) {
     throw new Error('space-time timeThreshold must be non-negative');
   }
   const values = new Uint32Array(GPU_SPACE_TIME_PARAMETER_LENGTH);
   values[0] = seed % 2 ** 32;
   values[1] = Math.floor(seed / 2 ** 32);
-  values[2] = permutations;
+  values[2] = permutationCount;
   values[3] = new Uint32Array(new Float32Array([timeThreshold]).buffer)[0];
   return values;
 }
@@ -163,32 +162,30 @@ export function getGPUSpaceTimeRelativeTimes(
   }
   const resolution = largest > 0 ? 2 ** (Math.floor(Math.log2(largest)) - 23) : 0;
   if (requiredResolution !== undefined && resolution > requiredResolution) {
-    throw new Error(
-      `space-time float32 resolution ${resolution} exceeds the required ${requiredResolution}; ` +
-        'shorten the time span or use a coarser time unit'
-    );
+    throw new Error(`space-time float32 resolution ${resolution} exceeds ${requiredResolution}`);
   }
   return {times: relative, origin: resolvedOrigin, resolution};
 }
 
 /**
- * CPU-side inference metadata of the space-time tests: Monte Carlo over swap-or-not shuffle permutations of
- * the times, alternative `'greater'` for both tests (Knox: excess close pairs; Mantel: positive
- * space-time correlation), no multiple-testing correction.
+ * CPU-side inference metadata of the space-time tests: Monte Carlo over swap-or-not shuffle
+ * permutations of the times, alternative `'greater'` for both tests (Knox: excess close pairs;
+ * Mantel: positive space-time correlation), no multiple-testing correction. `settings` is
+ * validated as {@link getGPUSpaceTimeParameterValues} does and the count is clamped to
+ * `maximumPermutations`, as the kernels do.
  *
- * @param test Which test the p-values belong to.
- * @param permutationCount Number of permutations `P`.
- * @param seed Permutation seed, omitted when unknown.
+ * @internal
  */
 export function getGPUSpaceTimeInferenceMetadata(
   test: 'knox' | 'mantel',
-  permutationCount: number,
-  seed?: number
+  settings: GPUSpaceTimeSettings,
+  maximumPermutations: number
 ): GPUInferenceMetadata {
+  getGPUSpaceTimeParameterValues(settings);
   return {
     alternative: 'greater',
-    permutationCount,
-    ...(seed === undefined ? {} : {seed}),
+    permutationCount: Math.min(settings.permutationCount, maximumPermutations),
+    seed: settings.seed,
     multipleTesting: 'none',
     testedRowsDefinition:
       test === 'knox'

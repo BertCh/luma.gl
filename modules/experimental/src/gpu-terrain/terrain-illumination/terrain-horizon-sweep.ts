@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -10,16 +15,19 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {TERRAIN_ILLUMINATION_WGSL_CONSTANTS} from './terrain-illumination-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection
-} from '../terrain-grid-utils';
+  getRasterGroundCellSizeWGSL,
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection
+} from '../../analysis-core/raster-grid';
 
 /** Fixed-point scale of the digital line slope: `slopeFixed = round(minor / major * 65536)`. @internal */
 export const TERRAIN_SWEEP_SLOPE_SCALE = 65536;
 
 /** Largest grid extent supported by the 32-bit fixed-point line geometry. @internal */
-export const TERRAIN_SWEEP_MAX_EXTENT = 32767;
+export const TERRAIN_SWEEP_MAXIMUM_EXTENT = 32767;
+
+/** Cell size and row-edge slots of the sweep's `settings` layout. @internal */
+export const TERRAIN_SWEEP_GRID_SLOTS = {cellSizeIndex: 0, northEdgeIndex: 4} as const;
 
 /** Workgroup size of the sweep kernels (one invocation per digital line). @internal */
 const TERRAIN_SWEEP_WORKGROUP_SIZE = 64;
@@ -83,10 +91,12 @@ export function getTerrainSweepLineGeometry(
     !Number.isSafeInteger(height) ||
     width < 1 ||
     height < 1 ||
-    width > TERRAIN_SWEEP_MAX_EXTENT ||
-    height > TERRAIN_SWEEP_MAX_EXTENT
+    width > TERRAIN_SWEEP_MAXIMUM_EXTENT ||
+    height > TERRAIN_SWEEP_MAXIMUM_EXTENT
   ) {
-    throw new Error(`Terrain sweep extents must be integers in [1, ${TERRAIN_SWEEP_MAX_EXTENT}]`);
+    throw new Error(
+      `Terrain sweep extents must be integers in [1, ${TERRAIN_SWEEP_MAXIMUM_EXTENT}]`
+    );
   }
   const xMajor = Math.abs(dx) >= Math.abs(dy);
   const major = xMajor ? dx : dy;
@@ -107,18 +117,6 @@ export function getTerrainSweepLineGeometry(
   };
 }
 
-/**
- * Computes the digital line family that follows a ground-space unit direction `(east, row-ward)`
- * on cells of `groundCell = [x, y]` ground meters, exactly as the sweep kernel does it in WGSL.
- *
- * Square cells use {@link getTerrainSweepLineGeometry} on `groundDirection` unchanged (float64 slope),
- * so isotropic grids keep their exact geometry. Anisotropic cells use the pixel direction
- * `groundDirection / groundCell`, rounded to float32 at each step like the kernel, and round the
- * slope half to even like WGSL `round`.
- *
- * @throws If the direction or cell is zero or not finite, or an extent exceeds 32767.
- * @internal
- */
 /**
  * Mirrors a line family across the row axis (negated row component), exactly as the sweep kernel
  * does for a `'settings'` source on north-advancing rows: the slope negates, and so does the travel
@@ -145,6 +143,18 @@ export function getTerrainSweepMirroredLineGeometry(
   };
 }
 
+/**
+ * Computes the digital line family that follows a ground-space unit direction `(east, row-ward)`
+ * on cells of `groundCell = [x, y]` ground meters, exactly as the sweep kernel does it in WGSL.
+ *
+ * Square cells use {@link getTerrainSweepLineGeometry} on `groundDirection` unchanged (float64 slope),
+ * so isotropic grids keep their exact geometry. Anisotropic cells use the pixel direction
+ * `groundDirection / groundCell`, rounded to float32 at each step like the kernel, and round the
+ * slope half to even like WGSL `round`.
+ *
+ * @throws If the direction or cell is zero or not finite, or an extent exceeds 32767.
+ * @internal
+ */
 export function getTerrainSweepGroundLineGeometry(
   groundDirection: readonly [number, number],
   groundCell: readonly [number, number],
@@ -179,8 +189,116 @@ export function getTerrainSweepGroundLineGeometry(
   };
 }
 
+/** Elements between sector records: 256 bytes, so every record binds at element offset 0. */
+const SWEEP_SECTOR_RECORD_STRIDE = 64;
+
+/** Words of one sweep sector record, see {@link createTerrainSweepSectorTable}. */
+const SWEEP_SECTOR_RECORD_LENGTH = 7;
+
+/**
+ * Graph-owned sweep geometry of every horizon sector, written once per encoding.
+ *
+ * Record `s` (at element `s * 64`) holds `[xMajor (0/1), slopeFixed (i32 bits), travelSign (i32
+ * bits), stepPixelLength (f32 bits), groundEast (f32 bits), groundRowward (f32 bits), s]`: the
+ * float64 square-cell geometry of {@link getTerrainSweepLineGeometry} and the ground direction it
+ * came from. A sweep kernel with the `'table'` geometry source reads its record, so every
+ * sector's kernel has the same WGSL (library rule 12).
+ *
+ * @internal
+ */
+export type TerrainSweepSectorTable<Parameters> = {
+  /** One-thread node that writes every record; schedule it before the first sweep. */
+  writeNode: GPUCommandNode<Parameters>;
+  /** Returns the record view of `sector`. */
+  getRecord: (sector: number) => GraphDataView<'uint32'>;
+};
+
+/**
+ * Creates the {@link TerrainSweepSectorTable} for ground-space sector directions.
+ *
+ * @internal
+ */
+export function createTerrainSweepSectorTable<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    width: number;
+    height: number;
+    /** Ground-space unit direction of every sector, see `getGPUTerrainHorizonDirection`. */
+    directions: readonly (readonly [number, number])[];
+  }
+): TerrainSweepSectorTable<Parameters> {
+  const sectorCount = props.directions.length;
+  const words = new Uint32Array(sectorCount * SWEEP_SECTOR_RECORD_LENGTH);
+  const floats = new Float32Array(1);
+  const integers = new Int32Array(1);
+  const getFloatBits = (value: number): number => {
+    floats[0] = value;
+    return new Uint32Array(floats.buffer)[0];
+  };
+  const getIntegerBits = (value: number): number => {
+    integers[0] = value;
+    return new Uint32Array(integers.buffer)[0];
+  };
+  for (const [sector, direction] of props.directions.entries()) {
+    const geometry = getTerrainSweepLineGeometry(direction, props.width, props.height);
+    words.set(
+      [
+        geometry.xMajor ? 1 : 0,
+        getIntegerBits(geometry.slopeFixed),
+        getIntegerBits(geometry.travelSign),
+        getFloatBits(geometry.stepPixelLength),
+        getFloatBits(direction[0]),
+        getFloatBits(direction[1]),
+        sector
+      ],
+      sector * SWEEP_SECTOR_RECORD_LENGTH
+    );
+  }
+  const table = createTransientView(
+    graph,
+    `${props.id}-sweep-sector-records`,
+    'uint32',
+    Math.max(sectorCount, 1) * SWEEP_SECTOR_RECORD_STRIDE
+  );
+  const writeNode = createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-sweep-sectors`,
+    operation: 'GPUTerrainHorizon',
+    variant: 'sweep-sector-table',
+    bindings: [{name: 'records', view: table, type: 'u32', access: 'read_write'}],
+    invocationCount: 1,
+    declarations: `const SECTOR_WORDS = array<u32, ${words.length}>(${Array.from(words, word => `${word}u`).join(', ')});`,
+    body: `for (var sector = 0u; sector < ${sectorCount}u; sector++) {
+    for (var word = 0u; word < ${SWEEP_SECTOR_RECORD_LENGTH}u; word++) {
+      records[recordsOffset + sector * ${SWEEP_SECTOR_RECORD_STRIDE}u + word] =
+        SECTOR_WORDS[sector * ${SWEEP_SECTOR_RECORD_LENGTH}u + word];
+    }
+  }`
+  });
+  const getRecord = (sector: number): GraphDataView<'uint32'> =>
+    graph.createDataView(table.buffer, {
+      format: 'uint32',
+      length: SWEEP_SECTOR_RECORD_LENGTH,
+      byteOffset: table.byteOffset + sector * SWEEP_SECTOR_RECORD_STRIDE * 4
+    });
+  return {writeNode, getRecord};
+}
+
+/** WGSL `u32` expression of the sector index in a `'table'` sweep kernel. @internal */
+export const TERRAIN_SWEEP_SECTOR_WGSL = 'sectorRecord[sectorRecordOffset + 6u]';
+
 /** Where the sweep reads its line geometry. @internal */
 export type TerrainHorizonSweepGeometrySource =
+  | {
+      /**
+       * Geometry of one sector read from a {@link TerrainSweepSectorTable} record (binding
+       * `sectorRecord`), so all sectors share one pipeline. Conversion on anisotropic reference
+       * cells is that of the baked source.
+       */
+      kind: 'table';
+      /** Record view from {@link TerrainSweepSectorTable.getRecord}. */
+      record: GraphDataView<'uint32'>;
+    }
   | {
       /**
        * Geometry baked from a ground-space direction (one node per sector). Square reference
@@ -206,7 +324,7 @@ export type TerrainHorizonSweepGeometrySource =
       /** Settings index of the ground-space unit direction `(east, south)`. */
       groundDirectionIndex: number;
       /** Row direction of the grid; the packed geometry assumes `'south'`. */
-      rowDirection: GPUTerrainRowDirection;
+      rowDirection: GPURasterRowDirection;
     };
 
 /**
@@ -229,18 +347,16 @@ export type TerrainHorizonSweepNodeProps = {
   /** Radius window in pixels (the contributor's `maximumRadius`). */
   maximumRadius: number;
   /** Cell size interpretation. */
-  cellSizeMode: GPUTerrainCellSizeMode;
+  cellSizeMode: GPURasterCellSizeMode;
   /** 1 for horizons, -1 for the nadir pass (inverted DEM; curvature still drops). */
   zFactorSign: 1 | -1;
-  /** Canonical elevation values, one per pixel. */
+  /** Canonical elevation values, one per pixel: NaN exactly where a pixel is invalid. */
   elevationValues: GraphDataView<'float32'>;
-  /** Canonical elevation validity, one per pixel. */
-  elevationValidity: GraphDataView<'uint32'>;
   /** GPUTerrainHorizon settings: `[cellX, cellY, zFactor, curvature, northEdge, southEdge, maximumDistance, _]`. */
   settings: GraphDataView<'float32'>;
   /** Pixel-count u32 scratch, reused by every sector (sectors run in order). */
   hull: GraphDataView<'uint32'>;
-  /** Up to 4 extra bindings written by `outputWGSL`. */
+  /** Up to 4 extra bindings written by `outputWGSL` (3 with the `'table'` geometry source). */
   outputBindings: readonly WGSLKernelBinding[];
   /** Extra module-scope WGSL (helpers and constants) for `outputWGSL`. */
   outputDeclarations?: string;
@@ -321,8 +437,9 @@ export function createTerrainHorizonSweepNode<Parameters>(
   props: TerrainHorizonSweepKernelProps
 ): GPUCommandNode<Parameters> {
   const {width, height, geometry} = props;
-  if (props.outputBindings.length > 4) {
-    throw new Error(`${props.id} sweep supports at most 4 output bindings`);
+  const outputLimit = geometry.kind === 'table' ? 4 : 5;
+  if (props.outputBindings.length > outputLimit) {
+    throw new Error(`${props.id} sweep supports at most ${outputLimit} output bindings`);
   }
   if (!Number.isFinite(props.maximumRadius) || props.maximumRadius <= 0) {
     throw new Error(`${props.id} sweep maximumRadius must be positive`);
@@ -331,20 +448,29 @@ export function createTerrainHorizonSweepNode<Parameters>(
     geometry.kind === 'baked'
       ? getTerrainSweepLineGeometry(geometry.direction, width, height)
       : undefined;
-  if (width > TERRAIN_SWEEP_MAX_EXTENT || height > TERRAIN_SWEEP_MAX_EXTENT) {
-    throw new Error(`${props.id} sweep extents must not exceed ${TERRAIN_SWEEP_MAX_EXTENT}`);
+  if (width > TERRAIN_SWEEP_MAXIMUM_EXTENT || height > TERRAIN_SWEEP_MAXIMUM_EXTENT) {
+    throw new Error(`${props.id} sweep extents must not exceed ${TERRAIN_SWEEP_MAXIMUM_EXTENT}`);
   }
   const referenceRow = props.cellSizeMode === 'uniform' ? '0u' : 'HEIGHT / 2u';
   const settingsIndex = geometry.kind === 'settings' ? geometry.index : 0;
   const groundDirectionIndex = geometry.kind === 'settings' ? geometry.groundDirectionIndex : 0;
   const geometryWGSL = `${
-    bakedGeometry
-      ? `var xMajor = ${bakedGeometry.xMajor ? 'true' : 'false'};
+    geometry.kind === 'table'
+      ? `var xMajor = sectorRecord[sectorRecordOffset] != 0u;
+  var slopeFixed = bitcast<i32>(sectorRecord[sectorRecordOffset + 1u]);
+  var travelSign = bitcast<i32>(sectorRecord[sectorRecordOffset + 2u]);
+  var stepPixelLength = bitcast<f32>(sectorRecord[sectorRecordOffset + 3u]);
+  let groundDirection = vec2<f32>(
+    bitcast<f32>(sectorRecord[sectorRecordOffset + 4u]),
+    bitcast<f32>(sectorRecord[sectorRecordOffset + 5u])
+  );`
+      : bakedGeometry
+        ? `var xMajor = ${bakedGeometry.xMajor ? 'true' : 'false'};
   var slopeFixed: i32 = ${bakedGeometry.slopeFixed};
   var travelSign: i32 = ${bakedGeometry.travelSign};
   var stepPixelLength: f32 = ${getWGSLFloatLiteral(bakedGeometry.stepPixelLength)};
   let groundDirection = GROUND_DIRECTION;`
-      : `var xMajor = settings[settingsOffset + ${settingsIndex}u] != 0.0;
+        : `var xMajor = settings[settingsOffset + ${settingsIndex}u] != 0.0;
   var slopeFixed = i32(settings[settingsOffset + ${settingsIndex + 1}u]);
   var travelSign = select(-1, 1, settings[settingsOffset + ${settingsIndex + 2}u] > 0.0);
   var stepPixelLength = settings[settingsOffset + ${settingsIndex + 3}u];
@@ -377,9 +503,18 @@ export function createTerrainHorizonSweepNode<Parameters>(
   }`;
   const bindings: WGSLKernelBinding[] = [
     {name: 'elevationValues', view: props.elevationValues, type: 'f32', access: 'read'},
-    {name: 'elevationValidity', view: props.elevationValidity, type: 'u32', access: 'read'},
     {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
     {name: 'hull', view: props.hull, type: 'u32', access: 'read_write'},
+    ...(geometry.kind === 'table'
+      ? [
+          {
+            name: 'sectorRecord',
+            view: geometry.record,
+            type: 'u32' as const,
+            access: 'read' as const
+          }
+        ]
+      : []),
     ...props.outputBindings
   ];
   return createWGSLKernelNode<Parameters>(graph, {
@@ -480,10 +615,7 @@ const HEIGHT: u32 = ${props.height}u;
 const NONE: u32 = 0xffffffffu;
 const MAXIMUM_RADIUS: f32 = ${getWGSLFloatLiteral(props.maximumRadius)};
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
-  cellSizeIndex: 0,
-  northEdgeIndex: 4
-})}
+${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_SWEEP_GRID_SLOTS)}
 var<private> sweepXMajor: bool;
 var<private> sweepSlopeFixed: i32;
 var<private> sweepTravel: i32;
@@ -506,8 +638,9 @@ fn getStepLength(row: u32, xMajor: bool, slopeFixed: i32) -> f32 {
   let cell = getGroundCellSize(row);
   return length(select(vec2<f32>(slope, 1.0), vec2<f32>(1.0, slope), xMajor) * cell);
 }
+// Canonical elevation is NaN exactly where a pixel is invalid.
 fn isValidPixel(pixel: u32) -> bool {
-  return elevationValidity[elevationValidityOffset + pixel] != 0u;
+  return isFiniteValue(elevationValues[elevationValuesOffset + pixel]);
 }
 fn getMajorIndex(pixel: u32) -> i32 {
   return i32(select(pixel / WIDTH, pixel % WIDTH, sweepXMajor));

@@ -5,13 +5,23 @@
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort,
+  GPURecipeStatusPort,
+  GPUStatusScalar,
+  GPUTrajectoryGeometryPort
+} from '../../analysis-core/contracts/index';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
 import {GPUTrajectoryMetrics} from '../trajectory-analysis/index';
 import {GPUZoneEvents} from '../trajectory-zones/index';
 import type {
   GPUZoneEventOutput,
-  GPUZoneEventsDiagnostics,
+  GPUZoneEventsStatus,
   GPUZoneVisitTableOutput
 } from '../trajectory-zones/index';
 import {
@@ -36,10 +46,15 @@ export type GPUFleetDwellZoneTable = {
   keys?: GraphDataView<'uint32'>;
   /** Rows per zone: stops (stops variant) or visiting tracks (zone events variant). */
   counts?: GraphDataView<'uint32'>;
-  /** One-row number of table rows (the zone count). */
-  count?: GraphDataView<'uint32'>;
-  /** One-row overflow flag (always 0 in dense mode). */
-  overflow?: GraphDataView<'uint32'>;
+  /** Optional one-row status words of the zone statistics stage. */
+  status?: {
+    /** Number of table rows (the zone count). */
+    count?: GPUStatusScalar;
+    /** Overflow flag (always 0 in dense mode). */
+    overflow?: GPUStatusScalar;
+    /** Unclamped group count (equals the row count in dense mode). */
+    requiredCount?: GPUStatusScalar;
+  };
   /** Total dwell time per zone. */
   sumValues?: GraphDataView<'float32'>;
   /** Mean dwell per stop (stops variant) or per visiting track (zone events variant). */
@@ -52,8 +67,13 @@ export type GPUFleetDwellZoneTable = {
 export type GPUFleetDwellZoneTableViews = {
   keys: GraphDataView<'uint32'>;
   counts: GraphDataView<'uint32'>;
-  count: GraphDataView<'uint32'>;
-  overflow: GraphDataView<'uint32'>;
+  /** One-row status words of the zone statistics stage. */
+  status: {
+    count: GPUStatusScalar;
+    overflow: GPUStatusScalar;
+    /** Unclamped group count (equals the row count in dense mode). */
+    requiredCount: GPUStatusScalar;
+  };
   sumValues: GraphDataView<'float32'>;
   means: GraphDataView<'float32'>;
   maximums: GraphDataView<'float32'>;
@@ -68,8 +88,23 @@ function createZoneTable<Parameters>(
   return {
     keys: getOrCreateView(graph, `${id}-zone-keys`, 'uint32', capacity, provided.keys),
     counts: getOrCreateView(graph, `${id}-zone-counts`, 'uint32', capacity, provided.counts),
-    count: getOrCreateView(graph, `${id}-zone-count`, 'uint32', 1, provided.count),
-    overflow: getOrCreateView(graph, `${id}-zone-overflow`, 'uint32', 1, provided.overflow),
+    status: {
+      count: getOrCreateView(graph, `${id}-zone-count`, 'uint32', 1, provided.status?.count),
+      overflow: getOrCreateView(
+        graph,
+        `${id}-zone-overflow`,
+        'uint32',
+        1,
+        provided.status?.overflow
+      ),
+      requiredCount: getOrCreateView(
+        graph,
+        `${id}-zone-required-count`,
+        'uint32',
+        1,
+        provided.status?.requiredCount
+      )
+    },
     sumValues: getOrCreateView(graph, `${id}-zone-sums`, 'float32', capacity, provided.sumValues),
     means: getOrCreateView(graph, `${id}-zone-means`, 'float32', capacity, provided.means),
     maximums: getOrCreateView(graph, `${id}-zone-maximums`, 'float32', capacity, provided.maximums)
@@ -106,27 +141,30 @@ function addZoneStatistics<Parameters>(
       output: {
         keys: table.keys,
         counts: table.counts,
-        count: table.count,
-        overflow: table.overflow
+        status: table.status
       }
     })
   );
 }
 
-/** Polygon zones as a GeoArrow-style polygon set (static topology). */
-export type GPUFleetDwellPolygonZones = {
-  /** Flattened polygon vertices. */
-  polygonPositions: GraphDataView<'float32x2'>;
-  /** Feature-to-polygon offsets, `zoneCount + 1` entries. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets. */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Ring-to-vertex offsets. */
-  ringOffsets: GraphDataView<'uint32'>;
-  /** Optional stable zone ids used as the table rows instead of feature rows; each must be below `zoneCapacity`. */
-  featureIds?: GraphDataView<'uint32'>;
+/**
+ * Polygon zones in the four-level `GPUPolygonGeometryPort` layout (one packed `positions` view),
+ * one zone per feature. Optional `sourceIds` are stable zone IDs used as the table rows instead of
+ * feature rows; each must be below `zoneCapacity`.
+ */
+export type GPUFleetDwellPolygonZones = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
   /** Maximum `(stop, zone)` bounding-box candidates per encoding. */
   candidateCapacity: number;
+};
+
+/**
+ * Tracks as the movement contributors take them (`GPUPackedGeometryPort<GPUTrajectoryGeometryPort>`: packed `positions`
+ * sorted by track then time, `trackOffsets` with `trackCount + 1` entries, float32 or Int64
+ * `uint32x2` `timestamps`).
+ */
+export type GPUFleetDwellTrajectories = GPUPackedGeometryPort<GPUTrajectoryGeometryPort> & {
+  /** Low parts of double-single `float32` timestamps (stops variant only). */
+  timestampsLow?: GraphDataView<'float32'>;
 };
 
 /** Properties for {@link addFleetDwellRecipe}. */
@@ -135,15 +173,22 @@ export type GPUFleetDwellRecipeProps = GPURecipeOverrides<
   {
     stops?: {
       ids?: GraphDataView<'uint32'>;
-      count?: GraphDataView<'uint32'>;
-      overflow?: GraphDataView<'uint32'>;
+      status?: {
+        count?: GPUStatusScalar;
+        overflow?: GPUStatusScalar;
+        requiredCount?: GPUStatusScalar;
+      };
       centroids?: GraphDataView<'float32x2'>;
       durations?: GraphDataView<'float32'>;
       startRows?: GraphDataView<'uint32'>;
       endRows?: GraphDataView<'uint32'>;
     };
     table?: GPUFleetDwellZoneTable;
-    joinOverflow?: GraphDataView<'uint32'>;
+    /** Mirrors `result.status`. */
+    status?: {
+      joinOverflow?: GPUStatusScalar;
+      joinUncertainCount?: GPUStatusScalar;
+    };
   },
   {stopZones?: GraphDataView<'uint32'>; stopMask?: GraphDataView<'uint32'>}
 > & {
@@ -158,14 +203,8 @@ export type GPUFleetDwellRecipeProps = GPURecipeOverrides<
    * returned as `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
-  /** Planar sample positions sorted by track then time. */
-  positions: GraphDataView<'float32x2'>;
-  /** Sample times: float32 relative times (or float32 high parts with `timestampsLow`), or Int64 words. */
-  timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
-  /** Low parts of double-single `float32` timestamps. */
-  timestampsLow?: GraphDataView<'float32'>;
-  /** `trackCount + 1` row offsets. */
-  trackOffsets: GraphDataView<'uint32'>;
+  /** Planar tracks. */
+  trajectories: GPUFleetDwellTrajectories;
   /** `getGPUTrajectoryMetricsParameterValues` view (stop speed threshold and minimum duration). */
   parameters: GraphDataView<'float32'>;
   /** Stop capacity of the bounded stop list. */
@@ -182,15 +221,29 @@ export type GPUFleetDwellRecipeResult = GPURecipeResult & {
   spatialContext: GPUSpatialContext;
   stops: {
     ids: GraphDataView<'uint32'>;
-    count: GraphDataView<'uint32'>;
-    overflow: GraphDataView<'uint32'>;
     centroids: GraphDataView<'float32x2'>;
     durations: GraphDataView<'float32'>;
+    /** One-row status words of the stop list (stage `metrics`). */
+    status: {
+      count: GPUStatusScalar;
+      overflow: GPUStatusScalar;
+      /** Unclamped stop count, for sizing `stopCapacity`. */
+      requiredCount: GPUStatusScalar;
+    };
   };
   stopZones: GraphDataView<'uint32'>;
-  joinOverflow: GraphDataView<'uint32'>;
   /** Per-zone stop count (`counts`), total, mean and longest dwell. */
   table: GPUFleetDwellZoneTableViews;
+  /** Status words next to the per-stage `stages`. */
+  status: {
+    /** One-row flag: 1 when the stop-to-zone join was incomplete (stage `zone-join`). */
+    joinOverflow: GPUStatusScalar;
+    /**
+     * One-row count of stop-to-zone classifications resolved as uncertain (those stops get no
+     * zone), stage `zone-join`.
+     */
+    joinUncertainCount: GPUStatusScalar;
+  } & GPURecipeStatusPort;
 };
 
 /**
@@ -218,13 +271,29 @@ export function addFleetDwellRecipe<Parameters>(
   const scratch = props.scratch ?? {};
   const capacity = props.stopCapacity;
   const zoneCount = props.zones.featureOffsets.length - 1;
+  const {trajectories} = props;
   assertRecipe(ID, capacity >= 1, 'stopCapacity must be positive');
   assertRecipe(ID, zoneCount >= 1, 'needs at least one zone');
   const provided = outputs.stops ?? {};
   const stops = {
     ids: getOrCreateView(graph, `${id}-stop-ids`, 'uint32', capacity, provided.ids),
-    count: getOrCreateView(graph, `${id}-stop-count`, 'uint32', 1, provided.count),
-    overflow: getOrCreateView(graph, `${id}-stop-overflow`, 'uint32', 1, provided.overflow),
+    status: {
+      count: getOrCreateView(graph, `${id}-stop-count`, 'uint32', 1, provided.status?.count),
+      overflow: getOrCreateView(
+        graph,
+        `${id}-stop-overflow`,
+        'uint32',
+        1,
+        provided.status?.overflow
+      ),
+      requiredCount: getOrCreateView(
+        graph,
+        `${id}-stop-required-count`,
+        'uint32',
+        1,
+        provided.status?.requiredCount
+      )
+    },
     centroids: getOrCreateView(
       graph,
       `${id}-stop-centroids`,
@@ -244,17 +313,20 @@ export function addFleetDwellRecipe<Parameters>(
     new GPUTrajectoryMetrics({
       spatialContext,
       id: `${id}-metrics`,
-      positions: props.positions,
-      timestamps: props.timestamps,
-      timestampsLow: props.timestampsLow,
-      trackOffsets: props.trackOffsets,
+      positions: trajectories.positions,
+      timestamps: trajectories.timestamps,
+      timestampsLow: trajectories.timestampsLow,
+      trackOffsets: trajectories.trackOffsets,
       parameters: props.parameters,
-      stops: {
-        output: {ids: stops.ids, count: stops.count, overflow: stops.overflow},
-        centroids: stops.centroids,
-        durations: stops.durations,
-        startRows: provided.startRows,
-        endRows: provided.endRows
+      output: {
+        stops: {
+          ids: stops.ids,
+          status: stops.status,
+          centroids: stops.centroids,
+          durations: stops.durations,
+          startRows: provided.startRows,
+          endRows: provided.endRows
+        }
       }
     })
   );
@@ -271,21 +343,26 @@ export function addFleetDwellRecipe<Parameters>(
     `${id}-join-overflow`,
     'uint32',
     1,
-    outputs.joinOverflow
+    outputs.status?.joinOverflow
+  );
+  const joinUncertainCount = getOrCreateView(
+    graph,
+    `${id}-join-uncertain-count`,
+    'uint32',
+    1,
+    outputs.status?.joinUncertainCount
   );
   builder.add(
     new GPUPointInPolygonJoin({
       id: `${id}-join`,
       spatialContext,
-      points: stops.centroids,
-      polygonPositions: props.zones.polygonPositions,
-      featureOffsets: props.zones.featureOffsets,
-      polygonOffsets: props.zones.polygonOffsets,
-      ringOffsets: props.zones.ringOffsets,
-      featureIds: props.zones.featureIds,
+      points: {kind: 'points', positions: stops.centroids},
+      polygons: props.zones,
       candidateCapacity: props.zones.candidateCapacity,
-      pointFeatureIds: stopZones,
-      overflow: joinOverflow
+      output: {
+        pointFeatureIds: stopZones,
+        status: {overflow: joinOverflow, uncertainCount: joinUncertainCount}
+      }
     })
   );
 
@@ -297,7 +374,7 @@ export function addFleetDwellRecipe<Parameters>(
       operation: 'GPURecipeFleetDwell',
       variant: 'stop-mask',
       bindings: [
-        {name: 'stopCount', view: stops.count, type: 'u32', access: 'read'},
+        {name: 'stopCount', view: stops.status.count, type: 'u32', access: 'read'},
         {name: 'stopMask', view: mask, type: 'u32', access: 'read_write'}
       ],
       invocationCount: capacity,
@@ -312,15 +389,25 @@ export function addFleetDwellRecipe<Parameters>(
     contributors: builder.contributors,
     stops,
     stopZones,
-    joinOverflow,
     table,
     outputs: {stops, table},
     intermediates: {stopZones},
     status: {
+      joinOverflow,
+      joinUncertainCount,
       stages: [
-        {stage: 'metrics', status: {count: stops.count, overflow: stops.overflow}},
-        {stage: 'zone-join', status: {overflow: joinOverflow}},
-        {stage: 'zone-statistics', status: {count: table.count, overflow: table.overflow}}
+        {
+          stage: 'metrics',
+          status: stops.status
+        },
+        {
+          stage: 'zone-join',
+          status: {overflow: joinOverflow, uncertainCount: joinUncertainCount}
+        },
+        {
+          stage: 'zone-statistics',
+          status: table.status
+        }
       ]
     }
   };
@@ -330,13 +417,14 @@ export function addFleetDwellRecipe<Parameters>(
 export type GPUFleetDwellZoneEventsRecipeProps = GPURecipeOverrides<
   Record<never, never>,
   {
-    events?: Omit<Partial<GPUZoneEventOutput>, 'output'> & {
-      output?: Partial<GPUZoneEventOutput['output']>;
+    events?: Omit<Partial<GPUZoneEventOutput>, 'status'> & {
+      status?: Partial<GPUZoneEventOutput['status']>;
     };
     dwellTimes?: GraphDataView<'float32'>;
     visitCounts?: GraphDataView<'uint32'>;
     trackEventCounts?: GraphDataView<'uint32'>;
-    diagnostics?: GPUZoneEventsDiagnostics;
+    /** Mirrors `result.status`. */
+    status?: GPUZoneEventsStatus;
     table?: GPUFleetDwellZoneTable;
   },
   {
@@ -355,25 +443,21 @@ export type GPUFleetDwellZoneEventsRecipeProps = GPURecipeOverrides<
    * returned as `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
-  /** Planar sample positions sorted by track then time. */
-  positions: GraphDataView<'float32x2'>;
-  /** Float32 relative times or Int64 words. */
-  timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
-  /** `trackCount + 1` row offsets. */
-  trackOffsets: GraphDataView<'uint32'>;
-  /** Zone boundary edge starts (rings and holes of one zone share its index). */
-  edgeStarts: GraphDataView<'float32x2'>;
-  /** Zone boundary edge ends. */
-  edgeEnds: GraphDataView<'float32x2'>;
-  /** Zone index per edge. */
-  edgeZones: GraphDataView<'uint32'>;
-  /** Number of zones. */
-  zoneCount: number;
+  /** Planar tracks (`timestampsLow` is not used by this variant). */
+  trajectories: GPUFleetDwellTrajectories;
+  /**
+   * Zones in the four-level `GPUPolygonGeometryPort` layout (one packed `positions` view), one zone
+   * per feature; holes and extra parts share the zone index.
+   */
+  zones: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /** Segment-edge candidate scratch rows. */
   candidateCapacity: number;
-  /** Compile-time event bound per track. */
-  maxEventsPerTrack: number;
-  /** Event capacity (`events.output.ids` rows) when `events` is not given. Defaults to `trackCount * maxEventsPerTrack`. */
+  /** Compile-time number of events kept per track. */
+  trackEventCapacity: number;
+  /**
+   * Event capacity (`events.ids` rows) when `outputs.events.ids` is not given. Defaults to
+   * `trackCount * trackEventCapacity`.
+   */
   eventCapacity?: number;
 };
 
@@ -383,8 +467,13 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
   spatialContext: GPUSpatialContext;
   events: {
     ids: GraphDataView<'uint32'>;
-    count: GraphDataView<'uint32'>;
-    overflow: GraphDataView<'uint32'>;
+    /** One-row status words of the event list (stage `zone-events`). */
+    status: {
+      count: GPUStatusScalar;
+      overflow: GPUStatusScalar;
+      /** Unclamped event count, for sizing `eventCapacity`. */
+      requiredCount: GPUStatusScalar;
+    };
     zones: GraphDataView<'uint32'>;
     types: GraphDataView<'uint32'>;
     times: GraphDataView<'float32'>;
@@ -397,19 +486,20 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
   dwellTimes: GraphDataView<'float32'>;
   visitCounts: GraphDataView<'uint32'>;
   trackEventCounts: GraphDataView<'uint32'>;
-  /**
-   * One-row `GPUZoneEvents` diagnostics: `candidateCount` is the unclamped candidate count (the
-   * `candidateCapacity` needed), and `candidateOverflow`, `trackOverflow` and `eventOverflow` split
-   * `events.overflow` into candidate scratch, per-track bound and event list capacity.
-   */
-  diagnostics: {
-    candidateCount: GraphDataView<'uint32'>;
-    candidateOverflow: GraphDataView<'uint32'>;
-    trackOverflow: GraphDataView<'uint32'>;
-    eventOverflow: GraphDataView<'uint32'>;
-  };
   /** Per-zone count of visiting tracks and their total, mean and longest dwell. */
   table: GPUFleetDwellZoneTableViews;
+  /**
+   * One-row `GPUZoneEvents` status words next to the per-stage `stages`: `candidateCount` is the
+   * unclamped candidate count (the `candidateCapacity` needed), and `candidateOverflow`,
+   * `trackOverflow` and `eventOverflow` split `events.status.overflow` into candidate scratch,
+   * per-track bound and event list capacity.
+   */
+  status: {
+    candidateCount: GPUStatusScalar;
+    candidateOverflow: GPUStatusScalar;
+    trackOverflow: GPUStatusScalar;
+    eventOverflow: GPUStatusScalar;
+  } & GPURecipeStatusPort;
 };
 
 /**
@@ -421,6 +511,10 @@ export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
  * spent inside a zone, moving or not, and needs no point-in-polygon join. `table.counts` is the
  * number of tracks that visited the zone. `events.eventPositions` and `visitTable` are optional
  * pass-through outputs of `GPUZoneEvents` (crossing positions and a sparse `(track, zone)` table).
+ *
+ * Status: stages `zone-events` (event count, unclamped `requiredCount`, event overflow and
+ * `candidateOverflow`; the unclamped candidate count is `status.candidateCount`),
+ * `visit-table` (with `scratch.visitTable`) and `zone-statistics`.
  */
 export function addFleetDwellZoneEventsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -431,16 +525,26 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
-  const trackCount = props.trackOffsets.length - 1;
-  const {zoneCount} = props;
+  const {trajectories, zones} = props;
+  const trackCount = trajectories.trackOffsets.length - 1;
+  const zoneCount = zones.featureOffsets.length - 1;
   assertRecipe(ID, trackCount >= 1 && zoneCount >= 1, 'needs tracks and zones');
   const cellCount = trackCount * zoneCount;
-  const eventCapacity = props.eventCapacity ?? trackCount * props.maxEventsPerTrack;
+  const eventCapacity = props.eventCapacity ?? trackCount * props.trackEventCapacity;
   const given = outputs.events ?? {};
   const events = {
-    ids: getOrCreateView(graph, `${id}-event-ids`, 'uint32', eventCapacity, given.output?.ids),
-    count: getOrCreateView(graph, `${id}-event-count`, 'uint32', 1, given.output?.count),
-    overflow: getOrCreateView(graph, `${id}-event-overflow`, 'uint32', 1, given.output?.overflow),
+    ids: getOrCreateView(graph, `${id}-event-ids`, 'uint32', eventCapacity, given.ids),
+    status: {
+      count: getOrCreateView(graph, `${id}-event-count`, 'uint32', 1, given.status?.count),
+      overflow: getOrCreateView(graph, `${id}-event-overflow`, 'uint32', 1, given.status?.overflow),
+      requiredCount: getOrCreateView(
+        graph,
+        `${id}-event-required-count`,
+        'uint32',
+        1,
+        given.status?.requiredCount
+      )
+    },
     zones: getOrCreateView(graph, `${id}-event-zones`, 'uint32', eventCapacity, given.eventZones),
     types: getOrCreateView(graph, `${id}-event-types`, 'uint32', eventCapacity, given.eventTypes),
     times: getOrCreateView(graph, `${id}-event-times`, 'float32', eventCapacity, given.eventTimes),
@@ -468,7 +572,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
     trackCount,
     outputs.trackEventCounts
   );
-  const givenDiagnostics = outputs.diagnostics ?? {};
+  const givenDiagnostics = outputs.status ?? {};
   const diagnostics = {
     candidateCount: getOrCreateView(
       graph,
@@ -503,28 +607,31 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
     new GPUZoneEvents({
       id: `${id}-events`,
       spatialContext,
-      positions: props.positions,
-      timestamps: props.timestamps,
-      trackOffsets: props.trackOffsets,
-      edgeStarts: props.edgeStarts,
-      edgeEnds: props.edgeEnds,
-      edgeZones: props.edgeZones,
-      zoneCount,
-      candidateCapacity: props.candidateCapacity,
-      maxEventsPerTrack: props.maxEventsPerTrack,
-      events: {
-        output: {ids: events.ids, count: events.count, overflow: events.overflow},
-        eventZones: events.zones,
-        eventTypes: events.types,
-        eventTimes: events.times,
-        eventRows: events.rows,
-        eventPositions: events.positions
+      tracks: {
+        kind: 'trajectories',
+        positions: trajectories.positions,
+        timestamps: trajectories.timestamps,
+        trackOffsets: trajectories.trackOffsets
       },
-      visitTable: scratch.visitTable,
-      dwellTimes,
-      visitCounts,
-      trackEventCounts,
-      diagnostics
+      zones,
+      candidateCapacity: props.candidateCapacity,
+      trackEventCapacity: props.trackEventCapacity,
+      output: {
+        events: {
+          ids: events.ids,
+          status: events.status,
+          eventZones: events.zones,
+          eventTypes: events.types,
+          eventTimes: events.times,
+          eventRows: events.rows,
+          eventPositions: events.positions
+        },
+        visitTable: scratch.visitTable,
+        dwellTimes,
+        visitCounts,
+        trackEventCounts,
+        status: diagnostics
+      }
     })
   );
 
@@ -563,22 +670,28 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
     dwellTimes,
     visitCounts,
     trackEventCounts,
-    diagnostics,
     table,
     outputs: {events, dwellTimes, visitCounts, trackEventCounts, table},
-    intermediates: {visitTable: scratch.visitTable, diagnostics, cellZones, cellMask},
+    intermediates: {visitTable: scratch.visitTable, cellZones, cellMask},
     status: {
+      ...diagnostics,
       stages: [
         {
           stage: 'zone-events',
-          status: {
-            count: events.count,
-            overflow: events.overflow,
-            candidateOverflow: diagnostics.candidateOverflow,
-            requiredCount: diagnostics.candidateCount
-          }
+          status: {...events.status, candidateOverflow: diagnostics.candidateOverflow}
         },
-        {stage: 'zone-statistics', status: {count: table.count, overflow: table.overflow}}
+        ...(scratch.visitTable
+          ? [
+              {
+                stage: 'visit-table',
+                status: scratch.visitTable.status
+              }
+            ]
+          : []),
+        {
+          stage: 'zone-statistics',
+          status: table.status
+        }
       ]
     }
   };

@@ -3,12 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
   GPUCompaction,
   GPUGridIndex,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -17,16 +20,17 @@ import {
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {createPublishNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  getGPUGridIndexMaximumCellCount,
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateExtent,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
-import {
-  getTrajectoryGeodesicRadius,
-  resolveTrajectorySpatialContext
-} from '../trajectory-analysis/trajectory-spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
   createEncounterClearNode,
   createEncounterCompositeKeyNode,
@@ -42,22 +46,17 @@ import {
 } from './encounter-kernels';
 
 const OPERATION = 'GPUTrajectoryEncounters';
-/** Largest `columns * rows * bucketCount` lattice the contributor builds. */
-const MAXIMUM_CELL_COUNT = 1 << 27;
 
 /**
- * Capacity-bounded encounter pair list of {@link GPUTrajectoryEncounters}.
+ * Capacity-bounded encounter pair list of {@link GPUTrajectoryEncounters}: a
+ * {@link GPUCompactOutput} extended with optional per-pair columns.
  *
- * `output.ids.length` is the pair capacity. Every column that is present must have exactly that
- * many rows. Pairs are ordered by `(track, partner)` with `track < partner`. Rows at and after
- * `output.count` hold sentinels: `0xffffffff` for IDs and buckets, `0` for counts, distances and
- * times.
+ * `ids.length` is the pair capacity. Every column that is present must have exactly that many
+ * rows. Pairs are ordered by `(track, partner)` with `track < partner`. `ids` holds the lower track
+ * index of each pair. Rows at and after `count` hold sentinels: `0xffffffff` for IDs and buckets,
+ * `0` for counts, distances and times.
  */
-export type GPUTrajectoryEncounterOutput = {
-  /** Bounded compact result. `ids` holds the lower track index of each pair. */
-  output: GPUCompactOutput;
-  /** Candidate-stage incompleteness from the hit scratch or grid index. */
-  candidateOverflow: GraphDataView<'uint32'>;
+export type GPUTrajectoryEncounterPairs = GPUCompactOutput & {
   /** Optional higher track index of each pair. */
   partners?: GraphDataView<'uint32'>;
   /** Optional first time bucket in which the pair was within the distance. */
@@ -68,6 +67,17 @@ export type GPUTrajectoryEncounterOutput = {
   bucketCounts?: GraphDataView<'uint32'>;
   /** Optional `bucketTimes[firstBucket]`. Requires `bucketTimes` and `firstBuckets`. */
   firstTimes?: GraphDataView<'float32'>;
+};
+
+/** Caller-owned outputs of {@link GPUTrajectoryEncounters}. */
+export type GPUTrajectoryEncounterOutput = {
+  /** Bounded pair list. `pairs.overflow` is 1 only when the final pair capacity is too small. */
+  pairs: GPUTrajectoryEncounterPairs;
+  /** One-row status words. */
+  status: {
+    /** Candidate-stage incompleteness from the hit scratch or grid index. */
+    candidateOverflow: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -118,7 +128,8 @@ export type GPUTrajectoryEncountersProps = {
    * {@link GPUTrajectoryEncounters.maximumDistance} covers it (great-circle). The lattice has
    * `floor(extent / cellSize)` columns and rows (at least 1), so cells are never narrower than
    * this. In a great-circle context it must be below 90 degrees, and below 120 degrees when the
-   * bounds span all longitudes.
+   * bounds span all longitudes. `columns * rows * bucketCount` is at most
+   * {@link getGPUGridIndexMaximumCellCount} (2^25 - 1 on a default device), so raise `cellSize` or lower `bucketCount` for large bounds.
    */
   cellSize: number;
   /**
@@ -134,9 +145,9 @@ export type GPUTrajectoryEncountersProps = {
    * scratch, which every encoding sorts.
    */
   hitCapacity: number;
-  /** Bounded pair list. */
-  pairs: GPUTrajectoryEncounterOutput;
-  /** Optional `bucketCount` rows with the time of each bucket, read by `pairs.firstTimes`. */
+  /** Caller-owned bounded pair list and status. */
+  output: GPUTrajectoryEncounterOutput;
+  /** Optional `bucketCount` rows with the time of each bucket, read by `output.pairs.firstTimes`. */
   bucketTimes?: GraphDataView<'float32'>;
 };
 
@@ -153,9 +164,11 @@ export type GPUTrajectoryEncountersProps = {
  * bucket count of each run. Pairs are therefore lowest-ID ordered (`track < partner`),
  * deduplicated across buckets, and sorted by `(track, partner)`.
  *
- * Semantics: this is a discrete approximation. Two tracks that pass within the distance between
- * two buckets are missed; choose `bucketCount` so the distance travelled per bucket is small
- * compared with `distance`, or treat results as encounters sampled at bucket times. Samples on a
+ * Semantics: this is a discrete approximation, a preview. Two tracks that pass within the distance
+ * between two buckets are missed; choose `bucketCount` so the distance travelled per bucket is small
+ * compared with `distance`, or treat results as encounters sampled at bucket times. For the exact
+ * closest point of approach between linearly moving tracks, use
+ * `GPUTrajectoryClosestApproach` on the raw samples. Samples on a
  * common clock are required (column `k` means the same instant for every track). Use
  * {@link addClockEncounters} (`GPUTrajectoryResample` with `spacing: 'clock'`) to build that table
  * for tracks with different time windows, or supply your own table and mark absent samples with
@@ -173,8 +186,8 @@ export type GPUTrajectoryEncountersProps = {
  * the polar caps, since `maximumDistance` shrinks to 0 as `L` approaches 90 degrees. Reported
  * `minimumDistances` are meters.
  *
- * Bounds: `pairs.candidateOverflow` is 1 when the hit scratch or grid index overflowed, after
- * which pairs may be missing or have too-small counts. `pairs.output.overflow` is independently 1
+ * Bounds: `output.status.candidateOverflow` is 1 when the hit scratch or grid index overflowed, after
+ * which pairs may be missing or have too-small counts. `output.pairs.overflow` is independently 1
  * only when the final pair capacity is too small. The lattice must hold at most 2^27 cells.
  */
 export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
@@ -200,17 +213,15 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     this.id = props.id ?? 'trajectory-encounters';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
-    const geodesicRadius = getTrajectoryGeodesicRadius(this.spatialContext);
-    for (const [name, value] of [
-      ['trackCount', props.trackCount],
-      ['bucketCount', props.bucketCount],
-      ['hitCapacity', props.hitCapacity]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
+    const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
+    validateCapacity(id, 'trackCount', props.trackCount);
+    validateCapacity(id, 'bucketCount', props.bucketCount);
+    validateCapacity(id, 'hitCapacity', props.hitCapacity);
     const sampleCount = props.trackCount * props.bucketCount;
     if (sampleCount >= 0x7fffffff) {
       throw new Error(`${id} trackCount * bucketCount must be below 2^31`);
@@ -220,7 +231,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       throw new Error(`${id} samples length must equal trackCount * bucketCount`);
     }
     if (props.trackValid) {
-      validatePackedUint32View(props.trackValid, `${id} trackValid`);
+      validatePackedView(props.trackValid, ['uint32'], `${id} trackValid`);
       if (props.trackValid.length !== props.trackCount) {
         throw new Error(`${id} trackValid length must equal trackCount`);
       }
@@ -233,12 +244,9 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       throw new Error(`${id} cellSize must be a positive finite number`);
     }
     const [minX, minY, maxX, maxY] = props.bounds;
-    if (
-      !props.bounds.every(Number.isFinite) ||
-      !(Math.fround(minX) < Math.fround(maxX)) ||
-      !(Math.fround(minY) < Math.fround(maxY))
-    ) {
-      throw new Error(`${id} bounds must be finite with minima below maxima`);
+    validateExtent(id, props.bounds, 'bounds');
+    if (!(Math.fround(minX) < Math.fround(maxX)) || !(Math.fround(minY) < Math.fround(maxY))) {
+      throw new Error(`${id} bounds collapse in float32`);
     }
     if (geodesicRadius === undefined) {
       this.maximumDistance = props.cellSize;
@@ -267,16 +275,13 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       Math.floor((Math.fround(maxX) - Math.fround(minX)) / props.cellSize)
     );
     this.rows = Math.max(1, Math.floor((Math.fround(maxY) - Math.fround(minY)) / props.cellSize));
-    if (this.columns * this.rows * props.bucketCount > MAXIMUM_CELL_COUNT) {
-      throw new Error(`${id} lattice exceeds ${MAXIMUM_CELL_COUNT} cells; raise cellSize`);
+    const {pairs, status} = props.output;
+    validateCompactOutput(id, pairs);
+    validatePackedView(status.candidateOverflow, ['uint32'], `${id} status.candidateOverflow`);
+    if (status.candidateOverflow.length < 1) {
+      throw new Error(`${id} status.candidateOverflow must hold one row`);
     }
-    const {pairs} = props;
-    validateCompactOutput(id, pairs.output);
-    validatePackedUint32View(pairs.candidateOverflow, `${id} pairs.candidateOverflow`);
-    if (pairs.candidateOverflow.length < 1) {
-      throw new Error(`${id} pairs.candidateOverflow must contain one uint32 row`);
-    }
-    const capacity = pairs.output.ids.length;
+    const capacity = pairs.ids.length;
     for (const [name, view, format] of [
       ['partners', pairs.partners, 'uint32'],
       ['firstBuckets', pairs.firstBuckets, 'uint32'],
@@ -287,7 +292,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       if (view) {
         validatePackedView(view, [format], `${id} pairs.${name}`);
         if (view.length !== capacity) {
-          throw new Error(`${id} pairs.${name} length must equal the pair capacity`);
+          throw new Error(`${id} pairs.${name} length must equal the capacity`);
         }
       }
     }
@@ -303,11 +308,11 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        pairs.output.ids,
-        pairs.output.count,
-        pairs.output.overflow,
-        pairs.output.requiredCount,
-        pairs.candidateOverflow,
+        pairs.ids,
+        pairs.status.count,
+        pairs.status.overflow,
+        pairs.status.requiredCount,
+        status.candidateOverflow,
         pairs.partners,
         pairs.firstBuckets,
         pairs.minimumDistances,
@@ -323,29 +328,36 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, columns, rows} = this;
-    const {pairs} = props;
+    const {pairs, status} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       props.samples,
       props.trackValid,
       props.distance,
       props.bucketTimes,
-      pairs.output.ids,
-      pairs.output.count,
-      pairs.output.overflow,
-      pairs.output.requiredCount,
-      pairs.candidateOverflow,
+      pairs.ids,
+      pairs.status.count,
+      pairs.status.overflow,
+      pairs.status.requiredCount,
+      status.candidateOverflow,
       pairs.partners,
       pairs.firstBuckets,
       pairs.minimumDistances,
       pairs.bucketCounts,
       pairs.firstTimes
     ]);
+    // The per-bucket lattice index stores `cells + 1` uint32 offsets in one binding.
+    validateMaximumCount(
+      id,
+      'columns x rows x bucketCount',
+      columns * rows * props.bucketCount,
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
     const bounds = props.bounds.map(Math.fround) as [number, number, number, number];
     const shape: EncounterShape = {
       trackCount: props.trackCount,
       bucketCount: props.bucketCount,
       hitCapacity: props.hitCapacity,
-      pairCapacity: pairs.output.ids.length,
+      pairCapacity: pairs.ids.length,
       columns,
       rows,
       bounds,
@@ -558,7 +570,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         sortedPartners,
         sortedBuckets,
         sortedDistances,
-        ids: pairs.output.ids,
+        ids: pairs.ids,
         partners: pairs.partners,
         firstBuckets: pairs.firstBuckets,
         minimumDistances: pairs.minimumDistances,
@@ -581,7 +593,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
           {name: 'gridOverflow', view: gridOverflow, type: 'u32', access: 'read'},
           {
             name: 'candidateOverflow',
-            view: pairs.candidateOverflow,
+            view: status.candidateOverflow,
             type: 'u32',
             access: 'read_write'
           }
@@ -594,7 +606,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: runCount,
-        output: pairs.output,
+        output: pairs,
         overflowSources: []
       })
     );

@@ -5,7 +5,7 @@
 import {validatePairStatisticsBounds} from './pair-statistics-parameters';
 
 /** Number of float32 elements in a `GPURipleyDistanceFunctions` parameter buffer. */
-export const GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH = 8;
+export const GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH = 8;
 
 /**
  * Edge-correction mode of `GPURipleyDistanceFunctions`: none, the border (reduced sample, spatstat
@@ -27,7 +27,7 @@ const EDGE_CORRECTION_CODES: Record<GPURipleyDistanceEdgeCorrection, number> = {
  *
  * Every field can change between encodings without rebuilding or recompiling the graph.
  */
-export type GPURipleyDistanceParameters = {
+export type GPURipleyDistanceFunctionsSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` observation window. Events outside it, or with a
    * non-finite coordinate, are excluded. The reference lattice of F covers this rectangle.
@@ -47,34 +47,34 @@ export type GPURipleyDistanceParameters = {
  * `[minX, minY, maxX, maxY, maximumDistance, edgeCorrectionCode, 0, 0]`, where the code is 0 for
  * `'none'`, 1 for `'border'`, 2 for `'kaplan-meier'` and 3 for `'hanisch'`.
  *
- * @param parameters Parameters to encode.
+ * @param@param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, the mode is
  * unknown, or `target` is too short.
  */
-export function getGPURipleyDistanceParameterValues(
-  parameters: GPURipleyDistanceParameters,
-  target: Float32Array = new Float32Array(GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH)
+export function getGPURipleyDistanceFunctionsParameterValues(
+  settings: GPURipleyDistanceFunctionsSettings,
+  target: Float32Array = new Float32Array(GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH) {
+  if (target.length < GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH) {
     throw new Error(
-      `Ripley distance functions target must hold ${GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH} elements`
+      `GPURipleyDistanceFunctions target must hold ${GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH} elements`
     );
   }
   validatePairStatisticsBounds(
-    'Ripley distance functions',
-    parameters.bounds,
-    parameters.maximumDistance
+    'GPURipleyDistanceFunctions',
+    settings.bounds,
+    settings.maximumDistance
   );
-  const edgeCorrection = parameters.edgeCorrection ?? 'border';
+  const edgeCorrection = settings.edgeCorrection ?? 'border';
   if (!Object.prototype.hasOwnProperty.call(EDGE_CORRECTION_CODES, edgeCorrection)) {
     throw new Error(
-      `Ripley distance functions edgeCorrection must be 'none', 'border', 'kaplan-meier' or 'hanisch'`
+      `GPURipleyDistanceFunctions edgeCorrection must be 'none', 'border', 'kaplan-meier' or 'hanisch'`
     );
   }
   target.set([
-    ...parameters.bounds,
-    parameters.maximumDistance,
+    ...settings.bounds,
+    settings.maximumDistance,
     EDGE_CORRECTION_CODES[edgeCorrection],
     0,
     0

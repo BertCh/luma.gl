@@ -12,11 +12,11 @@ export const GPU_SPATIAL_CLUSTERING_NOISE = 0xffffffff;
 const MAXIMUM_MINIMUM_POINTS = 2 ** 24;
 
 /**
- * CPU description of the per-frame parameters of one {@link GPUSpatialClustering}.
+ * CPU settings of the per-frame parameters of one {@link GPUSpatialClustering}.
  *
  * Distances use the same planar units as the positions.
  */
-export type GPUSpatialClusteringParameters = {
+export type GPUSpatialClusteringSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` extent of the data. Points outside it, or with a
    * non-finite coordinate, are excluded and labeled noise. Bounds should cover the data: they
@@ -39,13 +39,13 @@ export type GPUSpatialClusteringParameters = {
  *
  * Layout: `[minX, minY, maxX, maxY, epsilon, minimumPoints, 0, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, `epsilon <= 0`, `minimumPoints` is not an integer in
  * `[1, 2^24]`, or `target` is too short.
  */
 export function getGPUSpatialClusteringParameterValues(
-  parameters: GPUSpatialClusteringParameters,
+  settings: GPUSpatialClusteringSettings,
   target: Float32Array = new Float32Array(GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH) {
@@ -53,23 +53,23 @@ export function getGPUSpatialClusteringParameterValues(
       `Spatial clustering target must hold ${GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} elements`
     );
   }
-  for (const value of [...parameters.bounds, parameters.epsilon]) {
+  for (const value of [...settings.bounds, settings.epsilon]) {
     if (!Number.isFinite(value)) {
       throw new Error('Spatial clustering bounds and epsilon must be finite');
     }
   }
-  if (parameters.epsilon <= 0) {
+  if (settings.epsilon <= 0) {
     throw new Error('Spatial clustering epsilon must be positive');
   }
   if (
-    !Number.isInteger(parameters.minimumPoints) ||
-    parameters.minimumPoints < 1 ||
-    parameters.minimumPoints > MAXIMUM_MINIMUM_POINTS
+    !Number.isInteger(settings.minimumPoints) ||
+    settings.minimumPoints < 1 ||
+    settings.minimumPoints > MAXIMUM_MINIMUM_POINTS
   ) {
     throw new Error(
       `Spatial clustering minimumPoints must be an integer from 1 to ${MAXIMUM_MINIMUM_POINTS}`
     );
   }
-  target.set([...parameters.bounds, parameters.epsilon, parameters.minimumPoints, 0, 0]);
+  target.set([...settings.bounds, settings.epsilon, settings.minimumPoints, 0, 0]);
   return target;
 }

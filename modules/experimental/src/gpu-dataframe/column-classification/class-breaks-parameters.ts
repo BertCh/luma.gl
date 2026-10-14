@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
+
 /** Classification methods supported by `GPUClassBreaks`. */
 export type GPUClassBreaksMethod =
   | 'equal-interval'
@@ -46,7 +48,7 @@ export function getGPUClassBreaksParameterLength(maximumClassCount: number): num
 }
 
 /** Per-frame settings packed by {@link getGPUClassBreaksParameterValues}. */
-export type GPUClassBreaksParameters = {
+export type GPUClassBreaksSettings = {
   /** Classification method. It must be one of the contributor's compiled `methods`. */
   method: GPUClassBreaksMethod;
   /**
@@ -77,44 +79,55 @@ export type GPUClassBreaksParameters = {
  * custom edges (`'custom'`), and NaN elsewhere. Probabilities are computed here on the CPU so the
  * GPU quantiles match a CPU oracle bit for bit.
  *
- * @param parameters Per-frame settings.
+ * @param settings Per-frame settings.
  * @param maximumClassCount Compile-time class capacity of the contributor.
  * @param target Optional destination of at least `getGPUClassBreaksParameterLength(maximumClassCount)` elements.
- * @throws If the class count is out of range or custom edges do not fit.
+ * @throws If the class count is out of range, custom edges do not fit or one is NaN, or a method
+ * setting (interval, ratio, hinge) is not finite.
  */
 export function getGPUClassBreaksParameterValues(
-  parameters: GPUClassBreaksParameters,
+  settings: GPUClassBreaksSettings,
   maximumClassCount: number,
   target: Float32Array = new Float32Array(getGPUClassBreaksParameterLength(maximumClassCount))
 ): Float32Array {
   const length = getGPUClassBreaksParameterLength(maximumClassCount);
   if (target.length < length) {
-    throw new Error(`Class breaks parameter target must hold ${length} elements`);
+    throw new Error(`GPUClassBreaks parameter target must hold ${length} elements`);
   }
-  const {method} = parameters;
+  const {method} = settings;
   const methodCode = GPU_CLASS_BREAKS_METHOD_CODES[method];
   if (methodCode === undefined) {
-    throw new Error(`Unknown class breaks method ${String(method)}`);
+    throw new Error(`GPUClassBreaks unknown method ${String(method)}`);
   }
-  let classCount = parameters.classCount ?? 5;
+  let classCount = settings.classCount ?? 5;
   if (method === 'box-plot') {
     classCount = GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT;
   } else if (method === 'custom') {
-    const edgeCount = parameters.customEdges?.length ?? 0;
+    const edgeCount = settings.customEdges?.length ?? 0;
     if (edgeCount < 2) {
-      throw new Error('Custom class breaks need at least two edges');
+      throw new Error('GPUClassBreaks custom needs at least two edges');
     }
     classCount = edgeCount - 1;
   }
-  if (!Number.isInteger(classCount) || classCount < 1 || classCount > maximumClassCount) {
-    throw new Error(`Class count must be an integer in [1, ${maximumClassCount}]`);
+  validateCapacity('GPUClassBreaks', 'classCount', classCount, 1, maximumClassCount);
+  for (const [name, value] of [
+    ['standardDeviationInterval', settings.standardDeviationInterval],
+    ['headTailRatio', settings.headTailRatio],
+    ['boxPlotHinge', settings.boxPlotHinge]
+  ] as const) {
+    if (value !== undefined && !Number.isFinite(value)) {
+      throw new Error(`GPUClassBreaks ${name} must be finite`);
+    }
+  }
+  if (method === 'custom' && Array.from(settings.customEdges!).some(Number.isNaN)) {
+    throw new Error('GPUClassBreaks custom edges must not be NaN');
   }
   target.fill(NaN, 0, length);
   target[0] = methodCode;
   target[1] = classCount;
-  target[2] = parameters.standardDeviationInterval ?? 1;
-  target[3] = parameters.headTailRatio ?? 0.4;
-  target[4] = parameters.boxPlotHinge ?? 1.5;
+  target[2] = settings.standardDeviationInterval ?? 1;
+  target[3] = settings.headTailRatio ?? 0.4;
+  target[4] = settings.boxPlotHinge ?? 1.5;
   target[5] = 0;
   target[6] = 0;
   target[7] = 0;
@@ -128,7 +141,7 @@ export function getGPUClassBreaksParameterValues(
     target[data + 1] = 0.5;
     target[data + 2] = 0.75;
   } else if (method === 'custom') {
-    const edges = parameters.customEdges!;
+    const edges = settings.customEdges!;
     for (let index = 0; index < edges.length; index++) {
       target[data + index] = edges[index];
     }

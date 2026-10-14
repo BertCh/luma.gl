@@ -260,9 +260,12 @@ fn cellIndexH3FaceIjkToIndex(face: u32, coord: vec3i, resolution: u32) -> vec2u 
 }
 
 fn cellIndexH3FromLngLat(lngLatDegrees: vec2f, resolution: u32) -> vec2u {
+  // Exponent-bit tests catch NaN and infinity without a NaN compare, which Metal may fold.
+  let exponentBits = vec2u(bitcast<u32>(lngLatDegrees.x), bitcast<u32>(lngLatDegrees.y)) & vec2u(0x7f800000u);
   if (
-    !(abs(lngLatDegrees.x) < 3.0e38) ||
-    !(abs(lngLatDegrees.y) < 3.0e38) ||
+    any(exponentBits == vec2u(0x7f800000u)) ||
+    abs(lngLatDegrees.x) >= 3.0e38 ||
+    abs(lngLatDegrees.y) >= 3.0e38 ||
     resolution > DGGS_H3_MAX_RESOLUTION
   ) {
     return vec2u(0u);

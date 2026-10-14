@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUGridIndex,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -20,11 +17,17 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../utils/wgsl-common';
-import {validateGPUStatusPort, type GPUSpatialContext} from '../contracts/index';
+import {validateGPUStatusPort, type GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {
+  getGPUGridIndexMaximumCellCount,
+  validateCapacity,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
 import {GRID_COORDINATE_WGSL} from './gpu-inverse-distance-weighting';
 import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
 import {
@@ -73,8 +76,9 @@ const STATUS_UNCERTAIN = 2;
  */
 export type GPUKrigingOutput = {
   /**
-   * Predicted value per output cell, at least `width * height` float32 rows, row `y * width +
-   * x`. Nodata cells (too few distinct neighbors, an ill-conditioned system, an unreliable
+   * Predicted value per output cell, at least `grid.width * grid.height` float32 rows, row
+   * `y * grid.width + x` in the grid's row order (row 0 is the grid's first row: the top row of a
+   * north-up grid, `minY` when rows advance north). Nodata cells (too few distinct neighbors, an ill-conditioned system, an unreliable
    * variance) are NaN.
    */
   values: GraphDataView<'float32'>;
@@ -96,26 +100,29 @@ export type GPUKrigingOutput = {
   crossValidationPrediction?: GraphDataView<'float32'>;
   /** Optional leave-one-out kriging variance per sample row, same layout. */
   crossValidationVariance?: GraphDataView<'float32'>;
-  /**
-   * Optional count of output cells that are nodata because the settings were invalid or fewer
-   * than `minimumNeighborCount` distinct sample positions fell in the neighborhood
-   * (`GPUInvalidStatusPort`). Cells outside the sample domain are included.
-   */
-  invalidCount?: GraphDataView<'uint32'>;
-  /**
-   * Optional count of output cells made nodata because the kriging system was ill conditioned
-   * (pivot ratio below `KRIGING_PIVOT_RATIO_TOLERANCE`) or its variance came out materially
-   * negative (`GPUUncertaintyStatusPort`).
-   */
-  uncertainCount?: GraphDataView<'uint32'>;
+  /** Optional diagnostic counts. */
+  status?: {
+    /**
+     * Optional count of output cells that are nodata because the settings were invalid or fewer
+     * than `minimumNeighborCount` distinct sample positions fell in the neighborhood
+     * (`GPUInvalidStatusPort`). Cells outside the sample domain are included.
+     */
+    invalidCount?: GraphDataView<'uint32'>;
+    /**
+     * Optional count of output cells made nodata because the kriging system was ill conditioned
+     * (pivot ratio below `KRIGING_PIVOT_RATIO_TOLERANCE`) or its variance came out materially
+     * negative (`GPUUncertaintyStatusPort`).
+     */
+    uncertainCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
  * Properties for {@link GPUKriging}.
  *
- * Per-frame (no recompile): the contents of `parameters` (extent, radius, neighborhood size,
- * variogram model and parameters) and of every input buffer. Topology (needs a new graph): `width`,
- * `height`, sample count, `indexGridSize`, `indexBounds`, `maximumNeighborCount`, and whether
+ * Per-frame (no recompile): the contents of `parameters` (radius, neighborhood size,
+ * variogram model and parameters) and of every input buffer. Topology (needs a new graph): the
+ * `grid` size, sample count, `indexGridSize`, `indexBounds`, `maximumNeighborCount`, and whether
  * `mask` and each optional output are present.
  */
 export type GPUKrigingProps = {
@@ -127,7 +134,7 @@ export type GPUKrigingProps = {
    *
    * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` uses haversine distances on
    * a sphere (`sphereRadius`, else the IUGG mean Earth radius): positions are absolute
-   * `[longitude, latitude]` degrees, the grid index and the output extent stay in degrees, and the
+   * `[longitude, latitude]` degrees, the grid index and the output grid stay in degrees, and the
    * search radius and variogram range are in meters (kilometers with `units: 'kilometers'`).
    * Neighbors are ordered by the haversine term; f32 absolute lon/lat limits accuracy to about 1 m
    * at Earth scale, and the local-origin offsets used in planar mode do not apply. The query box
@@ -135,7 +142,7 @@ export type GPUKrigingProps = {
    * per cell (no early stop). Other longitude/latitude metrics throw.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed sample positions in the same units as the extent, radius and variogram range. */
+  /** Packed sample positions in the same units as the grid, radius and variogram range. */
   positions: GraphDataView<'float32x2'>;
   /** Packed float32 sample values. NaN values are skipped. */
   values: GraphDataView<'float32'>;
@@ -143,11 +150,15 @@ export type GPUKrigingProps = {
   mask?: GraphDataView<'uint32'>;
   /** Per-frame float32 view of at least 12 values written with `getGPUKrigingParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Output raster width in cells. */
-  width: number;
-  /** Output raster height in cells. */
-  height: number;
-  /** Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the samples. */
+  /**
+   * Output raster grid: axis-aligned, its width and height size the kernels, and its cell centers
+   * are predicted. Pack the matching placement with `getGPUKrigingParameterValues`.
+   */
+  grid: GPURasterMetadata;
+  /**
+   * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the samples. At most
+   * {@link getGPUGridIndexMaximumCellCount} cells (2^25 - 1 on a default device).
+   */
   indexGridSize: readonly [number, number];
   /** Inclusive sample domain `[minX, minY, maxX, maxY]` of the internal grid index. */
   indexBounds: readonly [number, number, number, number];
@@ -172,7 +183,7 @@ export type GPUKrigingProps = {
  * `fitVariogramModel`: `gamma(0) = 0`, `gamma(h) = nugget + sill * shape(h / range)`.
  *
  * Numerical policy:
- * - Coordinates are local. Distances are differences of offsets from the extent minimum (cells)
+ * - Coordinates are local. Distances are differences of offsets from the grid start corner (cells)
  *   or from the index domain minimum (cross-validation), so UTM-sized absolute coordinates do not
  *   quantize them to the f32 ulp at the absolute magnitude, and the exact-hit test compares
  *   offsets.
@@ -208,7 +219,7 @@ export class GPUKriging implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Resolved metric (planar or great-circle). */
   private readonly separation: InterpolationSeparation;
-  /** `width * height`. */
+  /** `grid.width * grid.height`. */
   readonly cellCount: number;
   /** Compile-time neighborhood capacity. */
   readonly maximumNeighborCount: number;
@@ -219,22 +230,15 @@ export class GPUKriging implements GPUCommandNodeProducer {
     const {id} = this;
     this.separation = resolveInterpolationSeparation(id, props.spatialContext);
     this.spatialContext = this.separation.context;
+    this.cellCount = validateRasterGrid(id, props.grid);
+    if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
+      throw new Error(`${id} needs an axis-aligned grid`);
+    }
     for (const [name, size] of [
-      ['width', props.width],
-      ['height', props.height],
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
     ] as const) {
-      if (!Number.isSafeInteger(size) || size < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    this.cellCount = props.width * props.height;
-    if (
-      this.cellCount > 0xffffffff ||
-      props.indexGridSize[0] * props.indexGridSize[1] >= 0xffffffff
-    ) {
-      throw new Error(`${id} raster and index cell counts must fit in uint32`);
+      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
     if (
@@ -246,32 +250,14 @@ export class GPUKriging implements GPUCommandNodeProducer {
       throw new Error(`${id} indexBounds must be finite and ordered`);
     }
     this.maximumNeighborCount = props.maximumNeighborCount ?? MAXIMUM_NEIGHBOR_CAPACITY;
-    if (
-      !Number.isSafeInteger(this.maximumNeighborCount) ||
-      this.maximumNeighborCount < 1 ||
-      this.maximumNeighborCount > MAXIMUM_NEIGHBOR_CAPACITY
-    ) {
-      throw new Error(
-        `${id} maximumNeighborCount must be an integer in [1, ${MAXIMUM_NEIGHBOR_CAPACITY}]`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumNeighborCount',
+      this.maximumNeighborCount,
+      1,
+      MAXIMUM_NEIGHBOR_CAPACITY
+    );
     const {output} = props;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['values', props.values],
-      ['mask', props.mask],
-      ['parameters', props.parameters],
-      ['output.values', output.values],
-      ['output.variance', output.variance],
-      ['output.crossValidationPrediction', output.crossValidationPrediction],
-      ['output.crossValidationVariance', output.crossValidationVariance],
-      ['output.invalidCount', output.invalidCount],
-      ['output.uncertainCount', output.uncertainCount]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
@@ -282,7 +268,7 @@ export class GPUKriging implements GPUCommandNodeProducer {
       throw new Error(`${id} positions length must equal values length`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== sampleCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -293,12 +279,12 @@ export class GPUKriging implements GPUCommandNodeProducer {
     }
     validatePackedView(output.values, ['float32'], `${id} output.values`);
     if (output.values.length < this.cellCount) {
-      throw new Error(`${id} output.values must hold width * height rows`);
+      throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
     }
     if (output.variance) {
       validatePackedView(output.variance, ['float32'], `${id} output.variance`);
       if (output.variance.length < this.cellCount) {
-        throw new Error(`${id} output.variance must hold width * height rows`);
+        throw new Error(`${id} output.variance must hold grid.width * grid.height rows`);
       }
       if (output.variance.buffer === output.values.buffer) {
         throw new Error(`${id} outputs must not share buffers`);
@@ -330,8 +316,8 @@ export class GPUKriging implements GPUCommandNodeProducer {
       }
     }
     validateGPUStatusPort(id, {
-      invalidCount: output.invalidCount,
-      uncertainCount: output.uncertainCount
+      invalidCount: output.status?.invalidCount,
+      uncertainCount: output.status?.uncertainCount
     });
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -340,8 +326,8 @@ export class GPUKriging implements GPUCommandNodeProducer {
         output.variance,
         output.crossValidationPrediction,
         output.crossValidationVariance,
-        output.invalidCount,
-        output.uncertainCount
+        output.status?.invalidCount,
+        output.status?.uncertainCount
       ],
       [props.positions, props.values, props.mask, props.parameters]
     );
@@ -355,7 +341,8 @@ export class GPUKriging implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, cellCount, maximumNeighborCount} = this;
-    const {output, width, height, indexGridSize, indexBounds} = props;
+    const {output, grid, indexGridSize, indexBounds} = props;
+    const {width, height} = grid;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.values,
@@ -365,9 +352,15 @@ export class GPUKriging implements GPUCommandNodeProducer {
       output.variance,
       output.crossValidationPrediction,
       output.crossValidationVariance,
-      output.invalidCount,
-      output.uncertainCount
+      output.status?.invalidCount,
+      output.status?.uncertainCount
     ]);
+    validateMaximumCount(
+      id,
+      'indexGridSize cells',
+      indexGridSize[0] * indexGridSize[1],
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
     const sampleCount = props.values.length;
     const indexCellCount = indexGridSize[0] * indexGridSize[1];
     const cellOffsets = createTransientView(
@@ -440,7 +433,7 @@ const ORIGIN: vec2f = ${this.separation.geographic ? 'vec2f(0.0)' : 'DOMAIN_MIN'
 ${GRID_COORDINATE_WGSL}
 ${getKrigingWGSL(this.separation)}`;
 
-    const hasStatus = Boolean(output.invalidCount || output.uncertainCount);
+    const hasStatus = Boolean(output.status?.invalidCount || output.status?.uncertainCount);
     const cellStatus = hasStatus
       ? createTransientView(graph, `${id}-cell-status`, 'uint32', cellCount)
       : undefined;
@@ -473,14 +466,14 @@ const HEIGHT: u32 = ${height}u;
 ${sharedDeclarations}`,
         body: `let column = index % WIDTH;
   let rasterRow = index / WIDTH;
-  let extentMin = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
-  let extentMax = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
-  let cellSize = (extentMax - extentMin) / vec2f(f32(WIDTH), f32(HEIGHT));
-  // Planar offsets from the extent minimum stay small whatever the absolute coordinates are;
+  let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+  let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
+  // Planar offsets from the grid start corner stay small whatever the absolute coordinates are;
   // great-circle distances take absolute lon/lat, so the origin is zero.
-  let origin = ${this.separation.geographic ? 'vec2f(0.0)' : 'extentMin'};
+  let origin = ${this.separation.geographic ? 'vec2f(0.0)' : 'gridStart'};
   let cellOffset = (vec2f(f32(column), f32(rasterRow)) + vec2f(0.5)) * cellSize;
-  let center = extentMin + cellOffset;
+  let center = gridStart + cellOffset;
   let estimate = estimateKriging(center, ${this.separation.geographic ? 'center' : 'cellOffset'}, origin, 0xffffffffu);
   valuesOut[valuesOutOffset + index] = estimate.value;
   ${output.variance ? 'varianceOut[varianceOutOffset + index] = estimate.variance;' : ''}
@@ -521,7 +514,7 @@ ${sharedDeclarations}`,
   let position = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
   var prediction = getNaN();
   var predictionVariance = getNaN();
-  if (!isNanValue(value) && isFiniteValue(position.x) && isFiniteValue(position.y)) {
+  if (!isNanBits(value) && isFiniteValue(position.x) && isFiniteValue(position.y)) {
     // Kriged from every OTHER sample: the row itself is excluded from the neighbor search.
     let estimate = estimateKriging(position, position - ORIGIN, ORIGIN, index);
     prediction = estimate.value;
@@ -535,8 +528,8 @@ ${sharedDeclarations}`,
 
     if (cellStatus) {
       for (const [name, view] of [
-        ['invalid', output.invalidCount],
-        ['uncertain', output.uncertainCount]
+        ['invalid', output.status?.invalidCount],
+        ['uncertain', output.status?.uncertainCount]
       ] as const) {
         if (view) {
           nodes.push(
@@ -558,21 +551,21 @@ ${sharedDeclarations}`,
           variant: 'count-status',
           bindings: [
             {name: 'cellStatus', view: cellStatus, type: 'u32', access: 'read'},
-            ...(output.invalidCount
+            ...(output.status?.invalidCount
               ? [
                   {
                     name: 'invalidCountOut',
-                    view: output.invalidCount,
+                    view: output.status?.invalidCount,
                     type: 'atomic<u32>',
                     access: 'read_write'
                   } as const
                 ]
               : []),
-            ...(output.uncertainCount
+            ...(output.status?.uncertainCount
               ? [
                   {
                     name: 'uncertainCountOut',
-                    view: output.uncertainCount,
+                    view: output.status?.uncertainCount,
                     type: 'atomic<u32>',
                     access: 'read_write'
                   } as const
@@ -583,8 +576,8 @@ ${sharedDeclarations}`,
           declarations: `const STATUS_INVALID: u32 = ${STATUS_INVALID}u;
 const STATUS_UNCERTAIN: u32 = ${STATUS_UNCERTAIN}u;`,
           body: `let status = cellStatus[cellStatusOffset + index];
-  ${output.invalidCount ? 'if (status == STATUS_INVALID) { atomicAdd(&invalidCountOut[invalidCountOutOffset], 1u); }' : ''}
-  ${output.uncertainCount ? 'if (status == STATUS_UNCERTAIN) { atomicAdd(&uncertainCountOut[uncertainCountOutOffset], 1u); }' : ''}`
+  ${output.status?.invalidCount ? 'if (status == STATUS_INVALID) { atomicAdd(&invalidCountOut[invalidCountOutOffset], 1u); }' : ''}
+  ${output.status?.uncertainCount ? 'if (status == STATUS_UNCERTAIN) { atomicAdd(&uncertainCountOut[uncertainCountOutOffset], 1u); }' : ''}`
         })
       );
     }
@@ -706,7 +699,7 @@ fn estimateKriging(center: vec2f, localCenter: vec2f, origin: vec2f, excludeRow:
           continue;
         }
         let value = sampleValues[sampleValuesOffset + sample];
-        if (isNanValue(value)) {
+        if (isNanBits(value)) {
           continue;
         }
         let position = vec2f(positions[positionsOffset + 2u * sample], positions[positionsOffset + 2u * sample + 1u]);

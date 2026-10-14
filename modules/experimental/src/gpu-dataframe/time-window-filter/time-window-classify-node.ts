@@ -10,14 +10,26 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getGraphViewChunks} from '../../utils/gpu-contributor-utils';
-import {GPU_TIME_WINDOW_PARAMETER_LENGTH} from './time-window-parameters';
+import {GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from './time-window-parameters';
 import {
-  GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
   TIME_WORDS_WGSL,
   type GPUInt64TimeWordRows
 } from './time-words';
 
 type Float32Rows = GraphDataView<'float32'> | GraphVectorView<'float32'>;
+
+/**
+ * Exact double-single `a >= b`, shared by the mask kernel and the sorted-range kernel so both
+ * accept identical rows. Backends with fast-math may reassociate a high-plus-low sum and drop the
+ * low parts, so acceptance compares the high parts first and uses the low parts only on ties.
+ * @internal
+ */
+export const FLOAT_TIME_AT_LEAST_WGSL = /* wgsl */ `// Exact double-single a >= b. Backends with fast-math may reassociate the sum above and drop the
+// low parts, so acceptance compares the high parts first and uses the low parts only on ties.
+fn isTimeAtLeast(aHigh: f32, aLow: f32, bHigh: f32, bLow: f32) -> bool {
+  return aHigh > bHigh || (aHigh == bHigh && aLow >= bLow);
+}`;
 
 /** Properties for {@link getTimeWindowClassifyNodes}. @internal */
 export type TimeWindowClassifyProps = {
@@ -136,11 +148,7 @@ fn timeDifference(aHigh: f32, aLow: f32, bHigh: f32, bLow: f32) -> f32 {
   return (aHigh - bHigh) + (aLow - bLow);
 }
 
-// Exact double-single a >= b. Backends with fast-math may reassociate the sum above and drop the
-// low parts, so acceptance compares the high parts first and uses the low parts only on ties.
-fn isTimeAtLeast(aHigh: f32, aLow: f32, bHigh: f32, bLow: f32) -> bool {
-  return aHigh > bHigh || (aHigh == bHigh && aLow >= bLow);
-}`,
+${FLOAT_TIME_AT_LEAST_WGSL}`,
         body: /* wgsl */ `
   let windowStartHigh = params[paramsOffset + 0u];
   let windowStartLow = params[paramsOffset + 1u];
@@ -154,10 +162,12 @@ fn isTimeAtLeast(aHigh: f32, aLow: f32, bHigh: f32, bLow: f32) -> bool {
   let rowEndHigh = ${endHigh ? 'endHigh[endHighOffset + index]' : 'rowStartHigh'};
   let rowEndLow = ${rowEndLow};
 
-  // Ordered comparisons are false for NaN, so NaN rows are rejected.
+  // Ordered comparisons are false for NaN, so NaN rows are rejected. A reversed window
+  // (end < start) accepts nothing, interval rows included (B-13).
   let endAfterWindowStart = timeDifference(rowEndHigh, rowEndLow, windowStartHigh, windowStartLow);
   let startBeforeWindowEnd = timeDifference(windowEndHigh, windowEndLow, rowStartHigh, rowStartLow);
   let accepted =
+    isTimeAtLeast(windowEndHigh, windowEndLow, windowStartHigh, windowStartLow) &&
     isTimeAtLeast(rowEndHigh, rowEndLow, windowStartHigh, windowStartLow) &&
     isTimeAtLeast(windowEndHigh, windowEndLow, rowStartHigh, rowStartLow);
   outputMask[outputMaskOffset + index] = select(0u, 1u, accepted);
@@ -201,17 +211,19 @@ function validateTimeWindowClassifyMode(props: TimeWindowClassifyProps, isWordMo
     if (props.window.format !== 'uint32') {
       throw new Error(`${id} uint32x2 word timestamps require a packed uint32 word window`);
     }
-    if (props.window.length < GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH) {
+    if (props.window.length < GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH) {
       throw new Error(
-        `${id} word window must hold ${GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH} uint32 values`
+        `${id} word window must hold ${GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH} uint32 values`
       );
     }
   } else {
     if (props.window.format !== 'float32') {
       throw new Error(`${id} float32 timestamps require a float32 window`);
     }
-    if (props.window.length < GPU_TIME_WINDOW_PARAMETER_LENGTH) {
-      throw new Error(`${id} window must hold ${GPU_TIME_WINDOW_PARAMETER_LENGTH} float32 values`);
+    if (props.window.length < GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH) {
+      throw new Error(
+        `${id} window must hold ${GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} float32 values`
+      );
     }
   }
 }
@@ -294,7 +306,9 @@ function createWordClassifyNode<Parameters>(
 
   let endAfterWindowStart = timeWordsDifference(rowEnd, 0.0, windowStart, windowStartFraction);
   let startBeforeWindowEnd = timeWordsDifference(windowEnd, windowEndFraction, rowStart, 0.0);
+  // A reversed window (end < start) accepts nothing, interval rows included (B-13).
   let accepted =
+    isTimeWordsAtLeast(windowEnd, windowEndFraction, windowStart, windowStartFraction) &&
     isTimeWordsAtLeast(rowEnd, 0.0, windowStart, windowStartFraction) &&
     isTimeWordsAtLeast(windowEnd, windowEndFraction, rowStart, 0.0);
   outputMask[outputMaskOffset + index] = select(0u, 1u, accepted);

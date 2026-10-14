@@ -228,20 +228,20 @@ export function createLineImportanceInitNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    trackOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     scratch: LineImportanceScratch;
     importance: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const lineCount = props.trackOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'importance-init',
     bindings: [
       {
-        name: 'trackOffsets',
-        view: props.trackOffsets,
+        name: 'lineOffsets',
+        view: props.lineOffsets,
         type: 'u32',
         access: 'read'
       },
@@ -267,8 +267,8 @@ export function createLineImportanceInitNode<Parameters>(
     invocationCount: props.importance.length,
     declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const ENDPOINT_IMPORTANCE: u32 = ${LINE_ENDPOINT_IMPORTANCE_BITS}u;`,
-    body: /* wgsl */ `let firstRow = trackOffsets[trackOffsetsOffset];
-  let endRow = trackOffsets[trackOffsetsOffset + LINE_COUNT];
+    body: /* wgsl */ `let firstRow = lineOffsets[lineOffsetsOffset];
+  let endRow = lineOffsets[lineOffsetsOffset + LINE_COUNT];
   if (index < firstRow || index >= endRow) {
     leftAnchors[leftAnchorsOffset + index] = index;
     rightAnchors[rightAnchorsOffset + index] = index;
@@ -280,15 +280,15 @@ const ENDPOINT_IMPORTANCE: u32 = ${LINE_ENDPOINT_IMPORTANCE_BITS}u;`,
   var high = LINE_COUNT + 1u;
   while (low < high) {
     let middle = (low + high) / 2u;
-    if (trackOffsets[trackOffsetsOffset + middle] <= index) {
+    if (lineOffsets[lineOffsetsOffset + middle] <= index) {
       low = middle + 1u;
     } else {
       high = middle;
     }
   }
   let line = low - 1u;
-  let lineStart = trackOffsets[trackOffsetsOffset + line];
-  let lineLast = trackOffsets[trackOffsetsOffset + line + 1u] - 1u;
+  let lineStart = lineOffsets[lineOffsetsOffset + line];
+  let lineLast = lineOffsets[lineOffsetsOffset + line + 1u] - 1u;
   if (index == lineStart || index >= lineLast) {
     leftAnchors[leftAnchorsOffset + index] = index;
     rightAnchors[rightAnchorsOffset + index] = index;
@@ -684,22 +684,22 @@ export function createLineKeepMaskNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    trackOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     importance: GraphDataView<'float32'>;
     parameters: GraphDataView<'float32'>;
-    keepMask: GraphDataView<'uint32'>;
+    outputMask: GraphDataView<'uint32'>;
     rowIds: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const lineCount = props.trackOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'keep-mask',
     bindings: [
       {
-        name: 'trackOffsets',
-        view: props.trackOffsets,
+        name: 'lineOffsets',
+        view: props.lineOffsets,
         type: 'u32',
         access: 'read'
       },
@@ -716,8 +716,8 @@ export function createLineKeepMaskNode<Parameters>(
         access: 'read'
       },
       {
-        name: 'keepMask',
-        view: props.keepMask,
+        name: 'outputMask',
+        view: props.outputMask,
         type: 'u32',
         access: 'read_write'
       },
@@ -727,10 +727,10 @@ export function createLineKeepMaskNode<Parameters>(
     declarations: `const LINE_COUNT: u32 = ${lineCount}u;`,
     body: `rowIds[rowIdsOffset + index] = index;
   let tolerance = parameters[parametersOffset];
-  let inLine = index >= trackOffsets[trackOffsetsOffset] &&
-    index < trackOffsets[trackOffsetsOffset + LINE_COUNT];
+  let inLine = index >= lineOffsets[lineOffsetsOffset] &&
+    index < lineOffsets[lineOffsetsOffset + LINE_COUNT];
   let keep = inLine && importance[importanceOffset + index] > tolerance;
-  keepMask[keepMaskOffset + index] = select(0u, 1u, keep);`
+  outputMask[outputMaskOffset + index] = select(0u, 1u, keep);`
   });
 }
 
@@ -744,18 +744,18 @@ export function createLineKeptRangesNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    trackOffsets: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
     compactRows: GraphDataView<'uint32'>;
     requiredCount: GraphDataView<'uint32'>;
     lineCounts?: GraphDataView<'uint32'>;
     lineStarts?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const lineCount = props.trackOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   const bindings: WGSLKernelBinding[] = [
     {
-      name: 'trackOffsets',
-      view: props.trackOffsets,
+      name: 'lineOffsets',
+      view: props.lineOffsets,
       type: 'u32',
       access: 'read'
     },
@@ -807,8 +807,8 @@ fn lowerBoundKeptRow(row: u32, count: u32) -> u32 {
   return low;
 }`,
     body: `let keptCount = min(requiredCount[requiredCountOffset], COMPACT_CAPACITY);
-  let lineStart = trackOffsets[trackOffsetsOffset + index];
-  let lineEnd = max(trackOffsets[trackOffsetsOffset + index + 1u], lineStart);
+  let lineStart = lineOffsets[lineOffsetsOffset + index];
+  let lineEnd = max(lineOffsets[lineOffsetsOffset + index + 1u], lineStart);
   let first = lowerBoundKeptRow(lineStart, keptCount);
   let last = lowerBoundKeptRow(lineEnd, keptCount);
   ${props.lineCounts ? 'lineCounts[lineCountsOffset + index] = last - first;' : ''}

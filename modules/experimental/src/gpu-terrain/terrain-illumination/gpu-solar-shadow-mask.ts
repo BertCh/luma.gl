@@ -9,7 +9,7 @@ import {
   type GraphDataView,
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPURasterBufferToTexture} from '../../gpu-raster/index';
+import {GPURasterBufferToTexture, type GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -17,14 +17,15 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings,
-  validateTerrainTexture
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateParameterTarget,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterParameters,
+  validateRasterOutputTexture
+} from '../../gpu-raster/raster-band-utils';
 import {
-  GPU_TERRAIN_HORIZON_MAX_DIRECTION_COUNT,
-  GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT
+  GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT,
+  GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT
 } from './gpu-terrain-horizon';
 import {
   getTerrainSolarVisibilityWGSL,
@@ -35,7 +36,7 @@ import {
   type GPUTerrainHorizonFormat
 } from './terrain-illumination-utils';
 
-/** Number of float32 values read from `GPUSolarShadowMaskProps.settings`. */
+/** Number of float32 values read from `GPUSolarShadowMaskProps.parameters`. */
 export const GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH = 8;
 
 /** Mean angular radius of the solar disk in degrees, the default penumbra half-width. */
@@ -68,9 +69,11 @@ export function getGPUSolarShadowMaskParameterValues(
   settings: GPUSolarShadowMaskSettings,
   target: Float32Array = new Float32Array(GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH) {
-    throw new Error('Solar shadow mask settings target must hold 8 values');
-  }
+  validateParameterTarget(
+    'getGPUSolarShadowMaskParameterValues',
+    target,
+    GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH
+  );
   const angularRadius = settings.angularRadiusDegrees ?? GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES;
   if (!Number.isFinite(angularRadius) || angularRadius < 0) {
     throw new Error('Solar shadow mask angular radius must be finite and non-negative');
@@ -88,19 +91,29 @@ export function getGPUSolarShadowMaskParameterValues(
   return target;
 }
 
+/** Caller-owned outputs of {@link GPUSolarShadowMask}; at least one is required. */
+export type GPUSolarShadowMaskOutput = {
+  /** Fraction of the solar disk above the local horizon per pixel, in `[0, 1]`. */
+  sunVisibility?: GraphDataView<'float32'>;
+  /** `ambient * svf + sun * sunVisibility * max(cos(incidence), 0)`. Requires slope and aspect. */
+  illumination?: GraphDataView<'float32'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunVisibility`. */
+  sunVisibilityTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `illumination`. */
+  illuminationTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+};
+
 /**
  * Properties for {@link GPUSolarShadowMask}.
  *
- * Topology: grid size, `directionCount`, and which inputs and outputs exist. Per-frame: `settings`
+ * Topology: grid size, `directionCount`, and which inputs and outputs exist. Per-frame: `parameters`
  * (sun position, disk radius, intensities) and input contents.
  */
 export type GPUSolarShadowMaskProps = {
   /** Prefix for node and transient IDs. Defaults to `'solar-shadow-mask'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /** Number of horizon sectors, an integer in `[4, 64]`, matching the `GPUTerrainHorizon`. */
   directionCount: number;
   /**
@@ -115,22 +128,16 @@ export type GPUSolarShadowMaskProps = {
    * `ceil(width * height * directionCount / 2)` words.
    */
   horizon: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUSolarShadowMaskParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUSolarShadowMaskParameterValues}. */
+  parameters: GraphDataView<'float32'>;
   /** Optional slope in degrees, as written by `GPUTerrainDerivatives`. Required for `illumination`. */
   slope?: GraphDataView<'float32'>;
   /** Optional aspect in degrees clockwise from north, -1 when flat. Required with `slope`. */
   aspect?: GraphDataView<'float32'>;
   /** Optional sky-view factor scaling ambient light in `illumination`. */
   skyViewFactor?: GraphDataView<'float32'>;
-  /** Optional fraction of the solar disk above the local horizon, in `[0, 1]`. */
-  sunVisibility?: GraphDataView<'float32'>;
-  /** Optional `ambient * svf + sun * sunVisibility * max(cos(incidence), 0)`. Requires slope and aspect. */
-  illumination?: GraphDataView<'float32'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunVisibility`. */
-  sunVisibilityTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-  /** Optional storage texture (`r32float` or `rgba32float`, channel 0) receiving `illumination`. */
-  illuminationTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
+  /** Caller-owned outputs. */
+  output: GPUSolarShadowMaskOutput;
 };
 
 /**
@@ -144,7 +151,7 @@ export type GPUSolarShadowMaskProps = {
  * aspect and an ambient term scaled by the optional sky-view factor, matching a "sun + ambient"
  * light rig in data space.
  *
- * Each frame reads two horizon values per pixel, so animating time of day is one settings write
+ * Each frame reads two horizon values per pixel, so animating time of day is one parameters write
  * and never recompiles. Pixels with a NaN horizon, slope, aspect, or sky-view factor receive NaN.
  */
 export class GPUSolarShadowMask implements GPUCommandNodeProducer {
@@ -159,27 +166,28 @@ export class GPUSolarShadowMask implements GPUCommandNodeProducer {
     this.id = props.id ?? 'solar-shadow-mask';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const {directionCount} = props;
     if (
       !Number.isSafeInteger(directionCount) ||
-      directionCount < GPU_TERRAIN_HORIZON_MIN_DIRECTION_COUNT ||
-      directionCount > GPU_TERRAIN_HORIZON_MAX_DIRECTION_COUNT
+      directionCount < GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT ||
+      directionCount > GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT
     ) {
       throw new Error(`${id} directionCount must be an integer in [4, 64]`);
     }
     if (
-      !props.sunVisibility &&
-      !props.illumination &&
-      !props.sunVisibilityTexture &&
-      !props.illuminationTexture
+      !output.sunVisibility &&
+      !output.illumination &&
+      !output.sunVisibilityTexture &&
+      !output.illuminationTexture
     ) {
       throw new Error(`${id} requires at least one output`);
     }
     if (Boolean(props.slope) !== Boolean(props.aspect)) {
       throw new Error(`${id} slope and aspect must be provided together`);
     }
-    if ((props.illumination || props.illuminationTexture) && !props.slope) {
+    if ((output.illumination || output.illuminationTexture) && !props.slope) {
       throw new Error(`${id} illumination requires slope and aspect`);
     }
     validateTerrainHorizonFormat(id, props.horizonFormat ?? 'float32');
@@ -196,29 +204,22 @@ export class GPUSolarShadowMask implements GPUCommandNodeProducer {
       ['slope', props.slope],
       ['aspect', props.aspect],
       ['skyViewFactor', props.skyViewFactor],
-      ['sunVisibility', props.sunVisibility],
-      ['illumination', props.illumination]
+      ['output.sunVisibility', output.sunVisibility],
+      ['output.illumination', output.illumination]
     ] as const) {
       validateTerrainIlluminationView(id, name, view, 'float32', pixelCount);
     }
-    validateTerrainSettings(id, props.settings, GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH);
+    validateRasterParameters(id, props.parameters, GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH);
     for (const [name, texture] of [
-      ['sunVisibilityTexture', props.sunVisibilityTexture],
-      ['illuminationTexture', props.illuminationTexture]
+      ['output.sunVisibilityTexture', output.sunVisibilityTexture],
+      ['output.illuminationTexture', output.illuminationTexture]
     ] as const) {
-      validateTerrainTexture(
-        id,
-        name,
-        texture,
-        ['r32float', 'rgba32float'],
-        props.width,
-        props.height
-      );
+      validateRasterOutputTexture(id, name, texture, ['r32float', 'rgba32float'], props.grid);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.sunVisibility, props.illumination],
-      [props.horizon, props.settings, props.slope, props.aspect, props.skyViewFactor]
+      [output.sunVisibility, output.illumination],
+      [props.horizon, props.parameters, props.slope, props.aspect, props.skyViewFactor]
     );
   }
 
@@ -227,30 +228,31 @@ export class GPUSolarShadowMask implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, directionCount} = props;
-    const pixelCount = width * height;
+    const {output} = props;
+    const {directionCount} = props;
+    const pixelCount = props.grid.width * props.grid.height;
     validateGraphViewsBelongToGraph(id, graph, [
       props.horizon,
-      props.settings,
+      props.parameters,
       props.slope,
       props.aspect,
       props.skyViewFactor,
-      props.sunVisibility,
-      props.illumination
+      output.sunVisibility,
+      output.illumination
     ]);
-    for (const texture of [props.sunVisibilityTexture, props.illuminationTexture]) {
+    for (const texture of [output.sunVisibilityTexture, output.illuminationTexture]) {
       if (texture && texture.texture.graph !== graph) {
         throw new Error(`${id} views must belong to the target graph`);
       }
     }
     const visibilityTarget =
-      props.sunVisibility ??
-      (props.sunVisibilityTexture
+      output.sunVisibility ??
+      (output.sunVisibilityTexture
         ? createTransientView(graph, `${id}-sun-visibility`, 'float32', pixelCount)
         : undefined);
     const illuminationTarget =
-      props.illumination ??
-      (props.illuminationTexture
+      output.illumination ??
+      (output.illuminationTexture
         ? createTransientView(graph, `${id}-illumination`, 'float32', pixelCount)
         : undefined);
     const bindings: WGSLKernelBinding[] = [
@@ -260,7 +262,7 @@ export class GPUSolarShadowMask implements GPUCommandNodeProducer {
         type: this.horizonFormat === 'unorm16' ? 'u32' : 'f32',
         access: 'read'
       },
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (props.slope && props.aspect) {
       bindings.push(
@@ -333,8 +335,8 @@ ${getTerrainSolarVisibilityWGSL(this.horizonFormat, 'horizon', directionCount)}`
       })
     ];
     for (const [name, target, texture] of [
-      ['sun-visibility', visibilityTarget, props.sunVisibilityTexture],
-      ['illumination', illuminationTarget, props.illuminationTexture]
+      ['sun-visibility', visibilityTarget, output.sunVisibilityTexture],
+      ['illumination', illuminationTarget, output.illuminationTexture]
     ] as const) {
       if (texture && target) {
         nodes.push(

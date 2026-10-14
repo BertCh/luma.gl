@@ -12,7 +12,7 @@ export const GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH = 4;
  *
  * Sample `k` of every track is taken at `start + k * step`, in the unit of the timestamps.
  */
-export type GPUTrajectoryClock = {
+export type GPUTrajectoryClockSettings = {
   /**
    * First clock instant. Float32 mode: a number in the timestamps' relative epoch. Word mode: a
    * `bigint` (exact integer) or a `number` whose fractional part becomes the f32 sub-unit fraction.
@@ -34,13 +34,13 @@ export type GPUTrajectoryClock = {
  * too short.
  */
 export function getGPUTrajectoryClockParameterValues(
-  clock: GPUTrajectoryClock,
+  clock: GPUTrajectoryClockSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH)
 ): Float32Array {
   checkTarget(target);
   checkStep(clock);
   if (typeof clock.start === 'bigint') {
-    throw new Error('Float32 trajectory clocks must use numbers; use the word parameters');
+    throw new Error('Float32 clocks must be numbers, not bigints');
   }
   if (!Number.isFinite(clock.start)) {
     throw new Error('Trajectory clock start must be finite');
@@ -61,7 +61,7 @@ export function getGPUTrajectoryClockParameterValues(
  * is too short.
  */
 export function getGPUTrajectoryClockWordParameterValues(
-  clock: GPUTrajectoryClock,
+  clock: GPUTrajectoryClockSettings,
   target: Uint32Array = new Uint32Array(GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH)
 ): Uint32Array {
   checkTarget(target);
@@ -82,7 +82,7 @@ function checkTarget(target: Float32Array | Uint32Array): void {
   }
 }
 
-function checkStep(clock: GPUTrajectoryClock): void {
+function checkStep(clock: GPUTrajectoryClockSettings): void {
   if (!Number.isFinite(clock.step) || clock.step <= 0) {
     throw new Error('Trajectory clock step must be finite and positive');
   }

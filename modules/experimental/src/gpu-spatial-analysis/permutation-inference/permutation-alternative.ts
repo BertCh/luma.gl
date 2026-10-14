@@ -2,10 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_DEFAULT_INFERENCE_ALTERNATIVE, type GPUInferenceAlternative} from '../contracts/index';
+import {
+  GPU_DEFAULT_INFERENCE_ALTERNATIVE,
+  type GPUInferenceAlternative
+} from '../../analysis-core/contracts/index';
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
 
 /**
- * Alternative hypothesis (tail) of a permutation pseudo p-value. This is the shared
+ * Alternative hypothesis (tail) of a permutation pseudo p-value, the shared
  * {@link GPUInferenceAlternative} union; the default is `'two-sided'`.
  *
  * With `R` permutations, `g = #{sim >= observed}` and `l = #{sim <= observed}` (ties count in both):
@@ -17,7 +21,7 @@ import {GPU_DEFAULT_INFERENCE_ALTERNATIVE, type GPUInferenceAlternative} from '.
  *   `'folded'` for an undirected test that matches esda exactly. Ties never make a row look more
  *   significant: when every simulation equals the observed value, `g = l = R` and `p = 1`.
  * - `'greater'`: `p = (g + 1) / (R + 1)`; the observed statistic is large.
- * - `'lesser'` (alias `'less'`): `p = (l + 1) / (R + 1)`; the observed statistic is small.
+ * - `'lesser'`: `p = (l + 1) / (R + 1)`; the observed statistic is small.
  * - `'folded'`: `p = (f + 1) / (R + 1)` with `f = #{|sim - mean| >= |observed - mean|}` and `mean` the
  *   mean of the `R` simulated statistics (the observed value is excluded from the mean, as esda
  *   computes it from the reference distribution). Ties count; the test is symmetric about the
@@ -31,19 +35,13 @@ import {GPU_DEFAULT_INFERENCE_ALTERNATIVE, type GPUInferenceAlternative} from '.
  *   attainable `p = 1/(R+1)`, while `min(g, l)` counts the ties on both sides and reports `p = 1`.
  *   The two agree whenever no simulation equals the observed value.
  *
- * @deprecated Use {@link GPUInferenceAlternative}; this name remains as an alias.
+ * Validates an alternative and returns it, throwing on an unknown tail. @internal
  */
-export type GPUPermutationAlternative = GPUInferenceAlternative;
-
-/** Validates an alternative and returns its canonical name (`'less'` becomes `'lesser'`). @internal */
 export function resolvePermutationAlternative(
   id: string,
   alternative: GPUInferenceAlternative | undefined
 ): 'directed' | 'two-sided' | 'greater' | 'lesser' | 'folded' {
   const value = alternative ?? GPU_DEFAULT_INFERENCE_ALTERNATIVE;
-  if (value === 'less') {
-    return 'lesser';
-  }
   if (!['directed', 'two-sided', 'greater', 'lesser', 'folded'].includes(value)) {
     throw new Error(
       `${id} alternative must be 'directed', 'two-sided', 'greater', 'lesser' or 'folded', got ${String(alternative)}`
@@ -68,7 +66,7 @@ export function getExceedanceCountWGSL(
     case 'folded':
       return 'folded';
     default:
-      // 'directed': the smaller tail, counting ties on both sides (see GPUPermutationAlternative).
+      // 'directed': the smaller tail, counting ties on both sides (see resolvePermutationAlternative).
       return 'min(greater, lesser)';
   }
 }
@@ -106,5 +104,89 @@ export function getPermutationPValue(
   return {
     exceedances,
     pValue: Math.min(multiplier * (exceedances + 1), permutations + 1) / (permutations + 1)
+  };
+}
+
+/**
+ * Validates the compile-time `stopAfterExceedances` of a permutation test (Besag and Clifford
+ * 1991, "Sequential Monte Carlo p-values", Biometrika 78(2)) and returns it, or `undefined` when
+ * the sequential rule is off. Throws unless it is an integer in `[1, maximumPermutations]`, and for
+ * the `'folded'` alternative, whose statistic needs the mean of the full run first.
+ *
+ * With `h = stopAfterExceedances`, the permutations are consumed in index order and the run stops at
+ * the first `L` whose exceedance count (the same count the p-value uses) reaches `h`; then
+ * `p = min(1, m h / L)` with `m` the alternative's multiplier. A run that never reaches `h` keeps
+ * the standard `p = min(m (M + 1), P + 1) / (P + 1)`. @internal
+ */
+export function resolveStopAfterExceedances(
+  id: string,
+  stopAfterExceedances: number | undefined,
+  alternative: ReturnType<typeof resolvePermutationAlternative>,
+  maximumPermutations: number
+): number | undefined {
+  if (stopAfterExceedances === undefined) {
+    return undefined;
+  }
+  validateCapacity(id, 'stopAfterExceedances', stopAfterExceedances, 1, maximumPermutations);
+  if (alternative === 'folded') {
+    throw new Error(`${id} stopAfterExceedances does not support the folded alternative`);
+  }
+  return stopAfterExceedances;
+}
+
+/**
+ * CPU twin of the sequential stopping rule over per-permutation tail flags in permutation-index
+ * order. Used as the test oracle.
+ *
+ * @param alternative Tail; `undefined` is `'two-sided'`. `'folded'` throws.
+ * @param flags For each permutation, whether `sim >= observed` (`greater`) and `sim <= observed`
+ * (`lesser`).
+ * @param stopAfterExceedances The target count `h`.
+ * @returns Permutations used `L`, the exceedance count `M` at `L`, whether the run stopped
+ * (`M === h`) and the p-value.
+ */
+export function getSequentialPermutationPValue(
+  alternative: GPUInferenceAlternative | undefined,
+  flags: readonly {greater: boolean; lesser: boolean}[],
+  stopAfterExceedances: number
+): {permutations: number; exceedances: number; stopped: boolean; pValue: number} {
+  const resolved = resolvePermutationAlternative('getSequentialPermutationPValue', alternative);
+  if (resolved === 'folded') {
+    throw new Error('getSequentialPermutationPValue does not support the folded alternative');
+  }
+  const multiplier = getAlternativeMultiplier(resolved);
+  let greater = 0;
+  let lesser = 0;
+  for (let permutation = 0; permutation < flags.length; permutation++) {
+    greater += flags[permutation].greater ? 1 : 0;
+    lesser += flags[permutation].lesser ? 1 : 0;
+    const exceedances = {
+      greater,
+      lesser,
+      'two-sided': Math.min(greater, lesser),
+      directed: Math.min(greater, lesser)
+    }[resolved];
+    if (exceedances >= stopAfterExceedances) {
+      const permutations = permutation + 1;
+      return {
+        permutations,
+        exceedances,
+        stopped: true,
+        pValue: Math.min(multiplier * exceedances, permutations) / permutations
+      };
+    }
+  }
+  const total = flags.length;
+  const exceedances = {
+    greater,
+    lesser,
+    'two-sided': Math.min(greater, lesser),
+    directed: Math.min(greater, lesser)
+  }[resolved];
+  return {
+    permutations: total,
+    exceedances,
+    stopped: false,
+    pValue: Math.min(multiplier * (exceedances + 1), total + 1) / (total + 1)
   };
 }

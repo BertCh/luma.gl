@@ -3,38 +3,42 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  TERRAIN_WGSL_HELPERS,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  RASTER_WGSL_HELPERS,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateParameterTarget,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from '../../gpu-raster/raster-band-utils';
 import {
   TERRAIN_GEOMORPHOMETRY_CELL_SLOTS,
   writeTerrainGeomorphometryCellSettings,
   type TerrainGeomorphometryCellSettings
 } from '../terrain-curvature/terrain-geomorphometry-utils';
 import {
-  getTerrainGroundCellSizeWGSL,
-  getTerrainRowNorthSignWGSL,
-  type GPUTerrainCellSizeMode,
-  type GPUTerrainRowDirection,
-  TERRAIN_DEGREES_TO_RADIANS_WGSL,
-  validateTerrainCellSizeMode,
-  validateTerrainRowDirection
-} from '../terrain-grid-utils';
+  getRasterGroundCellSizeWGSL,
+  getRasterRowNorthSignWGSL,
+  type GPURasterCellSizeMode,
+  type GPURasterRowDirection,
+  RASTER_DEGREES_TO_RADIANS_WGSL,
+  validateRasterCellSizeMode,
+  validateRasterRowDirection
+} from '../../analysis-core/raster-grid';
 
 /**
  * How the zenith and nadir lines of sight of one direction are reduced to a ternary pattern digit.
@@ -63,7 +67,7 @@ export const GPU_GEOMORPHON_FORMS = {
 /** One geomorphon landform code, see {@link GPU_GEOMORPHON_FORMS}. */
 export type GPUGeomorphonForm = (typeof GPU_GEOMORPHON_FORMS)[keyof typeof GPU_GEOMORPHON_FORMS];
 
-/** Number of float32 values read from `GPUGeomorphonsProps.settings`. */
+/** Number of float32 values read from `GPUGeomorphonsProps.parameters`. */
 export const GPU_GEOMORPHONS_PARAMETER_LENGTH = 8;
 
 /**
@@ -71,62 +75,46 @@ export const GPU_GEOMORPHONS_PARAMETER_LENGTH = 8;
  *
  * The cell-size model follows `cellSizeMode` of the contributor: projected metres (`'uniform'`),
  * equatorial Web Mercator metres (`'web-mercator'`), or geographic degrees (`'geographic'`) with
- * latitude-dependent row spacing derived from `northEdge` and `southEdge`.
+ * latitude-dependent row spacing derived from the row edges of the grid.
  */
 export type GPUGeomorphonsSettings = TerrainGeomorphometryCellSettings & {
   /** Flatness threshold in degrees, greater than 0 and below 90. Defaults to 1. */
   flatThresholdDegrees?: number;
   /**
    * Distance in ground metres beyond which the flatness threshold is lowered to the height
-   * `tan(threshold) * flatDistance`. 0 disables the rule. Defaults to 0.
+   * `tan(threshold) * flatDistance`. 0 disables the rule. Defaults to 0. As in GRASS
+   * `r.geomorphon` (`main.c`: `flat_distance <= skip_distance || flat_distance >=
+   * search_distance` sets it to 0), a distance at or inside the skip distance
+   * (`skipRadius` cells) or at or beyond the search distance (`searchRadius` cells) disables the
+   * rule; both are measured with the row's north-south ground cell size.
    */
   flatDistance?: number;
 };
 
 /**
  * Packs settings into the 8-float layout read by {@link GPUGeomorphons}:
- * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge, flatThresholdDegrees, flatDistance, 0]`.
+ * `[cellSizeX, cellSizeY, zFactor, northEdge, southEdge, flatThresholdDegrees, flatDistance, 0]`,
+ * with the cell size and the row-edge world y taken from `grid`.
  */
 export function getGPUGeomorphonsParameterValues(
   settings: GPUGeomorphonsSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_GEOMORPHONS_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_GEOMORPHONS_PARAMETER_LENGTH) {
-    throw new Error('Geomorphons settings target must hold 8 values');
-  }
-  writeTerrainGeomorphometryCellSettings(settings, target);
+  validateParameterTarget(
+    'getGPUGeomorphonsParameterValues',
+    target,
+    GPU_GEOMORPHONS_PARAMETER_LENGTH
+  );
+  writeTerrainGeomorphometryCellSettings(settings, grid, target);
   target[5] = settings.flatThresholdDegrees ?? 1;
   target[6] = settings.flatDistance ?? 0;
   target[7] = 0;
   return target;
 }
 
-/**
- * Properties for {@link GPUGeomorphons}.
- *
- * Topology: grid size, elevation band, search and skip radius, comparison mode, which outputs
- * exist, `cellSizeMode`, and `rowDirection`. Per-frame: `settings` and elevation contents.
- * Cell sizes are interpreted by `cellSizeMode`: projected metres (`'uniform'`), equatorial Web
- * Mercator metres (`'web-mercator'`), or geographic degrees (`'geographic'`) with
- * latitude-dependent row spacing.
- */
-export type GPUGeomorphonsProps = {
-  /** Prefix for node and transient IDs. Defaults to `'geomorphons'`. */
-  id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
-  /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
-  elevation: GPURasterBand;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUGeomorphonsParameterValues}. */
-  settings: GraphDataView<'float32'>;
-  /** Search radius in cells along the row axis; at least `skipRadius + 2`. */
-  searchRadius: number;
-  /** Cells next to the centre that are ignored along every line of sight. Defaults to 0. */
-  skipRadius?: number;
-  /** Zenith/nadir reduction. Defaults to `'anglev1'`. */
-  comparison?: GPUGeomorphonComparison;
+/** Caller-owned outputs of {@link GPUGeomorphons}; at least one is required. */
+export type GPUGeomorphonsOutput = {
   /** Optional landform per pixel, see {@link GPU_GEOMORPHON_FORMS}; 0 where invalid. */
   forms?: GraphDataView<'uint32'>;
   /** Optional rotation- and mirror-invariant ternary class (498 values); 0 where invalid. */
@@ -134,11 +122,40 @@ export type GPUGeomorphonsProps = {
   /** Optional 6561-valued ternary pattern code, sum of `(digit + 1) * 3^direction`; 0 where invalid. */
   pattern?: GraphDataView<'uint32'>;
   /** Optional per-pixel 1 where the geomorphon is valid, else 0. */
-  validity?: GraphDataView<'uint32'>;
+  outputValidity?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUGeomorphons}.
+ *
+ * Topology: grid size, elevation band, search and skip radius, comparison mode, which outputs
+ * exist, `cellSizeMode`, and `rowDirection`. Per-frame: `parameters` (including the grid cell
+ * size and latitude band) and elevation contents.
+ * Cell sizes are interpreted by `cellSizeMode`: projected metres (`'uniform'`), equatorial Web
+ * Mercator metres (`'web-mercator'`), or geographic degrees (`'geographic'`) with
+ * latitude-dependent row spacing.
+ */
+export type GPUGeomorphonsProps = {
+  /** Prefix for node and transient IDs. Defaults to `'geomorphons'`. */
+  id?: string;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
+  /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
+  elevation: GPURasterBand;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUGeomorphonsParameterValues}. */
+  parameters: GraphDataView<'float32'>;
+  /** Search radius in cells along the row axis; at least `skipRadius + 2`. */
+  searchRadius: number;
+  /** Cells next to the centre that are ignored along every line of sight. Defaults to 0. */
+  skipRadius?: number;
+  /** Zenith/nadir reduction. Defaults to `'anglev1'`. */
+  comparison?: GPUGeomorphonComparison;
+  /** Caller-owned outputs. */
+  output: GPUGeomorphonsOutput;
   /** Cell size interpretation. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Direction in which the row index increases. Defaults to `'south'` (north-up rasters). */
-  rowDirection?: GPUTerrainRowDirection;
+  rowDirection?: GPURasterRowDirection;
 };
 
 /**
@@ -150,7 +167,10 @@ export type GPUGeomorphonsProps = {
  * instead of arctangents, so ties on integer terrain are exact. Cells that are invalid, or within
  * `skipRadius + 1` cells of the raster border, receive form 0, ternary 0, pattern 0, and
  * validity 0. Invalid samples along a line of sight are ignored; a direction whose first
- * neighbour is invalid, or that has no valid sample, contributes pattern digit 0.
+ * neighbour is invalid, or that has no valid sample, contributes pattern digit 0. GRASS keeps its
+ * initial -90/+90 degree zenith/nadir angles for a line of sight with no sample after the skip,
+ * which `anglev2` reads as a tie and turns into +1; here no sample means no relief evidence, so the
+ * digit stays 0 in every comparison mode.
  *
  * `requiredHalo` equals `searchRadius` cells along the row metric; for non-square geographic
  * cells the east-west reach in columns can exceed it. The cell size is the ground size of the
@@ -168,7 +188,8 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     this.id = props.id ?? 'geomorphons';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     const skipRadius = props.skipRadius ?? 0;
     if (!Number.isSafeInteger(props.searchRadius) || props.searchRadius < 1) {
       throw new Error(`${id} searchRadius must be a positive integer`);
@@ -182,29 +203,30 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     if (!['anglev1', 'anglev2', 'anglev2-distance'].includes(props.comparison ?? 'anglev1')) {
       throw new Error(`${id} comparison must be anglev1, anglev2, or anglev2-distance`);
     }
-    if (!props.forms && !props.ternary && !props.pattern && !props.validity) {
+    if (!output.forms && !output.ternary && !output.pattern && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
     }
     for (const [name, view] of [
-      ['forms', props.forms],
-      ['ternary', props.ternary],
-      ['pattern', props.pattern],
-      ['validity', props.validity]
+      ['forms', output.forms],
+      ['ternary', output.ternary],
+      ['pattern', output.pattern],
+      ['outputValidity', output.outputValidity]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} output.${name}`);
         if (view.length !== pixelCount) {
-          throw new Error(`${id} ${name} must contain one value per pixel`);
+          throw new Error(`${id} output.${name} must contain one value per pixel`);
         }
       }
     }
-    validateTerrainSettings(id, props.settings, GPU_GEOMORPHONS_PARAMETER_LENGTH);
-    validateTerrainCellSizeMode(id, props.cellSizeMode);
-    validateTerrainRowDirection(id, props.rowDirection);
-    validateTerrainBuffersDistinct(
+    validateRasterParameters(id, props.parameters, GPU_GEOMORPHONS_PARAMETER_LENGTH);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterRowDirection(id, props.rowDirection);
+    validateRasterBuffersDistinct(
       id,
-      [props.forms, props.ternary, props.pattern, props.validity],
-      [...getTerrainBandViews(props.elevation), props.settings]
+      [output.forms, output.ternary, output.pattern, output.outputValidity],
+      [...getRasterBandViews(props.elevation), props.parameters]
     );
     this.requiredHalo = props.searchRadius;
   }
@@ -214,22 +236,17 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
-      props.forms,
-      props.ternary,
-      props.pattern,
-      props.validity
+      props.parameters,
+      output.forms,
+      output.ternary,
+      output.pattern,
+      output.outputValidity
     ]);
-    const source = getTerrainElevationNodes(
-      graph,
-      id,
-      props.elevation,
-      props.width,
-      props.height,
-      true
-    );
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const validity = source.band.validity;
     if (!validity || source.band.storage.kind !== 'buffer') {
       throw new Error(`${id} could not canonicalize elevation`);
@@ -237,13 +254,13 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     const bindings: WGSLKernelBinding[] = [
       {name: 'elevation', view: source.band.storage.values, type: 'f32', access: 'read'},
       {name: 'elevationValidity', view: validity, type: 'u32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
     for (const [name, view] of [
-      ['formValues', props.forms],
-      ['ternaryValues', props.ternary],
-      ['patternValues', props.pattern],
-      ['validityValues', props.validity]
+      ['formValues', output.forms],
+      ['ternaryValues', output.ternary],
+      ['patternValues', output.pattern],
+      ['validityValues', output.outputValidity]
     ] as const) {
       if (view) {
         bindings.push({name, view, type: 'u32', access: 'read_write'});
@@ -260,7 +277,7 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
         operation: 'GPUGeomorphons',
         variant: `${comparison}-${cellSizeMode}-skip${skipRadius}-radius${props.searchRadius}`,
         bindings,
-        invocationCount: props.width * props.height,
+        invocationCount: width * height,
         declarations: getDeclarations(props, comparison, skipRadius, cellSizeMode, rowDirection),
         body: getBody(props)
       })
@@ -272,19 +289,19 @@ function getDeclarations(
   props: GPUGeomorphonsProps,
   comparison: GPUGeomorphonComparison,
   skipRadius: number,
-  cellSizeMode: GPUTerrainCellSizeMode,
-  rowDirection: GPUTerrainRowDirection
+  cellSizeMode: GPURasterCellSizeMode,
+  rowDirection: GPURasterRowDirection
 ): string {
   return /* wgsl */ `
-const WIDTH: u32 = ${props.width}u;
-const HEIGHT: u32 = ${props.height}u;
+const WIDTH: u32 = ${props.grid.width}u;
+const HEIGHT: u32 = ${props.grid.height}u;
 const SEARCH_RADIUS: i32 = ${props.searchRadius};
 const SKIP_RADIUS: i32 = ${skipRadius};
 const COMPARISON: u32 = ${comparison === 'anglev1' ? 0 : comparison === 'anglev2' ? 1 : 2}u;
-${getTerrainRowNorthSignWGSL(rowDirection, 'i32')}
-${TERRAIN_DEGREES_TO_RADIANS_WGSL}
-${TERRAIN_WGSL_HELPERS}
-${getTerrainGroundCellSizeWGSL(cellSizeMode, TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
+${getRasterRowNorthSignWGSL(rowDirection, 'i32')}
+${RASTER_DEGREES_TO_RADIANS_WGSL}
+${RASTER_WGSL_HELPERS}
+${getRasterGroundCellSizeWGSL(cellSizeMode, TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}
 
 // Directions in GRASS order: NE, N, NW, W, SW, S, SE, E.
 const DIRECTION_COLUMN = array<i32, 8>(1, 0, -1, -1, -1, 0, 1, 1);
@@ -361,10 +378,12 @@ fn getPatternDigit(
 
 function getBody(props: GPUGeomorphonsProps): string {
   const writes = [
-    props.forms ? 'formValues[formValuesOffset + index] = outputForm;' : '',
-    props.ternary ? 'ternaryValues[ternaryValuesOffset + index] = outputTernary;' : '',
-    props.pattern ? 'patternValues[patternValuesOffset + index] = outputPattern;' : '',
-    props.validity ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);' : ''
+    props.output.forms ? 'formValues[formValuesOffset + index] = outputForm;' : '',
+    props.output.ternary ? 'ternaryValues[ternaryValuesOffset + index] = outputTernary;' : '',
+    props.output.pattern ? 'patternValues[patternValuesOffset + index] = outputPattern;' : '',
+    props.output.outputValidity
+      ? 'validityValues[validityValuesOffset + index] = select(0u, 1u, isValid);'
+      : ''
   ].join('\n  ');
   return /* wgsl */ `
   let row = i32(index / WIDTH);
@@ -390,6 +409,14 @@ function getBody(props: GPUGeomorphonsProps): string {
     // The strict search limit is shrunk by 1e-5 so a sample exactly at the limit is excluded even
     // when f32 cell sizes round (for example cos(0) or equal east-west and north-south sizes).
     let searchDistance = f32(SEARCH_RADIUS) * groundCell.y * 0.99999;
+    // GRASS r.geomorphon ignores flat_distance at or inside the skip distance and at or beyond
+    // the search distance (review C-13).
+    let skipDistance = f32(SKIP_RADIUS) * groundCell.y;
+    let flatReference = select(
+      0.0,
+      flatDistance,
+      flatDistance > skipDistance && flatDistance < f32(SEARCH_RADIUS) * groundCell.y
+    );
     var digits: array<u32, 8>;
     var minusCount = 0u;
     var plusCount = 0u;
@@ -428,7 +455,7 @@ function getBody(props: GPUGeomorphonsProps): string {
       }
       if (zenithCount == 0) { continue; }
       let digit = getPatternDigit(
-        zenithHeight, zenithCount, nadirHeight, nadirCount, tangent, flatDistance, step
+        zenithHeight, zenithCount, nadirHeight, nadirCount, tangent, flatReference, step
       );
       digits[direction] = u32(digit + 1);
       if (digit > 0) { plusCount++; }

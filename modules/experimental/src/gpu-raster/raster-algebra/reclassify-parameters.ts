@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from './raster-algebra-utils';
+import {validateParameterTarget} from '../raster-band-utils';
 
 /** Number of float32 elements in a {@link GPURasterReclassify} parameter view. */
 export const GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH = 4;
@@ -35,9 +35,15 @@ export function getGPURasterReclassifyParameterValues(
   settings: GPURasterReclassifySettings,
   target: Float32Array = new Float32Array(GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH)
 ): Float32Array {
-  validateParameterTarget('Raster reclassify', target, GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH);
+  validateParameterTarget(
+    'getGPURasterReclassifyParameterValues',
+    target,
+    GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH
+  );
   if (!Number.isSafeInteger(settings.breakCount) || settings.breakCount < 0) {
-    throw new Error('Raster reclassify breakCount must be a non-negative integer');
+    throw new Error(
+      'getGPURasterReclassifyParameterValues breakCount must be a non-negative integer'
+    );
   }
   target[0] = settings.breakCount;
   target[1] = settings.closed === 'right' ? 1 : 0;

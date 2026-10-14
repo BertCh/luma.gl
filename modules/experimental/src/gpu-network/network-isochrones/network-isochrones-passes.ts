@@ -168,11 +168,21 @@ fn isochronesGetPosition(node: u32) -> vec2f {
   let radius = max(max(params[paramsOffset + 5u], 0.0), 0.5 * length(cellSize));
   let reachX = i32(min(u32(ceil(radius / cellSize.x)), MAXIMUM_BUFFER_PIXELS));
   let reachY = i32(min(u32(ceil(radius / cellSize.y)), MAXIMUM_BUFFER_PIXELS));
+  // Extent culling (review B-20): an edge, or a sample, farther than the splat reach from the
+  // raster extent touches no pixel.
+  let maximum = vec2f(params[paramsOffset + 3u], params[paramsOffset + 4u]);
+  let reach = vec2f(f32(reachX), f32(reachY)) * abs(cellSize) + vec2f(radius);
+  let extentLow = min(minimum, maximum) - reach;
+  let extentHigh = max(minimum, maximum) + reach;
+  if (any(max(startPoint, endPoint) < extentLow) || any(min(startPoint, endPoint) > extentHigh)) {
+    return;
+  }
   let spacing = 0.5 * radius;
   let sampleCount = clamp(u32(ceil(length(endPoint - startPoint) / spacing)) + 1u, 2u, MAXIMUM_SAMPLES);
   for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) {
     let t = f32(sampleIndex) / f32(sampleCount - 1u);
     let point = mix(startPoint, endPoint, vec2f(t));
+    if (any(point < extentLow) || any(point > extentHigh)) { continue; }
     let edgeCost = sourceCost + t * weight;
     let centerPixel = vec2i(floor((point - minimum) / cellSize));
     for (var dy = -reachY; dy <= reachY; dy++) {

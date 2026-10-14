@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from './raster-algebra-utils';
+import {validateParameterTarget} from '../raster-band-utils';
 
 /** Number of float32 elements in a {@link GPURasterCellStatistics} parameter view. */
 export const GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH = 4;
@@ -35,13 +35,15 @@ export function getGPURasterCellStatisticsParameterValues(
   target: Float32Array = new Float32Array(GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH)
 ): Float32Array {
   validateParameterTarget(
-    'Raster cell statistics',
+    'getGPURasterCellStatisticsParameterValues',
     target,
     GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH
   );
   const minimumValidCount = settings.minimumValidCount ?? 1;
   if (!Number.isSafeInteger(minimumValidCount) || minimumValidCount < 0) {
-    throw new Error('Raster cell statistics minimumValidCount must be a non-negative integer');
+    throw new Error(
+      'getGPURasterCellStatisticsParameterValues minimumValidCount must be a non-negative integer'
+    );
   }
   target[0] = settings.noDataPolicy === 'propagate' ? 1 : 0;
   target[1] = minimumValidCount;
@@ -90,10 +92,16 @@ export function getGPURasterConditionalParameterValues(
   settings: GPURasterConditionalSettings = {},
   target: Float32Array = new Float32Array(GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH)
 ): Float32Array {
-  validateParameterTarget('Raster conditional', target, GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH);
+  validateParameterTarget(
+    'getGPURasterConditionalParameterValues',
+    target,
+    GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH
+  );
   const comparison = settings.comparison ?? '>';
   if (!(comparison in COMPARISON_CODES)) {
-    throw new Error(`Raster conditional comparison ${comparison} is not supported`);
+    throw new Error(
+      `getGPURasterConditionalParameterValues comparison ${comparison} is not supported`
+    );
   }
   const threshold = settings.threshold ?? 0;
   target.fill(0, 0, GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH);
@@ -164,15 +172,15 @@ export type GPURasterArithmeticSettings = {
   /** `b` when no `b` view is bound. Defaults to 0. */
   constantB?: number;
   /** Optional output clamp lower bound. Defaults to `-Infinity`. */
-  clampMin?: number;
+  clampMinimum?: number;
   /** Optional output clamp upper bound. Defaults to `+Infinity`. */
-  clampMax?: number;
+  clampMaximum?: number;
 };
 
 /**
  * Packs per-frame {@link GPURasterArithmetic} parameters.
  *
- * Layout (float32): `[operation, scaleA, offsetA, scaleB, offsetB, constantB, clampMin, clampMax]`
+ * Layout (float32): `[operation, scaleA, offsetA, scaleB, offsetB, constantB, clampMinimum, clampMaximum]`
  * with codes from {@link GPU_RASTER_ARITHMETIC_OPERATION_CODES}.
  *
  * @param settings Operation, operand scales, constant, and clamp.
@@ -182,10 +190,16 @@ export function getGPURasterArithmeticParameterValues(
   settings: GPURasterArithmeticSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH)
 ): Float32Array {
-  validateParameterTarget('Raster arithmetic', target, GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH);
+  validateParameterTarget(
+    'getGPURasterArithmeticParameterValues',
+    target,
+    GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH
+  );
   const code = GPU_RASTER_ARITHMETIC_OPERATION_CODES[settings.operation];
   if (code === undefined) {
-    throw new Error(`Raster arithmetic operation ${settings.operation} is not supported`);
+    throw new Error(
+      `getGPURasterArithmeticParameterValues operation ${settings.operation} is not supported`
+    );
   }
   target[0] = code;
   target[1] = settings.scaleA ?? 1;
@@ -193,7 +207,7 @@ export function getGPURasterArithmeticParameterValues(
   target[3] = settings.scaleB ?? 1;
   target[4] = settings.offsetB ?? 0;
   target[5] = settings.constantB ?? 0;
-  target[6] = settings.clampMin ?? -Infinity;
-  target[7] = settings.clampMax ?? Infinity;
+  target[6] = settings.clampMinimum ?? -Infinity;
+  target[7] = settings.clampMaximum ?? Infinity;
   return target;
 }

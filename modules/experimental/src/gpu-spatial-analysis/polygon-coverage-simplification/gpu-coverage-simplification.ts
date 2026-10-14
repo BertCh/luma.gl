@@ -6,7 +6,6 @@ import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,32 +17,47 @@ import {
   getWGSLFloatLiteral
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
   getKeyGroupNodes,
   getKeyPairSortNodes,
   KEY_PAIR_INVALID
 } from '../spatial-weights/key-pair-grouping';
-import {GPUSegmentIntersection} from '../segment-intersection/index';
+import {
+  getGPUSegmentIntersectionMaximumVertexCount,
+  GPUSegmentIntersection
+} from '../segment-intersection/index';
 import {
   GPULineSimplification,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   type GPULineSimplificationProps
 } from '../line-simplification/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUCoverageSimplification';
 const INVALID = `${KEY_PAIR_INVALID}u`;
 /** Bit of a vertex's `prev` entry that marks the first vertex of its ring. */
 const RING_BEGIN_BIT = '0x80000000u';
-/** Default number of detect-and-repair rounds of the topology pass. */
-const DEFAULT_TOPOLOGY_ROUNDS = 4;
-/** Number of rows `topologyStats` must hold. */
-export const GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATS_LENGTH = 4;
-const TOPOLOGY_STATS_LENGTH = GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATS_LENGTH;
+/** Default number of detect-and-repair iterations of the topology pass. */
+const DEFAULT_TOPOLOGY_ITERATION_COUNT = 4;
+/** Number of rows `output.topologyStatistics` must hold. */
+export const GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH = 4;
+const TOPOLOGY_STATS_LENGTH = GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH;
+/**
+ * Work-stats word that absorbs the crossing counts of the intermediate repair rounds. Nothing reads
+ * it; a shared word keeps the round index out of the classify kernel (one pipeline for all of them).
+ */
+const INTERMEDIATE_CROSSING_SLOT = TOPOLOGY_STATS_LENGTH;
 
 /** Caller-owned outputs of {@link GPUCoverageSimplification}. */
 export type GPUCoverageSimplificationOutput = {
@@ -54,38 +68,44 @@ export type GPUCoverageSimplificationOutput = {
   positions: GraphDataView<'float32x2'>;
   /**
    * `ringCount + 1` offsets into `positions`; ring `r` keeps rows `[ringOffsets[r], ringOffsets[r + 1])`.
-   * Polygon-to-ring offsets are unchanged, so the input `polygonOffsets` still apply. Offsets are
-   * clamped to the capacity so rings stay consistent after an overflow.
+   * The ring count is unchanged, so the input `featureOffsets` and `polygonOffsets` still apply and
+   * `positions` with these `ringOffsets` is a polygon port with those offsets. Offsets are clamped
+   * to the capacity so rings stay consistent after an overflow.
    */
   ringOffsets: GraphDataView<'uint32'>;
-  /** Optional per-input-vertex `1`/`0` keep mask, `positions.length` rows of the input. */
-  keepMask?: GraphDataView<'uint32'>;
-  /** One-row flag: 1 when more vertices were kept than `positions` can hold, else 0. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped kept-vertex total. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /** Optional per-input-vertex `1`/`0` output mask, `positions.length` rows of the input. */
+  outputMask?: GraphDataView<'uint32'>;
   /**
-   * Optional {@link GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATS_LENGTH} rows describing the topology
-   * pass (all zero when `topologyRounds` is 0):
+   * Optional {@link GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH} rows describing the
+   * topology pass (all zero when `topologyIterationCount` is 0):
    * - `[0]` crossings before any repair: pairs of simplified arc segments that intersect (cross,
    *   touch in a T-junction or overlap) without sharing a coverage point.
-   * - `[1]` crossings remaining after the last repair round.
-   * - `[2]` vertices restored by the repair rounds (the ring-minimum step is not counted).
-   * - `[3]` 1 when the candidate pair capacity overflowed in some round, so the counts are lower
-   *   bounds.
+   * - `[1]` crossings remaining after the last repair iteration.
+   * - `[2]` vertices restored by the repair iterations (the ring-minimum step is not counted).
+   * - `[3]` 1 when the candidate pair capacity overflowed in some iteration, so the counts are
+   *   lower bounds.
    * Crossings fixed is `[0] - [1]`.
    */
-  topologyStats?: GraphDataView<'uint32'>;
+  topologyStatistics?: GraphDataView<'uint32'>;
+  /** Status scalars. */
+  status: {
+    /** Optional one-row scalar: 1 when every arc was decided within `maximumIterations`, else 0. */
+    converged?: GraphDataView<'uint32'>;
+    /** One-row flag: 1 when more vertices were kept than `positions` can hold, else 0. */
+    overflow: GraphDataView<'uint32'>;
+    /** Optional one-row unclamped kept-vertex total. */
+    requiredCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
  * Properties for {@link GPUCoverageSimplification}.
  *
  * Per-frame (no recompile): the contents of `parameters` (the tolerance) and of the input
- * buffers, as long as lengths stay the same. Compile-time: `snapTolerance`, `maximumRounds`, all
+ * buffers, as long as lengths stay the same. Compile-time: `snapTolerance`, `maximumIterations`, all
  * view lengths and which optional outputs are present.
  */
-export type GPUCoverageSimplificationProps = {
+export type GPUCoverageSimplificationProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'coverage-simplification'`. */
   id?: string;
   /**
@@ -96,14 +116,12 @@ export type GPUCoverageSimplificationProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Flattened ring vertices (GeoArrow layout, as `GPUContiguityWeights`). Planar, finite
-   * coordinates; use tile- or view-local units because distances are f32.
+   * Layout notes. Rows are features: the coverage identity of a ring is its feature, and two rings
+   * of one feature never partner each other. `positions` are flattened ring vertices, planar and
+   * finite (use tile- or view-local units because distances are f32). Rings close implicitly and
+   * every ring (shells, holes) is simplified. `ringOffsets`, `polygonOffsets` and `featureOffsets`
+   * each carry a terminal entry.
    */
-  positions: GraphDataView<'float32x2'>;
-  /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly. */
-  ringOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets with a terminal entry. Every ring (shells, holes) is simplified. */
-  polygonOffsets: GraphDataView<'uint32'>;
   /**
    * Vertex snap tolerance, with the same meaning as `GPUContiguityWeights.snapTolerance`. Two
    * vertices that snap to the same point are one point of the coverage. Defaults to `0` (exact f32
@@ -122,23 +140,21 @@ export type GPUCoverageSimplificationProps = {
    * of the coverage count as outer boundary. Compile-time.
    */
   simplifyBoundary?: boolean;
-  /** Compile-time cap on Douglas-Peucker rounds, as `GPULineSimplification.maximumRounds`. */
-  maximumRounds?: number;
+  /** Compile-time cap on Douglas-Peucker iterations, as `GPULineSimplification.maximumIterations`. */
+  maximumIterations?: number;
   /**
-   * Compile-time number of detect-and-repair rounds that make the simplified coverage
+   * Compile-time number of detect-and-repair iterations that make the simplified coverage
    * topology-preserving. Each round finds simplified segments that cross, touch or overlap
    * without sharing a coverage point and restores the original vertex farthest from each of them.
    * `0` skips detection and repair (the ring minimum still applies). Defaults to `4`.
    */
-  topologyRounds?: number;
+  topologyIterationCount?: number;
   /**
-   * Compile-time capacity of the candidate pair list of each detection round. Shared arcs appear
+   * Compile-time capacity of the candidate pair list of each detection iteration. Shared arcs appear
    * in two rings and every node touches several segments, so the list holds those legitimate
-   * pairs too. Defaults to `max(256, 4 * vertices)`. On overflow `topologyStats[3]` is set.
+   * pairs too. Defaults to `max(256, 4 * vertices)`. On overflow `output.topologyStatistics[3]` is set.
    */
   topologyPairCapacity?: number;
-  /** Optional one-row scalar: 1 when every arc was decided within `maximumRounds`, else 0. */
-  converged?: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPUCoverageSimplificationOutput;
 };
@@ -168,17 +184,17 @@ export type GPUCoverageSimplificationProps = {
  *
  * **Guarantees.** Neighbours stay gap-free and overlap-free along shared arcs: the simplified shared
  * boundary of two polygons is the same polyline in both rings. The kept set along each arc equals
- * Douglas-Peucker on that arc when `converged` is 1, before the topology steps below add vertices.
+ * Douglas-Peucker on that arc when `status.converged` is 1, before the topology steps below add vertices.
  *
  * **Topology preservation** (Shapely `coverage_simplify`, PostGIS `ST_CoverageSimplify`). Arc
  * endpoints (junctions where the partner changes, and ring starts) are always kept, so nodes never
  * move. A ring never keeps fewer than three vertices: if Douglas-Peucker leaves fewer, the
- * farthest original vertices are restored. Then `topologyRounds` rounds run: the simplified rings
+ * farthest original vertices are restored. Then `topologyIterationCount` iterations run: the simplified rings
  * are compacted, `GPUSegmentIntersection` lists intersecting segment pairs with exact predicates,
  * pairs that share a coverage point (a node) or are the same shared edge are ignored, and for every
  * remaining pair the original vertex farthest from each segment's span is restored (one
  * Douglas-Peucker split step; decisions are shared through point IDs, so neighbours still agree).
- * `output.topologyStats` reports crossings before, crossings remaining after the last round, and
+ * `output.topologyStatistics` reports crossings before, crossings remaining after the last iteration, and
  * restored vertices. Crossings that need more splits than the rounds provide stay in the output
  * and are counted as remaining; an input that is itself self-intersecting cannot be repaired.
  * Non-finite vertices are unsupported (never kept).
@@ -202,30 +218,26 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 1 || props.positions.length >= 2 ** 30) {
-      throw new Error(`${id} positions must hold between 1 and 2^30 - 1 vertices`);
+    if (props.positions.length < 1) {
+      throw new Error(`${id} positions must hold at least one vertex`);
     }
     validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
     validatePackedUint32View(props.polygonOffsets, `${id} polygonOffsets`);
-    if (props.ringOffsets.length < 2) {
-      throw new Error(`${id} ringOffsets must hold at least two entries`);
+    validatePackedUint32View(props.featureOffsets, `${id} featureOffsets`);
+    for (const [name, view] of [
+      ['ringOffsets', props.ringOffsets],
+      ['polygonOffsets', props.polygonOffsets],
+      ['featureOffsets', props.featureOffsets]
+    ] as const) {
+      if (view.length < 2) {
+        throw new Error(`${id} ${name} must hold at least two entries`);
+      }
     }
-    if (props.polygonOffsets.length < 2) {
-      throw new Error(`${id} polygonOffsets must hold at least two entries`);
+    if (props.topologyIterationCount !== undefined) {
+      validateCapacity(id, 'topologyIterationCount', props.topologyIterationCount, 0, 16);
     }
-    if (
-      props.topologyRounds !== undefined &&
-      (!Number.isInteger(props.topologyRounds) ||
-        props.topologyRounds < 0 ||
-        props.topologyRounds > 16)
-    ) {
-      throw new Error(`${id} topologyRounds must be an integer from 0 to 16`);
-    }
-    if (
-      props.topologyPairCapacity !== undefined &&
-      (!Number.isInteger(props.topologyPairCapacity) || props.topologyPairCapacity < 1)
-    ) {
-      throw new Error(`${id} topologyPairCapacity must be a positive integer`);
+    if (props.topologyPairCapacity !== undefined) {
+      validateCapacity(id, 'topologyPairCapacity', props.topologyPairCapacity);
     }
     if (props.simplifyBoundary !== undefined && typeof props.simplifyBoundary !== 'boolean') {
       throw new Error(`${id} simplifyBoundary must be a boolean`);
@@ -251,34 +263,35 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
     if (output.ringOffsets.length !== props.ringOffsets.length) {
       throw new Error(`${id} output.ringOffsets length must equal ringOffsets length`);
     }
-    validatePackedUint32View(output.overflow, `${id} output.overflow`);
-    if (output.overflow.length < 1) {
-      throw new Error(`${id} output.overflow must hold one uint32`);
+    const {overflow, requiredCount} = output.status;
+    validatePackedUint32View(overflow, `${id} output.status.overflow`);
+    if (overflow.length < 1) {
+      throw new Error(`${id} output.status.overflow must hold one uint32`);
     }
-    if (output.keepMask) {
-      validatePackedUint32View(output.keepMask, `${id} output.keepMask`);
-      if (output.keepMask.length !== props.positions.length) {
-        throw new Error(`${id} output.keepMask length must equal positions length`);
+    if (output.outputMask) {
+      validatePackedUint32View(output.outputMask, `${id} output.outputMask`);
+      if (output.outputMask.length !== props.positions.length) {
+        throw new Error(`${id} output.outputMask length must equal positions length`);
       }
     }
-    if (output.topologyStats) {
-      validatePackedUint32View(output.topologyStats, `${id} output.topologyStats`);
-      if (output.topologyStats.length < TOPOLOGY_STATS_LENGTH) {
+    if (output.topologyStatistics) {
+      validatePackedUint32View(output.topologyStatistics, `${id} output.topologyStatistics`);
+      if (output.topologyStatistics.length < TOPOLOGY_STATS_LENGTH) {
         throw new Error(
-          `${id} output.topologyStats must hold ${TOPOLOGY_STATS_LENGTH} uint32 rows`
+          `${id} output.topologyStatistics must hold ${TOPOLOGY_STATS_LENGTH} uint32 rows`
         );
       }
     }
-    if (output.requiredCount) {
-      validatePackedUint32View(output.requiredCount, `${id} output.requiredCount`);
-      if (output.requiredCount.length < 1) {
-        throw new Error(`${id} output.requiredCount must hold one uint32`);
+    if (requiredCount) {
+      validatePackedUint32View(requiredCount, `${id} output.status.requiredCount`);
+      if (requiredCount.length < 1) {
+        throw new Error(`${id} output.status.requiredCount must hold one uint32`);
       }
     }
-    if (props.converged) {
-      validatePackedUint32View(props.converged, `${id} converged`);
-      if (props.converged.length < 1) {
-        throw new Error(`${id} converged must hold one uint32`);
+    if (output.status.converged) {
+      validatePackedUint32View(output.status.converged, `${id} output.status.converged`);
+      if (output.status.converged.length < 1) {
+        throw new Error(`${id} output.status.converged must hold one uint32`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -286,13 +299,19 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
       [
         output.positions,
         output.ringOffsets,
-        output.keepMask,
-        output.overflow,
-        output.requiredCount,
-        output.topologyStats,
-        props.converged
+        output.outputMask,
+        overflow,
+        requiredCount,
+        output.topologyStatistics,
+        output.status.converged
       ],
-      [props.positions, props.ringOffsets, props.polygonOffsets, props.parameters]
+      [
+        props.positions,
+        props.ringOffsets,
+        props.polygonOffsets,
+        props.featureOffsets,
+        props.parameters
+      ]
     );
   }
 
@@ -301,29 +320,40 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, ringOffsets, polygonOffsets, output} = props;
+    const {positions, ringOffsets, polygonOffsets, featureOffsets, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       ringOffsets,
       polygonOffsets,
+      featureOffsets,
       props.parameters,
-      props.converged,
+      output.status.converged,
       output.positions,
       output.ringOffsets,
-      output.keepMask,
-      output.overflow,
-      output.requiredCount,
-      output.topologyStats
+      output.outputMask,
+      output.status.overflow,
+      output.status.requiredCount,
+      output.topologyStatistics
     ]);
+    // Every topology round builds a segment table over the compacted vertices.
+    validateMaximumCount(
+      id,
+      'positions rows',
+      props.positions.length,
+      getGPUSegmentIntersectionMaximumVertexCount(graph.device)
+    );
     const vertexCount = positions.length;
     const ringCount = ringOffsets.length - 1;
-    const polygonCount = polygonOffsets.length - 1;
+    const featureCount = featureOffsets.length - 1;
     const outputCapacity = output.positions.length;
     const snapTolerance = props.snapTolerance ?? 0;
     const lineRowCapacity = 2 * vertexCount;
     const view = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
 
+    // First ring of every feature (terminal entry included), so a kernel finds the feature of a
+    // ring with one search instead of reading both offset levels.
+    const featureRingStarts = view('feature-ring-starts', featureCount + 1);
     const vertexHigh = view('vertex-high', vertexCount);
     const vertexLow = view('vertex-low', vertexCount);
     const vertexPolygon = view('vertex-polygon', vertexCount);
@@ -332,13 +362,25 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
 
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-feature-ring-starts`,
+        operation: OPERATION,
+        variant: 'feature-ring-starts',
+        bindings: [
+          {name: 'featureOffsets', view: featureOffsets, type: 'u32', access: 'read'},
+          {name: 'polygonOffsets', view: polygonOffsets, type: 'u32', access: 'read'},
+          {name: 'featureRingStarts', view: featureRingStarts, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: featureCount + 1,
+        body: 'featureRingStarts[featureRingStartsOffset + index] = polygonOffsets[polygonOffsetsOffset + featureOffsets[featureOffsetsOffset + index]];'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-vertex-topology`,
         operation: OPERATION,
         variant: 'vertex-topology',
         bindings: [
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'ringOffsets', view: ringOffsets, type: 'u32', access: 'read'},
-          {name: 'polygonOffsets', view: polygonOffsets, type: 'u32', access: 'read'},
+          {name: 'featureRingStarts', view: featureRingStarts, type: 'u32', access: 'read'},
           {name: 'vertexHigh', view: vertexHigh, type: 'u32', access: 'read_write'},
           {name: 'vertexLow', view: vertexLow, type: 'u32', access: 'read_write'},
           {name: 'vertexPolygon', view: vertexPolygon, type: 'u32', access: 'read_write'},
@@ -347,7 +389,7 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
         ],
         invocationCount: vertexCount,
         declarations: `const RING_COUNT: u32 = ${ringCount}u;
-const POLYGON_COUNT: u32 = ${polygonCount}u;
+const FEATURE_COUNT: u32 = ${featureCount}u;
 const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 
 ${IS_FINITE_FLOAT_WGSL}
@@ -369,11 +411,12 @@ fn quantise(value: f32) -> u32 {
       high = middle;
     }
   }
+  // The coverage identity of a ring is its feature: first ring of feature f is featureRingStarts[f].
   var polygon = 0u;
-  high = POLYGON_COUNT;
+  high = FEATURE_COUNT;
   while (polygon + 1u < high) {
     let middle = (polygon + high) / 2u;
-    if (polygonOffsets[polygonOffsetsOffset + middle] <= ring) {
+    if (featureRingStarts[featureRingStartsOffset + middle] <= ring) {
       polygon = middle;
     } else {
       high = middle;
@@ -384,8 +427,8 @@ fn quantise(value: f32) -> u32 {
   let ringBegin = ringOffsets[ringOffsetsOffset + ring];
   let ringEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
   let inRing = index >= ringBegin && index < ringEnd &&
-    ring >= polygonOffsets[polygonOffsetsOffset] && ring < polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT] &&
-    ring < polygonOffsets[polygonOffsetsOffset + polygon + 1u];
+    ring >= featureRingStarts[featureRingStartsOffset] && ring < featureRingStarts[featureRingStartsOffset + FEATURE_COUNT] &&
+    ring < featureRingStarts[featureRingStartsOffset + polygon + 1u];
   let valid = inRing && isFiniteFloat(x) && isFiniteFloat(y);
   vertexHigh[vertexHighOffset + index] = select(${INVALID}, quantise(x), valid);
   vertexLow[vertexLowOffset + index] = select(${INVALID}, quantise(y), valid);
@@ -705,14 +748,18 @@ const RING_COUNT: u32 = ${ringCount}u;`,
       id: `${id}-arcs`,
       spatialContext: this.spatialContext,
       positions: linePositions,
-      trackOffsets,
+      lineOffsets: trackOffsets,
       importance: lineImportance,
-      maximumRounds: props.maximumRounds,
-      status: props.converged ? {converged: props.converged} : undefined,
+      maximumIterations: props.maximumIterations,
       parameters: props.parameters,
-      selection: {
-        output: {ids: selectionIds, count: selectionCount, overflow: selectionOverflow},
-        keepMask: lineKeep
+      output: {
+        ids: selectionIds,
+        outputMask: lineKeep,
+        status: {
+          count: selectionCount,
+          overflow: selectionOverflow,
+          ...(output.status.converged ? {converged: output.status.converged} : {})
+        }
       }
     };
     nodes.push(...new GPULineSimplification(lineProps).getCommandNodes(graph));
@@ -770,7 +817,7 @@ const RING_COUNT: u32 = ${ringCount}u;`,
     );
 
     // Topology repair: keep at least three vertices per ring, then detect and repair crossings.
-    const topologyRounds = props.topologyRounds ?? DEFAULT_TOPOLOGY_ROUNDS;
+    const topologyRounds = props.topologyIterationCount ?? DEFAULT_TOPOLOGY_ITERATION_COUNT;
     {
       nodes.push(
         ...getRingCollapseNodes(graph, {
@@ -785,21 +832,20 @@ const RING_COUNT: u32 = ${ringCount}u;`,
         })
       );
     }
-    if (topologyRounds === 0 && output.topologyStats) {
+    if (topologyRounds === 0 && output.topologyStatistics) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-topology-stats-zero`,
           operation: OPERATION,
-          view: output.topologyStats,
+          view: output.topologyStatistics,
           type: 'u32',
           value: '0u'
         })
       );
     }
     if (topologyRounds > 0) {
-      const workStats = view('topology-work', TOPOLOGY_STATS_LENGTH + topologyRounds + 1);
+      const workStats = view('topology-work', TOPOLOGY_STATS_LENGTH + 1);
       const ownedVertex = view('owned-vertex', vertexCount);
-      const featureOffsets = view('feature-offsets', polygonCount + 1);
       const pairCapacity = props.topologyPairCapacity ?? Math.max(256, 4 * vertexCount);
       nodes.push(
         createFillNode<Parameters>(graph, {
@@ -823,21 +869,11 @@ const RING_COUNT: u32 = ${ringCount}u;`,
   let partner = edgePartner[edgePartnerOffset + index];
   ownedVertex[ownedVertexOffset + index] =
     select(0u, select(0u, 1u, partner == ${INVALID} || polygon < partner), polygon != ${INVALID});`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-feature-offsets`,
-          operation: OPERATION,
-          variant: 'feature-offsets',
-          bindings: [
-            {name: 'featureOffsets', view: featureOffsets, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: polygonCount + 1,
-          body: 'featureOffsets[featureOffsetsOffset + index] = index;'
         })
       );
-      // The last round only measures the remaining crossings, so without `topologyStats` it would
+      // The last round only measures the remaining crossings, so without `topologyStatistics` it would
       // be a full compaction plus segment intersection whose result nobody reads.
-      const lastRound = output.topologyStats ? topologyRounds : topologyRounds - 1;
+      const lastRound = output.topologyStatistics ? topologyRounds : topologyRounds - 1;
       for (let round = 0; round <= lastRound; round++) {
         const isInitial = round === 0;
         const isFinal = round === topologyRounds;
@@ -857,12 +893,11 @@ const RING_COUNT: u32 = ${ringCount}u;`,
             pairCapacity,
             repair: !isFinal,
             statsView: workStats,
-            crossingSlot: isInitial ? 0 : isFinal ? 1 : -1,
-            roundIndex: round
+            crossingSlot: isInitial ? 0 : isFinal ? 1 : INTERMEDIATE_CROSSING_SLOT
           })
         );
       }
-      if (output.topologyStats) {
+      if (output.topologyStatistics) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-topology-stats-copy`,
@@ -870,17 +905,22 @@ const RING_COUNT: u32 = ${ringCount}u;`,
             variant: 'topology-stats-copy',
             bindings: [
               {name: 'workStats', view: workStats, type: 'u32', access: 'read'},
-              {name: 'topologyStats', view: output.topologyStats, type: 'u32', access: 'read_write'}
+              {
+                name: 'topologyStatistics',
+                view: output.topologyStatistics,
+                type: 'u32',
+                access: 'read_write'
+              }
             ],
             invocationCount: TOPOLOGY_STATS_LENGTH,
-            body: 'topologyStats[topologyStatsOffset + index] = workStats[workStatsOffset + index];'
+            body: 'topologyStatistics[topologyStatisticsOffset + index] = workStats[workStatsOffset + index];'
           })
         );
       }
     }
 
     // Per-vertex mask, rank, and ring-wise compaction.
-    const keepMask = output.keepMask ?? view('keep-mask', vertexCount);
+    const keepMask = output.outputMask ?? view('keep-mask', vertexCount);
     const keepRank = view('keep-rank', vertexCount);
     nodes.push(
       createKeepMaskNode<Parameters>(graph, `${id}-keep-mask`, pointIds, keepPoint, keepMask),
@@ -904,8 +944,8 @@ const RING_COUNT: u32 = ${ringCount}u;`,
         keepMask,
         keepRank,
         outputRingOffsets: output.ringOffsets,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
         vertexCount,
         ringCount,
         capacity: outputCapacity
@@ -1364,8 +1404,8 @@ function getTopologyRoundNodes<Parameters>(
     pairCapacity: number;
     repair: boolean;
     statsView: GraphDataView<'uint32'>;
+    /** Stats word that receives the repairable crossing count of this round. */
     crossingSlot: number;
-    roundIndex: number;
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, vertexCount, ringCount, pairCapacity, statsView} = props;
@@ -1390,7 +1430,7 @@ function getTopologyRoundNodes<Parameters>(
   const pairCount = view('pair-count', 1);
   const pairOverflow = view('pair-overflow', 1);
   const pairKinds = view('pair-kinds', pairCapacity);
-  const crossingSlot = props.crossingSlot >= 0 ? props.crossingSlot : 4 + props.roundIndex;
+  const {crossingSlot} = props;
 
   const nodes: GPUCommandNode<Parameters>[] = [
     createKeepMaskNode<Parameters>(graph, `${id}-keep-mask`, props.pointIds, props.keepPoint, mask),
@@ -1474,13 +1514,14 @@ function getTopologyRoundNodes<Parameters>(
         polygonOffsets: props.polygonOffsets,
         ringOffsets: compactRingOffsets
       },
-      pairs: {
-        leftIds: pairLeft,
-        rightIds: pairRight,
-        count: pairCount,
-        overflow: pairOverflow
-      },
-      kinds: pairKinds
+      output: {
+        pairs: {
+          leftIds: pairLeft,
+          rightIds: pairRight,
+          status: {count: pairCount, overflow: pairOverflow}
+        },
+        kinds: pairKinds
+      }
     }).getCommandNodes(graph),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-classify`,

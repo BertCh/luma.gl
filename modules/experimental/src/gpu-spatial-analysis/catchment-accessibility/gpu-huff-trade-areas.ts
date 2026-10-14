@@ -4,8 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -14,7 +12,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -28,6 +27,50 @@ export const GPU_HUFF_NO_TRADE_AREA = 0xffffffff;
 
 /** Number of `float32` words of the optional per-frame parameter view of {@link GPUHuffTradeAreas}. */
 export const GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH = 1;
+
+/** Per-frame settings of {@link GPUHuffTradeAreas}. */
+export type GPUHuffTradeAreasSettings = {
+  /** Attractiveness exponent `alpha`, positive and finite. Defaults to 1. */
+  exponent?: number;
+};
+
+/**
+ * Packs {@link GPUHuffTradeAreasSettings} into the `GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH` `float32`
+ * words `[exponent]` read by {@link GPUHuffTradeAreas}.
+ *
+ * @throws If `exponent` is not a positive finite number.
+ */
+export function getGPUHuffTradeAreasParameterValues(
+  settings: GPUHuffTradeAreasSettings = {}
+): Float32Array {
+  const exponent = settings.exponent ?? 1;
+  if (!Number.isFinite(exponent) || !(exponent > 0)) {
+    throw new Error('GPUHuffTradeAreas exponent must be positive and finite');
+  }
+  return Float32Array.of(exponent);
+}
+
+/** Caller-owned outputs of {@link GPUHuffTradeAreas}. */
+export type GPUHuffTradeAreasOutput = {
+  /**
+   * Trade area per demand location: the facility with the highest probability (the lowest ID wins
+   * ties), or {@link GPU_HUFF_NO_TRADE_AREA} when none is reachable.
+   */
+  tradeArea: GraphDataView<'uint32'>;
+  /**
+   * Optional Huff probability per demand-weights slot, aligned with `demandWeights.neighbors`:
+   * `p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik` (0 for slots past the last row, and for rows
+   * whose denominator is 0). Rows sum to 1.
+   */
+  probabilities?: GraphDataView<'float32'>;
+  /** Optional probability `p_ij` of the trade-area facility per demand location. */
+  tradeAreaProbability?: GraphDataView<'float32'>;
+  /**
+   * Optional expected demand `E_j = sum_i P_i p_ij` captured per facility. Needs `facilityWeights`
+   * and `demand`.
+   */
+  expectedDemand?: GraphDataView<'float32'>;
+};
 
 /**
  * Properties for {@link GPUHuffTradeAreas}.
@@ -55,25 +98,12 @@ export type GPUHuffTradeAreasProps = {
   /** Demand `P_i` per demand location. Required with `expectedDemand`. */
   demand?: GraphDataView<'float32'>;
   /**
-   * Optional per-frame parameters, `GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH` `float32` words
-   * `[exponent]`: the attractiveness exponent `alpha`. Without it `alpha = 1`. Must be positive.
+   * Optional per-frame parameters, `GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH` `float32` words written
+   * with {@link getGPUHuffTradeAreasParameterValues}. Without it `alpha = 1`.
    */
   parameters?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned Huff probability per demand-weights slot, aligned with
-   * `demandWeights.neighbors`: `p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik` (0 for slots past the
-   * last row, and for rows whose denominator is 0). Rows sum to 1.
-   */
-  probabilities?: GraphDataView<'float32'>;
-  /**
-   * Caller-owned trade area per demand location: the facility with the highest probability
-   * (the lowest ID wins ties), or {@link GPU_HUFF_NO_TRADE_AREA} when none is reachable.
-   */
-  tradeArea: GraphDataView<'uint32'>;
-  /** Optional caller-owned probability `p_ij` of the trade-area facility per demand location. */
-  tradeAreaProbability?: GraphDataView<'float32'>;
-  /** Optional caller-owned expected demand `E_j = sum_i P_i p_ij` captured per facility. */
-  expectedDemand?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUHuffTradeAreasOutput;
 };
 
 /**
@@ -106,40 +136,43 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     this.props = props;
     this.demandCount = validateGPUSpatialWeights(id, props.demandWeights, 'demandWeights');
     this.facilityCount = props.attractiveness.length;
+    const {output} = props;
     validatePackedView(props.attractiveness, ['float32'], `${id} attractiveness`);
-    validatePackedUint32View(props.tradeArea, `${id} tradeArea`);
+    validatePackedView(output.tradeArea, ['uint32'], `${id} output.tradeArea`);
     for (const [name, view] of [
       ['demand', props.demand],
       ['parameters', props.parameters],
-      ['probabilities', props.probabilities],
-      ['tradeAreaProbability', props.tradeAreaProbability],
-      ['expectedDemand', props.expectedDemand]
+      ['output.probabilities', output.probabilities],
+      ['output.tradeAreaProbability', output.tradeAreaProbability],
+      ['output.expectedDemand', output.expectedDemand]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
-    if (props.tradeArea.length !== this.demandCount) {
-      throw new Error(`${id} tradeArea length must equal the demand count`);
+    if (output.tradeArea.length !== this.demandCount) {
+      throw new Error(`${id} output.tradeArea length must equal the demand count`);
     }
-    if (props.tradeAreaProbability && props.tradeAreaProbability.length !== this.demandCount) {
-      throw new Error(`${id} tradeAreaProbability length must equal the demand count`);
+    if (output.tradeAreaProbability && output.tradeAreaProbability.length !== this.demandCount) {
+      throw new Error(`${id} output.tradeAreaProbability length must equal the demand count`);
     }
     if (
-      props.probabilities &&
-      props.probabilities.length !== props.demandWeights.neighbors.length
+      output.probabilities &&
+      output.probabilities.length !== props.demandWeights.neighbors.length
     ) {
-      throw new Error(`${id} probabilities length must equal demandWeights.neighbors length`);
+      throw new Error(
+        `${id} output.probabilities length must equal demandWeights.neighbors length`
+      );
     }
     if (props.parameters && props.parameters.length < GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH} word`);
     }
-    if (props.expectedDemand) {
+    if (output.expectedDemand) {
       if (!props.facilityWeights || !props.demand) {
-        throw new Error(`${id} expectedDemand needs facilityWeights and demand`);
+        throw new Error(`${id} output.expectedDemand needs facilityWeights and demand`);
       }
-      if (props.expectedDemand.length !== this.facilityCount) {
-        throw new Error(`${id} expectedDemand length must equal the facility count`);
+      if (output.expectedDemand.length !== this.facilityCount) {
+        throw new Error(`${id} output.expectedDemand length must equal the facility count`);
       }
       if (props.demand.length !== this.demandCount) {
         throw new Error(`${id} demand length must equal the demandWeights row count`);
@@ -149,12 +182,7 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
         throw new Error(`${id} facilityWeights row count must equal the facility count`);
       }
     }
-    const outputs = [
-      props.probabilities,
-      props.tradeArea,
-      props.tradeAreaProbability,
-      props.expectedDemand
-    ];
+    const outputs = getOutputs(output);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
     const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
     if (new Set(outputBuffers).size !== outputBuffers.length) {
@@ -167,14 +195,8 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, facilityCount, demandCount} = this;
-    const {attractiveness, demandWeights, parameters} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getInputs(props),
-      props.probabilities,
-      props.tradeArea,
-      props.tradeAreaProbability,
-      props.expectedDemand
-    ]);
+    const {attractiveness, demandWeights, parameters, output} = props;
+    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(output)]);
     const denominators = createTransientView(graph, `${id}-denominators`, 'float32', demandCount);
     const parameterBinding = parameters
       ? [{name: 'parameters', view: parameters, type: 'f32' as const, access: 'read' as const}]
@@ -214,12 +236,12 @@ fn getAttraction(value: f32) -> f32 {
         bindings: [
           ...demandBindings,
           {name: 'denominators', view: denominators, type: 'f32', access: 'read_write'},
-          {name: 'tradeArea', view: props.tradeArea, type: 'u32', access: 'read_write'},
-          ...(props.tradeAreaProbability
+          {name: 'tradeArea', view: output.tradeArea, type: 'u32', access: 'read_write'},
+          ...(output.tradeAreaProbability
             ? [
                 {
                   name: 'tradeProbability',
-                  view: props.tradeAreaProbability,
+                  view: output.tradeAreaProbability,
                   type: 'f32' as const,
                   access: 'read_write' as const
                 }
@@ -238,10 +260,10 @@ fn getAttraction(value: f32) -> f32 {
       }`)}
   denominators[denominatorsOffset + index] = total;
   tradeArea[tradeAreaOffset + index] = select(${GPU_HUFF_NO_TRADE_AREA}u, bestFacility, total > 0.0);
-  ${props.tradeAreaProbability ? 'tradeProbability[tradeProbabilityOffset + index] = select(0.0, best / total, total > 0.0);' : ''}`
+  ${output.tradeAreaProbability ? 'tradeProbability[tradeProbabilityOffset + index] = select(0.0, best / total, total > 0.0);' : ''}`
       })
     ];
-    if (props.probabilities) {
+    if (output.probabilities) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-probabilities`,
@@ -250,7 +272,7 @@ fn getAttraction(value: f32) -> f32 {
           bindings: [
             ...demandBindings,
             {name: 'denominators', view: denominators, type: 'f32', access: 'read'},
-            {name: 'probabilities', view: props.probabilities, type: 'f32', access: 'read_write'}
+            {name: 'probabilities', view: output.probabilities, type: 'f32', access: 'read_write'}
           ],
           invocationCount: demandCount,
           declarations,
@@ -266,7 +288,7 @@ fn getAttraction(value: f32) -> f32 {
         })
       );
     }
-    if (props.expectedDemand && props.facilityWeights && props.demand) {
+    if (output.expectedDemand && props.facilityWeights && props.demand) {
       const facilityWeights = props.facilityWeights;
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
@@ -281,7 +303,7 @@ fn getAttraction(value: f32) -> f32 {
             {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
             {name: 'denominators', view: denominators, type: 'f32', access: 'read'},
             ...parameterBinding,
-            {name: 'expectedDemand', view: props.expectedDemand, type: 'f32', access: 'read_write'}
+            {name: 'expectedDemand', view: output.expectedDemand, type: 'f32', access: 'read_write'}
           ],
           invocationCount: facilityCount,
           declarations,
@@ -301,6 +323,16 @@ fn getAttraction(value: f32) -> f32 {
     }
     return nodes;
   }
+}
+
+/** Returns every caller-owned output view of a Huff contributor. */
+function getOutputs(output: GPUHuffTradeAreasOutput): (GraphDataView | undefined)[] {
+  return [
+    output.probabilities,
+    output.tradeArea,
+    output.tradeAreaProbability,
+    output.expectedDemand
+  ];
 }
 
 /** Returns every read-only view of a Huff contributor. */

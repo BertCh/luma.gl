@@ -3,32 +3,50 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
-import {
-  getTrajectoryGeodesicRadius,
-  resolveTrajectorySpatialContext
-} from '../trajectory-analysis/trajectory-spatial-context';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  getDynamicTimeWarpingBody,
+  getDynamicTimeWarpingDeclarations,
+  getFrechetDecisionBody,
+  getFrechetDecisionDeclarations,
+  TRACK_SIMILARITY_NO_BAND
+} from './track-similarity-dynamic-programs';
+import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUTrackSimilarity';
 const HAUSDORFF_WORKGROUP_SIZE = 64;
 const FRECHET_LANES = 256;
+
+/**
+ * Largest pair capacity (`pairA.length`) of {@link GPUTrackSimilarity}: the Frechet kernel runs
+ * 256 lanes per pair in one 1-D dispatch, which must stay below `2^32` invocations, so
+ * `floor((2^32 - 1) / 256) = 2^24 - 1`.
+ */
+export const GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT = Math.floor(0xffffffff / FRECHET_LANES);
 /** Workgroup memory holds one f32 per vertex of the shorter Frechet track (8 KiB at the maximum). */
-const MAXIMUM_FRECHET_VERTICES = 2048;
+const MAXIMUM_FRECHET_VERTEX_COUNT = 2048;
 const MAXIMUM_DENSIFY_SUBDIVISIONS = 4096;
+/** Largest `dynamicTimeWarpingBandRadius`, so band sums of densified indices stay in 32 bits. */
+const MAXIMUM_BAND_RADIUS = 2 ** 30;
 
 /**
  * WGSL: metric value (squared planar distance, or great-circle meters) from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
@@ -99,24 +117,58 @@ function getDirectedPassSource(from: 'A' | 'B', to: 'A' | 'B'): string {
   }`;
 }
 
-/** Bits of the `status` column of {@link GPUTrackSimilarity}. */
+/** Bits of the `output.pairStatus` column of {@link GPUTrackSimilarity}. */
 export const GPU_TRACK_SIMILARITY_STATUS = {
   /** At least one of the two tracks has no vertices. All distances are NaN. */
   emptyTrack: 1,
   /**
-   * The shorter of the two (densified) tracks has more than `maxFrechetVertices` vertices. The
-   * Frechet distance is NaN. The longer track is not limited.
+   * The shorter of the two (densified) tracks has more than `maximumFrechetVertexCount` vertices.
+   * The Frechet distance and dynamic time warping are NaN and `frechetWithin` is 0. The longer
+   * track is not limited.
    */
   frechetCapExceeded: 2,
   /** The pair index is out of range or at or beyond `activePairCount`. All distances are NaN. */
   invalidPair: 4
 } as const;
 
+/** Caller-owned per-pair outputs of {@link GPUTrackSimilarity}. At least one measure is required. */
+export type GPUTrackSimilarityOutput = {
+  /** Optional per-pair symmetric discrete Hausdorff distance, NaN when not computed. */
+  hausdorff?: GraphDataView<'float32'>;
+  /** Optional per-pair discrete Frechet distance, NaN when not computed. */
+  frechet?: GraphDataView<'float32'>;
+  /**
+   * Optional per-pair Frechet decision: 1 when the discrete Frechet distance is at most
+   * `frechetEpsilon`, else 0 (also 0 for skipped pairs and an unusable epsilon). Requires
+   * `frechetEpsilon`. Cheaper than `frechet`: endpoint and coupling bounds decide most pairs in
+   * `O(n + m)`, and the free-space program stops once no monotone path can survive. The test is
+   * made in the internal metric (squared planar distance against `epsilon^2`, or meters), so an
+   * epsilon within an f32 rounding of the distance may decide either way.
+   */
+  frechetWithin?: GraphDataView<'uint32'>;
+  /**
+   * Optional per-pair dynamic time warping cost: the smallest sum of point distances (planar
+   * units, or great-circle meters) over monotone warping paths between the (densified) vertex
+   * sequences, the convention of `similaritymeasures.dtw` (not the square root of summed squares
+   * of `tslearn` and `dtaidistance`). Banded by `dynamicTimeWarpingBandRadius`; NaN when not
+   * computed. Summed in f32, so the relative error grows with the path length (about
+   * `(n + m) * 2^-24`).
+   */
+  dynamicTimeWarping?: GraphDataView<'float32'>;
+  /**
+   * Optional per-pair maximum distance between any vertex of one track and any vertex of the other
+   * (original vertices, never densified), NaN when not computed. Matches Sedona `ST_MaxDistance`.
+   */
+  maximumDistance?: GraphDataView<'float32'>;
+  /** Optional per-pair {@link GPU_TRACK_SIMILARITY_STATUS} bit set, 0 when computed. */
+  pairStatus?: GraphDataView<'uint32'>;
+};
+
 /**
  * Properties for {@link GPUTrackSimilarity}.
  *
  * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
- * pair capacity (`pairA.length`), `maxFrechetVertices`, and which outputs are present.
+ * pair capacity (`pairA.length`), `maximumFrechetVertexCount`, and which outputs are present.
  */
 export type GPUTrackSimilarityProps = {
   /** Prefix for generated node IDs. Defaults to `'track-similarity'`. */
@@ -125,7 +177,7 @@ export type GPUTrackSimilarityProps = {
    * Coordinate space of both vertex sets. Native planar (the default): distances are Euclidean in
    * the f32 input coordinates. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`:
    * vertices are `[longitude, latitude]` degrees and every distance (Hausdorff, Frechet and
-   * `maxDistance`) is a great-circle distance in meters on a sphere of `sphereRadius` (default
+   * `maximumDistance`) is a great-circle distance in meters on a sphere of `sphereRadius` (default
    * `GPU_EARTH_MEAN_RADIUS_METERS`). Segments are straight in longitude/latitude (the edge model of
    * the rest of the package): the point-to-segment distance is the haversine distance to the
    * closest point of the segment, with the closest point found in the local equirectangular frame
@@ -135,34 +187,25 @@ export type GPUTrackSimilarityProps = {
    * other metrics throw.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed planar vertices of the first track set, sorted by track. */
-  positionsA: GraphDataView<'float32x2'>;
-  /** `trackCountA + 1` monotonic vertex offsets of the first set. */
-  offsetsA: GraphDataView<'uint32'>;
-  /** Vertices of the second set. Defaults to the first set (similarity inside one set). */
-  positionsB?: GraphDataView<'float32x2'>;
-  /** Offsets of the second set. Required with `positionsB`. */
-  offsetsB?: GraphDataView<'uint32'>;
-  /** Track index into the first set for each pair. */
+  /**
+   * First set of tracks (lines or polygon boundaries): packed planar `positions` sorted by track
+   * and `lineOffsets` with `trackCountA + 1` monotonic vertex offsets.
+   */
+  linesA: GPUPackedGeometryPort<GPULineGeometryPort>;
+  /** Second set of tracks. Defaults to the first set (similarity inside one set). */
+  linesB?: GPUPackedGeometryPort<GPULineGeometryPort>;
+  /**
+   * Track index into the first set for each pair. The length is the pair capacity, at most
+   * {@link GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT}.
+   */
   pairA: GraphDataView<'uint32'>;
   /** Track index into the second set for each pair, aligned with `pairA`. */
   pairB: GraphDataView<'uint32'>;
   /**
    * Optional one-row GPU-written pair count, for example `GPUTrajectoryEncounters`
-   * `pairs.output.count`. Pairs at and after it get `invalidPair`.
+   * `output.pairs.count`. Pairs at and after it get `invalidPair`.
    */
   activePairCount?: GraphDataView<'uint32'>;
-  /** Optional per-pair symmetric discrete Hausdorff distance, NaN when not computed. */
-  hausdorff?: GraphDataView<'float32'>;
-  /** Optional per-pair discrete Frechet distance, NaN when not computed. */
-  frechet?: GraphDataView<'float32'>;
-  /**
-   * Optional per-pair maximum distance between any vertex of one track and any vertex of the other
-   * (original vertices, never densified), NaN when not computed. Matches Sedona `ST_MaxDistance`.
-   */
-  maxDistance?: GraphDataView<'float32'>;
-  /** Optional per-pair {@link GPU_TRACK_SIMILARITY_STATUS} bit set, 0 when computed. */
-  status?: GraphDataView<'uint32'>;
   /**
    * Densify fraction with the meaning of Shapely `hausdorff_distance(a, b, densify)` and
    * `frechet_distance(a, b, densify)`: every segment is split into `round(1 / densify)` equal
@@ -178,7 +221,23 @@ export type GPUTrackSimilarityProps = {
    * unlimited: it is swept in strips of 256 lanes. Pairs whose shorter track exceeds the cap report
    * `frechetCapExceeded` and a NaN Frechet distance; resample or simplify them first.
    */
-  maxFrechetVertices?: number;
+  maximumFrechetVertexCount?: number;
+  /**
+   * Per-frame Frechet decision threshold, one float32 row, in the output distance unit (planar
+   * units, or meters with a great-circle context). Required with `output.frechetWithin`. NaN,
+   * negative or infinite values decide 0.
+   */
+  frechetEpsilon?: GraphDataView<'float32'>;
+  /**
+   * Sakoe-Chiba band radius of `output.dynamicTimeWarping`, in (densified) vertices; omitted means
+   * unbanded. Compile-time. Same band as `tslearn.metrics.sakoe_chiba_mask(n, m, radius)`: for
+   * tracks of `L >= S` vertices, long vertex `l` may warp to short vertex `s` when
+   * `s - radius <= l <= s + (L - S) + radius`, so radius 0 is the widened diagonal and a radius
+   * of at least `S` is unbanded. Cells outside the band are never evaluated.
+   */
+  dynamicTimeWarpingBandRadius?: number;
+  /** Caller-owned per-pair output views. */
+  output: GPUTrackSimilarityOutput;
 };
 
 /**
@@ -189,7 +248,7 @@ export type GPUTrackSimilarityProps = {
  * where `directed(A, B)` is the largest distance from a (densified) vertex of A to the polyline B
  * (to its nearest point on any segment, not only to its vertices). The Frechet distance is the
  * minimum over monotone couplings of the largest coupled distance between (densified) vertices.
- * `maxDistance` is the largest vertex-to-vertex distance (Sedona `ST_MaxDistance`). Polygon
+ * `maximumDistance` is the largest vertex-to-vertex distance (Sedona `ST_MaxDistance`). Polygon
  * boundaries are the open ring sequences with the repeated closing vertex, so Frechet is
  * orientation and start sensitive. Distances are planar in the f32 input coordinates by default,
  * or great-circle meters with a `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
@@ -197,11 +256,19 @@ export type GPUTrackSimilarityProps = {
  * no geodesic code.
  *
  * Composition: one status kernel, then one workgroup per pair per requested measure. Hausdorff and
- * `maxDistance` use 64 lanes that stride over vertices and reduce with a workgroup max tree
+ * `maximumDistance` use 64 lanes that stride over vertices and reduce with a workgroup max tree
  * (`O(n * m)` per pair, no cap). Frechet runs the dynamic program on anti-diagonals with one lane
  * per vertex of the longer track, in strips of 256 lanes whose last row is carried to the next
- * strip in workgroup memory; only the shorter track is capped (`maxFrechetVertices`, flagged in
- * `status`). Densified vertices are computed on the fly, nothing is materialised.
+ * strip in workgroup memory; only the shorter track is capped (`maximumFrechetVertexCount`, flagged in
+ * `output.pairStatus`). Densified vertices are computed on the fly, nothing is materialised.
+ *
+ * The same anti-diagonal layout computes two more measures. `frechetWithin` is the Frechet
+ * decision against a per-frame `frechetEpsilon`: endpoint distances (a lower bound) and one fixed
+ * monotone coupling (an upper bound) decide most pairs in `O(n + m)`, and the remaining pairs run
+ * the boolean free-space program, which stops as soon as no monotone path can survive.
+ * `dynamicTimeWarping` is the dynamic time warping cost (`similaritymeasures.dtw`: sum of point
+ * distances), optionally inside a Sakoe-Chiba band (`dynamicTimeWarpingBandRadius`, tslearn's
+ * mask), whose outside cells are never evaluated. Both share the shorter-track cap.
  *
  * Pairs are the caller's choice, for example `GPUTrajectoryEncounters` output, cluster candidates,
  * or two vintages of one boundary. This contributor does not generate pairs.
@@ -216,7 +283,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
   /** Sphere radius in meters of a great-circle context, `undefined` for planar. */
   readonly sphereRadius: number | undefined;
   /** Resolved Frechet vertex cap. */
-  readonly maxFrechetVertices: number;
+  readonly maximumFrechetVertexCount: number;
   /** Resolved subdivisions per segment, `round(1 / densify)`, 1 without densify. */
   readonly densifySubdivisions: number;
 
@@ -224,42 +291,79 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     this.id = props.id ?? 'track-similarity';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
-    this.sphereRadius = getTrajectoryGeodesicRadius(this.spatialContext);
-    validatePackedView(props.positionsA, ['float32x2'], `${id} positionsA`);
-    validatePackedUint32View(props.offsetsA, `${id} offsetsA`);
-    if (props.offsetsA.length < 2) {
-      throw new Error(`${id} offsetsA must contain at least two rows`);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
+    this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
+    const {linesA, linesB, output} = props;
+    validatePackedView(linesA.positions, ['float32x2'], `${id} linesA.positions`);
+    validatePackedView(linesA.lineOffsets, ['uint32'], `${id} linesA.lineOffsets`);
+    if (linesA.lineOffsets.length < 2) {
+      throw new Error(`${id} linesA.lineOffsets needs two rows`);
     }
-    if (Boolean(props.positionsB) !== Boolean(props.offsetsB)) {
-      throw new Error(`${id} positionsB and offsetsB must be given together`);
-    }
-    if (props.positionsB && props.offsetsB) {
-      validatePackedView(props.positionsB, ['float32x2'], `${id} positionsB`);
-      validatePackedUint32View(props.offsetsB, `${id} offsetsB`);
-      if (props.offsetsB.length < 2) {
-        throw new Error(`${id} offsetsB must contain at least two rows`);
+    if (linesB) {
+      validatePackedView(linesB.positions, ['float32x2'], `${id} linesB.positions`);
+      validatePackedView(linesB.lineOffsets, ['uint32'], `${id} linesB.lineOffsets`);
+      if (linesB.lineOffsets.length < 2) {
+        throw new Error(`${id} linesB.lineOffsets needs two rows`);
       }
     }
-    validatePackedUint32View(props.pairA, `${id} pairA`);
-    validatePackedUint32View(props.pairB, `${id} pairB`);
+    validatePackedView(props.pairA, ['uint32'], `${id} pairA`);
+    validatePackedView(props.pairB, ['uint32'], `${id} pairB`);
     if (props.pairA.length < 1 || props.pairB.length !== props.pairA.length) {
       throw new Error(`${id} pairA and pairB must have the same positive length`);
     }
+    validateCapacity(
+      id,
+      'pairA.length',
+      props.pairA.length,
+      1,
+      GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT
+    );
     if (props.activePairCount) {
-      validatePackedUint32View(props.activePairCount, `${id} activePairCount`);
+      validatePackedView(props.activePairCount, ['uint32'], `${id} activePairCount`);
       if (props.activePairCount.length < 1) {
         throw new Error(`${id} activePairCount must contain one uint32 row`);
       }
     }
-    if (!props.hausdorff && !props.frechet && !props.maxDistance) {
-      throw new Error(`${id} needs hausdorff, frechet or maxDistance output`);
+    if (
+      !output.hausdorff &&
+      !output.frechet &&
+      !output.maximumDistance &&
+      !output.frechetWithin &&
+      !output.dynamicTimeWarping
+    ) {
+      throw new Error(
+        `${id} needs hausdorff, frechet, frechetWithin, dynamicTimeWarping or maximumDistance output`
+      );
+    }
+    if (Boolean(output.frechetWithin) !== Boolean(props.frechetEpsilon)) {
+      throw new Error(`${id} output.frechetWithin and frechetEpsilon go together`);
+    }
+    if (props.frechetEpsilon) {
+      validatePackedView(props.frechetEpsilon, ['float32'], `${id} frechetEpsilon`);
+      if (props.frechetEpsilon.length < 1) {
+        throw new Error(`${id} frechetEpsilon must contain one float32 row`);
+      }
+    }
+    if (props.dynamicTimeWarpingBandRadius !== undefined) {
+      validateCapacity(
+        id,
+        'dynamicTimeWarpingBandRadius',
+        props.dynamicTimeWarpingBandRadius,
+        0,
+        MAXIMUM_BAND_RADIUS
+      );
     }
     for (const [name, view, format] of [
-      ['hausdorff', props.hausdorff, 'float32'],
-      ['frechet', props.frechet, 'float32'],
-      ['maxDistance', props.maxDistance, 'float32'],
-      ['status', props.status, 'uint32']
+      ['hausdorff', output.hausdorff, 'float32'],
+      ['frechet', output.frechet, 'float32'],
+      ['frechetWithin', output.frechetWithin, 'uint32'],
+      ['dynamicTimeWarping', output.dynamicTimeWarping, 'float32'],
+      ['maximumDistance', output.maximumDistance, 'float32'],
+      ['pairStatus', output.pairStatus, 'uint32']
     ] as const) {
       if (view) {
         validatePackedView(view, [format], `${id} ${name}`);
@@ -276,27 +380,33 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     if (this.densifySubdivisions > MAXIMUM_DENSIFY_SUBDIVISIONS) {
       throw new Error(`${id} densify must be at least 1 / ${MAXIMUM_DENSIFY_SUBDIVISIONS}`);
     }
-    this.maxFrechetVertices = props.maxFrechetVertices ?? 256;
-    if (
-      !Number.isInteger(this.maxFrechetVertices) ||
-      this.maxFrechetVertices < 1 ||
-      this.maxFrechetVertices > MAXIMUM_FRECHET_VERTICES
-    ) {
-      throw new Error(
-        `${id} maxFrechetVertices must be an integer from 1 to ${MAXIMUM_FRECHET_VERTICES}`
-      );
-    }
+    this.maximumFrechetVertexCount = props.maximumFrechetVertexCount ?? 256;
+    validateCapacity(
+      id,
+      'maximumFrechetVertexCount',
+      this.maximumFrechetVertexCount,
+      1,
+      MAXIMUM_FRECHET_VERTEX_COUNT
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.hausdorff, props.frechet, props.maxDistance, props.status],
       [
-        props.positionsA,
-        props.offsetsA,
-        props.positionsB,
-        props.offsetsB,
+        output.hausdorff,
+        output.frechet,
+        output.frechetWithin,
+        output.dynamicTimeWarping,
+        output.maximumDistance,
+        output.pairStatus
+      ],
+      [
+        linesA.positions,
+        linesA.lineOffsets,
+        linesB?.positions,
+        linesB?.lineOffsets,
         props.pairA,
         props.pairB,
-        props.activePairCount
+        props.activePairCount,
+        props.frechetEpsilon
       ]
     );
   }
@@ -306,38 +416,43 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    const {linesA, linesB, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      props.positionsA,
-      props.offsetsA,
-      props.positionsB,
-      props.offsetsB,
+      linesA.positions,
+      linesA.lineOffsets,
+      linesB?.positions,
+      linesB?.lineOffsets,
       props.pairA,
       props.pairB,
       props.activePairCount,
-      props.hausdorff,
-      props.frechet,
-      props.maxDistance,
-      props.status
+      props.frechetEpsilon,
+      output.hausdorff,
+      output.frechet,
+      output.frechetWithin,
+      output.dynamicTimeWarping,
+      output.maximumDistance,
+      output.pairStatus
     ]);
-    const positionsB = props.positionsB ?? props.positionsA;
-    const offsetsB = props.offsetsB ?? props.offsetsA;
+    const positionsB = linesB?.positions ?? linesA.positions;
+    const offsetsB = linesB?.lineOffsets ?? linesA.lineOffsets;
     const pairCount = props.pairA.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const constants = `const PAIR_COUNT: u32 = ${pairCount}u;
-const TRACK_COUNT_A: u32 = ${props.offsetsA.length - 1}u;
+const TRACK_COUNT_A: u32 = ${linesA.lineOffsets.length - 1}u;
 const TRACK_COUNT_B: u32 = ${offsetsB.length - 1}u;
-const FRECHET_CAP: u32 = ${this.maxFrechetVertices}u;
+const FRECHET_CAP: u32 = ${this.maximumFrechetVertexCount}u;
 const DENSIFY: u32 = ${this.densifySubdivisions}u;
 const STATUS_EMPTY: u32 = ${GPU_TRACK_SIMILARITY_STATUS.emptyTrack}u;
 const STATUS_TOO_LONG: u32 = ${GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded}u;
 const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
 
     // The status buffer is needed by the distance kernels even when the caller does not want it.
-    const status = props.status ?? createTransientView(graph, `${id}-status`, 'uint32', pairCount);
+    const status =
+      output.pairStatus ?? createTransientView(graph, `${id}-status`, 'uint32', pairCount);
     const statusBindings: WGSLKernelBinding[] = [
       {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
       {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
-      {name: 'offsetsA', view: props.offsetsA, type: 'u32', access: 'read'},
+      {name: 'offsetsA', view: linesA.lineOffsets, type: 'u32', access: 'read'},
       {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'}
     ];
     if (props.activePairCount) {
@@ -376,8 +491,8 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
     const distanceBindings = (output: GraphDataView<'float32'>): WGSLKernelBinding[] => [
       {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
       {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
-      {name: 'positionsA', view: props.positionsA, type: 'f32', access: 'read'},
-      {name: 'offsetsA', view: props.offsetsA, type: 'u32', access: 'read'},
+      {name: 'positionsA', view: linesA.positions, type: 'f32', access: 'read'},
+      {name: 'offsetsA', view: linesA.lineOffsets, type: 'u32', access: 'read'},
       {name: 'positionsB', view: positionsB, type: 'f32', access: 'read'},
       {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'},
       {name: 'status', view: status, type: 'u32', access: 'read'},
@@ -464,13 +579,13 @@ fn pointSegmentMetric(point: vec2<f32>, from0: vec2<f32>, to0: vec2<f32>) -> f32
 }`
 }`;
 
-    if (props.hausdorff) {
+    if (output.hausdorff) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-hausdorff`,
           operation: OPERATION,
           variant: 'hausdorff',
-          bindings: distanceBindings(props.hausdorff),
+          bindings: distanceBindings(output.hausdorff),
           workgroupSize: HAUSDORFF_WORKGROUP_SIZE,
           invocationCount: pairCount * HAUSDORFF_WORKGROUP_SIZE,
           guardIndex: false,
@@ -516,13 +631,13 @@ ${getDirectedPolylineSource('B')}`,
       );
     }
 
-    if (props.maxDistance) {
+    if (output.maximumDistance) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-max-distance`,
           operation: OPERATION,
           variant: 'max-distance',
-          bindings: distanceBindings(props.maxDistance),
+          bindings: distanceBindings(output.maximumDistance),
           workgroupSize: HAUSDORFF_WORKGROUP_SIZE,
           invocationCount: pairCount * HAUSDORFF_WORKGROUP_SIZE,
           guardIndex: false,
@@ -562,13 +677,13 @@ ${trackHelpers}`,
       );
     }
 
-    if (props.frechet) {
+    if (output.frechet) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-frechet`,
           operation: OPERATION,
           variant: 'frechet',
-          bindings: distanceBindings(props.frechet),
+          bindings: distanceBindings(output.frechet),
           workgroupSize: FRECHET_LANES,
           invocationCount: pairCount * FRECHET_LANES,
           guardIndex: false,
@@ -577,7 +692,7 @@ const WORKGROUP_SIZE: u32 = ${FRECHET_LANES}u;
 const LANES: u32 = ${FRECHET_LANES}u;
 var<workgroup> olderDiagonal: array<f32, ${FRECHET_LANES}>;
 var<workgroup> previousDiagonal: array<f32, ${FRECHET_LANES}>;
-var<workgroup> boundaryRow: array<f32, ${this.maxFrechetVertices}>;
+var<workgroup> boundaryRow: array<f32, ${this.maximumFrechetVertexCount}>;
 var<workgroup> sharedLongCount: u32;
 var<workgroup> sharedShortCount: u32;
 ${trackHelpers}
@@ -658,6 +773,99 @@ fn coupledSquared(swapped: bool, startA: u32, countA: u32, startB: u32, countB: 
         })
       );
     }
+    if (output.dynamicTimeWarping) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-dynamic-time-warping`,
+          operation: OPERATION,
+          variant: 'dynamic-time-warping',
+          bindings: distanceBindings(output.dynamicTimeWarping),
+          workgroupSize: FRECHET_LANES,
+          invocationCount: pairCount * FRECHET_LANES,
+          guardIndex: false,
+          declarations: `${constants}
+${getDynamicTimeWarpingDeclarations(
+  FRECHET_LANES,
+  this.maximumFrechetVertexCount,
+  props.dynamicTimeWarpingBandRadius ?? TRACK_SIMILARITY_NO_BAND
+)}
+${trackHelpers}`,
+          body: getDynamicTimeWarpingBody(
+            prologue('(STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)')
+          )
+        })
+      );
+    }
+
+    if (output.frechetWithin && props.frechetEpsilon) {
+      // The decision kernel binds the epsilon too, so the pair ranges are resolved first into one
+      // view to stay within eight storage bindings.
+      const pairRanges = createTransientView(graph, `${id}-pair-ranges`, 'uint32', pairCount * 4);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-pair-ranges`,
+          operation: OPERATION,
+          variant: 'pair-ranges',
+          bindings: [
+            {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
+            {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
+            {name: 'offsetsA', view: linesA.lineOffsets, type: 'u32', access: 'read'},
+            {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'},
+            {name: 'status', view: status, type: 'u32', access: 'read'},
+            {name: 'pairRanges', view: pairRanges, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: pairCount,
+          declarations: constants,
+          body: `var range = vec4<u32>(0u);
+  if (status[statusOffset + index] == 0u) {
+    let a = pairA[pairAOffset + index];
+    let b = pairB[pairBOffset + index];
+    let startA = offsetsA[offsetsAOffset + a];
+    let startB = offsetsB[offsetsBOffset + b];
+    range = vec4<u32>(startA, offsetsA[offsetsAOffset + a + 1u] - startA,
+      startB, offsetsB[offsetsBOffset + b + 1u] - startB);
+  }
+  pairRanges[pairRangesOffset + index * 4u] = range.x;
+  pairRanges[pairRangesOffset + index * 4u + 1u] = range.y;
+  pairRanges[pairRangesOffset + index * 4u + 2u] = range.z;
+  pairRanges[pairRangesOffset + index * 4u + 3u] = range.w;`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-frechet-decision`,
+          operation: OPERATION,
+          variant: 'frechet-decision',
+          bindings: [
+            {name: 'pairRanges', view: pairRanges, type: 'u32', access: 'read'},
+            {name: 'positionsA', view: linesA.positions, type: 'f32', access: 'read'},
+            {name: 'positionsB', view: positionsB, type: 'f32', access: 'read'},
+            {name: 'status', view: status, type: 'u32', access: 'read'},
+            {name: 'frechetEpsilon', view: props.frechetEpsilon, type: 'f32', access: 'read'},
+            {name: 'frechetWithin', view: output.frechetWithin, type: 'u32', access: 'read_write'}
+          ],
+          workgroupSize: FRECHET_LANES,
+          invocationCount: pairCount * FRECHET_LANES,
+          guardIndex: false,
+          declarations: `${constants}
+${getFrechetDecisionDeclarations(
+  FRECHET_LANES,
+  this.maximumFrechetVertexCount,
+  this.sphereRadius !== undefined
+)}
+${trackHelpers}`,
+          body: getFrechetDecisionBody(`let pair = index / WORKGROUP_SIZE;
+  let lane = localInvocationIndex;
+  let flags = status[statusOffset + min(pair, PAIR_COUNT - 1u)];
+  let skipped = pair >= PAIR_COUNT ||
+    (flags & (STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)) != 0u;
+  let rangeBase = pairRangesOffset + min(pair, PAIR_COUNT - 1u) * 4u;
+  let startA = pairRanges[rangeBase];
+  let countA = select(pairRanges[rangeBase + 1u], 0u, skipped);
+  let startB = pairRanges[rangeBase + 2u];
+  let countB = select(pairRanges[rangeBase + 3u], 0u, skipped);`)
+        })
+      );
+    }
+
     return nodes;
   }
 }

@@ -3,11 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
   GPUCompaction,
   GPUGroupAggregation,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -18,13 +21,10 @@ import {createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../contracts/index';
-import {
-  getTrajectoryGeodesicRadius,
-  resolveTrajectorySpatialContext
-} from './trajectory-spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {
   createTrajectoryCentroidOffsetsNode,
   createTrajectoryFinalizeNode,
@@ -37,20 +37,20 @@ import {
   getSegmentedReductionNodes
 } from './trajectory-metrics-kernels';
 import {GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} from './trajectory-metrics-parameters';
+import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 
 /**
- * Caller-owned, capacity-bounded stop (dwell) outputs of {@link GPUTrajectoryMetrics}.
+ * Caller-owned, capacity-bounded stop (dwell) outputs of {@link GPUTrajectoryMetrics}: a
+ * {@link GPUCompactOutput} extended with optional per-stop columns.
  *
- * `output.ids.length` is the stop capacity, fixed at compile time. Every column that is present
- * must have exactly that many rows. Stops are ordered by start row, which is track order and then
- * time. Rows at and after `output.count` are rewritten with sentinels: `0xffffffff` for IDs and
- * rows, `0` for durations and centroids.
+ * `ids.length` is the stop capacity, fixed at compile time. Every column that is present must have
+ * exactly that many rows. Stops are ordered by start row, which is track order and then time. Rows
+ * at and after `count` are rewritten with sentinels: `0xffffffff` for IDs and rows, `0` for
+ * durations and centroids. `ids` holds the track index of each stop.
  */
-export type GPUTrajectoryStopOutput = {
-  /** Bounded compact result. `ids` holds the track index of each stop. */
-  output: GPUCompactOutput;
+export type GPUTrajectoryStopOutput = GPUCompactOutput & {
   /**
-   * Optional one row receiving the clamped stop count (`output.count`), typically an indirect draw
+   * Optional one row receiving the clamped stop count (`count`), typically an indirect draw
    * record's `instanceCount` imported with `graph.importGPUData(id, drawCommands.getInstanceCountData(0))`,
    * so a stop layer needs no count copy.
    */
@@ -66,61 +66,10 @@ export type GPUTrajectoryStopOutput = {
 };
 
 /**
- * Properties for {@link GPUTrajectoryMetrics}.
- *
- * Per-frame (no recompile): the contents of every input buffer, including `trackOffsets` and
- * `parameters`. Compile-time (needs a new graph): view lengths, the track count
- * (`trackOffsets.length - 1`), the stop capacity (`stops.output.ids.length`), and which optional
- * views are present.
+ * Caller-owned outputs of {@link GPUTrajectoryMetrics}. At least one view must be present.
+ * Status: the stop list reports capacity overflow through `stops.overflow`.
  */
-export type GPUTrajectoryMetricsProps = {
-  /** Prefix for generated node and transient IDs. Defaults to `'trajectory-metrics'`. */
-  id?: string;
-  /**
-   * Coordinate space and metric of the positions. Omitted means native planar coordinates and
-   * Euclidean distances in position units. `{coordinateSpace: 'longitude-latitude', metric:
-   * 'great-circle'}` means positions are `(longitude, latitude)` degrees and distances are
-   * great-circle meters on a sphere of `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`),
-   * so speeds are meters per timestamp unit. Other contexts throw.
-   */
-  spatialContext?: GPUSpatialContext;
-  /**
-   * Packed positions, one row per sample, sorted by track and then time. Planar `(x, y)` or
-   * geographic `(longitude, latitude)` degrees, see `spatialContext`. Compile-time length.
-   */
-  positions: GraphDataView<'float32x2'>;
-  /**
-   * Packed sample times, same length as `positions`. Three representations:
-   *
-   * - `float32` relative to an application epoch (default, cheapest). Absolute epoch times lose
-   *   precision in f32.
-   * - `float32` high parts with `timestampsLow` (double-single), for absolute times from
-   *   `splitTimestamps`.
-   * - `uint32x2` Int64 `(low, high)` words, for example an Arrow `Int64` epoch-ms column uploaded
-   *   zero-copy. Every difference is subtracted exactly and then converted to f32.
-   *
-   * All durations, speeds, `stopMinimumDuration`, and `stopSpeedThreshold` use the timestamps'
-   * unit (milliseconds for epoch-ms words).
-   */
-  timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
-  /**
-   * Optional double-single low parts, aligned with `timestamps`, which must then be the f32 high
-   * parts (see `splitTimestamps`). Differences are `(aHigh - bHigh) + (aLow - bLow)` and ordering
-   * compares high parts first. Not allowed with `uint32x2` word timestamps.
-   */
-  timestampsLow?: GraphDataView<'float32'>;
-  /**
-   * `trackCount + 1` monotonic row offsets. Track `t` owns rows
-   * `[trackOffsets[t], trackOffsets[t + 1])`. The length is compile-time and the contents are
-   * per-frame. Rows outside `[trackOffsets[0], trackOffsets[trackCount])` are ignored.
-   */
-  trackOffsets: GraphDataView<'uint32'>;
-  /**
-   * Per-frame packed float32 view of at least {@link GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH}
-   * elements written with `getGPUTrajectoryMetricsParameterValues`. Required when `stops` or
-   * `trackStopCounts` is requested.
-   */
-  parameters?: GraphDataView<'float32'>;
+export type GPUTrajectoryMetricsOutput = {
   /** Optional per-track path length, `trackCount` rows. */
   trackLengths?: GraphDataView<'float32'>;
   /** Optional per-track duration `t[last] - t[first]`, `trackCount` rows. */
@@ -157,6 +106,57 @@ export type GPUTrajectoryMetricsProps = {
   trackStopCounts?: GraphDataView<'uint32'>;
   /** Optional bounded stop list. */
   stops?: GPUTrajectoryStopOutput;
+};
+
+/**
+ * Properties for {@link GPUTrajectoryMetrics}: the trajectory layout ({@link GPUTrajectoryGeometryFields}:
+ * `positions`, `timestamps`, `trackOffsets`) plus the options below.
+ *
+ * `positions` are packed rows sorted by track and then time, planar `(x, y)` or geographic
+ * `(longitude, latitude)` degrees, see `spatialContext`. `timestamps` have three representations:
+ *
+ * - `float32` relative to an application epoch (default, cheapest). Absolute epoch times lose
+ *   precision in f32.
+ * - `float32` high parts with `timestampsLow` (double-single), for absolute times from
+ *   `splitTimestamps`.
+ * - `uint32x2` Int64 `(low, high)` words, for example an Arrow `Int64` epoch-ms column uploaded
+ *   zero-copy. Every difference is subtracted exactly and then converted to f32.
+ *
+ * All durations, speeds, `stopMinimumDuration`, and `stopSpeedThreshold` use the timestamps'
+ * unit (milliseconds for epoch-ms words). `trackOffsets` are `trackCount + 1` monotonic row
+ * offsets. Track `t` owns rows `[trackOffsets[t], trackOffsets[t + 1])`. Rows outside
+ * `[trackOffsets[0], trackOffsets[trackCount])` are ignored.
+ *
+ * Per-frame (no recompile): the contents of every input buffer, including `trackOffsets` and
+ * `parameters`. Compile-time (needs a new graph): view lengths, the track count
+ * (`trackOffsets.length - 1`), the stop capacity (`output.stops.ids.length`), and which optional
+ * views are present.
+ */
+export type GPUTrajectoryMetricsProps = GPUTrajectoryGeometryFields & {
+  /** Prefix for generated node and transient IDs. Defaults to `'trajectory-metrics'`. */
+  id?: string;
+  /**
+   * Coordinate space and metric of the positions. Omitted means native planar coordinates and
+   * Euclidean distances in position units. `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` means positions are `(longitude, latitude)` degrees and distances are
+   * great-circle meters on a sphere of `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`),
+   * so speeds are meters per timestamp unit. Other contexts throw.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Optional double-single low parts, aligned with `timestamps`, which must then be the f32 high
+   * parts (see `splitTimestamps`). Differences are `(aHigh - bHigh) + (aLow - bLow)` and ordering
+   * compares high parts first. Not allowed with `uint32x2` word timestamps.
+   */
+  timestampsLow?: GraphDataView<'float32'>;
+  /**
+   * Per-frame packed float32 view of at least {@link GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH}
+   * elements written with `getGPUTrajectoryMetricsParameterValues`. Required when `output.stops`
+   * or `output.trackStopCounts` is requested.
+   */
+  parameters?: GraphDataView<'float32'>;
+  /** Caller-owned output views. */
+  output: GPUTrajectoryMetricsOutput;
 };
 
 /**
@@ -226,7 +226,11 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     this.id = props.id ?? 'trajectory-metrics';
     this.props = props;
     const id = this.id;
-    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     if (props.timestampsLow) {
@@ -238,7 +242,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         throw new Error(`${id} timestampsLow length must equal positions length`);
       }
     }
-    validatePackedUint32View(props.trackOffsets, `${id} trackOffsets`);
+    validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);
     if (props.timestamps.length !== props.positions.length) {
       throw new Error(`${id} timestamps length must equal positions length`);
     }
@@ -246,11 +250,12 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       throw new Error(`${id} trackOffsets must contain at least two rows`);
     }
     const trackCount = props.trackOffsets.length - 1;
+    const {output} = props;
     for (const [name, view] of [
-      ['trackLengths', props.trackLengths],
-      ['trackDurations', props.trackDurations],
-      ['averageSpeeds', props.averageSpeeds],
-      ['maximumSpeeds', props.maximumSpeeds]
+      ['trackLengths', output.trackLengths],
+      ['trackDurations', output.trackDurations],
+      ['averageSpeeds', output.averageSpeeds],
+      ['maximumSpeeds', output.maximumSpeeds]
     ] as const) {
       if (!view) {
         continue;
@@ -261,9 +266,9 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       }
     }
     for (const [name, view] of [
-      ['stepSpeeds', props.stepSpeeds],
-      ['stepHeadings', props.stepHeadings],
-      ['stepAccelerations', props.stepAccelerations]
+      ['stepSpeeds', output.stepSpeeds],
+      ['stepHeadings', output.stepHeadings],
+      ['stepAccelerations', output.stepAccelerations]
     ] as const) {
       if (!view) {
         continue;
@@ -273,22 +278,22 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal positions length`);
       }
     }
-    if (props.trackStopCounts) {
-      validatePackedUint32View(props.trackStopCounts, `${id} trackStopCounts`);
-      if (props.trackStopCounts.length !== trackCount) {
+    if (output.trackStopCounts) {
+      validatePackedView(output.trackStopCounts, ['uint32'], `${id} trackStopCounts`);
+      if (output.trackStopCounts.length !== trackCount) {
         throw new Error(`${id} trackStopCounts length must equal the track count`);
       }
     }
-    const {stops} = props;
+    const {stops} = output;
     if (stops) {
-      validateCompactOutput(id, stops.output);
+      validateCompactOutput(id, stops);
       if (stops.drawInstanceCount) {
-        validatePackedUint32View(stops.drawInstanceCount, `${id} stops.drawInstanceCount`);
+        validatePackedView(stops.drawInstanceCount, ['uint32'], `${id} stops.drawInstanceCount`);
         if (stops.drawInstanceCount.length < 1) {
           throw new Error(`${id} stops.drawInstanceCount must contain one uint32 row`);
         }
       }
-      const capacity = stops.output.ids.length;
+      const capacity = stops.ids.length;
       for (const [name, view, format] of [
         ['startRows', stops.startRows, 'uint32'],
         ['endRows', stops.endRows, 'uint32'],
@@ -312,19 +317,19 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         );
       }
     }
-    if ((stops || props.trackStopCounts) && !props.parameters) {
+    if ((stops || output.trackStopCounts) && !props.parameters) {
       throw new Error(`${id} parameters are required for stops and trackStopCounts`);
     }
     if (
       !(
-        props.trackLengths ||
-        props.trackDurations ||
-        props.averageSpeeds ||
-        props.maximumSpeeds ||
-        props.trackStopCounts ||
-        props.stepSpeeds ||
-        props.stepHeadings ||
-        props.stepAccelerations ||
+        output.trackLengths ||
+        output.trackDurations ||
+        output.averageSpeeds ||
+        output.maximumSpeeds ||
+        output.trackStopCounts ||
+        output.stepSpeeds ||
+        output.stepHeadings ||
+        output.stepAccelerations ||
         stops
       )
     ) {
@@ -333,18 +338,18 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.trackLengths,
-        props.trackDurations,
-        props.averageSpeeds,
-        props.maximumSpeeds,
-        props.stepSpeeds,
-        props.stepHeadings,
-        props.stepAccelerations,
-        props.trackStopCounts,
-        stops?.output.ids,
-        stops?.output.count,
-        stops?.output.overflow,
-        stops?.output.requiredCount,
+        output.trackLengths,
+        output.trackDurations,
+        output.averageSpeeds,
+        output.maximumSpeeds,
+        output.stepSpeeds,
+        output.stepHeadings,
+        output.stepAccelerations,
+        output.trackStopCounts,
+        stops?.ids,
+        stops?.status.count,
+        stops?.status.overflow,
+        stops?.status.requiredCount,
         stops?.drawInstanceCount,
         stops?.startRows,
         stops?.endRows,
@@ -363,25 +368,26 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {stops} = props;
+    const {output} = props;
+    const {stops} = output;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.timestamps,
       props.timestampsLow,
       props.trackOffsets,
       props.parameters,
-      props.trackLengths,
-      props.trackDurations,
-      props.averageSpeeds,
-      props.maximumSpeeds,
-      props.stepSpeeds,
-      props.stepHeadings,
-      props.stepAccelerations,
-      props.trackStopCounts,
-      stops?.output.ids,
-      stops?.output.count,
-      stops?.output.overflow,
-      stops?.output.requiredCount,
+      output.trackLengths,
+      output.trackDurations,
+      output.averageSpeeds,
+      output.maximumSpeeds,
+      output.stepSpeeds,
+      output.stepHeadings,
+      output.stepAccelerations,
+      output.trackStopCounts,
+      stops?.ids,
+      stops?.status.count,
+      stops?.status.overflow,
+      stops?.status.requiredCount,
       stops?.drawInstanceCount,
       stops?.startRows,
       stops?.endRows,
@@ -391,15 +397,15 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     const rowCount = props.positions.length;
     const trackCount = props.trackOffsets.length - 1;
     const maximumSegmentCount = graph.device.limits.maxComputeWorkgroupsPerDimension;
-    const hasStops = Boolean(stops || props.trackStopCounts);
+    const hasStops = Boolean(stops || output.trackStopCounts);
     const nodes: GPUCommandNode<Parameters>[] = [];
-    const geodesicRadius = getTrajectoryGeodesicRadius(this.spatialContext);
+    const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
 
-    const needsLengths = Boolean(props.trackLengths || props.averageSpeeds);
+    const needsLengths = Boolean(output.trackLengths || output.averageSpeeds);
     const stepDistances = needsLengths
       ? createTransientView(graph, `${id}-step-distances`, 'float32', rowCount)
       : undefined;
-    const stepSpeeds = props.maximumSpeeds
+    const stepSpeeds = output.maximumSpeeds
       ? createTransientView(graph, `${id}-step-speeds`, 'float32', rowCount)
       : undefined;
     // Scratch for runs. Compaction outputs need input-length capacity; everything else per run.
@@ -427,7 +433,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
       })
     );
 
-    if (props.stepSpeeds || props.stepHeadings || props.stepAccelerations) {
+    if (output.stepSpeeds || output.stepHeadings || output.stepAccelerations) {
       nodes.push(
         createTrajectoryStepColumnsNode<Parameters>(graph, {
           id: `${id}-step-columns`,
@@ -436,16 +442,16 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           timestampsLow: props.timestampsLow,
           trackOffsets: props.trackOffsets,
           geodesicRadius,
-          stepSpeeds: props.stepSpeeds,
-          stepHeadings: props.stepHeadings,
-          stepAccelerations: props.stepAccelerations
+          stepSpeeds: output.stepSpeeds,
+          stepHeadings: output.stepHeadings,
+          stepAccelerations: output.stepAccelerations
         })
       );
     }
 
     const trackLengths =
-      props.trackLengths ??
-      (props.averageSpeeds
+      output.trackLengths ??
+      (output.averageSpeeds
         ? createTransientView(graph, `${id}-lengths`, 'float32', trackCount)
         : undefined);
     if (stepDistances && trackLengths) {
@@ -463,7 +469,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         )
       );
     }
-    if (stepSpeeds && props.maximumSpeeds) {
+    if (stepSpeeds && output.maximumSpeeds) {
       nodes.push(
         ...getSegmentedReductionNodes(
           graph,
@@ -471,14 +477,14 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
             id: `${id}-maximum-speeds`,
             input: stepSpeeds,
             segmentOffsets: props.trackOffsets,
-            output: props.maximumSpeeds,
+            output: output.maximumSpeeds,
             operation: 'max'
           },
           maximumSegmentCount
         )
       );
     }
-    if (props.trackDurations || props.averageSpeeds) {
+    if (output.trackDurations || output.averageSpeeds) {
       nodes.push(
         createTrajectoryFinalizeNode<Parameters>(graph, {
           id: `${id}-track-finalize`,
@@ -486,8 +492,8 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           timestampsLow: props.timestampsLow,
           trackOffsets: props.trackOffsets,
           trackLengths,
-          trackDurations: props.trackDurations,
-          averageSpeeds: props.averageSpeeds
+          trackDurations: output.trackDurations,
+          averageSpeeds: output.averageSpeeds
         })
       );
     }
@@ -622,7 +628,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         }).getCommandNodes(graph),
         ...createTrajectoryStopGatherNodes<Parameters>(graph, {
           id: `${id}-stop-gather`,
-          capacity: stops.output.ids.length,
+          capacity: stops.ids.length,
           stopTotal,
           qualifiedRuns,
           runStarts,
@@ -632,19 +638,19 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           timestampsLow: props.timestampsLow,
           sumsX: centroidSums?.sumsX,
           sumsY: centroidSums?.sumsY,
-          ids: stops.output.ids,
+          ids: stops.ids,
           startRows: stops.startRows,
           endRows: stops.endRows,
           centroids: stops.centroids,
           durations: stops.durations
         })
       );
-      if (props.trackStopCounts) {
+      if (output.trackStopCounts) {
         nodes.push(
           ...new GPUGroupAggregation({
             id: `${id}-stop-counts`,
             keys: runTracks,
-            output: props.trackStopCounts
+            output: output.trackStopCounts
           }).getCommandNodes(graph)
         );
       }
@@ -653,16 +659,16 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           id: `${id}-publish`,
           operation: 'GPUTrajectoryMetrics',
           requiredCount: stopTotal,
-          output: stops.output,
+          output: stops,
           extraCounts: stops.drawInstanceCount ? [stops.drawInstanceCount] : []
         })
       );
-    } else if (props.trackStopCounts) {
+    } else if (output.trackStopCounts) {
       nodes.push(
         ...new GPUGroupAggregation({
           id: `${id}-stop-counts`,
           keys: runTracks,
-          output: props.trackStopCounts
+          output: output.trackStopCounts
         }).getCommandNodes(graph)
       );
     }

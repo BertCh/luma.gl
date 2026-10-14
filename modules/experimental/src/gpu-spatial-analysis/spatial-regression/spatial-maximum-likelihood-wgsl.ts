@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {assert} from '@luma.gl/core';
 import {
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BISECTION_STEPS,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SCAN_STEPS
@@ -9,18 +10,14 @@ import {
 import {GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER} from './spatial-weights-traces-parameters';
 
 function validateSeriesArguments(maximumPower: number, bindingName: string): void {
-  if (
-    !Number.isInteger(maximumPower) ||
-    maximumPower < 2 ||
-    maximumPower > GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
-  ) {
-    throw new Error(
-      `maximumPower must be an integer in [2, ${GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER}]`
-    );
-  }
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(bindingName)) {
-    throw new Error('bindingName must be a WGSL identifier');
-  }
+  // Internal helper: the estimators validate maximumPower in their constructors and pass fixed
+  // binding names, so a violation here is a library bug.
+  assert(
+    Number.isInteger(maximumPower) &&
+      maximumPower >= 2 &&
+      maximumPower <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER &&
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(bindingName)
+  );
 }
 
 /**

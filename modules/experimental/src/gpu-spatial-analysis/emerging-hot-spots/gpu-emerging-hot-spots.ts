@@ -5,7 +5,6 @@
 import {
   createTransientView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -17,11 +16,16 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
-import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/inference';
+import type {
+  GPUInferenceMetadata,
+  GPUMultipleTestingMethod
+} from '../../analysis-core/contracts/inference';
 import {
   GPUMultipleTestingAdjustment,
   GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
@@ -30,10 +34,12 @@ import {
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
-  GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS,
-  GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT,
-  GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
-  GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
+  getGPUEmergingHotSpotsParameterValues,
+  type GPUEmergingHotSpotsSettings,
+  GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS,
+  GPU_EMERGING_HOT_SPOTS_MAXIMUM_SLICE_COUNT,
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+  GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
 } from './emerging-hot-spot-parameters';
 
 const OPERATION = 'GPUEmergingHotSpots';
@@ -48,6 +54,38 @@ const MANN_KENDALL_WORKGROUP_SIZE = 64;
 /** Below this series length a single invocation is cheaper than workgroup setup and reduction. */
 const MANN_KENDALL_COOPERATIVE_SLICE_COUNT = 64;
 const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
+
+/** Caller-owned outputs of {@link GPUEmergingHotSpots}. */
+export type GPUEmergingHotSpotsOutput = {
+  /** Caller-owned per-bin Gi* z-scores in cube layout; NaN for missing bins. */
+  giZScores: GraphDataView<'float32'>;
+  /** Optional caller-owned per-bin two-sided normal p-value of the Gi* z, cube layout, NaN for missing bins. */
+  pValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned per-bin `multipleTesting`-adjusted p-value in cube layout; NaN for
+   * missing bins. Equals `pValues` for `'none'`.
+   */
+  adjustedPValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned per-cell index of the last finite slice, or
+   * `GPU_EMERGING_HOT_SPOTS_NO_SLICE` (`0xffffffff`) for a cell without any.
+   */
+  lastValidSlice?: GraphDataView<'uint32'>;
+  /** Caller-owned per-cell Mann-Kendall z of the Gi* series (continuity corrected). */
+  trendZ: GraphDataView<'float32'>;
+  /** Caller-owned per-cell two-sided Mann-Kendall p-value. */
+  trendP: GraphDataView<'float32'>;
+  /** Caller-owned per-cell Mann-Kendall statistic `S`, an exact integer. */
+  trendS: GraphDataView<'sint32'>;
+  /** Caller-owned per-cell category code from `GPU_EMERGING_HOT_SPOTS_CATEGORIES` (0 to 17). */
+  category: GraphDataView<'uint32'>;
+  /** Caller-owned per-cell count of significant hot slices (`z > 0` and adjusted p at most `1 - confidenceLevel`). */
+  hotSliceCount: GraphDataView<'uint32'>;
+  /** Caller-owned per-cell count of significant cold slices (`z < 0` and adjusted p at most `1 - confidenceLevel`). */
+  coldSliceCount: GraphDataView<'uint32'>;
+  /** Optional caller-owned `[n, mean, variance, standardDeviation]` of the valid bins. */
+  globalStatistics?: GraphDataView<'float32'>;
+};
 
 /**
  * Properties for {@link GPUEmergingHotSpots}.
@@ -89,10 +127,10 @@ export type GPUEmergingHotSpotsProps = {
    * finite and non-negative. Defaults to `1`. Lattice mode always uses the focal cell with weight 1.
    */
   selfWeight?: number;
-  /** Slices per cell, at most `GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT`. Compile-time. */
+  /** Slices per cell, at most `GPU_EMERGING_HOT_SPOTS_MAXIMUM_SLICE_COUNT`. Compile-time. */
   sliceCount: number;
   /**
-   * Largest per-frame `radius` in cells, at most `GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS`. Larger
+   * Largest per-frame `radius` in cells, at most `GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS`. Larger
    * per-frame radii are clamped. Compile-time. Defaults to 4.
    */
   maximumRadius?: number;
@@ -100,8 +138,8 @@ export type GPUEmergingHotSpotsProps = {
   mask?: GraphDataView<'uint32'>;
   /**
    * Per-frame parameters: a packed float32 view of at least
-   * `GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH` elements written with
-   * `getGPUEmergingHotSpotParameterValues`.
+   * `GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH` elements written with
+   * `getGPUEmergingHotSpotsParameterValues` or {@link GPUEmergingHotSpots.getParameterValues}.
    */
   parameters: GraphDataView<'float32'>;
   /**
@@ -121,39 +159,13 @@ export type GPUEmergingHotSpotsProps = {
   /**
    * Compile-time. How the cell's final slice is chosen. `'require'` (default): the final slice is
    * the last slice of the cube, and a cell whose last slice is missing (NaN) gets
-   * `GPU_EMERGING_HOT_SPOT_CATEGORIES.UNDETERMINED`. `'last-valid'`: the final slice is the last
+   * `GPU_EMERGING_HOT_SPOTS_CATEGORIES.UNDETERMINED`. `'last-valid'`: the final slice is the last
    * finite one, so a stale cell can be labelled New or Persistent for a period it has no data in
    * (the previous behavior).
    */
   finalSlice?: 'require' | 'last-valid';
-  /** Caller-owned per-bin Gi* z-scores in cube layout; NaN for missing bins. */
-  giZScores: GraphDataView<'float32'>;
-  /** Optional caller-owned per-bin two-sided normal p-value of the Gi* z, cube layout, NaN for missing bins. */
-  pValues?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned per-bin `multipleTesting`-adjusted p-value in cube layout; NaN for
-   * missing bins. Equals `pValues` for `'none'`.
-   */
-  adjustedPValues?: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned per-cell index of the last finite slice, or
-   * `GPU_EMERGING_HOT_SPOT_NO_SLICE` (`0xffffffff`) for a cell without any.
-   */
-  lastValidSlice?: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell Mann-Kendall z of the Gi* series (continuity corrected). */
-  trendZ: GraphDataView<'float32'>;
-  /** Caller-owned per-cell two-sided Mann-Kendall p-value. */
-  trendP: GraphDataView<'float32'>;
-  /** Caller-owned per-cell Mann-Kendall statistic `S`, an exact integer. */
-  trendS: GraphDataView<'sint32'>;
-  /** Caller-owned per-cell category code from `GPU_EMERGING_HOT_SPOT_CATEGORIES` (0 to 17). */
-  category: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell count of significant hot slices (`z > 0` and adjusted p at most `1 - confidenceLevel`). */
-  hotSliceCount: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell count of significant cold slices (`z < 0` and adjusted p at most `1 - confidenceLevel`). */
-  coldSliceCount: GraphDataView<'uint32'>;
-  /** Optional caller-owned `[n, mean, variance, standardDeviation]` of the valid bins. */
-  globalStatistics?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUEmergingHotSpotsOutput;
 };
 
 /**
@@ -181,7 +193,7 @@ export type GPUEmergingHotSpotsProps = {
  *    `erfcc` Chebyshev fit (relative error below 1.2e-7); `p = 1` when `Var <= 0`.
  * 3b. Between 2 and 3: two-sided normal p-values `erfc(|z| / sqrt(2))` of every valid Gi* bin,
  *    adjusted by {@link GPUMultipleTestingAdjustment} over all valid bins (`multipleTesting`).
- * 4. Classification into the 17 {@link GPU_EMERGING_HOT_SPOT_CATEGORIES} plus `UNDETERMINED`.
+ * 4. Classification into the 17 {@link GPU_EMERGING_HOT_SPOTS_CATEGORIES} plus `UNDETERMINED`.
  *
  * Classification rules, evaluated on the finite z series (NaN slices skipped). A slice is hot when
  * its adjusted p-value is at most `1 - confidenceLevel` and `z > 0`, and cold with `z < 0`
@@ -244,6 +256,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     this.id = props.id ?? 'emerging-hot-spots';
     this.props = props;
     const id = this.id;
+    const {output} = props;
     this.multipleTesting = resolveGPUMultipleTestingMethod(
       id,
       props.multipleTesting ?? 'benjamini-hochberg'
@@ -261,20 +274,11 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     if (!Number.isFinite(selfWeight) || selfWeight < 0) {
       throw new Error(`${id} selfWeight must be a finite number >= 0`);
     }
-    for (const [name, value] of [
-      ['gridWidth', hasLattice ? gridWidth : 1],
-      ['gridHeight', hasLattice ? gridHeight : 1],
-      ['sliceCount', sliceCount]
-    ] as const) {
-      if (value === undefined || !Number.isInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
+    if (hasLattice) {
+      validateCapacity(id, 'gridWidth', gridWidth ?? Number.NaN);
+      validateCapacity(id, 'gridHeight', gridHeight ?? Number.NaN);
     }
-    if (sliceCount > GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT) {
-      throw new Error(
-        `${id} sliceCount must be at most ${GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT}`
-      );
-    }
+    validateCapacity(id, 'sliceCount', sliceCount, 1, GPU_EMERGING_HOT_SPOTS_MAXIMUM_SLICE_COUNT);
     const cellCount = props.weights
       ? validateGPUSpatialWeights(id, props.weights)
       : gridWidth! * gridHeight!;
@@ -285,25 +289,20 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     if (binCount > MAXIMUM_BIN_COUNT) {
       throw new Error(`${id} cellCount * sliceCount must be below 2^31`);
     }
-    const maximumRadius = props.maximumRadius ?? 4;
-    if (
-      !Number.isInteger(maximumRadius) ||
-      maximumRadius < 0 ||
-      maximumRadius > GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS
-    ) {
-      throw new Error(
-        `${id} maximumRadius must be an integer in 0..${GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS}`
-      );
-    }
+    validateCapacity(
+      id,
+      'maximumRadius',
+      props.maximumRadius ?? 4,
+      0,
+      GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS
+    );
     validatePackedView(props.values, ['float32', 'uint32'], `${id} values`);
     if (props.values.length !== binCount) {
       throw new Error(`${id} values length must equal cellCount * sliceCount`);
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH} float32 values`
-      );
+    if (props.parameters.length < GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH) {
+      throw new Error(`${id} parameters is too short`);
     }
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
@@ -311,13 +310,13 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the cell count`);
       }
     }
-    validatePackedView(props.giZScores, ['float32'], `${id} giZScores`);
-    if (props.giZScores.length !== binCount) {
+    validatePackedView(output.giZScores, ['float32'], `${id} giZScores`);
+    if (output.giZScores.length !== binCount) {
       throw new Error(`${id} giZScores length must equal values length`);
     }
     for (const [name, view] of [
-      ['pValues', props.pValues],
-      ['adjustedPValues', props.adjustedPValues]
+      ['pValues', output.pValues],
+      ['adjustedPValues', output.adjustedPValues]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
@@ -327,58 +326,56 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       }
     }
     if (
-      (this.multipleTesting !== 'none' || props.pValues || props.adjustedPValues) &&
+      (this.multipleTesting !== 'none' || output.pValues || output.adjustedPValues) &&
       binCount >= GPU_MULTIPLE_TESTING_MAXIMUM_ROWS
     ) {
       // The adjustment ranks bins as exact f32 integers.
       throw new Error(`${id} multiple testing needs fewer than 2^24 bins`);
     }
-    if (props.lastValidSlice) {
-      validatePackedUint32View(props.lastValidSlice, `${id} lastValidSlice`);
-      if (props.lastValidSlice.length !== cellCount) {
+    if (output.lastValidSlice) {
+      validatePackedUint32View(output.lastValidSlice, `${id} lastValidSlice`);
+      if (output.lastValidSlice.length !== cellCount) {
         throw new Error(`${id} lastValidSlice length must equal the cell count`);
       }
     }
-    validatePackedView(props.trendZ, ['float32'], `${id} trendZ`);
-    validatePackedView(props.trendP, ['float32'], `${id} trendP`);
-    validatePackedView(props.trendS, ['sint32'], `${id} trendS`);
-    validatePackedUint32View(props.category, `${id} category`);
-    validatePackedUint32View(props.hotSliceCount, `${id} hotSliceCount`);
-    validatePackedUint32View(props.coldSliceCount, `${id} coldSliceCount`);
+    validatePackedView(output.trendZ, ['float32'], `${id} trendZ`);
+    validatePackedView(output.trendP, ['float32'], `${id} trendP`);
+    validatePackedView(output.trendS, ['sint32'], `${id} trendS`);
+    validatePackedUint32View(output.category, `${id} category`);
+    validatePackedUint32View(output.hotSliceCount, `${id} hotSliceCount`);
+    validatePackedUint32View(output.coldSliceCount, `${id} coldSliceCount`);
     for (const [name, view] of [
-      ['trendZ', props.trendZ],
-      ['trendP', props.trendP],
-      ['trendS', props.trendS],
-      ['category', props.category],
-      ['hotSliceCount', props.hotSliceCount],
-      ['coldSliceCount', props.coldSliceCount]
+      ['trendZ', output.trendZ],
+      ['trendP', output.trendP],
+      ['trendS', output.trendS],
+      ['category', output.category],
+      ['hotSliceCount', output.hotSliceCount],
+      ['coldSliceCount', output.coldSliceCount]
     ] as const) {
       if (view.length !== cellCount) {
         throw new Error(`${id} ${name} length must equal the cell count`);
       }
     }
-    if (props.globalStatistics) {
-      validatePackedView(props.globalStatistics, ['float32'], `${id} globalStatistics`);
-      if (props.globalStatistics.length < GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH) {
-        throw new Error(
-          `${id} globalStatistics must hold ${GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH} float32 values`
-        );
+    if (output.globalStatistics) {
+      validatePackedView(output.globalStatistics, ['float32'], `${id} globalStatistics`);
+      if (output.globalStatistics.length < GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH) {
+        throw new Error(`${id} globalStatistics is too short`);
       }
     }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        props.giZScores,
-        props.pValues,
-        props.adjustedPValues,
-        props.lastValidSlice,
-        props.trendZ,
-        props.trendP,
-        props.trendS,
-        props.category,
-        props.hotSliceCount,
-        props.coldSliceCount,
-        props.globalStatistics
+        output.giZScores,
+        output.pValues,
+        output.adjustedPValues,
+        output.lastValidSlice,
+        output.trendZ,
+        output.trendP,
+        output.trendS,
+        output.category,
+        output.hotSliceCount,
+        output.coldSliceCount,
+        output.globalStatistics
       ],
       [
         props.values,
@@ -392,17 +389,41 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
   }
 
   /**
-   * CPU-side description of the inference behind the hot and cold bins, for building a legend.
-   * `significanceLevel` is omitted: the confidence level is a per-frame parameter
-   * (`1 - confidenceLevel`, default 0.05), so the caller that writes it knows it.
+   * Packs `settings` for this node's `parameters` view, with `settings.multipleTesting` taken
+   * from the node. Throws on invalid settings or a `multipleTesting` that differs from the node.
+   *
+   * @param settings The per-frame settings to pack (the same object `getInferenceMetadata` reads).
+   * @param target Optional destination of at least `GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH` elements.
    */
-  getInferenceMetadata(): GPUInferenceMetadata {
+  getParameterValues(settings: GPUEmergingHotSpotsSettings, target?: Float32Array): Float32Array {
+    return getGPUEmergingHotSpotsParameterValues(this._resolveSettings(settings), target);
+  }
+
+  /**
+   * CPU-side description of the inference behind the hot and cold bins, for building a legend,
+   * derived from the same `settings` that {@link getParameterValues} packs
+   * (`significanceLevel = 1 - confidenceLevel`). Validates `settings` like the packer.
+   */
+  getInferenceMetadata(settings: GPUEmergingHotSpotsSettings): GPUInferenceMetadata {
+    const resolved = this._resolveSettings(settings);
+    getGPUEmergingHotSpotsParameterValues(resolved);
     return {
       alternative: 'two-sided',
       permutationCount: 0,
       multipleTesting: this.multipleTesting,
+      significanceLevel: 1 - (resolved.confidenceLevel ?? 0.95),
       testedRowsDefinition: 'valid space-time bins'
     };
+  }
+
+  private _resolveSettings(settings: GPUEmergingHotSpotsSettings): GPUEmergingHotSpotsSettings {
+    if (
+      settings.multipleTesting !== undefined &&
+      settings.multipleTesting !== this.multipleTesting
+    ) {
+      throw new Error(`${this.id} settings.multipleTesting must match the node`);
+    }
+    return {...settings, multipleTesting: this.multipleTesting};
   }
 
   /** Returns the emerging-hot-spot nodes in dependency order. */
@@ -410,7 +431,8 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {values, mask, parameters, giZScores, weights, sliceCount} = props;
+    const {values, mask, parameters, weights, sliceCount, output} = props;
+    const {giZScores} = output;
     const gridWidth = props.gridWidth ?? 1;
     const gridHeight = props.gridHeight ?? 1;
     const selfWeight = props.selfWeight ?? 1;
@@ -422,25 +444,31 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       weights?.neighbors,
       weights?.weights,
       giZScores,
-      props.trendZ,
-      props.trendP,
-      props.pValues,
-      props.adjustedPValues,
-      props.lastValidSlice,
-      props.trendS,
-      props.category,
-      props.hotSliceCount,
-      props.coldSliceCount,
-      props.globalStatistics
+      output.trendZ,
+      output.trendP,
+      output.pValues,
+      output.adjustedPValues,
+      output.lastValidSlice,
+      output.trendS,
+      output.category,
+      output.hotSliceCount,
+      output.coldSliceCount,
+      output.globalStatistics
     ]);
     const {finalSlice, multipleTesting} = this;
     // Without a correction the classifier compares z with the critical z and needs no p-values.
     const usesAdjustment = multipleTesting !== 'none';
     const needsPValues =
-      usesAdjustment || props.pValues !== undefined || props.adjustedPValues !== undefined;
+      usesAdjustment || output.pValues !== undefined || output.adjustedPValues !== undefined;
     const maximumRadius = props.maximumRadius ?? 4;
     const cellCount = weights ? weights.offsets.length - 1 : gridWidth * gridHeight;
     const binCount = cellCount * sliceCount;
+    // Rule 16: every per-bin view is one storage binding, so the cube must fit the device's
+    // binding size (2^25 four-byte bins at the 128 MiB default), not only the 2^31 index range.
+    const maximumBindingBins = Math.floor(graph.device.limits.maxStorageBufferBindingSize / 4);
+    if (binCount > maximumBindingBins) {
+      throw new Error(`${id} cube exceeds maxStorageBufferBindingSize`);
+    }
     const cooperativeMannKendall = sliceCount >= MANN_KENDALL_COOPERATIVE_SLICE_COUNT;
     const blockCount = Math.ceil(binCount / BIN_BLOCK);
     const valueType = values.format === 'uint32' ? 'u32' : 'f32';
@@ -453,12 +481,12 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       blockCount
     );
     const statistics =
-      props.globalStatistics ??
+      output.globalStatistics ??
       createTransientView(
         graph,
         `${id}-statistics`,
         'float32',
-        GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
+        GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
       );
 
     const declarations = /* wgsl */ `
@@ -631,12 +659,12 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
     giZScores[giZScoresOffset + cell * SLICE_COUNT + slice] = zScore;
   }`;
     const pValues =
-      props.pValues ??
+      output.pValues ??
       (needsPValues
         ? createTransientView(graph, `${id}-p-values`, 'float32', binCount)
         : undefined);
     const adjustedPValues =
-      props.adjustedPValues ??
+      output.adjustedPValues ??
       (needsPValues
         ? createTransientView(graph, `${id}-adjusted-p-values`, 'float32', binCount)
         : undefined);
@@ -665,7 +693,7 @@ ${ERFC_VALUE_WGSL}`,
         id: `${id}-adjustment`,
         pValues: pValues!,
         method: multipleTesting,
-        adjustedPValues: adjustedPValues!
+        output: {adjustedPValues: adjustedPValues!}
       }).getCommandNodes(graph)
     ];
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -877,13 +905,13 @@ var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
                 } satisfies WGSLKernelBinding
               ]
             : []),
-          {name: 'hotSliceCount', view: props.hotSliceCount, type: 'u32', access: 'read_write'},
-          {name: 'coldSliceCount', view: props.coldSliceCount, type: 'u32', access: 'read_write'},
-          ...(props.lastValidSlice
+          {name: 'hotSliceCount', view: output.hotSliceCount, type: 'u32', access: 'read_write'},
+          {name: 'coldSliceCount', view: output.coldSliceCount, type: 'u32', access: 'read_write'},
+          ...(output.lastValidSlice
             ? [
                 {
                   name: 'lastValidSlice',
-                  view: props.lastValidSlice,
+                  view: output.lastValidSlice,
                   type: 'u32',
                   access: 'read_write'
                 } satisfies WGSLKernelBinding
@@ -903,7 +931,7 @@ ${getSliceStateWGSL(usesAdjustment)}`,
   })}
   hotSliceCount[hotSliceCountOffset + index] = hot;
   coldSliceCount[coldSliceCountOffset + index] = cold;
-  ${props.lastValidSlice ? 'lastValidSlice[lastValidSliceOffset + index] = lastValid;' : ''}`
+  ${output.lastValidSlice ? 'lastValidSlice[lastValidSliceOffset + index] = lastValid;' : ''}`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-mann-kendall`,
@@ -924,25 +952,25 @@ ${getSliceStateWGSL(usesAdjustment)}`,
             : []),
           {
             name: 'trendZ',
-            view: props.trendZ,
+            view: output.trendZ,
             type: 'f32',
             access: 'read_write'
           },
           {
             name: 'trendP',
-            view: props.trendP,
+            view: output.trendP,
             type: 'f32',
             access: 'read_write'
           },
           {
             name: 'trendS',
-            view: props.trendS,
+            view: output.trendS,
             type: 'i32',
             access: 'read_write'
           },
           {
             name: 'category',
-            view: props.category,
+            view: output.category,
             type: 'u32',
             access: 'read_write'
           }

@@ -4,31 +4,31 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import {FIND_PATH_WGSL} from '../line-segmentize/line-segmentize-kernels';
+import {FIND_LINE_WGSL} from '../line-segmentize/line-segmentize-kernels';
 import {GPU_LINE_NO_SOURCE} from '../line-segmentize/line-segmentize-types';
 
 /** Number of float32 elements in a `GPURectangleClip` parameter buffer. */
 export const GPU_RECTANGLE_CLIP_PARAMETER_LENGTH = 4;
 
 /**
- * WGSL helpers for line clipping over the bound `positions`, `pathOffsets`, `parameters` and the
- * constants `PATH_COUNT` and `ROW_COUNT`: `getClip(row)` returns `(t0, t1, kept)` for the segment
+ * WGSL helpers for line clipping over the bound `positions`, `lineOffsets`, `parameters` and the
+ * constants `LINE_COUNT` and `ROW_COUNT`: `getClip(row)` returns `(t0, t1, kept)` for the segment
  * starting at `row` (Liang-Barsky), and `isContinuation(row)` whether the clipped segment extends
- * the clipped segment before it (same path, previous kept and unclipped at its end, this one
+ * the clipped segment before it (same line, previous kept and unclipped at its end, this one
  * unclipped at its start).
  *
  * @internal
  */
 const LINE_CLIP_WGSL = /* wgsl */ `
-${FIND_PATH_WGSL}
+${FIND_LINE_WGSL}
 
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
 
 fn getClip(row: u32) -> vec3<f32> {
-  let path = findPath(row);
-  if (path == NO_PATH || row + 1u >= min(pathOffsets[pathOffsetsOffset + path + 1u], ROW_COUNT)) {
+  let line = findLine(row);
+  if (line == NO_LINE || row + 1u >= min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT)) {
     return vec3<f32>(0.0);
   }
   let a = getPosition(row);
@@ -66,12 +66,12 @@ fn getClip(row: u32) -> vec3<f32> {
   return vec3<f32>(t0, t1, 1.0);
 }
 
-fn getPathStart(row: u32) -> u32 {
-  return pathOffsets[pathOffsetsOffset + findPath(row)];
+fn getLineStart(row: u32) -> u32 {
+  return lineOffsets[lineOffsetsOffset + findLine(row)];
 }
 
 fn isContinuation(row: u32, clip: vec3<f32>) -> bool {
-  if (clip.z == 0.0 || row == 0u || row <= getPathStart(row)) {
+  if (clip.z == 0.0 || row == 0u || row <= getLineStart(row)) {
     return false;
   }
   let previous = getClip(row - 1u);
@@ -94,12 +94,12 @@ fn getClippedEnd(row: u32, clip: vec3<f32>) -> vec2<f32> {
 export type LineClipInputs = {
   operation: string;
   positions: GraphDataView<'float32x2'>;
-  pathOffsets: GraphDataView<'uint32'>;
+  lineOffsets: GraphDataView<'uint32'>;
   parameters: GraphDataView<'float32'>;
 };
 
 function getLineClipDeclarations(inputs: LineClipInputs): string {
-  return `const PATH_COUNT: u32 = ${inputs.pathOffsets.length - 1}u;
+  return `const LINE_COUNT: u32 = ${inputs.lineOffsets.length - 1}u;
 const ROW_COUNT: u32 = ${inputs.positions.length}u;
 ${LINE_CLIP_WGSL}`;
 }
@@ -107,12 +107,12 @@ ${LINE_CLIP_WGSL}`;
 function getLineClipBindings(inputs: LineClipInputs): WGSLKernelBinding[] {
   return [
     {name: 'positions', view: inputs.positions, type: 'f32', access: 'read'},
-    {name: 'pathOffsets', view: inputs.pathOffsets, type: 'u32', access: 'read'},
+    {name: 'lineOffsets', view: inputs.lineOffsets, type: 'u32', access: 'read'},
     {name: 'parameters', view: inputs.parameters, type: 'f32', access: 'read'}
   ];
 }
 
-/** Per-row output vertex count (0, 1 or 2) and path-start flag of the clipped segments. @internal */
+/** Per-row output vertex count (0, 1 or 2) and line-start flag of the clipped segments. @internal */
 export function createLineClipCountNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: LineClipInputs & {
@@ -139,31 +139,31 @@ export function createLineClipCountNode<Parameters>(
   });
 }
 
-/** Writes clipped vertices, path starts and optional source paths. @internal */
+/** Writes clipped vertices, line starts and optional source lines. @internal */
 export function createLineClipEmitNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: LineClipInputs & {
     id: string;
     starts: GraphDataView<'uint32'>;
-    pathIndices: GraphDataView<'uint32'>;
+    lineIndices: GraphDataView<'uint32'>;
     outputPositions: GraphDataView<'float32x2'>;
-    outputPathOffsets: GraphDataView<'uint32'>;
-    outputSourcePaths?: GraphDataView<'uint32'>;
+    outputLineOffsets: GraphDataView<'uint32'>;
+    outputSourceLineIndices?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const capacity = props.outputPositions.length;
-  const pathCapacity = props.outputPathOffsets.length - 1;
+  const lineCapacity = props.outputLineOffsets.length - 1;
   const bindings: WGSLKernelBinding[] = [
     ...getLineClipBindings(props),
     {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
-    {name: 'pathIndices', view: props.pathIndices, type: 'u32', access: 'read'},
+    {name: 'lineIndices', view: props.lineIndices, type: 'u32', access: 'read'},
     {name: 'outPositions', view: props.outputPositions, type: 'f32', access: 'read_write'},
-    {name: 'outPathOffsets', view: props.outputPathOffsets, type: 'u32', access: 'read_write'}
+    {name: 'outLineOffsets', view: props.outputLineOffsets, type: 'u32', access: 'read_write'}
   ];
-  if (props.outputSourcePaths) {
+  if (props.outputSourceLineIndices) {
     bindings.push({
-      name: 'outSourcePaths',
-      view: props.outputSourcePaths,
+      name: 'outSourceLineIndices',
+      view: props.outputSourceLineIndices,
       type: 'u32',
       access: 'read_write'
     });
@@ -176,7 +176,7 @@ export function createLineClipEmitNode<Parameters>(
     invocationCount: props.positions.length,
     declarations: `${getLineClipDeclarations(props)}
 const CAPACITY: u32 = ${capacity}u;
-const PATH_CAPACITY: u32 = ${pathCapacity}u;
+const LINE_CAPACITY: u32 = ${lineCapacity}u;
 fn writeVertex(slot: u32, p: vec2<f32>) {
   if (slot < CAPACITY) {
     outPositions[outPositionsOffset + 2u * slot] = p.x;
@@ -190,10 +190,10 @@ fn writeVertex(slot: u32, p: vec2<f32>) {
   let continues = isContinuation(index, clip);
   var slot = starts[startsOffset + index];
   if (!continues) {
-    let pathIndex = pathIndices[pathIndicesOffset + index];
-    if (pathIndex < PATH_CAPACITY) {
-      outPathOffsets[outPathOffsetsOffset + pathIndex] = min(slot, CAPACITY);
-      ${props.outputSourcePaths ? 'outSourcePaths[outSourcePathsOffset + pathIndex] = findPath(index);' : ''}
+    let lineIndex = lineIndices[lineIndicesOffset + index];
+    if (lineIndex < LINE_CAPACITY) {
+      outLineOffsets[outLineOffsetsOffset + lineIndex] = min(slot, CAPACITY);
+      ${props.outputSourceLineIndices ? 'outSourceLineIndices[outSourceLineIndicesOffset + lineIndex] = findLine(index);' : ''}
     }
     writeVertex(slot, getClippedStart(index, clip));
     slot += 1u;
@@ -202,17 +202,17 @@ fn writeVertex(slot: u32, p: vec2<f32>) {
   });
 }
 
-/** Publishes counts and flags and the unclamped totals to `totals = [vertices, paths]`. @internal */
+/** Publishes counts and flags and the unclamped totals to `totals = [vertices, lines]`. @internal */
 export function createLineClipPublishNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     operation: string;
     capacity: number;
-    pathCapacity: number;
+    lineCapacity: number;
     starts: GraphDataView<'uint32'>;
     counts: GraphDataView<'uint32'>;
-    pathIndices: GraphDataView<'uint32'>;
+    lineIndices: GraphDataView<'uint32'>;
     startFlags: GraphDataView<'uint32'>;
     totals: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
@@ -223,7 +223,7 @@ export function createLineClipPublishNode<Parameters>(
   const bindings: WGSLKernelBinding[] = [
     {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
     {name: 'counts', view: props.counts, type: 'u32', access: 'read'},
-    {name: 'pathIndices', view: props.pathIndices, type: 'u32', access: 'read'},
+    {name: 'lineIndices', view: props.lineIndices, type: 'u32', access: 'read'},
     {name: 'startFlags', view: props.startFlags, type: 'u32', access: 'read'},
     {name: 'totals', view: props.totals, type: 'u32', access: 'read_write'},
     {name: 'countOut', view: props.count, type: 'u32', access: 'read_write'},
@@ -240,44 +240,44 @@ export function createLineClipPublishNode<Parameters>(
     bindings,
     invocationCount: 1,
     body: `let vertexTotal = starts[startsOffset + ${last}u] + counts[countsOffset + ${last}u];
-  let pathTotal = pathIndices[pathIndicesOffset + ${last}u] + startFlags[startFlagsOffset + ${last}u];
-  let pathClamped = min(pathTotal, ${props.pathCapacity}u);
+  let lineTotal = lineIndices[lineIndicesOffset + ${last}u] + startFlags[startFlagsOffset + ${last}u];
+  let lineClamped = min(lineTotal, ${props.lineCapacity}u);
   totals[totalsOffset] = min(vertexTotal, ${props.capacity}u);
-  totals[totalsOffset + 1u] = pathClamped;
+  totals[totalsOffset + 1u] = lineClamped;
   countOut[countOutOffset] = min(vertexTotal, ${props.capacity}u);
-  overflowOut[overflowOutOffset] = select(0u, 1u, vertexTotal > ${props.capacity}u || pathTotal > ${props.pathCapacity}u);
+  overflowOut[overflowOutOffset] = select(0u, 1u, vertexTotal > ${props.capacity}u || lineTotal > ${props.lineCapacity}u);
   ${props.requiredCount ? 'totalOut[totalOutOffset] = vertexTotal;' : ''}`
   });
 }
 
 /**
- * Fills the unused tail of `pathOffsets` (paths at or after `totals[1]`) with the vertex count,
- * and optional source paths with `GPU_LINE_NO_SOURCE`.
+ * Fills the unused tail of `lineOffsets` (lines at or after `totals[1]`) with the vertex count,
+ * and optional source lines with `GPU_LINE_NO_SOURCE`.
  *
  * @internal
  */
-export function createPathTailNode<Parameters>(
+export function createLineTailNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     operation: string;
     totals: GraphDataView<'uint32'>;
-    pathOffsets: GraphDataView<'uint32'>;
-    sourcePaths?: GraphDataView<'uint32'>;
-    pathCount?: GraphDataView<'uint32'>;
+    lineOffsets: GraphDataView<'uint32'>;
+    sourceLineIndices?: GraphDataView<'uint32'>;
+    lineCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
     {name: 'totals', view: props.totals, type: 'u32', access: 'read'},
-    {name: 'pathOffsets', view: props.pathOffsets, type: 'u32', access: 'read_write'}
+    {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read_write'}
   ];
-  if (props.pathCount) {
-    bindings.push({name: 'pathCountOut', view: props.pathCount, type: 'u32', access: 'read_write'});
+  if (props.lineCount) {
+    bindings.push({name: 'lineCountOut', view: props.lineCount, type: 'u32', access: 'read_write'});
   }
-  if (props.sourcePaths) {
+  if (props.sourceLineIndices) {
     bindings.push({
-      name: 'sourcePaths',
-      view: props.sourcePaths,
+      name: 'sourceLineIndices',
+      view: props.sourceLineIndices,
       type: 'u32',
       access: 'read_write'
     });
@@ -285,13 +285,13 @@ export function createPathTailNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    variant: 'path-tail',
+    variant: 'line-tail',
     bindings,
-    invocationCount: props.pathOffsets.length,
-    body: `${props.pathCount ? 'if (index == 0u) {\n    pathCountOut[pathCountOutOffset] = totals[totalsOffset + 1u];\n  }' : ''}
+    invocationCount: props.lineOffsets.length,
+    body: `${props.lineCount ? 'if (index == 0u) {\n    lineCountOut[lineCountOutOffset] = totals[totalsOffset + 1u];\n  }' : ''}
   if (index >= totals[totalsOffset + 1u]) {
-    pathOffsets[pathOffsetsOffset + index] = totals[totalsOffset];
-    ${props.sourcePaths ? `if (index < ${props.sourcePaths.length}u) {\n      sourcePaths[sourcePathsOffset + index] = ${GPU_LINE_NO_SOURCE}u;\n    }` : ''}
+    lineOffsets[lineOffsetsOffset + index] = totals[totalsOffset];
+    ${props.sourceLineIndices ? `if (index < ${props.sourceLineIndices.length}u) {\n      sourceLineIndices[sourceLineIndicesOffset + index] = ${GPU_LINE_NO_SOURCE}u;\n    }` : ''}
   }`
   });
 }
@@ -308,7 +308,7 @@ export type PolygonStageInputs = {
 };
 
 const POLYGON_STAGE_WGSL = /* wgsl */ `
-${FIND_PATH_WGSL}
+${FIND_LINE_WGSL}
 
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -343,12 +343,12 @@ fn getIntersection(s: vec2<f32>, e: vec2<f32>) -> vec2<f32> {
 
 // Previous vertex of the ring that owns \`row\`, or false when the row is outside every ring.
 fn getRingPrevious(row: u32) -> vec3<f32> {
-  let ring = findPath(row);
-  if (ring == NO_PATH) {
+  let ring = findLine(row);
+  if (ring == NO_LINE) {
     return vec3<f32>(0.0);
   }
-  let start = pathOffsets[pathOffsetsOffset + ring];
-  let end = min(pathOffsets[pathOffsetsOffset + ring + 1u], INPUT_ROWS);
+  let start = lineOffsets[lineOffsetsOffset + ring];
+  let end = min(lineOffsets[lineOffsetsOffset + ring + 1u], INPUT_ROWS);
   let previous = getPosition(select(row - 1u, end - 1u, row == start));
   return vec3<f32>(previous, 1.0);
 }
@@ -356,7 +356,7 @@ fn getRingPrevious(row: u32) -> vec3<f32> {
 
 function getStageDeclarations(props: PolygonStageInputs): string {
   return `const BOUNDARY: u32 = ${props.boundary}u;
-const PATH_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const LINE_COUNT: u32 = ${props.ringOffsets.length - 1}u;
 const INPUT_ROWS: u32 = ${props.positions.length}u;
 ${POLYGON_STAGE_WGSL}`;
 }
@@ -364,7 +364,7 @@ ${POLYGON_STAGE_WGSL}`;
 function getStageBindings(props: PolygonStageInputs): WGSLKernelBinding[] {
   return [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-    {name: 'pathOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+    {name: 'lineOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
     {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'}
   ];
 }
@@ -499,7 +499,7 @@ export function createPolygonPublishNode<Parameters>(
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     requiredCount?: GraphDataView<'uint32'>;
-    pathCount?: GraphDataView<'uint32'>;
+    lineCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
@@ -510,8 +510,8 @@ export function createPolygonPublishNode<Parameters>(
   if (props.requiredCount) {
     bindings.push({name: 'totalOut', view: props.requiredCount, type: 'u32', access: 'read_write'});
   }
-  if (props.pathCount) {
-    bindings.push({name: 'pathCountOut', view: props.pathCount, type: 'u32', access: 'read_write'});
+  if (props.lineCount) {
+    bindings.push({name: 'lineCountOut', view: props.lineCount, type: 'u32', access: 'read_write'});
   }
   // stageFlags holds each stage's unclamped total; any stage above capacity truncated the result.
   return createWGSLKernelNode<Parameters>(graph, {
@@ -528,6 +528,6 @@ export function createPolygonPublishNode<Parameters>(
   countOut[countOutOffset] = min(finalTotal, ${props.capacity}u);
   overflowOut[overflowOutOffset] = select(0u, 1u, overflow);
   ${props.requiredCount ? 'totalOut[totalOutOffset] = finalTotal;' : ''}
-  ${props.pathCount ? `pathCountOut[pathCountOutOffset] = ${props.ringCount}u;` : ''}`
+  ${props.lineCount ? `lineCountOut[lineCountOutOffset] = ${props.ringCount}u;` : ''}`
   });
 }

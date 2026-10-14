@@ -6,7 +6,7 @@
 export const GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH = 4;
 
 /** CPU description of the per-frame parameters of `GPULineSimplification`. */
-export type GPULineSimplificationParameters = {
+export type GPULineSimplificationSettings = {
   /**
    * Douglas-Peucker tolerance in position units (meters in a great-circle context). A vertex is kept when its importance is strictly
    * greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints
@@ -22,12 +22,12 @@ export type GPULineSimplificationParameters = {
  * Layout: `[tolerance, 0, 0, 0]`. Write the result into a `GPUParameterBuffer` between
  * encodings to change the tolerance without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements. A new array is returned when omitted.
  * @throws If the tolerance is not finite, is negative, or `target` is too short.
  */
 export function getGPULineSimplificationParameterValues(
-  parameters: GPULineSimplificationParameters,
+  settings: GPULineSimplificationSettings,
   target: Float32Array = new Float32Array(GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH) {
@@ -35,7 +35,7 @@ export function getGPULineSimplificationParameterValues(
       `Line simplification target must hold ${GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} elements`
     );
   }
-  const {tolerance} = parameters;
+  const {tolerance} = settings;
   if (!Number.isFinite(tolerance) || tolerance < 0) {
     throw new Error('Line simplification tolerance must be finite and non-negative');
   }

@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUSort,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,8 +12,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE,
@@ -36,6 +35,8 @@ import {
 const OPERATION = 'GPUCompositeScore';
 /** Rows summed in fixed order by one thread of a tile pass. */
 const TILE_ROWS = 256;
+/** Lanes of the cooperative workgroup that reduces the per-tile partials in a fixed order. */
+const REDUCTION_LANES = 256;
 
 /** Caller-owned outputs of {@link GPUCompositeScore}. */
 export type GPUCompositeScoreOutput = {
@@ -47,7 +48,7 @@ export type GPUCompositeScoreOutput = {
    */
   scaled?: GraphDataView<'float32'>;
   /**
-   * Optional per-indicator `[min, max, mean, std]` (population standard deviation) over the
+   * Optional per-indicator `[minimum, maximum, mean, standardDeviation]` (population standard deviation) over the
    * included rows, `indicatorCount * 4` values. NaN when no row is included.
    */
   columnStatistics?: GraphDataView<'float32'>;
@@ -131,8 +132,8 @@ export type GPUCompositeScoreProps = {
  *
  * Determinism: no atomics at all. Column min and max (order-preserving u32 keys, exact) and the
  * valid-row count are per-tile reductions merged in tile order. Means and centered (co)variances are
- * two-pass fixed-order sums: one thread per (256-row tile, column) sums in row order, then one thread
- * per column merges tiles in tile order. The covariance is symmetric, so only the upper triangle
+ * two-pass fixed-order sums: one thread per (256-row tile, column) sums in row order, then one 256-lane
+ * workgroup per column merges tiles (strided, then a fixed binary tree). The covariance is symmetric, so only the upper triangle
  * of (column, column) pairs is accumulated and mirrored when merging.
  * The power iteration runs in a single thread. Results are bitwise reproducible on one adapter.
  */
@@ -149,24 +150,13 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const {indicatorCount, output} = props;
-    if (
-      !Number.isInteger(indicatorCount) ||
-      indicatorCount < 1 ||
-      indicatorCount > GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT
-    ) {
-      throw new Error(
-        `${id} indicatorCount must be an integer in [1, ${GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT}]`
-      );
-    }
-    for (const [name, view] of [
-      ['indicators', props.indicators],
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
+    validateCapacity(
+      id,
+      'indicatorCount',
+      indicatorCount,
+      1,
+      GPU_COMPOSITE_SCORE_MAXIMUM_INDICATOR_COUNT
+    );
     validatePackedView(props.indicators, ['float32'], `${id} indicators`);
     if (props.indicators.length % indicatorCount !== 0) {
       throw new Error(`${id} indicators length must be a multiple of indicatorCount`);
@@ -176,7 +166,7 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal the row count`);
       }
@@ -372,27 +362,54 @@ ${COMPOSITE_SCORE_WGSL}`;
           write('validCount', validCount, 'u32'),
           write('statistics', statistics, 'f32')
         ],
-        invocationCount: indicatorCount,
-        declarations,
-        body: `var count = 0u;
+        invocationCount: indicatorCount * REDUCTION_LANES,
+        workgroupSize: REDUCTION_LANES,
+        guardIndex: false,
+        declarations: `${declarations}
+var<workgroup> laneCounts: array<u32, ${REDUCTION_LANES}>;
+var<workgroup> laneSums: array<f32, ${REDUCTION_LANES}>;
+var<workgroup> laneMinimumKeys: array<u32, ${REDUCTION_LANES}>;
+var<workgroup> laneMaximumKeys: array<u32, ${REDUCTION_LANES}>;`,
+        // One workgroup per column: lane l folds tiles l, l + 256, ... in order, then a fixed
+        // binary tree combines the lane partials, so the result is run-to-run reproducible.
+        body: `let column = workgroupIndex;
+  let lane = localInvocationIndex;
+  var count = 0u;
   var sum = 0.0;
   var minimumKey = 0xffffffffu;
   var maximumKey = 0u;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+  for (var tile = lane; tile < TILE_COUNT; tile += ${REDUCTION_LANES}u) {
     count = count + tileCounts[tileCountsOffset + tile];
-    sum = sum + tileSums[tileSumsOffset + tile * COLUMN_COUNT + index];
-    minimumKey = min(minimumKey, tileMinKeys[tileMinKeysOffset + tile * COLUMN_COUNT + index]);
-    maximumKey = max(maximumKey, tileMaxKeys[tileMaxKeysOffset + tile * COLUMN_COUNT + index]);
+    sum = sum + tileSums[tileSumsOffset + tile * COLUMN_COUNT + column];
+    minimumKey = min(minimumKey, tileMinKeys[tileMinKeysOffset + tile * COLUMN_COUNT + column]);
+    maximumKey = max(maximumKey, tileMaxKeys[tileMaxKeysOffset + tile * COLUMN_COUNT + column]);
   }
-  if (index == 0u) {
-    validCount[validCountOffset] = count;
+  laneCounts[lane] = count;
+  laneSums[lane] = sum;
+  laneMinimumKeys[lane] = minimumKey;
+  laneMaximumKeys[lane] = maximumKey;
+  workgroupBarrier();
+  for (var stride = ${REDUCTION_LANES / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) {
+      laneCounts[lane] = laneCounts[lane] + laneCounts[lane + stride];
+      laneSums[lane] = laneSums[lane] + laneSums[lane + stride];
+      laneMinimumKeys[lane] = min(laneMinimumKeys[lane], laneMinimumKeys[lane + stride]);
+      laneMaximumKeys[lane] = max(laneMaximumKeys[lane], laneMaximumKeys[lane + stride]);
+    }
+    workgroupBarrier();
   }
-  let nan = getNaN();
-  let hasRows = count != 0u;
-  let base = statisticsOffset + index * 4u;
-  statistics[base] = select(nan, decodeOrderedKey(minimumKey), hasRows);
-  statistics[base + 1u] = select(nan, decodeOrderedKey(maximumKey), hasRows);
-  statistics[base + 2u] = select(nan, sum / f32(max(count, 1u)), hasRows);`
+  if (lane == 0u) {
+    let totalCount = laneCounts[0];
+    if (column == 0u) {
+      validCount[validCountOffset] = totalCount;
+    }
+    let nan = getNaN();
+    let hasRows = totalCount != 0u;
+    let base = statisticsOffset + column * 4u;
+    statistics[base] = select(nan, decodeOrderedKey(laneMinimumKeys[0]), hasRows);
+    statistics[base + 1u] = select(nan, decodeOrderedKey(laneMaximumKeys[0]), hasRows);
+    statistics[base + 2u] = select(nan, laneSums[0] / f32(max(totalCount, 1u)), hasRows);
+  }`
       })
     );
 
@@ -449,32 +466,48 @@ ${COMPOSITE_SCORE_WGSL}`;
           write('moments', moments, 'f32'),
           write('statistics', statistics, 'f32')
         ],
-        invocationCount: momentCount,
-        declarations,
-        body: `let count = validCount[validCountOffset];
-  var sum = 0.0;
-  var pair = index;
+        invocationCount: momentCount * REDUCTION_LANES,
+        workgroupSize: REDUCTION_LANES,
+        guardIndex: false,
+        declarations: `${declarations}
+var<workgroup> laneSums: array<f32, ${REDUCTION_LANES}>;`,
+        // One workgroup per moment index, strided over tiles with a fixed binary tree.
+        body: `let momentIndex = workgroupIndex;
+  let lane = localInvocationIndex;
+  var pair = momentIndex;
   if (FULL_MOMENTS) {
     // Mirror the lower triangle onto the upper one; the products commute, so this is exact.
-    let first = index / COLUMN_COUNT;
-    let second = index % COLUMN_COUNT;
+    let first = momentIndex / COLUMN_COUNT;
+    let second = momentIndex % COLUMN_COUNT;
     let low = min(first, second);
     let high = max(first, second);
     pair = low * COLUMN_COUNT - (low * (low - 1u)) / 2u + (high - low);
   }
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+  var sum = 0.0;
+  for (var tile = lane; tile < TILE_COUNT; tile += ${REDUCTION_LANES}u) {
     sum = sum + tileMoments[tileMomentsOffset + tile * PAIR_COUNT + pair];
   }
-  let moment = select(getNaN(), sum / f32(max(count, 1u)), count != 0u);
-  moments[momentsOffset + index] = moment;
-  var column = index;
-  var isDiagonal = true;
-  if (FULL_MOMENTS) {
-    column = index / COLUMN_COUNT;
-    isDiagonal = column == index % COLUMN_COUNT;
+  laneSums[lane] = sum;
+  workgroupBarrier();
+  for (var stride = ${REDUCTION_LANES / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) {
+      laneSums[lane] = laneSums[lane] + laneSums[lane + stride];
+    }
+    workgroupBarrier();
   }
-  if (isDiagonal) {
-    statistics[statisticsOffset + column * 4u + 3u] = select(sqrt(max(moment, 0.0)), moment, isNanBits(moment));
+  if (lane == 0u) {
+    let count = validCount[validCountOffset];
+    let moment = select(getNaN(), laneSums[0] / f32(max(count, 1u)), count != 0u);
+    moments[momentsOffset + momentIndex] = moment;
+    var column = momentIndex;
+    var isDiagonal = true;
+    if (FULL_MOMENTS) {
+      column = momentIndex / COLUMN_COUNT;
+      isDiagonal = column == momentIndex % COLUMN_COUNT;
+    }
+    if (isDiagonal) {
+      statistics[statisticsOffset + column * 4u + 3u] = select(sqrt(max(moment, 0.0)), moment, isNanBits(moment));
+    }
   }`
       })
     );
@@ -511,6 +544,19 @@ const POWER_ITERATIONS: u32 = ${GPU_COMPOSITE_SCORE_POWER_ITERATIONS}u;`,
       const sortRows = transient('sort-rows', 'uint32', rowCount);
       const sortedKeys = transient('sorted-keys', 'uint32', rowCount);
       const sortedRows = transient('sorted-rows', 'uint32', rowCount);
+      // The ranked column index lives in a GPU word, so no kernel source names a column and the
+      // pipeline count does not grow with `indicatorCount`.
+      const rankColumnState = transient('rank-column', 'uint32', 1);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-rank-reset`,
+          operation: OPERATION,
+          variant: 'rank-reset',
+          bindings: [write('rankColumnState', rankColumnState, 'u32')],
+          invocationCount: 1,
+          body: `rankColumnState[rankColumnStateOffset] = 0u;`
+        })
+      );
       for (let column = 0; column < indicatorCount; column++) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
@@ -521,13 +567,14 @@ const POWER_ITERATIONS: u32 = ${GPU_COMPOSITE_SCORE_POWER_ITERATIONS}u;`,
               read('indicators', indicators, 'f32'),
               read('rowValid', rowValid, 'u32'),
               write('sortKeys', sortKeys, 'u32'),
-              write('sortRows', sortRows, 'u32')
+              write('sortRows', sortRows, 'u32'),
+              read('rankColumnState', rankColumnState, 'u32')
             ],
             invocationCount: rowCount,
-            declarations: `${declarations}
-const RANK_COLUMN: u32 = ${column}u;`,
-            body: `let isValid = rowValid[rowValidOffset + index] != 0u;
-  let value = indicators[indicatorsOffset + index * COLUMN_COUNT + RANK_COLUMN];
+            declarations,
+            body: `let rankColumn = rankColumnState[rankColumnStateOffset];
+  let isValid = rowValid[rowValidOffset + index] != 0u;
+  let value = indicators[indicatorsOffset + index * COLUMN_COUNT + rankColumn];
   // Finite keys are below 0xff800000, so excluded rows sort after every included row; -0 ranks as +0.
   sortKeys[sortKeysOffset + index] = select(0xffffffffu, getOrderedKey(select(value, 0.0, value == 0.0)), isValid);
   sortRows[sortRowsOffset + index] = index;`
@@ -552,12 +599,23 @@ const RANK_COLUMN: u32 = ${column}u;`,
               read('sortedKeys', sortedKeys, 'u32'),
               read('sortedRows', sortedRows, 'u32'),
               read('validCount', validCount, 'u32'),
-              write('ranks', ranks, 'f32')
+              write('ranks', ranks, 'f32'),
+              read('rankColumnState', rankColumnState, 'u32')
             ],
             invocationCount: rowCount,
-            declarations: `${declarations}
-const RANK_COLUMN: u32 = ${column}u;`,
+            declarations,
             body: RANK_SCATTER_BODY
+          })
+        );
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-rank-advance-${column}`,
+            operation: OPERATION,
+            variant: 'rank-advance',
+            bindings: [write('rankColumnState', rankColumnState, 'u32')],
+            invocationCount: 1,
+            declarations: `const COLUMN_COUNT: u32 = ${indicatorCount}u;`,
+            body: `rankColumnState[rankColumnStateOffset] = (rankColumnState[rankColumnStateOffset] + 1u) % COLUMN_COUNT;`
           })
         );
       }
@@ -684,7 +742,8 @@ const PRINCIPAL_COMPONENT_BODY = /* wgsl */ `let directionBase = paramsOffset + 
   summary[summaryOffset + 2u] = select(nan, sqrt(residual), hasVariance);`;
 
 // Rank of each sorted position: average of the first and last position of its tie run.
-const RANK_SCATTER_BODY = /* wgsl */ `let count = validCount[validCountOffset];
+const RANK_SCATTER_BODY = /* wgsl */ `let rankColumn = rankColumnState[rankColumnStateOffset];
+  let count = validCount[validCountOffset];
   if (index >= count) {
     return;
   }
@@ -714,7 +773,7 @@ const RANK_SCATTER_BODY = /* wgsl */ `let count = validCount[validCountOffset];
   let averageRank = 0.5 * (f32(first) + f32(last));
   let percentile = select(0.5, averageRank / f32(max(count, 2u) - 1u), count > 1u);
   let row = sortedRows[sortedRowsOffset + index];
-  ranks[ranksOffset + row * COLUMN_COUNT + RANK_COLUMN] = percentile;`;
+  ranks[ranksOffset + row * COLUMN_COUNT + rankColumn] = percentile;`;
 
 function getScoreBody(props: {
   hasRanks: boolean;

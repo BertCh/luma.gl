@@ -5,56 +5,56 @@
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../contracts/spatial-context';
 import {
-  createIdentitySourcePathsNode,
-  createPathOffsetsPublishNode,
-  createPathPrefixNode,
+  getGPUGreatCircleRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  createIdentitySourceLineIndicesNode,
+  createLineOffsetsPublishNode,
+  createLinePrefixNode,
   createSegmentizeCountNode,
   createSegmentizeEmitNode
 } from './line-segmentize-kernels';
 import {GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} from './line-segmentize-parameters';
-import {
-  resolveLineSpatialContext,
-  type GPULineCoordinateSystem,
-  type GPULinePathOutput
-} from './line-segmentize-types';
-import {getLinePathOutputViews, validateLinePathOutput} from './line-path-output';
+import {type GPULineCoordinateSystem, type GPULineGeometryOutput} from './line-segmentize-types';
+import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geometry-output';
 
 const OPERATION = 'GPULineSegmentize';
 
 /** Default compile-time cap on output pieces per input segment. */
-export const GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECES = 1024;
+export const GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECE_COUNT = 1024;
 
 /**
  * Properties for {@link GPULineSegmentize}.
  *
  * Per-frame (no recompile): the contents of `parameters` (maximum segment length) and of every
- * input buffer. Compile-time: view lengths, the path count, `spatialContext`,
- * `maximumPiecesPerSegment`, the output capacity, and which optional outputs are present.
+ * input buffer. Compile-time: view lengths, the line count, `spatialContext`,
+ * `maximumPieceCount`, the output capacity, and which optional outputs are present.
  */
 export type GPULineSegmentizeProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-segmentize'`. */
   id?: string;
   /**
-   * Packed positions sorted by path: planar coordinates, or longitude/latitude degrees with a
+   * Packed positions sorted by line: planar coordinates, or longitude/latitude degrees with a
    * great-circle `spatialContext`.
    */
   positions: GraphDataView<'float32x2'>;
-  /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
-  pathOffsets: GraphDataView<'uint32'>;
+  /** `lineCount + 1` monotonic row offsets; line `p` owns rows `[lineOffsets[p], lineOffsets[p + 1])`. */
+  lineOffsets: GraphDataView<'uint32'>;
   /**
    * Planar (default, straight segments) or `{coordinateSpace: 'longitude-latitude', metric:
    * 'great-circle'}` (slerped great-circle arcs, lengths in the context unit on its
@@ -64,33 +64,33 @@ export type GPULineSegmentizeProps = {
   spatialContext?: GPUSpatialContext;
   /**
    * Compile-time cap on output pieces per input segment, so a tiny maximum length cannot explode
-   * counts. Default 1024. `positions.length * maximumPiecesPerSegment` must fit in 32 bits.
+   * counts. Default 1024. `positions.length * maximumPieceCount` must fit in 32 bits.
    */
-  maximumPiecesPerSegment?: number;
+  maximumPieceCount?: number;
   /**
    * Per-frame packed float32 view of at least {@link GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} elements
    * written with `getGPULineSegmentizeParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
-  /** Densified paths, one output path per input path. */
-  output: GPULinePathOutput;
+  /** Densified lines, one output line per input line. */
+  output: GPULineGeometryOutput;
 };
 
 /**
- * Densifies many paths so that no output segment is longer than a per-frame maximum length
- * (turf-style densify, PostGIS `ST_Segmentize`, the CPU tessellation step of arc and path layers).
+ * Densifies many lines so that no output segment is longer than a per-frame maximum length
+ * (turf-style densify, PostGIS `ST_Segmentize`, the CPU tessellation step of arc and line layers).
  *
  * Every input segment of length `L` is split into
- * `clamp(ceil(L / maximumSegmentLength), 1, maximumPiecesPerSegment)` equal pieces; input vertices
+ * `clamp(ceil(L / maximumSegmentLength), 1, maximumPieceCount)` equal pieces; input vertices
  * are always kept. A planar context lerps; a great-circle longitude/latitude context treats
  * positions as degrees, measures haversine lengths times the sphere radius (meters by default), and slerps interior points evenly in angle along the
- * great circle. Spherical output longitudes are unwrapped so each path stays continuous across
+ * great circle. Spherical output longitudes are unwrapped so each line stays continuous across
  * the antimeridian (values may leave `[-180, 180]`), which deck.gl `PathLayer` handles with
  * `wrapLongitude` or as-is in a globe view.
  *
- * Composition: optional per-path prefix (Neumaier-compensated cumulative measures and longitude
+ * Composition: optional per-line prefix (Neumaier-compensated cumulative measures and longitude
  * unwrapping shifts, sequential in row order), per-row count, exclusive `GPUScan`, per-row emit,
- * and a publish kernel that clamps path offsets to the capacity. Deterministic; no atomics.
+ * and a publish kernel that clamps line offsets to the capacity. Deterministic; no atomics.
  *
  * Precision: f32. Interior spherical points come from f32 unit vectors, about 1e-7 rad (under a
  * meter on Earth) from the f64 slerp.
@@ -107,44 +107,38 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
   /** Resolved sphere radius in the context's length unit (1 for planar). */
   readonly radius: number;
   /** Resolved compile-time piece cap. */
-  readonly maximumPiecesPerSegment: number;
+  readonly maximumPieceCount: number;
 
   constructor(props: GPULineSegmentizeProps) {
     this.id = props.id ?? 'line-segmentize';
     this.props = props;
-    const resolved = resolveLineSpatialContext(this.id, props.spatialContext);
-    this.spatialContext = resolved.spatialContext;
-    this.coordinateSystem = resolved.coordinateSystem;
-    this.radius = resolved.radius;
-    this.maximumPiecesPerSegment =
-      props.maximumPiecesPerSegment ?? GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECES;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+    );
+    this.coordinateSystem =
+      this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';
+    this.radius = getGPUGreatCircleRadius(this.spatialContext) ?? 1;
+    this.maximumPieceCount =
+      props.maximumPieceCount ?? GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECE_COUNT;
     const {id} = this;
-    for (const [name, view] of [
-      ['positions', props.positions],
-      ['pathOffsets', props.pathOffsets],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    if (
-      !Number.isSafeInteger(this.maximumPiecesPerSegment) ||
-      this.maximumPiecesPerSegment < 1 ||
-      rowCount * this.maximumPiecesPerSegment > 0xffffffff
-    ) {
-      throw new Error(
-        `${id} maximumPiecesPerSegment must be a positive integer with positions.length * maximumPiecesPerSegment < 2^32`
-      );
-    }
-    validatePackedUint32View(props.pathOffsets, `${id} pathOffsets`);
-    if (props.pathOffsets.length < 2) {
-      throw new Error(`${id} pathOffsets must contain at least two rows`);
+    // positions.length * maximumPieceCount must fit in 32 bits.
+    validateCapacity(
+      id,
+      'maximumPieceCount',
+      this.maximumPieceCount,
+      1,
+      Math.floor(0xffffffff / rowCount)
+    );
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    if (props.lineOffsets.length < 2) {
+      throw new Error(`${id} lineOffsets needs two rows`);
     }
     validatePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH) {
@@ -152,17 +146,17 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} float32 values`
       );
     }
-    validateLinePathOutput(id, props.output, props.pathOffsets.length - 1);
-    validateGraphOutputsDisjointFromInputs(id, getLinePathOutputViews(props.output), [
+    validateLineGeometryOutput(id, props.output, props.lineOffsets.length - 1);
+    validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
       props.positions,
-      props.pathOffsets,
+      props.lineOffsets,
       props.parameters
     ]);
   }
 
   /**
    * Returns the optional prefix node, the count node, the scan nodes, the emit node, the publish
-   * node and an optional source-path node.
+   * node and an optional source-line-index node.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -171,12 +165,12 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.pathOffsets,
+      props.lineOffsets,
       props.parameters,
-      ...getLinePathOutputViews(output)
+      ...getLineGeometryOutputViews(output)
     ]);
     const rowCount = props.positions.length;
-    const pathCount = props.pathOffsets.length - 1;
+    const lineCount = props.lineOffsets.length - 1;
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rowCount);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rowCount);
     const rowMeasures = output.measures
@@ -189,11 +183,11 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (rowMeasures || rowShifts) {
       nodes.push(
-        createPathPrefixNode<Parameters>(graph, {
+        createLinePrefixNode<Parameters>(graph, {
           id: `${id}-prefix`,
           operation: OPERATION,
           positions: props.positions,
-          pathOffsets: props.pathOffsets,
+          lineOffsets: props.lineOffsets,
           coordinateSystem,
           radius,
           rowMeasures,
@@ -206,11 +200,11 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         id: `${id}-count`,
         operation: OPERATION,
         positions: props.positions,
-        pathOffsets: props.pathOffsets,
+        lineOffsets: props.lineOffsets,
         parameters: props.parameters,
         coordinateSystem,
         radius,
-        maximumPiecesPerSegment: this.maximumPiecesPerSegment,
+        maximumPieceCount: this.maximumPieceCount,
         counts
       }),
       ...new GPUScan({
@@ -233,28 +227,28 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         outputSourceRows: output.sourceRows,
         outputMeasures: output.measures
       }),
-      createPathOffsetsPublishNode<Parameters>(graph, {
+      createLineOffsetsPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
-        pathOffsets: props.pathOffsets,
-        pathCount,
+        lineOffsets: props.lineOffsets,
+        lineCount,
         rowCount,
         counts,
         starts,
-        outputPathOffsets: output.pathOffsets,
+        outputLineOffsets: output.lineOffsets,
         capacity: output.positions.length,
-        count: output.count,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount,
-        pathCountOutput: output.pathCount
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
+        lineCountOutput: output.status.lineCount
       })
     );
-    if (output.sourcePaths) {
+    if (output.sourceLineIndices) {
       nodes.push(
-        createIdentitySourcePathsNode<Parameters>(graph, {
-          id: `${id}-source-paths`,
+        createIdentitySourceLineIndicesNode<Parameters>(graph, {
+          id: `${id}-source-line-indexs`,
           operation: OPERATION,
-          sourcePaths: output.sourcePaths
+          sourceLineIndices: output.sourceLineIndices
         })
       );
     }

@@ -211,13 +211,18 @@ fn isBorderShared(walk: u32) -> bool {
     return false;
   }
   let neighbour = u32(neighbourRow) * CELL_COLUMNS + u32(neighbourColumn);
+  // The neighbour's two corners on the shared border are this (valid) cell's border corners;
+  // only its two far corners, which sit at the same corner indices as the border, are loaded.
+  // isSliverBand does not depend on the corner order.
   var neighbourValues: array<f32, 4>;
-  for (var corner = 0u; corner < 4u; corner++) {
-    let sample = getSampleIndex(neighbour, corner);
+  neighbourValues[0] = cornerValues[EDGE_START[walk]];
+  neighbourValues[1] = cornerValues[EDGE_END[walk]];
+  for (var farCorner = 0u; farCorner < 2u; farCorner++) {
+    let sample = getSampleIndex(neighbour, select(EDGE_START[walk], EDGE_END[walk], farCorner == 1u));
     if (!isSampleValid(sample)) {
       return false;
     }
-    neighbourValues[corner] = values[valuesOffset + sample];
+    neighbourValues[2u + farCorner] = values[valuesOffset + sample];
   }
   // A zero-area neighbour region writes no edges, so this cell must keep its own.
   return !isSliverBand(neighbourValues);
@@ -363,7 +368,9 @@ fn getSampleIndex(cell: u32, corner: u32) -> u32 {
 }
 
 fn isSampleValid(sample: u32) -> bool {
-  var isValid = !isNoDataValue(values[valuesOffset + sample]);
+  // Infinities cannot be interpolated: they are nodata, like NaN.
+  let sampleValue = values[valuesOffset + sample];
+  var isValid = isFiniteValue(sampleValue) && !isNoDataValue(sampleValue);
   ${hasValidity ? 'isValid = isValid && validity[validityOffset + sample] != 0u;' : ''}
   return isValid;
 }

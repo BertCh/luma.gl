@@ -15,14 +15,12 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {
-  PARTICLE_ADVECTION_DROP_PURPOSE,
-  PARTICLE_ADVECTION_SPAWN_PURPOSE
-} from './particle-advection-cpu';
 import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling';
 import {
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
+  PARTICLE_ADVECTION_DROP_PURPOSE,
+  PARTICLE_ADVECTION_SPAWN_PURPOSE
 } from './particle-advection-parameters';
 import {PHILOX_WGSL} from '../../utils/philox-random';
 
@@ -44,10 +42,26 @@ export type GPUParticleAdvectionTrails = {
   length: number;
 };
 
+/** Optional caller-owned outputs of {@link GPUParticleAdvection}. */
+export type GPUParticleAdvectionOutput = {
+  /**
+   * Position before this frame's step, equal to the new position on a respawn frame, so
+   * `(previousPositions[i], positions[i])` is a zero-length segment after a jump.
+   */
+  previousPositions?: GraphDataView<'float32x2'>;
+  /**
+   * `|v| * |speedScale|` sampled at the new position, for colouring. Zero when a freshly spawned
+   * particle sits outside the field or on a NaN cell.
+   */
+  speeds?: GraphDataView<'float32'>;
+  /** Trail ring buffer. */
+  trails?: GPUParticleAdvectionTrails;
+};
+
 /**
  * Properties for {@link GPUParticleAdvection}.
  *
- * Per-frame (no recompile): the contents of `parameters`, `wordParameters` and `velocities`.
+ * Per-frame (no recompile): the contents of `parameters`, `uint32Parameters` and `velocities`.
  * Topology (needs a new graph): `fieldWidth`, `fieldHeight`, `particleCount` (view lengths), the
  * trail length and which optional outputs are present.
  */
@@ -70,11 +84,11 @@ export type GPUParticleAdvectionProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Per-frame uint32 parameters (at least {@link GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH}
-   * rows), written with `getGPUParticleAdvectionWordParameterValues`: seed, frame, maximum age,
+   * Per-frame uint32 parameters (at least {@link GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH}
+   * rows), written with `getGPUParticleAdvectionUint32ParameterValues`: seed, frame, maximum age,
    * reset flag.
    */
-  wordParameters: GraphDataView<'uint32'>;
+  uint32Parameters: GraphDataView<'uint32'>;
   /** Particle state, updated in place. All state views have `particleCount` rows. */
   state: {
     /** Current particle positions. */
@@ -84,18 +98,8 @@ export type GPUParticleAdvectionProps = {
     /** Respawn count of each particle; keys its next spawn position. */
     generations: GraphDataView<'uint32'>;
   };
-  /**
-   * Optional output: position before this frame's step, equal to the new position on a respawn
-   * frame, so `(previousPositions[i], positions[i])` is a zero-length segment after a jump.
-   */
-  previousPositions?: GraphDataView<'float32x2'>;
-  /**
-   * Optional output: `|v| * |speedScale|` sampled at the new position, for colouring. Zero when a
-   * freshly spawned particle sits outside the field or on a NaN cell.
-   */
-  speeds?: GraphDataView<'float32'>;
-  /** Optional trail ring buffer. */
-  trails?: GPUParticleAdvectionTrails;
+  /** Optional caller-owned outputs. */
+  output?: GPUParticleAdvectionOutput;
 };
 
 /**
@@ -111,8 +115,8 @@ export type GPUParticleAdvectionProps = {
  *
  * Determinism: there are no atomics and no persistent RNG state. Random numbers come from a
  * Philox 4x32-10 counter-based generator. The spawn position of particle `i` in generation `g` is
- * `philox(counter = (i, g, 0, 0), key = (seed, 1))` (words x and y; word z staggers the initial age
- * on reset), and the drop test of frame `f` uses word x of `philox((i, f, 0, 0), (seed, 2))`. A
+ * `philox(counter = (i, g, 0, 0), key = (seed, 4))` (words x and y; word z staggers the initial age
+ * on reset), and the drop test of frame `f` uses word x of `philox((i, f, 0, 0), (seed, 5))`. A
  * replay with the same parameter sequence is therefore bitwise identical, and a particle's spawn
  * points do not depend on the particle count or the dispatch order.
  *
@@ -142,7 +146,9 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
 
   constructor(props: GPUParticleAdvectionProps) {
     const id = props.id ?? 'particle-advection';
-    const {fieldWidth, fieldHeight, state, trails} = props;
+    const {fieldWidth, fieldHeight, state} = props;
+    const output = props.output ?? {};
+    const {trails} = output;
     for (const [name, value] of [
       ['fieldWidth', fieldWidth],
       ['fieldHeight', fieldHeight]
@@ -161,10 +167,10 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
         `${id} parameters must contain ${GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH} float32 rows`
       );
     }
-    validatePackedUint32View(props.wordParameters, `${id} wordParameters`);
-    if (props.wordParameters.length < GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH) {
+    validatePackedUint32View(props.uint32Parameters, `${id} uint32Parameters`);
+    if (props.uint32Parameters.length < GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH) {
       throw new Error(
-        `${id} wordParameters must contain ${GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH} uint32 rows`
+        `${id} uint32Parameters must contain ${GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH} uint32 rows`
       );
     }
     validatePackedView(state.positions, ['float32x2'], `${id} state.positions`);
@@ -174,17 +180,17 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
     }
     validatePackedUint32View(state.ages, `${id} state.ages`);
     validatePackedUint32View(state.generations, `${id} state.generations`);
-    if (props.previousPositions) {
-      validatePackedView(props.previousPositions, ['float32x2'], `${id} previousPositions`);
+    if (output.previousPositions) {
+      validatePackedView(output.previousPositions, ['float32x2'], `${id} output.previousPositions`);
     }
-    if (props.speeds) {
-      validatePackedView(props.speeds, ['float32'], `${id} speeds`);
+    if (output.speeds) {
+      validatePackedView(output.speeds, ['float32'], `${id} output.speeds`);
     }
     for (const [name, view] of [
       ['state.ages', state.ages],
       ['state.generations', state.generations],
-      ['previousPositions', props.previousPositions],
-      ['speeds', props.speeds]
+      ['output.previousPositions', output.previousPositions],
+      ['output.speeds', output.speeds]
     ] as const) {
       if (view && view.length !== particleCount) {
         throw new Error(`${id} ${name} must have one row per particle`);
@@ -192,11 +198,13 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
     }
     if (trails) {
       if (!Number.isInteger(trails.length) || trails.length < 1) {
-        throw new Error(`${id} trails.length must be a positive integer`);
+        throw new Error(`${id} output.trails.length must be a positive integer`);
       }
-      validatePackedView(trails.positions, ['float32x2'], `${id} trails.positions`);
+      validatePackedView(trails.positions, ['float32x2'], `${id} output.trails.positions`);
       if (trails.positions.length !== particleCount * trails.length) {
-        throw new Error(`${id} trails.positions must have particleCount * trails.length rows`);
+        throw new Error(
+          `${id} output.trails.positions must have particleCount * trails.length rows`
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -205,11 +213,11 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
         state.positions,
         state.ages,
         state.generations,
-        props.previousPositions,
-        props.speeds,
+        output.previousPositions,
+        output.speeds,
         trails?.positions
       ],
-      [props.velocities, props.parameters, props.wordParameters]
+      [props.velocities, props.parameters, props.uint32Parameters]
     );
     this.id = id;
     this.particleCount = particleCount;
@@ -221,16 +229,18 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, particleCount} = this;
-    const {state, trails} = props;
+    const {state} = props;
+    const output = props.output ?? {};
+    const {trails} = output;
     validateGraphViewsBelongToGraph(id, graph, [
       props.velocities,
       props.parameters,
-      props.wordParameters,
+      props.uint32Parameters,
       state.positions,
       state.ages,
       state.generations,
-      props.previousPositions,
-      props.speeds,
+      output.previousPositions,
+      output.speeds,
       trails?.positions
     ]);
     const bindings: WGSLKernelBinding[] = [
@@ -248,7 +258,7 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
       },
       {
         name: 'words',
-        view: props.wordParameters,
+        view: props.uint32Parameters,
         type: 'u32',
         access: 'read'
       },
@@ -266,18 +276,18 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
         access: 'read_write'
       }
     ];
-    if (props.previousPositions) {
+    if (output.previousPositions) {
       bindings.push({
         name: 'previousPositions',
-        view: props.previousPositions,
+        view: output.previousPositions,
         type: 'f32',
         access: 'read_write'
       });
     }
-    if (props.speeds) {
+    if (output.speeds) {
       bindings.push({
         name: 'speeds',
-        view: props.speeds,
+        view: output.speeds,
         type: 'f32',
         access: 'read_write'
       });
@@ -350,12 +360,12 @@ fn getSpeed(sample: vec2<f32>, speedScale: f32) -> f32 { return length(sample) *
   ages[agesOffset + index] = age;
   generations[generationsOffset + index] = generation;
   ${
-    props.previousPositions
+    output.previousPositions
       ? `previousPositions[previousPositionsOffset + 2u * index] = previous.x;
   previousPositions[previousPositionsOffset + 2u * index + 1u] = previous.y;`
       : '_ = previous;'
   }
-  ${props.speeds ? 'speeds[speedsOffset + index] = speed;' : '_ = speed;'}`
+  ${output.speeds ? 'speeds[speedsOffset + index] = speed;' : '_ = speed;'}`
       })
     ];
     if (trails) {
@@ -367,7 +377,7 @@ fn getSpeed(sample: vec2<f32>, speedScale: f32) -> f32 { return length(sample) *
           bindings: [
             {
               name: 'words',
-              view: props.wordParameters,
+              view: props.uint32Parameters,
               type: 'u32',
               access: 'read'
             },

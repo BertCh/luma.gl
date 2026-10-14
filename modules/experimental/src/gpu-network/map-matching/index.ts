@@ -4,12 +4,15 @@
 
 export {
   GPUMapMatching,
+  getGPUMapMatchingMaximumEdgeCount,
+  getGPUMapMatchingMaximumEntryCapacity,
   GPU_MAP_MATCHING_NONE,
   GPU_MAP_MATCHING_PARAMETER_LENGTH,
-  encodeGPUMapMatchingParameters
+  getGPUMapMatchingParameterValues
 } from './gpu-map-matching';
 export type {
   GPUMapMatchingOutput,
-  GPUMapMatchingParameters,
-  GPUMapMatchingProps
+  GPUMapMatchingProps,
+  GPUMapMatchingRouteTable,
+  GPUMapMatchingSettings
 } from './gpu-map-matching';

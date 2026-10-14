@@ -9,12 +9,12 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
-import {FIND_PATH_WGSL} from '../line-segmentize/line-segmentize-kernels';
+import {FIND_LINE_WGSL} from '../line-segmentize/line-segmentize-kernels';
 
 /** Static description shared by the walk kernels. @internal */
 export type LineDensityGridConstants = {
   positions: GraphDataView<'float32x2'>;
-  pathOffsets: GraphDataView<'uint32'>;
+  lineOffsets: GraphDataView<'uint32'>;
   columns: number;
   rows: number;
   coordinateSystem: 'planar' | 'spherical';
@@ -36,7 +36,7 @@ export type LineDensityGridConstants = {
 export function getWalkSegmentSource(constants: LineDensityGridConstants, emit: boolean): string {
   const spherical = constants.coordinateSystem === 'spherical';
   return /* wgsl */ `
-const PATH_COUNT: u32 = ${constants.pathOffsets.length - 1}u;
+const LINE_COUNT: u32 = ${constants.lineOffsets.length - 1}u;
 const ROW_COUNT: u32 = ${constants.positions.length}u;
 const COLUMNS: i32 = ${constants.columns};
 const ROWS: i32 = ${constants.rows};
@@ -45,7 +45,7 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(constants.radius)};
 const INFINITE: f32 = 3.0e38;
 const EMITS_PIECES: bool = ${emit};
 ${spherical ? GEODESIC_WGSL : ''}
-${FIND_PATH_WGSL}
+${FIND_LINE_WGSL}
 
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -60,11 +60,11 @@ fn getPieceLength(a: vec2<f32>, b: vec2<f32>, t0: f32, t1: f32) -> f32 {
 }
 
 fn walkSegment(row: u32, slot: u32) -> u32 {
-  let path = findPath(row);
-  if (path == NO_PATH) {
+  let line = findLine(row);
+  if (line == NO_LINE) {
     return 0u;
   }
-  if (row + 1u >= min(pathOffsets[pathOffsetsOffset + path + 1u], ROW_COUNT)) {
+  if (row + 1u >= min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT)) {
     return 0u;
   }
   let origin = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
@@ -174,7 +174,7 @@ export function createWalkCountNode<Parameters>(
     variant: 'count',
     bindings: [
       {name: 'positions', view: props.constants.positions, type: 'f32', access: 'read'},
-      {name: 'pathOffsets', view: props.constants.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: props.constants.lineOffsets, type: 'u32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'counts', view: props.counts, type: 'u32', access: 'read_write'}
     ],
@@ -203,7 +203,7 @@ export function createWalkEmitNode<Parameters>(
     variant: 'emit',
     bindings: [
       {name: 'positions', view: props.constants.positions, type: 'f32', access: 'read'},
-      {name: 'pathOffsets', view: props.constants.pathOffsets, type: 'u32', access: 'read'},
+      {name: 'lineOffsets', view: props.constants.lineOffsets, type: 'u32', access: 'read'},
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
       {name: 'keys', view: props.keys, type: 'u32', access: 'read_write'},
@@ -222,28 +222,25 @@ export function createRecordPublishNode<Parameters>(
     id: string;
     operation: string;
     capacity: number;
-    starts: GraphDataView<'uint32'>;
-    counts: GraphDataView<'uint32'>;
+    total: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     totalRecords?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
-    {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
-    {name: 'counts', view: props.counts, type: 'u32', access: 'read'},
+    {name: 'scanTotal', view: props.total, type: 'u32', access: 'read'},
     {name: 'overflowOut', view: props.overflow, type: 'u32', access: 'read_write'}
   ];
   if (props.totalRecords) {
     bindings.push({name: 'totalOut', view: props.totalRecords, type: 'u32', access: 'read_write'});
   }
-  const last = props.starts.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'publish',
     bindings,
     invocationCount: 1,
-    body: `let total = starts[startsOffset + ${last}u] + counts[countsOffset + ${last}u];
+    body: `let total = scanTotal[scanTotalOffset];
   overflowOut[overflowOutOffset] = select(0u, 1u, total > ${props.capacity}u);
   ${props.totalRecords ? 'totalOut[totalOutOffset] = total;' : ''}`
   });

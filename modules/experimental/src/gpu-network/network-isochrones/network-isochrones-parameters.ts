@@ -6,10 +6,10 @@
 export const GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH = 12;
 
 /** Per-frame settings of {@link GPUNetworkIsochrones}. */
-export type GPUNetworkIsochroneSettings = {
+export type GPUNetworkIsochronesSettings = {
   /**
-   * Number of active ascending breaks, at most `breaks.length`. `breakCount + 1` bands exist:
-   * band `k` holds cost in `[breaks[k - 1], breaks[k])`, band 0 everything below the first break
+   * Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist:
+   * band `k` holds cost in `[costBreaks[k - 1], costBreaks[k])`, band 0 everything below the first break
    * and the last band everything at or above the last active break (including unreached pixels).
    */
   breakCount: number;
@@ -43,15 +43,15 @@ export type GPUNetworkIsochroneSettings = {
  *
  * @param settings Break count, extent, buffer, band window and cell cost limit.
  * @param target Optional destination of at least 12 elements.
- * @throws If the target is too short or a value is invalid.
+ * @throws If the target is too short or a value is invalid (the message starts with `GPUNetworkIsochrones`).
  */
-export function getGPUNetworkIsochroneParameterValues(
-  settings: GPUNetworkIsochroneSettings,
+export function getGPUNetworkIsochronesParameterValues(
+  settings: GPUNetworkIsochronesSettings,
   target: Float32Array = new Float32Array(GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH) {
     throw new Error(
-      `Isochrones parameter target must hold ${GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH} elements`
+      `GPUNetworkIsochrones parameter target must hold ${GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH} elements`
     );
   }
   const {breakCount} = settings;
@@ -63,20 +63,20 @@ export function getGPUNetworkIsochroneParameterValues(
     ['lastBand', lastBand]
   ] as const) {
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(`Isochrones ${name} must be a non-negative integer`);
+      throw new Error(`GPUNetworkIsochrones ${name} must be a non-negative integer`);
     }
   }
   const [minX, minY, maxX, maxY] = settings.extent;
   if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) {
-    throw new Error('Isochrones extent must be finite with maxX > minX and maxY > minY');
+    throw new Error('GPUNetworkIsochrones extent must be finite with maxX > minX and maxY > minY');
   }
   const bufferRadius = settings.bufferRadius ?? 0;
   const walkCostPerUnit = settings.walkCostPerUnit ?? 0;
   if (!(bufferRadius >= 0) || !Number.isFinite(bufferRadius)) {
-    throw new Error('Isochrones bufferRadius must be a non-negative finite number');
+    throw new Error('GPUNetworkIsochrones bufferRadius must be a non-negative finite number');
   }
   if (!(walkCostPerUnit >= 0) || !Number.isFinite(walkCostPerUnit)) {
-    throw new Error('Isochrones walkCostPerUnit must be a non-negative finite number');
+    throw new Error('GPUNetworkIsochrones walkCostPerUnit must be a non-negative finite number');
   }
   target.fill(0);
   target[0] = breakCount;

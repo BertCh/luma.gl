@@ -9,10 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {
-  getFixedPointWGSL,
-  ORDERED_KEY_WGSL
-} from '../../gpu-spatial-analysis/cell-aggregation/cell-table';
+import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   atomicBinding,
   GROUP_NONE,

@@ -13,7 +13,7 @@ export {
 } from './column-quantiles-parameters';
 export type {
   GPUColumnQuantileInterpolation,
-  GPUColumnQuantilesParameterInput
+  GPUColumnQuantilesSettings
 } from './column-quantiles-parameters';
 export {GPUClassBreaks} from './gpu-class-breaks';
 export type {GPUClassBreaksOutput, GPUClassBreaksProps} from './gpu-class-breaks';
@@ -25,7 +25,7 @@ export {
   GPU_CLASS_BREAKS_METHODS,
   GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH
 } from './class-breaks-parameters';
-export type {GPUClassBreaksMethod, GPUClassBreaksParameters} from './class-breaks-parameters';
+export type {GPUClassBreaksMethod, GPUClassBreaksSettings} from './class-breaks-parameters';
 export {GPUColorScale} from './gpu-color-scale';
 export type {GPUColorScaleOutput, GPUColorScaleProps} from './gpu-color-scale';
 export {
@@ -37,7 +37,7 @@ export {
 } from './color-scale-parameters';
 export type {
   GPUColorScaleInterpolation,
-  GPUColorScaleParameterOptions,
+  GPUColorScaleSettings,
   GPUColorScaleType
 } from './color-scale-parameters';
 export {GPUBivariateClassification} from './gpu-bivariate-classification';
@@ -51,6 +51,6 @@ export {
   GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH
 } from './bivariate-classification-parameters';
 export type {
-  GPUBivariateClassificationParameterOptions,
+  GPUBivariateClassificationSettings,
   GPUBivariateValueByAlpha
 } from './bivariate-classification-parameters';

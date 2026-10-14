@@ -2,25 +2,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUMultipleTestingMethod} from '../contracts/inference';
+import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/inference';
 
 /** Number of float32 elements in an emerging-hot-spot parameter buffer. */
-export const GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH = 8;
+export const GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH = 8;
 
 /** Number of float32 rows written to an optional `globalStatistics` output. */
-export const GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH = 4;
+export const GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH = 4;
 
 /** Largest supported compile-time `sliceCount`; long Mann-Kendall series use 64 GPU lanes. */
-export const GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT = 256;
+export const GPU_EMERGING_HOT_SPOTS_MAXIMUM_SLICE_COUNT = 256;
 
 /** Largest supported compile-time `maximumRadius`, in cells. */
-export const GPU_EMERGING_HOT_SPOT_MAXIMUM_RADIUS = 32;
+export const GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS = 32;
 
 /** Sentinel written to an optional `lastValidSlice` output for a cell with no finite slice. */
-export const GPU_EMERGING_HOT_SPOT_NO_SLICE = 0xffffffff;
+export const GPU_EMERGING_HOT_SPOTS_NO_SLICE = 0xffffffff;
 
 /** Default `minimumTrendSliceCount`: ESRI advises at least 10 time steps for Mann-Kendall. */
-export const GPU_EMERGING_HOT_SPOT_DEFAULT_MINIMUM_TREND_SLICE_COUNT = 10;
+export const GPU_EMERGING_HOT_SPOTS_DEFAULT_MINIMUM_TREND_SLICE_COUNT = 10;
 
 /**
  * Stable `uint32` codes of the 17 ArcGIS emerging hot spot categories and the extra
@@ -34,7 +34,7 @@ export const GPU_EMERGING_HOT_SPOT_DEFAULT_MINIMUM_TREND_SLICE_COUNT = 10;
  * `finalSlice` or any other option. The options only change which bins count as hot or cold, so a
  * legend built once stays valid.
  */
-export const GPU_EMERGING_HOT_SPOT_CATEGORIES = {
+export const GPU_EMERGING_HOT_SPOTS_CATEGORIES = {
   /** No pattern detected. */
   NO_PATTERN: 0,
   /** Significant hot spot in the final slice and never before. */
@@ -80,17 +80,18 @@ export const GPU_EMERGING_HOT_SPOT_CATEGORIES = {
 } as const;
 
 /** Two-sided normal critical z of the 90%, 95% and 99% confidence levels. */
-export const GPU_EMERGING_HOT_SPOT_CRITICAL_Z_SCORES: Readonly<Record<string, number>> = {
+export const GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES: Readonly<Record<string, number>> = {
   '0.9': 1.6448536269514722,
   '0.95': 1.959963984540054,
   '0.99': 2.5758293035489004
 };
 
 /**
- * CPU description of the per-frame parameters of `GPUEmergingHotSpots`. Every field can change
- * between encodings without rebuilding or recompiling the graph.
+ * CPU settings of `GPUEmergingHotSpots`, packed by {@link getGPUEmergingHotSpotsParameterValues}
+ * (or `GPUEmergingHotSpots.getParameterValues`) into its per-frame `parameters` view. Every field
+ * can change between encodings without rebuilding or recompiling the graph.
  */
-export type GPUEmergingHotSpotParameters = {
+export type GPUEmergingHotSpotsSettings = {
   /**
    * Lattice mode: spatial neighborhood radius in lattice cells. Cell `(dx, dy)` offsets with
    * `dx * dx + dy * dy <= radius * radius` are neighbors (the focal cell included, so `0` is the
@@ -114,10 +115,11 @@ export type GPUEmergingHotSpotParameters = {
    */
   criticalZ?: number;
   /**
-   * The compile-time `multipleTesting` of the node these parameters feed. It does not change the
-   * packed values; it makes this function reject a `criticalZ` combined with a correction and
+   * The compile-time `multipleTesting` of the node these settings feed. It does not change the
+   * packed values; it makes the packer reject a `criticalZ` combined with a correction and
    * decide whether `confidenceLevel` must be tabulated. Defaults to `'benjamini-hochberg'`, like
-   * the node.
+   * the node. `GPUEmergingHotSpots.getParameterValues` fills it from the node and rejects a
+   * different value.
    */
   multipleTesting?: GPUMultipleTestingMethod;
   /**
@@ -138,71 +140,69 @@ export type GPUEmergingHotSpotParameters = {
 };
 
 /**
- * Packs emerging-hot-spot parameters into the 8-element float32 layout read by
+ * Packs emerging-hot-spot settings into the 8-element float32 layout read by
  * `GPUEmergingHotSpots`.
  *
  * Layout: `[radius, temporalWindow, criticalZ, trendSignificanceLevel, persistentFraction,
  * minimumTrendSliceCount, significanceLevel, 0]`, where `significanceLevel = 1 - confidenceLevel`
  * and `criticalZ` is only read with `multipleTesting: 'none'`.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite or out of range, `criticalZ` is combined with a correction,
  * `confidenceLevel` is not 0.9, 0.95 or 0.99 without a `criticalZ` and `multipleTesting: 'none'`,
  * or `target` is too short.
  */
-export function getGPUEmergingHotSpotParameterValues(
-  parameters: GPUEmergingHotSpotParameters,
-  target: Float32Array = new Float32Array(GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH)
+export function getGPUEmergingHotSpotsParameterValues(
+  settings: GPUEmergingHotSpotsSettings,
+  target: Float32Array = new Float32Array(GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH) {
-    throw new Error(
-      `Emerging hot spot target must hold ${GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH} elements`
-    );
+  if (target.length < GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH) {
+    throw new Error('GPUEmergingHotSpots target is too short');
   }
-  const {temporalWindow} = parameters;
-  const radius = parameters.radius ?? 0;
+  const {temporalWindow} = settings;
+  const radius = settings.radius ?? 0;
   if (!Number.isFinite(radius) || radius < 0) {
-    throw new Error('Emerging hot spot radius must be a finite number >= 0');
+    throw new Error('GPUEmergingHotSpots radius must be a finite number >= 0');
   }
   if (!Number.isInteger(temporalWindow) || temporalWindow < 0) {
-    throw new Error('Emerging hot spot temporalWindow must be an integer >= 0');
+    throw new Error('GPUEmergingHotSpots temporalWindow must be an integer >= 0');
   }
-  const confidenceLevel = parameters.confidenceLevel ?? 0.95;
+  const confidenceLevel = settings.confidenceLevel ?? 0.95;
   if (!(confidenceLevel > 0 && confidenceLevel < 1)) {
-    throw new Error('Emerging hot spot confidenceLevel must be in (0, 1)');
+    throw new Error('GPUEmergingHotSpots confidenceLevel must be in (0, 1)');
   }
-  const multipleTesting = parameters.multipleTesting ?? 'benjamini-hochberg';
-  let criticalZ = parameters.criticalZ;
+  const multipleTesting = settings.multipleTesting ?? 'benjamini-hochberg';
+  let criticalZ = settings.criticalZ;
   if (criticalZ !== undefined) {
     if (multipleTesting !== 'none') {
-      throw new Error("Emerging hot spot criticalZ requires multipleTesting 'none'");
+      throw new Error("GPUEmergingHotSpots criticalZ requires multipleTesting 'none'");
     }
     if (!Number.isFinite(criticalZ) || criticalZ <= 0) {
-      throw new Error('Emerging hot spot criticalZ must be a finite number > 0');
+      throw new Error('GPUEmergingHotSpots criticalZ must be a finite number > 0');
     }
   } else {
-    criticalZ = GPU_EMERGING_HOT_SPOT_CRITICAL_Z_SCORES[String(confidenceLevel)];
+    criticalZ = GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES[String(confidenceLevel)];
     if (criticalZ === undefined) {
       if (multipleTesting === 'none') {
-        throw new Error('Emerging hot spot confidenceLevel must be 0.9, 0.95 or 0.99');
+        throw new Error('GPUEmergingHotSpots confidenceLevel must be 0.9, 0.95 or 0.99');
       }
       // Unused with a correction: the adjusted p-value decides.
       criticalZ = 0;
     }
   }
   const minimumTrendSliceCount =
-    parameters.minimumTrendSliceCount ?? GPU_EMERGING_HOT_SPOT_DEFAULT_MINIMUM_TREND_SLICE_COUNT;
+    settings.minimumTrendSliceCount ?? GPU_EMERGING_HOT_SPOTS_DEFAULT_MINIMUM_TREND_SLICE_COUNT;
   if (!Number.isInteger(minimumTrendSliceCount) || minimumTrendSliceCount < 0) {
-    throw new Error('Emerging hot spot minimumTrendSliceCount must be an integer >= 0');
+    throw new Error('GPUEmergingHotSpots minimumTrendSliceCount must be an integer >= 0');
   }
-  const trendSignificanceLevel = parameters.trendSignificanceLevel ?? 1 - confidenceLevel;
+  const trendSignificanceLevel = settings.trendSignificanceLevel ?? 1 - confidenceLevel;
   if (!(trendSignificanceLevel > 0 && trendSignificanceLevel < 1)) {
-    throw new Error('Emerging hot spot trendSignificanceLevel must be in (0, 1)');
+    throw new Error('GPUEmergingHotSpots trendSignificanceLevel must be in (0, 1)');
   }
-  const persistentFraction = parameters.persistentFraction ?? 0.9;
+  const persistentFraction = settings.persistentFraction ?? 0.9;
   if (!(persistentFraction > 0.5 && persistentFraction <= 1)) {
-    throw new Error('Emerging hot spot persistentFraction must be in (0.5, 1]');
+    throw new Error('GPUEmergingHotSpots persistentFraction must be in (0.5, 1]');
   }
   target.set([
     radius,

@@ -8,6 +8,10 @@ import {
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION,
   type GPUKernelDensityKernel
 } from './kernel-density-math';
+import type {
+  GPUKernelDensityEdgeCorrection,
+  GPUKernelDensityNormalization
+} from './gpu-kernel-density';
 
 /**
  * WGSL `getKernelValue(distanceSquared, bandwidth)`: the normalised `K_h(d)` of
@@ -100,4 +104,49 @@ fn getWindowMass(point: vec2f, windowMin: vec2f, windowMax: vec2f, bandwidth: f3
   return getSignedQuadrantMass(high.x, high.y) - getSignedQuadrantMass(low.x, high.y) -
     getSignedQuadrantMass(high.x, low.y) + getSignedQuadrantMass(low.x, low.y);
 }`;
+}
+
+/**
+ * WGSL statements that turn the raw kernel sum `total` of one output cell into the written value:
+ * NaN for an invalid cell or one outside the window, the `'uniform'` division by the window mass,
+ * the `'probability'` division by the included weight, and the store to `valuesOut[index]`. Shared
+ * by the exact gather and the binned finish so the NaN rules cannot diverge. The caller defines
+ * `valid: bool`, `total: f32`, `cellOffset`, `windowMin`, `windowMax: vec2f` and `bandwidth: f32`,
+ * and declares the `weightSum` binding for `'probability'` and {@link getWindowMassWGSL} for edge
+ * correction.
+ * @internal
+ */
+export function getKernelDensityResultWGSL(
+  edgeCorrection: GPUKernelDensityEdgeCorrection,
+  normalization: GPUKernelDensityNormalization
+): string {
+  return `var result = total;
+  if (!valid) {
+    result = getNaN();
+  }
+  ${
+    edgeCorrection === 'none'
+      ? ''
+      : `if (valid) {
+    if (!(all(cellOffset >= windowMin) && all(cellOffset <= windowMax))) {
+      result = getNaN();
+    }${
+      edgeCorrection === 'uniform'
+        ? ` else {
+      let mass = getWindowMass(cellOffset, windowMin, windowMax, bandwidth);
+      result = select(getNaN(), total / mass, mass > 1e-6);
+    }`
+        : ''
+    }
+  }`
+  }
+  ${
+    normalization === 'probability'
+      ? `if (valid) {
+    let totalWeight = weightSum[weightSumOffset];
+    result = select(getNaN(), result / totalWeight, totalWeight > 0.0);
+  }`
+      : ''
+  }
+  valuesOut[valuesOutOffset + index] = result;`;
 }

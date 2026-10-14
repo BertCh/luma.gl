@@ -3,36 +3,34 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
-import {
-  resolveGPUSpatialContext,
-  type GPUSpatialContext,
-  type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+import type {GPUNearestFeatureSource} from './spatial-join-types';
 import type {
-  GPUNearestFeatureSource,
-  GPUSpatialJoinGeometry,
-  GPUSpatialJoinLines,
-  GPUSpatialJoinPolygons
-} from './spatial-join-types';
+  GPULineGeometryPort,
+  GPUPackedGeometryPort,
+  GPUPointGeometryPort,
+  GPUPolygonGeometryPort
+} from '../../analysis-core/contracts/index';
 
 /** Value written to `neighborSegmentIndices` when the distance has no feature edge (a point feature, or containment). */
 export const GPU_NEAREST_NO_SEGMENT = 0xffffffff;
 
 /**
  * Feature geometry accepted by {@link GPUNearestFeatureJoin}: points, single segments, linestrings
- * and polygons or multipolygons (GeoArrow layout, see `GPUSpatialJoinPolygons`).
+ * and polygons or multipolygons (four-level layout). Optional `sourceIds` are written instead of
+ * feature rows.
  */
 export type GPUNearestFeatureGeometry =
   | GPUNearestFeatureSource
-  | GPUSpatialJoinLines
-  | GPUSpatialJoinPolygons;
+  | GPUPackedGeometryPort<GPULineGeometryPort>
+  | GPUPackedGeometryPort<GPUPolygonGeometryPort>;
 
 /**
- * Query geometry for the k-nearest mode when it is not a chunked point set: points, linestrings or
- * polygons, one query feature per row. Line and polygon queries are not chunked.
+ * Query geometry of {@link GPUNearestFeatureJoin}, one query per row: points (possibly chunked),
+ * linestrings or polygons. Line and polygon queries are one packed view each and need neighbors mode.
  */
-export type GPUNearestQueryGeometry = GPUSpatialJoinGeometry;
+export type GPUNearestQueryGeometry =
+  | GPUPointGeometryPort
+  | GPUPackedGeometryPort<GPULineGeometryPort | GPUPolygonGeometryPort>;
 
 /**
  * Tie rule of the k-nearest mode.
@@ -53,40 +51,9 @@ export type NearestSide = {
   kind: GPUNearestFeatureGeometry['kind'];
   /** Number of vertices in the position buffer, used to clamp malformed offsets. */
   vertexCount: number;
+  /** Word offset of ring offsets packed after the polygon feature ring ranges, when present. */
+  packedRingOffsetsBase?: number;
 };
 
 /** Packed rows used by a polygon side after ring ranges are precomputed. @internal */
 export type NearestPolygonRings = GraphDataView<'uint32x2'>;
-
-/** Contexts of the nearest-feature operations: planar, or great-circle on longitude/latitude. @internal */
-export const NEAREST_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
-  coordinateSpaces: ['planar', 'longitude-latitude'],
-  metrics: ['none', 'native', 'great-circle']
-};
-
-/**
- * Resolves the spatial context of a nearest-feature operation and its sphere radius in meters
- * (`undefined` for planar distances). Longitude/latitude positions need `metric: 'great-circle'`;
- * `units: 'kilometers'` is rejected because distances are meters.
- *
- * @internal
- */
-export function resolveNearestSpatialContext(
-  id: string,
-  context: GPUSpatialContext | undefined
-): {spatialContext: GPUSpatialContext; sphereRadius: number | undefined} {
-  const spatialContext = resolveGPUSpatialContext(id, context, NEAREST_SPATIAL_CONTEXT_SUPPORT);
-  if (spatialContext.coordinateSpace !== 'longitude-latitude') {
-    return {spatialContext, sphereRadius: undefined};
-  }
-  if (spatialContext.metric !== 'great-circle') {
-    throw new Error(`${id} longitude-latitude positions need metric 'great-circle' (meters)`);
-  }
-  if (spatialContext.units === 'kilometers') {
-    throw new Error(`${id} great-circle distances are in meters`);
-  }
-  return {
-    spatialContext,
-    sphereRadius: spatialContext.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS
-  };
-}

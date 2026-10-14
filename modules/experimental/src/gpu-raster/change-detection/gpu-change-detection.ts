@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,9 +10,12 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {validateRasterParameters} from '../raster-band-utils';
 import {GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from './change-detection-parameters';
 import {ERFC_WGSL, NAN_WGSL, STUDENT_T_WGSL} from './change-detection-wgsl';
 
@@ -174,48 +174,26 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     const bandCount = props.bandCount ?? 1;
     this.bandCount = bandCount;
     this.significanceSource = props.significanceSource ?? 't-test';
-    for (const [name, count] of [
-      ['cellCount', cellCount],
-      ['bandCount', bandCount]
-    ] as const) {
-      if (!Number.isInteger(count) || count < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    if (!Number.isInteger(sliceCount) || sliceCount < 2 || sliceCount > MAXIMUM_SLICE_COUNT) {
-      throw new Error(`${id} sliceCount must be an integer in [2, ${MAXIMUM_SLICE_COUNT}]`);
-    }
+    validateCapacity(id, 'cellCount', cellCount, 1, 0x7fffffff);
+    validateCapacity(id, 'bandCount', bandCount, 1, 0x7fffffff);
+    validateCapacity(id, 'sliceCount', sliceCount, 2, MAXIMUM_SLICE_COUNT);
     if (cellCount * sliceCount * bandCount > 0x7fffffff) {
       throw new Error(`${id} cellCount * sliceCount * bandCount must not exceed 2^31 - 1`);
     }
     if (this.significanceSource !== 't-test' && this.significanceSource !== 'mann-kendall') {
       throw new Error(`${id} significanceSource must be 't-test' or 'mann-kendall'`);
     }
-    for (const [name, view] of [
-      ['slices', props.slices],
-      ['mask', props.mask],
-      ['parameters', props.parameters]
-    ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.slices, ['float32'], `${id} slices`);
     if (props.slices.length < cellCount * sliceCount * bandCount) {
       throw new Error(`${id} slices must hold cellCount * sliceCount * bandCount rows`);
     }
     if (props.mask) {
-      validatePackedUint32View(props.mask, `${id} mask`);
+      validatePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length < cellCount) {
         throw new Error(`${id} mask must hold cellCount rows`);
       }
     }
-    validatePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_CHANGE_DETECTION_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_CHANGE_DETECTION_PARAMETER_LENGTH} float32 values`
-      );
-    }
+    validateRasterParameters(id, props.parameters, GPU_CHANGE_DETECTION_PARAMETER_LENGTH);
     const present = Object.entries(output).filter(([, view]) => view);
     if (present.length === 0) {
       throw new Error(`${id} needs at least one output`);
@@ -229,7 +207,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
       validatePackedView(output.mannKendallS, ['sint32'], `${id} output.mannKendallS`);
     }
     if (output.significance) {
-      validatePackedUint32View(output.significance, `${id} output.significance`);
+      validatePackedView(output.significance, ['uint32'], `${id} output.significance`);
     }
     for (const name of SINGLE_BAND_OUTPUTS) {
       if (output[name] && bandCount !== 1) {

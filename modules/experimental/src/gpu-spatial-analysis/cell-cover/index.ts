@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUCellCover} from './gpu-cell-cover';
+export {
+  GPUCellCover,
+  getGPUCellCoverMaximumCandidateCapacity,
+  getGPUCellCoverMaximumEdgeSlabEntryCount
+} from './gpu-cell-cover';
 export type {
   GPUCellCoverContainment,
   GPUCellCoverOutput,

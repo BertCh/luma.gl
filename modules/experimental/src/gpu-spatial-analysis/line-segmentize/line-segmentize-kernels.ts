@@ -13,28 +13,28 @@ import type {GPULineCoordinateSystem} from './line-segmentize-types';
 import {BALANCED_SEARCH_WORKGROUP_SIZE, getBalancedSearchSource} from './balanced-search';
 
 /**
- * WGSL `findPath(row) -> u32`: upper-bound binary search over the bound `pathOffsets`
- * (`PATH_COUNT + 1` rows). Returns the path owning `row`, or `NO_PATH` when the row lies outside
- * every path. Empty paths are skipped naturally.
+ * WGSL `findLine(row) -> u32`: upper-bound binary search over the bound `lineOffsets`
+ * (`LINE_COUNT + 1` rows). Returns the line owning `row`, or `NO_LINE` when the row lies outside
+ * every line. Empty lines are skipped naturally.
  *
  * @internal
  */
-export const FIND_PATH_WGSL = /* wgsl */ `
-const NO_PATH: u32 = 0xffffffffu;
+export const FIND_LINE_WGSL = /* wgsl */ `
+const NO_LINE: u32 = 0xffffffffu;
 
-fn findPath(row: u32) -> u32 {
+fn findLine(row: u32) -> u32 {
   var low = 0u;
-  var high = PATH_COUNT + 1u;
+  var high = LINE_COUNT + 1u;
   while (low < high) {
     let middle = (low + high) / 2u;
-    if (pathOffsets[pathOffsetsOffset + middle] <= row) {
+    if (lineOffsets[lineOffsetsOffset + middle] <= row) {
       low = middle + 1u;
     } else {
       high = middle;
     }
   }
-  if (low == 0u || low > PATH_COUNT) {
-    return NO_PATH;
+  if (low == 0u || low > LINE_COUNT) {
+    return NO_LINE;
   }
   return low - 1u;
 }
@@ -68,53 +68,53 @@ fn getSegmentLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
 `;
 }
 
-/** Properties for {@link createPathPrefixNode}. @internal */
-export type PathPrefixNodeProps = {
+/** Properties for {@link createLinePrefixNode}. @internal */
+export type LinePrefixNodeProps = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
-  pathOffsets: GraphDataView<'uint32'>;
+  lineOffsets: GraphDataView<'uint32'>;
   coordinateSystem: GPULineCoordinateSystem;
   radius: number;
-  /** Per-row measure of the row's vertex from its path start. Rows outside paths are untouched. */
+  /** Per-row measure of the row's vertex from its line start. Rows outside lines are untouched. */
   rowMeasures?: GraphDataView<'float32'>;
   /**
-   * Per-row longitude shift (a multiple of 360) that makes longitudes continuous along the path.
+   * Per-row longitude shift (a multiple of 360) that makes longitudes continuous along the line.
    * Spherical only.
    */
   rowShifts?: GraphDataView<'float32'>;
 };
 
-/** Lanes of the workgroup that scans one path in {@link createPathPrefixNode}. */
+/** Lanes of the workgroup that scans one line in {@link createLinePrefixNode}. */
 const PREFIX_LANES = 64;
 
 /**
- * Builds the per-path prefix: cumulative measures and longitude unwrapping shifts.
+ * Builds the per-line prefix: cumulative measures and longitude unwrapping shifts.
  *
- * Block hybrid: workgroup `w` owns paths `[PREFIX_LANES * w, PREFIX_LANES * w + PREFIX_LANES)`.
- * Phase 1: every lane walks its own path serially when it has at most `PREFIX_LANES` rows, with a
+ * Block hybrid: workgroup `w` owns lines `[PREFIX_LANES * w, PREFIX_LANES * w + PREFIX_LANES)`.
+ * Phase 1: every lane walks its own line serially when it has at most `PREFIX_LANES` rows, with a
  * Neumaier-compensated f32 sum in row order (deterministic, and bit-identical to the former
- * one-thread-per-path kernel); longer paths are queued. Phase 2: the workgroup visits the queued
- * paths of its block in ascending order and scans each cooperatively in tiles of `PREFIX_LANES`
+ * one-thread-per-line kernel); longer lines are queued. Phase 2: the workgroup visits the queued
+ * lines of its block in ascending order and scans each cooperatively in tiles of `PREFIX_LANES`
  * segments: each tile is a Hillis-Steele inclusive scan in workgroup memory, and the running total
- * carries between tiles in compensated form. That cuts the dependent chain of a path of `n` rows
- * from `n` global read-modify-write steps to `n / 64` tiles of 6 scan rounds, so one very long path
- * no longer stalls the stage, while many short paths still cost one thread each (not one
- * workgroup each). Shifts are sums of multiples of 360, exact in f32 either way; long-path
+ * carries between tiles in compensated form. That cuts the dependent chain of a line of `n` rows
+ * from `n` global read-modify-write steps to `n / 64` tiles of 6 scan rounds, so one very long line
+ * no longer stalls the stage, while many short lines still cost one thread each (not one
+ * workgroup each). Shifts are sums of multiples of 360, exact in f32 either way; long-line
  * measures differ from the serial sum only by f32 rounding (about `log2(64)` roundings per tile).
  *
  * @internal
  */
-export function createPathPrefixNode<Parameters>(
+export function createLinePrefixNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: PathPrefixNodeProps
+  props: LinePrefixNodeProps
 ): GPUCommandNode<Parameters> {
-  const pathCount = props.pathOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   const bindings: WGSLKernelBinding[] = [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
     {
-      name: 'pathOffsets',
-      view: props.pathOffsets,
+      name: 'lineOffsets',
+      view: props.lineOffsets,
       type: 'u32',
       access: 'read'
     }
@@ -139,12 +139,12 @@ export function createPathPrefixNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    variant: 'path-prefix',
+    variant: 'line-prefix',
     bindings,
-    invocationCount: Math.ceil(pathCount / PREFIX_LANES) * PREFIX_LANES,
+    invocationCount: Math.ceil(lineCount / PREFIX_LANES) * PREFIX_LANES,
     workgroupSize: PREFIX_LANES,
     guardIndex: false,
-    declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+    declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const PREFIX_LANES: u32 = ${PREFIX_LANES}u;
 var<workgroup> largeBits: array<atomic<u32>, 2>;
@@ -156,12 +156,12 @@ var<workgroup> tileLengths: array<f32, ${PREFIX_LANES}>;
 var<workgroup> tileShifts: array<f32, ${PREFIX_LANES}>;
 ${getLineGeometrySource(props.coordinateSystem, props.radius)}`,
     body: /* wgsl */ `let lane = localInvocationIndex;
-  let pathBase = workgroupIndex * PREFIX_LANES;
-  let ownPath = pathBase + lane;
-  // Phase 1: this lane's own path, serially when small; larger paths are queued for phase 2.
-  if (ownPath < PATH_COUNT) {
-    let first = min(pathOffsets[pathOffsetsOffset + ownPath], ROW_COUNT);
-    let last = min(max(pathOffsets[pathOffsetsOffset + ownPath + 1u], first), ROW_COUNT);
+  let lineBase = workgroupIndex * PREFIX_LANES;
+  let ownLine = lineBase + lane;
+  // Phase 1: this lane's own line, serially when small; larger lines are queued for phase 2.
+  if (ownLine < LINE_COUNT) {
+    let first = min(lineOffsets[lineOffsetsOffset + ownLine], ROW_COUNT);
+    let last = min(max(lineOffsets[lineOffsetsOffset + ownLine + 1u], first), ROW_COUNT);
     if (last > first) {
       if (last - first <= PREFIX_LANES) {
         var sum = 0.0;
@@ -206,26 +206,26 @@ ${getLineGeometrySource(props.coordinateSystem, props.radius)}`,
     largeBitsCopy[1] = atomicLoad(&largeBits[1]);
   }
   // Phase 2: every barrier below is in workgroup-uniform control flow (the queue is read through
-  // workgroupUniformLoad), and the queued paths are visited in ascending order.
+  // workgroupUniformLoad), and the queued lines are visited in ascending order.
   for (var word = 0u; word < 2u; word++) {
     var pending = workgroupUniformLoad(&largeBitsCopy[word]);
     while (pending != 0u) {
       let slot = word * 32u + firstTrailingBit(pending);
       pending = pending & (pending - 1u);
-      let pathStart = workgroupUniformLoad(&largeStart[slot]);
-      let pathEnd = workgroupUniformLoad(&largeEnd[slot]);
+      let lineStart = workgroupUniformLoad(&largeStart[slot]);
+      let lineEnd = workgroupUniformLoad(&largeEnd[slot]);
       if (lane == 0u) {
-        ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + pathStart] = 0.0;' : ''}
-        ${rowShifts ? 'rowShifts[rowShiftsOffset + pathStart] = 0.0;' : ''}
+        ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + lineStart] = 0.0;' : ''}
+        ${rowShifts ? 'rowShifts[rowShiftsOffset + lineStart] = 0.0;' : ''}
         prefixCarry[0] = 0.0;
         prefixCarry[1] = 0.0;
         prefixCarry[2] = 0.0;
       }
-      for (var tileStart = pathStart + 1u; tileStart < pathEnd; tileStart += PREFIX_LANES) {
+      for (var tileStart = lineStart + 1u; tileStart < lineEnd; tileStart += PREFIX_LANES) {
         let row = tileStart + lane;
         var segmentLength = 0.0;
         var segmentShift = 0.0;
-        if (row < pathEnd) {
+        if (row < lineEnd) {
           let previous = getPosition(row - 1u);
           let current = getPosition(row);
           ${rowMeasures ? 'segmentLength = getSegmentLength(previous, current);' : ''}
@@ -246,7 +246,7 @@ ${getLineGeometrySource(props.coordinateSystem, props.radius)}`,
           tileShifts[lane] += addedShift;
           workgroupBarrier();
         }
-        if (row < pathEnd) {
+        if (row < lineEnd) {
           ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + row] = (prefixCarry[0] + tileLengths[lane]) + prefixCarry[1];' : ''}
           ${rowShifts ? 'rowShifts[rowShiftsOffset + row] = prefixCarry[2] + tileShifts[lane];' : ''}
         }
@@ -276,18 +276,18 @@ export type SegmentizeCountNodeProps = {
   id: string;
   operation: string;
   positions: GraphDataView<'float32x2'>;
-  pathOffsets: GraphDataView<'uint32'>;
+  lineOffsets: GraphDataView<'uint32'>;
   parameters: GraphDataView<'float32'>;
   coordinateSystem: GPULineCoordinateSystem;
   radius: number;
-  maximumPiecesPerSegment: number;
+  maximumPieceCount: number;
   /** Per-row output vertex count. */
   counts: GraphDataView<'uint32'>;
 };
 
 /**
- * Per-row output vertex count of `GPULineSegmentize`: `0` outside paths, `1` for the last row of a
- * path, otherwise `clamp(ceil(length / maximumSegmentLength), 1, maximumPiecesPerSegment)`.
+ * Per-row output vertex count of `GPULineSegmentize`: `0` outside lines, `1` for the last row of a
+ * line, otherwise `clamp(ceil(length / maximumSegmentLength), 1, maximumPieceCount)`.
  *
  * @internal
  */
@@ -295,7 +295,7 @@ export function createSegmentizeCountNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: SegmentizeCountNodeProps
 ): GPUCommandNode<Parameters> {
-  const pathCount = props.pathOffsets.length - 1;
+  const lineCount = props.lineOffsets.length - 1;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
@@ -303,8 +303,8 @@ export function createSegmentizeCountNode<Parameters>(
     bindings: [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {
-        name: 'pathOffsets',
-        view: props.pathOffsets,
+        name: 'lineOffsets',
+        view: props.lineOffsets,
         type: 'u32',
         access: 'read'
       },
@@ -317,9 +317,9 @@ export function createSegmentizeCountNode<Parameters>(
       {name: 'counts', view: props.counts, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: `const PATH_COUNT: u32 = ${pathCount}u;
-const MAXIMUM_PIECES: u32 = ${props.maximumPiecesPerSegment}u;
-${FIND_PATH_WGSL}
+    declarations: `const LINE_COUNT: u32 = ${lineCount}u;
+const MAXIMUM_PIECES: u32 = ${props.maximumPieceCount}u;
+${FIND_LINE_WGSL}
 ${getLineGeometrySource(props.coordinateSystem, props.radius)}
 
 fn getPieceCount(segmentLength: f32, maximumLength: f32) -> u32 {
@@ -329,10 +329,10 @@ fn getPieceCount(segmentLength: f32, maximumLength: f32) -> u32 {
   let pieces = min(ceil(segmentLength / maximumLength), f32(MAXIMUM_PIECES));
   return clamp(u32(pieces), 1u, MAXIMUM_PIECES);
 }`,
-    body: /* wgsl */ `let path = findPath(index);
+    body: /* wgsl */ `let line = findLine(index);
   var count = 0u;
-  if (path != NO_PATH) {
-    if (index + 1u >= pathOffsets[pathOffsetsOffset + path + 1u]) {
+  if (line != NO_LINE) {
+    if (index + 1u >= lineOffsets[lineOffsetsOffset + line + 1u]) {
       count = 1u;
     } else {
       count = getPieceCount(
@@ -473,7 +473,7 @@ export type ArcCountNodeProps = {
   targets: GraphDataView<'float32x2'>;
   parameters: GraphDataView<'float32'>;
   radius: number;
-  maximumSegments: number;
+  maximumSegmentCount: number;
   /** Per-pair output vertex count (`segments + 1`). */
   counts: GraphDataView<'uint32'>;
 };
@@ -490,7 +490,7 @@ fn getTarget(row: u32) -> vec2<f32> {
 
 /**
  * Per-pair vertex count of `GPUGreatCircleArcs`: `segments + 1` with
- * `segments = clamp(max(ceil(distance / maximumSegmentLength), minimumSegments), 1, maximumSegments)`.
+ * `segments = clamp(max(ceil(distance / maximumSegmentLength), minimumSegments), 1, maximumSegmentCount)`.
  *
  * @internal
  */
@@ -516,7 +516,7 @@ export function createArcCountNode<Parameters>(
     invocationCount: props.sources.length,
     declarations: `${GEODESIC_WGSL}
 const RADIUS: f32 = ${getWGSLFloatLiteral(props.radius)};
-const MAXIMUM_SEGMENTS: u32 = ${props.maximumSegments}u;
+const MAXIMUM_SEGMENTS: u32 = ${props.maximumSegmentCount}u;
 ${ARC_GEOMETRY_WGSL}`,
     body: /* wgsl */ `let distance = geodesicCentralAngle(getSource(index), getTarget(index)) * RADIUS;
   let maximumLength = parameters[parametersOffset];
@@ -638,42 +638,42 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   });
 }
 
-/** Properties for {@link createPathOffsetsPublishNode}. @internal */
-export type PathOffsetsPublishNodeProps = {
+/** Properties for {@link createLineOffsetsPublishNode}. @internal */
+export type LineOffsetsPublishNodeProps = {
   id: string;
   operation: string;
   /**
-   * Input path row offsets (`pathCount + 1`). Omit when every path is one input row (pairs), so
-   * path `p` starts at row `p`.
+   * Input line row offsets (`lineCount + 1`). Omit when every line is one input row (pairs), so
+   * line `p` starts at row `p`.
    */
-  pathOffsets?: GraphDataView<'uint32'>;
-  pathCount: number;
+  lineOffsets?: GraphDataView<'uint32'>;
+  lineCount: number;
   rowCount: number;
   counts: GraphDataView<'uint32'>;
   starts: GraphDataView<'uint32'>;
-  outputPathOffsets: GraphDataView<'uint32'>;
+  outputLineOffsets: GraphDataView<'uint32'>;
   capacity: number;
   count: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
   requiredCount?: GraphDataView<'uint32'>;
-  pathCountOutput?: GraphDataView<'uint32'>;
+  lineCountOutput?: GraphDataView<'uint32'>;
 };
 
 /**
- * Writes clamped output path offsets from the scanned row starts, plus the clamped vertex count,
- * the overflow flag, and the optional unclamped total and path count. Every word is rewritten.
+ * Writes clamped output line offsets from the scanned row starts, plus the clamped vertex count,
+ * the overflow flag, and the optional unclamped total and line count. Every word is rewritten.
  *
  * @internal
  */
-export function createPathOffsetsPublishNode<Parameters>(
+export function createLineOffsetsPublishNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: PathOffsetsPublishNodeProps
+  props: LineOffsetsPublishNodeProps
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [];
-  if (props.pathOffsets) {
+  if (props.lineOffsets) {
     bindings.push({
-      name: 'pathOffsets',
-      view: props.pathOffsets,
+      name: 'lineOffsets',
+      view: props.lineOffsets,
       type: 'u32',
       access: 'read'
     });
@@ -682,8 +682,8 @@ export function createPathOffsetsPublishNode<Parameters>(
     {name: 'counts', view: props.counts, type: 'u32', access: 'read'},
     {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
     {
-      name: 'outputPathOffsets',
-      view: props.outputPathOffsets,
+      name: 'outputLineOffsets',
+      view: props.outputLineOffsets,
       type: 'u32',
       access: 'read_write'
     },
@@ -703,69 +703,69 @@ export function createPathOffsetsPublishNode<Parameters>(
       access: 'read_write'
     });
   }
-  if (props.pathCountOutput) {
+  if (props.lineCountOutput) {
     bindings.push({
-      name: 'pathCountOut',
-      view: props.pathCountOutput,
+      name: 'lineCountOut',
+      view: props.lineCountOutput,
       type: 'u32',
       access: 'read_write'
     });
   }
-  const pathRow = props.pathOffsets
-    ? 'min(pathOffsets[pathOffsetsOffset + index], ROW_COUNT)'
+  const lineRow = props.lineOffsets
+    ? 'min(lineOffsets[lineOffsetsOffset + index], ROW_COUNT)'
     : 'min(index, ROW_COUNT)';
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
     variant: 'publish',
     bindings,
-    invocationCount: props.pathCount + 1,
+    invocationCount: props.lineCount + 1,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
 const CAPACITY: u32 = ${props.capacity}u;
-const PATH_COUNT: u32 = ${props.pathCount}u;`,
+const LINE_COUNT: u32 = ${props.lineCount}u;`,
     body: /* wgsl */ `let total = starts[startsOffset + ROW_COUNT - 1u] + counts[countsOffset + ROW_COUNT - 1u];
-  let row = ${pathRow};
+  let row = ${lineRow};
   var start = total;
   if (row < ROW_COUNT) {
     start = starts[startsOffset + row];
   }
-  outputPathOffsets[outputPathOffsetsOffset + index] = min(start, CAPACITY);
+  outputLineOffsets[outputLineOffsetsOffset + index] = min(start, CAPACITY);
   if (index == 0u) {
     countOut[countOutOffset] = min(total, CAPACITY);
     overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
     ${props.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
-    ${props.pathCountOutput ? 'pathCountOut[pathCountOutOffset] = PATH_COUNT;' : ''}
+    ${props.lineCountOutput ? 'lineCountOut[lineCountOutOffset] = LINE_COUNT;' : ''}
   }`
   });
 }
 
 /**
- * Writes the identity source-path column (`sourcePaths[p] = p`) for contributors that emit one output
- * path per input path.
+ * Writes the identity source-line-index column (`sourceLineIndices[p] = p`) for contributors that emit one output
+ * line per input line.
  *
  * @internal
  */
-export function createIdentitySourcePathsNode<Parameters>(
+export function createIdentitySourceLineIndicesNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     operation: string;
-    sourcePaths: GraphDataView<'uint32'>;
+    sourceLineIndices: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    variant: 'source-paths',
+    variant: 'source-line-indexs',
     bindings: [
       {
-        name: 'sourcePaths',
-        view: props.sourcePaths,
+        name: 'sourceLineIndices',
+        view: props.sourceLineIndices,
         type: 'u32',
         access: 'read_write'
       }
     ],
-    invocationCount: props.sourcePaths.length,
-    body: 'sourcePaths[sourcePathsOffset + index] = index;'
+    invocationCount: props.sourceLineIndices.length,
+    body: 'sourceLineIndices[sourceLineIndicesOffset + index] = index;'
   });
 }

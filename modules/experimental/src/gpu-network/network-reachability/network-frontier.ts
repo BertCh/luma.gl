@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer} from '@luma.gl/core';
+import {assert, Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -26,6 +26,13 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
  * parameter words, and `roundCounts`), its own dispatch slots, and a stamp base. Phases may share one
  * {@link FrontierState}: a later phase continues the stamps above the earlier phase's maximum
  * (`stampBase + maxRounds`), and re-initializes only its own control words and dispatch slots.
+ *
+ * The round index never reaches WGSL text (library rule 12). Each dispatch slot is a 256-byte
+ * window `[x, y, z, round]` (the indirect arguments of round `round` and the round index itself,
+ * written by the phase reset). A kernel that pushes into round `r` binds the slot of round `r` as
+ * `nextDispatch` at a 256-byte aligned offset, so its element offset is always 0, and reads `r`
+ * from word {@link FRONTIER_SLOT_ROUND}. Every round of a phase therefore compiles to the same WGSL
+ * and constants, and one pipeline serves all of them.
  */
 
 /** Queue chunk and workgroup size of frontier rounds. */
@@ -43,6 +50,17 @@ export const FRONTIER_CONTROL_PARAMETER_0 = 2;
 /** Phase control word: second phase-defined parameter. */
 export const FRONTIER_CONTROL_PARAMETER_1 = 3;
 
+/**
+ * Words between consecutive dispatch slots: 64 words is 256 bytes, the storage binding offset
+ * alignment, so a slot sub-view always has element offset 0 and the bound kernel source does not
+ * depend on the slot.
+ */
+export const FRONTIER_DISPATCH_SLOT_WORDS = 64;
+/** Dispatch slot word holding the round index (within its phase) the slot dispatches. */
+export const FRONTIER_SLOT_ROUND = 3;
+/** Dispatch slot words the phase reset writes: `x`, `y`, `z` and the round index. */
+const FRONTIER_SLOT_WRITTEN_WORDS = 4;
+
 /** Graph-owned buffers of a frontier. @internal */
 export type FrontierState = {
   nodeCount: number;
@@ -52,9 +70,9 @@ export type FrontierState = {
   queuedRound: GraphDataView<'uint32'>;
   /** Phase control regions. */
   control: GraphDataView<'uint32'>;
-  /** Indirect `[x, y, z]` slots of even rounds. */
+  /** Indirect `[x, y, z, round]` slots of even rounds, {@link FRONTIER_DISPATCH_SLOT_WORDS} apart. */
   dispatchEven: GraphDataView<'uint32'>;
-  /** Indirect `[x, y, z]` slots of odd rounds. */
+  /** Indirect `[x, y, z, round]` slots of odd rounds, {@link FRONTIER_DISPATCH_SLOT_WORDS} apart. */
   dispatchOdd: GraphDataView<'uint32'>;
 };
 
@@ -107,14 +125,14 @@ export function createFrontierState<Parameters>(
       graph,
       `${id}-dispatch-even`,
       'uint32',
-      props.dispatchSlotCount * 3,
+      props.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS,
       dispatchUsage
     ),
     dispatchOdd: createTransientView(
       graph,
       `${id}-dispatch-odd`,
       'uint32',
-      props.dispatchSlotCount * 3,
+      props.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS,
       dispatchUsage
     )
   };
@@ -125,17 +143,31 @@ export function getFrontierPhaseMaximumStamp(phase: FrontierPhase): number {
   return phase.stampBase + phase.maxRounds + 1;
 }
 
+/** Byte offset of the dispatch slot of `round` inside its parity's dispatch buffer. @internal */
+export function getFrontierDispatchSlotByteOffset(phase: FrontierPhase, round: number): number {
+  return 4 * FRONTIER_DISPATCH_SLOT_WORDS * (phase.dispatchSlotOffset + Math.floor(round / 2));
+}
+
 /**
  * Returns the frontier storage bindings in `@binding` order: `queues` (u32), `queuedRound`,
- * `control` and `nextDispatch` (atomic<u32>). `nextDispatch` is the dispatch buffer of the round
- * the kernel pushes into, which is the other parity from the round it reads.
+ * `control` and `nextDispatch` (atomic<u32>). `nextDispatch` is the dispatch slot of `nextRound`,
+ * the round the kernel pushes into, bound as a 256-byte aligned sub-view so the kernel source is
+ * the same for every round.
  *
  * @internal
  */
-export function getFrontierBindings(
+export function getFrontierBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
   state: FrontierState,
-  nextRoundIsOdd: boolean
+  phase: FrontierPhase,
+  nextRound: number
 ): WGSLKernelBinding[] {
+  const dispatch = nextRound % 2 === 1 ? state.dispatchOdd : state.dispatchEven;
+  const nextDispatch = graph.createDataView(dispatch.buffer, {
+    format: 'uint32',
+    length: FRONTIER_DISPATCH_SLOT_WORDS,
+    byteOffset: dispatch.byteOffset + getFrontierDispatchSlotByteOffset(phase, nextRound)
+  });
   return [
     {name: 'queues', view: state.queues, type: 'u32', access: 'read_write'},
     {
@@ -152,7 +184,7 @@ export function getFrontierBindings(
     },
     {
       name: 'nextDispatch',
-      view: nextRoundIsOdd ? state.dispatchOdd : state.dispatchEven,
+      view: nextDispatch,
       type: 'atomic<u32>',
       access: 'read_write'
     }
@@ -160,43 +192,48 @@ export function getFrontierBindings(
 }
 
 /**
- * WGSL for the constants and `frontierPush(targetNode: u32)` of a kernel that pushes into
- * `nextRound`. Needs the {@link getFrontierBindings} bindings. `frontierPush` sets the truncated flag
- * instead of pushing when `nextRound` is at or beyond the phase limit.
+ * WGSL for the constants and `frontierPush(targetNode: u32)` of a kernel bound with
+ * {@link getFrontierBindings}. The round it pushes into is read from the bound slot, so the source
+ * depends only on the phase and the node count. `frontierPush` sets the truncated flag instead of
+ * pushing when that round is at or beyond the phase limit.
  *
  * @internal
  */
 export function getFrontierPushSource(
   phase: FrontierPhase,
   nodeCount: number,
-  nextRound: number,
   maximumWorkgroupsPerDimension: number
 ): string {
-  const nextWord = 3 * (phase.dispatchSlotOffset + Math.floor(nextRound / 2));
   return /* wgsl */ `
 const FRONTIER_MAXIMUM_X: u32 = ${maximumWorkgroupsPerDimension}u;
-const FRONTIER_TRUNCATED_WORD: u32 = controlOffset + ${phase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u;
-const FRONTIER_LIMIT_WORD: u32 = controlOffset + ${phase.controlWordOffset + FRONTIER_CONTROL_LIMIT}u;
-const FRONTIER_PARAMETER_0_WORD: u32 = controlOffset + ${phase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_0}u;
-const FRONTIER_PARAMETER_1_WORD: u32 = controlOffset + ${phase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_1}u;
-const FRONTIER_ROUND_COUNTS_WORD: u32 = controlOffset + ${phase.controlWordOffset + FRONTIER_PHASE_HEADER_WORDS}u;
-const FRONTIER_NEXT_ROUND: u32 = ${nextRound}u;
-const FRONTIER_NEXT_STAMP: u32 = ${phase.stampBase + nextRound + 1}u;
-const FRONTIER_NEXT_QUEUE_BASE: u32 = ${(nextRound % 2) * nodeCount}u;
-const FRONTIER_NEXT_DISPATCH_WORD: u32 = ${nextWord}u;
+const FRONTIER_TRUNCATED_WORD: u32 = ${phase.controlWordOffset + FRONTIER_CONTROL_TRUNCATED}u;
+const FRONTIER_LIMIT_WORD: u32 = ${phase.controlWordOffset + FRONTIER_CONTROL_LIMIT}u;
+const FRONTIER_PARAMETER_0_WORD: u32 = ${phase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_0}u;
+const FRONTIER_PARAMETER_1_WORD: u32 = ${phase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_1}u;
+const FRONTIER_ROUND_COUNTS_WORD: u32 = ${phase.controlWordOffset + FRONTIER_PHASE_HEADER_WORDS}u;
+const FRONTIER_STAMP_BASE: u32 = ${phase.stampBase}u;
+const FRONTIER_QUEUE_NODE_COUNT: u32 = ${nodeCount}u;
+const FRONTIER_SLOT_ROUND_WORD: u32 = ${FRONTIER_SLOT_ROUND}u;
+
+// Round index (within the phase) of the bound nextDispatch slot.
+fn frontierNextRound() -> u32 {
+  return atomicLoad(&nextDispatch[nextDispatchOffset + FRONTIER_SLOT_ROUND_WORD]);
+}
 
 fn frontierPush(targetNode: u32) {
-  if (FRONTIER_NEXT_ROUND >= atomicLoad(&control[FRONTIER_LIMIT_WORD])) {
-    atomicStore(&control[FRONTIER_TRUNCATED_WORD], 1u);
+  let nextRound = frontierNextRound();
+  if (nextRound >= atomicLoad(&control[controlOffset + FRONTIER_LIMIT_WORD])) {
+    atomicStore(&control[controlOffset + FRONTIER_TRUNCATED_WORD], 1u);
     return;
   }
-  if (atomicMax(&queuedRound[queuedRoundOffset + targetNode], FRONTIER_NEXT_STAMP) >= FRONTIER_NEXT_STAMP) {
+  let nextStamp = FRONTIER_STAMP_BASE + nextRound + 1u;
+  if (atomicMax(&queuedRound[queuedRoundOffset + targetNode], nextStamp) >= nextStamp) {
     return;
   }
-  let slot = atomicAdd(&control[FRONTIER_ROUND_COUNTS_WORD + FRONTIER_NEXT_ROUND], 1u);
-  queues[queuesOffset + FRONTIER_NEXT_QUEUE_BASE + slot] = targetNode;
+  let slot = atomicAdd(&control[controlOffset + FRONTIER_ROUND_COUNTS_WORD + nextRound], 1u);
+  queues[queuesOffset + (nextRound & 1u) * FRONTIER_QUEUE_NODE_COUNT + slot] = targetNode;
   if (slot % ${FRONTIER_WORKGROUP_SIZE}u == 0u && slot / ${FRONTIER_WORKGROUP_SIZE}u < FRONTIER_MAXIMUM_X) {
-    atomicAdd(&nextDispatch[nextDispatchOffset + FRONTIER_NEXT_DISPATCH_WORD], 1u);
+    atomicAdd(&nextDispatch[nextDispatchOffset], 1u);
   }
 }`;
 }
@@ -204,7 +241,7 @@ fn frontierPush(targetNode: u32) {
 /**
  * WGSL statements for an initialize kernel's `index` that reset one phase: control words (zeroed,
  * with `limit` and the parameter words set from the given WGSL `u32` expressions) and the phase's
- * dispatch slots (`x = 0, y = 1, z = 1`). Needs `control`, `dispatchEven` and `dispatchOdd` bound as
+ * dispatch slots (`x = 0, y = 1, z = 1`, and the slot's round index). Needs `control`, `dispatchEven` and `dispatchOdd` bound as
  * plain `u32` read_write arrays. The kernel needs at least {@link getFrontierResetInvocationCount}
  * invocations. Zeroing `queuedRound` is the first phase's responsibility.
  *
@@ -222,17 +259,26 @@ export function getFrontierResetSource(
     if (index == ${FRONTIER_CONTROL_PARAMETER_1}u) { controlValue = ${expressions.parameter1 ?? '0u'}; }
     control[controlOffset + ${phase.controlWordOffset}u + index] = controlValue;
   }
-  if (index < ${dispatchSlotCount * 3}u) {
-    let dispatchValue = select(1u, 0u, index % 3u == 0u);
-    dispatchEven[dispatchEvenOffset + ${phase.dispatchSlotOffset * 3}u + index] = dispatchValue;
-    dispatchOdd[dispatchOddOffset + ${phase.dispatchSlotOffset * 3}u + index] = dispatchValue;
+  if (index < ${dispatchSlotCount * FRONTIER_SLOT_WRITTEN_WORDS}u) {
+    let slot = index / ${FRONTIER_SLOT_WRITTEN_WORDS}u;
+    let slotWord = index % ${FRONTIER_SLOT_WRITTEN_WORDS}u;
+    let word = (${phase.dispatchSlotOffset}u + slot) * ${FRONTIER_DISPATCH_SLOT_WORDS}u + slotWord;
+    // x starts at 0 (pushes grow it), y and z at 1; word ${FRONTIER_SLOT_ROUND} is the slot's round index.
+    var evenValue = select(1u, 0u, slotWord == 0u);
+    var oddValue = evenValue;
+    if (slotWord == ${FRONTIER_SLOT_ROUND}u) {
+      evenValue = 2u * slot;
+      oddValue = 2u * slot + 1u;
+    }
+    dispatchEven[dispatchEvenOffset + word] = evenValue;
+    dispatchOdd[dispatchOddOffset + word] = oddValue;
   }`;
 }
 
 /** Minimum invocation count of a kernel using {@link getFrontierResetSource}. @internal */
 export function getFrontierResetInvocationCount(phase: FrontierPhase): number {
   const {controlWordCount, dispatchSlotCount} = getFrontierPhaseLayout(phase.maxRounds);
-  return Math.max(controlWordCount, dispatchSlotCount * 3);
+  return Math.max(controlWordCount, dispatchSlotCount * FRONTIER_SLOT_WRITTEN_WORDS);
 }
 
 /**
@@ -283,11 +329,17 @@ export type FrontierRoundProps = {
    * WGSL `fn visit(node: u32)` that processes one queued node and calls `push(targetNode: u32)` for
    * each node that must be processed again. It may use the phase bindings and the
    * `FRONTIER_*_WORD` constants. Every successful improvement of a node must be followed by a
-   * `push` of that node.
+   * `push` of that node. The `FRONTIER_*_WORD` constants are word indices relative to the
+   * `control` view: read them as `control[controlOffset + FRONTIER_PARAMETER_0_WORD]`.
    */
   visitSource: string;
   /** Hops one workgroup chains inside a dispatch, 1 to 64. */
   localIterations: number;
+  /**
+   * Optional WGSL statements run once per workgroup after its last chunk, in workgroup-uniform
+   * control flow (barriers are allowed). Used to flush per-workgroup counters.
+   */
+  epilogueSource?: string;
 };
 
 /**
@@ -304,14 +356,14 @@ export function createFrontierRoundNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const {state, phase, round, localIterations} = props;
   const {nodeCount} = state;
-  const frontierBindings = getFrontierBindings(state, (round + 1) % 2 === 1);
+  const frontierBindings = getFrontierBindings(graph, state, phase, round + 1);
   const bindings = [...props.bindings, ...frontierBindings];
-  if (bindings.length > 8) {
-    throw new Error(`${props.id} needs more than 8 storage bindings`);
-  }
+  // Every frontier round binds a fixed set chosen by its contributor (at most 8 for the WebGPU
+  // default limit); a ninth binding is a bug in that contributor, not a prop error.
+  assert(bindings.length <= 8);
   const maximumX = graph.device.limits.maxComputeWorkgroupsPerDimension;
   const currentDispatch = round % 2 === 0 ? state.dispatchEven : state.dispatchOdd;
-  const slotByteOffset = 12 * (phase.dispatchSlotOffset + Math.floor(round / 2));
+  const slotByteOffset = getFrontierDispatchSlotByteOffset(phase, round);
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
@@ -328,10 +380,8 @@ export function createFrontierRoundNode<Parameters>(
     },
     extraResources: [{buffer: currentDispatch, usage: 'indirect'}],
     declarations: `${props.declarations ?? ''}
-${getFrontierPushSource(phase, nodeCount, round + 1, maximumX)}
+${getFrontierPushSource(phase, nodeCount, maximumX)}
 const FRONTIER_LOCAL_ITERATIONS: u32 = ${localIterations}u;
-const FRONTIER_CURRENT_ROUND: u32 = ${round}u;
-const FRONTIER_CURRENT_QUEUE_BASE: u32 = ${(round % 2) * nodeCount}u;
 
 var<workgroup> frontierLocalQueue: array<u32, ${2 * FRONTIER_WORKGROUP_SIZE}>;
 var<workgroup> frontierLocalCount: array<atomic<u32>, 2>;
@@ -351,8 +401,11 @@ fn push(targetNode: u32) {
 }
 
 ${props.visitSource}`,
-    body: `if (localInvocationIndex == 0u) {
-    frontierSharedCount = atomicLoad(&control[FRONTIER_ROUND_COUNTS_WORD + FRONTIER_CURRENT_ROUND]);
+    body: `// This round's index is one below the round of the slot it pushes into (rule 12: it is data).
+  let currentRound = frontierNextRound() - 1u;
+  let currentQueueBase = (currentRound & 1u) * FRONTIER_QUEUE_NODE_COUNT;
+  if (localInvocationIndex == 0u) {
+    frontierSharedCount = atomicLoad(&control[controlOffset + FRONTIER_ROUND_COUNTS_WORD + currentRound]);
   }
   let queueLength = workgroupUniformLoad(&frontierSharedCount);
   let dispatchedGroupCount = min(
@@ -365,7 +418,7 @@ ${props.visitSource}`,
     frontierLocalWriteHalf = 1u;
     let queueIndex = chunk * ${FRONTIER_WORKGROUP_SIZE}u + localInvocationIndex;
     if (queueIndex < queueLength) {
-      visit(queues[queuesOffset + FRONTIER_CURRENT_QUEUE_BASE + queueIndex]);
+      visit(queues[queuesOffset + currentQueueBase + queueIndex]);
     }
     for (var hop = 1u; hop < FRONTIER_LOCAL_ITERATIONS; hop++) {
       workgroupBarrier();
@@ -384,6 +437,7 @@ ${props.visitSource}`,
       }
     }
     workgroupBarrier();
-  }`
+  }
+  ${props.epilogueSource ?? ''}`
   });
 }

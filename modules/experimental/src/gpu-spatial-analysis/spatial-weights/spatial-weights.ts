@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {
-  validatePackedUint32View,
-  validatePackedView,
-  type GraphDataView
-} from '@luma.gl/gpgpu/gpu-core';
-import {validateGPUStatusPort, type GPUSpatialWeightsPort} from '../contracts/index';
+  validateGPUStatusPort,
+  type GPUSpatialWeightsPort
+} from '../../analysis-core/contracts/index';
+import type {GPUCapacityPlan} from '../../analysis-core/contracts/capacity-planning';
+import {validateCapacity, validatePackedView} from '../../utils/gpu-contributor-utils';
 
 /**
  * A spatial-weights matrix in CSR form: row `i` lists the neighbors `j` of focus row `i` and the
@@ -36,7 +37,7 @@ export type GPUSpatialWeights = GPUSpatialWeightsPort & {
    * it to the weights they expose; uploaded weights may omit it, which consumers read as
    * `transform: 'unknown'`, `symmetric: 'unknown'`.
    */
-  info?: GPUSpatialWeightsInfo;
+  information?: GPUSpatialWeightsInformation;
   /** `rows + 1` exclusive row offsets into the neighbor slots. */
   offsets: GraphDataView<'uint32'>;
   /** Neighbor row IDs, ascending within each row. Its length is the slot capacity. */
@@ -77,7 +78,7 @@ export type GPUSpatialWeightsProvenance = {
 };
 
 /** CPU-side metadata carried with a {@link GPUSpatialWeights}. */
-export type GPUSpatialWeightsInfo = {
+export type GPUSpatialWeightsInformation = {
   /** Number of focus rows, `offsets.length - 1`. */
   rowCount: number;
   /** Transform applied to the weights. */
@@ -117,7 +118,7 @@ export function resolveGPUIslandPolicy(
 
 /** Returns whether a consumer should re-standardize rows over the neighbors left after masking. */
 export function isGPUSpatialWeightsRowStandardized(weights: GPUSpatialWeights): boolean {
-  return weights.info?.transform === 'row';
+  return weights.information?.transform === 'row';
 }
 
 /**
@@ -177,44 +178,40 @@ export function validateGPUSpatialWeights(
   weights: GPUSpatialWeights,
   name = 'weights'
 ): number {
-  validatePackedUint32View(weights.offsets, `${id} ${name}.offsets`);
-  validatePackedUint32View(weights.neighbors, `${id} ${name}.neighbors`);
+  validatePackedView(weights.offsets, ['uint32'], `${id} ${name}.offsets`);
+  validatePackedView(weights.neighbors, ['uint32'], `${id} ${name}.neighbors`);
   validatePackedView(weights.weights, ['float32'], `${id} ${name}.weights`);
-  if (weights.offsets.length < 2) {
-    throw new Error(`${id} ${name}.offsets must hold at least two entries`);
-  }
-  if (weights.neighbors.length < 1) {
-    throw new Error(`${id} ${name}.neighbors must hold at least one slot`);
-  }
+  validateCapacity(id, `${name}.offsets length`, weights.offsets.length, 2);
+  validateCapacity(id, `${name}.neighbors length`, weights.neighbors.length);
   if (weights.weights.length !== weights.neighbors.length) {
-    throw new Error(`${id} ${name}.weights length must equal ${name}.neighbors length`);
+    throw new Error(`${id} ${name}.weights length must equal neighbors length`);
   }
   if (weights.distances) {
     validatePackedView(weights.distances, ['float32'], `${id} ${name}.distances`);
     if (weights.distances.length !== weights.neighbors.length) {
-      throw new Error(`${id} ${name}.distances length must equal ${name}.neighbors length`);
+      throw new Error(`${id} ${name}.distances length must equal neighbors length`);
     }
   }
   const rowCount = weights.offsets.length - 1;
   if (weights.status) {
     validateGPUStatusPort(`${id} ${name}.status`, weights.status);
   }
-  const {info} = weights;
-  if (info) {
-    if (info.rowCount !== rowCount) {
-      throw new Error(`${id} ${name}.info.rowCount must equal ${name}.offsets.length - 1`);
+  const {information} = weights;
+  if (information) {
+    if (information.rowCount !== rowCount) {
+      throw new Error(`${id} ${name}.information.rowCount must equal the row count`);
     }
-    if (!TRANSFORM_STATES.includes(info.transform)) {
-      throw new Error(`${id} ${name}.info.transform is not a known transform state`);
+    if (!TRANSFORM_STATES.includes(information.transform)) {
+      throw new Error(`${id} ${name}.information.transform is unknown`);
     }
-    if (info.symmetric !== true && info.symmetric !== false && info.symmetric !== 'unknown') {
-      throw new Error(`${id} ${name}.info.symmetric must be true, false or 'unknown'`);
+    if (![true, false, 'unknown'].includes(information.symmetric)) {
+      throw new Error(`${id} ${name}.information.symmetric must be a boolean or 'unknown'`);
     }
   }
   return rowCount;
 }
 
-/** Transform states a {@link GPUSpatialWeightsInfo} may declare. */
+/** Transform states a {@link GPUSpatialWeightsInformation} may declare. */
 const TRANSFORM_STATES: readonly GPUSpatialWeightsTransformState[] = [
   'unknown',
   'raw',
@@ -227,8 +224,58 @@ const TRANSFORM_STATES: readonly GPUSpatialWeightsTransformState[] = [
 ];
 
 /**
- * Returns `weights` with `info` attached and the given status views merged over its own. The
- * views are shared with `weights`; only the wrapper object is new. Producers use it to build
+ * Caller-owned output of a capacity-bounded weights producer (`GPUContiguityWeights`,
+ * `GPULatticeWeights`, `GPUSpatialWeightsAlgebra`): the CSR views plus the one-row status scalars
+ * the producer writes.
+ */
+export type GPUSpatialWeightsOutput = GPUSpatialWeights & {
+  status: {
+    /** One when the neighbors (or an intermediate stage) did not fit their capacity, else 0. */
+    overflow: GraphDataView<'uint32'>;
+    /**
+     * Optional unclamped slot requirement: exact unless `candidateOverflow` (or the producer's
+     * documented intermediate stage) overflowed, in which case it is a lower bound.
+     */
+    requiredCount?: GraphDataView<'uint32'>;
+    /** Optional: one when an intermediate candidate stage overflowed (see each producer). */
+    candidateOverflow?: GraphDataView<'uint32'>;
+  };
+};
+
+/**
+ * Validates a {@link GPUSpatialWeightsOutput} and returns its row count.
+ *
+ * @param id Contributor ID used in error messages.
+ * @param output Output to validate.
+ */
+export function validateGPUSpatialWeightsOutput(
+  id: string,
+  output: GPUSpatialWeightsOutput
+): number {
+  const rowCount = validateGPUSpatialWeights(id, output, 'output');
+  if (!output.status?.overflow) {
+    throw new Error(`${id} output.status.overflow is required`);
+  }
+  return rowCount;
+}
+
+/** Returns the views of a CSR, for disjointness and graph-membership checks. @internal */
+export function getGPUSpatialWeightsViews(
+  weights: GPUSpatialWeights
+): (GraphDataView<'uint32'> | GraphDataView<'float32'> | undefined)[] {
+  return [weights.offsets, weights.neighbors, weights.weights, weights.distances];
+}
+
+/** Returns the status views of a {@link GPUSpatialWeightsOutput}. @internal */
+export function getGPUSpatialWeightsStatusViews(
+  output: GPUSpatialWeightsOutput
+): (GraphDataView<'uint32'> | undefined)[] {
+  return [output.status.overflow, output.status.requiredCount, output.status.candidateOverflow];
+}
+
+/**
+ * Returns `weights` with `information` attached and the given status views merged over its own.
+ * The views are shared with `weights`; only the wrapper object is new. Producers use it to build
  * their `outputWeights`.
  *
  * @param weights Caller-owned views.
@@ -236,40 +283,78 @@ const TRANSFORM_STATES: readonly GPUSpatialWeightsTransformState[] = [
  */
 export function describeGPUSpatialWeights(
   weights: GPUSpatialWeights,
-  description: {info: GPUSpatialWeightsInfo; status?: GPUSpatialWeights['status']}
+  description: {information: GPUSpatialWeightsInformation; status?: GPUSpatialWeights['status']}
 ): GPUSpatialWeights {
   const status = {...weights.status, ...description.status};
   return {
     ...weights,
-    info: description.info,
+    information: description.information,
     status: Object.keys(status).length > 0 ? status : undefined
   };
 }
 
+/** Bytes per CSR slot of the caller-owned views: a uint32 neighbor ID and a float32 weight. */
+export const GPU_SPATIAL_WEIGHTS_SLOT_BYTE_LENGTH = 8;
+/** Extra bytes per slot when the CSR carries float32 `distances`. */
+export const GPU_SPATIAL_WEIGHTS_DISTANCE_BYTE_LENGTH = 4;
+/** Default growth headroom of {@link getGPUSpatialWeightsCapacityPlan}: 25 percent. */
+export const GPU_SPATIAL_WEIGHTS_CAPACITY_HEADROOM = 0.25;
+
+/** Inputs to {@link getGPUSpatialWeightsCapacityPlan}. */
+export type GPUSpatialWeightsCapacityPlanOptions = {
+  /** Focus rows of the CSR (`offsets.length - 1`). */
+  rowCount: number;
+  /** Slot capacity the producer ran with, or the first guess. */
+  capacity: number;
+  /** `output.status.requiredCount` read back after a frame, when the producer wrote it. */
+  requiredCount?: number;
+  /** Whether `distances` are allocated. Defaults to false. */
+  distances?: boolean;
+  /** Extra fraction of `requiredCount` allocated on growth. Defaults to 0.25. */
+  headroom?: number;
+};
+
+/** Slot plan and caller-owned output bytes of a {@link GPUSpatialWeightsOutput}. */
+export type GPUSpatialWeightsCapacityPlan = GPUCapacityPlan & {
+  /** Bytes of `offsets` (`(rowCount + 1) * 4`). */
+  offsetsByteLength: number;
+};
+
 /**
- * Suggests a new slot capacity for the grow loop of capacity-bounded producers
- * (`GPUNeighborSearch`, `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsAlgebra`).
+ * The grow step of every capacity-bounded weights producer (`GPUNeighborSearch`,
+ * `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsAlgebra`): plans the slot
+ * capacity of the next allocation and the bytes of the caller-owned CSR views.
  *
- * The loop: build with a guess, read `outputWeights.status.requiredCount` and
- * `status.overflow` after a frame, and when the required count exceeds the capacity allocate a
- * view of `getGPUSpatialWeightsCapacity(requiredCount, capacity)` slots and rebuild. Returns
- * `currentCapacity` when `requiredCount` already fits; otherwise `requiredCount` plus `headroom`
- * (a fraction, default 0.25) so a slowly growing input does not rebuild every frame.
- *
- * @param requiredCount Exact unclamped slot requirement read back from the producer.
- * @param currentCapacity Slot capacity the producer ran with.
- * @param headroom Extra fraction of `requiredCount` to allocate on growth. Defaults to 0.25.
+ * The loop: build with a guess, read `output.status.requiredCount` (and `overflow`) after a
+ * frame, and when the required count exceeds the capacity allocate `plan.capacity` slots and
+ * rebuild. The capacity stays unchanged while `requiredCount` fits; otherwise it is
+ * `requiredCount` plus `headroom`, so a slowly growing input does not rebuild every frame.
+ * `estimatedOutputBytes` is the bytes of `neighbors`, `weights` (and `distances`) at that
+ * capacity plus `offsets`, from the same per-slot constants the recipes allocate with.
  */
-export function getGPUSpatialWeightsCapacity(
-  requiredCount: number,
-  currentCapacity: number,
-  headroom = 0.25
-): number {
-  if (!(Number.isFinite(requiredCount) && requiredCount >= 0)) {
-    throw new Error('getGPUSpatialWeightsCapacity requiredCount must be a non-negative number');
+export function getGPUSpatialWeightsCapacityPlan(
+  options: GPUSpatialWeightsCapacityPlanOptions
+): GPUSpatialWeightsCapacityPlan {
+  const {rowCount, capacity} = options;
+  validateCapacity('getGPUSpatialWeightsCapacityPlan', 'rowCount', rowCount);
+  validateCapacity('getGPUSpatialWeightsCapacityPlan', 'capacity', capacity);
+  const headroom = Math.max(options.headroom ?? GPU_SPATIAL_WEIGHTS_CAPACITY_HEADROOM, 0);
+  const requiredCount = options.requiredCount ?? capacity;
+  if (!(Number.isSafeInteger(requiredCount) && requiredCount >= 0)) {
+    throw new Error('getGPUSpatialWeightsCapacityPlan requiredCount must be >= 0');
   }
-  if (requiredCount <= currentCapacity) {
-    return currentCapacity;
-  }
-  return Math.ceil(requiredCount * (1 + Math.max(headroom, 0)));
+  const nextCapacity =
+    requiredCount <= capacity ? capacity : Math.ceil(requiredCount * (1 + headroom));
+  const slotByteLength =
+    GPU_SPATIAL_WEIGHTS_SLOT_BYTE_LENGTH +
+    (options.distances ? GPU_SPATIAL_WEIGHTS_DISTANCE_BYTE_LENGTH : 0);
+  const offsetsByteLength = (rowCount + 1) * Uint32Array.BYTES_PER_ELEMENT;
+  return {
+    capacity: nextCapacity,
+    estimatedRequiredCount: requiredCount,
+    limited: nextCapacity < requiredCount,
+    offsetsByteLength,
+    estimatedOutputBytes: nextCapacity * slotByteLength + offsetsByteLength,
+    estimatedPeakTransientBytes: 0
+  };
 }

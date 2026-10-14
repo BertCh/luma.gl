@@ -13,10 +13,7 @@ export type {
   GPUGeometryMeasuresOutput,
   GPUGeometryMeasuresProps
 } from './gpu-geometry-measures';
-export type {
-  GPUGeometryCoordinateSystem,
-  GPUGeometryHoleRule
-} from './geometry-measures-kernels';
+export type {GPUGeometryCoordinateSystem} from './geometry-measures-kernels';
 export {GPUGeodesicPairs} from './gpu-geodesic-pairs';
 export type {GPUGeodesicPairsOutput, GPUGeodesicPairsProps} from './gpu-geodesic-pairs';
 export {GPUGeodesicDestination} from './gpu-geodesic-destination';

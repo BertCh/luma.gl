@@ -7,4 +7,4 @@ export {
   GPU_RECTANGLE_CLIP_PARAMETER_LENGTH,
   GPURectangleClip
 } from './gpu-rectangle-clip';
-export type {GPURectangleClipParameters, GPURectangleClipProps} from './gpu-rectangle-clip';
+export type {GPURectangleClipSettings, GPURectangleClipProps} from './gpu-rectangle-clip';

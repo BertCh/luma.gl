@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PHILOX_PURPOSES} from '../../utils/philox-random';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,8 +12,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -27,6 +28,7 @@ import {
   getSpaceTimeGroupsPerSlot,
   getSpaceTimeShuffleWGSL,
   getSpaceTimeSummaryBodyWGSL,
+  SPACE_TIME_BATCH_PROLOGUE_WGSL,
   SPACE_TIME_MAXIMUM_PERMUTATIONS,
   SPACE_TIME_MAXIMUM_ROWS,
   SPACE_TIME_SLOT_PROLOGUE_WGSL,
@@ -36,9 +38,17 @@ import {
   getGPUSpaceTimeInferenceMetadata,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
-  type GPUSpaceTimeParameters
+  type GPUSpaceTimeSettings
 } from './space-time-parameters';
-import type {GPUInferenceMetadata} from '../contracts/index';
+import {
+  createSpaceTimeStateView,
+  createSpaceTimeStoppingNodes,
+  getSpaceTimeStoppingBatchSize,
+  SPACE_TIME_STATE,
+  type SpaceTimeBatchNodeProps,
+  validateSpaceTimeStopping
+} from './space-time-stopping';
+import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUMantelTest';
 /**
@@ -48,6 +58,23 @@ const OPERATION = 'GPUMantelTest';
 const PARTIAL_STRIDE = 3;
 /** Largest block count of the observed-moment pass, which has no per-permutation parallelism. */
 const MAXIMUM_PAIR_STAT_BLOCKS = 4096;
+
+/** Caller-owned outputs of {@link GPUMantelTest}. */
+export type GPUMantelTestOutput = {
+  /**
+   * Caller-owned statistics, `maximumPermutations + 1` rows: element 0 is the observed correlation
+   * `r`, elements `1..P` the correlation under permuted times (rows past `P` are 0).
+   */
+  statistics: GraphDataView<'float32'>;
+  /** Caller-owned `GPU_SPACE_TIME_SUMMARY_LENGTH` float32 words, see `GPU_SPACE_TIME_SUMMARY`. */
+  summary: GraphDataView<'float32'>;
+  /**
+   * One uint32 word: the number of permutations used, `L` when `stopAfterExceedances` stopped the
+   * run and the permutation count `P` otherwise. Required with `stopAfterExceedances`, rejected
+   * without it.
+   */
+  permutationCount?: GraphDataView<'uint32'>;
+};
 
 /**
  * Properties for {@link GPUMantelTest}.
@@ -78,12 +105,22 @@ export type GPUMantelTestProps = {
   /** Compile-time upper bound on the per-frame permutation count, 1 to 65536. */
   maximumPermutations: number;
   /**
-   * Caller-owned statistics, `maximumPermutations + 1` rows: element 0 is the observed correlation
-   * `r`, elements `1..P` the correlation under permuted times (rows past `P` are 0).
+   * Compile-time Besag-Clifford sequential stopping (Besag and Clifford 1991): an integer `h` in
+   * `[1, maximumPermutations]`. Omitted (the default) runs all `P` permutations, unchanged. With
+   * `h`, the run stops at the first permutation `L` whose running count of permuted correlations
+   * `>=` the observed `r` equals `h`, and `pseudoPGreater = min(1, h / L)`; when fewer than `h`
+   * exceed in all `P`, it is the usual `(greaterCount + 1) / (P + 1)`. Permutations are evaluated
+   * in batches of 64 or more (the batch size grows so there are at most 256 batches), each batch
+   * scanned in permutation order on the GPU, so `L` and the p-value do not depend on the batch
+   * size, and a stopped run skips the remaining batches. The first `L` permutations equal those
+   * of the full run. `statistics` rows past `L` are 0 and the `summary` mean, variance, counts and
+   * z-score cover the first `L` permutations; `pseudoPLesser` and `pseudoPTwoSided` keep their
+   * fixed-`L` formulas and are not sequentially valid. Requires `output.permutationCount`, which
+   * receives `L`.
    */
-  statistics: GraphDataView<'float32'>;
-  /** Caller-owned `GPU_SPACE_TIME_SUMMARY_LENGTH` float32 words, see `GPU_SPACE_TIME_SUMMARY`. */
-  summary: GraphDataView<'float32'>;
+  stopAfterExceedances?: number;
+  /** Caller-owned outputs. */
+  output: GPUMantelTestOutput;
 };
 
 /**
@@ -133,9 +170,9 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
       throw new Error(`${id} pairs.distances is required`);
     }
     validatePackedView(props.times, ['float32'], `${id} times`);
-    validatePackedUint32View(props.parameters, `${id} parameters`);
-    validatePackedView(props.statistics, ['float32'], `${id} statistics`);
-    validatePackedView(props.summary, ['float32'], `${id} summary`);
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
+    validatePackedView(props.output.statistics, ['float32'], `${id} output.statistics`);
+    validatePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     if (this.rows < 2) {
       throw new Error(`${id} needs at least two rows`);
     }
@@ -144,29 +181,33 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
       throw new Error(`${id} supports at most ${SPACE_TIME_MAXIMUM_ROWS} rows`);
     }
     if (props.times.length !== this.rows) {
-      throw new Error(`${id} times length must equal the pairs row count`);
+      throw new Error(`${id} times needs one row per pairs row`);
     }
     if (props.parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters must hold ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
+      throw new Error(`${id} parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
     }
-    if (
-      !Number.isInteger(props.maximumPermutations) ||
-      props.maximumPermutations < 1 ||
-      props.maximumPermutations > SPACE_TIME_MAXIMUM_PERMUTATIONS
-    ) {
-      throw new Error(
-        `${id} maximumPermutations must be an integer in [1, ${SPACE_TIME_MAXIMUM_PERMUTATIONS}]`
-      );
+    validateCapacity(
+      id,
+      'maximumPermutations',
+      props.maximumPermutations,
+      1,
+      SPACE_TIME_MAXIMUM_PERMUTATIONS
+    );
+    if (props.output.statistics.length < props.maximumPermutations + 1) {
+      throw new Error(`${id} output.statistics needs maximumPermutations + 1 rows`);
     }
-    if (props.statistics.length < props.maximumPermutations + 1) {
-      throw new Error(`${id} statistics must hold maximumPermutations + 1 rows`);
-    }
-    if (props.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
-      throw new Error(`${id} summary must hold ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
+    validateSpaceTimeStopping(
+      id,
+      props.stopAfterExceedances,
+      props.maximumPermutations,
+      props.output.permutationCount
+    );
+    if (props.output.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
+      throw new Error(`${id} output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.statistics, props.summary],
+      [props.output.statistics, props.output.summary, props.output.permutationCount],
       [
         props.times,
         props.parameters,
@@ -176,23 +217,25 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
         props.pairs.distances
       ]
     );
-    if (props.statistics.buffer === props.summary.buffer) {
+    if (
+      props.output.statistics.buffer === props.output.summary.buffer ||
+      (props.output.permutationCount &&
+        (props.output.permutationCount.buffer === props.output.statistics.buffer ||
+          props.output.permutationCount.buffer === props.output.summary.buffer))
+    ) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
   }
 
   /**
-   * CPU-side description of how the `summary` p-values are produced, for building a legend.
-   * Alternative `'greater'`, Monte Carlo, no multiple-testing correction. Pass the per-frame
-   * `parameters` for the actual permutation count and seed; without them the count is
-   * `maximumPermutations`.
+   * CPU-side description of how the `output.summary` p-values are produced, for building a
+   * legend: alternative `'greater'`, Monte Carlo, no multiple-testing correction.
+   *
+   * @param settings The per-frame settings packed into `parameters` (validated as
+   * `getGPUSpaceTimeParameterValues` does; the count is clamped to `maximumPermutations`).
    */
-  getInferenceMetadata(parameters?: GPUSpaceTimeParameters): GPUInferenceMetadata {
-    return getGPUSpaceTimeInferenceMetadata(
-      'mantel',
-      parameters?.permutations ?? this.props.maximumPermutations,
-      parameters?.seed
-    );
+  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUInferenceMetadata {
+    return getGPUSpaceTimeInferenceMetadata('mantel', settings, this.props.maximumPermutations);
   }
 
   /** Returns `pair-mask`, `pair-stats`, `shift`, `partials`, `reduce` and `summary` nodes in order. */
@@ -200,7 +243,8 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rows} = this;
-    const {pairs, times, parameters, statistics, summary, maximumPermutations} = props;
+    const {pairs, times, parameters, maximumPermutations} = props;
+    const {statistics, summary} = props.output;
     const distances = pairs.distances!;
     validateGraphViewsBelongToGraph(id, graph, [
       pairs.offsets,
@@ -210,11 +254,29 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
       times,
       parameters,
       statistics,
-      summary
+      summary,
+      ...(props.output.permutationCount ? [props.output.permutationCount] : [])
     ]);
-    const [blocks, rowsPerBlock] = getSpaceTimeBlocks(rows);
     const slotCount = maximumPermutations + 1;
+    // The (permutation, block) partials and the spatial moments share one storage binding: at
+    // many permutations fewer row blocks keep it within maxStorageBufferBindingSize (rule 16).
+    const bindingWords = Math.floor(graph.device.limits.maxStorageBufferBindingSize / 4);
+    const [blocks, rowsPerBlock] = getSpaceTimeBlocks(
+      rows,
+      Math.floor(bindingWords / (slotCount * PARTIAL_STRIDE + 2))
+    );
     const groupsPerSlot = getSpaceTimeGroupsPerSlot(blocks);
+    const stopAfterExceedances = props.stopAfterExceedances;
+    const stopping = stopAfterExceedances !== undefined;
+    // Stopping evaluates the slots in batches, so the (slot, block) table holds one batch. The
+    // block count is unchanged so the sums, and with them the results, equal the full run's.
+    const batchSize = getSpaceTimeStoppingBatchSize(slotCount);
+    const tableSlots = stopping ? batchSize : slotCount;
+    const state = stopping ? createSpaceTimeStateView(graph, id) : undefined;
+    const stateBindings = state
+      ? [{name: 'state', view: state, type: 'u32' as const, access: 'read' as const}]
+      : [];
+    const batchDeclarations = stopping ? `\nconst BATCH_SIZE: u32 = ${batchSize}u;` : '';
     const common = getSpaceTimeCommonWGSL(rows, maximumPermutations, blocks, rowsPerBlock);
     // pair-stats is one pass over the pairs with no permutation axis, so it takes more blocks
     // than the (permutation, block) kernels to fill the device.
@@ -228,14 +290,16 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
       'uint32',
       pairs.neighbors.length
     );
-    const shift = createTransientView(graph, `${id}-shift`, 'float32', 2);
+    // Stopping keeps the centring shift in the state words (as float32 bits): the partials kernel
+    // is at the 8 storage bindings limit with the state binding.
+    const shift = stopping ? undefined : createTransientView(graph, `${id}-shift`, 'float32', 2);
     const partials = createTransientView(
       graph,
       `${id}-partials`,
       'float32',
       // The permutation-invariant spatial moments (2 words per block) follow the partials, which
       // keeps the partials kernel at 8 storage bindings.
-      slotCount * blocks * PARTIAL_STRIDE + blocks * 2
+      tableSlots * blocks * PARTIAL_STRIDE + blocks * 2
     );
     const pairBindings = [
       {name: 'offsets', view: pairs.offsets, type: 'u32' as const, access: 'read' as const},
@@ -244,6 +308,148 @@ export class GPUMantelTest implements GPUCommandNodeProducer {
       {name: 'distances', view: distances, type: 'f32' as const, access: 'read' as const},
       {name: 'times', view: times, type: 'f32' as const, access: 'read' as const}
     ];
+    const createPartialsNode = (batch?: SpaceTimeBatchNodeProps<Parameters>) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: batch?.id ?? `${id}-partials`,
+        operation: OPERATION,
+        variant: 'partials',
+        bindings: [
+          ...pairBindings,
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          // Stopping reads the shift from the state words; otherwise a separate view.
+          ...(stopping
+            ? stateBindings
+            : [{name: 'shift', view: shift!, type: 'f32' as const, access: 'read' as const}]),
+          {name: 'partials', view: partials, type: 'f32', access: 'read_write'}
+        ],
+        condition: batch?.condition,
+        extraResources: batch?.extraResources,
+        workgroupSize: SPACE_TIME_WORKGROUP_SIZE,
+        invocationCount: tableSlots * groupsPerSlot * SPACE_TIME_WORKGROUP_SIZE,
+        guardIndex: false,
+        declarations: `${common}
+${getSpaceTimeShuffleWGSL(blocks, PHILOX_PURPOSES.mantelTestShuffle.id)}
+const SLOT_COUNT: u32 = ${tableSlots}u;${batchDeclarations}
+const MOMENTS_BASE: u32 = partialsOffset + ${tableSlots * blocks * PARTIAL_STRIDE}u;`,
+        // One permutation per workgroup with interleaved rows (see the Knox partials). Slot 0 also
+        // writes the permutation-invariant moments. With stopping, the slot is the batch cursor (a
+        // GPU word) times the batch size plus the workgroup's slot in the batch.
+        body: `${stopping ? SPACE_TIME_BATCH_PROLOGUE_WGSL : SPACE_TIME_SLOT_PROLOGUE_WGSL}
+  var sumX = 0.0;
+  var sumXX = 0.0;
+  var sumY = 0.0;
+  var sumYY = 0.0;
+  var sumXY = 0.0;
+  if (runsSlot) {
+    ${
+      stopping
+        ? `let shiftDistance = bitcast<f32>(state[stateOffset + ${SPACE_TIME_STATE.shiftDistance}u]);
+    let shiftTime = bitcast<f32>(state[stateOffset + ${SPACE_TIME_STATE.shiftTime}u]);`
+        : `let shiftDistance = shift[shiftOffset];
+    let shiftTime = shift[shiftOffset + 1u];`
+    }
+    for (var row = block; row < ROWS; row += BLOCKS) {
+      let time = times[timesOffset + getPermutedRow(row, slot)];
+      for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
+        let other = neighbors[neighborsOffset + entry];
+        if (pairMask[pairMaskOffset + entry] != 0u) {
+          let x = distances[distancesOffset + entry] - shiftDistance;
+          let y = abs(time - times[timesOffset + getPermutedRow(other, slot)]) - shiftTime;
+          if (slot == 0u) {
+            sumX += x;
+            sumXX += x * x;
+          }
+          sumY += y;
+          sumYY += y * y;
+          sumXY += x * y;
+        }
+      }
+    }
+  }
+  if (block < BLOCKS) {
+    let base = partialsOffset + (block * SLOT_COUNT + ${stopping ? 'localSlot' : 'slot'}) * ${PARTIAL_STRIDE}u;
+    partials[base] = sumY;
+    partials[base + 1u] = sumYY;
+    partials[base + 2u] = sumXY;
+  }
+  if (slot == 0u && block < BLOCKS) {
+    partials[MOMENTS_BASE + 2u * block] = sumX;
+    partials[MOMENTS_BASE + 2u * block + 1u] = sumXX;
+  }`
+      });
+    const createReduceNode = (batch?: SpaceTimeBatchNodeProps<Parameters>) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: batch?.id ?? `${id}-reduce`,
+        operation: OPERATION,
+        variant: 'reduce',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          ...stateBindings,
+          {name: 'partials', view: partials, type: 'f32', access: 'read'},
+          {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
+          {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
+        ],
+        condition: batch?.condition,
+        extraResources: batch?.extraResources,
+        // Stopping reduces the slots of one batch; the arithmetic is the full run's.
+        ...(stopping
+          ? {workgroupSize: 64, invocationCount: batchSize}
+          : {invocationCount: statistics.length}),
+        declarations: `${common}
+const SLOT_COUNT: u32 = ${tableSlots}u;${batchDeclarations}
+const MOMENTS_BASE: u32 = partialsOffset + ${tableSlots * blocks * PARTIAL_STRIDE}u;`,
+        body: `${
+          stopping
+            ? `let slot = state[stateOffset] * BATCH_SIZE + index;
+  let localSlot = index;
+  let runs = slot <= readPermutationCount();`
+            : `let slot = index;
+  let localSlot = index;
+  let runs = index <= readPermutationCount();`
+        }
+  var result = 0.0;
+  if (runs) {
+    var sumX = 0.0;
+    var sumXX = 0.0;
+    var sumY = 0.0;
+    var sumYY = 0.0;
+    var sumXY = 0.0;
+    for (var block = 0u; block < BLOCKS; block++) {
+      let base = partialsOffset + (block * SLOT_COUNT + localSlot) * ${PARTIAL_STRIDE}u;
+      sumX += partials[MOMENTS_BASE + 2u * block];
+      sumXX += partials[MOMENTS_BASE + 2u * block + 1u];
+      sumY += partials[base];
+      sumYY += partials[base + 1u];
+      sumXY += partials[base + 2u];
+    }
+    let count = f32(pairCount[pairCountOffset]);
+    let covariance = sumXY - sumX * sumY / count;
+    let varianceX = sumXX - sumX * sumX / count;
+    let varianceY = sumYY - sumY * sumY / count;
+    if (count > 1.0 && varianceX > 0.0 && varianceY > 0.0) {
+      result = clamp(covariance / sqrt(varianceX * varianceY), -1.0, 1.0);
+    }
+  }
+  ${stopping ? 'if (runs) { statistics[statisticsOffset + slot] = result; }' : 'statistics[statisticsOffset + slot] = result;'}`
+      });
+    const stoppingNodes =
+      stopping && state
+        ? createSpaceTimeStoppingNodes<Parameters>(graph, {
+            id,
+            operation: OPERATION,
+            stopAfterExceedances,
+            slotCount,
+            groupsPerSlot,
+            workgroupSize: SPACE_TIME_WORKGROUP_SIZE,
+            statisticType: 'f32',
+            parameters,
+            statistics,
+            state,
+            common,
+            createPartialsNode,
+            createReduceNode
+          })
+        : [];
     return [
       createSpaceTimePairMaskNode<Parameters>(graph, {
         id,
@@ -291,7 +497,9 @@ const PAIR_STAT_BLOCKS: u32 = ${pairStatBlocks}u;`,
           {name: 'pairCounts', view: pairCounts, type: 'u32', access: 'read'},
           {name: 'pairSums', view: pairSums, type: 'f32', access: 'read'},
           {name: 'pairCount', view: pairCount, type: 'u32', access: 'read_write'},
-          {name: 'shift', view: shift, type: 'f32', access: 'read_write'}
+          stopping && state
+            ? {name: 'state', view: state, type: 'u32', access: 'read_write'}
+            : {name: 'shift', view: shift!, type: 'f32', access: 'read_write'}
         ],
         invocationCount: 1,
         declarations: `const BLOCKS: u32 = ${pairStatBlocks}u;`,
@@ -305,105 +513,15 @@ const PAIR_STAT_BLOCKS: u32 = ${pairStatBlocks}u;`,
   }
   pairCount[pairCountOffset] = count;
   let divisor = max(f32(count), 1.0);
-  shift[shiftOffset] = sumDistance / divisor;
+${
+  stopping
+    ? `state[stateOffset + ${SPACE_TIME_STATE.shiftDistance}u] = bitcast<u32>(sumDistance / divisor);
+  state[stateOffset + ${SPACE_TIME_STATE.shiftTime}u] = bitcast<u32>(sumTime / divisor);`
+    : `shift[shiftOffset] = sumDistance / divisor;
   shift[shiftOffset + 1u] = sumTime / divisor;`
+}`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-partials`,
-        operation: OPERATION,
-        variant: 'partials',
-        bindings: [
-          ...pairBindings,
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'shift', view: shift, type: 'f32', access: 'read'},
-          {name: 'partials', view: partials, type: 'f32', access: 'read_write'}
-        ],
-        workgroupSize: SPACE_TIME_WORKGROUP_SIZE,
-        invocationCount: slotCount * groupsPerSlot * SPACE_TIME_WORKGROUP_SIZE,
-        guardIndex: false,
-        declarations: `${common}
-${getSpaceTimeShuffleWGSL(blocks)}
-const SLOT_COUNT: u32 = ${slotCount}u;
-const MOMENTS_BASE: u32 = partialsOffset + ${slotCount * blocks * PARTIAL_STRIDE}u;`,
-        // One permutation per workgroup with interleaved rows (see the Knox partials). Slot 0 also
-        // writes the permutation-invariant moments.
-        body: `${SPACE_TIME_SLOT_PROLOGUE_WGSL}
-  var sumX = 0.0;
-  var sumXX = 0.0;
-  var sumY = 0.0;
-  var sumYY = 0.0;
-  var sumXY = 0.0;
-  if (runsSlot) {
-    let shiftDistance = shift[shiftOffset];
-    let shiftTime = shift[shiftOffset + 1u];
-    for (var row = block; row < ROWS; row += BLOCKS) {
-      let time = times[timesOffset + getPermutedRow(row, slot)];
-      for (var entry = offsets[offsetsOffset + row]; entry < offsets[offsetsOffset + row + 1u]; entry++) {
-        let other = neighbors[neighborsOffset + entry];
-        if (pairMask[pairMaskOffset + entry] != 0u) {
-          let x = distances[distancesOffset + entry] - shiftDistance;
-          let y = abs(time - times[timesOffset + getPermutedRow(other, slot)]) - shiftTime;
-          if (slot == 0u) {
-            sumX += x;
-            sumXX += x * x;
-          }
-          sumY += y;
-          sumYY += y * y;
-          sumXY += x * y;
-        }
-      }
-    }
-  }
-  if (block < BLOCKS) {
-    let base = partialsOffset + (block * SLOT_COUNT + slot) * ${PARTIAL_STRIDE}u;
-    partials[base] = sumY;
-    partials[base + 1u] = sumYY;
-    partials[base + 2u] = sumXY;
-  }
-  if (slot == 0u && block < BLOCKS) {
-    partials[MOMENTS_BASE + 2u * block] = sumX;
-    partials[MOMENTS_BASE + 2u * block + 1u] = sumXX;
-  }`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-reduce`,
-        operation: OPERATION,
-        variant: 'reduce',
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'partials', view: partials, type: 'f32', access: 'read'},
-          {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
-          {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: statistics.length,
-        declarations: `${common}
-const SLOT_COUNT: u32 = ${slotCount}u;
-const MOMENTS_BASE: u32 = partialsOffset + ${slotCount * blocks * PARTIAL_STRIDE}u;`,
-        body: `var result = 0.0;
-  if (index <= readPermutationCount()) {
-    var sumX = 0.0;
-    var sumXX = 0.0;
-    var sumY = 0.0;
-    var sumYY = 0.0;
-    var sumXY = 0.0;
-    for (var block = 0u; block < BLOCKS; block++) {
-      let base = partialsOffset + (block * SLOT_COUNT + index) * ${PARTIAL_STRIDE}u;
-      sumX += partials[MOMENTS_BASE + 2u * block];
-      sumXX += partials[MOMENTS_BASE + 2u * block + 1u];
-      sumY += partials[base];
-      sumYY += partials[base + 1u];
-      sumXY += partials[base + 2u];
-    }
-    let count = f32(pairCount[pairCountOffset]);
-    let covariance = sumXY - sumX * sumY / count;
-    let varianceX = sumXX - sumX * sumX / count;
-    let varianceY = sumYY - sumY * sumY / count;
-    if (count > 1.0 && varianceX > 0.0 && varianceY > 0.0) {
-      result = clamp(covariance / sqrt(varianceX * varianceY), -1.0, 1.0);
-    }
-  }
-  statistics[statisticsOffset + index] = result;`
-      }),
+      ...(stopping ? stoppingNodes : [createPartialsNode(), createReduceNode()]),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
         operation: OPERATION,
@@ -412,14 +530,25 @@ const MOMENTS_BASE: u32 = partialsOffset + ${slotCount * blocks * PARTIAL_STRIDE
           {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
           {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
           {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
-          {name: 'summary', view: summary, type: 'f32', access: 'read_write'}
+          {name: 'summary', view: summary, type: 'f32', access: 'read_write'},
+          ...stateBindings,
+          ...(props.output.permutationCount
+            ? [
+                {
+                  name: 'permutationsUsed',
+                  view: props.output.permutationCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
         declarations: common,
         body: `let observedPairs = f32(pairCount[pairCountOffset]);
   let timeClosePairs = 0.0;
   let expected = 0.0;
-  ${getSpaceTimeSummaryBodyWGSL('f32')}`
+  ${getSpaceTimeSummaryBodyWGSL('f32', stopAfterExceedances)}`
       })
     ];
   }

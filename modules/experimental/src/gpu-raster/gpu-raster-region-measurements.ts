@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration, Device} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {
   GPUCommandGraph,
@@ -13,7 +13,6 @@ import type {
 import {GPUGroupAggregation} from '@luma.gl/gpgpu/gpu-core';
 import {
   createTransientView,
-  getViewBinding,
   getViewElementOffset,
   validatePackedView
 } from '@luma.gl/gpgpu/gpu-core';
@@ -29,7 +28,19 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterMetadata} from './types';
+import {validateMaximumCount} from '../utils/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
+
+/**
+ * Largest region output capacity (`output.pixelCounts.length`) of
+ * {@link GPURasterRegionMeasurements} on `device`: the grouped reductions dispatch one invocation
+ * per region row in 256-invocation workgroups, limited to `maxComputeWorkgroupsPerDimension`
+ * workgroups, so 16776960 on a default device (65535 workgroups).
+ */
+export function getGPURasterRegionMeasurementsMaximumCapacity(device: Device): number {
+  return device.limits.maxComputeWorkgroupsPerDimension * 256;
+}
 
 /** Distinct caller-owned, equally sized dense region columns and mergeable partials. */
 export type GPURasterRegionMeasurementOutputs = {
@@ -74,7 +85,11 @@ export type GPURasterRegionMeasurementsProps = {
   overflow: GraphDataView<'uint32'>;
   /** Explicitly float32 source; callers must promote integer samples deliberately. */
   intensity: GPURasterBufferBand<'float32'>;
-  /** Equally sized caller-owned dense region columns. Row zero represents dense label one. */
+  /**
+   * Equally sized caller-owned dense region columns. Row zero represents dense label one. Their
+   * length is at most {@link getGPURasterRegionMeasurementsMaximumCapacity}
+   * (16776960 on a default device).
+   */
   output: GPURasterRegionMeasurementOutputs;
   /** Optional limit below output capacity. Defaults to the common output column length. */
   capacity?: number;
@@ -199,6 +214,12 @@ export class GPURasterRegionMeasurements {
       }
     }
     const groupCount = this.output.pixelCounts.length;
+    validateMaximumCount(
+      this.id,
+      'output capacity',
+      groupCount,
+      getGPURasterRegionMeasurementsMaximumCapacity(graph.device)
+    );
     if (groupCount === 0) return;
     if (
       graph.device.limits.maxComputeInvocationsPerWorkgroup < 256 ||
@@ -637,13 +658,15 @@ function addRegionPass<Parameters>(
         source: makeShader(locations),
         shaderLayout: {bindings: declarations}
       });
+      const bindingViews: Record<string, GraphDataView> = {};
+      for (const binding of bindings) {
+        bindingViews[binding.name] = binding.view;
+      }
+      const resolveChangedBindings = createChangedBindingResolver(bindingViews);
       return {
         encode: ({computePass, getBuffer}) => {
-          const resolved: Record<string, Binding> = {};
-          for (const binding of bindings) {
-            resolved[binding.name] = getViewBinding(binding.view, getBuffer);
-          }
-          computation.setBindings(resolved);
+          const changedBindings = resolveChangedBindings(getBuffer);
+          if (changedBindings) computation.setBindings(changedBindings);
           computation.dispatch(computePass, dispatch[0], dispatch[1]);
         },
         destroy: () => computation.destroy()

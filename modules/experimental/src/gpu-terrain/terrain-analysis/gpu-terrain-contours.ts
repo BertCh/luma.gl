@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedUint32View,
   type DrawCommandBufferView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -16,17 +15,19 @@ import {
   type GPURasterMetadata
 } from '../../gpu-raster/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   captureGraphCommandNodes,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainGrid
-} from './terrain-analysis-utils';
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 
 /** One contour level and its caller-owned outputs, mirroring `GPURasterContoursProps`. */
 export type GPUTerrainContourLevel = {
@@ -34,12 +35,12 @@ export type GPUTerrainContourLevel = {
   level: number | GraphDataView<'float32'>;
   /** Two float32x2 local pixel-center positions per segment. */
   vertices: GraphDataView<'float32x2'>;
-  /** One-row `min(required, capacity)` segment count. */
-  segmentCount: GraphDataView<'uint32'>;
-  /** Optional one-row unclamped segment count. */
-  requiredSegmentCount?: GraphDataView<'uint32'>;
-  /** Optional one-row per-level overflow. A graph transient is used when omitted. */
-  overflow?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars of this level: `count` receives `min(required, capacity)` segments,
+   * the optional `requiredCount` the unclamped segment count and the optional `overflow` the
+   * per-level overflow (a graph transient is used when omitted).
+   */
+  status: GPUCardinalityPort & Partial<GPUOverflowStatusPort>;
   /**
    * Optional non-indexed indirect draw record (16 bytes). All four words (`vertexCount`,
    * `instanceCount`, `firstVertex`, `firstInstance`) are rewritten on every encoding from the
@@ -51,10 +52,10 @@ export type GPUTerrainContourLevel = {
   /**
    * Shape of the draw record written to `draw`. Defaults to `'instanced'`.
    *
-   * - `'instanced'`: `[verticesPerInstance, segmentCount, 0, 0]`. One instance per segment, for
+   * - `'instanced'`: `[verticesPerInstance, status.count, 0, 0]`. One instance per segment, for
    *   instanced-segment renderers (a quad per segment uses 4 or 6 vertices) that read endpoints
    *   by instance index from `vertices`.
-   * - `'line-list'`: `[2 * segmentCount, 1, 0, 0]`. One non-instanced `line-list` draw over the
+   * - `'line-list'`: `[2 * status.count, 1, 0, 0]`. One non-instanced `line-list` draw over the
    *   `vertices` buffer used as an ordinary vertex buffer (two vertices per segment).
    */
   drawLayout?: 'instanced' | 'line-list';
@@ -67,27 +68,38 @@ export type GPUTerrainContourLevel = {
   capacity?: number;
 };
 
+/** One-row status words written by {@link GPUTerrainContours}. */
+export type GPUTerrainContoursStatus = {
+  /** One-row flag: 1 when any level overflowed in this encoding, else 0. */
+  overflow: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned outputs of {@link GPUTerrainContours}; per-level outputs live in each level. */
+export type GPUTerrainContoursOutput = {
+  /** Contributor-wide status words. */
+  status: GPUTerrainContoursStatus;
+};
+
 /**
  * Properties for {@link GPUTerrainContours}.
  *
- * Topology: grid size, elevation format, the number of levels, numeric level values, capacities,
- * and `metadata`. Per-frame: GPU level views and elevation contents.
+ * Topology: grid, elevation format, the number of levels, numeric level values, and capacities.
+ * Per-frame: GPU level views and elevation contents.
  */
 export type GPUTerrainContoursProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-contours'`. */
   id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
+  /**
+   * Raster grid: its width and height size the kernels. Forwarded to every level;
+   * `pixelInterpretation: 'point'` removes the half-pixel vertex offset.
+   */
+  grid: GPURasterMetadata;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
   /** At least one contour level. */
   levels: readonly GPUTerrainContourLevel[];
-  /** One-row flag: 1 when any level overflowed in this encoding, else 0. */
-  overflow: GraphDataView<'uint32'>;
-  /** Forwarded to every level. `pixelInterpretation: 'point'` removes the half-pixel vertex offset. */
-  metadata?: GPURasterMetadata;
+  /** Caller-owned outputs. */
+  output: GPUTerrainContoursOutput;
 };
 
 /**
@@ -109,30 +121,31 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-contours';
     this.props = props;
     const {id} = this;
-    validateTerrainGrid(id, props.width, props.height);
+    validateRasterGrid(id, props.grid);
+    const {overflow} = props.output.status;
     if (props.levels.length < 1) {
       throw new Error(`${id} requires at least one contour level`);
     }
     for (const [index, level] of props.levels.entries()) {
       validateContourLevelDraw(id, index, level);
     }
-    validatePackedUint32View(props.overflow, `${id} overflow`);
-    if (props.overflow.length < 1) {
-      throw new Error(`${id} overflow must contain one uint32 row`);
+    validatePackedView(overflow, ['uint32'], `${id} output.status.overflow`);
+    if (overflow.length < 1) {
+      throw new Error(`${id} output.status.overflow must contain one uint32 row`);
     }
     const otherBuffers = [
-      ...getTerrainBandViews(props.elevation),
+      ...getRasterBandViews(props.elevation),
       ...props.levels.flatMap(level => [
         level.vertices,
-        level.segmentCount,
-        level.requiredSegmentCount,
-        level.overflow,
+        level.status.count,
+        level.status.requiredCount,
+        level.status.overflow,
         typeof level.level === 'number' ? undefined : level.level
       ])
     ]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
-    if (otherBuffers.includes(props.overflow.buffer)) {
+    if (otherBuffers.includes(overflow.buffer)) {
       throw new Error(`${id} outputs must not share buffers with each other or with inputs`);
     }
   }
@@ -142,27 +155,29 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
+    const {width, height} = props.grid;
+    const {overflow} = props.output.status;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.overflow,
+      overflow,
       ...props.levels.flatMap(level => [
         level.vertices,
-        level.segmentCount,
-        level.requiredSegmentCount,
-        level.overflow,
+        level.status.count,
+        level.status.requiredCount,
+        level.status.overflow,
         typeof level.level === 'number' ? undefined : level.level,
         level.draw?.words
       ])
     ]);
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, false);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, false);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     for (const [index, level] of props.levels.entries()) {
       // The default two-vertex instanced record is written by the raster publish pass itself;
       // every other shape is written by a contributor node that reads the clamped segment count.
       const customDraw = level.draw !== undefined && !isDefaultContourDraw(level);
       const levelOverflow =
-        level.overflow ?? createTransientView(graph, `${id}-level-${index}-overflow`, 'uint32', 1);
+        level.status.overflow ??
+        createTransientView(graph, `${id}-level-${index}-overflow`, 'uint32', 1);
       nodes.push(
         ...captureGraphCommandNodes(graph, () =>
           new GPURasterContours({
@@ -172,13 +187,13 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
             input: source.band,
             level: level.level,
             vertices: level.vertices,
-            segmentCount: level.segmentCount,
+            segmentCount: level.status.count,
             overflow: levelOverflow,
-            requiredSegmentCount: level.requiredSegmentCount,
+            requiredSegmentCount: level.status.requiredCount,
             draw: customDraw ? undefined : level.draw,
             drawCommandIndex: customDraw ? undefined : level.drawCommandIndex,
             capacity: level.capacity,
-            metadata: props.metadata
+            metadata: props.grid
           }).addToGraph(graph)
         )
       );
@@ -193,7 +208,7 @@ export class GPUTerrainContours implements GPUCommandNodeProducer {
           variant: 'overflow',
           bindings: [
             {name: 'levelOverflow', view: levelOverflow, type: 'u32', access: 'read'},
-            {name: 'outputOverflow', view: props.overflow, type: 'u32', access: 'read_write'}
+            {name: 'outputOverflow', view: overflow, type: 'u32', access: 'read_write'}
           ],
           invocationCount: 1,
           body: `let previous = ${index === 0 ? '0u' : 'outputOverflow[outputOverflowOffset]'};
@@ -247,7 +262,7 @@ function validateContourLevelDraw(id: string, index: number, level: GPUTerrainCo
   if (commandIndex >= draw.capacity) {
     throw new Error(`${label} drawCommandIndex exceeds the indirect draw capacity`);
   }
-  validatePackedUint32View(draw.words, `${label} draw words`);
+  validatePackedView(draw.words, ['uint32'], `${label} draw words`);
   if (draw.words.buffer !== draw.buffer || draw.words.length < draw.capacity * 4) {
     throw new Error(`${label} draw words must span every draw record`);
   }
@@ -268,7 +283,7 @@ function createContourDrawNode<Parameters>(
     operation: 'GPUTerrainContours',
     variant: 'draw',
     bindings: [
-      {name: 'segmentCount', view: level.segmentCount, type: 'u32', access: 'read'},
+      {name: 'segmentCount', view: level.status.count, type: 'u32', access: 'read'},
       {name: 'drawWords', view: draw.words, type: 'u32', access: 'read_write'}
     ],
     invocationCount: 1,

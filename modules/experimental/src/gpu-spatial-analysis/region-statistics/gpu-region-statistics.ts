@@ -10,7 +10,6 @@ import {
   GPUVisibilityWorkflow,
   GraphVectorView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -21,17 +20,15 @@ import {
   createPublishNode,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import type {
-  GPUCompactOutput,
-  GPUFloat32Positions,
-  GPUUint32Rows
-} from '../../utils/gpu-contributor-types';
+import type {GPUFloat32Positions, GPUUint32Rows} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCapacity,
+  validateCompactOutput,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GPUPickRegionMask} from './gpu-pick-region-mask';
 import {GPURegionMask, REGION_STATISTICS_WGSL_HELPERS} from './gpu-region-mask';
@@ -49,11 +46,14 @@ import {
   type GPURegionRadius,
   type GPURegionRectangle,
   type GPURegionSelection,
-  type GPURegionStatisticsGridIndex
+  type GPURegionStatisticsGridIndex,
+  type GPURegionStatisticsOutput
 } from './region-statistics-types';
 
-import type {GPUSpatialContext} from '../contracts/spatial-context';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
+/** Workgroup size of the counting kernel: lane 0 publishes one global atomic per workgroup. */
+const COUNT_WORKGROUP_SIZE = 256;
 const OPERATION = 'GPURegionStatistics';
 const MAXIMUM_BIN_COUNT = 65536;
 
@@ -62,48 +62,34 @@ const MAXIMUM_BIN_COUNT = 65536;
  *
  * Per-frame: region bounds, circle, lasso vertices and vertex count, screen transform, a view
  * histogram domain, and every input buffer's contents. Compile-time: the row count, the lasso
- * vertex capacity, `histogram.binCount`, a literal domain, `batchIndex`, the selection kind, which
- * optional views exist, `output.ids.length`, and `spatialIndex`.
+ * vertex capacity, `histogram.binCount`, a literal domain, `batchIndex`, the region kind, which
+ * optional views exist, `output.selectedRows.ids.length`, and `spatialIndex`.
  */
 export type GPURegionStatisticsProps = {
   /** ID prefix for every node and transient. Defaults to `'region-statistics'`. */
   id?: string;
   /**
-   * Coordinate space of `positions` and of the selection. Omitted means native planar. Rectangle,
-   * lasso and pick selections also accept longitude/latitude (straight edges in degree space, no
-   * antimeridian handling). A `'radius'` selection is a planar distance and throws in
+   * Coordinate space of `positions` and of the region. Omitted means native planar. Rectangle,
+   * lasso and pick regions also accept longitude/latitude (straight edges in degree space, no
+   * antimeridian handling). A `'radius'` region is a planar distance and throws in
    * longitude/latitude at construction; project positions to a planar frame first.
    */
   spatialContext?: GPUSpatialContext;
-  /** Region input. */
-  selection: GPURegionSelection;
+  /** Region input: a shape, a pick-region result or a caller-computed mask. */
+  region: GPURegionSelection;
   /** Packed 2D positions. Required for `rectangle`, `polygon`, and `radius`. */
   positions?: GPUFloat32Positions;
   /** Optional `float32` value column aligned with the source rows. */
   values?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
-  /** Optional stable IDs used in `output.ids`. Row indices are used when omitted. */
+  /** Optional stable IDs used in `output.selectedRows.ids`. Row indices are used when omitted. */
   sourceIds?: GPUUint32Rows;
   /** Optional histogram. Requires `values`. */
   histogram?: GPURegionHistogramProps;
-  /** Optional caller-owned 0/1 selection mask for highlighting. Not allowed with `kind: 'mask'`. */
-  outputMask?: GraphDataView<'uint32'>;
-  /** Optional caller-owned bounded stable-ID result. `output.ids.length` must be at least 1. */
-  output?: GPUCompactOutput;
-  /**
-   * Optional packed one-row view that receives the clamped selected count, the same value as
-   * `output.count` (`min(selected, output.ids.length)`), rewritten every encoding. Typically the
-   * `instanceCount` word of an indirect draw record, imported as a 1-row view at an element offset
-   * so an instanced draw of the selected rows needs no readback. Requires `output`: the draw
-   * indexes rows through `output.ids`, so a contributor with no id list has nothing to draw, and
-   * statistics-only contributors read the selected count from `summary` instead. Must not alias any
-   * other output or input.
-   */
-  drawInstanceCount?: GraphDataView<'uint32'>;
-  /** Caller-owned packed summary of `8 + binCount` uint32 words. */
-  summary: GraphDataView<'uint32'>;
+  /** Caller-owned outputs: the packed summary plus optional mask, selected rows and draw count. */
+  output: GPURegionStatisticsOutput;
   /**
    * Compile-time. Gathers candidates from a uniform grid index instead of testing every row. Only
-   * for world-space `rectangle`, `radius`, and `polygon` selections with packed `positions`,
+   * for world-space `rectangle`, `radius`, and `polygon` regions with packed `positions`,
    * `values`, and `sourceIds`. See {@link GPURegionStatisticsGridIndex} for the identity guarantee
    * and the new `candidatesTruncated` summary flag.
    */
@@ -134,9 +120,10 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPURegionSpatialContext(
       id,
       props.spatialContext,
-      props.selection.kind
+      props.region.kind
     );
-    const {selection, positions, values, sourceIds, histogram, outputMask, output, summary} = props;
+    const {region: selection, positions, values, sourceIds, histogram} = props;
+    const {mask: outputMask, selectedRows: output, summary, drawInstanceCount} = props.output;
     const rowCount =
       selection.kind === 'mask'
         ? selection.mask.length
@@ -154,14 +141,14 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         selection.kind === 'radius') &&
       !positions
     ) {
-      throw new Error(`${id} positions are required for ${selection.kind} selections`);
+      throw new Error(`${id} positions are required for ${selection.kind} regions`);
     }
     for (const [name, view] of [
       ['positions', positions],
       ['values', values],
       ['sourceIds', sourceIds],
-      ['outputMask', outputMask],
-      ['selection.mask', selection.kind === 'mask' ? selection.mask : undefined]
+      ['output.mask', outputMask],
+      ['region.mask', selection.kind === 'mask' ? selection.mask : undefined]
     ] as const) {
       if (view && view.length !== rowCount) {
         throw new Error(`${id} ${name} length must equal the source row count`);
@@ -174,13 +161,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       if (!values) {
         throw new Error(`${id} histogram requires values`);
       }
-      if (
-        !Number.isSafeInteger(histogram.binCount) ||
-        histogram.binCount < 1 ||
-        histogram.binCount > MAXIMUM_BIN_COUNT
-      ) {
-        throw new Error(`${id} histogram.binCount must be an integer in [1, ${MAXIMUM_BIN_COUNT}]`);
-      }
+      validateCapacity(id, 'histogram.binCount', histogram.binCount, 1, MAXIMUM_BIN_COUNT);
       const {domain} = histogram;
       if (Array.isArray(domain)) {
         const [minimum, maximum] = domain as readonly number[];
@@ -195,37 +176,35 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       }
     }
     if (selection.kind === 'radius') {
-      validatePackedView(selection.circle, ['float32'], `${id} circle`);
+      validatePackedView(selection.circle, ['float32'], `${id} region.circle`);
       if (selection.circle.length !== 3) {
-        throw new Error(`${id} circle must contain three float32 values`);
+        throw new Error(`${id} region.circle must contain three float32 values`);
       }
     }
     if (selection.kind === 'mask' && outputMask) {
-      throw new Error(`${id} outputMask cannot be combined with a mask selection`);
+      throw new Error(`${id} output.mask cannot be combined with a mask region`);
     }
     if (outputMask) {
-      validatePackedUint32View(outputMask, `${id} outputMask`);
+      validatePackedUint32View(outputMask, `${id} output.mask`);
     }
-    validatePackedUint32View(summary, `${id} summary`);
+    validatePackedUint32View(summary, `${id} output.summary`);
     const binCount = histogram?.binCount ?? 0;
     if (summary.length !== GPU_REGION_STATISTICS_HEADER_LENGTH + binCount) {
-      throw new Error(
-        `${id} summary must hold ${GPU_REGION_STATISTICS_HEADER_LENGTH + binCount} uint32 words`
-      );
+      throw new Error(`${id} output.summary must hold 8 + binCount uint32 words`);
     }
     if (output) {
       validateCompactOutput(id, output);
       if (output.ids.length < 1) {
-        throw new Error(`${id} output.ids must hold at least one row`);
+        throw new Error(`${id} output.selectedRows.ids must hold at least one row`);
       }
     }
-    if (props.drawInstanceCount) {
-      validatePackedUint32View(props.drawInstanceCount, `${id} drawInstanceCount`);
-      if (props.drawInstanceCount.length < 1) {
-        throw new Error(`${id} drawInstanceCount must contain one uint32 row`);
+    if (drawInstanceCount) {
+      validatePackedUint32View(drawInstanceCount, `${id} output.drawInstanceCount`);
+      if (drawInstanceCount.length < 1) {
+        throw new Error(`${id} output.drawInstanceCount must contain one uint32 row`);
       }
       if (!output) {
-        throw new Error(`${id} drawInstanceCount requires output`);
+        throw new Error(`${id} output.drawInstanceCount requires output.selectedRows`);
       }
     }
     if (props.spatialIndex) {
@@ -237,10 +216,10 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         summary,
         outputMask,
         output?.ids,
-        output?.count,
-        output?.overflow,
-        output?.requiredCount,
-        props.drawInstanceCount
+        output?.status.count,
+        output?.status.overflow,
+        output?.status.requiredCount,
+        drawInstanceCount
       ],
       getStatisticsInputs(props)
     );
@@ -251,15 +230,16 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
-    const {selection, positions, values, sourceIds, histogram, outputMask, output, summary} = props;
+    const {region: selection, positions, values, sourceIds, histogram} = props;
+    const {mask: outputMask, selectedRows: output, summary, drawInstanceCount} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       summary,
       outputMask,
       output?.ids,
-      output?.count,
-      output?.overflow,
-      output?.requiredCount,
-      props.drawInstanceCount,
+      output?.status.count,
+      output?.status.overflow,
+      output?.status.requiredCount,
+      drawInstanceCount,
       ...getStatisticsInputs(props)
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -279,7 +259,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
     if (spatialIndex) {
       candidates = getGridCandidateNodes(graph, {
         id,
-        selection: selection as GPURegionRectangle | GPURegionRadius | GPURegionPolygon,
+        region: selection as GPURegionRectangle | GPURegionRadius | GPURegionPolygon,
         positions: positions as GPUFloat32Positions,
         values: values as GraphDataView<'float32'> | undefined,
         spatialIndex,
@@ -323,8 +303,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
               spatialContext: this.spatialContext,
               positions: positions as GPUFloat32Positions,
               region: selection,
-              outputMask: mask as GraphDataView<'uint32'>,
-              overflow: regionOverflow
+              output: {mask: mask as GraphDataView<'uint32'>, status: {overflow: regionOverflow}}
             }).getCommandNodes(graph)
           );
           break;
@@ -335,8 +314,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
               spatialContext: this.spatialContext,
               positions: positions as GPUFloat32Positions,
               region: selection,
-              outputMask: mask as GraphDataView<'uint32'>,
-              overflow: regionOverflow
+              output: {mask: mask as GraphDataView<'uint32'>, status: {overflow: regionOverflow}}
             }).getCommandNodes(graph)
           );
           break;
@@ -344,10 +322,9 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           nodes.push(
             ...new GPUPickRegionMask({
               id: `${id}-pick`,
-              result: selection.result,
+              picks: selection.picks,
               batchIndex: selection.batchIndex,
-              outputMask: mask as GraphDataView<'uint32'>,
-              overflow: regionOverflow
+              output: {mask: mask as GraphDataView<'uint32'>, status: {overflow: regionOverflow}}
             }).getCommandNodes(graph)
           );
           break;
@@ -476,7 +453,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           overflowSources: candidates
             ? [regionOverflow, candidates.candidateFlag]
             : [regionOverflow],
-          extraCounts: props.drawInstanceCount ? [props.drawInstanceCount] : []
+          extraCounts: drawInstanceCount ? [drawInstanceCount] : []
         })
       );
     }
@@ -505,7 +482,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
 function getStatisticsInputs(
   props: GPURegionStatisticsProps
 ): (GraphDataView | GraphVectorView | undefined)[] {
-  const {selection, histogram} = props;
+  const {region: selection, histogram} = props;
   const selectionViews: (GraphDataView | undefined)[] = [];
   switch (selection.kind) {
     case 'rectangle':
@@ -518,7 +495,7 @@ function getStatisticsInputs(
       selectionViews.push(selection.circle);
       break;
     case 'pick-region':
-      selectionViews.push(selection.result);
+      selectionViews.push(selection.picks);
       break;
     case 'mask':
       selectionViews.push(selection.mask);
@@ -571,6 +548,7 @@ function getCountNodes<Parameters>(
           variant: 'count',
           bindings,
           invocationCount: chunkLength,
+          workgroupSize: COUNT_WORKGROUP_SIZE,
           guardIndex: false,
           declarations: `const ROW_START: u32 = ${rowStart}u;
 var<workgroup> localSelectedCount: atomic<u32>;

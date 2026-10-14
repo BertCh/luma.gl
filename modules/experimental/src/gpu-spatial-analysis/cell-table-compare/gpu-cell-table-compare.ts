@@ -5,9 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -20,20 +17,26 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
 import {
   getCellTableViews,
+  validateCellTable,
+  type GPUCellTable
+} from '../cell-aggregation/cell-table';
+import {
   getFixedPointWGSL,
   GPU_CELL_DEFAULT_SUM_SCALE,
   ORDERED_KEY_WGSL,
-  validateCellTable,
-  validateSumScale,
-  type GPUCellTable
-} from '../cell-aggregation/cell-table';
+  validateSumScale
+} from '../../analysis-core/cell-key-wgsl';
 
 const OPERATION = 'GPUCellTableCompare';
-const STATS_WORKGROUP_SIZE = 256;
+const STATISTICS_WORKGROUP_SIZE = 256;
+/** Upper bound of the workgroups sharing the standardized z-score reductions. */
+const STATISTICS_MAXIMUM_GROUPS = 256;
 
 /** `presence` bit set when the cell occurs in the `before` table. */
 export const GPU_CELL_COMPARE_PRESENT_BEFORE = 1;
@@ -73,12 +76,12 @@ export type GPUCellTableCompareOutput = {
   percentChange?: GraphDataView<'float32'>;
   /** The configured z-score, see {@link GPUCellTableCompareZScore}. */
   zScore?: GraphDataView<'float32'>;
-  /** One-row scalar receiving `min(requiredCount, cells.length)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when union cells were dropped or either input table overflowed. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped number of union cells. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /**
+   * One-row status scalars: `count` receives `min(requiredCount, cells.length)`, `overflow`
+   * receives 1 when union cells were dropped or either input table overflowed, and the optional
+   * `requiredCount` receives the unclamped number of union cells.
+   */
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
 };
 
 /**
@@ -161,21 +164,16 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
       throw new Error(`${id} measure 'sum' needs sums on both before and after`);
     }
     const {output} = props;
-    for (const [name, view] of Object.entries(output)) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} output.${name} must be a single packed view`);
-      }
-    }
     validatePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     const capacity = output.cells.length;
     if (capacity < 1) {
       throw new Error(`${id} output.cells must hold at least one row`);
     }
     if (output.presence) {
-      validatePackedUint32View(output.presence, `${id} output.presence`);
+      validatePackedView(output.presence, ['uint32'], `${id} output.presence`);
     }
     if (output.mask) {
-      validatePackedUint32View(output.mask, `${id} output.mask`);
+      validatePackedView(output.mask, ['uint32'], `${id} output.mask`);
     }
     for (const name of ['before', 'after', 'delta', 'ratio', 'percentChange', 'zScore'] as const) {
       const view = output[name];
@@ -195,17 +193,17 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     ] as const) {
       const view = output[name];
       if (view && view.length !== capacity) {
-        throw new Error(`${id} output.${name} must have the same length as output.cells`);
+        throw new Error(`${id} output.${name} needs output.cells.length rows`);
       }
     }
     for (const name of ['count', 'overflow', 'requiredCount'] as const) {
-      const view = output[name];
+      const view = output.status[name];
       if (!view) {
         continue;
       }
-      validatePackedUint32View(view, `${id} output.${name}`);
+      validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
       if (view.length < 1) {
-        throw new Error(`${id} output.${name} must contain one uint32 row`);
+        throw new Error(`${id} output.status.${name} needs one row`);
       }
     }
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
@@ -214,7 +212,11 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     ]);
   }
 
-  /** Returns match, scan, merge, measure, statistics, derived-column, tail, and publish nodes in order. */
+  /**
+   * Returns match, scan, merge, measure, statistics, derived-column, tail, and publish nodes in
+   * order. A standardized z-score adds three statistics nodes (`-statistics-sums`,
+   * `-statistics-squares`, `-statistics`) that reduce in fixed order across workgroups.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -289,9 +291,9 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
         variant: 'matches',
         bindings: [
           read('beforeCells', before.cells),
-          read('beforeCount', before.count),
+          read('beforeCount', before.status.count),
           read('afterCells', after.cells),
-          read('afterCount', after.count),
+          read('afterCount', after.status.count),
           write('flags', flags),
           write('bounds', bounds)
         ],
@@ -439,47 +441,112 @@ ${getFixedPointWGSL(this.sumScale)}`,
       })
     );
 
-    // 4. Standardized z-score statistics: one workgroup, fixed order.
+    // 4. Standardized z-score statistics in three fixed-order stages: per-workgroup partial sums,
+    // per-workgroup partial squares around a mean every workgroup derives identically from the
+    // combined partial sums, then one workgroup combining both into mean and population deviation.
     const wantsStandardized = Boolean(output.zScore) && this.zScoreKind === 'standardized';
     const statistics = wantsStandardized ? transient('statistics', 'float32', 2) : undefined;
     if (statistics) {
+      const groups = Math.max(
+        1,
+        Math.min(STATISTICS_MAXIMUM_GROUPS, Math.ceil(capacity / STATISTICS_WORKGROUP_SIZE))
+      );
+      // Words [0, groups) are partial sums and [groups, 2 * groups) partial squares.
+      const partialsView = transient('statistics-partials', 'float32', 2 * groups);
       const tree = (name: string) => `partials[localInvocationIndex] = ${name};
   workgroupBarrier();
-  for (var stride = ${STATS_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+  for (var stride = ${STATISTICS_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
     if (localInvocationIndex < stride) {
       partials[localInvocationIndex] += partials[localInvocationIndex + stride];
     }
     workgroupBarrier();
   }`;
+      // Lanes load the partials of workgroups `0..GROUPS` at `base` (zero past GROUPS), then tree-sum.
+      const combine = (base: string) => `partials[localInvocationIndex] = 0.0;
+  if (localInvocationIndex < GROUPS) {
+    partials[localInvocationIndex] = groupPartials[groupPartialsOffset + ${base} + localInvocationIndex];
+  }
+  workgroupBarrier();
+  for (var stride = ${STATISTICS_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partials[localInvocationIndex] += partials[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }`;
+      const declarations = `const CAPACITY: u32 = ${capacity}u;
+const GROUPS: u32 = ${groups}u;
+const STRIDE: u32 = ${groups * STATISTICS_WORKGROUP_SIZE}u;
+var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
       nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-statistics-sums`,
+          operation: OPERATION,
+          variant: 'statistics-sums',
+          bindings: [
+            read('deltas', deltaValues, 'f32'),
+            read('total', total),
+            write('groupPartials', partialsView, 'f32')
+          ],
+          workgroupSize: STATISTICS_WORKGROUP_SIZE,
+          invocationCount: groups * STATISTICS_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations,
+          body: `let rowCount = min(total[totalOffset], CAPACITY);
+  var partialSum = 0.0;
+  for (var row = index; row < rowCount; row += STRIDE) {
+    partialSum += deltas[deltasOffset + row];
+  }
+  ${tree('partialSum')}
+  if (localInvocationIndex == 0u) {
+    groupPartials[groupPartialsOffset + index / ${STATISTICS_WORKGROUP_SIZE}u] = partials[0];
+  }`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-statistics-squares`,
+          operation: OPERATION,
+          variant: 'statistics-squares',
+          bindings: [
+            read('deltas', deltaValues, 'f32'),
+            read('total', total),
+            write('groupPartials', partialsView, 'f32')
+          ],
+          workgroupSize: STATISTICS_WORKGROUP_SIZE,
+          invocationCount: groups * STATISTICS_WORKGROUP_SIZE,
+          guardIndex: false,
+          // Words [0, GROUPS) are only read and [GROUPS, 2 * GROUPS) only written.
+          declarations,
+          body: `let rowCount = min(total[totalOffset], CAPACITY);
+  ${combine('0u')}
+  let mean = select(0.0, partials[0] / f32(rowCount), rowCount > 0u);
+  workgroupBarrier();
+  var partialSquares = 0.0;
+  for (var row = index; row < rowCount; row += STRIDE) {
+    let centered = deltas[deltasOffset + row] - mean;
+    partialSquares += centered * centered;
+  }
+  ${tree('partialSquares')}
+  if (localInvocationIndex == 0u) {
+    groupPartials[groupPartialsOffset + GROUPS + index / ${STATISTICS_WORKGROUP_SIZE}u] = partials[0];
+  }`
+        }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-statistics`,
           operation: OPERATION,
           variant: 'statistics',
           bindings: [
-            read('deltas', deltaValues, 'f32'),
+            read('groupPartials', partialsView, 'f32'),
             read('total', total),
             write('statistics', statistics, 'f32')
           ],
-          workgroupSize: STATS_WORKGROUP_SIZE,
-          invocationCount: STATS_WORKGROUP_SIZE,
+          workgroupSize: STATISTICS_WORKGROUP_SIZE,
+          invocationCount: STATISTICS_WORKGROUP_SIZE,
           guardIndex: false,
-          declarations: `const CAPACITY: u32 = ${capacity}u;
-var<workgroup> partials: array<f32, ${STATS_WORKGROUP_SIZE}>;`,
+          declarations,
           body: `let rowCount = min(total[totalOffset], CAPACITY);
-  var partialSum = 0.0;
-  for (var row = localInvocationIndex; row < rowCount; row += ${STATS_WORKGROUP_SIZE}u) {
-    partialSum += deltas[deltasOffset + row];
-  }
-  ${tree('partialSum')}
+  ${combine('0u')}
   let mean = select(0.0, partials[0] / f32(rowCount), rowCount > 0u);
   workgroupBarrier();
-  var partialSquares = 0.0;
-  for (var row = localInvocationIndex; row < rowCount; row += ${STATS_WORKGROUP_SIZE}u) {
-    let centered = deltas[deltasOffset + row] - mean;
-    partialSquares += centered * centered;
-  }
-  ${tree('partialSquares')}
+  ${combine('GROUPS')}
   if (localInvocationIndex == 0u) {
     statistics[statisticsOffset] = mean;
     statistics[statisticsOffset + 1u] = select(0.0, sqrt(partials[0] / f32(rowCount)), rowCount > 0u);
@@ -573,11 +640,9 @@ const NO_ROW: u32 = 0xffffffffu;`,
         // Only the capacity of `ids` is used: nothing is copied without `compactIds`.
         output: {
           ids: output.cells as unknown as GraphDataView<'uint32'>,
-          count: output.count,
-          overflow: output.overflow,
-          requiredCount: output.requiredCount
+          status: output.status
         },
-        overflowSources: [before.overflow, after.overflow]
+        overflowSources: [before.status.overflow, after.status.overflow]
       })
     );
     return nodes;
@@ -595,8 +660,8 @@ function getOutputViews(output: GPUCellTableCompareOutput): (GraphDataView | und
     output.ratio,
     output.percentChange,
     output.zScore,
-    output.count,
-    output.overflow,
-    output.requiredCount
+    output.status.count,
+    output.status.overflow,
+    output.status.requiredCount
   ];
 }

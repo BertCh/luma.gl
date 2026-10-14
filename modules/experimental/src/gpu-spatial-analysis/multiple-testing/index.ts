@@ -8,4 +8,7 @@ export {
   GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
   resolveGPUMultipleTestingMethod
 } from './gpu-multiple-testing-adjustment';
-export type {GPUMultipleTestingAdjustmentProps} from './gpu-multiple-testing-adjustment';
+export type {
+  GPUMultipleTestingAdjustmentOutput,
+  GPUMultipleTestingAdjustmentProps
+} from './gpu-multiple-testing-adjustment';

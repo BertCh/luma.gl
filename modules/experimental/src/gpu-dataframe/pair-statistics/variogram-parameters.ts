@@ -16,7 +16,7 @@ export const GPU_VARIOGRAM_STATISTICS_LENGTH = 5;
  * Distances use the planar units of the positions. Every field can change between encodings
  * without rebuilding or recompiling the graph.
  */
-export type GPUVariogramParameters = {
+export type GPUVariogramSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate
    * or value, are excluded. The extent also sizes the neighbor-search lattice.
@@ -37,23 +37,23 @@ export type GPUVariogramParameters = {
  * Packs `GPUVariogram` parameters into the 8-element float32 layout
  * `[minX, minY, maxX, maxY, maximumDistance, azimuthOffset, 0, 0]`.
  *
- * @param parameters Parameters to encode.
+ * @param@param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
  * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, or `target`
  * is too short.
  */
 export function getGPUVariogramParameterValues(
-  parameters: GPUVariogramParameters,
+  settings: GPUVariogramSettings,
   target: Float32Array = new Float32Array(GPU_VARIOGRAM_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_VARIOGRAM_PARAMETER_LENGTH) {
-    throw new Error(`Variogram target must hold ${GPU_VARIOGRAM_PARAMETER_LENGTH} elements`);
+    throw new Error(`GPUVariogram target must hold ${GPU_VARIOGRAM_PARAMETER_LENGTH} elements`);
   }
-  const azimuthOffset = parameters.azimuthOffset ?? 0;
-  validatePairStatisticsBounds('Variogram', parameters.bounds, parameters.maximumDistance);
+  const azimuthOffset = settings.azimuthOffset ?? 0;
+  validatePairStatisticsBounds('GPUVariogram', settings.bounds, settings.maximumDistance);
   if (!Number.isFinite(azimuthOffset)) {
-    throw new Error('Variogram azimuthOffset must be finite');
+    throw new Error('GPUVariogram azimuthOffset must be finite');
   }
-  target.set([...parameters.bounds, parameters.maximumDistance, azimuthOffset, 0, 0]);
+  target.set([...settings.bounds, settings.maximumDistance, azimuthOffset, 0, 0]);
   return target;
 }

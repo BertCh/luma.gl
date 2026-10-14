@@ -29,23 +29,36 @@ import {
   GPU_DEFAULT_INFERENCE_ALTERNATIVE,
   GPU_EARTH_AUTHALIC_RADIUS_METERS,
   resolveGPUSpatialContext,
+  type GPUInferenceAlternative,
   type GPUInferenceMetadata,
   type GPUMultipleTestingMethod,
+  type GPUPackedGeometryPort,
+  type GPUPolygonGeometryPort,
+  type GPURecipeStatusPort,
   type GPUSpatialContext,
-  type GPUSpatialContextSupport
-} from '../contracts/index';
+  type GPUSpatialContextSupport,
+  type GPUStatusScalar
+} from '../../analysis-core/contracts/index';
+import {GPUParameterBuffer} from '../../utils/gpu-contributor-utils';
 import {GPUNeighborSearch} from '../neighbor-search/index';
-import {GPULocalPermutationTest} from '../permutation-inference/index';
-import type {
-  GPULocalPermutationStatistic,
-  GPUPermutationAlternative
-} from '../permutation-inference/index';
 import {
+  GPU_PERMUTATION_PARAMETER_LENGTH,
+  GPULocalPermutationTest
+} from '../permutation-inference/index';
+import type {GPULocalPermutationStatistic} from '../permutation-inference/index';
+import {
+  getGPUSpatialAutocorrelationParameterValues,
   GPUHotSpotAnalysis,
-  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
+  type GPUSpatialAutocorrelationSettings
 } from '../spatial-autocorrelation/index';
 import {GPULatticeWeights} from '../spatial-weights/index';
-import type {GPULatticeCriterion, GPUSpatialWeights} from '../spatial-weights/index';
+import type {
+  GPULatticeCriterion,
+  GPUSpatialWeights,
+  GPUSpatialWeightsOutput
+} from '../spatial-weights/index';
 import {
   addCellDiskWeightsNodes,
   assertRecipe,
@@ -54,7 +67,8 @@ import {
   getOrCreateView,
   RecipeBuilder,
   type GPURecipeOverrides,
-  type GPURecipeResult
+  type GPURecipeResult,
+  type ProvidedCellTable
 } from './recipe-utils';
 
 const ID = 'GPUHotSpotAnalysisRecipe';
@@ -66,18 +80,11 @@ export const GPU_HOT_SPOT_DEFAULT_MINIMUM_NEIGHBORS = 8;
 export const GPU_HOT_SPOT_DEFAULT_MULTIPLE_TESTING: GPUMultipleTestingMethod = 'benjamini-hochberg';
 
 /**
- * Study area of the points source: polygons in GeoArrow-style offsets, as `GPUCellCover` takes
- * them. Every cell whose center lies inside the polygons is an analysis row, empty or not.
+ * Study area of the points source: polygon features in the four-level `GPUPolygonGeometryPort`
+ * layout (one packed `positions` view, longitude/latitude degrees), as `GPUCellCover` takes them.
+ * Every cell whose center lies inside the polygons is an analysis row, empty or not.
  */
-export type GPUHotSpotStudyArea = {
-  /** Flattened polygon vertices, planar longitude/latitude degrees. */
-  polygonPositions: GraphDataView<'float32x2'>;
-  /** Feature-to-polygon offsets with `featureCount + 1` entries, first 0. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets with a terminal entry. */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Ring-to-vertex offsets with a terminal entry. */
-  ringOffsets: GraphDataView<'uint32'>;
+export type GPUHotSpotStudyArea = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
   /** Candidate cells `GPUCellCover` tests (see its `candidateCapacity`). */
   candidateCapacity: number;
   /**
@@ -192,18 +199,21 @@ export type GPUHotSpotLatticeSource = {
 
 /** Optional pseudo p-value confirmation of the Gi* hot spots. */
 export type GPUHotSpotPermutationOptions = {
-  /** `getGPUPermutationParameterValues` view. */
-  parameters: GraphDataView<'uint32'>;
+  /**
+   * A `GPUParameterBuffer` of at least `GPU_PERMUTATION_PARAMETER_LENGTH` uint32 values that the
+   * recipe fills from `settings` (`seed`, `permutationCount`, `significanceLevel`).
+   */
+  parameters: GPUParameterBuffer<'uint32'>;
   /** Compile-time upper bound of the per-frame permutation count. */
   maximumPermutations: number;
   /** Local statistic. Defaults to `'localGStar'`. */
   statistic?: GPULocalPermutationStatistic;
   /** Tail of the pseudo p-value. */
-  alternative?: GPUPermutationAlternative;
+  alternative?: GPUInferenceAlternative;
   /** Compile-time neighbor bound, up to 64. */
   maximumNeighbors?: number;
-  /** Benjamini-Hochberg control of `significant`. */
-  falseDiscoveryRate?: boolean;
+  /** Multiple-testing control of `significant`. Defaults to `'none'`. */
+  multipleTesting?: GPUMultipleTestingMethod;
 };
 
 /** Optional class breaks and colors of the Gi* z-scores. */
@@ -222,6 +232,19 @@ export type GPUHotSpotColorOptions = {
   maximumPaletteCount: number;
 };
 
+/**
+ * Per-frame inference settings of {@link addHotSpotAnalysisRecipe}: the autocorrelation settings
+ * of `GPUHotSpotAnalysis` (significance level, optional fixed moments) and, with `permutation`,
+ * the permutation seed and count. The recipe packs them into its `GPUParameterBuffer`s and derives
+ * `result.inference` and `result.permutationInference` from the same object.
+ */
+export type GPUHotSpotAnalysisRecipeSettings = GPUSpatialAutocorrelationSettings & {
+  /** Permutation seed, with `permutation`. Defaults to 0. */
+  seed?: number;
+  /** Per-frame permutation count, with `permutation`. Defaults to `maximumPermutations`. */
+  permutationCount?: number;
+};
+
 /** Properties for {@link addHotSpotAnalysisRecipe}. */
 export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
   Record<never, never>,
@@ -231,16 +254,33 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
     pValues?: GraphDataView<'float32'>;
     neighborCounts?: GraphDataView<'uint32'>;
     globalStatistics?: GraphDataView<'float32'>;
-    weightsOverflow?: GraphDataView<'uint32'>;
-    /** One-row scalar: rows set to NaN by the `minimumNeighbors` guard. */
-    invalidCount?: GraphDataView<'uint32'>;
-    /** One-row scalar: points that fell outside the study area (points source). */
-    pointsOutsideStudyArea?: GraphDataView<'uint32'>;
+    /** Mirrors `result.status`. */
+    status?: {
+      weightsOverflow?: GPUStatusScalar;
+      /** One-row scalar: the unclamped neighbor total, for sizing the neighbor capacity (stage `weights`). */
+      weightsRequiredCount?: GPUStatusScalar;
+      /** One-row scalar: study rows dropped by the distance band (non-finite or out of bounds). */
+      weightsInvalidCount?: GPUStatusScalar;
+      /** One-row scalar: rows set to NaN by the `minimumNeighbors` guard. */
+      invalidCount?: GPUStatusScalar;
+      /** One-row scalar: points that fell outside the study area (points source). */
+      pointsOutsideStudyArea?: GPUStatusScalar;
+    };
+    /** Optional status scalars of the study-area cover (points source, stage `study-area`). */
+    studyArea?: {
+      status?: {
+        requiredCount?: GPUStatusScalar;
+        /** Features rejected for a bounding box wider than 180 degrees of longitude. */
+        invalidCount?: GPUStatusScalar;
+        /** Features reaching beyond the latitude limit of the cover. */
+        uncertainCount?: GPUStatusScalar;
+      };
+    };
     permutation?: {
       exceedances?: GraphDataView<'uint32'>;
       pseudoPValues?: GraphDataView<'float32'>;
       significant?: GraphDataView<'uint32'>;
-      overflow?: GraphDataView<'uint32'>;
+      status?: {overflow?: GPUStatusScalar};
     };
     color?: {
       breaks?: GraphDataView<'float32'>;
@@ -250,10 +290,10 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
     };
   },
   {
-    /** The deduplicated study table (`cells`, `counts` = cover multiplicity, `count`, `overflow`). */
-    table?: Partial<GPUCellTable>;
+    /** The deduplicated study table (`cells`, `counts` = cover multiplicity, `status.count`, `status.overflow`). */
+    table?: ProvidedCellTable;
     /** The occupied-cell table of the points. */
-    pointTable?: Partial<GPUCellTable>;
+    pointTable?: ProvidedCellTable;
     centers?: GraphDataView<'float32x2'>;
     values?: GraphDataView<'float32'>;
     mask?: GraphDataView<'uint32'>;
@@ -265,8 +305,16 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
   id?: string;
   /** Where the rows come from. */
   source: GPUHotSpotPointsSource | GPUHotSpotLatticeSource;
-  /** `getGPUSpatialAutocorrelationParameterValues` view (significance level, optional moments). */
-  parameters: GraphDataView<'float32'>;
+  /**
+   * Inference settings; change them per frame with `result.setSettings`. Defaults to `{}` (every
+   * setting at its default).
+   */
+  settings?: GPUHotSpotAnalysisRecipeSettings;
+  /**
+   * A `GPUParameterBuffer` of at least `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` float32
+   * values that the recipe fills from `settings`.
+   */
+  parameters: GPUParameterBuffer<'float32'>;
   /** Weight of the focal row in Gi*. Defaults to 1 (classic Gi*). */
   selfWeight?: number;
   /**
@@ -310,7 +358,7 @@ export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult & {
   rowCount: number;
   /**
    * Study table (points source only): `cells` are the sorted study-area cells, `counts` and
-   * `sumValues` the points joined onto them (0 for empty cells), `count` the occupied rows.
+   * `sumValues` the points joined onto them (0 for empty cells), `status.count` the occupied rows.
    */
   table?: GPUCellTable;
   /** Cell centers (points source only). */
@@ -319,11 +367,6 @@ export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult & {
   values: GraphDataView<'float32'>;
   mask?: GraphDataView<'uint32'>;
   weights: GPUSpatialWeights;
-  weightsOverflow: GraphDataView<'uint32'>;
-  /** Rows set to NaN because they had fewer than `minimumNeighbors` neighbors. */
-  invalidCount: GraphDataView<'uint32'>;
-  /** Points outside the study area (points source only). */
-  pointsOutsideStudyArea?: GraphDataView<'uint32'>;
   zScores: GraphDataView<'float32'>;
   bins: GraphDataView<'sint32'>;
   pValues: GraphDataView<'float32'>;
@@ -333,13 +376,35 @@ export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult & {
   inference: GPUInferenceMetadata;
   /** Metadata of the permutation confirmation; present with `permutation`. */
   permutationInference?: GPUInferenceMetadata;
+  /**
+   * Writes `settings` into the parameter buffers for the next submitted encoding and updates
+   * `inference` and `permutationInference` from the same object. Throws, writing nothing, on
+   * invalid settings.
+   */
+  setSettings: (settings: GPUHotSpotAnalysisRecipeSettings) => void;
   /** Present when `permutation` was requested. */
   permutation?: {
     exceedances: GraphDataView<'uint32'>;
     pseudoPValues: GraphDataView<'float32'>;
     significant: GraphDataView<'uint32'>;
-    overflow: GraphDataView<'uint32'>;
+    status: {overflow: GPUStatusScalar};
   };
+  /** Status words next to the per-stage `stages`. */
+  status: {
+    /** One-row flag: 1 when the neighbor list overflowed its capacity (stage `weights`). */
+    weightsOverflow: GPUStatusScalar;
+    /**
+     * Unclamped neighbor total, for `getGPUSpatialWeightsCapacityPlan` (stage `weights`). Every
+     * source reports it.
+     */
+    weightsRequiredCount: GPUStatusScalar;
+    /** Study rows dropped by the distance band; present with a `distanceBand` (stage `weights`). */
+    weightsInvalidCount?: GPUStatusScalar;
+    /** Rows set to NaN because they had fewer than `minimumNeighbors` neighbors. */
+    invalidCount: GPUStatusScalar;
+    /** Points outside the study area (points source only). */
+    pointsOutsideStudyArea?: GPUStatusScalar;
+  } & GPURecipeStatusPort;
   /** Present when `color` was requested. */
   color?: {
     breaks: GraphDataView<'float32'>;
@@ -348,23 +413,6 @@ export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult & {
     classIndices: GraphDataView<'uint32'>;
   };
 };
-
-/** CPU-side description of the Gi* `zScores`, `pValues` and `bins` of the recipe. */
-function getHotSpotInferenceMetadata(
-  method: GPUMultipleTestingMethod,
-  minimumNeighbors: number,
-  testedRows: string
-): GPUInferenceMetadata {
-  return {
-    alternative: GPU_DEFAULT_INFERENCE_ALTERNATIVE,
-    permutationCount: 0,
-    multipleTesting: method,
-    testedRowsDefinition:
-      minimumNeighbors > 0
-        ? `${testedRows} with at least ${minimumNeighbors} neighbors`
-        : testedRows
-  };
-}
 
 const AUTHALIC_RADIUS_KILOMETERS = GPU_EARTH_AUTHALIC_RADIUS_METERS / 1000;
 
@@ -431,6 +479,12 @@ function getDiskNeighborCount(family: GPUCellFamily, rings: number): number {
  *
  * Rows are study cells (`cellCapacity`) or lattice cells. Everything except the output views is
  * graph-owned; pass caller-owned views for the results you read back.
+ *
+ * Status: `status.stages` lists, in order, `study-area` (count, overflow, candidate overflow,
+ * required count, rejected and latitude-limited features), `study-table` and `point-aggregation`
+ * (count, overflow, required count) for a points source; `weights` (overflow, plus the unclamped
+ * neighbor total for a lattice or distance band and the dropped rows of a distance band);
+ * `minimum-neighbors`; and with `permutation`, `permutation`.
  */
 export function addHotSpotAnalysisRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -448,6 +502,17 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     'minimumNeighbors must be a non-negative integer'
   );
   const multipleTesting = props.multipleTesting ?? GPU_HOT_SPOT_DEFAULT_MULTIPLE_TESTING;
+  assertRecipe(
+    ID,
+    props.parameters.length >= GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
+    `parameters needs ${GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} values`
+  );
+  assertRecipe(
+    ID,
+    !props.permutation || props.permutation.parameters.length >= GPU_PERMUTATION_PARAMETER_LENGTH,
+    `permutation.parameters needs ${GPU_PERMUTATION_PARAMETER_LENGTH} values`
+  );
+  const parameters = props.parameters.importToGraph(graph, `${id}-parameters`);
   let rowCount: number;
   let values: GraphDataView<'float32'>;
   let mask: GraphDataView<'uint32'> | undefined;
@@ -455,14 +520,23 @@ export function addHotSpotAnalysisRecipe<Parameters>(
   let centers: GraphDataView<'float32x2'> | undefined;
   let weights: GPUSpatialWeights;
   let pointsOutsideStudyArea: GraphDataView<'uint32'> | undefined;
+  let weightsInvalidCount: GraphDataView<'uint32'> | undefined;
   const stages: {stage: string; status: Record<string, GraphDataView<'uint32'>>}[] = [];
   const weightsOverflow = getOrCreateView(
     graph,
     `${id}-weights-overflow`,
     'uint32',
     1,
-    outputs.weightsOverflow
+    outputs.status?.weightsOverflow
   );
+  const weightsRequiredCount = getOrCreateView(
+    graph,
+    `${id}-weights-required-count`,
+    'uint32',
+    1,
+    outputs.status?.weightsRequiredCount
+  );
+  const weightsStatus = {overflow: weightsOverflow, requiredCount: weightsRequiredCount};
   let testedRows: string;
 
   if (source.kind === 'points') {
@@ -517,9 +591,37 @@ export function addHotSpotAnalysisRecipe<Parameters>(
     const cover = {
       featureIds: createTransientView(graph, `${id}-cover-features`, 'uint32', coverCapacity),
       cells: createTransientView(graph, `${id}-cover-cells`, 'uint32x2', coverCapacity),
-      count: createTransientView(graph, `${id}-cover-count`, 'uint32', 1),
-      overflow: createTransientView(graph, `${id}-cover-overflow`, 'uint32', 1),
-      candidateOverflow: createTransientView(graph, `${id}-cover-candidate-overflow`, 'uint32', 1)
+      status: {
+        count: createTransientView(graph, `${id}-cover-count`, 'uint32', 1),
+        requiredCount: getOrCreateView(
+          graph,
+          `${id}-cover-required-count`,
+          'uint32',
+          1,
+          outputs.studyArea?.status?.requiredCount
+        ),
+        overflow: createTransientView(graph, `${id}-cover-overflow`, 'uint32', 1),
+        candidateOverflow: createTransientView(
+          graph,
+          `${id}-cover-candidate-overflow`,
+          'uint32',
+          1
+        ),
+        invalidCount: getOrCreateView(
+          graph,
+          `${id}-cover-invalid-count`,
+          'uint32',
+          1,
+          outputs.studyArea?.status?.invalidCount
+        ),
+        uncertainCount: getOrCreateView(
+          graph,
+          `${id}-cover-uncertain-count`,
+          'uint32',
+          1,
+          outputs.studyArea?.status?.uncertainCount
+        )
+      }
     };
     builder.add(
       new GPUCellCover({
@@ -527,7 +629,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         family: source.family,
         resolution: source.resolution,
         containment: 'center',
-        polygonPositions: source.studyArea.polygonPositions,
+        positions: source.studyArea.positions,
         featureOffsets: source.studyArea.featureOffsets,
         polygonOffsets: source.studyArea.polygonOffsets,
         ringOffsets: source.studyArea.ringOffsets,
@@ -543,7 +645,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         operation: ID,
         variant: 'cover-mask',
         bindings: [
-          {name: 'coverCount', view: cover.count, type: 'u32', access: 'read'},
+          {name: 'coverCount', view: cover.status.count, type: 'u32', access: 'read'},
           {name: 'coverMask', view: coverMask, type: 'u32', access: 'read_write'}
         ],
         invocationCount: coverCapacity,
@@ -559,8 +661,23 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         rowCount,
         studyProvided.counts
       ),
-      count: getOrCreateView(graph, `${id}-count`, 'uint32', 1, studyProvided.count),
-      overflow: getOrCreateView(graph, `${id}-table-overflow`, 'uint32', 1, studyProvided.overflow)
+      status: {
+        count: getOrCreateView(graph, `${id}-count`, 'uint32', 1, studyProvided.status?.count),
+        overflow: getOrCreateView(
+          graph,
+          `${id}-table-overflow`,
+          'uint32',
+          1,
+          studyProvided.status?.overflow
+        ),
+        requiredCount: getOrCreateView(
+          graph,
+          `${id}-study-required-count`,
+          'uint32',
+          1,
+          studyProvided.status?.requiredCount
+        )
+      }
     };
     builder.add(
       new GPUCellAggregation({
@@ -598,8 +715,29 @@ export function addHotSpotAnalysisRecipe<Parameters>(
             pointProvided.sumValues
           )
         : undefined,
-      count: getOrCreateView(graph, `${id}-point-count`, 'uint32', 1, pointProvided.count),
-      overflow: getOrCreateView(graph, `${id}-point-overflow`, 'uint32', 1, pointProvided.overflow)
+      status: {
+        count: getOrCreateView(
+          graph,
+          `${id}-point-count`,
+          'uint32',
+          1,
+          pointProvided.status?.count
+        ),
+        overflow: getOrCreateView(
+          graph,
+          `${id}-point-overflow`,
+          'uint32',
+          1,
+          pointProvided.status?.overflow
+        ),
+        requiredCount: getOrCreateView(
+          graph,
+          `${id}-point-required-count`,
+          'uint32',
+          1,
+          pointProvided.status?.requiredCount
+        )
+      }
     };
     if (source.family === 'quadbin') {
       builder.add(
@@ -668,7 +806,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
                 } as const
               ]
             : []),
-          {name: 'pointCount', view: pointTable.count, type: 'u32', access: 'read'},
+          {name: 'pointCount', view: pointTable.status.count, type: 'u32', access: 'read'},
           {name: 'joinedCounts', view: joinedCounts, type: 'u32', access: 'read_write'},
           ...(joinedSums
             ? [{name: 'joinedSums', view: joinedSums, type: 'f32', access: 'read_write'} as const]
@@ -695,7 +833,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
       `${id}-points-outside`,
       'uint32',
       1,
-      outputs.pointsOutsideStudyArea
+      outputs.status?.pointsOutsideStudyArea
     );
     graph.add(
       createFillNode<Parameters>(graph, {
@@ -714,9 +852,9 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         bindings: [
           {name: 'pointCells', view: pointTable.cells, type: 'u32', access: 'read'},
           {name: 'pointCounts', view: pointTable.counts, type: 'u32', access: 'read'},
-          {name: 'pointCount', view: pointTable.count, type: 'u32', access: 'read'},
+          {name: 'pointCount', view: pointTable.status.count, type: 'u32', access: 'read'},
           {name: 'studyCells', view: studyTable.cells, type: 'u32', access: 'read'},
-          {name: 'studyCount', view: studyTable.count, type: 'u32', access: 'read'},
+          {name: 'studyCount', view: studyTable.status.count, type: 'u32', access: 'read'},
           {name: 'outside', view: pointsOutsideStudyArea, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: pointCapacity,
@@ -781,7 +919,7 @@ export function addHotSpotAnalysisRecipe<Parameters>(
             ? [{name: 'studyCells', view: studyTable.cells, type: 'u32', access: 'read'} as const]
             : []),
           ...(areas ? [{name: 'areas', view: areas, type: 'f32', access: 'read'} as const] : []),
-          {name: 'studyCount', view: studyTable.count, type: 'u32', access: 'read'},
+          {name: 'studyCount', view: studyTable.status.count, type: 'u32', access: 'read'},
           {name: 'analysisValues', view: values, type: 'f32', access: 'read_write'},
           {name: 'analysisMask', view: mask, type: 'u32', access: 'read_write'}
         ],
@@ -800,14 +938,22 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     );
 
     // Topological CSR over the study cells.
-    weights = createTransientSpatialWeights(
+    const diskWeights: GPUSpatialWeightsOutput = createTransientSpatialWeights(
       graph,
       `${id}-weights`,
       rowCount,
       neighborCapacity,
-      scratch.weights
+      {...scratch.weights, status: weightsStatus}
     );
+    weights = diskWeights;
     if (distanceBand) {
+      weightsInvalidCount = getOrCreateView(
+        graph,
+        `${id}-weights-invalid-count`,
+        'uint32',
+        1,
+        outputs.status?.weightsInvalidCount
+      );
       const search = new GPUNeighborSearch({
         id: `${id}-neighbors`,
         mode: 'radius',
@@ -816,30 +962,36 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         spatialContext: distanceBand.spatialContext,
         parameters: distanceBand.neighborSearchParameters,
         gridSize: distanceBand.gridSize,
-        weights,
-        overflow: weightsOverflow,
+        output: {
+          ...diskWeights,
+          status: {...weightsStatus, invalidCount: weightsInvalidCount}
+        },
         rowStandardize: distanceBand.rowStandardize ?? false,
         // The band documents binary weights (`weightKind: 'binary'`).
         weightTransform: distanceBand.rowStandardize ? 'row' : 'binary'
       });
       builder.add(search);
-      // Downstream consumers read the described weights, so info and status flow.
+      // Downstream consumers read the described weights, so information and status flow.
       weights = search.outputWeights;
     } else {
       addCellDiskWeightsNodes(graph, builder, `${id}-neighbors`, {
         family: source.family,
         cells: studyTable.cells,
-        count: studyTable.count,
+        count: studyTable.status.count,
         mask,
         rings,
-        weights,
-        overflow: weightsOverflow
+        weights: diskWeights,
+        overflow: weightsOverflow,
+        requiredCount: weightsRequiredCount
       });
-      weights.info = {
-        rowCount,
-        transform: 'binary',
-        symmetric: true,
-        provenance: {source: 'GPUCellTopology', criterion: 'disk', order: rings}
+      weights = {
+        ...diskWeights,
+        information: {
+          rowCount,
+          transform: 'binary',
+          symmetric: true,
+          provenance: {source: 'GPUCellTopology', criterion: 'disk', order: rings}
+        }
       };
     }
 
@@ -847,28 +999,33 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       cells: studyTable.cells,
       counts: joinedCounts,
       sumValues: joinedSums,
-      count: studyTable.count,
-      overflow: studyTable.overflow
+      status: {count: studyTable.status.count, overflow: studyTable.status.overflow}
     };
     stages.push(
       {
         stage: 'study-area',
-        status: {overflow: cover.overflow, candidateOverflow: cover.candidateOverflow}
+        status: cover.status
       },
-      {stage: 'study-table', status: {count: studyTable.count, overflow: studyTable.overflow}},
-      {stage: 'point-aggregation', status: {count: pointTable.count, overflow: pointTable.overflow}}
+      {
+        stage: 'study-table',
+        status: studyTable.status as Required<typeof studyTable.status>
+      },
+      {
+        stage: 'point-aggregation',
+        status: pointTable.status as Required<typeof pointTable.status>
+      }
     );
   } else {
     testedRows = 'lattice cells';
     rowCount = source.width * source.height;
     values = source.values;
     mask = source.mask;
-    weights = createTransientSpatialWeights(
+    const latticeWeights = createTransientSpatialWeights(
       graph,
       `${id}-weights`,
       rowCount,
       source.neighborCapacity,
-      scratch.weights
+      {...scratch.weights, status: weightsStatus}
     );
     const lattice = new GPULatticeWeights({
       id: `${id}-lattice`,
@@ -877,13 +1034,19 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       criterion: source.criterion ?? 'queen',
       radius: source.radius,
       mask,
-      weights,
-      overflow: weightsOverflow
+      output: latticeWeights
     });
     builder.add(lattice);
     weights = lattice.outputWeights;
   }
-  stages.push({stage: 'weights', status: {overflow: weightsOverflow}});
+  stages.push({
+    stage: 'weights',
+    status: {
+      overflow: weightsOverflow,
+      requiredCount: weightsRequiredCount,
+      ...(weightsInvalidCount ? {invalidCount: weightsInvalidCount} : {})
+    }
+  });
 
   const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, outputs.zScores);
   const bins = getOrCreateView(graph, `${id}-bins`, 'sint32', rowCount, outputs.bins);
@@ -902,21 +1065,17 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
     outputs.globalStatistics
   );
-  builder.add(
+  const hotSpots = builder.add(
     new GPUHotSpotAnalysis({
       id: `${id}-gi-star`,
       weights,
       selfWeight: props.selfWeight,
       values,
       mask,
-      parameters: props.parameters,
+      parameters,
       multipleTesting,
       minimumNeighbors: Math.max(1, minimumNeighbors),
-      zScores,
-      bins,
-      pValues,
-      neighborCounts,
-      globalStatistics
+      output: {zScores, bins, pValues, neighborCounts, globalStatistics}
     })
   );
 
@@ -927,7 +1086,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     `${id}-invalid-count`,
     'uint32',
     1,
-    outputs.invalidCount
+    outputs.status?.invalidCount
   );
   graph.add(
     createFillNode<Parameters>(graph, {
@@ -968,21 +1127,28 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     values,
     mask,
     weights,
-    weightsOverflow,
-    invalidCount,
-    pointsOutsideStudyArea,
     zScores,
     bins,
     pValues,
     neighborCounts,
     globalStatistics,
-    inference: getHotSpotInferenceMetadata(multipleTesting, minimumNeighbors, testedRows),
-    outputs: {zScores, bins, pValues, neighborCounts, globalStatistics, invalidCount},
+    // Filled by `writeSettings` below, before the result is returned.
+    inference: undefined as unknown as GPUInferenceMetadata,
+    setSettings: settings => writeSettings(settings),
+    outputs: {zScores, bins, pValues, neighborCounts, globalStatistics},
     intermediates: {table, centers, values, mask, weights},
-    status: {stages}
+    status: {
+      weightsOverflow,
+      weightsRequiredCount,
+      ...(weightsInvalidCount ? {weightsInvalidCount} : {}),
+      invalidCount,
+      ...(pointsOutsideStudyArea ? {pointsOutsideStudyArea} : {}),
+      stages
+    }
   };
 
   const {permutation} = props;
+  let permutationTest: GPULocalPermutationTest | undefined;
   if (permutation) {
     const provided = outputs.permutation ?? {};
     const permutationOutputs = {
@@ -1007,10 +1173,18 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         rowCount,
         provided.significant
       ),
-      overflow: getOrCreateView(graph, `${id}-permutation-overflow`, 'uint32', 1, provided.overflow)
+      status: {
+        overflow: getOrCreateView(
+          graph,
+          `${id}-permutation-overflow`,
+          'uint32',
+          1,
+          provided.status?.overflow
+        )
+      }
     };
     const permutationAlternative = permutation.alternative ?? GPU_DEFAULT_INFERENCE_ALTERNATIVE;
-    builder.add(
+    permutationTest = builder.add(
       new GPULocalPermutationTest({
         id: `${id}-permutation`,
         weights,
@@ -1018,26 +1192,62 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         mask,
         statistic: permutation.statistic ?? 'localGStar',
         alternative: permutationAlternative,
-        parameters: permutation.parameters,
+        parameters: permutation.parameters.importToGraph(graph, `${id}-permutation-parameters`),
         maximumPermutations: permutation.maximumPermutations,
         maximumNeighbors: permutation.maximumNeighbors,
-        falseDiscoveryRate: permutation.falseDiscoveryRate,
-        ...permutationOutputs
+        multipleTesting: permutation.multipleTesting,
+        output: {
+          exceedances: permutationOutputs.exceedances,
+          pseudoPValues: permutationOutputs.pseudoPValues,
+          significant: permutationOutputs.significant,
+          status: permutationOutputs.status
+        }
       })
     );
     result.permutation = permutationOutputs;
-    result.permutationInference = {
-      alternative: permutationAlternative === 'less' ? 'lesser' : permutationAlternative,
-      permutationCount: permutation.maximumPermutations,
-      multipleTesting: permutation.falseDiscoveryRate ? 'benjamini-hochberg' : 'none',
-      testedRowsDefinition: result.inference.testedRowsDefinition
-    };
     result.outputs['permutation'] = permutationOutputs;
     result.status.stages = [
       ...result.status.stages,
-      {stage: 'permutation', status: {overflow: permutationOutputs.overflow}}
+      {stage: 'permutation', status: permutationOutputs.status}
     ];
   }
+
+  // One source of truth (rule 19): the recipe packs `settings` itself and derives the metadata of
+  // both inferences from the same object; every view is validated before either is written.
+  function writeSettings(settings: GPUHotSpotAnalysisRecipeSettings): void {
+    const {seed, permutationCount, ...autocorrelation} = settings;
+    const values = getGPUSpatialAutocorrelationParameterValues(autocorrelation);
+    const inference: GPUInferenceMetadata = {
+      ...hotSpots.getInferenceMetadata(autocorrelation),
+      testedRowsDefinition:
+        minimumNeighbors > 0
+          ? `${testedRows} with at least ${minimumNeighbors} neighbors`
+          : testedRows
+    };
+    let permutationValues: Uint32Array | undefined;
+    let permutationInference: GPUInferenceMetadata | undefined;
+    if (permutationTest && permutation) {
+      const permutationSettings = {
+        seed: seed ?? 0,
+        permutationCount: permutationCount ?? permutation.maximumPermutations,
+        significanceLevel: autocorrelation.significanceLevel
+      };
+      permutationValues = permutationTest.getParameterValues(permutationSettings);
+      permutationInference = {
+        ...permutationTest.getInferenceMetadata(permutationSettings),
+        testedRowsDefinition: inference.testedRowsDefinition
+      };
+    }
+    props.parameters.write(values);
+    if (permutationValues) {
+      permutation!.parameters.write(permutationValues);
+    }
+    result.inference = inference;
+    if (permutationInference) {
+      result.permutationInference = permutationInference;
+    }
+  }
+  writeSettings(props.settings ?? {});
 
   const {color} = props;
   if (color) {

@@ -158,31 +158,39 @@ const PRIVATIZED_SLOT_LIMIT = 1024;
 
 /**
  * Builds the `declarations` and `body` of a one-row-one-slot counting kernel. `slotBody` is the
- * body of `fn getSlot(index: u32) -> u32` that returns the slot or `NO_SLOT`. Small tables are
- * counted in a workgroup-private atomic table and flushed with one global atomic per non-empty
- * slot per workgroup, so global atomic traffic drops from one per row to at most one per slot
- * per workgroup (skewed columns no longer serialise on a few hot counters). Large tables keep one
+ * body of `fn getSlot(index: u32, column: u32) -> u32` that returns the slot or `NO_SLOT`. The
+ * body starts by reading `column` from the column cursor. Small tables are counted in a
+ * workgroup-private atomic table and flushed with one global atomic per non-empty slot per
+ * workgroup, so global atomic traffic drops from one per row to at most one per slot per
+ * workgroup (skewed columns no longer serialise on a few hot counters). Large tables keep one
  * global atomic per row.
+ *
+ * `maximumSlotCount` sizes the workgroup table and selects the strategy, so every column of the
+ * graph shares one kernel source; `slotCount` is a WGSL `u32` expression of the runtime column's
+ * slot count that bounds the clear and flush loops.
  */
 function getPrivatizedCountingKernel(options: {
-  slotCount: number;
+  maximumSlotCount: number;
+  slotCount: string;
   targetName: string;
-  /** WGSL expression of the first slot's index in the target. */
+  /** WGSL expression of the first slot's index in the target, in terms of `column`. */
   targetBase: string;
   declarations: string;
   slotBody: string;
 }): {declarations: string; body: string; guardIndex?: boolean; workgroupSize: number} {
-  const {slotCount, targetName, targetBase, slotBody} = options;
+  const {maximumSlotCount, slotCount, targetName, targetBase, slotBody} = options;
   const slotFunction = `const NO_SLOT: u32 = 0xffffffffu;
-fn getSlot(index: u32) -> u32 {
+fn getSlot(index: u32, column: u32) -> u32 {
   ${slotBody}
 }`;
+  const readColumn = 'let column = columnCursor[columnCursorOffset];';
   const target = `${targetName}[${targetName}Offset + ${targetBase} + `;
-  if (slotCount > PRIVATIZED_SLOT_LIMIT || slotCount < 1) {
+  if (maximumSlotCount > PRIVATIZED_SLOT_LIMIT || maximumSlotCount < 1) {
     return {
       workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE,
       declarations: `${options.declarations}\n${slotFunction}`,
-      body: `let slot = getSlot(index);
+      body: `${readColumn}
+  let slot = getSlot(index, column);
   if (slot != NO_SLOT) {
     atomicAdd(&${target}slot], 1u);
   }`
@@ -191,20 +199,22 @@ fn getSlot(index: u32) -> u32 {
   return {
     declarations: `${options.declarations}
 ${slotFunction}
-var<workgroup> localCounts: array<atomic<u32>, ${slotCount}>;`,
+var<workgroup> localCounts: array<atomic<u32>, ${maximumSlotCount}>;`,
     // No early return: every invocation of a workgroup must reach the barriers.
-    body: `for (var slot = localInvocationIndex; slot < ${slotCount}u; slot += ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
+    body: `${readColumn}
+  let slotCount = ${slotCount};
+  for (var slot = localInvocationIndex; slot < slotCount; slot += ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
     atomicStore(&localCounts[slot], 0u);
   }
   workgroupBarrier();
   if (index < INVOCATION_COUNT) {
-    let slot = getSlot(index);
+    let slot = getSlot(index, column);
     if (slot != NO_SLOT) {
       atomicAdd(&localCounts[slot], 1u);
     }
   }
   workgroupBarrier();
-  for (var slot = localInvocationIndex; slot < ${slotCount}u; slot += ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
+  for (var slot = localInvocationIndex; slot < slotCount; slot += ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
     let count = atomicLoad(&localCounts[slot]);
     if (count != 0u) {
       atomicAdd(&${target}slot], count);
@@ -255,7 +265,29 @@ const write = (
 ): WGSLKernelBinding => ({name, view, type, access: 'read_write'});
 
 /**
+ * Module-scope constants shared by every per-column kernel: the column count and the per-column
+ * category metadata. They depend only on the column set, so all columns of a graph compile the
+ * same kernel source and read their own entry through the runtime column cursor.
+ */
+function getColumnConstantsWGSL(columns: readonly ColumnProfileColumn[]): string {
+  const list = (values: number[]) =>
+    `array<u32, ${columns.length}>(${values.map(value => `${value}u`).join(', ')})`;
+  // Private variables, not const arrays: a runtime index into a module-scope const array is
+  // valid WGSL but has been a driver-compiler weak spot; a private copy is always indexable.
+  return `const COLUMN_COUNT: u32 = ${columns.length}u;
+var<private> columnCategoryCounts: array<u32, ${columns.length}> = ${list(columns.map(column => column.categoryCount))};
+var<private> columnCategoryBases: array<u32, ${columns.length}> = ${list(columns.map(column => column.categoryBase))};`;
+}
+
+/** Reads the column that the current per-column kernel processes. */
+const READ_COLUMN_WGSL = 'let column = columnCursor[columnCursorOffset];';
+
+/**
  * Returns every command node of a column profile, in execution order.
+ *
+ * The per-column kernels do not bake their column index: a one-word GPU cursor names the current
+ * column, and one-thread advance steps (or the finish kernel) move it, so pipelines do not grow
+ * with the column count.
  *
  * @internal
  */
@@ -286,6 +318,9 @@ export function getColumnProfileNodes<Parameters>(
   const domains = f32('domains', columnCount * DOMAIN_STRIDE);
   const registers = output.hyperLogLogRegisters ?? u32('registers', columnCount * registerCount);
   const categoryCounts = needsCategoryCounts ? u32('category-counts', categoryTotal) : undefined;
+  const columnCursor = u32('column-cursor', 1);
+  const columnConstants = getColumnConstantsWGSL(columns);
+  const cursorRead = read('columnCursor', columnCursor, 'u32');
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   // Init: every accumulator is rewritten on every encoding.
@@ -294,9 +329,12 @@ export function getColumnProfileNodes<Parameters>(
       id: `${id}-init`,
       operation,
       variant: 'init',
-      bindings: [write('keys', keys)],
+      bindings: [write('keys', keys), write('columnCursor', columnCursor)],
       invocationCount: columnCount * KEY_STRIDE,
-      body: `keys[keysOffset + index] = select(0xffffffffu, 0u, (index & 1u) == 1u);`
+      body: `keys[keysOffset + index] = select(0xffffffffu, 0u, (index & 1u) == 1u);
+  if (index == 0u) {
+    columnCursor[columnCursorOffset] = 0u;
+  }`
     })
   );
   const fill = (name: string, view: GraphDataView, length: number, value: string) =>
@@ -339,12 +377,24 @@ export function getColumnProfileNodes<Parameters>(
         id: `${id}-column-${columnIndex}-moments-tile`,
         operation,
         column,
-        columnIndex,
         rowCount,
         tileCount,
         maskBinding,
         partials,
-        keys
+        keys,
+        columnCursor,
+        columnConstants
+      })
+    );
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-column-${columnIndex}-advance`,
+        operation,
+        variant: 'column-advance',
+        bindings: [write('columnCursor', columnCursor)],
+        invocationCount: 1,
+        declarations: `const COLUMN_COUNT: u32 = ${columnCount}u;`,
+        body: `columnCursor[columnCursorOffset] = (columnCursor[columnCursorOffset] + 1u) % COLUMN_COUNT;`
       })
     );
   }
@@ -443,6 +493,11 @@ ${IS_FINITE_BITS_WGSL}`,
     );
   }
 
+  // The finish kernel advances the cursor, so every other kernel of a column runs before it.
+  const maximumCategoryCount = Math.max(
+    0,
+    ...columns.map(column => (column.kind === 'category' ? column.categoryCount : 0))
+  );
   for (const [columnIndex, column] of columns.entries()) {
     const columnId = `${id}-column-${columnIndex}`;
     const isNumeric = column.kind === 'numeric';
@@ -457,22 +512,23 @@ ${IS_FINITE_BITS_WGSL}`,
             read('values', column.values, 'f32'),
             ...maskBinding,
             read('domains', domains, 'f32'),
-            write('histogram', output.histograms!, 'atomic<u32>')
+            write('histogram', output.histograms!, 'atomic<u32>'),
+            cursorRead
           ],
           invocationCount: rowCount,
           ...getPrivatizedCountingKernel({
-            slotCount: histogramBinCount,
+            maximumSlotCount: histogramBinCount,
+            slotCount: `${histogramBinCount}u`,
             targetName: 'histogram',
-            targetBase: `COLUMN * BIN_COUNT`,
+            targetBase: `column * BIN_COUNT`,
             declarations: `const BIN_COUNT: u32 = ${histogramBinCount}u;
-const COLUMN: u32 = ${columnIndex}u;
 ${BIN_WGSL}`,
             slotBody: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return NO_SLOT;\n  }' : ''}
   let value = values[valuesOffset + index];
   if ((bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u) {
     return NO_SLOT;
   }
-  let base = domainsOffset + COLUMN * ${DOMAIN_STRIDE}u;
+  let base = domainsOffset + column * ${DOMAIN_STRIDE}u;
   let mode = domains[base + 3u];
   let lo = domains[base];
   if (mode == 0.0 || value < lo || value > domains[base + 1u]) {
@@ -495,15 +551,17 @@ ${BIN_WGSL}`,
         bindings: [
           read('values', column.values, type),
           ...maskBinding,
-          write('registers', registers, 'atomic<u32>')
+          write('registers', registers, 'atomic<u32>'),
+          cursorRead
         ],
         invocationCount: rowCount,
         declarations: `const PRECISION: u32 = ${hyperLogLogPrecision}u;
 const REGISTER_COUNT: u32 = ${registerCount}u;
-const COLUMN: u32 = ${columnIndex}u;
-const SEED: u32 = ${getColumnProfileHashSeed(columnIndex)}u;
 ${HASH_WGSL}`,
-        body: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
+        body: `${READ_COLUMN_WGSL}
+  // Equals getColumnProfileHashSeed(column).
+  let seed = (column + 1u) * 0x9e3779b9u;
+  ${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
   ${
     isNumeric
       ? `var bits = bitcast<u32>(values[valuesOffset + index]);
@@ -518,10 +576,10 @@ ${HASH_WGSL}`,
     return;
   }`
   }
-  let hash = hashBits(bits ^ SEED);
+  let hash = hashBits(bits ^ seed);
   let registerIndex = hash >> (32u - PRECISION);
   let rank = min(countLeadingZeros(hash << PRECISION), 32u - PRECISION) + 1u;
-  atomicMax(&registers[registersOffset + COLUMN * REGISTER_COUNT + registerIndex], rank);`
+  atomicMax(&registers[registersOffset + column * REGISTER_COUNT + registerIndex], rank);`
       })
     );
     if (categoryCounts && !isNumeric) {
@@ -533,18 +591,19 @@ ${HASH_WGSL}`,
           bindings: [
             read('values', column.values, 'u32'),
             ...maskBinding,
-            write('categoryCounts', categoryCounts, 'atomic<u32>')
+            write('categoryCounts', categoryCounts, 'atomic<u32>'),
+            cursorRead
           ],
           invocationCount: rowCount,
           ...getPrivatizedCountingKernel({
-            slotCount: column.categoryCount,
+            maximumSlotCount: maximumCategoryCount,
+            slotCount: 'columnCategoryCounts[column]',
             targetName: 'categoryCounts',
-            targetBase: 'BASE',
-            declarations: `const CATEGORY_COUNT: u32 = ${column.categoryCount}u;
-const BASE: u32 = ${column.categoryBase}u;`,
+            targetBase: 'columnCategoryBases[column]',
+            declarations: columnConstants,
             slotBody: `${mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return NO_SLOT;\n  }' : ''}
   let code = values[valuesOffset + index];
-  if (code < CATEGORY_COUNT) {
+  if (code < columnCategoryCounts[column]) {
     return code;
   }
   return NO_SLOT;`
@@ -552,34 +611,27 @@ const BASE: u32 = ${column.categoryBase}u;`,
         })
       );
     }
-  }
-
-  if (hasTopCategories && categoryCounts) {
-    for (const [columnIndex, column] of columns.entries()) {
-      if (column.kind === 'category') {
-        nodes.push(
-          getTopCategoriesNode(graph, {
-            id: `${id}-column-${columnIndex}-top-categories`,
-            operation,
-            column,
-            columnIndex,
-            topCategoryCount,
-            categoryCounts,
-            topCategories: output.topCategories!,
-            topCategoryCounts: output.topCategoryCounts!
-          })
-        );
-      }
+    if (hasTopCategories && categoryCounts && !isNumeric) {
+      nodes.push(
+        getTopCategoriesNode(graph, {
+          id: `${columnId}-top-categories`,
+          operation,
+          topCategoryCount,
+          columnConstants,
+          columnCursor,
+          categoryCounts,
+          topCategories: output.topCategories!,
+          topCategoryCounts: output.topCategoryCounts!
+        })
+      );
     }
-  }
-
-  for (const [columnIndex, column] of columns.entries()) {
     nodes.push(
       getFinishNode(graph, {
-        id: `${id}-column-${columnIndex}-finish`,
+        id: `${columnId}-finish`,
         operation,
         column,
-        columnIndex,
+        columnConstants,
+        columnCursor,
         registerCount,
         hyperLogLogPrecision,
         histogramBinCount,
@@ -600,15 +652,16 @@ function getMomentTileNode<Parameters>(
     id: string;
     operation: string;
     column: ColumnProfileColumn;
-    columnIndex: number;
     rowCount: number;
     tileCount: number;
     maskBinding: WGSLKernelBinding[];
     partials: GraphDataView<'float32'>;
     keys: GraphDataView<'uint32'>;
+    columnCursor: GraphDataView<'uint32'>;
+    columnConstants: string;
   }
 ): GPUCommandNode<Parameters> {
-  const {column, columnIndex, rowCount, tileCount, maskBinding} = props;
+  const {column, rowCount, tileCount, maskBinding} = props;
   const isNumeric = column.kind === 'numeric';
   const hasMask = maskBinding.length > 0;
   const rowBody = isNumeric
@@ -635,7 +688,7 @@ function getMomentTileNode<Parameters>(
         accumulated.nullCount = accumulated.nullCount + 1.0;
       } else {
         accumulated.count = accumulated.count + 1.0;
-        if (value >= CATEGORY_COUNT) {
+        if (value >= categoryCount) {
           accumulated.finiteCount = accumulated.finiteCount + 1.0;
         }
         minimumKey = min(minimumKey, value);
@@ -649,7 +702,8 @@ function getMomentTileNode<Parameters>(
       read('values', column.values, isNumeric ? 'f32' : 'u32'),
       ...maskBinding,
       write('partials', props.partials, 'f32'),
-      write('keys', props.keys, 'atomic<u32>')
+      write('keys', props.keys, 'atomic<u32>'),
+      read('columnCursor', props.columnCursor, 'u32')
     ],
     invocationCount: tileCount * COLUMN_PROFILE_WORKGROUP_SIZE,
     workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE,
@@ -658,13 +712,14 @@ function getMomentTileNode<Parameters>(
 const TILE_COUNT: u32 = ${tileCount}u;
 const TILE_SIZE: u32 = ${COLUMN_PROFILE_TILE_SIZE}u;
 const ROWS_PER_INVOCATION: u32 = ${COLUMN_PROFILE_ROWS_PER_INVOCATION}u;
-const COLUMN: u32 = ${columnIndex}u;
-const CATEGORY_COUNT: u32 = ${column.categoryCount}u;
+${props.columnConstants}
 ${COLUMN_ORDERED_KEY_WGSL}
 ${MOMENTS_WGSL}
 var<workgroup> sharedKeys: array<atomic<u32>, ${KEY_STRIDE}>;`,
     body: `let local = localInvocationIndex;
   let tile = workgroupIndex;
+  ${READ_COLUMN_WGSL}
+  let categoryCount = columnCategoryCounts[column];
   if (local < ${KEY_STRIDE}u) {
     atomicStore(&sharedKeys[local], select(0xffffffffu, 0u, (local & 1u) == 1u));
   }
@@ -691,14 +746,14 @@ var<workgroup> sharedKeys: array<atomic<u32>, ${KEY_STRIDE}>;`,
   workgroupBarrier();
   if (local == 0u) {
     let record = sharedMoments[0];
-    let base = partialsOffset + (COLUMN * TILE_COUNT + tile) * ${RECORD_STRIDE}u;
+    let base = partialsOffset + (column * TILE_COUNT + tile) * ${RECORD_STRIDE}u;
     partials[base] = record.count;
     partials[base + 1u] = record.nullCount;
     partials[base + 2u] = record.finiteCount;
     partials[base + 3u] = record.mean;
     partials[base + 4u] = record.m2;
     partials[base + 5u] = record.sum;
-    let keyBase = keysOffset + COLUMN * ${KEY_STRIDE}u;
+    let keyBase = keysOffset + column * ${KEY_STRIDE}u;
     atomicMin(&keys[keyBase], atomicLoad(&sharedKeys[0]));
     atomicMax(&keys[keyBase + 1u], atomicLoad(&sharedKeys[1]));
     atomicMin(&keys[keyBase + 2u], atomicLoad(&sharedKeys[2]));
@@ -712,15 +767,15 @@ function getTopCategoriesNode<Parameters>(
   props: {
     id: string;
     operation: string;
-    column: ColumnProfileColumn;
-    columnIndex: number;
     topCategoryCount: number;
+    columnConstants: string;
+    columnCursor: GraphDataView<'uint32'>;
     categoryCounts: GraphDataView<'uint32'>;
     topCategories: GraphDataView<'uint32'>;
     topCategoryCounts: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const {column, columnIndex, topCategoryCount} = props;
+  const {topCategoryCount} = props;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
@@ -728,29 +783,31 @@ function getTopCategoriesNode<Parameters>(
     bindings: [
       read('categoryCounts', props.categoryCounts, 'u32'),
       write('topCategories', props.topCategories),
-      write('topCategoryCounts', props.topCategoryCounts)
+      write('topCategoryCounts', props.topCategoryCounts),
+      read('columnCursor', props.columnCursor, 'u32')
     ],
     invocationCount: COLUMN_PROFILE_WORKGROUP_SIZE,
     workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE,
     guardIndex: false,
-    declarations: `const CATEGORY_COUNT: u32 = ${column.categoryCount}u;
-const BASE: u32 = ${column.categoryBase}u;
-const COLUMN: u32 = ${columnIndex}u;
+    declarations: `${props.columnConstants}
 const TOP_COUNT: u32 = ${topCategoryCount}u;
-const STEP_COUNT: u32 = ${Math.ceil(column.categoryCount / COLUMN_PROFILE_WORKGROUP_SIZE)}u;
 var<workgroup> bestCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;
 var<workgroup> bestCodes: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
     body: `let local = localInvocationIndex;
+  ${READ_COLUMN_WGSL}
+  let categoryCount = columnCategoryCounts[column];
+  let base = columnCategoryBases[column];
+  let stepCount = (categoryCount + ${COLUMN_PROFILE_WORKGROUP_SIZE - 1}u) / ${COLUMN_PROFILE_WORKGROUP_SIZE}u;
   var previousCount = 0u;
   var previousCode = 0u;
   var hasPrevious = false;
   for (var rank = 0u; rank < TOP_COUNT; rank = rank + 1u) {
     var bestCount = 0u;
     var bestCode = 0xffffffffu;
-    for (var step = 0u; step < STEP_COUNT; step = step + 1u) {
+    for (var step = 0u; step < stepCount; step = step + 1u) {
       let code = step * ${COLUMN_PROFILE_WORKGROUP_SIZE}u + local;
-      if (code < CATEGORY_COUNT) {
-        let count = categoryCounts[categoryCountsOffset + BASE + code];
+      if (code < categoryCount) {
+        let count = categoryCounts[categoryCountsOffset + base + code];
         // Strictly after the previous pick in (count descending, code ascending) order.
         let isCandidate = count > 0u && (!hasPrevious || count < previousCount || (count == previousCount && code > previousCode));
         if (isCandidate && count > bestCount) {
@@ -776,8 +833,8 @@ var<workgroup> bestCodes: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
     let pickedCount = bestCounts[0];
     let pickedCode = bestCodes[0];
     if (local == 0u) {
-      topCategories[topCategoriesOffset + COLUMN * TOP_COUNT + rank] = select(0xffffffffu, pickedCode, pickedCount > 0u);
-      topCategoryCounts[topCategoryCountsOffset + COLUMN * TOP_COUNT + rank] = pickedCount;
+      topCategories[topCategoriesOffset + column * TOP_COUNT + rank] = select(0xffffffffu, pickedCode, pickedCount > 0u);
+      topCategoryCounts[topCategoryCountsOffset + column * TOP_COUNT + rank] = pickedCount;
     }
     previousCount = pickedCount;
     previousCode = pickedCode;
@@ -793,7 +850,8 @@ function getFinishNode<Parameters>(
     id: string;
     operation: string;
     column: ColumnProfileColumn;
-    columnIndex: number;
+    columnConstants: string;
+    columnCursor: GraphDataView<'uint32'>;
     registerCount: number;
     hyperLogLogPrecision: number;
     histogramBinCount: number;
@@ -804,7 +862,7 @@ function getFinishNode<Parameters>(
     output: ColumnProfileNodeProps['output'];
   }
 ): GPUCommandNode<Parameters> {
-  const {column, columnIndex, registerCount, histogramBinCount, output} = props;
+  const {column, registerCount, histogramBinCount, output} = props;
   const isNumeric = column.kind === 'numeric';
   const alphaTimesSquare = getHyperLogLogAlpha(registerCount) * registerCount * registerCount;
   const copyHistogram = !isNumeric && output.histograms && props.categoryCounts;
@@ -824,6 +882,7 @@ function getFinishNode<Parameters>(
       write('histogram', output.histograms!)
     );
   }
+  bindings.push(write('columnCursor', props.columnCursor));
   const statisticsBody = isNumeric
     ? `let hasValues = count > 0.0;
     let hasFinite = finiteCount > 0.0;
@@ -853,23 +912,28 @@ function getFinishNode<Parameters>(
     invocationCount: COLUMN_PROFILE_WORKGROUP_SIZE,
     workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE,
     guardIndex: false,
-    declarations: `const COLUMN: u32 = ${columnIndex}u;
+    declarations: `${props.columnConstants}
 const REGISTER_COUNT: u32 = ${registerCount}u;
 const REGISTER_STEP_COUNT: u32 = ${Math.ceil(registerCount / COLUMN_PROFILE_WORKGROUP_SIZE)}u;
 const ALPHA_TIMES_SQUARE: f32 = ${getWGSLFloatLiteral(alphaTimesSquare)};
 const BIN_COUNT: u32 = ${histogramBinCount}u;
-const CATEGORY_COUNT: u32 = ${column.categoryCount}u;
-const CATEGORY_BASE: u32 = ${column.categoryBase}u;
 ${COLUMN_ORDERED_KEY_WGSL}
+var<workgroup> sharedColumn: u32;
 var<workgroup> sharedInverseSums: array<f32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;
 var<workgroup> sharedZeroCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
+    // One workgroup: only invocation 0 touches the storage cursor, so advancing it at the end
+    // cannot race with the other invocations' column reads.
     body: `let local = localInvocationIndex;
+  if (local == 0u) {
+    sharedColumn = columnCursor[columnCursorOffset];
+  }
+  let column = workgroupUniformLoad(&sharedColumn);
   var inverseSum = 0.0;
   var zeroCount = 0u;
   for (var step = 0u; step < REGISTER_STEP_COUNT; step = step + 1u) {
     let registerIndex = step * ${COLUMN_PROFILE_WORKGROUP_SIZE}u + local;
     if (registerIndex < REGISTER_COUNT) {
-      let rank = registers[registersOffset + COLUMN * REGISTER_COUNT + registerIndex];
+      let rank = registers[registersOffset + column * REGISTER_COUNT + registerIndex];
       // 2^-rank is exact: rank is at most ${33 - props.hyperLogLogPrecision}.
       inverseSum = inverseSum + bitcast<f32>((127u - rank) << 23u);
       zeroCount = zeroCount + select(0u, 1u, rank == 0u);
@@ -887,23 +951,23 @@ var<workgroup> sharedZeroCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
   ${
     copyHistogram
       ? `for (var bin = local; bin < BIN_COUNT; bin = bin + ${COLUMN_PROFILE_WORKGROUP_SIZE}u) {
-    histogram[histogramOffset + COLUMN * BIN_COUNT + bin] = select(0u, categoryCounts[categoryCountsOffset + CATEGORY_BASE + bin], bin < CATEGORY_COUNT);
+    histogram[histogramOffset + column * BIN_COUNT + bin] = select(0u, categoryCounts[categoryCountsOffset + columnCategoryBases[column] + bin], bin < columnCategoryCounts[column]);
   }`
       : ''
   }
   if (local == 0u) {
-    let recordBase = recordsOffset + COLUMN * ${RECORD_STRIDE}u;
+    let recordBase = recordsOffset + column * ${RECORD_STRIDE}u;
     let count = records[recordBase];
     let nullCount = records[recordBase + 1u];
     let finiteCount = records[recordBase + 2u];
     let mean = records[recordBase + 3u];
     let m2 = records[recordBase + 4u];
     let sum = records[recordBase + 5u];
-    let keyBase = keysOffset + COLUMN * ${KEY_STRIDE}u;
+    let keyBase = keysOffset + column * ${KEY_STRIDE}u;
     let minimumKey = keys[keyBase];
     let maximumKey = keys[keyBase + 1u];
     let nan = getNaN();
-    let statisticsBase = statisticsOffset + COLUMN * ${GPU_COLUMN_PROFILE_STATISTIC_COUNT}u;
+    let statisticsBase = statisticsOffset + column * ${GPU_COLUMN_PROFILE_STATISTIC_COUNT}u;
     statistics[statisticsBase + ${stat.count}u] = count;
     statistics[statisticsBase + ${stat.nullCount}u] = nullCount;
     ${statisticsBody}
@@ -927,10 +991,11 @@ var<workgroup> sharedZeroCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
     statistics[statisticsBase + ${stat.distinctEstimate}u] = estimate;
     ${
       output.counts
-        ? `countsOut[countsOutOffset + COLUMN * 2u] = u32(count);
-    countsOut[countsOutOffset + COLUMN * 2u + 1u] = u32(nullCount);`
+        ? `countsOut[countsOutOffset + column * 2u] = u32(count);
+    countsOut[countsOutOffset + column * 2u + 1u] = u32(nullCount);`
         : ''
     }
+    columnCursor[columnCursorOffset] = (column + 1u) % COLUMN_COUNT;
   }`
   });
 }

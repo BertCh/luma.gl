@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {assert} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
+  type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
+  type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
@@ -23,7 +26,7 @@ const MAXIMUM_CHUNKS = 1024;
 const MAXIMUM_QUANTITIES = 4;
 
 /** Properties of {@link getGroupedSumNodes}. @internal */
-export type GroupedSumProps = {
+export type GroupedSumProps<Parameters = unknown> = {
   /** Prefix of the generated node and transient IDs. */
   id: string;
   /** Operation name reported in workload estimates. */
@@ -55,7 +58,33 @@ export type GroupedSumProps = {
   finish?: {bindings: WGSLKernelBinding[]; declarations?: string; body: string};
   /** Suffix of the fold node ID (`<id>-<suffix>`). Defaults to `'fold'`. */
   foldSuffix?: string;
+  /**
+   * Optional GPU-written indirect gates of the partial and fold kernels, for loops with a
+   * data-dependent exit. Their dispatch triples must match {@link getGroupedSumDispatchShapes}.
+   */
+  gates?: {partial: GroupedSumGate<Parameters>; fold: GroupedSumGate<Parameters>};
 };
+
+/** Condition and declared indirect use of one gated kernel. @internal */
+export type GroupedSumGate<Parameters> = {
+  condition: GPUCommandGraphNodeCondition<Parameters>;
+  extraResources: GraphBufferUse[];
+};
+
+/**
+ * `[invocationCount, workgroupSize]` of the partial and fold kernels of {@link getGroupedSumNodes},
+ * so a caller can write matching indirect dispatch triples. @internal
+ */
+export function getGroupedSumDispatchShapes(
+  rows: number,
+  groupCount: number
+): {partial: [number, number]; fold: [number, number]} {
+  const chunkCount = Math.min(MAXIMUM_CHUNKS, Math.max(1, Math.ceil(rows / WORKGROUP_SIZE)));
+  return {
+    partial: [chunkCount * WORKGROUP_SIZE, WORKGROUP_SIZE],
+    fold: [groupCount * WORKGROUP_SIZE, WORKGROUP_SIZE]
+  };
+}
 
 /**
  * Per-group sums of up to four per-row quantities without sorting or atomics, for at most 256
@@ -75,16 +104,14 @@ export type GroupedSumProps = {
  */
 export function getGroupedSumNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GroupedSumProps
+  props: GroupedSumProps<Parameters>
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, rows, groupCount, outputs} = props;
   const quantityCount = outputs.length;
-  if (groupCount < 1 || groupCount > GROUPED_SUM_MAXIMUM_GROUPS) {
-    throw new Error(`${id} supports 1 to ${GROUPED_SUM_MAXIMUM_GROUPS} groups`);
-  }
-  if (quantityCount < 1 || quantityCount > MAXIMUM_QUANTITIES) {
-    throw new Error(`${id} sums 1 to ${MAXIMUM_QUANTITIES} quantities`);
-  }
+  // The caller validates the group count against the chunked limit (one lane per group) and
+  // passes a fixed set of quantities that fits the shared-memory tile.
+  assert(groupCount >= 1 && groupCount <= GROUPED_SUM_MAXIMUM_GROUPS);
+  assert(quantityCount >= 1 && quantityCount <= MAXIMUM_QUANTITIES);
   const chunkCount = Math.min(MAXIMUM_CHUNKS, Math.max(1, Math.ceil(rows / WORKGROUP_SIZE)));
   const chunkSize = Math.ceil(rows / chunkCount / WORKGROUP_SIZE) * WORKGROUP_SIZE;
   const slices = Math.min(MAXIMUM_SLICES, Math.floor(WORKGROUP_SIZE / groupCount));
@@ -115,6 +142,7 @@ export function getGroupedSumNodes<Parameters>(
     workgroupSize: WORKGROUP_SIZE,
     invocationCount: chunkCount * WORKGROUP_SIZE,
     guardIndex: false,
+    ...props.gates?.partial,
     declarations: `${props.declarations ?? ''}
 const GROUP_COUNT: u32 = ${groupCount}u;
 const NO_GROUP: u32 = 0xffffffffu;
@@ -206,6 +234,7 @@ var<workgroup> laneCounts: array<u32, ${WORKGROUP_SIZE}>;`,
     workgroupSize: WORKGROUP_SIZE,
     invocationCount: groupCount * WORKGROUP_SIZE,
     guardIndex: false,
+    ...props.gates?.fold,
     declarations: `${finish?.declarations ?? ''}
 const GROUP_COUNT: u32 = ${groupCount}u;
 const CHUNK_COUNT: u32 = ${chunkCount}u;

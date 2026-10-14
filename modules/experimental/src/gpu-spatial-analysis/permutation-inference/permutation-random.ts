@@ -8,10 +8,10 @@
 // streams, so CPU oracles reproduce GPU permutations exactly. Proposed for promotion to the shared
 // utils module once a second contributor needs it.
 
-import {getPhilox4x32} from '../../utils/philox-random';
+import {getPhilox4x32, PHILOX_PURPOSES} from '../../utils/philox-random';
 
 /** Counter word `c` that tags the Feistel round-key block, kept apart from row streams. @internal */
-export const PERMUTATION_RANDOM_FEISTEL_STREAM = 0xfe157e10;
+export const PERMUTATION_RANDOM_FEISTEL_STREAM = PHILOX_PURPOSES.permutationFeistel.id;
 
 /** Feistel rounds of {@link getFeistelPermutationIndex}. @internal */
 export const PERMUTATION_RANDOM_FEISTEL_ROUNDS = 4;

@@ -5,8 +5,6 @@
 import {
   createTransientView,
   GPUScan,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -21,19 +19,24 @@ import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
-import {getDotSlotCountLimit} from './dot-density-cpu';
+import {
+  resolveGPUSpatialContext,
+  type GPULineGeometryFields,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/index';
+import {getDotSlotCountLimit} from './dot-density-constants';
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
-import {PHILOX_WGSL} from '../../utils/philox-random';
+import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../utils/philox-random';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURandomPointsOnLine';
 const NONE = '0xffffffffu';
 
-/** Philox key word 1 of the line-position draw (1 and 2 are the dot density draws). */
-export const RANDOM_POINTS_ON_LINE_PURPOSE = 3;
+/** Philox key word 1 of the line-position draw (`PHILOX_PURPOSES` registry). */
+export const RANDOM_POINTS_ON_LINE_PURPOSE = PHILOX_PURPOSES.randomPointsOnLine.id;
 
 /** Caller-owned outputs of {@link GPURandomPointsOnLine}. */
 export type GPURandomPointsOnLineOutput = {
@@ -53,7 +56,7 @@ export type GPURandomPointsOnLineOutput = {
 };
 
 /** Properties for {@link GPURandomPointsOnLine}. */
-export type GPURandomPointsOnLineProps = {
+export type GPURandomPointsOnLineProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'random-points-on-line'`. */
   id?: string;
   /**
@@ -61,10 +64,6 @@ export type GPURandomPointsOnLineProps = {
    * planar/native): arc length is measured in coordinate space. Other contexts throw at construction.
    */
   spatialContext?: GPUSpatialContext;
-  /** Vertices of every input linestring, concatenated. */
-  positions: GraphDataView<'float32x2'>;
-  /** Line-to-vertex offsets with `lineCount + 1` rows (GeoArrow layout). */
-  lineOffsets: GraphDataView<'uint32'>;
   /** Number of points to place on each line, one row per line. */
   counts: GraphDataView<'uint32'>;
   /** Per-frame uint32 parameters written with `getGPUDotDensityParameterValues` (only `seed` is read). */
@@ -106,9 +105,9 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validatePackedUint32View(props.lineOffsets, `${id} lineOffsets`);
-    validatePackedUint32View(props.counts, `${id} counts`);
-    validatePackedUint32View(props.parameters, `${id} parameters`);
+    validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validatePackedView(props.counts, ['uint32'], `${id} counts`);
+    validatePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs at least one line`);
     }
@@ -354,9 +353,9 @@ function getOutputs(props: GPURandomPointsOnLineProps): (GraphDataView | undefin
   return [
     output.positions,
     output.points.ids,
-    output.points.count,
-    output.points.overflow,
-    output.points.requiredCount,
+    output.points.status.count,
+    output.points.status.overflow,
+    output.points.status.requiredCount,
     output.fractions
   ];
 }

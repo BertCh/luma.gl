@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Binding, BindingDeclaration} from '@luma.gl/core';
+import type {BindingDeclaration} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import type {GPUCommandGraph, GraphDataView, GraphResourceUse} from '@luma.gl/gpgpu/gpu-core';
-import {getViewBinding, getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
+import {getViewElementOffset} from '@luma.gl/gpgpu/gpu-core';
 import {
   assertRasterStorageBindingFits,
   getRasterDispatchSize,
@@ -20,6 +20,7 @@ import {
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
 
 /** Independently implemented, GPU-resident operations on two calibrated raster bands. */
 export type GPURasterBandMathOperation =
@@ -199,21 +200,23 @@ export class GPURasterBandMath {
           source: this.getShaderSource(),
           shaderLayout: {bindings}
         });
+        const bindingViews: Record<string, GraphDataView> = {
+          leftValues: this.left.storage.values,
+          rightValues: this.right.storage.values,
+          outputValues: this.output,
+          outputValidity: this.outputValidity
+        };
+        if (this.left.validity) {
+          bindingViews['leftValidity'] = this.left.validity;
+        }
+        if (this.right.validity) {
+          bindingViews['rightValidity'] = this.right.validity;
+        }
+        const resolveChangedBindings = createChangedBindingResolver(bindingViews);
         return {
           encode: ({computePass, getBuffer}) => {
-            const resolvedBindings: Record<string, Binding> = {
-              leftValues: getViewBinding(this.left.storage.values, getBuffer),
-              rightValues: getViewBinding(this.right.storage.values, getBuffer),
-              outputValues: getViewBinding(this.output, getBuffer),
-              outputValidity: getViewBinding(this.outputValidity, getBuffer)
-            };
-            if (this.left.validity) {
-              resolvedBindings['leftValidity'] = getViewBinding(this.left.validity, getBuffer);
-            }
-            if (this.right.validity) {
-              resolvedBindings['rightValidity'] = getViewBinding(this.right.validity, getBuffer);
-            }
-            computation.setBindings(resolvedBindings);
+            const changedBindings = resolveChangedBindings(getBuffer);
+            if (changedBindings) computation.setBindings(changedBindings);
             computation.dispatch(computePass, horizontalCount, verticalCount);
           },
           destroy: () => computation.destroy()

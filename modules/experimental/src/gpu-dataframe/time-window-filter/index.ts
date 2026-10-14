@@ -3,18 +3,22 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {GPUTimeWindowFilter} from './gpu-time-window-filter';
-export type {GPUTimeWindowFilterProps} from './gpu-time-window-filter';
+export type {GPUTimeWindowFilterOutput, GPUTimeWindowFilterProps} from './gpu-time-window-filter';
 export {
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   splitTimestamps,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from './time-window-parameters';
-export type {GPUSplitTimestamps, GPUTimeWindow} from './time-window-parameters';
+export type {GPUSplitTimestamps, GPUTimeWindowFilterSettings} from './time-window-parameters';
 export {
   splitTimeWords,
   joinTimeWords,
   getInt64TimeWords,
-  getGPUTimeWindowWordParameterValues,
-  GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH
+  getGPUTimeWindowFilterWordParameterValues,
+  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH
 } from './time-words';
-export type {GPUInt64TimeWordRows, GPUTimeWords, GPUTimeWordWindow} from './time-words';
+export type {
+  GPUInt64TimeWordRows,
+  GPUTimeWords,
+  GPUTimeWindowFilterWordSettings
+} from './time-words';

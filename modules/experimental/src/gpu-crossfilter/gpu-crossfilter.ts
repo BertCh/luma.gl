@@ -3,7 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuXfilter.
 
-import {GPUCommandGraph, GraphVectorView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import type {Buffer} from '@luma.gl/core';
+import {
+  GPUCommandGraph,
+  GraphVectorView,
+  type GPUCommandGraphCPUCondition,
+  type GPUCommandNode,
+  type GPUNode,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGroupAggregation, type GPUGroupAggregationOperation} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPUHistogram,
@@ -15,6 +23,13 @@ import {GPUReduction} from '@luma.gl/gpgpu/gpu-core';
 import {GPUVisibilityWorkflow} from '@luma.gl/gpgpu/gpu-core';
 import {createTransientView} from '@luma.gl/gpgpu/gpu-core';
 import {
+  createHistogramCubeBuildNodes,
+  createHistogramCubeReadoutNode,
+  getHistogramCubeCellCount,
+  type HistogramCubeBinning
+} from './histogram-cube';
+import {
+  createOwnedView,
   GPUCrossfilterSelection,
   type GPUCrossfilterDimension,
   type GPUCrossfilterMask,
@@ -110,7 +125,7 @@ export type GPUCrossfilterMaskView = GPUCrossfilterViewOptions & {
 export type GPUCrossfilterCountView = GPUCrossfilterViewOptions & {
   /** This view publishes how many live rows pass the effective selection. */
   kind: 'count';
-  /** Caller-owned one-row `uint32` count; rewritten on every encoding. */
+  /** Caller-owned one-row `uint32` count; rewritten on every encoding unless nodes are skipped. */
   output: GraphDataView<'uint32'>;
 };
 
@@ -137,9 +152,62 @@ export type GPUCrossfilterProps = {
    * rows never enter a histogram, group, count, visibility list, or mask output, including views
    * that exclude their own dimension, and they are skipped when a histogram view uses
    * `domain: 'auto'`. Topology: it must share the dimensions' row count and chunk layout, and its
-   * presence is fixed at construction. Its contents may change every frame without recompiling.
+   * presence is fixed at construction. Its contents may change every frame without recompiling
+   * (with {@link GPUCrossfilterProps.skipUnchangedDimensions} or
+   * {@link GPUCrossfilterProps.histogramCubes}, call {@link GPUCrossfilter.invalidate} after
+   * changing them).
    */
   liveMask?: GPUCrossfilterMask;
+  /**
+   * Skips every graph node whose inputs did not change since it last ran, so brushing one
+   * dimension costs work proportional to the nodes that depend on it (the original crossfilter.js
+   * strategy): the dimension's predicate, the composed masks that include it, and the views that
+   * include its brush. Views that exclude that dimension, such as its own self-excluding
+   * histogram, are not recomputed.
+   *
+   * Defaults to `false` because the documented contract lets callers rewrite source buffers
+   * between encodings. When `true`, source buffers, group keys and values, `liveMask`, and view
+   * domains are assumed constant until the application calls {@link GPUCrossfilter.invalidate}.
+   * Masks become persistent buffers (they must outlive encodings that skip their writer), and
+   * view outputs are rewritten only when they can change.
+   *
+   * Change tracking is recorded when the graph evaluates each node's condition, that is, when the
+   * graph is encoded. If an encoding is never submitted, the skipped nodes' outputs stay stale
+   * until the next change; call {@link GPUCrossfilter.invalidate} to force a full refresh.
+   */
+  skipUnchangedDimensions?: boolean;
+  /**
+   * Enables Falcon-style data cubes for histogram views (Moritz, Howe, Heer, "Falcon: Balancing
+   * Interactive Latency and Resolution Sensitivity for Scalable Linked Visualizations", CHI 2019),
+   * for tables with tens of millions of rows. Defaults to `false`.
+   *
+   * While a histogram view is active ({@link GPUCrossfilter.activateView}), the GPU builds, for
+   * every other histogram view, an exact integer cube of rows by (active bin, linked bin) that
+   * passes every other selection. A brush on the active dimension then costs `O(bins)` per linked
+   * histogram, independent of the row count. Cubes are rebuilt when the activation or a
+   * non-active dimension changes. Memory is `activeBins * linkedBins * 4` bytes per linked view,
+   * validated against the device's storage-binding limit at construction. Source rows are assumed
+   * constant until {@link GPUCrossfilter.invalidate}.
+   */
+  histogramCubes?: boolean;
+};
+
+/** Generation key bumped when a dimension's brush changes. */
+const selectionKey = (dimensionId: string): string => `selection:${dimensionId}`;
+/** Generation key bumped when a dimension's source contents are reported changed. */
+const contentKey = (dimensionId: string): string => `content:${dimensionId}`;
+/** Generation key bumped when a view changes which path (exact or cube) produces its output. */
+const viewKey = (viewId: string): string => `view:${viewId}`;
+const LIVE_KEY = 'live';
+const ALL_KEY = 'all';
+const CUBE_KEY = 'cube';
+
+/** CPU skip-condition options of one group of graph nodes. */
+type ConditionOptions = {
+  /** Runs only when a dependency generation changed; defaults to `skipUnchangedDimensions`. */
+  track?: boolean;
+  /** Returns whether the group is eligible at all this encoding. */
+  gate?: () => boolean;
 };
 
 /**
@@ -165,6 +233,22 @@ export class GPUCrossfilter<Parameters = void> {
   private readonly viewMasks = new Map<string, GPUCrossfilterMask | undefined>();
   private readonly excludedDimensionMasks = new Map<string, GPUCrossfilterMask | undefined>();
   private readonly liveMask?: GPUCrossfilterMask;
+  private readonly skipUnchanged: boolean;
+  private readonly cubesEnabled: boolean;
+  /** Buffers allocated by this controller for persistent masks, extents, and cubes. */
+  private readonly ownedBuffers: Buffer[] = [];
+  /** Change counters behind the skip conditions; absent keys are generation 0. */
+  private readonly generations = new Map<string, number>();
+  /** Whether each dimension currently has an active range or bounds brush. */
+  private readonly brushActive = new Map<string, boolean>();
+  /** The histogram view whose dimension is the cube's active dimension. */
+  private activeViewId?: string;
+  /** Linked histogram views currently answered from a cube instead of the exact path. */
+  private servedViewIds: ReadonlySet<string> = new Set();
+  /** Selection key whose dependent mask passes are idle because only cubes consume the brush. */
+  private suppressedSelectionKey?: string;
+  /** Whether masks may go stale while cubes serve every consumer of the active brush. */
+  private readonly maySuppressMasks: boolean;
   private addedToGraph = false;
   private destroyed = false;
 
@@ -174,6 +258,15 @@ export class GPUCrossfilter<Parameters = void> {
     this.graph = graph;
     this.dimensions = props.dimensions;
     this.views = props.views ?? [];
+    this.skipUnchanged = props.skipUnchangedDimensions === true;
+    this.cubesEnabled = props.histogramCubes === true;
+    // Only histogram views read the brush through a cube. Any other consumer of a selection mask,
+    // or a public mask, needs the mask passes to keep running.
+    this.maySuppressMasks =
+      this.cubesEnabled &&
+      props.outputMask === undefined &&
+      this.dimensions.every(dimension => dimension.mask === undefined) &&
+      this.views.every(view => view.kind === 'histogram');
 
     if (this.dimensions.length === 0) {
       throw new Error(`${this.id} requires at least one selection dimension`);
@@ -186,7 +279,8 @@ export class GPUCrossfilter<Parameters = void> {
         }
         const firstSelection = this.selections.values().next().value;
         const selection = new GPUCrossfilterSelection(graph, dimension, {
-          id: `${this.id}-${dimension.id}`
+          id: `${this.id}-${dimension.id}`,
+          persistentMask: this.skipUnchanged
         });
         this.selections.set(dimension.id, selection);
         if (firstSelection) {
@@ -204,10 +298,12 @@ export class GPUCrossfilter<Parameters = void> {
       }
 
       const firstMask = this.selections.values().next().value!.mask;
-      this.mask = props.outputMask ?? createMaskLike(graph, `${this.id}-mask`, firstMask);
+      this.mask = props.outputMask ?? this.createMaskLike(`${this.id}-mask`, firstMask);
       assertMatchingInputs(firstMask, this.mask, `${this.id} output mask`);
+      if (this.cubesEnabled) this.validateCubeMemory();
     } catch (error) {
       for (const selection of this.selections.values()) selection.destroy();
+      for (const buffer of this.ownedBuffers) buffer.destroy();
       throw error;
     }
   }
@@ -215,25 +311,99 @@ export class GPUCrossfilter<Parameters = void> {
   /** Updates an inclusive scalar range without reading source data or recompiling the graph. */
   setRange(dimensionId: string, range: readonly [number, number]): this {
     this.getSelection(dimensionId).setRange(range);
+    this.noteSelectionChange(dimensionId, true);
     return this;
   }
 
   /** Updates inclusive `[minX, minY, maxX, maxY]` map or scatterplot brush bounds. */
   setBounds(dimensionId: string, bounds: readonly [number, number, number, number]): this {
     this.getSelection(dimensionId).setBounds(bounds);
+    this.noteSelectionChange(dimensionId, true);
     return this;
   }
 
   /** Disables one selection while retaining its reusable GPU control buffer and graph passes. */
   clear(dimensionId: string): this {
     this.getSelection(dimensionId).clear();
+    this.noteSelectionChange(dimensionId, false);
     return this;
   }
 
   /** Disables every selection without changing source buffers or command-graph topology. */
   clearAll(): this {
     this.assertAvailable();
-    for (const selection of this.selections.values()) selection.clear();
+    for (const [dimensionId, selection] of this.selections) {
+      selection.clear();
+      this.bumpGeneration(selectionKey(dimensionId));
+      this.brushActive.set(dimensionId, false);
+    }
+    this.updateCubeState();
+    return this;
+  }
+
+  /**
+   * Reports that source contents changed, so skipped nodes must run again.
+   *
+   * With `skipUnchangedDimensions` or `histogramCubes`, the controller assumes source buffers do
+   * not change between encodings. Pass a dimension id after rewriting that dimension's input (its
+   * predicate, every view that includes its brush, and its own histogram refresh), or nothing
+   * after rewriting any other source: group keys or values, a view input that is not a
+   * dimension's input, `liveMask`, or a `'auto'` domain's data. Without either option this does
+   * nothing, because every node runs on every encoding.
+   *
+   * It also recovers from an encoding that was never submitted: change tracking records a node as
+   * up to date when the graph evaluates its condition, not when the GPU finishes.
+   */
+  invalidate(dimensionId?: string): this {
+    this.assertAvailable();
+    if (dimensionId === undefined) {
+      this.bumpGeneration(ALL_KEY);
+    } else {
+      this.getSelection(dimensionId);
+      this.bumpGeneration(selectionKey(dimensionId));
+      this.bumpGeneration(contentKey(dimensionId));
+    }
+    return this;
+  }
+
+  /**
+   * Makes a histogram view's dimension the active dimension of the Falcon cubes.
+   *
+   * Requires `histogramCubes: true`. The view must be a histogram of a `range` dimension whose
+   * `input` is that dimension's `input` (the same view object), and that dimension must not be
+   * `exclusiveMaximum`. While active and brushed, every other histogram view is read from a cube
+   * and the active dimension's brush is snapped outward to the active view's bins: the result
+   * equals the exact path for brushes whose lower endpoint is a bin's lower boundary and whose
+   * upper endpoint lies in the last bin it should include (for integer data, one below the next
+   * boundary). Rows outside the active view's domain or edges are not counted, so a brush wider
+   * than the domain behaves as the domain. Views that are not histograms, and any histogram view
+   * sharing the active dimension without its own selection, keep their exact path.
+   *
+   * Masks that depend on the brushed dimension stop updating while cubes serve the brush when
+   * every view is a histogram and no public mask exists; otherwise they keep updating and only
+   * the histogram passes are saved.
+   */
+  activateView(viewId: string): this {
+    this.assertAvailable();
+    if (!this.cubesEnabled) {
+      throw new Error(`${this.id} activateView requires histogramCubes: true`);
+    }
+    const view = this.views.find(candidate => candidate.id === viewId);
+    if (!view || !this.isCubeCandidate(view)) {
+      throw new Error(`${this.id} view "${viewId}" cannot be the active cube view`);
+    }
+    this.activeViewId = viewId;
+    this.bumpGeneration(CUBE_KEY);
+    this.updateCubeState();
+    return this;
+  }
+
+  /** Stops serving histogram views from cubes; every view returns to its exact path. */
+  deactivateView(): this {
+    this.assertAvailable();
+    this.activeViewId = undefined;
+    this.bumpGeneration(CUBE_KEY);
+    this.updateCubeState();
     return this;
   }
 
@@ -269,14 +439,19 @@ export class GPUCrossfilter<Parameters = void> {
       throw new Error(`${this.id} can only be added to its graph once`);
     }
 
-    for (const selection of this.selections.values()) selection.addToGraph(graph);
+    for (const [dimensionId, selection] of this.selections) {
+      selection.addToGraph(graph, nodeId =>
+        this.createCondition(nodeId, [selectionKey(dimensionId), contentKey(dimensionId)])
+      );
+    }
     this.composeMasks(
       `${this.id}/controller/compose`,
       [
         ...Array.from(this.selections.values(), selection => selection.mask),
         ...(this.liveMask ? [this.liveMask] : [])
       ],
-      this.mask
+      this.mask,
+      this.getMaskDependencies()
     );
 
     for (const view of this.views) {
@@ -301,6 +476,7 @@ export class GPUCrossfilter<Parameters = void> {
           break;
       }
     }
+    if (this.cubesEnabled) this.addHistogramCubes();
     this.addedToGraph = true;
   }
 
@@ -308,6 +484,7 @@ export class GPUCrossfilter<Parameters = void> {
   destroy(): void {
     if (this.destroyed) return;
     for (const selection of this.selections.values()) selection.destroy();
+    for (const buffer of this.ownedBuffers) buffer.destroy();
     this.destroyed = true;
   }
 
@@ -321,14 +498,110 @@ export class GPUCrossfilter<Parameters = void> {
     return selection;
   }
 
+  /** Records a brush change for the skip conditions and the cube routing. */
+  private noteSelectionChange(dimensionId: string, active: boolean): void {
+    this.bumpGeneration(selectionKey(dimensionId));
+    this.brushActive.set(dimensionId, active);
+    this.updateCubeState();
+  }
+
+  private bumpGeneration(key: string): void {
+    this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
+  }
+
+  /**
+   * Creates the CPU skip condition of one graph node, or `undefined` when the node always runs.
+   *
+   * The node runs when `gate` allows it, no cube-served brush makes it idle, and (when tracked)
+   * a dependency generation changed since it last ran or it never ran. Each node needs its own
+   * condition because the "last ran" record is per node; every node of one group sees the same
+   * generations, so a group runs or skips together. The record is made when the graph evaluates
+   * the condition, before the GPU executes the encoding.
+   */
+  private createCondition(
+    nodeId: string,
+    dependencies: readonly string[],
+    options: ConditionOptions = {}
+  ): GPUCommandGraphCPUCondition<Parameters> | undefined {
+    const track = options.track ?? this.skipUnchanged;
+    const maySuppress =
+      this.maySuppressMasks && dependencies.some(key => key.startsWith('selection:'));
+    if (!track && !maySuppress && !options.gate) return undefined;
+
+    const observed = new Map<string, number>();
+    let hasRun = false;
+    return {
+      id: `${nodeId}/skip`,
+      source: 'cpu',
+      evaluate: () => {
+        if (options.gate && !options.gate()) return false;
+        if (
+          this.suppressedSelectionKey !== undefined &&
+          dependencies.includes(this.suppressedSelectionKey)
+        ) {
+          return false;
+        }
+        if (!track) return true;
+        let changed = !hasRun;
+        hasRun = true;
+        for (const key of [ALL_KEY, ...dependencies]) {
+          const generation = this.generations.get(key) ?? 0;
+          if (observed.get(key) !== generation) {
+            observed.set(key, generation);
+            changed = true;
+          }
+        }
+        return changed;
+      }
+    };
+  }
+
+  /** Adds an operation, attaching one skip condition per command node it expands to. */
+  private addConditioned(
+    node: GPUNode<Parameters>,
+    dependencies: readonly string[],
+    options?: ConditionOptions
+  ): void {
+    addConditionedNodes(this.graph, node, nodeId =>
+      this.createCondition(nodeId, dependencies, options)
+    );
+  }
+
+  /** Generation keys of the effective mask that leaves out one dimension. */
+  private getMaskDependencies(excludedDimensionId?: string): string[] {
+    const keys = this.dimensions
+      .filter(dimension => dimension.id !== excludedDimensionId)
+      .map(dimension => selectionKey(dimension.id));
+    if (this.liveMask) keys.push(LIVE_KEY);
+    return keys;
+  }
+
+  /** Generation keys of everything a view's output depends on. */
+  private getViewDependencies(view: GPUCrossfilterView): string[] {
+    const dependencies = this.getMaskDependencies(
+      excludesOwnSelection(view) ? view.dimension : undefined
+    );
+    if (view.kind === 'histogram') {
+      // A histogram also reads its own dimension's source values, and switches between paths.
+      if (view.dimension !== undefined) dependencies.push(contentKey(view.dimension));
+      dependencies.push(viewKey(view.id));
+    }
+    return dependencies;
+  }
+
+  /** Reserves a source-aligned mask, persistent when nodes that write it may be skipped. */
+  private createMaskLike(id: string, template: GPUCrossfilterMask): GPUCrossfilterMask {
+    return createMaskLike(
+      this.graph,
+      id,
+      template,
+      this.skipUnchanged ? this.ownedBuffers : undefined
+    );
+  }
+
   /** Computes and caches leave-one-dimension-out masks for linked distribution views. */
   private getEffectiveMask(view: GPUCrossfilterView): GPUCrossfilterMask | undefined {
-    const excludesOwnSelection =
-      view.dimension !== undefined &&
-      (view.includeOwnSelection === false ||
-        (view.includeOwnSelection !== true &&
-          (view.kind === 'histogram' || view.kind === 'group')));
-    if (!excludesOwnSelection || !view.dimension) return this.mask;
+    if (!excludesOwnSelection(view) || !view.dimension) return this.mask;
     if (this.excludedDimensionMasks.has(view.dimension)) {
       return this.excludedDimensionMasks.get(view.dimension);
     }
@@ -342,12 +615,16 @@ export class GPUCrossfilter<Parameters = void> {
       return undefined;
     }
 
-    const output = createMaskLike(
-      this.graph,
+    const output = this.createMaskLike(
       `${this.id}/controller/mask/without/${view.dimension}`,
       this.mask
     );
-    this.composeMasks(`${this.id}/controller/compose-without/${view.dimension}`, inputs, output);
+    this.composeMasks(
+      `${this.id}/controller/compose-without/${view.dimension}`,
+      inputs,
+      output,
+      this.getMaskDependencies(view.dimension)
+    );
     this.excludedDimensionMasks.set(view.dimension, output);
     return output;
   }
@@ -358,15 +635,22 @@ export class GPUCrossfilter<Parameters = void> {
     mask: GPUCrossfilterMask | undefined
   ): void {
     const id = `${this.id}/view/${view.id.length}:${view.id}`;
+    const dependencies = this.getViewDependencies(view);
+    // While a cube answers this view, its exact path idles.
+    const options: ConditionOptions | undefined = this.cubesEnabled
+      ? {gate: () => !this.servedViewIds.has(view.id)}
+      : undefined;
     if (view.edges !== undefined) {
-      this.graph.add(
+      this.addConditioned(
         new GPUHistogram({
           id,
           input: view.input,
           output: view.output,
           edges: view.edges,
           mask
-        })
+        }),
+        dependencies,
+        options
       );
       return;
     }
@@ -379,39 +663,45 @@ export class GPUCrossfilter<Parameters = void> {
         view.input.format,
         2
       ) as GraphDataView<typeof view.input.format>;
-      this.graph.add(
+      this.addConditioned(
         new GPUReduction({
           id: `${id}/extent`,
           input: view.input,
           mask: this.liveMask,
           output: extent,
           operation: 'extent'
-        })
+        }),
+        dependencies,
+        options
       );
       domain = extent;
     }
-    this.graph.add(
+    this.addConditioned(
       new GPUHistogram({
         id,
         input: view.input,
         output: view.output,
         domain,
         mask
-      })
+      }),
+      dependencies,
+      options
     );
   }
 
   /** Adds a one-row count of rows passing the effective selection. */
   private addCountView(view: GPUCrossfilterCountView, mask: GPUCrossfilterMask | undefined): void {
-    const selectionMask = mask ?? this.createAllRowsMask(view.id);
+    const dependencies = this.getViewDependencies(view);
+    const selectionMask = mask ?? this.createAllRowsMask(view.id, dependencies);
     this.viewMasks.set(view.id, selectionMask);
-    this.graph.add(
+    this.addConditioned(
       new GPUReduction({
         id: `${this.id}/view/${view.id.length}:${view.id}`,
         input: selectionMask,
         output: view.output,
         operation: 'sum'
-      })
+      }),
+      dependencies
     );
   }
 
@@ -422,7 +712,9 @@ export class GPUCrossfilter<Parameters = void> {
   private composeMasks(
     id: string,
     inputs: readonly GPUCrossfilterMask[],
-    output: GPUCrossfilterMask
+    output: GPUCrossfilterMask,
+    dependencies: readonly string[],
+    options?: ConditionOptions
   ): void {
     const maximumInputs = Math.max(
       2,
@@ -438,35 +730,40 @@ export class GPUCrossfilter<Parameters = void> {
           next.push(group[0]);
           continue;
         }
+        // Intermediate masks live and die within one composition, so transient storage is safe.
         const partial = createMaskLike(this.graph, `${id}/partial-${level}-${first}`, output);
-        this.graph.add(
-          new GPUMask({id: `${id}/partial-${level}-${first}`, inputs: group, output: partial})
+        this.addConditioned(
+          new GPUMask({id: `${id}/partial-${level}-${first}`, inputs: group, output: partial}),
+          dependencies,
+          options
         );
         next.push(partial);
       }
       remaining = next;
       level++;
     }
-    this.graph.add(new GPUMask({id, inputs: remaining, output}));
+    this.addConditioned(new GPUMask({id, inputs: remaining, output}), dependencies, options);
   }
 
   /** Adds source-aligned masked counts or floating-point grouped statistics. */
   private addGroupView(view: GPUCrossfilterGroupView, mask: GPUCrossfilterMask | undefined): void {
     const id = `${this.id}/view/${view.id.length}:${view.id}`;
+    const dependencies = this.getViewDependencies(view);
     if (!isGroupStatisticView(view)) {
-      this.graph.add(
+      this.addConditioned(
         new GPUGroupAggregation({
           id,
           keys: view.keys,
           output: view.output,
           operation: 'count',
           mask
-        })
+        }),
+        dependencies
       );
       return;
     }
 
-    this.graph.add(
+    this.addConditioned(
       new GPUGroupAggregation({
         id,
         keys: view.keys,
@@ -474,7 +771,8 @@ export class GPUCrossfilter<Parameters = void> {
         output: view.output,
         operation: view.operation,
         mask
-      })
+      }),
+      dependencies
     );
   }
 
@@ -483,9 +781,10 @@ export class GPUCrossfilter<Parameters = void> {
     view: GPUCrossfilterVisibilityView,
     mask: GPUCrossfilterMask | undefined
   ): void {
-    const selectionMask = mask ?? this.createAllRowsMask(view.id);
+    const dependencies = this.getViewDependencies(view);
+    const selectionMask = mask ?? this.createAllRowsMask(view.id, dependencies);
     this.viewMasks.set(view.id, selectionMask);
-    this.graph.add(
+    this.addConditioned(
       new GPUVisibilityWorkflow({
         id: `${this.id}/view/${view.id.length}:${view.id}`,
         predicates: [{kind: 'selection', mask: selectionMask}],
@@ -494,54 +793,284 @@ export class GPUCrossfilter<Parameters = void> {
         outputMask: view.outputMask,
         sourceIds: view.sourceIds,
         firstSourceIndex: view.firstSourceIndex
-      })
+      }),
+      dependencies
     );
   }
 
   /** Publishes one effective source-aligned view mask without transferring GPU ownership. */
   private addMaskView(view: GPUCrossfilterMaskView, mask: GPUCrossfilterMask | undefined): void {
-    const selectionMask = mask ?? this.createAllRowsMask(view.id);
+    const dependencies = this.getViewDependencies(view);
+    const selectionMask = mask ?? this.createAllRowsMask(view.id, dependencies);
     if (selectionMask !== view.output) {
-      this.graph.add(
+      this.addConditioned(
         new GPUMask({
           id: `${this.id}/view/${view.id.length}:${view.id}`,
           inputs: [selectionMask],
           output: view.output
-        })
+        }),
+        dependencies
       );
     }
     this.viewMasks.set(view.id, view.output);
   }
 
   /** Creates an all-rows predicate using only source-aligned GPU mask operations. */
-  private createAllRowsMask(viewId: string): GPUCrossfilterMask {
+  private createAllRowsMask(viewId: string, dependencies: readonly string[]): GPUCrossfilterMask {
     const id = `${this.id}/controller/mask/view/${viewId}/all`;
     const nodeId = `${this.id}/controller/view/${viewId}/all`;
     const firstMask = this.selections.values().next().value!.mask;
     if (this.liveMask) {
-      const live = createMaskLike(this.graph, id, firstMask);
-      this.graph.add(new GPUMask({id: nodeId, inputs: [this.liveMask], output: live}));
+      const live = this.createMaskLike(id, firstMask);
+      this.addConditioned(
+        new GPUMask({id: nodeId, inputs: [this.liveMask], output: live}),
+        dependencies
+      );
       return live;
     }
+    // `m OR NOT m` is all ones for any contents, so this mask depends on no selection.
     const inverse = createMaskLike(this.graph, `${id}-inverse`, firstMask);
-    const output = createMaskLike(this.graph, id, firstMask);
-    this.graph.add(
+    const output = this.createMaskLike(id, firstMask);
+    this.addConditioned(
       new GPUMask({
         id: `${nodeId}/not`,
         inputs: [firstMask],
         output: inverse,
         operation: 'not'
-      })
+      }),
+      dependencies
     );
-    this.graph.add(
+    this.addConditioned(
       new GPUMask({
         id: `${nodeId}/compose`,
         inputs: [firstMask, inverse],
         output,
         operation: 'or'
-      })
+      }),
+      dependencies
     );
     return output;
+  }
+
+  /** Whether a view can be the active cube view: a histogram of a range dimension's own input. */
+  private isCubeCandidate(view: GPUCrossfilterView): view is GPUCrossfilterHistogramView {
+    if (view.kind !== 'histogram' || view.dimension === undefined) return false;
+    const dimension = this.dimensions.find(candidate => candidate.id === view.dimension);
+    return (
+      dimension?.kind === 'range' &&
+      dimension.input === view.input &&
+      dimension.exclusiveMaximum !== true
+    );
+  }
+
+  /** Whether `linked` reads the brush of `active` and so is answered from a cube. */
+  private isCubeLinked(
+    active: GPUCrossfilterHistogramView,
+    linked: GPUCrossfilterView
+  ): linked is GPUCrossfilterHistogramView {
+    return (
+      linked.kind === 'histogram' &&
+      linked.id !== active.id &&
+      !(linked.dimension === active.dimension && excludesOwnSelection(linked))
+    );
+  }
+
+  /** Rejects cubes that exceed the device's storage binding or buffer size. */
+  private validateCubeMemory(): void {
+    const {maxStorageBufferBindingSize, maxBufferSize} = this.graph.device.limits;
+    for (const active of this.views) {
+      if (!this.isCubeCandidate(active)) continue;
+      for (const linked of this.views) {
+        if (!this.isCubeLinked(active, linked)) continue;
+        const byteLength =
+          getHistogramCubeCellCount(active.output.length, linked.output.length) *
+          Uint32Array.BYTES_PER_ELEMENT;
+        if (byteLength > maxStorageBufferBindingSize || byteLength > maxBufferSize) {
+          throw new Error(
+            `${this.id} cube "${active.id}" x "${linked.id}" needs ${byteLength} bytes, above the device limit`
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Recomputes which histogram views a cube serves and whether the brushed dimension's mask passes
+   * may idle, then marks views whose output path changed so their next owner rewrites them.
+   */
+  private updateCubeState(): void {
+    if (!this.cubesEnabled) return;
+    const served = new Set<string>();
+    let suppressedKey: string | undefined;
+    const active = this.views.find(view => view.id === this.activeViewId);
+    if (
+      active &&
+      this.isCubeCandidate(active) &&
+      active.dimension !== undefined &&
+      this.brushActive.get(active.dimension)
+    ) {
+      for (const view of this.views) {
+        if (this.isCubeLinked(active, view)) served.add(view.id);
+      }
+      // Idle the active dimension's masks only when every consumer of its brush is cube-served.
+      const everyConsumerServed = this.views.every(
+        view =>
+          served.has(view.id) || (view.dimension === active.dimension && excludesOwnSelection(view))
+      );
+      if (this.maySuppressMasks && everyConsumerServed) {
+        suppressedKey = selectionKey(active.dimension);
+      }
+    }
+    for (const view of this.views) {
+      if (served.has(view.id) !== this.servedViewIds.has(view.id)) {
+        this.bumpGeneration(viewKey(view.id));
+      }
+    }
+    this.servedViewIds = served;
+    this.suppressedSelectionKey = suppressedKey;
+  }
+
+  /** Adds the cube build and readout nodes for every (active candidate, linked view) pair. */
+  private addHistogramCubes(): void {
+    const histograms = this.views.filter(
+      (view): view is GPUCrossfilterHistogramView => view.kind === 'histogram'
+    );
+    const candidates = histograms.filter(view => this.isCubeCandidate(view));
+    if (candidates.length === 0) return;
+
+    // Automatic domains need an extent the cube kernels and the brush readout can read.
+    const extents = new Map<string, GraphDataView>();
+    for (const view of histograms) {
+      if (view.edges !== undefined || view.domain !== 'auto') continue;
+      const extent = createOwnedView(
+        this.graph,
+        `${this.id}/cube/${view.id.length}:${view.id}/extent`,
+        view.input.format,
+        2,
+        this.ownedBuffers
+      );
+      extents.set(view.id, extent);
+      this.addConditioned(
+        new GPUReduction({
+          id: `${this.id}/cube/${view.id.length}:${view.id}/extent`,
+          input: view.input,
+          ...(this.liveMask ? {mask: this.liveMask} : {}),
+          output: extent as GraphDataView<typeof view.input.format>,
+          operation: 'extent'
+        }),
+        [
+          ...(this.liveMask ? [LIVE_KEY] : []),
+          ...(view.dimension !== undefined ? [contentKey(view.dimension)] : [])
+        ],
+        {track: true, gate: () => this.activeViewId !== undefined}
+      );
+    }
+
+    const cubeRowCounts = new Map<string, number>();
+    for (const active of candidates) {
+      for (const linked of histograms) {
+        if (!this.isCubeLinked(active, linked)) continue;
+        cubeRowCounts.set(
+          linked.id,
+          Math.max(
+            cubeRowCounts.get(linked.id) ?? 0,
+            getHistogramCubeCellCount(active.output.length, linked.output.length)
+          )
+        );
+      }
+    }
+    const cubes = new Map<string, GraphDataView<'uint32'>>();
+    for (const [viewId, rowCount] of cubeRowCounts) {
+      cubes.set(
+        viewId,
+        createOwnedView(
+          this.graph,
+          `${this.id}/cube/${viewId.length}:${viewId}/cells`,
+          'uint32',
+          rowCount,
+          this.ownedBuffers
+        )
+      );
+    }
+
+    for (const active of candidates) {
+      for (const linked of histograms) {
+        if (!this.isCubeLinked(active, linked)) continue;
+        this.addHistogramCubePair(active, linked, cubes.get(linked.id)!, extents);
+      }
+    }
+  }
+
+  /** Adds the mask, build, and readout nodes of one cube. */
+  private addHistogramCubePair(
+    active: GPUCrossfilterHistogramView,
+    linked: GPUCrossfilterHistogramView,
+    cube: GraphDataView<'uint32'>,
+    extents: ReadonlyMap<string, GraphDataView>
+  ): void {
+    const activeDimension = active.dimension!;
+    const pairId = `${this.id}/cube/${active.id.length}:${active.id}/${linked.id.length}:${linked.id}`;
+    // The cube counts rows passing every selection except the active one, and except the linked
+    // view's own when the linked view excludes it.
+    const excluded = new Set([activeDimension]);
+    if (linked.dimension !== undefined && excludesOwnSelection(linked)) {
+      excluded.add(linked.dimension);
+    }
+    const maskDimensions = this.dimensions.filter(dimension => !excluded.has(dimension.id));
+    const maskInputs = [
+      ...maskDimensions.map(dimension => this.selections.get(dimension.id)!.mask),
+      ...(this.liveMask ? [this.liveMask] : [])
+    ];
+    const dependencies = [
+      ...maskDimensions.map(dimension => selectionKey(dimension.id)),
+      ...(this.liveMask ? [LIVE_KEY] : []),
+      CUBE_KEY,
+      contentKey(activeDimension),
+      ...(linked.dimension !== undefined ? [contentKey(linked.dimension)] : [])
+    ];
+    const options: ConditionOptions = {track: true, gate: () => this.activeViewId === active.id};
+
+    let mask: GPUCrossfilterMask | undefined;
+    if (maskInputs.length === 1) {
+      mask = maskInputs[0];
+    } else if (maskInputs.length > 1) {
+      // The composed mask is read only by this cube's build, which shares its condition.
+      mask = createMaskLike(this.graph, `${pairId}/mask`, this.mask);
+      this.composeMasks(`${pairId}/compose`, maskInputs, mask, dependencies, options);
+    }
+
+    const activeSide = {
+      chunks: getChunks(active.input),
+      binning: getCubeBinning(active, extents)
+    };
+    const linkedSide = {
+      chunks: getChunks(linked.input),
+      binning: getCubeBinning(linked, extents)
+    };
+    for (const node of createHistogramCubeBuildNodes(this.graph, {
+      id: pairId,
+      active: activeSide,
+      linked: linkedSide,
+      cube,
+      masks: mask ? getChunks(mask) : undefined,
+      createCondition: nodeId => this.createCondition(nodeId, dependencies, options)
+    })) {
+      this.graph.add(node);
+    }
+    this.graph.add(
+      createHistogramCubeReadoutNode(this.graph, {
+        id: pairId,
+        active: activeSide,
+        linked: linkedSide,
+        cube,
+        brushState: this.selections.get(activeDimension)!.getControlView(),
+        output: linked.output,
+        condition: this.createCondition(`${pairId}/readout`, [], {
+          track: false,
+          gate: () => this.activeViewId === active.id && this.servedViewIds.has(linked.id)
+        })
+      })
+    );
   }
 
   /** Rejects interactions after controller-owned selection buffers have been destroyed. */
@@ -550,6 +1079,66 @@ export class GPUCrossfilter<Parameters = void> {
       throw new Error(`${this.id} has been destroyed`);
     }
   }
+}
+
+/** Whether a distribution view leaves its own dimension's brush out of its result. */
+function excludesOwnSelection(view: GPUCrossfilterView): boolean {
+  return (
+    view.dimension !== undefined &&
+    (view.includeOwnSelection === false ||
+      (view.includeOwnSelection !== true && (view.kind === 'histogram' || view.kind === 'group')))
+  );
+}
+
+/** Returns source chunks in their original order. */
+function getChunks<Format extends GPUCrossfilterScalarFormat>(
+  input: GPUCrossfilterScalarInput<Format>
+): readonly GraphDataView<Format>[] {
+  return input instanceof GraphVectorView ? input.data : [input];
+}
+
+/** Describes how a histogram view bins values, reading automatic domains from their extents. */
+function getCubeBinning(
+  view: GPUCrossfilterHistogramView,
+  extents: ReadonlyMap<string, GraphDataView>
+): HistogramCubeBinning {
+  const base = {format: view.input.format, binCount: view.output.length};
+  if (view.edges !== undefined) return {...base, edges: view.edges};
+  return {...base, domain: view.domain === 'auto' ? extents.get(view.id)! : view.domain};
+}
+
+/** Expands an operation into command nodes and adds each with its own skip condition. */
+function addConditionedNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  node: GPUNode<Parameters>,
+  createCondition: (nodeId: string) => GPUCommandGraphCPUCondition<Parameters> | undefined
+): void {
+  for (const commandNode of expandCommandNodes(graph, node)) {
+    if (commandNode.condition || commandNode.publication) {
+      throw new Error(`${commandNode.id} cannot be skipped by a crossfilter`);
+    }
+    const condition = createCondition(commandNode.id);
+    graph.add(
+      condition ? ({...commandNode, condition} as GPUCommandNode<Parameters>) : commandNode
+    );
+  }
+}
+
+/** Resolves groups and producers to concrete command nodes, as `GPUCommandGraph.add` would. */
+function expandCommandNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  node: GPUNode<Parameters>
+): GPUCommandNode<Parameters>[] {
+  if (Array.isArray(node)) {
+    return (node as readonly GPUNode<Parameters>[]).flatMap(child =>
+      expandCommandNodes(graph, child)
+    );
+  }
+  if ('getNodes' in node) {
+    return node.getNodes().flatMap(child => expandCommandNodes(graph, child));
+  }
+  if ('getCommandNodes' in node) return [...node.getCommandNodes(graph)];
+  return [node as GPUCommandNode<Parameters>];
 }
 
 /** Narrows optional count operations away from floating-point grouped-statistic views. */
@@ -562,23 +1151,31 @@ function isGroupStatisticView(
   return view.operation !== undefined && view.operation !== 'count';
 }
 
-/** Reserves graph-owned mask storage while retaining every original vector chunk boundary. */
+/**
+ * Reserves graph-owned mask storage while retaining every original vector chunk boundary.
+ * With `ownedBuffers` the storage is persistent and zero-initialized instead of transient.
+ */
 function createMaskLike<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  template: GPUCrossfilterMask
+  template: GPUCrossfilterMask,
+  ownedBuffers?: Buffer[]
 ): GPUCrossfilterMask {
+  const createView = (viewId: string, length: number): GraphDataView<'uint32'> =>
+    ownedBuffers
+      ? createOwnedView(graph, viewId, 'uint32', length, ownedBuffers)
+      : createTransientView(graph, viewId, 'uint32', length);
   if (!(template instanceof GraphVectorView)) {
-    return createTransientView(graph, id, 'uint32', template.length);
+    return createView(id, template.length);
   }
 
   let emptyChunk: GraphDataView<'uint32'> | undefined;
   const data = template.data.map((chunk, chunkIndex) => {
     if (chunk.length === 0) {
-      emptyChunk ??= createTransientView(graph, `${id}-empty`, 'uint32', 0);
+      emptyChunk ??= createView(`${id}-empty`, 0);
       return emptyChunk;
     }
-    return createTransientView(graph, `${id}-chunk-${chunkIndex}`, 'uint32', chunk.length);
+    return createView(`${id}-chunk-${chunkIndex}`, chunk.length);
   });
 
   return new GraphVectorView({

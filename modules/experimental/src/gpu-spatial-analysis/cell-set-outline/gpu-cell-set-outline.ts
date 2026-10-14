@@ -5,9 +5,7 @@
 import {
   createTransientView,
   GPUScan,
-  GraphVectorView,
   validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -21,18 +19,19 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
 import {H3_NEIGHBOR_WGSL} from '../cell-topology/h3-neighbor-wgsl';
 import {QUADBIN_TOPOLOGY_WGSL} from '../cell-topology/cell-topology-wgsl';
-import {GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT} from '../contracts/spatial-context';
-import {GPUSegmentRingAssembly} from '../ring-assembly/index';
+import {GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT} from '../../analysis-core/contracts/spatial-context';
+import {GPUSegmentRingAssembly} from '../../analysis-core/ring-assembly/index';
 import type {
   GPUSegmentRingAssemblyInteriorSide,
   GPUSegmentRingAssemblyOutput
-} from '../ring-assembly/index';
+} from '../../analysis-core/ring-assembly/index';
 
 const OPERATION = 'GPUCellSetOutline';
 
@@ -67,12 +66,15 @@ export type GPUCellSetOutlineOutput = {
   endpoints: GraphDataView<'float32x4'>;
   /** Optional group label of the owning cell (when `groups` is an input). */
   groups?: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(requiredCount, capacity)`. */
-  count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when more segments existed than the capacity. */
-  overflow: GraphDataView<'uint32'>;
-  /** Optional one-row scalar receiving the unclamped segment count. */
-  requiredCount?: GraphDataView<'uint32'>;
+  /** Status scalars. */
+  status: {
+    /** One-row scalar receiving `min(requiredCount, capacity)`. */
+    count: GraphDataView<'uint32'>;
+    /** One-row scalar receiving 1 when more segments existed than the capacity. */
+    overflow: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped segment count. */
+    requiredCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -106,16 +108,32 @@ export type GPUCellSetOutlineProps = {
   /**
    * Optional ring assembly of the emitted segments (`GPUSegmentRingAssembly` composed after the
    * outline): closed rings in GeoArrow-style offsets plus positions, with shell and hole
-   * classification. `output.count` and `output.endpoints` (and `output.groups` when present) are the
+   * classification. `output.status.count` and `output.endpoints` (and `output.groups` when present) are the
    * assembly's inputs. The interior side is set from the family; `normalizeWinding` makes shells
    * counter-clockwise for both families.
    */
   rings?: GPUCellSetOutlineRings;
 };
 
+/**
+ * Default ring vertex tolerance of {@link GPUCellSetOutline}, in degrees: a named preset (the ring
+ * assembly itself defaults to f32 ulps of the extent) sized between the f32 round-off of decoded
+ * cell vertices and the shortest cell edge at H3 resolution 12 / Quadbin zoom 22.
+ */
+export const GPU_CELL_SET_OUTLINE_VERTEX_TOLERANCE = 5e-5;
+
 /** Ring assembly options of {@link GPUCellSetOutlineProps.rings}. */
 export type GPUCellSetOutlineRings = {
-  /** Vertex matching distance in degrees. Defaults to the assembly default (5e-5). */
+  /**
+   * Vertex matching distance in degrees. Defaults to
+   * {@link GPU_CELL_SET_OUTLINE_VERTEX_TOLERANCE} (5e-5), which is below
+   * the shortest cell edge up to H3 resolution 12 (about 8e-5 degrees) and Quadbin zoom 22, and
+   * above the f32 round-off of the shared boundary vertices (a few ulps of 180, about 1.5e-5 each).
+   * Finer cells have edges shorter than the default, so neighbouring vertices would merge: pass a
+   * tolerance of about a quarter of the shortest edge. From H3 resolution 14 or Quadbin zoom 25 on,
+   * the edges are as short as the f32 spacing of longitudes near 180 degrees, so the f32 vertices
+   * themselves are not distinct and outlines of such cells are not supported.
+   */
   vertexTolerance?: number;
   /** Orient rings of either family: shells counter-clockwise, holes clockwise. Default false. */
   normalizeWinding?: boolean;
@@ -143,7 +161,7 @@ export type GPUCellSetOutlineRings = {
  * antimeridian keep `cellToBoundary` longitudes, so segments may span more than 180 degrees of
  * longitude there. Nothing is submitted or read back.
  *
- * Draw `output.endpoints` as line segments (`count` rows), or set `rings` to chain them into closed
+ * Draw `output.endpoints` as line segments (`output.status.count` rows), or set `rings` to chain them into closed
  * rings (`GPUSegmentRingAssembly`).
  *
  * Consumes H3 or Quadbin cell keys only, so it takes no `spatialContext`. Its output segments are
@@ -174,11 +192,6 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     this.edgeSlots = GPU_CELL_SET_OUTLINE_MAXIMUM_EDGES[props.family];
     this.interiorSide = props.family === 'h3' ? 'left' : 'right';
     const {output} = props;
-    for (const [name, view] of Object.entries({...props, ...output})) {
-      if (name !== 'output' && (view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     if (rows < 1) {
@@ -189,9 +202,9 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['count', props.count],
-      ['output.count', output.count],
-      ['output.overflow', output.overflow],
-      ['output.requiredCount', output.requiredCount]
+      ['output.status.count', output.status.count],
+      ['output.status.overflow', output.status.overflow],
+      ['output.status.requiredCount', output.status.requiredCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -397,9 +410,9 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
       ? new GPUSegmentRingAssembly({
           id: `${id}-rings`,
           endpoints: output.endpoints,
-          count: output.count,
+          count: output.status.count,
           groups: output.groups,
-          vertexTolerance: props.rings.vertexTolerance,
+          vertexTolerance: props.rings.vertexTolerance ?? GPU_CELL_SET_OUTLINE_VERTEX_TOLERANCE,
           normalizeWinding: props.rings.normalizeWinding,
           interiorSide: this.interiorSide,
           // Outline segments are longitude/latitude degrees: compare turns with cos(latitude).
@@ -426,9 +439,11 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
         requiredCount: total,
         output: {
           ids: output.rows,
-          count: output.count,
-          overflow: output.overflow,
-          requiredCount: output.requiredCount
+          status: {
+            count: output.status.count,
+            overflow: output.status.overflow,
+            requiredCount: output.status.requiredCount
+          }
         }
       }),
       ...ringNodes
@@ -443,9 +458,9 @@ function getOutputViews(output: GPUCellSetOutlineOutput) {
     output.edgeIndices,
     output.endpoints,
     output.groups,
-    output.count,
-    output.overflow,
-    output.requiredCount
+    output.status.count,
+    output.status.overflow,
+    output.status.requiredCount
   ];
 }
 

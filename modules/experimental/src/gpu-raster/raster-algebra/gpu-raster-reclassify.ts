@@ -21,6 +21,8 @@ import {
 import {GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH} from './reclassify-parameters';
 
 const OPERATION = 'GPURasterReclassify';
+/** Workgroup size of the privatized classify kernel; its WGSL strides depend on it. */
+const CLASSIFY_WORKGROUP_SIZE = 256;
 
 /** Caller-owned outputs of {@link GPURasterReclassify}. Provide any non-empty subset. */
 export type GPURasterReclassifyOutput = {
@@ -206,6 +208,8 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
         // Class counts accumulate in a workgroup-private table (merged once per non-empty class)
         // when it fits, which takes the per-cell global atomic off a handful of hot addresses.
         guardIndex: !privatizeCounts,
+        // The slot-clearing and merge strides below assume this size.
+        workgroupSize: privatizeCounts ? CLASSIFY_WORKGROUP_SIZE : undefined,
         declarations: `const MAXIMUM_BREAK_COUNT: u32 = ${maximumBreakCount}u;
 ${privatizeCounts ? `var<workgroup> localCounts: array<atomic<u32>, ${maximumBreakCount + 1}>;` : ''}
 const NO_DATA_CLASS: u32 = 0xffffffffu;
@@ -213,7 +217,7 @@ ${getRasterAlgebraValueWGSL(props.noDataValue)}
 ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
         body: `${
           privatizeCounts
-            ? `for (var slot = localInvocationIndex; slot <= MAXIMUM_BREAK_COUNT; slot += 256u) {
+            ? `for (var slot = localInvocationIndex; slot <= MAXIMUM_BREAK_COUNT; slot += ${CLASSIFY_WORKGROUP_SIZE}u) {
     atomicStore(&localCounts[slot], 0u);
   }
   workgroupBarrier();
@@ -245,7 +249,7 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
   }
   }
   workgroupBarrier();
-  for (var slot = localInvocationIndex; slot <= MAXIMUM_BREAK_COUNT; slot += 256u) {
+  for (var slot = localInvocationIndex; slot <= MAXIMUM_BREAK_COUNT; slot += ${CLASSIFY_WORKGROUP_SIZE}u) {
     let partial = atomicLoad(&localCounts[slot]);
     if (partial != 0u) {
       atomicAdd(&countsOut[countsOutOffset + slot], partial);

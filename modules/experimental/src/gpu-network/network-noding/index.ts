@@ -2,10 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUNetworkNoding, GPU_NETWORK_NODING_NONE} from './gpu-network-noding';
+export {
+  GPUNetworkNoding,
+  getGPUNetworkNodingMaximumIntersectionCapacity,
+  GPU_NETWORK_NODING_NONE
+} from './gpu-network-noding';
 export type {
-  GPUNetworkNodingCSR,
   GPUNetworkNodingEdges,
   GPUNetworkNodingNodes,
-  GPUNetworkNodingProps
+  GPUNetworkNodingOutput,
+  GPUNetworkNodingProps,
+  GPUNetworkNodingTopology
 } from './gpu-network-noding';

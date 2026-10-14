@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
-import {type GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer
+} from '@luma.gl/gpgpu/gpu-core';
 import type {
   GPUFloat32Positions,
   GPUFloat64Positions,
@@ -26,10 +30,11 @@ import {
   validateRowView,
   validateSeparateBuffers
 } from './geospatial-utils';
+import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../gpu-spatial-analysis/contracts/spatial-context';
+} from '../analysis-core/contracts/spatial-context';
 
 type GPUPairwisePointDistanceBaseProps = {
   /** Prefix for generated graph-node IDs. */
@@ -68,7 +73,7 @@ export type GPUPairwisePointDistanceProps = GPUPairwisePointDistanceBaseProps &
  *
  * Planar only: longitude/latitude positions are rejected at construction.
  */
-export class GPUPairwisePointDistance {
+export class GPUPairwisePointDistance implements GPUCommandNodeProducer {
   readonly id: string;
   readonly left: GPUFloat32Positions | GPUFloat64Positions;
   readonly right: GPUFloat32Positions | GPUFloat64Positions;
@@ -95,8 +100,16 @@ export class GPUPairwisePointDistance {
     validateSeparateBuffers(this.output, [this.left, this.right], this.id);
   }
 
-  /** Adds one distance node per non-empty input chunk to the target graph. */
-  addToGraph<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+  /** Returns one distance node per non-empty input chunk, for `graph.add(contributor)`. */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    // The shared geospatial pass helper schedules through `graph.addComputePass`, so the
+    // adapter collects its nodes instead of adding them.
+    return captureGraphCommandNodes(graph, () => this.addNodes(graph));
+  }
+
+  private addNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void {
     assertGraphOwnership(graph, [this.left, this.right, this.output], this.id);
     const leftChunks = getRowChunks(this.left);
     const rightChunks = getRowChunks(this.right);

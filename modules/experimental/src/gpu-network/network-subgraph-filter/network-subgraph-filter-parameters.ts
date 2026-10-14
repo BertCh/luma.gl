@@ -7,8 +7,8 @@ export const GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE = 4;
 
 /** Word indices of the optional `counts` output. */
 export const GPU_NETWORK_SUBGRAPH_FILTER_COUNT_WORD = {
-  /** Vertices with a nonzero `vertexMask`. */
-  liveVertexCount: 0,
+  /** Nodes with a nonzero `nodeMask`. */
+  liveNodeCount: 0,
   /** CSR slots with a nonzero `edgeMask`. */
   liveSlotCount: 1,
   /** Live slots u -> u. */
@@ -33,8 +33,8 @@ export const GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH = 4;
  * `GPUTimeWindowFilter` windows: `start <= time <= end`.
  */
 export type GPUNetworkSubgraphFilterState = {
-  /** One range per `vertexColumns` entry, in order. */
-  vertexRanges?: readonly (readonly [number, number] | null | undefined)[];
+  /** One range per `nodeColumns` entry, in order. */
+  nodeRanges?: readonly (readonly [number, number] | null | undefined)[];
   /** One range per `edgeColumns` entry, in order. */
   edgeRanges?: readonly (readonly [number, number] | null | undefined)[];
   /** Closed window over the f32 `edgeTimes` column. */
@@ -43,8 +43,8 @@ export type GPUNetworkSubgraphFilterState = {
 
 /** Shape needed to size and pack the parameter view. */
 export type GPUNetworkSubgraphFilterParameterLayout = {
-  /** Number of vertex columns. */
-  vertexColumnCount: number;
+  /** Number of node columns. */
+  nodeColumnCount: number;
   /** Number of edge columns. */
   edgeColumnCount: number;
   /** Whether an f32 edge time column exists. */
@@ -56,7 +56,7 @@ export function getGPUNetworkSubgraphFilterParameterLength(
   layout: GPUNetworkSubgraphFilterParameterLayout
 ): number {
   return (
-    (layout.vertexColumnCount + layout.edgeColumnCount + (layout.hasEdgeTimes ? 1 : 0)) *
+    (layout.nodeColumnCount + layout.edgeColumnCount + (layout.hasEdgeTimes ? 1 : 0)) *
     GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE
   );
 }
@@ -65,7 +65,7 @@ export function getGPUNetworkSubgraphFilterParameterLength(
  * Packs ranges into the float32 layout the contributor reads.
  *
  * Records of {@link GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE} floats `[min, max, enabled, 0]`:
- * vertex columns first, then edge columns, then the f32 edge time window. Write the result into the
+ * node columns first, then edge columns, then the f32 edge time window. Write the result into the
  * caller-owned parameter buffer between encodings; nothing recompiles.
  *
  * Missing, `null` and `undefined` entries are disabled predicates.
@@ -83,7 +83,7 @@ export function getGPUNetworkSubgraphFilterParameterValues(
   const stride = GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE;
   target.fill(0, 0, getGPUNetworkSubgraphFilterParameterLength(layout));
   const records: (readonly [number, number] | null | undefined)[] = [];
-  for (let i = 0; i < layout.vertexColumnCount; i++) records.push(state.vertexRanges?.[i]);
+  for (let i = 0; i < layout.nodeColumnCount; i++) records.push(state.nodeRanges?.[i]);
   for (let i = 0; i < layout.edgeColumnCount; i++) records.push(state.edgeRanges?.[i]);
   if (layout.hasEdgeTimes) records.push(state.edgeTimeWindow);
   for (const [recordIndex, range] of records.entries()) {
@@ -97,7 +97,7 @@ export function getGPUNetworkSubgraphFilterParameterValues(
 
 /** Decoded `counts` output. */
 export type GPUNetworkSubgraphFilterCounts = {
-  liveVertexCount: number;
+  liveNodeCount: number;
   liveSlotCount: number;
   selfLoopSlotCount: number;
   liveEdgeCount: number;
@@ -109,7 +109,7 @@ export function decodeGPUNetworkSubgraphFilterCounts(
 ): GPUNetworkSubgraphFilterCounts {
   const word = GPU_NETWORK_SUBGRAPH_FILTER_COUNT_WORD;
   return {
-    liveVertexCount: words[word.liveVertexCount],
+    liveNodeCount: words[word.liveNodeCount],
     liveSlotCount: words[word.liveSlotCount],
     selfLoopSlotCount: words[word.selfLoopSlotCount],
     liveEdgeCount: words[word.liveEdgeCount]

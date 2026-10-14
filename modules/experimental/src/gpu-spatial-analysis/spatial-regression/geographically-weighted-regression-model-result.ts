@@ -5,7 +5,7 @@
 import {
   createGPURegressionModelResult,
   type GPURegressionModelResult
-} from '../contracts/model-result';
+} from '../../analysis-core/contracts/model-result';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH

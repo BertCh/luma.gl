@@ -4,37 +4,46 @@
 
 import {
   GPUHistogram,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
+  type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
+  type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../index';
+import type {GPURasterBand, GPURasterMetadata} from '../types';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid,
-  validateTerrainSettings
-} from '../../gpu-terrain/terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateParameterTarget,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid,
+  validateRasterGridAxisAligned,
+  validateRasterParameters
+} from '../raster-band-utils';
 import {
   createContributorTransientView,
   getRasterGridWGSL,
-  validateRasterCellSizeMode,
-  writeRasterGridSettings,
-  type RasterGridSettings
+  writeRasterGridPrefix
 } from './raster-grid-utils';
 import {
   createRasterIterationFinalizeNode,
+  createRasterIterationState,
+  getRasterIterationCondition,
   type RasterIterationState,
   createRasterTiledRelaxation,
   createRasterTiledRelaxationNodes,
+  getGPURasterRelaxationContinuationStateLength,
   getRasterRelaxationTileWGSL,
   validateRasterIterations
 } from './raster-relaxation';
@@ -42,60 +51,148 @@ import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common'
 
 const OPERATION = 'GPUCostDistance';
 const DEFAULT_MAXIMUM_ITERATIONS = 512;
+/**
+ * Default iterations per execution with `continuation`: 64 unrolled rounds are 16 gate nodes and
+ * about 80 graph nodes instead of 640, and two executions cover the 96 plain tiled rounds that
+ * precede the first directional sweep, so even a corridor needs a handful of submissions.
+ */
+const DEFAULT_CONTINUATION_MAXIMUM_ITERATIONS = 64;
 const DEFAULT_SWEEP_AFTER_ITERATION = 96;
 
-/** Number of float32 values read from {@link GPUCostDistanceProps.settings}. */
+/** Number of float32 values read from {@link GPUCostDistanceProps.parameters}. */
 export const GPU_COST_DISTANCE_PARAMETER_LENGTH = 8;
 
 /** Sentinel written for "no back-link" (unreached or impassable) and "no band". */
 export const GPU_COST_DISTANCE_NONE = 0xffffffff;
 
 /**
- * Back-link written when the iteration budget ran out before the link could be certified: every
+ * Back-link, band and band count written when the iteration budget ran out before the value
+ * could be certified (costs are then NaN, see {@link GPUCostDistanceOutput.costs}). Back-links: every
  * passable cell when the cost relaxation did not converge (its cost may still drop, and an
  * infinite cost may still become finite), and a zero-cost plateau cell whose tie level did not
  * converge. A converged run never writes it.
  */
 export const GPU_COST_DISTANCE_UNRESOLVED = 0xfffffffe;
 
-/** CPU description of the settings packed by {@link getGPUCostDistanceParameterValues}. */
-export type GPUCostDistanceSettings = RasterGridSettings & {
+/**
+ * CPU description of the settings packed by {@link getGPUCostDistanceParameterValues}. Cell size
+ * and latitude band come from the grid passed next to it.
+ */
+export type GPUCostDistanceSettings = {
   /** Candidate costs above this value stay unreached. Defaults to `Infinity`. */
   costLimit?: number;
 };
 
 /**
  * Packs settings into the 8-float layout read by {@link GPUCostDistance}:
- * `[cellSizeX, cellSizeY, northEdge, southEdge, costLimit, 0, 0, 0]`.
+ * `[cellSizeX, cellSizeY, northEdge, southEdge, costLimit, 0, 0, 0]`, with the cell size and the
+ * row-edge world y taken from `grid`.
  */
 export function getGPUCostDistanceParameterValues(
   settings: GPUCostDistanceSettings,
+  grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_COST_DISTANCE_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_COST_DISTANCE_PARAMETER_LENGTH) {
-    throw new Error('Cost distance settings target must hold 8 values');
-  }
+  validateParameterTarget(
+    'getGPUCostDistanceParameterValues',
+    target,
+    GPU_COST_DISTANCE_PARAMETER_LENGTH
+  );
   target.fill(0, 0, GPU_COST_DISTANCE_PARAMETER_LENGTH);
-  writeRasterGridSettings(target, settings);
+  writeRasterGridPrefix(target, grid);
   target[4] = settings.costLimit ?? Infinity;
   return target;
 }
 
+/** One-row status words of {@link GPUCostDistance}. */
+export type GPUCostDistanceStatus = {
+  /**
+   * One row: 1 when relaxation reached a fixpoint, 0 when `maximumIterations` stopped it. With
+   * `output.backLinks`, also 0 when `maximumTieIterations` stopped the tie phase; the affected
+   * back-links then read `GPU_COST_DISTANCE_UNRESOLVED`.
+   */
+  converged?: GraphDataView<'uint32'>;
+  /** One row: number of relaxation iterations executed. */
+  iterationCount?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Caller-owned state that lets {@link GPUCostDistance} spread one relaxation over several
+ * executions (submissions) instead of unrolling every round into one graph.
+ *
+ * WebGPU has no GPU-side command loop, so rounds beyond the unrolled count can only run in a later
+ * submission. The progress must outlive an execution, and graph transients may be aliased by the
+ * lifetime planner, so both views must be imported buffers that nothing else writes.
+ */
+export type GPUCostDistanceContinuation = {
+  /**
+   * `uint32` state of {@link getGPURasterRelaxationContinuationStateLength} words (loop status,
+   * restart word, tile activity). Create it zero-filled: zero means "no previous execution".
+   * To force a restart, write a nonzero value at element
+   * {@link GPU_RASTER_RELAXATION_RESTART_WORD} before the execution; the GPU clears it.
+   */
+  state: GraphDataView<'uint32'>;
+  /**
+   * `float32` working costs, one per cell, distinct from `output.costs`. They carry the partial
+   * result between executions, while `output.costs` is rewritten each execution (NaN where
+   * unresolved, see {@link GPUCostDistanceOutput.costs}).
+   */
+  values: GraphDataView<'float32'>;
+};
+
+/** Caller-owned outputs of {@link GPUCostDistance}. */
+export type GPUCostDistanceOutput = {
+  /**
+   * Cost per cell, `+Infinity` when unreached or impassable. Its length must equal
+   * `grid.width * grid.height`. When `maximumIterations` stopped the cost relaxation before a
+   * fixpoint, every passable cell is NaN (unresolved: its cost might still drop, and an unreached
+   * cell might still be reached), so a truncated run never reads as a converged one (library
+   * rule 9). A converged run never writes NaN.
+   */
+  costs: GraphDataView<'float32'>;
+  /**
+   * Optional D8 code (ESRI power of two) of the move from a cell toward the next cell on a
+   * least-cost path back to a source. 0 at cells reached as a source,
+   * `GPU_COST_DISTANCE_NONE` when unreached or impassable, and `GPU_COST_DISTANCE_UNRESOLVED`
+   * when an iteration budget ran out first (see that constant), so a truncated run never
+   * produces a link that reads as a source or a path that looks complete.
+   *
+   * Cycle-safe across zero-cost plateaus: a cell links to its smallest-direction strictly cheaper
+   * tight neighbor when one exists; otherwise (it was reached only across zero-cost edges) to the
+   * smallest-direction equal-cost zero-cost neighbor exactly one tie level closer to a strict entry
+   * or a source. Cost never increases along links and the level strictly decreases at equal cost, so
+   * following links always reaches a source. The tie phase runs only when this view is requested.
+   */
+  backLinks?: GraphDataView<'uint32'>;
+  /**
+   * Optional band per cell: cost in `(costBreaks[i - 1], costBreaks[i]]`, `GPU_COST_DISTANCE_NONE`
+   * beyond the last break or unreached, and `GPU_COST_DISTANCE_UNRESOLVED` where the cost is
+   * unresolved (see `costs`).
+   */
+  bands?: GraphDataView<'uint32'>;
+  /**
+   * Optional cell count per band (composes `GPUHistogram`). Every count is
+   * `GPU_COST_DISTANCE_UNRESOLVED` when the cost relaxation did not converge, since unresolved
+   * cells belong to no band yet.
+   */
+  bandCounts?: GraphDataView<'uint32'>;
+  /** Optional one-row convergence and iteration-count words. */
+  status?: GPUCostDistanceStatus;
+};
+
 /**
  * Properties for {@link GPUCostDistance}.
  *
- * Compile-time: `width`, `height`, `cellSizeMode`, `maxIterations`, the capacity of `sources`, the
+ * Compile-time: `grid` size, `cellSizeMode`, `maximumIterations`, the capacity of `sources`, the
  * friction band's format and calibration, and which optional views exist. Per-frame: the contents
- * of `friction`, `settings` (cell size, latitude edges, `costLimit`), `sources`, `sourceCosts`,
- * `sourceCount`, `sourceMask`, and `bandThresholds`.
+ * of `friction`, `parameters` (cell size, latitude edges, `costLimit`), `sources`, `sourceCosts`,
+ * `sourceCount`, `sourceMask`, and `costBreaks`.
  */
 export type GPUCostDistanceProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cost-distance'`. */
   id?: string;
-  /** Grid width in cells. Compile-time. */
-  width: number;
-  /** Grid height in cells. Compile-time. */
-  height: number;
+  /** Raster grid: its width and height size the kernels. */
+  grid: GPURasterMetadata;
   /**
    * Cost per ground meter. Compile-time format and calibration; contents are per-frame. Validity,
    * nodata, scale, and offset are honored. Invalid, NaN, infinite, or negative samples are
@@ -110,10 +207,10 @@ export type GPUCostDistanceProps = {
    * non-finite are impassable like any other invalid friction.
    */
   frictionParameters?: GraphDataView<'float32'>;
-  /** Per-frame settings with at least 8 float32 values, see {@link getGPUCostDistanceParameterValues}. */
-  settings: GraphDataView<'float32'>;
+  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUCostDistanceParameterValues}. */
+  parameters: GraphDataView<'float32'>;
   /** Cell size interpretation. Compile-time. Defaults to `'uniform'`. */
-  cellSizeMode?: GPUTerrainCellSizeMode;
+  cellSizeMode?: GPURasterCellSizeMode;
   /**
    * Source cell indices (`row * width + column`). Capacity is the length (compile-time); contents
    * are per-frame. Out-of-range or impassable cells are ignored.
@@ -125,57 +222,48 @@ export type GPUCostDistanceProps = {
   sourceCount?: GraphDataView<'uint32'>;
   /** Optional per-cell mask; a nonzero cell is a source at cost 0. Per-frame contents. */
   sourceMask?: GraphDataView<'uint32'>;
-  /** Number of unrolled gated relaxation iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`. Compile-time. Defaults to 512. */
-  maxIterations?: number;
+  /**
+   * Number of unrolled gated relaxation iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`.
+   * Compile-time. Defaults to 512, or to 64 with `continuation`, where it is the budget of one
+   * execution.
+   */
+  maximumIterations?: number;
+  /**
+   * Opt-in continuation across executions, see {@link GPUCostDistanceContinuation}. Each
+   * execution resumes where the previous one stopped unconverged: it skips initialization and
+   * seeding and runs up to `maximumIterations` more rounds, with the sweep schedule following the
+   * cumulative iteration count. `output.status` reports `converged` and `iterationCount`
+   * cumulatively; `output.costs` is NaN for passable cells until the execution that converges.
+   * An execution after a converged one, or after the restart word was set, starts from scratch. A
+   * caller that changes any input (friction, parameters, sources) must set the restart word;
+   * between restarts, inputs must stay unchanged. The caller polls `converged` (a readback of its
+   * choosing) and submits again until it is 1 or its own budget ends. Not supported with
+   * `output.backLinks`. Absent, behavior is unchanged and every encoding starts from scratch.
+   */
+  continuation?: GPUCostDistanceContinuation;
   /**
    * Iteration index at which relaxation switches from plain tiled passes to a cycle of tiled and
    * directional tile sweeps (right, left, down, up). Compile-time. Defaults to 96. Plain tiled
    * passes move a front one 16x16 tile per iteration; a sweep pass carries it along a whole row or
    * column of tiles, so long corridors, serpentines, and spirals converge in far fewer iterations.
-   * Open terrain normally converges before the switch and is unaffected. Set it to `maxIterations`
+   * Open terrain normally converges before the switch and is unaffected. Set it to `maximumIterations`
    * or more to keep plain tiled passes only.
    */
   sweepAfterIteration?: number;
   /**
    * Number of unrolled gated tie-level iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`. Compile-time.
-   * Defaults to `maxIterations`. Used only when `backLinks` is requested. The tie relaxation uses
+   * Defaults to `maximumIterations`. Used only when `output.backLinks` is requested. The tie relaxation uses
    * the cost phase's schedule: plain tiled passes (one 16x16 tile of plateau per iteration), then
    * directional tile sweeps from `sweepAfterIteration` on, so long or winding zero-cost plateaus
    * converge. Iterations after convergence are skipped on the GPU. A plateau that the budget
-   * cannot cover leaves `converged` at 0 and its unresolved cells at
+   * cannot cover leaves `output.status.converged` at 0 and its unresolved cells at
    * `GPU_COST_DISTANCE_UNRESOLVED`.
    */
-  maxTieIterations?: number;
-  /** Output cost per cell, `+Infinity` when unreached or impassable. Its length must equal `width * height`. */
-  costs: GraphDataView<'float32'>;
-  /**
-   * Optional output D8 code (ESRI power of two) of the move from a cell toward the next cell on a
-   * least-cost path back to a source. 0 at cells reached as a source,
-   * `GPU_COST_DISTANCE_NONE` when unreached or impassable, and `GPU_COST_DISTANCE_UNRESOLVED`
-   * when an iteration budget ran out first (see that constant), so a truncated run never
-   * produces a link that reads as a source or a path that looks complete.
-   *
-   * Cycle-safe across zero-cost plateaus: a cell links to its smallest-direction strictly cheaper
-   * tight neighbor when one exists; otherwise (it was reached only across zero-cost edges) to the
-   * smallest-direction equal-cost zero-cost neighbor exactly one tie level closer to a strict entry
-   * or a source. Cost never increases along links and the level strictly decreases at equal cost, so
-   * following links always reaches a source. The tie phase runs only when this view is requested.
-   */
-  backLinks?: GraphDataView<'uint32'>;
-  /** Isochrone thresholds, ascending. Required when `bands` or `bandCounts` is given. Per-frame contents, compile-time length. */
-  bandThresholds?: GraphDataView<'float32'>;
-  /** Optional output band per cell: cost in `(t[i - 1], t[i]]`, or `GPU_COST_DISTANCE_NONE` beyond the last threshold or unreached. */
-  bands?: GraphDataView<'uint32'>;
-  /** Optional output cell count per band (composes `GPUHistogram`). */
-  bandCounts?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row output: 1 when relaxation reached a fixpoint, 0 when `maxIterations` stopped
-   * it. With `backLinks`, also 0 when `maxTieIterations` stopped the tie phase; the affected
-   * back-links then read `GPU_COST_DISTANCE_UNRESOLVED`.
-   */
-  converged?: GraphDataView<'uint32'>;
-  /** Optional one-row output: number of relaxation iterations executed. */
-  iterationCount?: GraphDataView<'uint32'>;
+  maximumTieIterations?: number;
+  /** Isochrone cost breaks, ascending. Required when `output.bands` or `output.bandCounts` is given. Per-frame contents, compile-time length. */
+  costBreaks?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUCostDistanceOutput;
 };
 
 /**
@@ -187,7 +275,7 @@ export type GPUCostDistanceProps = {
  * workgroup memory, and a GPU-written indirect dispatch switches the remaining unrolled
  * iterations off once nothing changes, so nothing is read back. Diagonal moves are allowed
  * whenever both endpoints are passable (no corner-cutting restriction). Every encoding recomputes
- * from scratch. Zero-friction plateau cells share their cost with the source; their back-links
+ * from scratch, unless `continuation` resumes an unconverged run. Zero-friction plateau cells share their cost with the source; their back-links
  * still walk to the source (see `backLinks`).
  *
  * Non-goals: anisotropic or vertical-factor costs (slope-dependent, Tobler hiking), knight's-move
@@ -200,43 +288,63 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUCostDistanceProps;
   /** Resolved compile-time iteration count. */
-  readonly maxIterations: number;
+  readonly maximumIterations: number;
   /** Resolved compile-time tie-phase iteration count. */
-  readonly maxTieIterations: number;
+  readonly maximumTieIterations: number;
 
   constructor(props: GPUCostDistanceProps) {
     this.id = props.id ?? 'cost-distance';
     this.props = props;
-    this.maxIterations = props.maxIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+    this.maximumIterations =
+      props.maximumIterations ??
+      (props.continuation ? DEFAULT_CONTINUATION_MAXIMUM_ITERATIONS : DEFAULT_MAXIMUM_ITERATIONS);
     const {id} = this;
-    const cellCount = validateTerrainGrid(id, props.width, props.height);
-    validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
-    validateRasterIterations(id, 'maxIterations', this.maxIterations);
-    this.maxTieIterations = props.maxTieIterations ?? this.maxIterations;
-    validateRasterIterations(id, 'maxTieIterations', this.maxTieIterations);
-    validateTerrainSettings(id, props.settings, GPU_COST_DISTANCE_PARAMETER_LENGTH);
+    const {output} = props;
+    const cellCount = validateRasterGrid(id, props.grid);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    validateRasterIterations(id, 'maximumIterations', this.maximumIterations);
+    this.maximumTieIterations = props.maximumTieIterations ?? this.maximumIterations;
+    validateRasterIterations(id, 'maximumTieIterations', this.maximumTieIterations);
+    validateRasterParameters(id, props.parameters, GPU_COST_DISTANCE_PARAMETER_LENGTH);
     for (const [name, view] of [
       ['sources', props.sources],
       ['sourceCount', props.sourceCount],
       ['sourceMask', props.sourceMask],
-      ['backLinks', props.backLinks],
-      ['bands', props.bands],
-      ['bandCounts', props.bandCounts],
-      ['converged', props.converged],
-      ['iterationCount', props.iterationCount]
+      ['output.backLinks', output.backLinks],
+      ['output.bands', output.bands],
+      ['output.bandCounts', output.bandCounts],
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationCount', output.status?.iterationCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
       }
     }
     for (const [name, view] of [
       ['sourceCosts', props.sourceCosts],
-      ['costs', props.costs],
-      ['bandThresholds', props.bandThresholds],
-      ['frictionParameters', props.frictionParameters]
+      ['output.costs', output.costs],
+      ['costBreaks', props.costBreaks],
+      ['frictionParameters', props.frictionParameters],
+      ['continuation.values', props.continuation?.values]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
+      }
+    }
+    if (props.continuation) {
+      validatePackedView(props.continuation.state, ['uint32'], `${id} continuation.state`);
+      if (output.backLinks) {
+        throw new Error(`${id} continuation does not support output.backLinks`);
+      }
+      if (props.continuation.values.length !== cellCount) {
+        throw new Error(`${id} continuation.values must contain one value per cell`);
+      }
+      if (
+        props.continuation.state.length !==
+        getGPURasterRelaxationContinuationStateLength(props.grid)
+      ) {
+        throw new Error(`${id} continuation.state has the wrong length`);
       }
     }
     const frictionStorage = props.friction.storage;
@@ -259,9 +367,9 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       throw new Error(`${id} sourceMask must contain one value per cell`);
     }
     for (const [name, view] of [
-      ['costs', props.costs],
-      ['backLinks', props.backLinks],
-      ['bands', props.bands]
+      ['output.costs', output.costs],
+      ['output.backLinks', output.backLinks],
+      ['output.bands', output.bands]
     ] as const) {
       if (view && view.length !== cellCount) {
         throw new Error(`${id} ${name} must contain one value per cell`);
@@ -269,8 +377,8 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['sourceCount', props.sourceCount],
-      ['converged', props.converged],
-      ['iterationCount', props.iterationCount]
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationCount', output.status?.iterationCount]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
@@ -279,34 +387,38 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     if (props.frictionParameters && props.frictionParameters.length < 2) {
       throw new Error(`${id} frictionParameters must contain at least 2 values`);
     }
-    const needsThresholds = Boolean(props.bands || props.bandCounts);
-    if (needsThresholds !== Boolean(props.bandThresholds)) {
-      throw new Error(`${id} bandThresholds is required exactly when bands or bandCounts is given`);
+    const needsCostBreaks = Boolean(output.bands || output.bandCounts);
+    if (needsCostBreaks !== Boolean(props.costBreaks)) {
+      throw new Error(
+        `${id} costBreaks is required exactly when output.bands or output.bandCounts is given`
+      );
     }
-    if (props.bandThresholds && props.bandThresholds.length < 1) {
-      throw new Error(`${id} bandThresholds must contain at least one threshold`);
+    if (props.costBreaks && props.costBreaks.length < 1) {
+      throw new Error(`${id} costBreaks must contain at least one break`);
     }
-    if (props.bandCounts && props.bandCounts.length !== props.bandThresholds?.length) {
-      throw new Error(`${id} bandCounts length must equal bandThresholds length`);
+    if (output.bandCounts && output.bandCounts.length !== props.costBreaks?.length) {
+      throw new Error(`${id} output.bandCounts length must equal costBreaks length`);
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
       [
-        props.costs,
-        props.backLinks,
-        props.bands,
-        props.bandCounts,
-        props.converged,
-        props.iterationCount
+        output.costs,
+        output.backLinks,
+        output.bands,
+        output.bandCounts,
+        output.status?.converged,
+        output.status?.iterationCount,
+        props.continuation?.state,
+        props.continuation?.values
       ],
       [
-        ...getTerrainBandViews(props.friction),
-        props.settings,
+        ...getRasterBandViews(props.friction),
+        props.parameters,
         props.sources,
         props.sourceCosts,
         props.sourceCount,
         props.sourceMask,
-        props.bandThresholds,
+        props.costBreaks,
         props.frictionParameters
       ]
     );
@@ -316,32 +428,34 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maxIterations} = this;
-    const {width, height} = props;
+    const {id, props, maximumIterations} = this;
+    const {output} = props;
+    const {width, height} = props.grid;
     const cellSizeMode = props.cellSizeMode ?? 'uniform';
-    validateTerrainBandBelongsToGraph(id, graph, props.friction, []);
+    validateRasterBandBelongsToGraph(id, graph, props.friction, []);
     validateGraphViewsBelongToGraph(id, graph, [
-      props.settings,
+      props.parameters,
       props.frictionParameters,
       props.sources,
       props.sourceCosts,
       props.sourceCount,
       props.sourceMask,
-      props.costs,
-      props.backLinks,
-      props.bandThresholds,
-      props.bands,
-      props.bandCounts,
-      props.converged,
-      props.iterationCount
+      output.costs,
+      output.backLinks,
+      props.costBreaks,
+      output.bands,
+      output.bandCounts,
+      output.status?.converged,
+      output.status?.iterationCount,
+      props.continuation?.state,
+      props.continuation?.values
     ]);
     const cellCount = width * height;
-    const friction = getTerrainElevationNodes(
+    const friction = getRasterBufferBandNodes(
       graph,
       `${id}-friction`,
       props.friction,
-      width,
-      height,
+      props.grid,
       true
     );
     const auxiliary = createContributorTransientView(
@@ -401,13 +515,23 @@ ${GET_QUIET_NAN_WGSL}`,
   auxiliary[auxiliaryOffset + index] = select(getQuietNaN(), value, passable);`
       })
     ];
+    const {continuation} = props;
+    // A continued run keeps its progress in the caller-owned working costs; `output.costs` is
+    // republished from them each execution, because the unresolved pass overwrites it with NaN.
+    const working = continuation?.values ?? output.costs;
+    const seedCapacity = Math.max(props.sources?.length ?? 0, props.sourceMask ? cellCount : 0);
     const relaxationProps = {
       id,
       operation: OPERATION,
       width,
       height,
       cellSizeMode,
-      maxIterations
+      maxIterations: maximumIterations,
+      continuation: continuation && {
+        state: continuation.state,
+        // Slot 0 is the engine's tile reset; these are the initialize and seed kernels.
+        restartShapes: [[cellCount], [Math.max(seedCapacity, 1)]] as const
+      }
     };
     const sweepAfterIteration = props.sweepAfterIteration ?? DEFAULT_SWEEP_AFTER_ITERATION;
     const {relaxation, resetNodes} = createRasterTiledRelaxation<Parameters>(
@@ -415,6 +539,7 @@ ${GET_QUIET_NAN_WGSL}`,
       relaxationProps,
       false
     );
+    const initializeGate = relaxation.continuation?.getRestartGate(0, `${id}-initialize`);
     nodes.push(
       ...resetNodes,
       createWGSLKernelNode<Parameters>(graph, {
@@ -424,18 +549,25 @@ ${GET_QUIET_NAN_WGSL}`,
         bindings: [
           {
             name: 'costs',
-            view: props.costs,
+            view: working,
             type: 'u32',
             access: 'read_write'
           }
         ],
         invocationCount: cellCount,
-        body: 'costs[costsOffset + index] = 0x7f800000u;'
+        body: 'costs[costsOffset + index] = 0x7f800000u;',
+        condition: initializeGate?.condition,
+        extraResources: initializeGate?.extraResources
       })
     );
     let hasSeedNode = false;
     if ((props.sources?.length ?? 0) > 0 || props.sourceMask) {
-      nodes.push(this.getSeedNode(graph, auxiliary, relaxation.tileStamps, cellSizeMode));
+      nodes.push(
+        this.getSeedNode(graph, auxiliary, relaxation.tileStamps, cellSizeMode, 'costs', {
+          costs: working,
+          gate: relaxation.continuation?.getRestartGate(1, `${id}-seed`)
+        })
+      );
       hasSeedNode = true;
     }
     nodes.push(
@@ -443,9 +575,9 @@ ${GET_QUIET_NAN_WGSL}`,
         ...relaxationProps,
         relaxation,
         sweepAfterIteration,
-        values: props.costs,
+        values: working,
         auxiliary,
-        settings: props.settings,
+        settings: props.parameters,
         additiveEdgeCosts: true,
         declarations: /* wgsl */ `
 ${EDGE_COST_WGSL}
@@ -456,7 +588,7 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
       })
     );
     let tie: {levels: GraphDataView<'float32'>; masks: GraphDataView<'float32'>} | undefined;
-    if (props.backLinks) {
+    if (output.backLinks) {
       tie = this.getTieNodes(graph, {
         nodes,
         auxiliary,
@@ -465,29 +597,29 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
         sweepAfterIteration,
         costState: relaxation.state
       });
-    } else if (props.converged || props.iterationCount) {
+    } else if (output.status?.converged || output.status?.iterationCount) {
       nodes.push(
         createRasterIterationFinalizeNode<Parameters>(graph, {
           id: `${id}-finalize`,
           operation: OPERATION,
           state: relaxation.state,
-          converged: props.converged,
-          iterationCount: props.iterationCount
+          converged: output.status?.converged,
+          iterationCount: output.status?.iterationCount
         })
       );
     }
-    if (props.backLinks && tie) {
+    if (output.backLinks && tie) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-back-links`,
           operation: OPERATION,
           variant: 'back-links',
           bindings: [
-            {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+            {name: 'costs', view: output.costs, type: 'f32', access: 'read'},
             {name: 'auxiliary', view: auxiliary, type: 'f32', access: 'read'},
             {
               name: 'settings',
-              view: props.settings,
+              view: props.parameters,
               type: 'f32',
               access: 'read'
             },
@@ -501,7 +633,7 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
             },
             {
               name: 'backLinks',
-              view: props.backLinks,
+              view: output.backLinks,
               type: 'u32',
               access: 'read_write'
             }
@@ -550,9 +682,25 @@ const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;`,
         })
       );
     }
-    if (props.bandThresholds && (props.bands || props.bandCounts)) {
+    if (continuation) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish`,
+          operation: OPERATION,
+          variant: 'publish',
+          bindings: [
+            {name: 'working', view: continuation.values, type: 'u32', access: 'read'},
+            {name: 'costs', view: output.costs, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          body: 'costs[costsOffset + index] = working[workingOffset + index];'
+        })
+      );
+    }
+    nodes.push(...this.getUnresolvedCostNodes(graph, auxiliary, relaxation.state));
+    if (props.costBreaks && (output.bands || output.bandCounts)) {
       const bands =
-        props.bands ??
+        output.bands ??
         createContributorTransientView(
           graph,
           OPERATION,
@@ -567,20 +715,23 @@ const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;`,
           operation: OPERATION,
           variant: 'bands',
           bindings: [
-            {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+            {name: 'costs', view: output.costs, type: 'f32', access: 'read'},
             {
               name: 'thresholds',
-              view: props.bandThresholds,
+              view: props.costBreaks,
               type: 'f32',
               access: 'read'
             },
             {name: 'bands', view: bands, type: 'u32', access: 'read_write'}
           ],
           invocationCount: cellCount,
-          declarations: `const THRESHOLD_COUNT: u32 = ${props.bandThresholds.length}u;`,
+          declarations: `const THRESHOLD_COUNT: u32 = ${props.costBreaks.length}u;`,
           body: `let cost = costs[costsOffset + index];
   var band = ${GPU_COST_DISTANCE_NONE}u;
-  if (bitcast<u32>(cost) < 0x7f800000u) {
+  if ((bitcast<u32>(cost) & 0x7fffffffu) > 0x7f800000u) {
+    // NaN: the cost relaxation did not converge, so the cell's band is not known yet.
+    band = ${GPU_COST_DISTANCE_UNRESOLVED}u;
+  } else if (bitcast<u32>(cost) < 0x7f800000u) {
     var passedCount = 0u;
     for (var thresholdIndex = 0u; thresholdIndex < THRESHOLD_COUNT; thresholdIndex++) {
       if (thresholds[thresholdsOffset + thresholdIndex] < cost) { passedCount++; }
@@ -590,18 +741,87 @@ const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;`,
   bands[bandsOffset + index] = band;`
         })
       );
-      if (props.bandCounts) {
+      if (output.bandCounts) {
         nodes.push(
           ...new GPUHistogram({
             id: `${id}-band-counts`,
             input: bands,
-            output: props.bandCounts,
-            domain: [0, props.bandThresholds.length]
+            output: output.bandCounts,
+            domain: [0, props.costBreaks.length]
           }).getCommandNodes(graph)
+        );
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-band-counts-unresolved`,
+            operation: OPERATION,
+            variant: 'band-counts-unresolved',
+            bindings: [
+              {name: 'costStatus', view: relaxation.state.status, type: 'u32', access: 'read'},
+              {name: 'bandCounts', view: output.bandCounts, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: output.bandCounts.length,
+            body: `if (costStatus[costStatusOffset + 3u] == 0u) {
+    bandCounts[bandCountsOffset + index] = ${GPU_COST_DISTANCE_UNRESOLVED}u;
+  }`
+          })
         );
       }
     }
     return nodes;
+  }
+
+  /**
+   * Returns the nodes that mark every passable cost NaN when the cost relaxation stopped at
+   * `maxIterations` (library rule 9): a one-thread node arms an indirect dispatch only in that
+   * case, so a converged run pays one tiny dispatch, not a pass over the grid.
+   */
+  private getUnresolvedCostNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    auxiliary: GraphDataView<'float32'>,
+    costState: RasterIterationState<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const {output} = props;
+    const cellCount = props.grid.width * props.grid.height;
+    const gate = createRasterIterationState(graph, `${id}-unresolved`, OPERATION, cellCount, id);
+    const {x, y, z} = gate.layout;
+    const {condition, extraResources} = getRasterIterationCondition<Parameters>(
+      gate,
+      `${id}-unresolved-costs`
+    );
+    return [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-unresolved-arm`,
+        operation: OPERATION,
+        variant: 'unresolved-arm',
+        bindings: [
+          {name: 'costStatus', view: costState.status, type: 'u32', access: 'read'},
+          {name: 'dispatch', view: gate.dispatch, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        body: `let converged = costStatus[costStatusOffset + 3u] != 0u;
+  dispatch[dispatchOffset] = select(${x}u, 0u, converged);
+  dispatch[dispatchOffset + 1u] = ${y}u;
+  dispatch[dispatchOffset + 2u] = ${z}u;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-unresolved-costs`,
+        operation: OPERATION,
+        variant: 'unresolved-costs',
+        bindings: [
+          {name: 'auxiliary', view: auxiliary, type: 'f32', access: 'read'},
+          {name: 'costs', view: output.costs, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: gate.invocationCount,
+        workgroupSize: 256,
+        // Passable cells have a non-NaN auxiliary friction; the quiet NaN is written as bits.
+        body: `if ((bitcast<u32>(auxiliary[auxiliaryOffset + index]) & 0x7fffffffu) <= 0x7f800000u) {
+    costs[costsOffset + index] = 0x7fc00000u;
+  }`,
+        condition,
+        extraResources
+      })
+    ];
   }
 
   /**
@@ -619,14 +839,15 @@ const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;`,
     context: {
       nodes: GPUCommandNode<Parameters>[];
       auxiliary: GraphDataView<'float32'>;
-      cellSizeMode: GPUTerrainCellSizeMode;
+      cellSizeMode: GPURasterCellSizeMode;
       hasSeedNode: boolean;
       sweepAfterIteration: number;
-      costState: RasterIterationState;
+      costState: RasterIterationState<Parameters>;
     }
   ): {levels: GraphDataView<'float32'>; masks: GraphDataView<'float32'>} {
-    const {id, props, maxTieIterations} = this;
-    const {width, height} = props;
+    const {id, props, maximumTieIterations} = this;
+    const {output} = props;
+    const {width, height} = props.grid;
     const {nodes, auxiliary, cellSizeMode} = context;
     const cellCount = width * height;
     const levels = createContributorTransientView(
@@ -651,11 +872,11 @@ const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;`,
         operation: OPERATION,
         variant: 'tie-prepare',
         bindings: [
-          {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+          {name: 'costs', view: output.costs, type: 'f32', access: 'read'},
           {name: 'auxiliary', view: auxiliary, type: 'f32', access: 'read'},
           {
             name: 'settings',
-            view: props.settings,
+            view: props.parameters,
             type: 'f32',
             access: 'read'
           },
@@ -700,7 +921,7 @@ ${STRICT_PREDECESSOR_WGSL}`,
       width,
       height,
       cellSizeMode,
-      maxIterations: maxTieIterations
+      maxIterations: maximumTieIterations
     };
     const {relaxation: tieRelaxation, resetNodes} = createRasterTiledRelaxation<Parameters>(
       graph,
@@ -715,7 +936,7 @@ ${STRICT_PREDECESSOR_WGSL}`,
         sweepAfterIteration: context.sweepAfterIteration,
         values: levels,
         auxiliary: masks,
-        settings: props.settings,
+        settings: props.parameters,
         additiveEdgeCosts: true,
         declarations: /* wgsl */ `
 fn getRelaxationEdgeCost(neighborAuxiliary: f32, centerAuxiliary: f32, centerRow: u32, direction: u32) -> f32 {
@@ -739,23 +960,23 @@ fn getRelaxationLimit() -> f32 { return getInfinity(); }`
         access: 'read'
       }
     ];
-    if (props.converged) {
+    if (output.status?.converged) {
       bindings.push({
         name: 'converged',
-        view: props.converged,
+        view: output.status?.converged,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (props.iterationCount) {
+    if (output.status?.iterationCount) {
       bindings.push({
         name: 'iterationCount',
-        view: props.iterationCount,
+        view: output.status?.iterationCount,
         type: 'u32',
         access: 'read_write'
       });
     }
-    if (props.converged || props.iterationCount) {
+    if (output.status?.converged || output.status?.iterationCount) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-finalize`,
@@ -763,8 +984,8 @@ fn getRelaxationLimit() -> f32 { return getInfinity(); }`
           variant: 'tie-finalize',
           bindings,
           invocationCount: 1,
-          body: `${props.converged ? 'converged[convergedOffset] = costStatus[costStatusOffset + 3u] & tieStatus[tieStatusOffset + 3u];' : ''}
-  ${props.iterationCount ? 'iterationCount[iterationCountOffset] = costStatus[costStatusOffset + 2u];' : ''}`
+          body: `${output.status?.converged ? 'converged[convergedOffset] = costStatus[costStatusOffset + 3u] & tieStatus[tieStatusOffset + 3u];' : ''}
+  ${output.status?.iterationCount ? 'iterationCount[iterationCountOffset] = costStatus[costStatusOffset + 2u];' : ''}`
         })
       );
     }
@@ -780,16 +1001,26 @@ fn getRelaxationLimit() -> f32 { return getInfinity(); }`
     graph: GPUCommandGraph<Parameters>,
     auxiliary: GraphDataView<'float32'>,
     target: GraphDataView<'uint32'> | GraphDataView<'float32'>,
-    cellSizeMode: GPUTerrainCellSizeMode,
-    mode: 'costs' | 'roots' = 'costs'
+    cellSizeMode: GPURasterCellSizeMode,
+    mode: 'costs' | 'roots' = 'costs',
+    options: {
+      /** Cost values the seed kernel writes; defaults to `output.costs`. */
+      costs?: GraphDataView<'float32'>;
+      /** Restart gate: seed only when a continued execution starts from scratch. */
+      gate?: {
+        condition: GPUCommandGraphNodeCondition<Parameters>;
+        extraResources: GraphBufferUse[];
+      };
+    } = {}
   ): GPUCommandNode<Parameters> {
     const {id, props} = this;
-    const {width, height} = props;
+    const {output} = props;
+    const {width, height} = props.grid;
     const sourceCapacity = props.sources?.length ?? 0;
     const cellCount = width * height;
     const bindings: WGSLKernelBinding[] = [
       {name: 'auxiliary', view: auxiliary, type: 'f32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'}
+      {name: 'settings', view: props.parameters, type: 'f32', access: 'read'}
     ];
     if (props.sources) {
       bindings.push({
@@ -826,7 +1057,7 @@ fn getRelaxationLimit() -> f32 { return getInfinity(); }`
     bindings.push(
       {
         name: 'costBits',
-        view: props.costs,
+        view: options.costs ?? output.costs,
         type: 'atomic<u32>',
         access: 'read_write'
       },
@@ -880,7 +1111,9 @@ ${
   }`
           : ''
       }
-  ${props.sourceMask ? 'if (index < CELL_COUNT && sourceMask[sourceMaskOffset + index] != 0u) { seedCell(index, 0.0); }' : ''}`
+  ${props.sourceMask ? 'if (index < CELL_COUNT && sourceMask[sourceMaskOffset + index] != 0u) { seedCell(index, 0.0); }' : ''}`,
+      condition: options.gate?.condition,
+      extraResources: options.gate?.extraResources
     });
   }
 }
@@ -893,9 +1126,15 @@ fn getEdgeCost(direction: u32, centerRow: u32, neighborFriction: f32, centerFric
 
 /**
  * Returns the direction of the strictly cheaper tight neighbor with the smallest candidate cost (the
- * smallest direction on exact ties), or GRID_NONE when no strictly cheaper neighbor is tight within
- * a 1e-5 relative tolerance. Shared by the tie preparation and back-link kernels so that both agree
- * on which cells link strictly.
+ * smallest direction on exact ties), or GRID_NONE when no strictly cheaper neighbor is tight. Shared
+ * by the tie preparation and back-link kernels so that both agree on which cells link strictly.
+ *
+ * Tight means the recomputed move cost is within 4 ulp of the cell cost. The relaxation stored
+ * `fl(neighborCost + fl(edge))`; a compiler that contracts the recomputation into
+ * `fma(distance, meanFriction, neighborCost)` differs from it by at most the product rounding
+ * (0.5 ulp of the edge, which is at most the cost) plus both sum roundings, 1.5 ulp in all. A wider
+ * relative slack (formerly 1e-5) let a cell reached across a zero-cost edge link to a strictly
+ * cheaper neighbor whose move costs more, off the least-cost path.
  */
 const STRICT_PREDECESSOR_WGSL = /* wgsl */ `
 fn getStrictDirection(index: u32, centerAuxiliary: f32, centerCost: f32) -> u32 {
@@ -914,6 +1153,7 @@ fn getStrictDirection(index: u32, centerAuxiliary: f32, centerCost: f32) -> u32 
       bestDirection = direction;
     }
   }
-  if (bestDirection != GRID_NONE && bestCandidate <= centerCost * 1.00001) { return bestDirection; }
+  // 4 ulp of f32 (2^-21) relative: see the derivation in the TSDoc of STRICT_PREDECESSOR_WGSL.
+  if (bestDirection != GRID_NONE && bestCandidate <= centerCost * (1.0 + 4.76837158e-7)) { return bestDirection; }
   return GRID_NONE;
 }`;

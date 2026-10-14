@@ -10,6 +10,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../utils/gpu-contributor-types';
 import {createWGSLKernelNode, createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {createGatherNode, GROUP_NONE, readBinding, writeBinding} from './group-statistics-common';
 
@@ -155,9 +156,7 @@ export function getGroupStructureNodes<Parameters>(
     output: {
       keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
       counts: GraphDataView<'uint32'>;
-      count: GraphDataView<'uint32'>;
-      overflow: GraphDataView<'uint32'>;
-      requiredCount?: GraphDataView<'uint32'>;
+      status: GPUCardinalityPort & GPUOverflowStatusPort;
     };
   }
 ): {nodes: GPUCommandNode<Parameters>[]; structure: GroupStructure} {
@@ -465,9 +464,7 @@ const GROUP_NONE: u32 = ${GROUP_NONE}u;`,
       requiredCount: groupTotal,
       output: {
         ids: output.counts,
-        count: output.count,
-        overflow: output.overflow,
-        requiredCount: output.requiredCount
+        status: output.status
       }
     })
   );

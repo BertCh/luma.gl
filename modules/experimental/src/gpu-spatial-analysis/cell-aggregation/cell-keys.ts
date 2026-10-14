@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity} from '../../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 
 /** Discrete global grid families keyed by {@link GPUCellAggregation}. */
 export type GPUCellFamily = 'quadbin' | 'h3';
@@ -93,9 +94,7 @@ export type CellKeyLayout = {
 /** Returns the key bit layout of `family` at `resolution`. @internal */
 export function getCellKeyLayout(family: GPUCellFamily, resolution: number): CellKeyLayout {
   const maximum = GPU_CELL_MAXIMUM_RESOLUTION[family];
-  if (!Number.isInteger(resolution) || resolution < 0 || resolution > maximum) {
-    throw new Error(`${family} resolution must be an integer in [0, ${maximum}]`);
-  }
+  validateCapacity(family, 'resolution', resolution, 0, maximum);
   const lowBit = family === 'quadbin' ? 52 - 2 * resolution : 45 - 3 * resolution;
   return {
     family,

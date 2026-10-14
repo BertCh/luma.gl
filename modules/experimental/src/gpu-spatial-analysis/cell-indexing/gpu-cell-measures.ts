@@ -3,9 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,14 +16,15 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../contracts/earth';
+import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {
   getGPUAreaUnit,
   type GPUMeasureDescription,
   type GPUSpatialUnit
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/index';
 import {H3_BOUNDARY_WGSL} from './h3-boundary-wgsl';
@@ -162,11 +160,6 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       ['output.edgeCounts', output.edgeCounts],
       ['output.pentagons', output.pentagons]
     ] as const;
-    for (const [name, view] of [['cells', props.cells], ...outputViews] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
     validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     if (rows < 1) {
@@ -199,7 +192,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       ['output.pentagons', output.pentagons]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length !== rows) {
           throw new Error(`${id} ${name} length must equal the row count`);
         }

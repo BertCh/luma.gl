@@ -7,11 +7,14 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
 import {
-  getTerrainGroundScale,
-  getTerrainGroundScaleWGSL
-} from '../../gpu-terrain/terrain-grid-utils';
+  getRasterGroundCellSize,
+  getRasterGroundScaleWGSL,
+  writeRasterGridParameterValues,
+  type GPURasterCellSizeMode,
+  type RasterGridAffine,
+  type RasterGridGeoreference
+} from '../../analysis-core/raster-grid';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /**
@@ -81,51 +84,12 @@ export const GPU_RASTER_D8_DIRECTIONS: readonly GPURasterD8Direction[] = [
   {code: 128, columnOffset: 1, rowOffset: -1}
 ];
 
-/** Settings prefix shared by raster grid contributors: `[cellSizeX, cellSizeY, northEdge, southEdge]`. @internal */
-export const RASTER_GRID_SETTINGS_LENGTH = 4;
+/** Parameter prefix shared by raster grid contributors: `[cellSizeX, cellSizeY, northEdge, southEdge]`. @internal */
+export const RASTER_GRID_PARAMETER_LENGTH = 4;
 
-/** CPU description of the shared settings prefix. @internal */
-export type RasterGridSettings = {
-  /** `[x, y]` cell size: meters (uniform), EPSG:3857 meters (web-mercator), or degrees (geographic). */
-  cellSize: readonly [number, number];
-  /** Top edge of row 0: normalized Web Mercator y in `[0, 1]` or latitude degrees. Defaults to 0. */
-  northEdge?: number;
-  /** Bottom edge of the last row, same units as `northEdge`. Defaults to 0. */
-  southEdge?: number;
-};
-
-/** Writes the shared grid settings prefix into `target[0..3]`. @internal */
-export function writeRasterGridSettings(target: Float32Array, settings: RasterGridSettings): void {
-  target[0] = settings.cellSize[0];
-  target[1] = settings.cellSize[1];
-  target[2] = settings.northEdge ?? 0;
-  target[3] = settings.southEdge ?? 0;
-}
-
-/**
- * Returns ground `[x, y]` meters per cell at a continuous row coordinate (row index + 0.5 is a
- * cell center), in float64, with WGS84 radii of curvature at that row's latitude for the
- * `'web-mercator'` and `'geographic'` modes (see `GPUTerrainCellSizeMode`). CPU twin of the WGSL
- * `getGroundCellSize`.
- *
- * @internal
- */
-export function getRasterGroundCellSize(
-  cellSizeMode: GPUTerrainCellSizeMode,
-  rowCoordinate: number,
-  height: number,
-  settings: RasterGridSettings
-): [number, number] {
-  const [cellSizeX, cellSizeY] = settings.cellSize;
-  if (cellSizeMode === 'uniform') {
-    return [cellSizeX, cellSizeY];
-  }
-  const rowFraction = rowCoordinate / height;
-  const northEdge = settings.northEdge ?? 0;
-  const southEdge = settings.southEdge ?? 0;
-  const edge = northEdge + (southEdge - northEdge) * rowFraction;
-  const [scaleX, scaleY] = getTerrainGroundScale(cellSizeMode, edge);
-  return [cellSizeX * scaleX, cellSizeY * scaleY];
+/** Writes the georeference of `grid` into the shared parameter prefix `target[0..3]`. @internal */
+export function writeRasterGridPrefix(target: Float32Array, grid: RasterGridAffine): void {
+  writeRasterGridParameterValues(target, grid, {cellSizeIndex: 0, northEdgeIndex: 2});
 }
 
 /**
@@ -137,19 +101,19 @@ export function getRasterGroundCellSize(
  * @internal
  */
 export function getRasterD8Distance(
-  cellSizeMode: GPUTerrainCellSizeMode,
+  cellSizeMode: GPURasterCellSizeMode,
   direction: number,
   centerRow: number,
   height: number,
-  settings: RasterGridSettings
+  georeference: RasterGridGeoreference
 ): number {
   const {columnOffset, rowOffset} = GPU_RASTER_D8_DIRECTIONS[direction];
   const neighborRow = centerRow + rowOffset;
   const [groundX, groundY] = getRasterGroundCellSize(
     cellSizeMode,
+    georeference,
     (centerRow + neighborRow + 1) * 0.5,
-    height,
-    settings
+    height
   );
   if (rowOffset === 0) {
     return groundX;
@@ -160,17 +124,10 @@ export function getRasterD8Distance(
   return Math.sqrt(groundX * groundX + groundY * groundY);
 }
 
-/** Throws unless `cellSizeMode` is a supported mode. @internal */
-export function validateRasterCellSizeMode(id: string, cellSizeMode: string): void {
-  if (!['uniform', 'web-mercator', 'geographic'].includes(cellSizeMode)) {
-    throw new Error(`${id} cellSizeMode must be uniform, web-mercator, or geographic`);
-  }
-}
-
 /**
  * Returns WGSL grid constants and D8 helpers for one compile-time grid.
  *
- * The generated `getGroundCellSize` and `getD8Distance` read the shared settings prefix from a
+ * The generated `getGroundCellSize` and `getD8Distance` read the shared parameter prefix from a
  * float32 storage binding named `settings` (with the generated `settingsOffset` constant), so the
  * kernel must bind it. Declares `GRID_WIDTH`, `GRID_HEIGHT`, `getD8ColumnOffset`,
  * `getD8RowOffset`, `getD8Code`, `getD8Neighbor` (returns `0xffffffff` outside the grid),
@@ -181,14 +138,14 @@ export function validateRasterCellSizeMode(id: string, cellSizeMode: string): vo
 export function getRasterGridWGSL(props: {
   width: number;
   height: number;
-  cellSizeMode: GPUTerrainCellSizeMode;
+  cellSizeMode: GPURasterCellSizeMode;
 }): string {
   const groundCellSource =
     props.cellSizeMode === 'uniform'
       ? 'return cellSize;'
       : `let rowFraction = rowCoordinate / f32(GRID_HEIGHT);
   let edge = mix(settings[settingsOffset + 2u], settings[settingsOffset + 3u], rowFraction);
-  ${getTerrainGroundScaleWGSL(props.cellSizeMode)}
+  ${getRasterGroundScaleWGSL(props.cellSizeMode)}
   return cellSize * groundScale;`;
   return /* wgsl */ `
 const GRID_WIDTH: u32 = ${props.width}u;

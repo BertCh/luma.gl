@@ -2,10 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import {
+  resolveGPUSpatialContext,
+  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  getGPUGreatCircleRadius
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,85 +17,53 @@ import {
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {GPUNearestFeatureJoin} from '../../gpu-spatial-analysis/spatial-join/index';
-import type {GPUSpatialContext} from '../../gpu-spatial-analysis/contracts/spatial-context';
 import {
-  getNetworkGeodesicRadius,
-  getNetworkMetricWGSL,
-  resolveNetworkSpatialContext
-} from '../network-spatial-context';
+  getGPUNetworkTopologyViews,
+  validateGPUNetworkTopology,
+  type GPUNetworkAdjacency
+} from '../../analysis-core/network-topology';
+import {GPUNearestFeatureJoin} from '../../gpu-spatial-analysis/spatial-join/index';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {getNetworkMetricWGSL} from '../network-spatial-context';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
 import {createNetworkEdgeSourceNodes} from './network-edge-sources';
 
 const OPERATION = 'GPUNetworkSnapping';
 
-/** Value written to `snappedEdges` and `seedNodes` when a point snaps to no edge. */
+/** Value written to `snappedEdges` and `output.startNodes` when a point snaps to no edge. */
 export const GPU_NETWORK_SNAPPING_NONE = 0xffffffff;
+
+/**
+ * Largest edge count of {@link GPUNetworkSnapping} with `candidateCapacity` on `device`: the
+ * nearest-edge BVH holds 8 bytes of node bounds per node (`2 * edges - 1` nodes) in one storage
+ * binding, so 8388608 on a default device (128 MiB bindings). This equals the leaf limit of
+ * `GPUNearestFeatureJoin`, whose function can replace the body once it is exported.
+ */
+export function getGPUNetworkSnappingMaximumCandidateEdgeCount(device: Device): number {
+  return getStorageBindingElementLimit(device, 16);
+}
 
 /** Value written to fraction, distance, and cost outputs when a point snaps to no edge. */
 export const GPU_NETWORK_SNAPPING_NO_VALUE = -1;
 
 /**
- * Which edge endpoints become seeds of a snapped point:
+ * Which edge endpoints become start nodes of a snapped point:
  * - `'both'`: the edge source (cost `fraction * edgeCost`) and target (`(1 - fraction) * edgeCost`),
  *   for undirected networks that list both directions of each road.
  * - `'forward'`: only the target, for a point that leaves along a directed edge (forward search).
  * - `'reverse'`: only the source, for a point reached along a directed edge (reverse search).
  */
-export type GPUNetworkSnappingSeedDirection = 'both' | 'forward' | 'reverse';
+export type GPUNetworkSnappingStartDirection = 'both' | 'forward' | 'reverse';
 
-/**
- * Properties for {@link GPUNetworkSnapping}.
- *
- * Compile-time: point, node and edge counts, `candidateCapacity`, `seedDirection`, and which
- * optional views exist. Per-frame: point and node positions, edge lists and costs, and
- * `maxSnapDistance`.
- */
-export type GPUNetworkSnappingProps = {
-  /** Prefix for generated node and transient IDs. Defaults to `'network-snapping'`. */
-  id?: string;
-  /**
-   * Coordinates of `points` and `nodePositions`. Omitted means native planar coordinates.
-   * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
-   * snap distances and default edge costs as great-circle meters (`sphereRadius` defaults to
-   * `GPU_EARTH_MEAN_RADIUS_METERS`); `maxSnapDistance` is then in meters. The context is passed to
-   * `GPUNearestFeatureJoin` on the `candidateCapacity` path.
-   */
-  spatialContext?: GPUSpatialContext;
-  /** Points to snap (origins, facilities, opportunities), in the coordinates of `spatialContext`. */
-  points: GraphDataView<'float32x2'>;
-  /** Node positions, in the same coordinates as `points`. */
-  nodePositions: GraphDataView<'float32x2'>;
-  /** Edge source node per edge (COO). Exactly one of `edgeSources` and `offsets` is required. */
-  edgeSources?: GraphDataView<'uint32'>;
-  /**
-   * CSR row offsets with `nodeCount + 1` rows, an alternative to `edgeSources`. Edge rows past
-   * `offsets[nodeCount]` (a CSR shorter than `edgeTargets`) are not part of the network.
-   */
-  offsets?: GraphDataView<'uint32'>;
-  /** Edge target node per edge (the CSR `neighbors`). Edges with an endpoint out of range are skipped. */
-  edgeTargets: GraphDataView<'uint32'>;
-  /** Optional travel cost per edge. Defaults to the edge length (great-circle meters on longitude/latitude). */
-  edgeCosts?: GraphDataView<'float32'>;
-  /**
-   * Optional one-row per-frame maximum snap distance. Points farther from every edge snap to none.
-   * Required with `candidateCapacity`.
-   */
-  maxSnapDistance?: GraphDataView<'float32'>;
-  /**
-   * Compile-time candidate capacity. When given, candidate edges come from `GPUNearestFeatureJoin`
-   * (a BVH over edge segments probed with `maxSnapDistance`); candidates past the capacity are
-   * dropped and raise `overflow`. When omitted, each point scans every edge, which is exact and
-   * needs no radius but costs `pointCount * edgeCount`.
-   */
-  candidateCapacity?: number;
-  /** Compile-time. Morton-sort edges before the BVH build, as `GPUNearestFeatureJoin.spatialSort`. */
-  spatialSort?: boolean;
-  /** Which endpoints `seedNodes` lists. Defaults to `'both'`. */
-  seedDirection?: GPUNetworkSnappingSeedDirection;
+/** GPU-written views of {@link GPUNetworkSnapping}. */
+export type GPUNetworkSnappingOutput = {
   /**
    * Nearest edge row per point, or `GPU_NETWORK_SNAPPING_NONE`. Ties go to the smallest edge row,
    * so a point on a node shared by several edges snaps to the smallest incident edge.
@@ -108,15 +80,70 @@ export type GPUNetworkSnappingProps = {
   /** Optional snapped position, or the point itself when it snaps to no edge. */
   snappedPositions?: GraphDataView<'float32x2'>;
   /**
-   * Optional `2 * pointCount` seed nodes: row `2 * i` is the edge source of point `i` and row
-   * `2 * i + 1` the edge target, or `GPU_NETWORK_SNAPPING_NONE` when excluded by `seedDirection`
-   * or unsnapped. Feed it to `GPUNetworkCostMatrix` with `seedsPerRow: 2`.
+   * Optional `2 * pointCount` start nodes: row `2 * i` is the edge source of point `i` and row
+   * `2 * i + 1` the edge target, or `GPU_NETWORK_SNAPPING_NONE` when excluded by `startDirection`
+   * or unsnapped. Feed it to `GPUNetworkCostMatrix` with `startsPerRow: 2`.
    */
-  seedNodes?: GraphDataView<'uint32'>;
-  /** Optional `2 * pointCount` seed costs aligned with `seedNodes`, or -1. */
-  seedCosts?: GraphDataView<'float32'>;
-  /** Optional one-row flag: 1 when the BVH candidate search overflowed. */
-  overflow?: GraphDataView<'uint32'>;
+  startNodes?: GraphDataView<'uint32'>;
+  /** Optional `2 * pointCount` start costs aligned with `startNodes`, or -1. */
+  startCosts?: GraphDataView<'float32'>;
+  /** GPU-written status words. */
+  status?: {
+    /**
+     * One-row flag: 1 when the BVH candidate search overflowed, so some points were snapped without
+     * all their candidate edges. Required with `candidateCapacity` (library rule 9: a capacity that
+     * can drop work reports it); not allowed without it.
+     */
+    overflow?: GraphDataView<'uint32'>;
+  };
+};
+
+/**
+ * Properties for {@link GPUNetworkSnapping}.
+ *
+ * Compile-time: point, node and edge counts, `candidateCapacity`, `startDirection`, and which
+ * optional views exist. Per-frame: point and node positions, edge lists and costs, and
+ * `maximumSnapDistance`.
+ */
+export type GPUNetworkSnappingProps = {
+  /** Prefix for generated node and transient IDs. Defaults to `'network-snapping'`. */
+  id?: string;
+  /**
+   * Coordinates of `positions` and `topology.nodePositions`. Omitted means native planar coordinates.
+   * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
+   * snap distances and default edge costs as great-circle meters (`sphereRadius` defaults to
+   * `GPU_EARTH_MEAN_RADIUS_METERS`); `maximumSnapDistance` is then in meters. The context is passed to
+   * `GPUNearestFeatureJoin` on the `candidateCapacity` path.
+   */
+  spatialContext?: GPUSpatialContext;
+  /** Positions to snap (origins, facilities, opportunities), in the coordinates of `spatialContext`. */
+  positions: GraphDataView<'float32x2'>;
+  /**
+   * The network, with node positions in the same coordinates as `positions`. `weights` are optional
+   * travel costs per edge and default to the edge length (great-circle meters on longitude/latitude).
+   * Edges with an endpoint out of range are skipped, and edge slots past `offsets[nodeCount]` (a
+   * topology shorter than its edge capacity) are not part of the network.
+   */
+  topology: GPUNetworkAdjacency & {nodePositions: GraphDataView<'float32x2'>};
+  /**
+   * Optional one-row per-frame maximum snap distance. Points farther from every edge snap to none.
+   * Required with `candidateCapacity`.
+   */
+  maximumSnapDistance?: GraphDataView<'float32'>;
+  /**
+   * Compile-time candidate capacity. When given, candidate edges come from `GPUNearestFeatureJoin`
+   * (a BVH over edge segments probed with `maximumSnapDistance`); candidates past the capacity are
+   * dropped and raise `overflow`. When omitted, each point scans every edge, which is exact and
+   * needs no radius but costs `pointCount * edgeCount`. With a capacity the edge count is at most
+   * {@link getGPUNetworkSnappingMaximumCandidateEdgeCount} (8388608 on a default device).
+   */
+  candidateCapacity?: number;
+  /** Compile-time. Morton-sort edges before the BVH build, as `GPUNearestFeatureJoin.spatialSort`. */
+  spatialSort?: boolean;
+  /** Which endpoints `output.startNodes` lists. Defaults to `'both'`. */
+  startDirection?: GPUNetworkSnappingStartDirection;
+  /** The GPU-written views. */
+  output: GPUNetworkSnappingOutput;
 };
 
 /**
@@ -124,7 +151,7 @@ export type GPUNetworkSnappingProps = {
  * as virtual nodes between the edge endpoints.
  *
  * For every point the contributor reports the nearest edge (smallest edge row on ties), the fraction
- * along it, the snap distance, and the two seed costs: `fraction * edgeCost` to the edge source
+ * along it, the snap distance, and the two start costs: `fraction * edgeCost` to the edge source
  * and `(1 - fraction) * edgeCost` to the edge target. The edge cost defaults to the edge length.
  * Points beyond the optional maximum snap distance snap to no edge.
  *
@@ -142,113 +169,101 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkSnappingProps;
-  /** Number of points. */
+  /** Number of positions to snap. */
   readonly pointCount: number;
   /** Number of network nodes. */
   readonly nodeCount: number;
   /** Number of edges. */
   readonly edgeCount: number;
-  /** Resolved seed direction. */
-  readonly seedDirection: GPUNetworkSnappingSeedDirection;
+  /** Resolved start direction. */
+  readonly startDirection: GPUNetworkSnappingStartDirection;
   /** Resolved spatial context. */
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUNetworkSnappingProps) {
     this.id = props.id ?? 'network-snapping';
     this.props = props;
-    this.seedDirection = props.seedDirection ?? 'both';
+    this.startDirection = props.startDirection ?? 'both';
     const {id} = this;
-    this.spatialContext = resolveNetworkSpatialContext(id, props.spatialContext);
-    for (const [name, view] of [
-      ['points', props.points],
-      ['nodePositions', props.nodePositions],
-      ['snappedPositions', props.snappedPositions]
-    ] as const) {
-      if (view) {
-        validatePackedView(view, ['float32x2'], `${id} ${name}`);
-      }
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+    );
+    const {output} = props;
+    const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {
+      nodePositions: true
+    });
+    validatePackedView(props.positions, ['float32x2'], `${id} positions`);
+    if (output.snappedPositions) {
+      validatePackedView(output.snappedPositions, ['float32x2'], `${id} output.snappedPositions`);
     }
     for (const [name, view] of [
-      ['edgeSources', props.edgeSources],
-      ['offsets', props.offsets],
-      ['edgeTargets', props.edgeTargets],
-      ['snappedEdges', props.snappedEdges],
-      ['seedNodes', props.seedNodes],
-      ['overflow', props.overflow]
-    ] as const) {
-      if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
-      }
-    }
-    for (const [name, view] of [
-      ['edgeCosts', props.edgeCosts],
-      ['maxSnapDistance', props.maxSnapDistance],
-      ['snapFractions', props.snapFractions],
-      ['snapDistances', props.snapDistances],
-      ['sourceCosts', props.sourceCosts],
-      ['targetCosts', props.targetCosts],
-      ['seedCosts', props.seedCosts]
+      ['maximumSnapDistance', props.maximumSnapDistance],
+      ['output.snapFractions', output.snapFractions],
+      ['output.snapDistances', output.snapDistances],
+      ['output.sourceCosts', output.sourceCosts],
+      ['output.targetCosts', output.targetCosts],
+      ['output.startCosts', output.startCosts]
     ] as const) {
       if (view) {
         validatePackedView(view, ['float32'], `${id} ${name}`);
       }
     }
-    this.pointCount = props.points.length;
-    this.nodeCount = props.nodePositions.length;
-    this.edgeCount = props.edgeTargets.length;
-    if (Boolean(props.edgeSources) === Boolean(props.offsets)) {
-      throw new Error(`${id} requires exactly one of edgeSources and offsets`);
-    }
-    if (props.edgeSources && props.edgeSources.length !== this.edgeCount) {
-      throw new Error(`${id} edgeSources length must equal edgeTargets length`);
-    }
-    if (props.offsets && props.offsets.length !== this.nodeCount + 1) {
-      throw new Error(`${id} offsets must contain one more row than nodePositions`);
-    }
-    if (props.edgeCosts && props.edgeCosts.length !== this.edgeCount) {
-      throw new Error(`${id} edgeCosts length must equal edgeTargets length`);
-    }
     for (const [name, view] of [
-      ['snappedEdges', props.snappedEdges],
-      ['snapFractions', props.snapFractions],
-      ['snapDistances', props.snapDistances],
-      ['sourceCosts', props.sourceCosts],
-      ['targetCosts', props.targetCosts],
-      ['snappedPositions', props.snappedPositions]
+      ['output.snappedEdges', output.snappedEdges],
+      ['output.startNodes', output.startNodes],
+      ['output.status.overflow', output.status?.overflow]
+    ] as const) {
+      if (view) {
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
+      }
+    }
+    this.pointCount = props.positions.length;
+    this.nodeCount = nodeCount;
+    this.edgeCount = edgeCount;
+    for (const [name, view] of [
+      ['output.snappedEdges', output.snappedEdges],
+      ['output.snapFractions', output.snapFractions],
+      ['output.snapDistances', output.snapDistances],
+      ['output.sourceCosts', output.sourceCosts],
+      ['output.targetCosts', output.targetCosts],
+      ['output.snappedPositions', output.snappedPositions]
     ] as const) {
       if (view && view.length !== this.pointCount) {
-        throw new Error(`${id} ${name} length must equal the point count`);
+        throw new Error(`${id} ${name} length must equal the position count`);
       }
     }
     for (const [name, view] of [
-      ['seedNodes', props.seedNodes],
-      ['seedCosts', props.seedCosts]
+      ['output.startNodes', output.startNodes],
+      ['output.startCosts', output.startCosts]
     ] as const) {
       if (view && view.length !== 2 * this.pointCount) {
-        throw new Error(`${id} ${name} length must be twice the point count`);
+        throw new Error(`${id} ${name} length must be twice the position count`);
       }
     }
-    if (Boolean(props.seedNodes) !== Boolean(props.seedCosts)) {
-      throw new Error(`${id} seedNodes and seedCosts must be given together`);
+    if (Boolean(output.startNodes) !== Boolean(output.startCosts)) {
+      throw new Error(`${id} output.startNodes and output.startCosts must be given together`);
     }
     for (const [name, view] of [
-      ['maxSnapDistance', props.maxSnapDistance],
-      ['overflow', props.overflow]
+      ['maximumSnapDistance', props.maximumSnapDistance],
+      ['output.status.overflow', output.status?.overflow]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
       }
     }
     if (props.candidateCapacity !== undefined) {
-      if (!Number.isSafeInteger(props.candidateCapacity) || props.candidateCapacity < 1) {
-        throw new Error(`${id} candidateCapacity must be a positive integer`);
+      validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
+      if (!props.maximumSnapDistance) {
+        throw new Error(`${id} candidateCapacity requires maximumSnapDistance`);
       }
-      if (!props.maxSnapDistance) {
-        throw new Error(`${id} candidateCapacity requires maxSnapDistance`);
+      if (!output.status?.overflow) {
+        throw new Error(`${id} candidateCapacity requires output.status.overflow`);
       }
     }
-    if (props.overflow && props.candidateCapacity === undefined) {
-      throw new Error(`${id} overflow requires candidateCapacity`);
+    if (output.status?.overflow && props.candidateCapacity === undefined) {
+      throw new Error(`${id} output.status.overflow requires candidateCapacity`);
     }
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
@@ -259,8 +274,8 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns optional `edge-sources-clear` and `edge-sources` (CSR input; every edge row is
-   * written, rows past `offsets[nodeCount]` with an out-of-range source that every scan skips),
+   * Returns `edge-sources-clear` and `edge-sources` (every edge row is written, rows past
+   * `offsets[nodeCount]` with an out-of-range source that every scan skips),
    * the candidate search (`segments` plus the `${id}-join-*` nodes of `GPUNearestFeatureJoin`,
    * then `project`; or one `scan` node), and the optional `costs`, `positions`, and `seeds` nodes.
    */
@@ -268,36 +283,44 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, pointCount, nodeCount, edgeCount} = this;
+    const {offsets, neighbors: edgeTargets, weights: edgeCosts} = props.topology;
+    const {nodePositions} = props.topology;
+    const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    if (props.candidateCapacity !== undefined) {
+      validateMaximumCount(
+        id,
+        'topology edges with candidateCapacity',
+        edgeCount,
+        getGPUNetworkSnappingMaximumCandidateEdgeCount(graph.device)
+      );
+    }
     const nodes: GPUCommandNode<Parameters>[] = [];
     const nodeDeclarations = `const NODE_COUNT: u32 = ${nodeCount}u;
 const EDGE_COUNT: u32 = ${edgeCount}u;
 const NONE: u32 = ${ACCESSIBILITY_NONE}u;`;
 
-    let edgeSources = props.edgeSources;
-    if (props.offsets) {
-      edgeSources = createTransientView(
-        graph,
-        `${id}-edge-sources`,
-        'uint32',
-        Math.max(edgeCount, 1)
-      );
-      nodes.push(
-        ...createNetworkEdgeSourceNodes<Parameters>(graph, {
-          id: `${id}-edge-sources`,
-          operation: OPERATION,
-          offsets: props.offsets,
-          edgeSources,
-          nodeCount
-        })
-      );
-    }
-    const sources = edgeSources!;
+    const edgeSources = createTransientView(
+      graph,
+      `${id}-edge-sources`,
+      'uint32',
+      Math.max(edgeCount, 1)
+    );
+    nodes.push(
+      ...createNetworkEdgeSourceNodes<Parameters>(graph, {
+        id: `${id}-edge-sources`,
+        operation: OPERATION,
+        offsets,
+        edgeSources,
+        nodeCount
+      })
+    );
+    const sources = edgeSources;
     const fractions =
-      props.snapFractions ?? createTransientView(graph, `${id}-fractions`, 'float32', pointCount);
+      output.snapFractions ?? createTransientView(graph, `${id}-fractions`, 'float32', pointCount);
     const distances =
-      props.snapDistances ?? createTransientView(graph, `${id}-distances`, 'float32', pointCount);
-    const metricWGSL = getNetworkMetricWGSL(getNetworkGeodesicRadius(this.spatialContext));
+      output.snapDistances ?? createTransientView(graph, `${id}-distances`, 'float32', pointCount);
+    const metricWGSL = getNetworkMetricWGSL(getGPUGreatCircleRadius(this.spatialContext));
     const readNodeWGSL = /* wgsl */ `
 fn readNode(node: u32) -> vec2<f32> {
   return vec2<f32>(nodePositions[nodePositionsOffset + node * 2u], nodePositions[nodePositionsOffset + node * 2u + 1u]);
@@ -312,17 +335,17 @@ fn getDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32
   return networkSegmentDistance(point, start, end, fraction);
 }`;
     const projectBindings: WGSLKernelBinding[] = [
-      {name: 'points', view: props.points, type: 'f32', access: 'read'},
+      {name: 'points', view: props.positions, type: 'f32', access: 'read'},
       {
         name: 'nodePositions',
-        view: props.nodePositions,
+        view: nodePositions,
         type: 'f32',
         access: 'read'
       },
       {name: 'edgeSources', view: sources, type: 'u32', access: 'read'},
       {
         name: 'edgeTargets',
-        view: props.edgeTargets,
+        view: edgeTargets,
         type: 'u32',
         access: 'read'
       }
@@ -330,7 +353,7 @@ fn getDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32
     const projectOutputs: WGSLKernelBinding[] = [
       {
         name: 'snappedEdges',
-        view: props.snappedEdges,
+        view: output.snappedEdges,
         type: 'u32',
         access: 'read_write'
       },
@@ -347,7 +370,7 @@ fn getDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32
   fractions[fractionsOffset + index] = bestFraction;
   distances[distancesOffset + index] = bestDistance;`;
 
-    if (props.candidateCapacity !== undefined && props.maxSnapDistance) {
+    if (props.candidateCapacity !== undefined && props.maximumSnapDistance) {
       const segmentStarts = createTransientView(
         graph,
         `${id}-segment-starts`,
@@ -368,7 +391,7 @@ fn getDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32
             bindings: [
               {
                 name: 'nodePositions',
-                view: props.nodePositions,
+                view: nodePositions,
                 type: 'f32',
                 access: 'read'
               },
@@ -380,7 +403,7 @@ fn getDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32
               },
               {
                 name: 'edgeTargets',
-                view: props.edgeTargets,
+                view: edgeTargets,
                 type: 'u32',
                 access: 'read'
               },
@@ -428,17 +451,16 @@ fn readNode(node: u32) -> vec2<f32> {
         ...new GPUNearestFeatureJoin({
           id: `${id}-join`,
           spatialContext: this.spatialContext,
-          points: props.points,
+          queries: {kind: 'points', positions: props.positions},
           features: {
             kind: 'segments',
             starts: segmentStarts,
             ends: segmentEnds
           },
-          radius: props.maxSnapDistance,
+          radius: props.maximumSnapDistance,
           candidateCapacity: props.candidateCapacity,
           spatialSort: props.spatialSort,
-          nearestFeatureIds: joinRows,
-          overflow: props.overflow ?? createTransientView(graph, `${id}-overflow`, 'uint32', 1)
+          output: {nearestFeatureIds: joinRows, status: {overflow: output.status!.overflow!}}
         }).getCommandNodes(graph)
       );
       nodes.push(
@@ -473,10 +495,10 @@ ${segmentHelpers}`,
       );
     } else {
       const scanBindings = [...projectBindings, ...projectOutputs];
-      if (props.maxSnapDistance) {
+      if (props.maximumSnapDistance) {
         scanBindings.push({
-          name: 'maxSnapDistance',
-          view: props.maxSnapDistance,
+          name: 'maximumSnapDistance',
+          view: props.maximumSnapDistance,
           type: 'f32',
           access: 'read'
         });
@@ -491,7 +513,7 @@ ${segmentHelpers}`,
           declarations: `${nodeDeclarations}
 ${segmentHelpers}`,
           body: `let point = vec2<f32>(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
-  ${props.maxSnapDistance ? 'let limit = maxSnapDistance[maxSnapDistanceOffset];' : ''}
+  ${props.maximumSnapDistance ? 'let limit = maximumSnapDistance[maximumSnapDistanceOffset];' : ''}
   var bestEdge = NONE;
   var bestFraction = 0.0;
   var bestDistance = 0.0;
@@ -506,7 +528,7 @@ ${segmentHelpers}`,
     let fraction = getFraction(point, start, end);
     let distance = getDistance(point, start, end, fraction);
     // Strict less keeps the smallest edge row on ties; NaN never passes.
-    if (${props.maxSnapDistance ? 'distance <= limit' : 'distance >= 0.0'} && (bestEdge == NONE || distance < bestDistance)) {
+    if (${props.maximumSnapDistance ? 'distance <= limit' : 'distance >= 0.0'} && (bestEdge == NONE || distance < bestDistance)) {
       bestEdge = edge;
       bestFraction = fraction;
       bestDistance = distance;
@@ -517,18 +539,18 @@ ${segmentHelpers}`,
       );
     }
 
-    const needsCosts = Boolean(props.sourceCosts || props.targetCosts || props.seedNodes);
+    const needsCosts = Boolean(output.sourceCosts || output.targetCosts || output.startNodes);
     const sourceCosts =
-      props.sourceCosts ??
+      output.sourceCosts ??
       (needsCosts ? createTransientView(graph, `${id}-source-costs`, 'float32', pointCount) : null);
     const targetCosts =
-      props.targetCosts ??
+      output.targetCosts ??
       (needsCosts ? createTransientView(graph, `${id}-target-costs`, 'float32', pointCount) : null);
     if (sourceCosts && targetCosts) {
       const costBindings: WGSLKernelBinding[] = [
         {
           name: 'snappedEdges',
-          view: props.snappedEdges,
+          view: output.snappedEdges,
           type: 'u32',
           access: 'read'
         },
@@ -536,20 +558,20 @@ ${segmentHelpers}`,
         {name: 'edgeSources', view: sources, type: 'u32', access: 'read'},
         {
           name: 'edgeTargets',
-          view: props.edgeTargets,
+          view: edgeTargets,
           type: 'u32',
           access: 'read'
         },
-        props.edgeCosts
+        edgeCosts
           ? {
               name: 'edgeCosts',
-              view: props.edgeCosts,
+              view: edgeCosts,
               type: 'f32',
               access: 'read'
             }
           : {
               name: 'nodePositions',
-              view: props.nodePositions,
+              view: nodePositions,
               type: 'f32',
               access: 'read'
             },
@@ -574,7 +596,7 @@ ${segmentHelpers}`,
           bindings: costBindings,
           invocationCount: pointCount,
           declarations: `${nodeDeclarations}
-${props.edgeCosts ? '' : `${readNodeWGSL}\n${metricWGSL}`}`,
+${edgeCosts ? '' : `${readNodeWGSL}\n${metricWGSL}`}`,
           body: `let edge = snappedEdges[snappedEdgesOffset + index];
   if (edge >= EDGE_COUNT) {
     sourceCosts[sourceCostsOffset + index] = -1.0;
@@ -583,7 +605,7 @@ ${props.edgeCosts ? '' : `${readNodeWGSL}\n${metricWGSL}`}`,
   }
   let fraction = fractions[fractionsOffset + index];
   ${
-    props.edgeCosts
+    edgeCosts
       ? 'let edgeCost = edgeCosts[edgeCostsOffset + edge];'
       : `let edgeCost = networkDistance(
     readNode(edgeSources[edgeSourcesOffset + edge]),
@@ -595,37 +617,37 @@ ${props.edgeCosts ? '' : `${readNodeWGSL}\n${metricWGSL}`}`,
         })
       );
     }
-    if (props.snappedPositions) {
+    if (output.snappedPositions) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-positions`,
           operation: OPERATION,
           variant: 'positions',
           bindings: [
-            {name: 'points', view: props.points, type: 'f32', access: 'read'},
+            {name: 'points', view: props.positions, type: 'f32', access: 'read'},
             {
               name: 'nodePositions',
-              view: props.nodePositions,
+              view: nodePositions,
               type: 'f32',
               access: 'read'
             },
             {name: 'edgeSources', view: sources, type: 'u32', access: 'read'},
             {
               name: 'edgeTargets',
-              view: props.edgeTargets,
+              view: edgeTargets,
               type: 'u32',
               access: 'read'
             },
             {
               name: 'snappedEdges',
-              view: props.snappedEdges,
+              view: output.snappedEdges,
               type: 'u32',
               access: 'read'
             },
             {name: 'fractions', view: fractions, type: 'f32', access: 'read'},
             {
               name: 'snappedPositions',
-              view: props.snappedPositions,
+              view: output.snappedPositions,
               type: 'f32',
               access: 'read_write'
             }
@@ -646,25 +668,25 @@ ${metricWGSL}`,
         })
       );
     }
-    if (props.seedNodes && props.seedCosts && sourceCosts && targetCosts) {
-      const useSource = this.seedDirection !== 'forward';
-      const useTarget = this.seedDirection !== 'reverse';
+    if (output.startNodes && output.startCosts && sourceCosts && targetCosts) {
+      const useSource = this.startDirection !== 'forward';
+      const useTarget = this.startDirection !== 'reverse';
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-seeds`,
           operation: OPERATION,
-          variant: `seeds-${this.seedDirection}`,
+          variant: `seeds-${this.startDirection}`,
           bindings: [
             {
               name: 'snappedEdges',
-              view: props.snappedEdges,
+              view: output.snappedEdges,
               type: 'u32',
               access: 'read'
             },
             {name: 'edgeSources', view: sources, type: 'u32', access: 'read'},
             {
               name: 'edgeTargets',
-              view: props.edgeTargets,
+              view: edgeTargets,
               type: 'u32',
               access: 'read'
             },
@@ -682,13 +704,13 @@ ${metricWGSL}`,
             },
             {
               name: 'seedNodes',
-              view: props.seedNodes,
+              view: output.startNodes,
               type: 'u32',
               access: 'read_write'
             },
             {
               name: 'seedCosts',
-              view: props.seedCosts,
+              view: output.startCosts,
               type: 'f32',
               access: 'read_write'
             }
@@ -715,27 +737,24 @@ ${metricWGSL}`,
 /** Returns every read-only view of a snapping contributor. */
 function getInputs(props: GPUNetworkSnappingProps): (GraphDataView | undefined)[] {
   return [
-    props.points,
-    props.nodePositions,
-    props.edgeSources,
-    props.offsets,
-    props.edgeTargets,
-    props.edgeCosts,
-    props.maxSnapDistance
+    props.positions,
+    ...getGPUNetworkTopologyViews(props.topology),
+    props.maximumSnapDistance
   ];
 }
 
 /** Returns every writable view of a snapping contributor. */
 function getOutputs(props: GPUNetworkSnappingProps): (GraphDataView | undefined)[] {
+  const {output} = props;
   return [
-    props.snappedEdges,
-    props.snapFractions,
-    props.snapDistances,
-    props.sourceCosts,
-    props.targetCosts,
-    props.snappedPositions,
-    props.seedNodes,
-    props.seedCosts,
-    props.overflow
+    output.snappedEdges,
+    output.snapFractions,
+    output.snapDistances,
+    output.sourceCosts,
+    output.targetCosts,
+    output.snappedPositions,
+    output.startNodes,
+    output.startCosts,
+    output.status?.overflow
   ];
 }

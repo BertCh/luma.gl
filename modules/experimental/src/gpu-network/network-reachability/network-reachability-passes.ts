@@ -24,6 +24,41 @@ const REACHABILITY_WGSL_CONSTANTS = /* wgsl */ `
 const INFINITY_BITS: u32 = 0x7f800000u;
 const NONE: u32 = 0xffffffffu;`;
 
+/**
+ * Control words of the inflation counters, placed after every phase region of the frontier control
+ * buffer: relaxation count (low, high) then reached edge count (low, high). @internal
+ */
+export const NETWORK_REACHABILITY_COUNTER_WORD_COUNT = 4;
+
+/**
+ * WGSL for a 64-bit counter kept as two `u32` words (low, high). Adding with carry is correct for
+ * concurrent adders: the adder whose low-word sum wraps adds the carry to the high word. @internal
+ */
+const COUNTER_WGSL = /* wgsl */ `
+var<workgroup> counterLow: atomic<u32>;
+var<workgroup> counterHigh: atomic<u32>;
+
+// Adds to this workgroup's 64-bit partial count.
+fn addCount(count: u32) {
+  if (count == 0u) { return; }
+  let previous = atomicAdd(&counterLow, count);
+  if (previous + count < previous) { atomicAdd(&counterHigh, 1u); }
+}`;
+
+/** WGSL epilogue for thread 0 (after a barrier): adds the workgroup partial to the global words. */
+function getCounterFlushSource(wordOffset: number): string {
+  return `if (localInvocationIndex == 0u) {
+    let partialLow = atomicLoad(&counterLow);
+    let partialHigh = atomicLoad(&counterHigh);
+    if (partialLow != 0u || partialHigh != 0u) {
+      let previous = atomicAdd(&control[controlOffset + ${wordOffset}u], partialLow);
+      var carry = partialHigh;
+      if (previous + partialLow < previous) { carry += 1u; }
+      if (carry != 0u) { atomicAdd(&control[controlOffset + ${wordOffset + 1}u], carry); }
+    }
+  }`;
+}
+
 /** CSR inputs read by relaxation and predecessor passes. @internal */
 export type NetworkReachabilityGraphViews = {
   offsets: GraphDataView<'uint32'>;
@@ -53,6 +88,8 @@ export function createReachabilityInitializeNode<Parameters>(
     predecessors?: GraphDataView<'uint32'>;
     activeIterations?: GraphDataView<'uint32'>;
     costLimit?: GraphDataView<'float32'>;
+    /** Control word offset of the four inflation counter words to zero, when counting. */
+    counterWordOffset?: number;
   }
 ): GPUCommandNode<Parameters> {
   const {state, phase} = props;
@@ -107,13 +144,22 @@ export function createReachabilityInitializeNode<Parameters>(
     operation: OPERATION,
     variant: 'initialize',
     bindings,
-    invocationCount: Math.max(props.nodeCount, getFrontierResetInvocationCount(phase)),
+    invocationCount: Math.max(
+      props.nodeCount,
+      getFrontierResetInvocationCount(phase),
+      props.counterWordOffset === undefined ? 0 : NETWORK_REACHABILITY_COUNTER_WORD_COUNT
+    ),
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
 const NODE_COUNT: u32 = ${props.nodeCount}u;`,
     body: `${getFrontierResetSource(phase, {
       limit: getRoundLimitSource(phase.maxRounds, Boolean(props.activeIterations)),
       parameter0: props.costLimit ? 'bitcast<u32>(costLimit[costLimitOffset])' : undefined
     })}
+  ${
+    props.counterWordOffset === undefined
+      ? ''
+      : `if (index < ${NETWORK_REACHABILITY_COUNTER_WORD_COUNT}u) { control[controlOffset + ${props.counterWordOffset}u + index] = 0u; }`
+  }
   if (index < NODE_COUNT) {
     costBits[costBitsOffset + index] = INFINITY_BITS;
     // Stamps never need clearing within one encoding, but a previous encoding left them dirty.
@@ -121,6 +167,22 @@ const NODE_COUNT: u32 = ${props.nodeCount}u;`,
     ${props.predecessors ? 'predecessors[predecessorsOffset + index] = NONE;' : ''}
   }`
   });
+}
+
+/**
+ * Returns the WGSL early return that skips start rows at or after the active start count. A view
+ * is read per frame from the `sourceCount` binding; a number is baked in as a constant and adds no
+ * binding. @internal
+ */
+export function getStartCountGuardSource(
+  startCount: number | GraphDataView<'uint32'> | undefined
+): string {
+  if (startCount === undefined) {
+    return '';
+  }
+  return typeof startCount === 'number'
+    ? `if (index >= ${startCount}u) { return; }`
+    : 'if (index >= sourceCount[sourceCountOffset]) { return; }';
 }
 
 /** Seeds source costs and pushes the sources into round 0. @internal */
@@ -133,7 +195,7 @@ export function createReachabilitySeedNode<Parameters>(
     phase: FrontierPhase;
     sources: GraphDataView<'uint32'>;
     sourceCosts?: GraphDataView<'float32'>;
-    sourceCount?: GraphDataView<'uint32'>;
+    sourceCount?: number | GraphDataView<'uint32'>;
     hasCostLimit: boolean;
     costs: GraphDataView<'float32'>;
   }
@@ -149,7 +211,7 @@ export function createReachabilitySeedNode<Parameters>(
       access: 'read'
     });
   }
-  if (props.sourceCount) {
+  if (typeof props.sourceCount === 'object') {
     bindings.push({
       name: 'sourceCount',
       view: props.sourceCount,
@@ -164,7 +226,7 @@ export function createReachabilitySeedNode<Parameters>(
       type: 'atomic<u32>',
       access: 'read_write'
     },
-    ...getFrontierBindings(props.state, false)
+    ...getFrontierBindings(graph, props.state, props.phase, 0)
   );
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -177,15 +239,14 @@ const NODE_COUNT: u32 = ${props.nodeCount}u;
 ${getFrontierPushSource(
   props.phase,
   props.nodeCount,
-  0,
   graph.device.limits.maxComputeWorkgroupsPerDimension
 )}`,
-    body: `${props.sourceCount ? 'if (index >= sourceCount[sourceCountOffset]) { return; }' : ''}
+    body: `${getStartCountGuardSource(props.sourceCount)}
   let node = sources[sourcesOffset + index];
   if (node >= NODE_COUNT) { return; }
   let cost = ${props.sourceCosts ? 'sourceCosts[sourceCostsOffset + index]' : '0.0'};
   if (!(cost >= 0.0)) { return; }
-  ${props.hasCostLimit ? 'if (cost > bitcast<f32>(atomicLoad(&control[FRONTIER_PARAMETER_0_WORD]))) { return; }' : ''}
+  ${props.hasCostLimit ? 'if (cost > bitcast<f32>(atomicLoad(&control[controlOffset + FRONTIER_PARAMETER_0_WORD]))) { return; }' : ''}
   // Fold -0.0 so the u32 bit order of non-negative floats matches numeric order.
   let bits = select(bitcast<u32>(cost), 0u, cost == 0.0);
   if (bits >= INFINITY_BITS) { return; }
@@ -216,13 +277,20 @@ export function createReachabilityRelaxNode<Parameters>(
      * lane base is added to every target, so no per-lane copy of the CSR exists.
      */
     laneNodeCount?: number;
+    /**
+     * Control word offset of the relaxation counter (low, high). When given, every visit adds the
+     * edges it scans. The source differs by variant only, never by round.
+     */
+    counterWordOffset?: number;
   }
 ): GPUCommandNode<Parameters> {
-  const {csr, laneNodeCount} = props;
+  const {csr, laneNodeCount, counterWordOffset} = props;
+  const isCounting = counterWordOffset !== undefined;
   return createFrontierRoundNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: laneNodeCount === undefined ? 'relax' : 'relax-lanes',
+    variant: `${laneNodeCount === undefined ? 'relax' : 'relax-lanes'}${isCounting ? '-counted' : ''}`,
+    epilogueSource: isCounting ? getCounterFlushSource(counterWordOffset) : undefined,
     state: props.state,
     phase: props.phase,
     round: props.round,
@@ -240,7 +308,7 @@ export function createReachabilityRelaxNode<Parameters>(
     ],
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
 const NODE_COUNT: u32 = ${laneNodeCount ?? props.nodeCount}u;
-const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
+const EDGE_COUNT: u32 = ${csr.neighbors.length}u;${isCounting ? COUNTER_WGSL : ''}`,
     visitSource: `fn visit(node: u32) {
   let sourceCost = bitcast<f32>(atomicLoad(&costBits[costBitsOffset + node]));
   ${
@@ -250,7 +318,8 @@ const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
   }
   let firstEdge = min(offsets[offsetsOffset + csrNode], EDGE_COUNT);
   let lastEdge = min(offsets[offsetsOffset + csrNode + 1u], EDGE_COUNT);
-  ${props.hasCostLimit ? 'let costLimitValue = bitcast<f32>(atomicLoad(&control[FRONTIER_PARAMETER_0_WORD]));' : ''}
+  ${props.hasCostLimit ? 'let costLimitValue = bitcast<f32>(atomicLoad(&control[controlOffset + FRONTIER_PARAMETER_0_WORD]));' : ''}
+  ${isCounting ? 'addCount(select(0u, lastEdge - firstEdge, lastEdge > firstEdge));' : ''}
   for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
     let targetCsrNode = neighbors[neighborsOffset + edgeIndex];
     let weight = weights[weightsOffset + edgeIndex];
@@ -281,11 +350,44 @@ export function createReachabilityFinalizeNode<Parameters>(
     tiePhase?: FrontierPhase;
     converged?: GraphDataView<'uint32'>;
     iterationCount?: GraphDataView<'uint32'>;
+    /** Two-row (low, high) outputs and the control word offset of the counter words they copy. */
+    counters?: {
+      wordOffset: number;
+      relaxationCount?: GraphDataView<'uint32'>;
+      reachedEdgeCount?: GraphDataView<'uint32'>;
+    };
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
     {name: 'control', view: props.state.control, type: 'u32', access: 'read'}
   ];
+  const counterCopies: string[] = [];
+  if (props.counters?.relaxationCount) {
+    bindings.push({
+      name: 'relaxationCount',
+      view: props.counters.relaxationCount,
+      type: 'u32',
+      access: 'read_write'
+    });
+    const word = props.counters.wordOffset;
+    counterCopies.push(
+      `relaxationCount[relaxationCountOffset] = control[controlOffset + ${word}u];`,
+      `relaxationCount[relaxationCountOffset + 1u] = control[controlOffset + ${word + 1}u];`
+    );
+  }
+  if (props.counters?.reachedEdgeCount) {
+    bindings.push({
+      name: 'reachedEdgeCount',
+      view: props.counters.reachedEdgeCount,
+      type: 'u32',
+      access: 'read_write'
+    });
+    const word = props.counters.wordOffset + 2;
+    counterCopies.push(
+      `reachedEdgeCount[reachedEdgeCountOffset] = control[controlOffset + ${word}u];`,
+      `reachedEdgeCount[reachedEdgeCountOffset + 1u] = control[controlOffset + ${word + 1}u];`
+    );
+  }
   if (props.converged) {
     bindings.push({
       name: 'converged',
@@ -318,7 +420,60 @@ export function createReachabilityFinalizeNode<Parameters>(
         };`
       : ''
   }
-  ${props.iterationCount ? 'iterationCount[iterationCountOffset] = frontierRoundCount;' : ''}`
+  ${props.iterationCount ? 'iterationCount[iterationCountOffset] = frontierRoundCount;' : ''}
+  ${counterCopies.join('\n  ')}`
+  });
+}
+
+/**
+ * Adds, for every node with a finite final cost, its out-degree (edges with an in-range target,
+ * any weight) to the reached edge counter: the edges a label-setting Dijkstra scans exactly once.
+ * One thread per expanded node, a workgroup partial sum, then one 64-bit add per workgroup. With
+ * lanes the CSR is read through `node % laneNodeCount`, so the count sums over lanes. @internal
+ */
+export function createReachabilityReachedEdgesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    nodeCount: number;
+    state: FrontierState;
+    csr: NetworkReachabilityGraphViews;
+    costs: GraphDataView<'float32'>;
+    /** Nodes per lane of one shared CSR; defaults to `nodeCount`. */
+    laneNodeCount?: number;
+    counterWordOffset: number;
+  }
+): GPUCommandNode<Parameters> {
+  const {csr} = props;
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'reached-edges',
+    bindings: [
+      {name: 'offsets', view: csr.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: csr.neighbors, type: 'u32', access: 'read'},
+      {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+      {name: 'control', view: props.state.control, type: 'atomic<u32>', access: 'read_write'}
+    ],
+    invocationCount: props.nodeCount,
+    // Workgroup barrier: every invocation of a dispatched workgroup must reach it.
+    guardIndex: false,
+    declarations: `${REACHABILITY_WGSL_CONSTANTS}
+const NODE_COUNT: u32 = ${props.nodeCount}u;
+const LANE_NODE_COUNT: u32 = ${props.laneNodeCount ?? props.nodeCount}u;
+const EDGE_COUNT: u32 = ${csr.neighbors.length}u;${COUNTER_WGSL}`,
+    body: `if (index < NODE_COUNT && bitcast<u32>(costs[costsOffset + index]) < INFINITY_BITS) {
+    let csrNode = index % LANE_NODE_COUNT;
+    let firstEdge = min(offsets[offsetsOffset + csrNode], EDGE_COUNT);
+    let lastEdge = min(offsets[offsetsOffset + csrNode + 1u], EDGE_COUNT);
+    var degree = 0u;
+    for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
+      if (neighbors[neighborsOffset + edgeIndex] < LANE_NODE_COUNT) { degree++; }
+    }
+    addCount(degree);
+  }
+  workgroupBarrier();
+  ${getCounterFlushSource(props.counterWordOffset + 2)}`
   });
 }
 
@@ -335,6 +490,11 @@ export function createReachabilityPredecessorsNode<Parameters>(
     costs: GraphDataView<'float32'>;
     predecessors: GraphDataView<'uint32'>;
     tieBits?: GraphDataView<'uint32'>;
+    /**
+     * Optional per-node label (a service-area facility row). When given, only tight edges between
+     * nodes of the same label count, so predecessor links stay inside one label's tree.
+     */
+    labels?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const {csr} = props;
@@ -358,10 +518,13 @@ export function createReachabilityPredecessorsNode<Parameters>(
       access: 'read_write'
     });
   }
+  if (props.labels) {
+    bindings.push({name: 'labels', view: props.labels, type: 'u32', access: 'read'});
+  }
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'predecessors',
+    variant: props.labels ? 'predecessors-labelled' : 'predecessors',
     bindings,
     invocationCount: props.nodeCount,
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
@@ -377,6 +540,7 @@ const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
     if (targetNode >= NODE_COUNT || !(weight >= 0.0)) { continue; }
     let targetCost = costs[costsOffset + targetNode];
     if (bitcast<u32>(targetCost) >= INFINITY_BITS || sourceCost + weight != targetCost) { continue; }
+    ${props.labels ? 'if (labels[labelsOffset + index] != labels[labelsOffset + targetNode]) { continue; }' : ''}
     if (sourceCost < targetCost) {
       atomicMin(&predecessors[predecessorsOffset + targetNode], index);
     }${
@@ -514,19 +678,24 @@ export function createReachabilityTieRootsNode<Parameters>(
     phase: FrontierPhase;
     sources: GraphDataView<'uint32'>;
     sourceCosts?: GraphDataView<'float32'>;
-    sourceCount?: GraphDataView<'uint32'>;
+    sourceCount?: number | GraphDataView<'uint32'>;
     hasCostLimit: boolean;
     costs: GraphDataView<'float32'>;
     levels: GraphDataView<'uint32'>;
+    /** Optional per-node label; a source row roots only the node whose label is that row. */
+    labels?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
     {name: 'sources', view: props.sources, type: 'u32', access: 'read'}
   ];
+  if (props.labels) {
+    bindings.push({name: 'labels', view: props.labels, type: 'u32', access: 'read'});
+  }
   if (props.sourceCosts) {
     bindings.push({name: 'sourceCosts', view: props.sourceCosts, type: 'f32', access: 'read'});
   }
-  if (props.sourceCount) {
+  if (typeof props.sourceCount === 'object') {
     bindings.push({name: 'sourceCount', view: props.sourceCount, type: 'u32', access: 'read'});
   }
   bindings.push(
@@ -544,7 +713,7 @@ export function createReachabilityTieRootsNode<Parameters>(
     invocationCount: props.sources.length,
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
 const NODE_COUNT: u32 = ${props.nodeCount}u;`,
-    body: `${props.sourceCount ? 'if (index >= sourceCount[sourceCountOffset]) { return; }' : ''}
+    body: `${getStartCountGuardSource(props.sourceCount)}
   let node = sources[sourcesOffset + index];
   if (node >= NODE_COUNT) { return; }
   let cost = ${props.sourceCosts ? 'sourceCosts[sourceCostsOffset + index]' : '0.0'};
@@ -552,6 +721,7 @@ const NODE_COUNT: u32 = ${props.nodeCount}u;`,
   ${props.hasCostLimit ? `if (cost > bitcast<f32>(control[controlOffset + ${props.phase.controlWordOffset + FRONTIER_CONTROL_PARAMETER_0}u])) { return; }` : ''}
   let bits = select(bitcast<u32>(cost), 0u, cost == 0.0);
   if (bits >= INFINITY_BITS) { return; }
+  ${props.labels ? 'if (labels[labelsOffset + node] != index) { return; }' : ''}
   if (bits == bitcast<u32>(costs[costsOffset + node])) {
     levels[levelsOffset + node] = 0u;
   }`
@@ -585,7 +755,7 @@ export function createReachabilityTieSeedNode<Parameters>(
       {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read'},
       {name: 'predecessors', view: props.predecessors, type: 'u32', access: 'read'},
       {name: 'levels', view: props.levels, type: 'u32', access: 'read_write'},
-      ...getFrontierBindings(props.state, false)
+      ...getFrontierBindings(graph, props.state, props.tiePhase, 0)
     ],
     invocationCount: props.nodeCount,
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
@@ -595,7 +765,6 @@ ${TIE_EDGE_WGSL}
 ${getFrontierPushSource(
   props.tiePhase,
   props.nodeCount,
-  0,
   graph.device.limits.maxComputeWorkgroupsPerDimension
 )}`,
     body: `if (predecessors[predecessorsOffset + index] != NONE) {

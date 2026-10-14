@@ -8,29 +8,42 @@ import {
   GPUReduction,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
+  type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
+  type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  createFillNode,
+  createWGSLDispatchGate,
+  createWGSLKernelNode
+} from '../../utils/wgsl-kernel-nodes';
+import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {
+  createSegmentSumNode,
+  getSegmentSumDispatchShape,
+  getSortKeyBits
+} from '../../utils/sorted-segment-sums';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
-} from '../contracts/spatial-context';
+} from '../../analysis-core/contracts/spatial-context';
 import {
   getRasterSphereRadius,
-  getSphericalCellAreaWGSL,
+  getPlacedCellAreaWGSL,
   validateGeographicRaster
-} from './spherical-cell-area';
+} from '../../analysis-core/spherical-cell-area';
+import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
+import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
+import type {GPURasterMetadata} from '../../gpu-raster/types';
 import {getZoneAnchorNodes} from './zone-anchor-nodes';
 
 const OPERATION = 'GPUPycnophylactic';
@@ -46,22 +59,51 @@ export const GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS = 512;
 /** Smoothing neighborhood of {@link GPUPycnophylactic}. */
 export type GPUPycnophylacticKernel = 'rook' | 'box';
 
+/** Caller-owned outputs of {@link GPUPycnophylactic}. */
+export type GPUPycnophylacticOutput = {
+  /**
+   * `grid.width * grid.height` result: the mass per cell. The cells of zone `z` sum to `totals[z]` (to
+   * float32 accuracy) and are non-negative. Cells outside the study area and cells of zones
+   * without cells are 0. On a longitude/latitude raster this is density times cell area; see
+   * `density`.
+   */
+  mass: GraphDataView<'float32'>;
+  /**
+   * Optional `grid.width * grid.height` density surface (mass per unit area: per cell on a planar raster,
+   * per square meter on a longitude/latitude raster), the quantity that is smoothed.
+   */
+  density?: GraphDataView<'float32'>;
+  /** Optional status words; each is one uint32 row. */
+  status?: {
+    /**
+     * 1 when the change fell to `tolerance` within `maximumIterations`, else 0. Requires
+     * `tolerance`. Also 0 when `maximumIterations` is 0.
+     */
+    converged?: GPUStatusScalar;
+    /**
+     * The number of smoothing iterations that ran (at most `maximumIterations`). Requires
+     * `tolerance`; without one every iteration runs.
+     */
+    iterationCount?: GPUStatusScalar;
+    /** Zones with no cell (or no area) after anchoring, whose total is lost. */
+    invalidCount?: GPUStatusScalar;
+  };
+};
+
 /**
  * Properties for {@link GPUPycnophylactic}.
  *
- * Compile-time: `width`, `height`, `zoneCount`, `iterations`, `kernel`, `spatialContext` and which
- * optional views exist. Per-frame: the contents of `zones`, `totals`, `extent`, `zoneAnchorCells`
+ * Compile-time: the `grid` size, `zoneCount`, `maximumIterations`, `kernel`, `spatialContext` and which
+ * optional views exist. Per-frame: the contents of `zones`, `totals`, `parameters`, `zoneAnchorCells`
  * and `tolerance`.
  */
 export type GPUPycnophylacticProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'pycnophylactic'`. */
   id?: string;
-  /** Raster width in cells. */
-  width: number;
-  /** Raster height in cells. */
-  height: number;
+  /** Raster grid: its width and height size the kernels, and `zones` holds `grid.width * grid.height` rows. */
+  grid: GPURasterMetadata;
   /**
-   * Zone raster (`width * height` rows, row-major): the zone of each cell, or any value
+   * Zone raster (`grid.width * grid.height` rows, row-major): the zone of each cell, or any value
    * `>= zoneCount` (such as `GPU_POLYGON_RASTERIZATION_NO_ZONE`) for a cell outside the study area.
    * Typically the `zones` output of a `GPUPolygonRasterization`.
    */
@@ -74,70 +116,51 @@ export type GPUPycnophylacticProps = {
    * Maximum number of smoothing iterations, in `[0, GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS]`. All of
    * them run unless `tolerance` stops the surface earlier.
    */
-  iterations: number;
+  maximumIterations: number;
   /**
    * Optional one-row relative tolerance. After each iteration the largest change of any cell,
    * divided by the mean density of its zone (`totals[z] / area(z)`), is compared with it. Once the
-   * change is at most `tolerance`, the surface is final and every remaining iteration is a no-op
-   * (deterministic, but the compiled iteration count is unchanged). Required for `converged` and
-   * `iterationLimitReached`. Per-frame; a NaN or negative tolerance never converges.
+   * change is at most `tolerance`, the surface is final: the per-cell kernels of the remaining
+   * iterations are skipped through a GPU-written indirect dispatch (the compiled iteration count is
+   * unchanged, and the surface is not copied forward). Required for `output.status.converged` and
+   * `output.status.iterationCount`. Per-frame; a NaN or negative tolerance never converges.
    */
   tolerance?: GraphDataView<'float32'>;
   /**
-   * Optional one-row output: 1 when the change fell to `tolerance` within `iterations`, else 0.
-   * Requires `tolerance`. Also 0 when `iterations` is 0.
-   */
-  converged?: GraphDataView<'uint32'>;
-  /**
-   * Optional one-row output: 1 when `iterations` ran out before the change reached `tolerance`,
-   * else 0. Requires `tolerance`.
-   */
-  iterationLimitReached?: GraphDataView<'uint32'>;
-  /**
    * Coordinate space of the raster. Omitted means native planar: every cell has the same area, so
    * mass and density coincide. A `longitude-latitude` context (metric `'none'` or `'great-circle'`)
-   * means a longitude/latitude grid described by `extent`: the surface smoothed is the DENSITY
+   * means a longitude/latitude grid placed by `parameters`: the surface smoothed is the DENSITY
    * (mass per square meter) and the zone totals are enforced on mass = density times the spherical
    * cell area `R^2 dLon (sin(latTop) - sin(latBottom))`, with `R` = `context.sphereRadius` or the
-   * WGS84 authalic radius. `output` is then mass per cell and `density` the surface itself.
+   * WGS84 authalic radius. `output.mass` is then mass per cell and `output.density` the surface
+   * itself.
    * Smoothing neighbors are still cell-index neighbors, so the focal mean is anisotropic on the
    * ground away from the equator. Other spaces throw.
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * `longitude-latitude` only: per-frame raster placement `[originLongitude, originLatitude,
-   * cellWidth, cellHeight]` in degrees (the view of `GPUPolygonRasterization.extent`; row 0 at the
-   * smallest latitude). Required for, and only valid with, a longitude/latitude context.
+   * `longitude-latitude` only: the per-frame raster placement, the `getGPUPolygonRasterizationParameterValues(grid)`
+   * view, the same view as `GPUPolygonRasterization.parameters` (float32, at least 4 values). A
+   * negative cell height (north-up rows) is handled: cell areas follow the mirrored rows. Required
+   * for, and only valid with, a longitude/latitude context.
    */
-  extent?: GraphDataView<'float32'>;
+  parameters?: GraphDataView<'float32'>;
   /**
    * Optional per-zone fallback cell (`zoneCount` rows of cell indices; out of range means none).
    * A zone that rasterized to no cell claims its anchor cell, for example the cell containing the
    * zone's label point, so its total is not lost. The claim is made in a transient copy of `zones`
    * and only succeeds if the cell belongs to no zone or to a zone that keeps another cell; shared
-   * anchors go to the lowest zone row. Zones that still have no cell are counted in `invalidCount`
-   * and their total is lost.
+   * anchors go to the lowest zone row. Zones that still have no cell are counted in
+   * `output.status.invalidCount` and their total is lost.
    */
   zoneAnchorCells?: GraphDataView<'uint32'>;
-  /** Optional one-row output: zones with no cell (or no area) after anchoring, whose total is lost. */
-  invalidCount?: GraphDataView<'uint32'>;
   /**
    * Focal mean: `'rook'` (default, Tobler 1979) averages the 4 edge neighbors inside the study
    * area; `'box'` averages the 3x3 block including the cell itself.
    */
   kernel?: GPUPycnophylacticKernel;
-  /**
-   * Caller-owned `width * height` result: the mass per cell. The cells of zone `z` sum to
-   * `totals[z]` (to float32 accuracy) and are non-negative. Cells outside the study area and cells
-   * of zones without cells are 0. On a longitude/latitude raster this is density times cell area;
-   * see `density`.
-   */
-  output: GraphDataView<'float32'>;
-  /**
-   * Optional caller-owned `width * height` density surface (mass per unit area: per cell on a
-   * planar raster, per square meter on a longitude/latitude raster), the quantity that is smoothed.
-   */
-  density?: GraphDataView<'float32'>;
+  /** Caller-owned outputs. */
+  output: GPUPycnophylacticOutput;
 };
 
 /**
@@ -145,7 +168,7 @@ export type GPUPycnophylacticProps = {
  * whose mass in every zone equals the zone total. Reference: Tobler, W. R. (1979), "Smooth
  * pycnophylactic interpolation for geographical regions", JASA 74(367), 519-530.
  *
- * Algorithm (at most `iterations` iterations, deterministic). With `a(c)` the cell area (1 on a
+ * Algorithm (at most `maximumIterations` iterations, deterministic). With `a(c)` the cell area (1 on a
  * planar raster, the spherical cell area on a longitude/latitude raster), `A(z)` the zone area and
  * `T(z)` the zone total:
  * 1. Initialize the density of every cell of zone `z` to `T(z) / A(z)`.
@@ -155,8 +178,8 @@ export type GPUPycnophylacticProps = {
  *    `T(z) / M(z)` (a zone whose mass is 0 is filled uniformly). The last step guarantees the
  *    totals and non-negativity after every iteration.
  * 3. With `tolerance`: stop (further iterations become no-ops) when the largest change of any cell
- *    relative to its zone's mean density is at most `tolerance`; `converged` and
- *    `iterationLimitReached` report which happened.
+ *    relative to its zone's mean density is at most `tolerance`; `output.status.converged` and
+ *    `output.status.iterationCount` report what happened.
  *
  * Deviation from Tobler (1979). Tobler alternates the smoothing with a volume-restoring
  * adjustment; the restoring step here is additive then clamped then multiplicative. The
@@ -167,7 +190,7 @@ export type GPUPycnophylacticProps = {
  *
  * Zones without cells. A zone smaller than a cell has no raster cell and its total would be lost.
  * `zoneAnchorCells` gives such a zone a fallback cell; zones that still have none are counted in
- * `invalidCount`. Totals of zones with no cell never appear in `output`.
+ * `output.status.invalidCount`. Totals of zones with no cell never appear in `output.mass`.
  *
  * Longitude/latitude rasters. With a `longitude-latitude` `spatialContext` the smoothed quantity is
  * the density per square meter and the totals are enforced on density times the spherical cell
@@ -176,7 +199,7 @@ export type GPUPycnophylacticProps = {
  *
  * Zone sums use a fixed-order segmented reduction over cells sorted once by zone, so results are
  * bitwise reproducible. Smoothing converges geometrically with the zone size, so use `tolerance`
- * rather than guessing `iterations`. Counts are float32 sums, exact up to 2^24 cells per zone;
+ * rather than guessing `maximumIterations`. Counts are float32 sums, exact up to 2^24 cells per zone;
  * larger zones lose count precision (the mass still sums to float32 accuracy).
  *
  * Together with `GPUArealInterpolation` this covers the tobler pycnophylactic and area
@@ -197,53 +220,44 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
-    for (const [name, value] of [
-      ['width', props.width],
-      ['height', props.height],
-      ['zoneCount', props.zoneCount]
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${id} ${name} must be a positive integer`);
-      }
-    }
-    if (
-      !Number.isSafeInteger(props.iterations) ||
-      props.iterations < 0 ||
-      props.iterations > GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS
-    ) {
-      throw new Error(
-        `${id} iterations must be an integer in [0, ${GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS}]`
-      );
-    }
+    const cellCount = validateRasterGrid(id, props.grid);
+    validateCapacity(id, 'zoneCount', props.zoneCount);
+    validateCapacity(
+      id,
+      'maximumIterations',
+      props.maximumIterations,
+      0,
+      GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS
+    );
     if (props.kernel !== undefined && props.kernel !== 'rook' && props.kernel !== 'box') {
       throw new Error(`${id} kernel must be 'rook' or 'box'`);
     }
-    const cellCount = props.width * props.height;
-    validatePackedUint32View(props.zones, `${id} zones`);
+    const {output} = props;
+    validatePackedView(props.zones, ['uint32'], `${id} zones`);
     validatePackedView(props.totals, ['float32'], `${id} totals`);
-    validatePackedView(props.output, ['float32'], `${id} output`);
+    validatePackedView(output.mass, ['float32'], `${id} output.mass`);
     if (props.zones.length !== cellCount) {
-      throw new Error(`${id} zones must contain width * height rows`);
+      throw new Error(`${id} zones must contain one row per grid cell`);
     }
-    if (props.output.length !== cellCount) {
-      throw new Error(`${id} output must contain width * height rows`);
+    if (output.mass.length !== cellCount) {
+      throw new Error(`${id} output.mass must contain one row per grid cell`);
     }
     if (props.totals.length !== props.zoneCount) {
       throw new Error(`${id} totals must contain zoneCount rows`);
     }
     if (this.spatialContext.coordinateSpace === 'longitude-latitude') {
-      validateGeographicRaster(id, props.extent, props.width, cellCount);
-    } else if (props.extent) {
-      throw new Error(`${id} extent needs a longitude-latitude spatialContext`);
+      validateGeographicRaster(id, props.parameters);
+    } else if (props.parameters) {
+      throw new Error(`${id} parameters need a longitude-latitude spatialContext`);
     }
-    if (props.density) {
-      validatePackedView(props.density, ['float32'], `${id} density`);
-      if (props.density.length !== cellCount) {
-        throw new Error(`${id} density must contain width * height rows`);
+    if (output.density) {
+      validatePackedView(output.density, ['float32'], `${id} output.density`);
+      if (output.density.length !== cellCount) {
+        throw new Error(`${id} output.density must contain one row per grid cell`);
       }
     }
     if (props.zoneAnchorCells) {
-      validatePackedUint32View(props.zoneAnchorCells, `${id} zoneAnchorCells`);
+      validatePackedView(props.zoneAnchorCells, ['uint32'], `${id} zoneAnchorCells`);
       if (props.zoneAnchorCells.length !== props.zoneCount) {
         throw new Error(`${id} zoneAnchorCells must have zoneCount rows`);
       }
@@ -255,36 +269,38 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
       }
     }
     for (const [name, view] of [
-      ['converged', props.converged],
-      ['iterationLimitReached', props.iterationLimitReached],
-      ['invalidCount', props.invalidCount]
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationCount', output.status?.iterationCount],
+      ['output.status.invalidCount', output.status?.invalidCount]
     ] as const) {
       if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
+        validatePackedView(view, ['uint32'], `${id} ${name}`);
         if (view.length < 1) {
           throw new Error(`${id} ${name} must hold one uint32`);
         }
       }
     }
-    if ((props.converged || props.iterationLimitReached) && !props.tolerance) {
-      throw new Error(`${id} converged and iterationLimitReached need a tolerance`);
+    if ((output.status?.converged || output.status?.iterationCount) && !props.tolerance) {
+      throw new Error(
+        `${id} output.status.converged and output.status.iterationCount need a tolerance`
+      );
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
 
   private getInputViews(): (GraphDataView | undefined)[] {
     const {props} = this;
-    return [props.zones, props.totals, props.extent, props.zoneAnchorCells, props.tolerance];
+    return [props.zones, props.totals, props.parameters, props.zoneAnchorCells, props.tolerance];
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {props} = this;
+    const {output} = this.props;
     return [
-      props.output,
-      props.density,
-      props.converged,
-      props.iterationLimitReached,
-      props.invalidCount
+      output.mass,
+      output.density,
+      output.status?.converged,
+      output.status?.iterationCount,
+      output.status?.invalidCount
     ];
   }
 
@@ -293,7 +309,8 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, totals, zoneCount, iterations, output} = props;
+    const {width, height} = props.grid;
+    const {totals, zoneCount, maximumIterations: iterations, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const cellCount = width * height;
     const kernel = props.kernel ?? 'rook';
@@ -400,7 +417,8 @@ fn getTotal(zone: u32) -> f32 {
     const getSumNodes = (
       label: string,
       values: GraphDataView<'float32'>,
-      sums: GraphDataView<'float32'>
+      sums: GraphDataView<'float32'>,
+      isGated = false
     ) => [
       // `sortedIndices` is a permutation of the cells, so no index is out of range.
       ...new GPUGather({
@@ -417,7 +435,9 @@ fn getTotal(zone: u32) -> f32 {
         segmentOffsets,
         output: sums,
         // Exclusive scan of per-zone counts of valid cells, so the last offset is at most `cellCount`.
-        offsetsWithinInput: true
+        offsetsWithinInput: true,
+        // Only the in-iteration sums are gated; `sumGate` is defined below, before they are built.
+        ...(isGated ? sumGate : {})
       })
     ];
 
@@ -433,14 +453,15 @@ fn getTotal(zone: u32) -> f32 {
           variant: 'cell-areas',
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
-            {name: 'extent', view: props.extent!, type: 'f32', access: 'read'},
+            {name: 'extent', view: props.parameters!, type: 'f32', access: 'read'},
             {name: 'cellAreas', view: cellAreas, type: 'f32', access: 'read_write'}
           ],
           invocationCount: cellCount,
           declarations: `const ZONE_COUNT: u32 = ${zoneCount}u;
 const WIDTH: u32 = ${width}u;
-${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
-          body: `var area = getCellArea(index / WIDTH);
+const HEIGHT: u32 = ${height}u;
+${getPlacedCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
+          body: `var area = getPlacedCellArea(index / WIDTH);
   // Cells outside the zones and cells without a positive finite area carry no area.
   if (zones[zonesOffset + index] >= ZONE_COUNT || (bitcast<u32>(area) & 0x7f800000u) == 0x7f800000u || !(area > 0.0)) {
     area = 0.0;
@@ -467,7 +488,7 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
     // Mass of the surface `values` (density times area), summed per zone into `zoneSums`.
     const getMassSumNodes = (label: string, values: GraphDataView<'float32'>) => {
       if (!cellAreas) {
-        return getSumNodes(label, values, zoneSums);
+        return getSumNodes(label, values, zoneSums, true);
       }
       const mass = createTransientView(graph, `${id}-${label}-mass`, 'float32', cellCount);
       return [
@@ -475,6 +496,8 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
           id: `${id}-${label}-mass`,
           operation: OPERATION,
           variant: 'mass',
+          // Only called inside the iterations, so it shares their gate.
+          ...gate,
           bindings: [
             {name: 'values', view: values, type: 'f32', access: 'read'},
             {name: 'cellAreas', view: cellAreas, type: 'f32', access: 'read'},
@@ -483,16 +506,16 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
           invocationCount: cellCount,
           body: 'mass[massOffset + index] = values[valuesOffset + index] * cellAreas[cellAreasOffset + index];'
         }),
-        ...getSumNodes(label, mass, zoneSums)
+        ...getSumNodes(label, mass, zoneSums, true)
       ];
     };
 
-    if (props.invalidCount) {
+    if (output.status?.invalidCount) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-invalid-count-clear`,
           operation: OPERATION,
-          view: props.invalidCount,
+          view: output.status?.invalidCount,
           type: 'u32',
           value: '0u',
           componentCount: 1
@@ -505,7 +528,7 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
             {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
             {
               name: 'invalidCount',
-              view: props.invalidCount,
+              view: output.status?.invalidCount,
               type: 'atomic<u32>',
               access: 'read_write'
             }
@@ -519,11 +542,11 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
     }
 
     // The final surface is a density. Planar rasters without a density output write it straight
-    // into `output` (mass equals density); otherwise a conversion pass writes mass and density.
-    const needsConversion = geographic || Boolean(props.density);
+    // into `output.mass` (mass equals density); otherwise a conversion pass writes mass and density.
+    const needsConversion = geographic || Boolean(output.density);
     const finalSurface = needsConversion
       ? createTransientView(graph, `${id}-surface`, 'float32', cellCount)
-      : output;
+      : output.mass;
     // The last iteration writes `finalSurface`; earlier ones alternate with the scratch raster.
     const bufferFor = (iteration: number) =>
       (iterations - 1 - iteration) % 2 === 0 ? finalSurface : scratch;
@@ -552,26 +575,46 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
       })
     );
 
-    // Convergence flag: set once the largest relative change falls to the tolerance.
+    // Convergence state: word 0 is set once the largest relative change falls to the tolerance,
+    // word 1 counts the iterations that ran. Once converged, the converged-flag kernel zeroes the
+    // indirect dispatch of every per-cell kernel and segment sum of the later iterations (rule 13);
+    // the upstream gather and maximum nodes between them stay ungated and only re-reduce the live
+    // surface. The surface is not copied forward: a final settle kernel copies the scratch raster
+    // into the final surface only when the last iteration that ran wrote the scratch raster.
     const flag = tolerance
-      ? createTransientView(graph, `${id}-converged-flag`, 'uint32', 1)
+      ? createTransientView(graph, `${id}-converged-flag`, 'uint32', 2)
       : undefined;
-    if (flag) {
+    // Slot 0: every gated per-cell kernel is a guarded kernel, so they share one dispatch triple.
+    // Slot 1: the zone sums, one workgroup per zone.
+    const iterationGate = flag
+      ? createWGSLDispatchGate(graph, {
+          id: `${id}-iteration-dispatch`,
+          operation: OPERATION,
+          shapes: [[cellCount], getSegmentSumDispatchShape(zoneCount)]
+        })
+      : undefined;
+    const gate: {
+      condition?: GPUCommandGraphNodeCondition<Parameters>;
+      extraResources?: GraphBufferUse[];
+    } = iterationGate ? iterationGate.getGate(0) : {};
+    const sumGate: typeof gate = iterationGate ? iterationGate.getGate(1) : {};
+    if (flag && iterationGate) {
       nodes.push(
-        createFillNode<Parameters>(graph, {
+        createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-converged-flag-clear`,
           operation: OPERATION,
-          view: flag,
-          type: 'u32',
-          value: '0u',
-          componentCount: 1
+          variant: 'converged-flag-clear',
+          bindings: [
+            {name: 'flag', view: flag, type: 'u32', access: 'read_write'},
+            iterationGate.binding
+          ],
+          invocationCount: 1,
+          body: `flag[flagOffset] = 0u;
+  flag[flagOffset + 1u] = 0u;
+  ${iterationGate.armWGSL}`
         })
       );
     }
-    const flagBinding = flag
-      ? [{name: 'flag', view: flag, type: 'u32' as const, access: 'read' as const}]
-      : [];
-    const flagGuard = flag ? 'if (flag[flagOffset] != 0u) {\n    return;\n  }\n  ' : '';
 
     let source = initial;
     for (let iteration = 0; iteration < iterations; iteration++) {
@@ -581,26 +624,17 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${label}-smooth`,
           operation: OPERATION,
-          variant: `smooth-${kernel}${flag ? '-guarded' : ''}`,
+          variant: `smooth-${kernel}`,
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},
             {name: 'source', view: source, type: 'f32', access: 'read'},
-            {name: 'destination', view: destination, type: 'f32', access: 'read_write'},
-            ...flagBinding
+            {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
           ],
           invocationCount: cellCount,
+          ...gate,
           declarations: sharedDeclarations,
-          body: `${
-            flag
-              ? `if (flag[flagOffset] != 0u) {
-    // Converged: the remaining iterations keep the surface.
-    destination[destinationOffset + index] = source[sourceOffset + index];
-    return;
-  }
-  `
-              : ''
-          }let zone = zones[zonesOffset + index];
+          body: `let zone = zones[zonesOffset + index];
   var result = 0.0;
   if (zone < ZONE_COUNT) {
     let column = i32(index % WIDTH);
@@ -634,18 +668,18 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${label}-restore-apply`,
           operation: OPERATION,
-          variant: `restore-and-clamp${flag ? '-guarded' : ''}`,
+          variant: 'restore-and-clamp',
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},
             {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
             {name: 'zoneSums', view: zoneSums, type: 'f32', access: 'read'},
-            {name: 'destination', view: destination, type: 'f32', access: 'read_write'},
-            ...flagBinding
+            {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
           ],
           invocationCount: cellCount,
+          ...gate,
           declarations: sharedDeclarations,
-          body: `${flagGuard}let zone = zones[zonesOffset + index];
+          body: `let zone = zones[zonesOffset + index];
   if (zone < ZONE_COUNT) {
     let area = zoneAreas[zoneAreasOffset + zone];
     // The shift is a density, so it restores the mass of the zone: sum(a * shift) = T - M.
@@ -657,18 +691,18 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${label}-scale-apply`,
           operation: OPERATION,
-          variant: `rescale${flag ? '-guarded' : ''}`,
+          variant: 'rescale',
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},
             {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
             {name: 'zoneSums', view: zoneSums, type: 'f32', access: 'read'},
-            {name: 'destination', view: destination, type: 'f32', access: 'read_write'},
-            ...flagBinding
+            {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
           ],
           invocationCount: cellCount,
+          ...gate,
           declarations: sharedDeclarations,
-          body: `${flagGuard}let zone = zones[zonesOffset + index];
+          body: `let zone = zones[zonesOffset + index];
   if (zone < ZONE_COUNT) {
     let total = getTotal(zone);
     let sum = zoneSums[zoneSumsOffset + zone];
@@ -682,7 +716,7 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
   }`
         })
       );
-      if (flag && tolerance) {
+      if (flag && tolerance && iterationGate) {
         const change = createTransientView(graph, `${id}-${label}-change`, 'float32', cellCount);
         const maximumChange = createTransientView(graph, `${id}-${label}-maximum`, 'float32', 1);
         nodes.push(
@@ -690,6 +724,7 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
             id: `${id}-${label}-change`,
             operation: OPERATION,
             variant: 'change',
+            ...gate,
             bindings: [
               {name: 'zones', view: zones, type: 'u32', access: 'read'},
               {name: 'totals', view: totals, type: 'f32', access: 'read'},
@@ -725,16 +760,44 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
             bindings: [
               {name: 'maximumChange', view: maximumChange, type: 'f32', access: 'read'},
               {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'},
-              {name: 'flag', view: flag, type: 'u32', access: 'read_write'}
+              {name: 'flag', view: flag, type: 'u32', access: 'read_write'},
+              iterationGate.binding
             ],
             invocationCount: 1,
-            body: `if (maximumChange[maximumChangeOffset] <= tolerance[toleranceOffset]) {
+            // Ungated (it writes the gate). After convergence the maximum is stale and ignored.
+            body: `if (flag[flagOffset] != 0u) {
+    return;
+  }
+  flag[flagOffset + 1u] = flag[flagOffset + 1u] + 1u;
+  if (maximumChange[maximumChangeOffset] <= tolerance[toleranceOffset]) {
     flag[flagOffset] = 1u;
+    ${iterationGate.disarmWGSL}
   }`
           })
         );
       }
       source = destination;
+    }
+    if (flag && iterations > 0) {
+      // Iteration i writes the final surface when (iterations - 1 - i) is even, so after
+      // `executed` iterations the scratch raster is live exactly when (iterations - executed) is odd.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-settle`,
+          operation: OPERATION,
+          variant: 'settle',
+          bindings: [
+            {name: 'flag', view: flag, type: 'u32', access: 'read'},
+            {name: 'scratch', view: scratch, type: 'f32', access: 'read'},
+            {name: 'surface', view: finalSurface, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          declarations: `const ITERATIONS: u32 = ${iterations}u;`,
+          body: `if ((ITERATIONS - flag[flagOffset + 1u]) % 2u == 1u) {
+    surface[surfaceOffset + index] = scratch[scratchOffset + index];
+  }`
+        })
+      );
     }
 
     if (needsConversion) {
@@ -742,7 +805,7 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-convert`,
           operation: OPERATION,
-          variant: `convert${cellAreas ? '-area' : ''}${props.density ? '-density' : ''}`,
+          variant: `convert${cellAreas ? '-area' : ''}${output.density ? '-density' : ''}`,
           bindings: [
             {name: 'surface', view: finalSurface, type: 'f32', access: 'read'},
             ...(cellAreas
@@ -755,12 +818,12 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
                   }
                 ]
               : []),
-            {name: 'output', view: output, type: 'f32', access: 'read_write'},
-            ...(props.density
+            {name: 'output', view: output.mass, type: 'f32', access: 'read_write'},
+            ...(output.density
               ? [
                   {
                     name: 'density',
-                    view: props.density,
+                    view: output.density,
                     type: 'f32' as const,
                     access: 'read_write' as const
                   }
@@ -770,11 +833,11 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
           invocationCount: cellCount,
           body: `let value = surface[surfaceOffset + index];
   output[outputOffset + index] = value${cellAreas ? ' * cellAreas[cellAreasOffset + index]' : ''};
-  ${props.density ? 'density[densityOffset + index] = value;' : ''}`
+  ${output.density ? 'density[densityOffset + index] = value;' : ''}`
         })
       );
     }
-    if (props.converged || props.iterationLimitReached) {
+    if (output.status?.converged || output.status?.iterationCount) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-status`,
@@ -782,21 +845,21 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
           variant: 'status',
           bindings: [
             {name: 'flag', view: flag!, type: 'u32', access: 'read'},
-            ...(props.converged
+            ...(output.status?.converged
               ? [
                   {
                     name: 'converged',
-                    view: props.converged,
+                    view: output.status?.converged,
                     type: 'u32' as const,
                     access: 'read_write' as const
                   }
                 ]
               : []),
-            ...(props.iterationLimitReached
+            ...(output.status?.iterationCount
               ? [
                   {
-                    name: 'iterationLimitReached',
-                    view: props.iterationLimitReached,
+                    name: 'iterationCount',
+                    view: output.status?.iterationCount,
                     type: 'u32' as const,
                     access: 'read_write' as const
                   }
@@ -804,12 +867,8 @@ ${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
               : [])
           ],
           invocationCount: 1,
-          body: `${props.converged ? 'converged[convergedOffset] = flag[flagOffset];' : ''}
-  ${
-    props.iterationLimitReached
-      ? `iterationLimitReached[iterationLimitReachedOffset] = ${iterations > 0 ? 'select(1u, 0u, flag[flagOffset] != 0u)' : '0u'};`
-      : ''
-  }`
+          body: `${output.status?.converged ? 'converged[convergedOffset] = flag[flagOffset];' : ''}
+  ${output.status?.iterationCount ? 'iterationCount[iterationCountOffset] = flag[flagOffset + 1u];' : ''}`
         })
       );
     }

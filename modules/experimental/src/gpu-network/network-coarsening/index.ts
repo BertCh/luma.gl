@@ -5,9 +5,11 @@
 export {
   GPUNetworkCoarsening,
   GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY,
+  getGPUNetworkCoarseningMaximumWeightedEdgeCapacity,
   GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
   GPU_NETWORK_COARSENING_SUMMARY_WORD,
   decodeGPUNetworkCoarseningSummary,
+  type GPUNetworkCoarseningOutput,
   type GPUNetworkCoarseningProps,
   type GPUNetworkCoarseningSummary
 } from './gpu-network-coarsening';

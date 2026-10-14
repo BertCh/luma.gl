@@ -5,18 +5,20 @@
 import {
   createTransientView,
   GPUReduction,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
 import {
   describeGPUSpatialWeights,
   type GPUSpatialWeights,
-  type GPUSpatialWeightsInfo,
+  type GPUSpatialWeightsInformation,
   type GPUSpatialWeightsTransformState,
   validateGPUSpatialWeights
 } from './spatial-weights';
@@ -68,7 +70,7 @@ export function getGPUSpatialWeightsKernelValue(
     case 'uniform':
       return z <= 1 ? 0.5 : 0;
     default:
-      throw new Error(`GPUSpatialWeightsTransform unknown kernel ${kernel}`);
+      throw new Error(`unknown kernel ${kernel}`);
   }
 }
 
@@ -136,7 +138,7 @@ export type GPUSpatialWeightsTransformProps = {
    *   neighbor times `eps = 1.0000001` (see {@link GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON}),
    *   so the k-th neighbor keeps a tiny positive weight. On the CSR that is the largest distance of
    *   row `i`, but only for rows that list exactly the k nearest neighbors, so `'adaptive'`
-   *   requires `weights.info.provenance.criterion === 'knn'` and throws otherwise. On
+   *   requires `weights.information.provenance.criterion === 'knn'` and throws otherwise. On
    *   distance-band weights pass the band radius as a number.
    */
   bandwidth?: number | 'adaptive';
@@ -155,8 +157,10 @@ const OPERATION_STATES: Record<
 };
 
 /** Describes the transformed weights: the operation's state and only the guaranteed symmetry. */
-function getTransformOutputInfo(props: GPUSpatialWeightsTransformProps): GPUSpatialWeightsInfo {
-  const input = props.weights.info;
+function getTransformOutputInformation(
+  props: GPUSpatialWeightsTransformProps
+): GPUSpatialWeightsInformation {
+  const input = props.weights.information;
   const symmetric = input?.symmetric === true;
   const preserved =
     props.operation === 'binary' ||
@@ -197,11 +201,11 @@ function getTransformOutputInfo(props: GPUSpatialWeightsTransformProps): GPUSpat
  * do not exist in weights, so a self weight `K(0)` is not written; compute it with
  * {@link getGPUSpatialWeightsKernelValue} and pass it as `selfWeight` to `GPUHotSpotAnalysis`
  * for a kernel Gi*. Weights are not row-standardized by the kernel; chain a `'row'` transform for
- * that, and note that statistics that find `info.transform === 'row'` re-standardize the rows over
+ * that, and note that statistics that find `information.transform === 'row'` re-standardize the rows over
  * their unmasked neighbors, so `kernel` then `row` is also the recipe to restore row
  * standardization after `GPUSpatialWeightsAlgebra` `'subgraph'` removed neighbors.
  *
- * {@link GPUSpatialWeightsTransform.outputWeights} is the transformed weights with `info`
+ * {@link GPUSpatialWeightsTransform.outputWeights} is the transformed weights with `information`
  * attached: `transform` is the operation (`'symmetrize'` gives `'symmetric'`), `symmetric` is
  * kept only where guaranteed (`binary` and `double` keep the input flag, a fixed-bandwidth
  * `kernel` keeps `true`, a `symmetrize` of symmetric weights stays `true`; everything else is
@@ -216,7 +220,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialWeightsTransformProps;
-  /** The transformed weights (`output` or in place) with `info` and `status` attached. */
+  /** The transformed weights (`output` or in place) with `information` and `status` attached. */
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsTransformProps) {
@@ -226,32 +230,29 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
     if (
       !['row', 'binary', 'kernel', 'symmetrize', 'double', 'variance'].includes(props.operation)
     ) {
-      throw new Error(
-        `${id} operation must be 'row', 'binary', 'kernel', 'symmetrize', 'double' or 'variance'`
-      );
+      throw new Error(`${id} unknown operation ${props.operation}`);
     }
     validateGPUSpatialWeights(id, props.weights);
     if (props.output) {
       validatePackedView(props.output, ['float32'], `${id} output`);
       if (props.output.length !== props.weights.neighbors.length) {
-        throw new Error(`${id} output length must equal weights.neighbors.length`);
+        throw new Error(`${id} output length must equal the slot capacity`);
       }
     }
     if (props.operation === 'kernel') {
       if (!props.weights.distances) {
-        throw new Error(`${id} the 'kernel' operation requires weights.distances`);
+        throw new Error(`${id} 'kernel' needs weights.distances`);
       }
       const {bandwidth} = props;
       if (bandwidth === undefined) {
-        throw new Error(`${id} the 'kernel' operation requires a bandwidth (number or 'adaptive')`);
+        throw new Error(`${id} 'kernel' needs a bandwidth`);
       }
       if (bandwidth !== 'adaptive' && !(Number.isFinite(bandwidth) && bandwidth > 0)) {
-        throw new Error(`${id} bandwidth must be 'adaptive' or a positive finite number`);
+        throw new Error(`${id} bandwidth must be 'adaptive' or > 0`);
       }
-      if (bandwidth === 'adaptive' && props.weights.info?.provenance?.criterion !== 'knn') {
-        throw new Error(
-          `${id} bandwidth 'adaptive' needs kNN weights (weights.info.provenance.criterion === 'knn'); pass a numeric bandwidth, for example the band radius, for distance-band weights`
-        );
+      if (bandwidth === 'adaptive' && props.weights.information?.provenance?.criterion !== 'knn') {
+        // Adaptive bandwidths are the k-th neighbor distance; use a number for distance bands.
+        throw new Error(`${id} bandwidth 'adaptive' needs kNN weights`);
       }
       const kernel = props.kernel ?? 'triangular';
       if (!['gaussian', 'triangular', 'epanechnikov', 'bisquare', 'uniform'].includes(kernel)) {
@@ -262,11 +263,11 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       throw new Error(`${id} doubleSum must be 'one' or 'rows'`);
     }
     if (props.operation === 'symmetrize' && this.isInPlace()) {
-      throw new Error(`${id} 'symmetrize' needs an output view separate from weights.weights`);
+      throw new Error(`${id} 'symmetrize' needs a separate output`);
     }
     this.outputWeights = describeGPUSpatialWeights(
       {...props.weights, weights: props.output ?? props.weights.weights},
-      {info: getTransformOutputInfo(props), status: props.weights.status}
+      {information: getTransformOutputInformation(props), status: props.weights.status}
     );
   }
 

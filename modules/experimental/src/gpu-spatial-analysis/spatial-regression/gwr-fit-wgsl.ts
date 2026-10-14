@@ -19,6 +19,11 @@ export type GWRFitWGSLOptions = {
   hasVariance: boolean;
   /** Distances are great-circle `geodesicHaversineDistance(a, b, radius)`; otherwise planar. */
   sphereRadius: number | null;
+  /**
+   * Gaussian weights of rows farther than `gaussianCutoff * bandwidth` are exactly 0, which also
+   * lets the Gaussian kernel use the grid index. Null or omitted is the exact unbounded Gaussian.
+   */
+  gaussianCutoff?: number | null;
 };
 
 /**
@@ -45,12 +50,13 @@ export function getGWRFitWGSL(options: GWRFitWGSLOptions): string {
     hasVariance,
     sphereRadius
   } = options;
+  const gaussianCutoff = options.gaussianCutoff ?? null;
   const hasGrid = Boolean(indexGridSize);
   return /* wgsl */ `
 ${sphereRadius === null ? '' : GEODESIC_WGSL}
 ${getCholeskyWGSL(P)}
 ${hasConditionNumber ? getSymmetricEigenvalueRangeWGSL(P) : ''}
-${indexGridSize ? getGridWGSL(indexGridSize) : ''}
+${indexGridSize ? getGridWGSL(indexGridSize, gaussianCutoff) : ''}
 struct LocalFit {
   ok: bool,
   hat: f32,
@@ -88,6 +94,13 @@ fn getSquaredDistance(pointA: vec2f, pointB: vec2f) -> f32 {
 }`
 }
 
+${
+  gaussianCutoff === null
+    ? ''
+    : `// Gaussian weights vanish beyond this many bandwidths (compile-time gaussianCutoff).
+const GAUSSIAN_CUTOFF: f32 = ${getWGSLFloatLiteral(gaussianCutoff)};
+`
+}
 fn getWeight(distance: f32, bandwidth: f32) -> f32 {
   let ratio = distance / bandwidth;
   if (getIsBisquare()) {
@@ -96,6 +109,13 @@ fn getWeight(distance: f32, bandwidth: f32) -> f32 {
     }
     let t = 1.0 - ratio * ratio;
     return t * t;
+  }${
+    gaussianCutoff === null
+      ? ''
+      : `
+  if (distance > GAUSSIAN_CUTOFF * bandwidth) {
+    return 0.0;
+  }`
   }
   return exp(-0.5 * ratio * ratio);
 }
@@ -301,7 +321,7 @@ function getCandidateLoopWGSL(body: string, hasGrid: boolean): string {
   }`;
   }
   return `let useGrid = isGridBandwidth(bandwidth);
-  let range = select(vec4u(0u, 0u, 0u, 0u), getGridRange(origin, bandwidth), useGrid);
+  let range = select(vec4u(0u, 0u, 0u, 0u), getGridRange(origin, getSupportRadius(bandwidth)), useGrid);
   let gridRowCount = select(1u, range.w - range.z + 1u, useGrid);
   for (var gridRowStep = 0u; gridRowStep < gridRowCount; gridRowStep++) {
     var firstSlot = 0u;
@@ -405,13 +425,22 @@ fn getLocalConditionNumber(i: u32, bandwidth: f32) -> f32 {
 `;
 }
 
-function getGridWGSL(indexGridSize: readonly [number, number]): string {
+function getGridWGSL(
+  indexGridSize: readonly [number, number],
+  gaussianCutoff: number | null
+): string {
   return /* wgsl */ `
 ${getGridLookupWGSL(indexGridSize)}
 
-// Bisquare has bounded support (fixed or adaptive), so the grid is exact for it.
+// Bisquare has bounded support (fixed or adaptive), so the grid is exact for it; the Gaussian
+// kernel is bounded only with a compile-time cutoff.
 fn isGridBandwidth(bandwidth: f32) -> bool {
-  return getIsBisquare() && bandwidth > 0.0 && isFiniteBits(bandwidth);
+  return ${gaussianCutoff === null ? 'getIsBisquare()' : 'true'} && bandwidth > 0.0 && isFiniteBits(bandwidth);
+}
+
+// Distance beyond which the weight is exactly 0.
+fn getSupportRadius(bandwidth: f32) -> f32 {
+  ${gaussianCutoff === null ? 'return bandwidth;' : 'return select(bandwidth * GAUSSIAN_CUTOFF, bandwidth, getIsBisquare());'}
 }
 
 // Included rows in grid-cell order: invocation \`slot\` fits the slot-th indexed row.

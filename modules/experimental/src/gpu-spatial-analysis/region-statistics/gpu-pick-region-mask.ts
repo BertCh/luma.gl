@@ -10,26 +10,37 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validateGraphViewsBelongToGraph
+} from '../../utils/gpu-contributor-utils';
+import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
+import type {GPURegionMaskOutput} from './region-statistics-types';
 
 /** Properties for {@link GPUPickRegionMask}. */
 export type GPUPickRegionMaskProps = {
   /** ID prefix. Defaults to `'pick-region-mask'`. */
   id?: string;
-  /** Packed `GPUIndexPickingTarget.addRegionPass` result. Its length must be at least 4. */
-  result: GraphDataView<'uint32'>;
+  /**
+   * Packed `GPUIndexPickingTarget.addRegionPass` result `[count, overflow, (objectIndex,
+   * batchIndex)...]`. Its length must be at least 4.
+   */
+  picks: GraphDataView<'uint32'>;
   /** Compile-time batch filter in `[0, 2^31 - 1]`. When omitted, every batch is accepted. */
   batchIndex?: number;
-  /** Packed mask whose length is the source row count. Cleared, then set to 1 for picked rows. */
-  outputMask: GraphDataView<'uint32'>;
-  /** One-row flag that copies the region result's overflow word as 0 or 1. Always written. */
-  overflow: GraphDataView<'uint32'>;
+  /**
+   * Caller-owned outputs: `mask`, whose length is the source row count (cleared, then set to 1
+   * for picked rows), and `status.overflow`, which copies the pick result's overflow word as 0 or
+   * 1. Both always written.
+   */
+  output: GPURegionMaskOutput;
 };
 
 /**
  * Converts a capacity-bounded index-picking region result into a deduplicated source-aligned 0/1
  * mask. The application adds `GPUIndexPickingTarget.addRegionPass` before this contributor; the graph
- * orders the two through the hazard on `result`.
+ * orders the two through the hazard on `picks`.
  */
 export class GPUPickRegionMask implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -41,29 +52,20 @@ export class GPUPickRegionMask implements GPUCommandNodeProducer {
     this.id = props.id ?? 'pick-region-mask';
     this.props = props;
     const {id} = this;
-    validatePackedUint32View(props.result, `${id} result`);
-    if (props.result.length < 4) {
-      throw new Error(`${id} result must hold at least one picked pair`);
+    const {picks, output} = props;
+    validatePackedUint32View(picks, `${id} picks`);
+    if (picks.length < 4) {
+      throw new Error(`${id} picks must hold at least one picked pair`);
     }
-    if (
-      props.batchIndex !== undefined &&
-      (!Number.isSafeInteger(props.batchIndex) ||
-        props.batchIndex < 0 ||
-        props.batchIndex > 0x7fffffff)
-    ) {
-      throw new Error(`${id} batchIndex must be an integer in [0, 2^31 - 1]`);
+    if (props.batchIndex !== undefined) {
+      validateCapacity(id, 'batchIndex', props.batchIndex, 0, 0x7fffffff);
     }
-    validatePackedUint32View(props.outputMask, `${id} outputMask`);
-    validatePackedUint32View(props.overflow, `${id} overflow`);
-    if (props.outputMask.length < 1 || props.overflow.length < 1) {
-      throw new Error(`${id} outputMask and overflow must contain at least one row`);
+    validatePackedUint32View(output.mask, `${id} output.mask`);
+    validateGPUStatusPort(`${id} output.status`, output.status);
+    if (output.mask.length < 1 || !output.status.overflow) {
+      throw new Error(`${id} output.mask and output.status.overflow are required`);
     }
-    if (
-      props.result.buffer === props.outputMask.buffer ||
-      props.result.buffer === props.overflow.buffer
-    ) {
-      throw new Error(`${id} outputs must not share buffers with inputs`);
-    }
+    validateGraphOutputsDisjointFromInputs(id, [output.mask, output.status.overflow], [picks]);
   }
 
   /** Returns clear, scatter, and overflow nodes. */
@@ -71,7 +73,9 @@ export class GPUPickRegionMask implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {result, outputMask, overflow, batchIndex} = props;
+    const {picks: result, batchIndex} = props;
+    const outputMask = props.output.mask;
+    const {overflow} = props.output.status;
     validateGraphViewsBelongToGraph(id, graph, [result, outputMask, overflow]);
     const pairCapacity = Math.floor((result.length - 2) / 2);
     return [

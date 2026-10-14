@@ -2,61 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../gpu-spatial-analysis/contracts/earth';
-import {
-  resolveGPUSpatialContext,
-  type GPUSpatialContext,
-  type GPUSpatialContextSupport
-} from '../gpu-spatial-analysis/contracts/spatial-context';
 import {GEODESIC_WGSL} from '../gpu-spatial-analysis/geometry-measures/geodesic-wgsl';
-
-/**
- * Spatial contexts accepted by the network contributors that have a great-circle path: native
- * planar coordinates, or `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`.
- *
- * @internal
- */
-export const GPU_NETWORK_GEODESIC_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze(
-  {
-    coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-    metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
-  }
-);
-
-/**
- * Resolves the context of a network contributor with a great-circle path. Longitude/latitude
- * positions need an explicit `'great-circle'` metric, and great-circle results are in meters.
- *
- * @internal
- */
-export function resolveNetworkSpatialContext(
-  id: string,
-  context: GPUSpatialContext | undefined
-): GPUSpatialContext {
-  const resolved = resolveGPUSpatialContext(
-    id,
-    context,
-    GPU_NETWORK_GEODESIC_SPATIAL_CONTEXT_SUPPORT
-  );
-  if (resolved.coordinateSpace === 'longitude-latitude' && resolved.metric !== 'great-circle') {
-    throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
-  }
-  if (resolved.units === 'kilometers') {
-    throw new Error(`${id} great-circle results are in meters`);
-  }
-  return resolved;
-}
-
-/**
- * Sphere radius in meters of a great-circle context, or `undefined` for planar coordinates.
- *
- * @internal
- */
-export function getNetworkGeodesicRadius(context: GPUSpatialContext): number | undefined {
-  return context.metric === 'great-circle'
-    ? (context.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS)
-    : undefined;
-}
 
 /**
  * WGSL point and segment metric shared by the network contributors. Include it once per shader.

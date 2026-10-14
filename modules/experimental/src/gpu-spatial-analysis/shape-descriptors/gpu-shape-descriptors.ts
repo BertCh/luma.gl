@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  GraphVectorView,
-  validatePackedUint32View,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,9 +15,11 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {GPUGeometryMeasures, type GPUGeometryHoleRule} from '../geometry-measures/index';
+import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
+import {GPUGeometryMeasures} from '../geometry-measures/index';
 import {
   createCompactnessNode,
   createConvexityNode,
@@ -34,8 +36,8 @@ export {GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH};
 /** Default sliver threshold: Polsby-Popper below this flags a sliver (about a 1:60 rectangle). */
 export const GPU_SHAPE_DESCRIPTORS_DEFAULT_SLIVER_THRESHOLD = 0.05;
 
-/** CPU description of the per-frame parameters of {@link GPUShapeDescriptors}. */
-export type GPUShapeDescriptorsParameters = {
+/** CPU description of the per-frame settings of {@link GPUShapeDescriptors}. */
+export type GPUShapeDescriptorsSettings = {
   /**
    * Polsby-Popper compactness below which a polygon is flagged as a sliver. Default
    * {@link GPU_SHAPE_DESCRIPTORS_DEFAULT_SLIVER_THRESHOLD}.
@@ -44,16 +46,16 @@ export type GPUShapeDescriptorsParameters = {
 };
 
 /**
- * Packs {@link GPUShapeDescriptorsParameters} into the 4-element float32 layout
+ * Packs {@link GPUShapeDescriptorsSettings} into the 4-element float32 layout
  * `[sliverThreshold, 0, 0, 0]`. Write the result into a `GPUParameterBuffer` between encodings to
  * move the threshold without recompiling.
  *
- * @param parameters Parameters to encode.
+ * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
  * @throws If the threshold is not a non-negative finite number, or `target` is too short.
  */
 export function getGPUShapeDescriptorsParameterValues(
-  parameters: GPUShapeDescriptorsParameters = {},
+  settings: GPUShapeDescriptorsSettings = {},
   target: Float32Array = new Float32Array(GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH) {
@@ -62,7 +64,7 @@ export function getGPUShapeDescriptorsParameterValues(
     );
   }
   const sliverThreshold =
-    parameters.sliverThreshold ?? GPU_SHAPE_DESCRIPTORS_DEFAULT_SLIVER_THRESHOLD;
+    settings.sliverThreshold ?? GPU_SHAPE_DESCRIPTORS_DEFAULT_SLIVER_THRESHOLD;
   if (!Number.isFinite(sliverThreshold) || sliverThreshold < 0) {
     throw new Error('Shape descriptors sliverThreshold must be a non-negative finite number');
   }
@@ -118,9 +120,14 @@ export type GPUShapeDescriptorsOutput = {
  * Properties for {@link GPUShapeDescriptors}.
  *
  * Per-frame (no recompile): the contents of `parameters` (sliver threshold) and every input
- * buffer. Compile-time: view lengths, `holeRule`, and which outputs are present.
+ * buffer. Compile-time: view lengths and which outputs are present.
+ *
+ * Polygons are the four-level layout of {@link GPUPolygonGeometryFields}, one row per feature. Ring
+ * role is positional: the first ring of each polygon is a shell and later rings are holes,
+ * whatever their winding, so multi-polygons with mixed winding and holed polygons measure
+ * correctly. The `clockwise` output reports the first ring of each feature.
  */
-export type GPUShapeDescriptorsProps = {
+export type GPUShapeDescriptorsProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'shape-descriptors'`. */
   id?: string;
   /**
@@ -130,16 +137,6 @@ export type GPUShapeDescriptorsProps = {
    * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed vertex positions in a planar (projected) coordinate system. */
-  positions: GraphDataView<'float32x2'>;
-  /** `ringCount + 1` monotonic vertex offsets, as in `GPUGeometryMeasures`. Rings close implicitly. */
-  ringOffsets: GraphDataView<'uint32'>;
-  /**
-   * Optional `featureCount + 1` monotonic ring offsets. When omitted every ring is its own feature.
-   */
-  featureRingOffsets?: GraphDataView<'uint32'>;
-  /** How rings combine; see `GPUGeometryMeasures`. Default `'winding'`. */
-  holeRule?: GPUGeometryHoleRule;
   /** Hull algorithm behind `output.convexity`. Default `'auto'`. */
   convexityMethod?: GPUShapeDescriptorsConvexityMethod;
   /** Per-frame packed float32 view of at least 4 elements, written with {@link getGPUShapeDescriptorsParameterValues}. */
@@ -161,7 +158,7 @@ export type GPUShapeDescriptorsProps = {
  * memory, so its cost is O(vertices * hull vertices) per feature and grows with the largest
  * feature; `convexityMethod: 'monotone-chain'` (chosen by `'auto'` for large average features)
  * uses `GPUGroupConvexHull` instead, which is O(n log n) and balanced across skewed features.
- * Orientation and elongation weight holes by the hole rule, so a polygon with a large hole is
+ * Orientation and elongation weight holes negatively, so a polygon with a large hole is
  * described by its area, not its outline. Planar only: a longitude/latitude `spatialContext` throws
  * at construction, so project first (`createGPULocalFrame` with `GPULocalFrameProjection`). The
  * resolved `spatialContext`, including any `frame` identity, is passed to the internal
@@ -182,8 +179,6 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
-  /** Resolved hole rule. */
-  readonly holeRule: GPUGeometryHoleRule;
   /** Whether convexity uses the sort-based monotone chain hull instead of gift wrapping. */
   readonly useMonotoneChainConvexity: boolean;
 
@@ -191,39 +186,18 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     this.id = props.id ?? 'shape-descriptors';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    this.holeRule = props.holeRule ?? 'winding';
     const {id} = this;
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      ringOffsets: props.ringOffsets,
-      featureRingOffsets: props.featureRingOffsets,
-      parameters: props.parameters,
-      ...props.output
-    })) {
-      if ((view as unknown) instanceof GraphVectorView) {
-        throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
-      }
-    }
-    if (this.holeRule !== 'winding' && this.holeRule !== 'first-ring-exterior') {
-      throw new Error(`${id} holeRule must be 'winding' or 'first-ring-exterior'`);
-    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one position`);
     }
-    validatePackedUint32View(props.ringOffsets, `${id} ringOffsets`);
-    if (props.ringOffsets.length < 2) {
-      throw new Error(`${id} ringOffsets must contain at least two rows`);
-    }
-    if (props.featureRingOffsets) {
-      validatePackedUint32View(props.featureRingOffsets, `${id} featureRingOffsets`);
-      if (props.featureRingOffsets.length < 2) {
-        throw new Error(`${id} featureRingOffsets must contain at least two rows`);
+    for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
+      validatePackedView(props[name], ['uint32'], `${id} ${name}`);
+      if (props[name].length < 2) {
+        throw new Error(`${id} ${name} must contain at least two rows`);
       }
     }
-    this.featureCount = props.featureRingOffsets
-      ? props.featureRingOffsets.length - 1
-      : props.ringOffsets.length - 1;
+    this.featureCount = props.featureOffsets.length - 1;
     const convexityMethod = props.convexityMethod ?? 'auto';
     if (!['auto', 'gift-wrapping', 'monotone-chain'].includes(convexityMethod)) {
       throw new Error(`${id} convexityMethod must be 'auto', 'gift-wrapping' or 'monotone-chain'`);
@@ -261,7 +235,13 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       columns.map(([, view]) => view as GraphDataView),
-      [props.positions, props.ringOffsets, props.featureRingOffsets, props.parameters]
+      [
+        props.positions,
+        props.ringOffsets,
+        props.featureOffsets,
+        props.polygonOffsets,
+        props.parameters
+      ]
     );
   }
 
@@ -277,7 +257,8 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.ringOffsets,
-      props.featureRingOffsets,
+      props.featureOffsets,
+      props.polygonOffsets,
       props.parameters,
       ...Object.values(output)
     ]);
@@ -305,8 +286,8 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
           positions: props.positions,
           geometryType: 'polygons',
           ringOffsets: props.ringOffsets,
-          featureRingOffsets: props.featureRingOffsets,
-          holeRule: this.holeRule,
+          featureOffsets: props.featureOffsets,
+          polygonOffsets: props.polygonOffsets,
           output: {lengths: perimeters, areas, centroids}
         }).getCommandNodes(graph)
       );
@@ -315,7 +296,8 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
       operation: OPERATION,
       positions: props.positions,
       ringOffsets: props.ringOffsets,
-      featureRingOffsets: props.featureRingOffsets,
+      featureOffsets: props.featureOffsets,
+      polygonOffsets: props.polygonOffsets,
       featureCount
     };
     if (needsMoments && centroids) {
@@ -324,7 +306,6 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
         createMomentsNode<Parameters>(graph, {
           ...ringInputs,
           id: `${id}-moments`,
-          holeRule: this.holeRule,
           centroids,
           moments
         }),

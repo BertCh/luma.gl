@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -12,8 +11,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -21,6 +22,20 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {GET_NAN_WGSL} from '../../utils/wgsl-common';
 import {getGPUSegregationLayout} from './segregation-layout';
+
+/**
+ * WGSL accessors of one scale's `environment` table: `units * K` weighted group counts, then
+ * `units` environment totals, then the scale index (as f32). Expects an `environment` binding.
+ */
+const ENVIRONMENT_LAYOUT_WGSL = (unitCount: number, groupCount: number) => `
+const ENVIRONMENT_TOTALS: u32 = ${unitCount * groupCount}u;
+const ENVIRONMENT_SCALE: u32 = ${unitCount * groupCount + unitCount}u;
+fn getEnvironmentTotal(unit: u32) -> f32 {
+  return environment[environmentOffset + ENVIRONMENT_TOTALS + unit];
+}
+fn getScaleIndex() -> u32 {
+  return u32(environment[environmentOffset + ENVIRONMENT_SCALE]);
+}`;
 
 const OPERATION = 'GPUSegregation';
 /** Lanes of the reduction workgroups (one workgroup per block of units, or per output column). */
@@ -31,44 +46,52 @@ const COLUMN_BATCH = 8;
 /** Largest supported number of groups. */
 export const GPU_SEGREGATION_MAXIMUM_GROUPS = 16;
 
-/** Optional per-unit outputs of {@link GPUSegregation}; each holds one block per scale. */
-export type GPUSegregationLocalOutputs = {
+/**
+ * Caller-owned outputs of {@link GPUSegregation}: the global `indices` and optional per-unit
+ * (local) outputs, each holding one block per scale.
+ */
+export type GPUSegregationOutput = {
+  /**
+   * `scales.length * layout.stride` global indices; scale `s` starts at `s * stride`. See
+   * `getGPUSegregationLayout`.
+   */
+  indices: GraphDataView<'float32'>;
   /**
    * `scales * units * K` local composition `pi_im` (share of group `m` in the environment of unit
    * `i`), index `(scale * units + i) * K + m`. Environment shares sum to 1 for a populated unit.
    */
-  environment?: GraphDataView<'float32'>;
+  localEnvironment?: GraphDataView<'float32'>;
   /** `scales * units` local entropy `E_i = sum_m pi_im ln(1 / pi_im)` of the environment, in nats. */
-  entropy?: GraphDataView<'float32'>;
+  localEntropy?: GraphDataView<'float32'>;
   /**
    * `scales * units * K` unit contributions to `D_g`: `t_i |pi_ig - P_g| / (2 T P_g (1 - P_g))`.
    * The sum over units is the dissimilarity `D_g` of the same scale.
    */
-  dissimilarity?: GraphDataView<'float32'>;
+  localDissimilarity?: GraphDataView<'float32'>;
   /**
    * `scales * units` unit contributions to H: `t_i (E - E_i) / (E T)`. The sum over units is the
    * entropy index H of the same scale.
    */
-  theil?: GraphDataView<'float32'>;
+  localTheil?: GraphDataView<'float32'>;
 };
 
 /**
  * Properties for {@link GPUSegregation}.
  *
- * Compile-time: `unitCount`, `groupCount`, the scales (their number and weights structure),
- * `selfWeight`, `atkinsonB` and which optional outputs exist. Per-frame: the contents of
+ * Compile-time: the unit count (`groupCounts.length / groupCount`), `groupCount`, the scales
+ * (their number and weights structure), `selfWeight`, `atkinsonInequalityAversion` and which
+ * optional outputs exist. Per-frame: the contents of
  * `groupCounts` and of every weights view.
  */
 export type GPUSegregationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'segregation'`. */
   id?: string;
-  /** Number of units (rows), for example census tracts or grid cells. */
-  unitCount: number;
   /** Number of population groups `K`, in `[2, GPU_SEGREGATION_MAXIMUM_GROUPS]`. */
   groupCount: number;
   /**
-   * Population per unit and group, `unitCount * K` float32 values, row-major
-   * (`groupCounts[i * K + m]`). Negative and non-finite entries count as 0.
+   * Population per unit and group, `units * K` float32 values, row-major
+   * (`groupCounts[i * K + m]`); the unit count (rows, for example census tracts or grid cells) is
+   * `groupCounts.length / K`. Negative and non-finite entries count as 0.
    */
   groupCounts: GraphDataView<'float32'>;
   /**
@@ -93,14 +116,9 @@ export type GPUSegregationProps = {
    */
   spatialForm?: 'environment' | 'smoothed-population';
   /** Atkinson inequality-aversion parameter `b`, in the open interval (0, 1). Defaults to 0.5. */
-  atkinsonB?: number;
-  /**
-   * Caller-owned `scales.length * layout.stride` global indices; scale `s` starts at
-   * `s * stride`. See `getGPUSegregationLayout`.
-   */
-  indices: GraphDataView<'float32'>;
-  /** Optional caller-owned per-unit outputs. */
-  local?: GPUSegregationLocalOutputs;
+  atkinsonInequalityAversion?: number;
+  /** Caller-owned outputs. */
+  output: GPUSegregationOutput;
 };
 
 /**
@@ -133,7 +151,7 @@ export type GPUSegregationProps = {
  * total), and isolation / interaction of a group that has no population. The diversity `E` is 0,
  * a defined value, when only one group is present.
  *
- * Local indices (optional `local` outputs) are the per-unit terms of these sums, so they add up to
+ * Local indices (optional `output.local*` views) are the per-unit terms of these sums, so they add up to
  * the global index of the same scale: environment composition, local entropy, and the unit
  * contributions to `D_g` and to H. A unit whose environment is empty (no population in it or its
  * neighbors) has no composition: all its local values are NaN and it contributes nothing to the
@@ -169,33 +187,26 @@ export class GPUSegregation implements GPUCommandNodeProducer {
   readonly props: GPUSegregationProps;
   /** Number of scales. */
   readonly scaleCount: number;
+  /** Number of units, `groupCounts.length / groupCount`. */
+  readonly unitCount: number;
 
   constructor(props: GPUSegregationProps) {
     const id = props.id ?? 'segregation';
     this.id = id;
     this.props = props;
-    const {unitCount, groupCount} = props;
-    if (!Number.isSafeInteger(unitCount) || unitCount < 1) {
-      throw new Error(`${id} unitCount must be a positive integer`);
-    }
-    if (
-      !Number.isSafeInteger(groupCount) ||
-      groupCount < 2 ||
-      groupCount > GPU_SEGREGATION_MAXIMUM_GROUPS
-    ) {
-      throw new Error(
-        `${id} groupCount must be an integer in [2, ${GPU_SEGREGATION_MAXIMUM_GROUPS}]`
-      );
-    }
+    const {groupCount} = props;
+    validateCapacity(id, 'groupCount', groupCount, 2, GPU_SEGREGATION_MAXIMUM_GROUPS);
     const scales = props.scales ?? [null];
     if (scales.length < 1) {
       throw new Error(`${id} scales must not be empty`);
     }
     this.scaleCount = scales.length;
     validatePackedView(props.groupCounts, ['float32'], `${id} groupCounts`);
-    if (props.groupCounts.length !== unitCount * groupCount) {
-      throw new Error(`${id} groupCounts must contain unitCount * groupCount rows`);
+    const unitCount = props.groupCounts.length / groupCount;
+    if (!Number.isInteger(unitCount) || unitCount < 1) {
+      throw new Error(`${id} groupCounts length must be a positive multiple of groupCount`);
     }
+    this.unitCount = unitCount;
     scales.forEach((weights, scaleIndex) => {
       if (
         weights &&
@@ -204,21 +215,30 @@ export class GPUSegregation implements GPUCommandNodeProducer {
         throw new Error(`${id} scales[${scaleIndex}] must have one row per unit`);
       }
     });
-    const b = props.atkinsonB ?? 0.5;
+    const b = props.atkinsonInequalityAversion ?? 0.5;
     if (!(b > 0 && b < 1)) {
-      throw new Error(`${id} atkinsonB must be in (0, 1)`);
+      throw new Error(`${id} atkinsonInequalityAversion must be in (0, 1)`);
     }
     const selfWeight = props.selfWeight ?? 1;
     if (!Number.isFinite(selfWeight) || selfWeight < 0) {
       throw new Error(`${id} selfWeight must be finite and non-negative`);
     }
     const layout = getGPUSegregationLayout(groupCount);
+    const {output} = props;
     const expectedLengths: [string, GraphDataView<'float32'> | undefined, number][] = [
-      ['indices', props.indices, this.scaleCount * layout.stride],
-      ['local.environment', props.local?.environment, this.scaleCount * unitCount * groupCount],
-      ['local.entropy', props.local?.entropy, this.scaleCount * unitCount],
-      ['local.dissimilarity', props.local?.dissimilarity, this.scaleCount * unitCount * groupCount],
-      ['local.theil', props.local?.theil, this.scaleCount * unitCount]
+      ['output.indices', output.indices, this.scaleCount * layout.stride],
+      [
+        'output.localEnvironment',
+        output.localEnvironment,
+        this.scaleCount * unitCount * groupCount
+      ],
+      ['output.localEntropy', output.localEntropy, this.scaleCount * unitCount],
+      [
+        'output.localDissimilarity',
+        output.localDissimilarity,
+        this.scaleCount * unitCount * groupCount
+      ],
+      ['output.localTheil', output.localTheil, this.scaleCount * unitCount]
     ];
     for (const [name, view, length] of expectedLengths) {
       if (view) {
@@ -242,13 +262,13 @@ export class GPUSegregation implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
-    const {local} = this.props;
+    const {output} = this.props;
     return [
-      this.props.indices,
-      local?.environment,
-      local?.entropy,
-      local?.dissimilarity,
-      local?.theil
+      output.indices,
+      output.localEnvironment,
+      output.localEntropy,
+      output.localDissimilarity,
+      output.localTheil
     ];
   }
 
@@ -256,12 +276,19 @@ export class GPUSegregation implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
+    const {id, props, unitCount} = this;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    const {unitCount, groupCount: K, groupCounts, indices, local} = props;
+    const {groupCount: K, groupCounts, output} = props;
+    const {indices} = output;
+    const local = {
+      environment: output.localEnvironment,
+      entropy: output.localEntropy,
+      dissimilarity: output.localDissimilarity,
+      theil: output.localTheil
+    };
     const scales = props.scales ?? [null];
     const selfWeight = props.selfWeight ?? 1;
-    const b = props.atkinsonB ?? 0.5;
+    const b = props.atkinsonInequalityAversion ?? 0.5;
     const layout = getGPUSegregationLayout(K);
     const termCount = 2 + 2 * K + K * K;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -326,7 +353,13 @@ fn reduceColumns(lane: u32, group: u32) {
       partials: GraphDataView<'float32'>,
       columns: number,
       output: GraphDataView<'float32'>,
-      collected?: {view: GraphDataView<'float32'>; base: number}
+      // Copies the totals into row `scale` of `view` (rows of `stride` values); the scale index is
+      // read from the scale's environment table (rule 12: no scale index in the WGSL text).
+      collected?: {
+        view: GraphDataView<'float32'>;
+        stride: number;
+        environment: GraphDataView<'float32'>;
+      }
     ) =>
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-${label}`,
@@ -342,14 +375,27 @@ fn reduceColumns(lane: u32, group: u32) {
                   view: collected.view,
                   type: 'f32' as const,
                   access: 'read_write' as const
+                },
+                {
+                  name: 'environment',
+                  view: collected.environment,
+                  type: 'f32' as const,
+                  access: 'read' as const
                 }
               ]
             : [])
         ],
         invocationCount: columns * LANES,
+        workgroupSize: LANES,
         guardIndex: false,
         declarations: `const LANES: u32 = ${LANES}u;
 const GROUPS: u32 = ${unitGroups}u;
+${
+  collected
+    ? `const COLLECTED_STRIDE: u32 = ${collected.stride}u;
+${ENVIRONMENT_LAYOUT_WGSL(unitCount, K)}`
+    : ''
+}
 var<workgroup> scratch: array<f32, ${LANES}>;`,
         // One workgroup per column; lane l sums partials l, l + 256, ... then a fixed tree.
         body: `let column = index / LANES;
@@ -368,7 +414,7 @@ var<workgroup> scratch: array<f32, ${LANES}>;`,
   }
   if (lane == 0u) {
     output[outputOffset + column] = scratch[0];
-    ${collected ? `collected[collectedOffset + ${collected.base}u + column] = scratch[0];` : ''}
+    ${collected ? 'collected[collectedOffset + getScaleIndex() * COLLECTED_STRIDE + column] = scratch[0];' : ''}
   }`
       });
 
@@ -381,7 +427,11 @@ var<workgroup> scratch: array<f32, ${LANES}>;`,
       scales.length * (K + 1)
     );
     const smoothedPopulation = props.spatialForm === 'smoothed-population';
-    const addTotals = (label: string, counts: GraphDataView<'float32'>, scaleIndex?: number) => {
+    const addTotals = (
+      label: string,
+      counts: GraphDataView<'float32'>,
+      scaleEnvironment?: GraphDataView<'float32'>
+    ) => {
       const totalPartials = createTransientView(
         graph,
         `${id}-${label}-partials`,
@@ -399,6 +449,7 @@ var<workgroup> scratch: array<f32, ${LANES}>;`,
             {name: 'partials', view: totalPartials, type: 'f32', access: 'read_write'}
           ],
           invocationCount: unitGroups * LANES,
+          workgroupSize: LANES,
           guardIndex: false,
           declarations: reductionDeclarations(K + 1, declarations),
           body: `let lane = localInvocationIndex;
@@ -416,29 +467,39 @@ var<workgroup> scratch: array<f32, ${LANES}>;`,
           totalPartials,
           K + 1,
           totals,
-          scaleIndex === undefined ? undefined : {view: allTotals, base: scaleIndex * (K + 1)}
+          scaleEnvironment
+            ? {view: allTotals, stride: K + 1, environment: scaleEnvironment}
+            : undefined
         )
       );
       return totals;
     };
-    const collectTotals = (scaleIndex: number, totals: GraphDataView<'float32'>) =>
+    const collectTotals = (
+      scaleId: string,
+      totals: GraphDataView<'float32'>,
+      environment: GraphDataView<'float32'>
+    ) =>
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-collect-totals-${scaleIndex}`,
+        id: `${scaleId}-collect-totals`,
         operation: OPERATION,
         variant: 'collect-totals',
         bindings: [
           {name: 'totals', view: totals, type: 'f32', access: 'read'},
-          {name: 'allTotals', view: allTotals, type: 'f32', access: 'read_write'}
+          {name: 'allTotals', view: allTotals, type: 'f32', access: 'read_write'},
+          {name: 'environment', view: environment, type: 'f32', access: 'read'}
         ],
         invocationCount: K + 1,
-        body: `allTotals[allTotalsOffset + ${scaleIndex * (K + 1)}u + index] = totals[totalsOffset + index];`
+        declarations: `const K: u32 = ${K}u;
+${ENVIRONMENT_LAYOUT_WGSL(unitCount, K)}`,
+        body: `allTotals[allTotalsOffset + getScaleIndex() * (K + 1u) + index] = totals[totalsOffset + index];`
       });
     const sharedTotals = smoothedPopulation ? undefined : addTotals('totals', groupCounts);
 
     // The composition share and environment helpers shared by the term and local kernels.
     const environmentDeclarations = `${declarations}
+${ENVIRONMENT_LAYOUT_WGSL(unitCount, K)}
 fn getShare(unit: u32, group: u32) -> f32 {
-  let total = environmentTotal[environmentTotalOffset + unit];
+  let total = getEnvironmentTotal(unit);
   return select(0.0, environment[environmentOffset + unit * K + group] / total, total > 0.0);
 }
 fn getPopulationShare(group: u32) -> f32 {
@@ -459,19 +520,27 @@ fn getDiversity() -> f32 {
       'float32',
       scales.length * termCount
     );
+    // Scale cursor: the environment kernel of each scale advances it and records the scale index
+    // in its environment table, which every later kernel of the scale reads.
+    const scaleCursor = createTransientView(graph, `${id}-scale-cursor`, 'uint32', 1);
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-scale-cursor-clear`,
+        operation: OPERATION,
+        variant: 'scale-cursor-clear',
+        bindings: [{name: 'scaleCursor', view: scaleCursor, type: 'u32', access: 'read_write'}],
+        invocationCount: 1,
+        body: 'scaleCursor[scaleCursorOffset] = 0xffffffffu;'
+      })
+    );
     scales.forEach((weights, scaleIndex) => {
       const scaleId = `${id}-scale-${scaleIndex}`;
+      // Layout: unitCount * K weighted group counts, unitCount totals, then the scale index.
       const environment = createTransientView(
         graph,
         `${scaleId}-environment`,
         'float32',
-        unitCount * K
-      );
-      const environmentTotal = createTransientView(
-        graph,
-        `${scaleId}-environment-total`,
-        'float32',
-        unitCount
+        unitCount * K + unitCount + 1
       );
       const sums = createTransientView(graph, `${scaleId}-sums`, 'float32', termCount);
       const termPartials = createTransientView(
@@ -512,12 +581,19 @@ fn getDiversity() -> f32 {
                 ]
               : []),
             {name: 'environment', view: environment, type: 'f32', access: 'read_write'},
-            {name: 'environmentTotal', view: environmentTotal, type: 'f32', access: 'read_write'}
+            {name: 'scaleCursor', view: scaleCursor, type: 'u32', access: 'read_write'}
           ],
           invocationCount: unitCount,
           declarations,
-          body: weights
-            ? `var total = 0.0;
+          // Only invocation 0 touches the cursor. The scale index is small, so f32 holds it exactly.
+          body: `if (index == 0u) {
+    let scale = scaleCursor[scaleCursorOffset] + 1u;
+    scaleCursor[scaleCursorOffset] = scale;
+    environment[environmentOffset + UNITS * K + UNITS] = f32(scale);
+  }
+  ${
+    weights
+      ? `var total = 0.0;
   for (var group = 0u; group < K; group++) {
     var sum = SELF_WEIGHT * countAt(index, group);
     for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
@@ -529,17 +605,18 @@ fn getDiversity() -> f32 {
     environment[environmentOffset + index * K + group] = sum;
     total += sum;
   }
-  environmentTotal[environmentTotalOffset + index] = total;`
-            : `for (var group = 0u; group < K; group++) {
+  environment[environmentOffset + UNITS * K + index] = total;`
+      : `for (var group = 0u; group < K; group++) {
     environment[environmentOffset + index * K + group] = countAt(index, group);
   }
-  environmentTotal[environmentTotalOffset + index] = unitTotal(index);`
+  environment[environmentOffset + UNITS * K + index] = unitTotal(index);`
+  }`
         })
       );
       const scaleTotals =
-        sharedTotals ?? addTotals(`scale-${scaleIndex}-totals`, counts, scaleIndex);
+        sharedTotals ?? addTotals(`scale-${scaleIndex}-totals`, counts, environment);
       nodes.push(
-        ...(sharedTotals ? [collectTotals(scaleIndex, scaleTotals)] : []),
+        ...(sharedTotals ? [collectTotals(scaleId, scaleTotals, environment)] : []),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${scaleId}-terms`,
           operation: OPERATION,
@@ -547,17 +624,17 @@ fn getDiversity() -> f32 {
           bindings: [
             {name: 'groupCounts', view: counts, type: 'f32', access: 'read'},
             {name: 'environment', view: environment, type: 'f32', access: 'read'},
-            {name: 'environmentTotal', view: environmentTotal, type: 'f32', access: 'read'},
             {name: 'totals', view: scaleTotals, type: 'f32', access: 'read'},
             {name: 'partials', view: termPartials, type: 'f32', access: 'read_write'}
           ],
           invocationCount: unitGroups * LANES,
+          workgroupSize: LANES,
           guardIndex: false,
           declarations: reductionDeclarations(termCount, environmentDeclarations),
           body: `let lane = localInvocationIndex;
   let group = (index - lane) / LANES;
   // A unit whose environment is empty has no composition: it contributes nothing to any sum.
-  if (index < UNITS && environmentTotal[environmentTotalOffset + index] > 0.0) {
+  if (index < UNITS && getEnvironmentTotal(index) > 0.0) {
     let unitPopulation = unitTotal(index);
     var entropy = 0.0;
     var absolute = 0.0;
@@ -581,10 +658,11 @@ fn getDiversity() -> f32 {
         }),
         addColumnTotals(`${scaleId}-sums`, termPartials, termCount, sums, {
           view: allSums,
-          base: scaleIndex * termCount
+          stride: termCount,
+          environment
         })
       );
-      if (local && (local.environment || local.entropy || local.dissimilarity || local.theil)) {
+      if (local.environment || local.entropy || local.dissimilarity || local.theil) {
         const outputs = [
           ['localEnvironment', local.environment],
           ['localEntropy', local.entropy],
@@ -599,7 +677,6 @@ fn getDiversity() -> f32 {
             bindings: [
               {name: 'groupCounts', view: counts, type: 'f32', access: 'read'},
               {name: 'environment', view: environment, type: 'f32', access: 'read'},
-              {name: 'environmentTotal', view: environmentTotal, type: 'f32', access: 'read'},
               {name: 'totals', view: scaleTotals, type: 'f32', access: 'read'},
               ...outputs.flatMap(([name, view]) =>
                 view ? [{name, view, type: 'f32' as const, access: 'read_write' as const}] : []
@@ -608,8 +685,9 @@ fn getDiversity() -> f32 {
             invocationCount: unitCount,
             declarations: environmentDeclarations,
             body: `let unitPopulation = unitTotal(index);
+  let scaleIndex = getScaleIndex();
   // An empty environment has no composition, so every local value of the unit is NaN.
-  let hasEnvironment = environmentTotal[environmentTotalOffset + index] > 0.0;
+  let hasEnvironment = getEnvironmentTotal(index) > 0.0;
   let populationTotal = totals[totalsOffset + K];
   let diversity = getDiversity();
   var entropy = 0.0;
@@ -618,7 +696,7 @@ fn getDiversity() -> f32 {
     entropy += entropyTerm(share);
     ${
       local.environment
-        ? `localEnvironment[localEnvironmentOffset + (${scaleIndex}u * UNITS + index) * K + group] =
+        ? `localEnvironment[localEnvironmentOffset + (scaleIndex * UNITS + index) * K + group] =
       select(getNaN(), share, hasEnvironment);`
         : ''
     }
@@ -626,20 +704,20 @@ fn getDiversity() -> f32 {
       local.dissimilarity
         ? `let populationShare = getPopulationShare(group);
     let scale = 2.0 * populationTotal * populationShare * (1.0 - populationShare);
-    localDissimilarity[localDissimilarityOffset + (${scaleIndex}u * UNITS + index) * K + group] =
+    localDissimilarity[localDissimilarityOffset + (scaleIndex * UNITS + index) * K + group] =
       select(getNaN(), unitPopulation * abs(share - populationShare) / scale, scale > 0.0 && hasEnvironment);`
         : ''
     }
   }
   ${
     local.entropy
-      ? `localEntropy[localEntropyOffset + ${scaleIndex}u * UNITS + index] =
+      ? `localEntropy[localEntropyOffset + scaleIndex * UNITS + index] =
     select(getNaN(), entropy, hasEnvironment);`
       : ''
   }
   ${
     local.theil
-      ? `localTheil[localTheilOffset + ${scaleIndex}u * UNITS + index] =
+      ? `localTheil[localTheilOffset + scaleIndex * UNITS + index] =
     select(getNaN(), unitPopulation * (diversity - entropy) / (diversity * populationTotal), diversity > 0.0 && populationTotal > 0.0 && hasEnvironment);`
       : ''
   }`

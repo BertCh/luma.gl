@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUBufferSurface} from './gpu-buffer-surface';
+export {
+  getGPUBufferSurfaceMaximumBoundaryRowCount,
+  GPUBufferSurface
+} from './gpu-buffer-surface';
 export type {
   GPUBufferCapStyle,
   GPUBufferSurfaceProps

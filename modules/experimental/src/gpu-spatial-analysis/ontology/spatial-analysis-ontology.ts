@@ -273,7 +273,7 @@ export type GPUSpatialAnalysisOperator = {
   primaryCapability: string;
   /** Additional capability IDs that describe secondary roles. */
   tags: readonly string[];
-  package: '@luma.gl/experimental/gpu-spatial-analysis';
+  package: '@luma.gl/experimental/gpu-spatial-analysis' | '@luma.gl/experimental/gpu-terrain';
   inputs: readonly GPUSpatialAnalysisDataKind[];
   outputs: readonly GPUSpatialAnalysisDataKind[];
   dimensionality: '2d' | '2d+time' | 'topology' | 'mixed' | 'unspecified';

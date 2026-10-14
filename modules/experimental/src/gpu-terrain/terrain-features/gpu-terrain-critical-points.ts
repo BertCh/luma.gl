@@ -3,22 +3,24 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand} from '../../gpu-raster/index';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
-  getTerrainBandViews,
-  getTerrainElevationNodes,
-  validateTerrainBandBelongsToGraph,
-  validateTerrainBuffersDistinct,
-  validateTerrainGrid
-} from '../terrain-analysis/terrain-analysis-utils';
+  validateGraphViewsBelongToGraph,
+  validatePackedView
+} from '../../utils/gpu-contributor-utils';
+import {
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterBandBelongsToGraph,
+  validateRasterBuffersDistinct,
+  validateRasterGrid
+} from '../../gpu-raster/raster-band-utils';
 
 /**
  * Critical-point classes written by {@link GPUTerrainCriticalPoints}.
@@ -38,23 +40,8 @@ export const GPU_TERRAIN_CRITICAL_POINT = {
 /** Number of class codes, and the required length of the optional `counts` output. */
 export const GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT = 6;
 
-/**
- * Properties for {@link GPUTerrainCriticalPoints}.
- *
- * Cell-size independent: the classification is made of pure comparisons of heights, so it does not
- * depend on the metric size of a pixel or on the vertical unit.
- */
-export type GPUTerrainCriticalPointsProps = {
-  /** Prefix for node and transient IDs. Defaults to `'terrain-critical-points'`. */
-  id?: string;
-  /** Grid width in pixels. */
-  width: number;
-  /** Grid height in pixels. */
-  height: number;
-  /** Elevation band, buffer or texture. It is canonicalised to float32 values plus validity. */
-  elevation: GPURasterBand;
-  /** Ring connectivity: 8 (Peucker-Douglas, default) or 6 (Freudenthal triangulation). */
-  connectivity?: 8 | 6;
+/** Caller-owned outputs of {@link GPUTerrainCriticalPoints}. */
+export type GPUTerrainCriticalPointsOutput = {
   /** One {@link GPU_TERRAIN_CRITICAL_POINT} code per pixel. */
   classes: GraphDataView<'uint32'>;
   /** Optional number of sign changes `c` around the ring, per pixel (0 for unclassified pixels). */
@@ -64,6 +51,25 @@ export type GPUTerrainCriticalPointsProps = {
    * cleared at the start of every encoding.
    */
   counts?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Properties for {@link GPUTerrainCriticalPoints}.
+ *
+ * Cell-size independent: the classification is made of pure comparisons of heights, so it does not
+ * depend on the metric size of a pixel or on the vertical unit.
+ */
+export type GPUTerrainCriticalPointsProps = {
+  /** Prefix for node and transient IDs. Defaults to `'terrain-critical-points'`. */
+  id?: string;
+  /** Raster grid: its width and height size the kernel. */
+  grid: GPURasterMetadata;
+  /** Elevation band, buffer or texture. It is canonicalised to float32 values plus validity. */
+  elevation: GPURasterBand;
+  /** Ring connectivity: 8 (Peucker-Douglas, default) or 6 (Freudenthal triangulation). */
+  connectivity?: 8 | 6;
+  /** Caller-owned outputs. */
+  output: GPUTerrainCriticalPointsOutput;
 };
 
 /**
@@ -105,30 +111,31 @@ export class GPUTerrainCriticalPoints implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-critical-points';
     this.props = props;
     const {id} = this;
-    const pixelCount = validateTerrainGrid(id, props.width, props.height);
+    const {output} = props;
+    const pixelCount = validateRasterGrid(id, props.grid);
     if (props.connectivity !== undefined && props.connectivity !== 8 && props.connectivity !== 6) {
       throw new Error(`${id} connectivity must be 8 or 6`);
     }
-    validatePackedUint32View(props.classes, `${id} classes`);
-    if (props.classes.length !== pixelCount) {
-      throw new Error(`${id} classes must contain one value per pixel`);
+    validatePackedView(output.classes, ['uint32'], `${id} output.classes`);
+    if (output.classes.length !== pixelCount) {
+      throw new Error(`${id} output.classes must contain one value per pixel`);
     }
-    if (props.signChanges) {
-      validatePackedUint32View(props.signChanges, `${id} signChanges`);
-      if (props.signChanges.length !== pixelCount) {
-        throw new Error(`${id} signChanges must contain one value per pixel`);
+    if (output.signChanges) {
+      validatePackedView(output.signChanges, ['uint32'], `${id} output.signChanges`);
+      if (output.signChanges.length !== pixelCount) {
+        throw new Error(`${id} output.signChanges must contain one value per pixel`);
       }
     }
-    if (props.counts) {
-      validatePackedUint32View(props.counts, `${id} counts`);
-      if (props.counts.length !== GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT) {
-        throw new Error(`${id} counts must contain one value per class (6)`);
+    if (output.counts) {
+      validatePackedView(output.counts, ['uint32'], `${id} output.counts`);
+      if (output.counts.length !== GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT) {
+        throw new Error(`${id} output.counts must contain one value per class (6)`);
       }
     }
-    validateTerrainBuffersDistinct(
+    validateRasterBuffersDistinct(
       id,
-      [props.classes, props.signChanges, props.counts],
-      getTerrainBandViews(props.elevation)
+      [output.classes, output.signChanges, output.counts],
+      getRasterBandViews(props.elevation)
     );
   }
 
@@ -137,17 +144,18 @@ export class GPUTerrainCriticalPoints implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height} = props;
-    validateTerrainBandBelongsToGraph(id, graph, props.elevation, []);
-    validateGraphViewsBelongToGraph(id, graph, [props.classes, props.signChanges, props.counts]);
-    const source = getTerrainElevationNodes(graph, id, props.elevation, width, height, true);
+    const {output} = props;
+    const {width, height} = props.grid;
+    validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
+    validateGraphViewsBelongToGraph(id, graph, [output.classes, output.signChanges, output.counts]);
+    const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
-    if (props.counts) {
+    if (output.counts) {
       nodes.push(
         createFillNode<Parameters>(graph, {
           id: `${id}-clear-counts`,
           operation: 'GPUTerrainCriticalPoints',
-          view: props.counts,
+          view: output.counts,
           type: 'u32',
           value: '0u'
         })
@@ -169,25 +177,25 @@ export class GPUTerrainCriticalPoints implements GPUCommandNodeProducer {
       },
       {
         name: 'classValues',
-        view: props.classes,
+        view: output.classes,
         type: 'u32' as const,
         access: 'read_write' as const
       },
-      ...(props.signChanges
+      ...(output.signChanges
         ? [
             {
               name: 'signChangeValues',
-              view: props.signChanges,
+              view: output.signChanges,
               type: 'u32' as const,
               access: 'read_write' as const
             }
           ]
         : []),
-      ...(props.counts
+      ...(output.counts
         ? [
             {
               name: 'classCounts',
-              view: props.counts,
+              view: output.counts,
               type: 'atomic<u32>' as const,
               access: 'read_write' as const
             }
@@ -254,8 +262,8 @@ fn getSide(column: u32, row: u32, columnOffset: i32, rowOffset: i32, centerHeigh
     }
   }
   classValues[classValuesOffset + index] = classCode;
-  ${props.signChanges ? 'signChangeValues[signChangeValuesOffset + index] = changeCount;' : ''}
-  ${props.counts ? 'atomicAdd(&classCounts[classCountsOffset + classCode], 1u);' : ''}`
+  ${output.signChanges ? 'signChangeValues[signChangeValuesOffset + index] = changeCount;' : ''}
+  ${output.counts ? 'atomicAdd(&classCounts[classCountsOffset + classCode], 1u);' : ''}`
       })
     );
     return nodes;

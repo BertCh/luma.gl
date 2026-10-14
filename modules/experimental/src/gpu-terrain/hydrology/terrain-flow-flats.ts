@@ -14,6 +14,7 @@ import {
   getRasterRelaxationTileWGSL
 } from '../../gpu-raster/cost-distance/raster-relaxation';
 import {TERRAIN_FLOW_SWEEP_AFTER_ITERATION, type TerrainFlowGrid} from './terrain-flow-passes';
+import type {GPUTerrainFlowFlatContinuation} from './gpu-terrain-flow';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUTerrainFlow';
@@ -47,7 +48,8 @@ fn getInfinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }`;
  * which differs from RichDEM's neighbor order; the resulting flow field is equally valid. Cells
  * with infinite `towardLower` (flats without an outlet) stay `flat`. Each pass runs at most
  * `maxIterations` gated relaxations; `converged` is 1 only when all three reached their fixpoint.
- * Cell size mode does not matter: hop counts are unitless.
+ * Cell size mode does not matter: hop counts are unitless. Also returns the status views of the
+ * three relaxations (word 3 is 1 once a relaxation reached its fixpoint).
  *
  * @internal
  */
@@ -56,6 +58,7 @@ export function createTerrainFlowFlatNodes<Parameters>(
   props: TerrainFlowGrid & {
     id: string;
     maxIterations: number;
+    continuation?: GPUTerrainFlowFlatContinuation;
     /** Canonical elevation, NaN for invalid cells. */
     elevation: GraphDataView<'float32'>;
     /** Routing surface (filled elevation or `elevation`), NaN for invalid cells. */
@@ -69,7 +72,7 @@ export function createTerrainFlowFlatNodes<Parameters>(
     iterationCount?: GraphDataView<'uint32'>;
     cellClass: {draining: number; flat: number; pit: number; outlet: number; invalid: number};
   }
-): GPUCommandNode<Parameters>[] {
+): {nodes: GPUCommandNode<Parameters>[]; statuses: GraphDataView<'uint32'>[]} {
   const cellCount = props.width * props.height;
   const {cellClass} = props;
   const makeView = (suffix: string) =>
@@ -81,12 +84,14 @@ export function createTerrainFlowFlatNodes<Parameters>(
       'float32',
       cellCount
     );
-  const lowerValues = makeView('lower-values');
+  const lowerValues = props.continuation?.lower.values ?? makeView('lower-values');
   const lowerAuxiliary = makeView('lower-aux');
-  const higherValues = makeView('higher-values');
+  const higherValues = props.continuation?.higher.values ?? makeView('higher-values');
   const higherAuxiliary = makeView('higher-aux');
-  const maximumValues = makeView('maximum-values');
+  const maximumValues = props.continuation?.maximum.values ?? makeView('maximum-values');
   const mask = makeView('mask');
+  const lowerSeeds = props.continuation ? makeView('lower-seeds') : lowerValues;
+  const higherSeeds = props.continuation ? makeView('higher-seeds') : higherValues;
 
   const prepareEdges = createWGSLKernelNode<Parameters>(graph, {
     id: `${props.id}-flats-prepare`,
@@ -96,9 +101,9 @@ export function createTerrainFlowFlatNodes<Parameters>(
       {name: 'surface', view: props.surface, type: 'f32', access: 'read'},
       {name: 'classes', view: props.classes, type: 'u32', access: 'read'},
       {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
-      {name: 'lowerValues', view: lowerValues, type: 'f32', access: 'read_write'},
+      {name: 'lowerValues', view: lowerSeeds, type: 'f32', access: 'read_write'},
       {name: 'lowerAuxiliary', view: lowerAuxiliary, type: 'f32', access: 'read_write'},
-      {name: 'higherValues', view: higherValues, type: 'f32', access: 'read_write'},
+      {name: 'higherValues', view: higherSeeds, type: 'f32', access: 'read_write'},
       {name: 'higherAuxiliary', view: higherAuxiliary, type: 'f32', access: 'read_write'}
     ],
     invocationCount: cellCount,
@@ -131,7 +136,7 @@ export function createTerrainFlowFlatNodes<Parameters>(
   });
 
   const buildRelaxation = (
-    suffix: string,
+    suffix: 'lower' | 'higher' | 'maximum',
     values: GraphDataView<'float32'>,
     auxiliary: GraphDataView<'float32'>,
     candidate: string
@@ -142,7 +147,13 @@ export function createTerrainFlowFlatNodes<Parameters>(
       width: props.width,
       height: props.height,
       cellSizeMode: props.cellSizeMode,
-      maxIterations: props.maxIterations
+      maxIterations: props.maxIterations,
+      continuation: props.continuation && {
+        state: props.continuation[suffix].state,
+        retainConverged: true,
+        prerequisite: suffix === 'maximum' ? props.continuation.higher.state : undefined,
+        restartShapes: [[cellCount]] as const
+      }
     };
     const {relaxation, resetNodes} = createRasterTiledRelaxation<Parameters>(
       graph,
@@ -204,6 +215,7 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
   // finite (negative) starting values are the seeds of the maximum relaxation.
   const prepareMaximum = createWGSLKernelNode<Parameters>(graph, {
     id: `${props.id}-flats-prepare-maximum`,
+    ...maximum.relaxation.continuation?.getRestartGate(0, `${props.id}-flats-prepare-maximum`),
     operation: OPERATION,
     variant: 'flats-prepare-maximum',
     bindings: [
@@ -307,19 +319,79 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
   }`
   });
 
-  const nodes: GPUCommandNode<Parameters>[] = [
-    prepareEdges,
-    ...lower.resetNodes,
-    ...higher.resetNodes,
-    ...maximum.resetNodes,
-    seedEdges,
-    ...lower.relaxNodes,
-    ...higher.relaxNodes,
-    prepareMaximum,
-    ...maximum.relaxNodes,
-    maskNode,
-    routeNode
-  ];
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  if (props.continuation) {
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${props.id}-flats-continuation-reset`,
+        operation: OPERATION,
+        bindings: [
+          {name: 'lower', view: props.continuation.lower.state, type: 'u32', access: 'read_write'},
+          {
+            name: 'higher',
+            view: props.continuation.higher.state,
+            type: 'u32',
+            access: 'read_write'
+          },
+          {
+            name: 'maximum',
+            view: props.continuation.maximum.state,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: 1,
+        body: `let restart = lower[lowerOffset + 5u] != 0u || higher[higherOffset + 5u] != 0u || maximum[maximumOffset + 5u] != 0u ||
+        (lower[lowerOffset + 3u] != 0u && higher[higherOffset + 3u] != 0u && maximum[maximumOffset + 3u] != 0u);
+        if (restart) {
+          lower[lowerOffset + 2u] = 0u; lower[lowerOffset + 3u] = 0u;
+          higher[higherOffset + 2u] = 0u; higher[higherOffset + 3u] = 0u;
+          maximum[maximumOffset + 2u] = 0u; maximum[maximumOffset + 3u] = 0u;
+          lower[lowerOffset + 5u] = 0u; higher[higherOffset + 5u] = 0u; maximum[maximumOffset + 5u] = 0u;
+        }`
+      })
+    );
+    nodes.push(prepareEdges);
+    for (const [stage, seeds, values, suffix] of [
+      [lower, lowerSeeds, lowerValues, 'lower'],
+      [higher, higherSeeds, higherValues, 'higher']
+    ] as const) {
+      nodes.push(
+        ...stage.resetNodes,
+        createWGSLKernelNode(graph, {
+          id: `${props.id}-flats-${suffix}-initialize`,
+          operation: OPERATION,
+          ...stage.relaxation.continuation?.getRestartGate(
+            0,
+            `${props.id}-flats-${suffix}-initialize`
+          ),
+          bindings: [
+            {name: 'seeds', view: seeds, type: 'f32', access: 'read'},
+            {name: 'values', view: values, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          body: 'values[valuesOffset + index] = seeds[seedsOffset + index];'
+        }),
+        ...stage.relaxNodes
+      );
+    }
+    // Maximum must start only after higher converges; its values then remain valid on resume.
+    nodes.push(...maximum.resetNodes, prepareMaximum, ...maximum.relaxNodes, maskNode, routeNode);
+  } else {
+    nodes.push(
+      prepareEdges,
+      ...lower.resetNodes,
+      ...higher.resetNodes,
+      ...maximum.resetNodes,
+      seedEdges,
+      ...lower.relaxNodes,
+      ...higher.relaxNodes,
+      prepareMaximum,
+      ...maximum.relaxNodes,
+      maskNode,
+      routeNode
+    );
+  }
   if (props.converged || props.iterationCount) {
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -375,5 +447,8 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
       })
     );
   }
-  return nodes;
+  return {
+    nodes,
+    statuses: [lower, higher, maximum].map(({relaxation}) => relaxation.state.status)
+  };
 }

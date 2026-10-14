@@ -18,6 +18,12 @@ export const GPU_CALENDAR_BUCKETS_INVALID_YEAR = -2147483648;
 export const GPU_CALENDAR_BUCKETS_MAXIMUM_OFFSET_MINUTES = 1440;
 
 /**
+ * Largest UTC offset magnitude in seconds (24 hours), the bound of the `timeZone` table offsets.
+ * A larger table offset makes the row invalid.
+ */
+export const GPU_CALENDAR_BUCKETS_MAXIMUM_OFFSET_SECONDS = 86_400;
+
+/**
  * Largest absolute day number (days since 1970-01-01) a row may reach after the offset. Rows
  * beyond it, roughly years -2.7 million to +2.7 million, are invalid.
  */
@@ -27,8 +33,8 @@ export const GPU_CALENDAR_BUCKETS_MAXIMUM_DAYS = 1_000_000_000;
  * Packs per-frame calendar parameters for `GPUCalendarBuckets`.
  *
  * Layout (`sint32`): `[utcOffsetMinutes, firstDayOfWeek]`. The offset is a fixed offset applied to
- * every row that has no per-row offset column. Daylight saving time is only handled through the
- * per-row offset column, which the caller precomputes.
+ * every row that has no per-row offset column or `timeZone` table. Daylight saving time is handled
+ * through the per-row offset column or the `timeZone` transition table.
  *
  * @param utcOffsetMinutes Fixed offset east of UTC in minutes, an integer in `[-1440, 1440]`.
  * @param firstDayOfWeek First day of the week for the `weekday` output and the hour by weekday
