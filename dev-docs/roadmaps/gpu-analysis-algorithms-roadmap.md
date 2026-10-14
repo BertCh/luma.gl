@@ -121,6 +121,12 @@ medians on one Apple-silicon WebGPU adapter.
 | P3 #9 Falcon cube | Done | Crossfilter histogram views. |
 | P3 #10 scanline cell cover | Done | H3 res 9: 487 → 26 ms; 0.01°×20° strip: 628 ms (overflow) → 88 ms. |
 
+Open follow-up:
+- `GPUNetworkCentrality` unrolls one hop per round (needed for cross-workgroup ordering). At the maximum iteration count,
+  one contributor declares about 197,000 command nodes. That is a compile-cost cliff, and the kernel audit had to stream
+  shader inspection to stay in memory. It should use a GPU-gated continuation (indirect dispatch on an unconverged
+  word) instead of unrolled rounds.
+
 Upstream items that blocked parts of this work:
 - `GPUSort` with a GPU-side row count.
 - Gateable `GPUBVH`, `GPUSort` and `GPUScan` builds.
