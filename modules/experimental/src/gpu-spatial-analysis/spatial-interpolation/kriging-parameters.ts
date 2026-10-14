@@ -9,9 +9,9 @@ export const GPU_KRIGING_PARAMETER_LENGTH = 12;
 
 /** Per-frame settings of {@link GPUKriging}. */
 export type GPUKrigingSettings = {
-  /** Output raster extent `[minX, minY, maxX, maxY]` in sample units. Cell centers are predicted. */
+  /** Output raster extent `[minX, minY, maxX, maxY]` in position units. Cell centers are predicted. */
   extent: readonly [number, number, number, number];
-  /** Search radius in sample units. `Infinity` searches the whole index domain. */
+  /** Search radius in position units. `Infinity` searches the whole index domain. */
   searchRadius: number;
   /**
    * Neighborhood size `k`. Clamped to the contributor's compile-time `maximumNeighborCount`.

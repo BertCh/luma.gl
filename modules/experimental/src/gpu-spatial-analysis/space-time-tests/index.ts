@@ -7,10 +7,12 @@ export type {GPUKnoxTestProps} from './gpu-knox-test';
 export {GPUMantelTest} from './gpu-mantel-test';
 export type {GPUMantelTestProps} from './gpu-mantel-test';
 export {
+  getGPUSpaceTimeInferenceMetadata,
   getGPUSpaceTimeParameterValues,
+  getGPUSpaceTimeRelativeTimes,
   getKnoxPoissonPValue,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from './space-time-parameters';
-export type {GPUSpaceTimeParameters} from './space-time-parameters';
+export type {GPUSpaceTimeParameters, GPUSpaceTimeRelativeTimes} from './space-time-parameters';

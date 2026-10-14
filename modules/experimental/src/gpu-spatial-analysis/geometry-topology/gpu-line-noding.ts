@@ -17,6 +17,7 @@ import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils
 import {GPULineSplit, GPU_LINE_SPLIT_SELF_CONTACT} from '../line-split/index';
 import type {GPULineGeometryPort} from '../contracts/index';
 import {GPU_TOPOLOGY_NONE, type GPUNodedSegmentPort} from './topology-types';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPULineNoding';
 
@@ -24,6 +25,13 @@ const OPERATION = 'GPULineNoding';
 export type GPULineNodingProps = {
   /** Prefix for generated node and transient IDs. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Arbitrary finite planar linework. */
   lines: Omit<GPULineGeometryPort, 'positions' | 'sourceIds'> & {
     positions: GraphDataView<'float32x2'>;
@@ -51,9 +59,12 @@ export type GPULineNodingProps = {
 export class GPULineNoding implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPULineNodingProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPULineNodingProps) {
     this.id = props.id ?? 'line-noding';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {lines, output} = props;

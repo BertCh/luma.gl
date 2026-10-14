@@ -21,6 +21,12 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../utils/wgsl-kernel-nodes';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/index';
+import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
 import {FIND_PATH_WGSL} from '../line-segmentize/line-segmentize-kernels';
 import {GPUSpatialJoinCandidates} from '../spatial-join/spatial-join-candidates';
@@ -29,11 +35,17 @@ import type {GPUSpatialJoinPolygons} from '../spatial-join/spatial-join-types';
 
 const OPERATION = 'GPULineLengthPerPolygon';
 
+/** Planar/native, or longitude-latitude with the great-circle metric. */
+const LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+  coordinateSpaces: ['planar', 'longitude-latitude'],
+  metrics: ['none', 'native', 'great-circle']
+};
+
 /** Caller-owned outputs of {@link GPULineLengthPerPolygon}. */
 export type GPULineLengthPerPolygonOutput = {
   /**
    * Total length of the part of every line that lies inside each polygon feature, one row per
-   * polygon feature, in position units (`'planar'`) or sphere-radius units (`'spherical'`).
+   * polygon feature, in position units (planar/native context) or sphere-radius units (longitude-latitude).
    */
   lengths: GraphDataView<'float32'>;
   /** Optional `sum(length * pathWeight)` per polygon feature. Requires `pathWeights`. */
@@ -62,10 +74,12 @@ export type GPULineLengthPerPolygonProps = {
   pathWeights?: GraphDataView<'float32'>;
   /** Polygon or multipolygon features, in the layout of `GPUSpatialPredicateJoin`. */
   polygons: GPUSpatialJoinPolygons;
-  /** `'planar'` (default) or `'spherical'` (longitude/latitude degrees, great-circle piece lengths). */
-  coordinateSystem?: 'planar' | 'spherical';
-  /** Sphere radius of `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
-  radius?: number;
+  /**
+   * Planar/native (default when omitted) or longitude-latitude with the `'great-circle'` metric
+   * (positions in degrees, piece lengths in meters, or in `sphereRadius` units). Replaces the former
+   * `coordinateSystem` and `radius` props. Other contexts throw at construction.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Compile-time capacity of (segment, polygon) bounding-box candidate pairs. Default
    * `max(1024, 8 * positions.length)`.
@@ -95,7 +109,7 @@ export type GPULineLengthPerPolygonProps = {
  * reproducible. No float atomics (segment counts use integer atomics).
  *
  * Pieces lying exactly along a ring edge are ambiguous (midpoint on the boundary) and may count or
- * not. Lines are not unioned: overlapping lines count once each, as in QGIS. `'spherical'` clips
+ * not. Lines are not unioned: overlapping lines count once each, as in QGIS. A longitude-latitude context clips
  * straight in longitude/latitude (as {@link GPULineDensity} does) and measures each piece as the
  * great-circle distance between its endpoints.
  *
@@ -109,9 +123,11 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
   readonly props: GPULineLengthPerPolygonProps;
   /** Number of polygon features. */
   readonly polygonCount: number;
-  /** Resolved coordinate system. */
+  /** Resolved coordinate and metric contract. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Resolved coordinate system derived from `spatialContext`. */
   readonly coordinateSystem: 'planar' | 'spherical';
-  /** Resolved sphere radius. */
+  /** Resolved sphere radius (`GPU_GEODESIC_MEAN_EARTH_RADIUS` unless the context sets one). */
   readonly radius: number;
   /** Resolved candidate pair capacity. */
   readonly maximumCandidatePairs: number;
@@ -122,17 +138,27 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     this.id = props.id ?? 'line-length-per-polygon';
     this.props = props;
     const {id} = this;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT
+    );
+    const spherical = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    if (spherical && this.spatialContext.metric !== 'great-circle') {
+      // Only the great-circle metric is implemented; 'none' on lon/lat has no length meaning.
+      throw new Error(`${id} longitude-latitude needs the great-circle metric`);
+    }
+    this.coordinateSystem = spherical ? 'spherical' : 'planar';
+    // An explicit sphereRadius is in result units; the default sphere honours units: 'kilometers'.
+    this.radius = spherical
+      ? (this.spatialContext.sphereRadius ??
+        (this.spatialContext.units === 'kilometers'
+          ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
+          : GPU_GEODESIC_MEAN_EARTH_RADIUS))
+      : GPU_GEODESIC_MEAN_EARTH_RADIUS;
     this.maximumCandidatePairs =
       props.maximumCandidatePairs ?? Math.max(1024, 8 * props.positions.length);
     this.maximumCrossings = props.maximumCrossings ?? 64;
-    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
-    }
     for (const [name, value] of [
       ['maximumCandidatePairs', this.maximumCandidatePairs],
       ['maximumCrossings', this.maximumCrossings]
@@ -366,6 +392,7 @@ const MAXIMUM_CROSSINGS: u32 = ${maximumCrossings}u;
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};
 const EDGE_TOLERANCE: f32 = 1.0e-6;
 ${spherical ? GEODESIC_WGSL : ''}
+${IS_NAN_BITS_WGSL}
 
 fn getVertex(row: u32) -> vec2f {
   return vec2f(polygonPositions[polygonPositionsOffset + 2u * row], polygonPositions[polygonPositionsOffset + 2u * row + 1u]);
@@ -409,7 +436,7 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
     let delta = b - a;
     let ringStart = featureRings[featureRingsOffset + 2u * feature];
     let ringEnd = featureRings[featureRingsOffset + 2u * feature + 1u];
-    if (a.x == a.x && a.y == a.y && b.x == b.x && b.y == b.y && (delta.x != 0.0 || delta.y != 0.0)) {
+    if (!isNanBits(a.x) && !isNanBits(a.y) && !isNanBits(b.x) && !isNanBits(b.y) && (delta.x != 0.0 || delta.y != 0.0)) {
       var crossings = array<f32, ${maximumCrossings}>();
       var crossingCount = 0u;
       var truncated = false;

@@ -23,6 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
 import {getDotSlotCountLimit} from './dot-density-cpu';
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
 import {PHILOX_WGSL} from '../../utils/philox-random';
@@ -55,6 +56,11 @@ export type GPURandomPointsOnLineOutput = {
 export type GPURandomPointsOnLineProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'random-points-on-line'`. */
   id?: string;
+  /**
+   * Coordinate and metric contract of the line positions. Planar/native only (omitted means
+   * planar/native): arc length is measured in coordinate space. Other contexts throw at construction.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Vertices of every input linestring, concatenated. */
   positions: GraphDataView<'float32x2'>;
   /** Line-to-vertex offsets with `lineCount + 1` rows (GeoArrow layout). */
@@ -88,6 +94,8 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURandomPointsOnLineProps;
+  /** Resolved coordinate and metric contract (planar/native). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of input lines. */
   readonly lineCount: number;
 
@@ -95,6 +103,7 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
     this.id = props.id ?? 'random-points-on-line';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedUint32View(props.lineOffsets, `${id} lineOffsets`);

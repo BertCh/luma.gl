@@ -25,6 +25,7 @@ import {
   getPredicateGeometryWGSL
 } from './geometry-predicates-access';
 import {GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH} from './geometry-predicates-parameters';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUGeometryPredicates';
 
@@ -41,6 +42,13 @@ const STRUCTURE_MISMATCH = 0xffffffff;
 export type GPUGeometryPredicatesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-predicates'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Point, linestring or polygon/multipolygon features in the GeoArrow layout of
    * `GPUSpatialPredicateJoin`. Each output column has one `uint32` row per feature, holding `0` or
@@ -146,6 +154,8 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeometryPredicatesProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
   /** Number of vertices of `geometry`. */
@@ -153,6 +163,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
 
   constructor(props: GPUGeometryPredicatesProps) {
     this.id = props.id ?? 'geometry-predicates';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {geometry} = props;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GraphVectorView,
@@ -122,6 +123,13 @@ export type GPUShapeDescriptorsOutput = {
 export type GPUShapeDescriptorsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'shape-descriptors'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed vertex positions in a planar (projected) coordinate system. */
   positions: GraphDataView<'float32x2'>;
   /** `ringCount + 1` monotonic vertex offsets, as in `GPUGeometryMeasures`. Rings close implicitly. */
@@ -154,8 +162,10 @@ export type GPUShapeDescriptorsProps = {
  * feature; `convexityMethod: 'monotone-chain'` (chosen by `'auto'` for large average features)
  * uses `GPUGroupConvexHull` instead, which is O(n log n) and balanced across skewed features.
  * Orientation and elongation weight holes by the hole rule, so a polygon with a large hole is
- * described by its area, not its outline. Use planar coordinates: for longitude/latitude input,
- * project first (geographic descriptors are open).
+ * described by its area, not its outline. Planar only: a longitude/latitude `spatialContext` throws
+ * at construction, so project first (`createGPULocalFrame` with `GPULocalFrameProjection`). The
+ * resolved `spatialContext`, including any `frame` identity, is passed to the internal
+ * `GPUGeometryMeasures`, so it propagates to the measures instead of a fixed planar descriptor.
  *
  * Degenerate features (zero area or perimeter) report NaN for ratios, 0 for the clockwise flag,
  * and `sliver = 1` when the perimeter is positive.
@@ -168,6 +178,8 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUShapeDescriptorsProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
   /** Resolved hole rule. */
@@ -178,6 +190,7 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
   constructor(props: GPUShapeDescriptorsProps) {
     this.id = props.id ?? 'shape-descriptors';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.holeRule = props.holeRule ?? 'winding';
     const {id} = this;
     for (const [name, view] of Object.entries({
@@ -287,7 +300,7 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     if (areas || perimeters || centroids) {
       nodes.push(
         ...new GPUGeometryMeasures({
-          spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+          spatialContext: this.spatialContext,
           id: `${id}-measures`,
           positions: props.positions,
           geometryType: 'polygons',

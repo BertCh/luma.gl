@@ -14,7 +14,14 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {CELL_KEY_WGSL, getCellKeyLayout, type CellKeyLayout, type GPUCellFamily} from './cell-keys';
+import {
+  CELL_KEY_WGSL,
+  getCellKeyLayout,
+  resolveCellSpatialContext,
+  type CellKeyLayout,
+  type GPUCellFamily
+} from './cell-keys';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 import {
   getCellTableNodes,
   getCellTableViews,
@@ -38,6 +45,12 @@ export type GPUCellRollupProps = {
   id?: string;
   /** Grid family of both tables. */
   family: GPUCellFamily;
+  /**
+   * Optional `discrete-grid` context of the keys. Defaults to
+   * `{coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: family}`; a given
+   * `gridFamily` must equal `family` and a given `gridResolution` must be at least `resolution`.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Resolution of every key in `source`. */
   sourceResolution: number;
   /** Coarser output resolution, at most `sourceResolution`. */
@@ -74,6 +87,8 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
   readonly layout: CellKeyLayout;
   /** Fixed-point scale of the sums. */
   readonly sumScale: number;
+  /** Resolved `discrete-grid` spatial context. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCellRollupProps) {
     this.id = props.id ?? 'cell-rollup';
@@ -81,6 +96,13 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
     const id = this.id;
     this.layout = getCellKeyLayout(props.family, props.resolution);
     getCellKeyLayout(props.family, props.sourceResolution);
+    this.spatialContext = resolveCellSpatialContext(
+      id,
+      props.family,
+      props.spatialContext,
+      'cells',
+      props.resolution
+    );
     if (props.resolution > props.sourceResolution) {
       throw new Error(`${id} resolution must not exceed sourceResolution`);
     }

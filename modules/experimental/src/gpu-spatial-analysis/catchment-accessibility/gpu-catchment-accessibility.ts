@@ -87,6 +87,11 @@ export type GPUCatchmentAccessibilityProps = {
  * Each output row accumulates its neighbors in slot order in one invocation, so results are
  * deterministic and match a sequential CPU sum within f32 rounding. Neighbor IDs outside the
  * partner row space are skipped.
+ *
+ * Spatial context: this operator reads no positions, only the weights, so it has no
+ * `spatialContext` prop. Distance units and the coordinate space (planar, or great-circle meters)
+ * are those of the weights' producer (`GPUNeighborSearch`, a network cost kernel); the operator is
+ * unit-free.
  */
 export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

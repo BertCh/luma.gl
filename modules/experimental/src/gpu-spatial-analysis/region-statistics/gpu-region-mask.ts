@@ -18,7 +18,8 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import type {GPURegionShape} from './region-statistics-types';
+import {resolveGPURegionSpatialContext, type GPURegionShape} from './region-statistics-types';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** Number of float32 elements in a region screen transform. */
@@ -31,6 +32,12 @@ export const REGION_STATISTICS_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
 export type GPURegionMaskProps = {
   /** ID prefix. Defaults to `'region-mask'`. */
   id?: string;
+  /**
+   * Coordinate space of `positions` and `region`. Omitted means native planar. Longitude/latitude
+   * is accepted: rectangle and lasso tests are topological, with straight edges in degree space
+   * and no antimeridian handling.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed 2D world positions. The topology is compile-time. */
   positions: GPUFloat32Positions;
   /** Rectangle or lasso polygon, optionally in screen space. Shape contents are per-frame. */
@@ -50,10 +57,17 @@ export class GPURegionMask implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURegionMaskProps;
+  /** Resolved spatial context. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURegionMaskProps) {
     this.id = props.id ?? 'region-mask';
     this.props = props;
+    this.spatialContext = resolveGPURegionSpatialContext(
+      this.id,
+      props.spatialContext,
+      props.region.kind
+    );
     const {id} = this;
     const {positions, region, outputMask, overflow} = props;
     for (const chunk of getGraphViewChunks(positions)) {

@@ -16,7 +16,11 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {
+  describeGPUSpatialWeights,
+  type GPUSpatialWeights,
+  validateGPUSpatialWeights
+} from './spatial-weights';
 
 const OPERATION = 'GPULatticeWeights';
 
@@ -56,7 +60,10 @@ export type GPULatticeWeightsProps = {
   weights: GPUSpatialWeights;
   /** Caller-owned one-row flag: 1 when the neighbors did not fit the capacity, else 0. */
   overflow: GraphDataView<'uint32'>;
-  /** Optional caller-owned one-row unclamped total neighbor count. */
+  /**
+   * Optional caller-owned one-row exact unclamped total neighbor count: the `requiredCount` of
+   * `outputWeights.status`.
+   */
   totalNeighbors?: GraphDataView<'uint32'>;
 };
 
@@ -71,12 +78,19 @@ export type GPULatticeWeightsProps = {
  * {@link GPUNeighborSearch}: offsets are clamped, slots past the capacity are dropped and
  * `overflow` is set. Output is deterministic and matches the CPU result exactly (distances within
  * f32 rounding).
+ *
+ * Capacity grow loop: pass `totalNeighbors`, read it and `overflow` after a frame and, when
+ * `overflow` is 1, reallocate the slot views with `getGPUSpatialWeightsCapacity` and rebuild.
+ * {@link GPULatticeWeights.outputWeights} is `weights` with `info` (`transform: 'binary'`,
+ * `symmetric: true`, provenance with criterion and order = radius) and `status` attached.
  */
 export class GPULatticeWeights implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULatticeWeightsProps;
+  /** The output CSR with `info` and `status` attached, for consumers. */
+  readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPULatticeWeightsProps) {
     const id = props.id ?? 'lattice-weights';
@@ -131,6 +145,19 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
         throw new Error(`${id} totalNeighbors must hold one uint32`);
       }
     }
+    this.outputWeights = describeGPUSpatialWeights(props.weights, {
+      info: {
+        rowCount: rows,
+        transform: 'binary',
+        symmetric: true,
+        hasSelfWeights: false,
+        provenance: {source: OPERATION, criterion: props.criterion, order: radius}
+      },
+      status: {
+        overflow: props.overflow,
+        requiredCount: props.totalNeighbors
+      }
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [

@@ -18,6 +18,7 @@ import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexico
 import type {GPUGeneratedGeometryPort, GPULineGeometryPort} from '../contracts/index';
 import {GPUSegmentIntersection} from '../segment-intersection/index';
 import type {GPUSpatialJoinLines} from '../spatial-join/index';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPULineSplit';
 
@@ -71,6 +72,13 @@ export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> &
 export type GPULineSplitProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-split'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Linestrings to split at their mutual and self intersections. */
   lines: GPUSpatialJoinLines;
   /**
@@ -118,6 +126,8 @@ export class GPULineSplit implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineSplitProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of vertices of the input lines. */
   readonly vertexCount: number;
   /** Number of input linestrings. */
@@ -129,6 +139,7 @@ export class GPULineSplit implements GPUCommandNodeProducer {
 
   constructor(props: GPULineSplitProps) {
     this.id = props.id ?? 'line-split';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {lines, pieces} = props;

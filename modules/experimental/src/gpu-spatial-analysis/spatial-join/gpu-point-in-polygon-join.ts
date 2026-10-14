@@ -13,6 +13,11 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPU_POINT_IN_POLYGON_CLASSIFICATION} from '../../geospatial/gpu-pairwise-point-in-polygon';
 import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
 import {createWGSLActiveCountDispatch, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {
   GPUCompactOutput,
@@ -44,6 +49,33 @@ import {isSameSpatialJoinGeometry} from './spatial-join-geometry';
 import type {GPUSpatialJoinPrepared} from './spatial-join-prepared';
 
 const OPERATION = 'GPUPointInPolygonJoin';
+
+/**
+ * The spatial context to give a `GPUPointInPolygonJoin` for an operation resolved with `context`:
+ * a longitude/latitude context becomes containment-only (`metric: 'none'`, polygon edges straight
+ * in degrees); any other context is passed through unchanged.
+ */
+export function getPointInPolygonContainmentContext(context: GPUSpatialContext): GPUSpatialContext {
+  return context.coordinateSpace === 'longitude-latitude'
+    ? {coordinateSpace: 'longitude-latitude', metric: 'none'}
+    : context;
+}
+
+/** Planar coordinates, or longitude/latitude with no metric (topological containment). */
+const SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native'] as const)
+});
+
+/**
+ * How {@link GPUPointInPolygonJoin} treats a point exactly on a polygon boundary: `'half-open'`
+ * (each boundary point goes to exactly one feature of a valid coverage), `'closed'` (boundary counts
+ * as contained, the smallest row wins) or `'open'` (boundary belongs to no feature).
+ */
+export type GPUPointInPolygonBoundaryRule = 'half-open' | 'closed' | 'open';
+
+/** Bit of a classification word set when a boundary point is owned under the half-open rule. */
+const HALF_OPEN_OWNER_BIT = 0x100;
 
 /**
  * Properties for {@link GPUPointInPolygonJoin}.
@@ -80,8 +112,47 @@ export type GPUPointInPolygonJoinProps = {
   candidateCapacity: number;
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. */
   leafCapacity?: number;
-  /** Count points on a ring boundary as contained. Defaults to `true`. */
+  /**
+   * Compile-time. How a point exactly on a polygon boundary is treated. The decision uses the exact
+   * orientation predicate, so "exactly on" is exact for the f32 vertices.
+   *
+   * - `'half-open'` (default): the boundary is split by the crossing-number convention of a
+   *   half-open region, so a point on a boundary shared by several features of a valid coverage
+   *   belongs to exactly one of them, whatever the feature rows are. The owner is the feature that
+   *   contains the point after an infinitesimal move toward +x and +y (+y dominates), which means
+   *   an edge or vertex belongs to the feature whose interior is to its right/above: left and
+   *   bottom boundaries are included, right and top boundaries are excluded. A horizontal edge
+   *   belongs to the feature above it, a vertical edge to the feature on its right, a vertex to the
+   *   feature whose interior touches the upper right of the vertex. Points on the outer right or
+   *   top boundary of a coverage belong to no feature (they are not lost by a bug: the rule that
+   *   makes interior boundaries unique makes those open).
+   * - `'closed'`: every boundary point counts as contained by every feature whose boundary it
+   *   touches, then the smallest feature row wins (the assignment keeps one feature per point).
+   *   Nothing is lost on the outer boundary, but the owner of a shared-boundary point depends on
+   *   the feature row order. This was the behavior before `boundaryRule` existed.
+   * - `'open'`: boundary points belong to no feature (only strict interior counts).
+   *
+   * A point strictly inside is unaffected by the rule. Overlapping features (an invalid coverage)
+   * still resolve to the smallest containing row. `matches` lists exactly the points that get a
+   * feature under the same rule.
+   */
+  boundaryRule?: GPUPointInPolygonBoundaryRule;
+  /**
+   * Compile-time shorthand kept for existing callers: `true` is `boundaryRule: 'closed'` and `false`
+   * is `boundaryRule: 'open'`. It is not a switch for the half-open rule: with neither prop set the
+   * join uses `'half-open'`. Passing it together with a `boundaryRule` that disagrees throws.
+   */
   includeBoundary?: boolean;
+  /**
+   * Coordinate space and metric of the points and polygons. Omitted means native planar
+   * coordinates. Containment is a topological test evaluated in the plane of the given
+   * coordinates: polygon edges are straight lines in the coordinates (as in GeoJSON), not
+   * geodesics. `{coordinateSpace: 'longitude-latitude', metric: 'none'}` is therefore accepted and
+   * behaves exactly like planar. A longitude/latitude context with any metric (for example
+   * `'great-circle'`) throws at construction because there are no geodesic edges; project to a
+   * planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Compile-time. When true, features are reordered along a Hilbert curve (see `spatialSortCurve`) of their bound
    * centers before the BVH build, so leaves that are close in space are close in the tree and
@@ -125,9 +196,15 @@ export type GPUPointInPolygonJoinProps = {
 /**
  * Joins planar points to the polygon features that contain them.
  *
- * A `GPUBVH` over feature bounds produces bounding-box candidates, `GPUPairwisePointInPolygon`
- * refines them with robust predicates, and each point keeps the containing feature with the
- * smallest row. Per-feature counts and an optional compact list of joined points are produced on
+ * A `GPUBVH` over feature bounds produces bounding-box candidates, an exact even/odd classifier
+ * (exact orientation signs, see `boundaryRule`) refines them, and each point keeps the containing
+ * feature with the smallest row.
+ *
+ * **Boundary points.** By default (`boundaryRule: 'half-open'`) a point on an edge or vertex shared
+ * by several features of a valid coverage is assigned to exactly one of them, independent of the
+ * feature row order, so counts over a coverage partition the points (only points on the outer right
+ * and top boundary are left out). `'closed'` and `'open'` select the previous behaviors; see
+ * {@link GPUPointInPolygonJoinProps.boundaryRule}. Zonal statistics rely on the half-open default. Per-feature counts and an optional compact list of joined points are produced on
  * the GPU. Every capacity reports overflow on the GPU.
  *
  * Candidates whose containment cannot be proven (`uncertain`) are not assigned and are not
@@ -145,8 +222,12 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
   readonly leafCapacity: number;
   /** Candidate pair capacity. */
   readonly candidateCapacity: number;
-  /** Whether boundary points count as contained. */
+  /** Resolved boundary rule. */
+  readonly boundaryRule: GPUPointInPolygonBoundaryRule;
+  /** Whether boundary points can count as contained (`boundaryRule` is not `'open'`). */
   readonly includeBoundary: boolean;
+  /** Resolved spatial context: native planar coordinates. */
+  readonly spatialContext: GPUSpatialContext;
   /** Whether features are spatially sorted before the BVH build. */
   readonly spatialSort: boolean;
 
@@ -216,7 +297,29 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     if (!isPowerOfTwo(this.leafCapacity)) {
       throw new Error(`${id} leafCapacity must be a positive power of two`);
     }
-    this.includeBoundary = props.includeBoundary ?? true;
+    if (
+      props.spatialContext?.coordinateSpace === 'longitude-latitude' &&
+      props.spatialContext.metric !== 'none'
+    ) {
+      throw new Error(
+        `${id} does not support the ${props.spatialContext.metric} metric on longitude-latitude coordinates; ` +
+          `use metric 'none' for containment or project positions to a planar frame first`
+      );
+    }
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+    const legacyRule: GPUPointInPolygonBoundaryRule | undefined =
+      props.includeBoundary === undefined ? undefined : props.includeBoundary ? 'closed' : 'open';
+    if (
+      props.boundaryRule !== undefined &&
+      !['half-open', 'closed', 'open'].includes(props.boundaryRule)
+    ) {
+      throw new Error(`${id} boundaryRule must be 'half-open', 'closed' or 'open'`);
+    }
+    if (legacyRule && props.boundaryRule && legacyRule !== props.boundaryRule) {
+      throw new Error(`${id} includeBoundary ${props.includeBoundary} conflicts with boundaryRule`);
+    }
+    this.boundaryRule = props.boundaryRule ?? legacyRule ?? 'half-open';
+    this.includeBoundary = this.boundaryRule !== 'open';
     this.spatialSort =
       props.prepared?.spatialSort ?? props.spatialSort ?? getDefaultSpatialSort(this.featureCount);
     if (props.prepared) {
@@ -413,6 +516,7 @@ const OUTSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.outside}u;
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
 const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;
+const HALF_OPEN_OWNER_BIT: u32 = ${HALF_OPEN_OWNER_BIT}u;
 ${EXACT_ORIENTATION_WGSL}
 fn readVertex(vertexIndex: u32) -> vec2f {
   return vec2f(
@@ -420,38 +524,62 @@ fn readVertex(vertexIndex: u32) -> vec2f {
     polygonPositions[polygonPositionsOffset + vertexIndex * 2u + 1u]
   );
 }
-// Exact even/odd classification, or UNCERTAIN when some orientation has no sign.
+// Exact even/odd classification, or UNCERTAIN when some orientation has no sign. A BOUNDARY result
+// also carries HALF_OPEN_OWNER_BIT when the point belongs to the feature under the half-open rule.
+//
+// Half-open rule: classify the point moved by (epsilon^2, epsilon) with epsilon infinitesimal. The
+// crossing test against an edge only changes when the point is on the edge's supporting line, where
+// the sign of the moved point is the sign of dx (the epsilon term), or of -dy for a vertical edge
+// (the epsilon^2 term). The y comparisons are unchanged because a vertex y is either equal to the
+// point's y or at least one ulp away.
 fn classifyExactly(point: vec2f, geometryStart: u32, geometryEnd: u32) -> u32 {
   var geometryInside = false;
+  var geometryOwned = false;
+  var onBoundary = false;
   for (var polygonIndex = geometryStart; polygonIndex < geometryEnd; polygonIndex++) {
     let polygonStart = polygonOffsets[polygonOffsetsOffset + polygonIndex];
     let polygonEnd = polygonOffsets[polygonOffsetsOffset + polygonIndex + 1u];
-    if (polygonStart >= polygonEnd || polygonEnd > RING_COUNT) { return UNCERTAIN; }
+    // Malformed offsets cannot be classified; an empty part contains nothing (as in shapely) and
+    // must not hide the other parts of the feature.
+    if (polygonStart > polygonEnd || polygonEnd > RING_COUNT) { return UNCERTAIN; }
     var polygonInside = false;
+    var polygonOwned = false;
     for (var ringIndex = polygonStart; ringIndex < polygonEnd; ringIndex++) {
       let ringStart = ringOffsets[ringOffsetsOffset + ringIndex];
       let ringEnd = ringOffsets[ringOffsetsOffset + ringIndex + 1u];
-      if (ringEnd < ringStart + 3u || ringEnd > VERTEX_COUNT) { return UNCERTAIN; }
+      if (ringEnd < ringStart || ringEnd > VERTEX_COUNT) { return UNCERTAIN; }
+      // A ring with fewer than 3 vertices bounds no area: skip it, as shapely treats empty parts.
+      if (ringEnd < ringStart + 3u) { continue; }
       var previous = readVertex(ringEnd - 1u);
       for (var vertexIndex = ringStart; vertexIndex < ringEnd; vertexIndex++) {
         let current = readVertex(vertexIndex);
         let sign = orientSign(previous, current, point);
         if (sign == 2) { return UNCERTAIN; }
-        if (sign == 0 &&
-            point.x >= min(previous.x, current.x) && point.x <= max(previous.x, current.x) &&
-            point.y >= min(previous.y, current.y) && point.y <= max(previous.y, current.y)) {
-          return BOUNDARY;
+        var side = sign;
+        if (sign == 0) {
+          if (point.x >= min(previous.x, current.x) && point.x <= max(previous.x, current.x) &&
+              point.y >= min(previous.y, current.y) && point.y <= max(previous.y, current.y)) {
+            onBoundary = true;
+          }
+          side = select(select(0, -1, current.x < previous.x), 1, current.x > previous.x);
+          if (side == 0) {
+            side = select(select(0, 1, current.y < previous.y), -1, current.y > previous.y);
+          }
         }
         if ((previous.y > point.y) != (current.y > point.y)) {
-          if ((current.y > previous.y && sign > 0) || (current.y < previous.y && sign < 0)) {
-            polygonInside = !polygonInside;
+          if (current.y > previous.y && sign > 0) { polygonInside = !polygonInside; }
+          if (current.y < previous.y && sign < 0) { polygonInside = !polygonInside; }
+          if ((current.y > previous.y && side > 0) || (current.y < previous.y && side < 0)) {
+            polygonOwned = !polygonOwned;
           }
         }
         previous = current;
       }
     }
     geometryInside = geometryInside || polygonInside;
+    geometryOwned = geometryOwned || polygonOwned;
   }
+  if (onBoundary) { return BOUNDARY | select(0u, HALF_OPEN_OWNER_BIT, geometryOwned); }
   return select(OUTSIDE, INSIDE, geometryInside);
 }`,
         body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
@@ -484,13 +612,17 @@ fn classifyExactly(point: vec2f, geometryStart: u32, geometryEnd: u32) -> u32 {
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
 const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;
-const INCLUDE_BOUNDARY: bool = ${this.includeBoundary};`,
+const HALF_OPEN_OWNER_BIT: u32 = ${HALF_OPEN_OWNER_BIT}u;
+const BOUNDARY_CLOSED: bool = ${this.boundaryRule === 'closed'};
+const BOUNDARY_HALF_OPEN: bool = ${this.boundaryRule === 'half-open'};`,
         body: `let activeCount = min(atomicLoad(&state[stateOffset]), CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
   let featureRow = candidatePairs[candidatePairsOffset + index * 2u + 1u];
-  let classification = pairClassifications[pairClassificationsOffset + index];
-  if (classification == INSIDE || (INCLUDE_BOUNDARY && classification == BOUNDARY)) {
+  let word = pairClassifications[pairClassificationsOffset + index];
+  let classification = word & ~HALF_OPEN_OWNER_BIT;
+  let owned = BOUNDARY_CLOSED || (BOUNDARY_HALF_OPEN && (word & HALF_OPEN_OWNER_BIT) != 0u);
+  if (classification == INSIDE || (owned && classification == BOUNDARY)) {
     atomicMin(&assignment[assignmentOffset + pointRow], featureRow);
   } else if (classification == UNCERTAIN) {
     atomicAdd(&state[stateOffset + 1u], 1u);

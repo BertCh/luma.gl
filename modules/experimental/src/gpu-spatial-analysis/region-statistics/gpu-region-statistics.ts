@@ -43,6 +43,7 @@ import {
 } from './region-statistics-grid';
 import {
   GPU_REGION_STATISTICS_HEADER_LENGTH,
+  resolveGPURegionSpatialContext,
   type GPURegionHistogramProps,
   type GPURegionPolygon,
   type GPURegionRadius,
@@ -50,6 +51,8 @@ import {
   type GPURegionSelection,
   type GPURegionStatisticsGridIndex
 } from './region-statistics-types';
+
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPURegionStatistics';
 const MAXIMUM_BIN_COUNT = 65536;
@@ -65,6 +68,13 @@ const MAXIMUM_BIN_COUNT = 65536;
 export type GPURegionStatisticsProps = {
   /** ID prefix for every node and transient. Defaults to `'region-statistics'`. */
   id?: string;
+  /**
+   * Coordinate space of `positions` and of the selection. Omitted means native planar. Rectangle,
+   * lasso and pick selections also accept longitude/latitude (straight edges in degree space, no
+   * antimeridian handling). A `'radius'` selection is a planar distance and throws in
+   * longitude/latitude at construction; project positions to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Region input. */
   selection: GPURegionSelection;
   /** Packed 2D positions. Required for `rectangle`, `polygon`, and `radius`. */
@@ -114,11 +124,18 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
   readonly props: GPURegionStatisticsProps;
   /** Resolved source row count. */
   readonly rowCount: number;
+  /** Resolved spatial context. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURegionStatisticsProps) {
     this.id = props.id ?? 'region-statistics';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPURegionSpatialContext(
+      id,
+      props.spatialContext,
+      props.selection.kind
+    );
     const {selection, positions, values, sourceIds, histogram, outputMask, output, summary} = props;
     const rowCount =
       selection.kind === 'mask'
@@ -303,6 +320,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           nodes.push(
             ...new GPURegionMask({
               id: `${id}-region`,
+              spatialContext: this.spatialContext,
               positions: positions as GPUFloat32Positions,
               region: selection,
               outputMask: mask as GraphDataView<'uint32'>,
@@ -314,6 +332,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           nodes.push(
             ...new GPURegionMask({
               id: `${id}-region`,
+              spatialContext: this.spatialContext,
               positions: positions as GPUFloat32Positions,
               region: selection,
               outputMask: mask as GraphDataView<'uint32'>,

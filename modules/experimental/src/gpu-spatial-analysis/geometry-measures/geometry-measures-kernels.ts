@@ -30,13 +30,14 @@ export type GPUGeometryHoleRule = 'winding' | 'first-ring-exterior';
 /**
  * Words per feature or group in the internal stats column:
  * `[length, signedArea, area, centroidX, centroidY, minX, minY, maxX, maxY, vertexCount, featureCount,
- * argMinX, argMinY, argMaxX, argMaxY]` (the last four are vertex rows, `0xffffffff` when empty)
- * stored as u32 words (floats as their bit patterns), so the integer counts are never
+ * argMinX, argMinY, argMaxX, argMaxY, invalidRingCount]` (the extremes are vertex rows, `0xffffffff`
+ * when empty; `invalidRingCount` is the number of geographic polygon rings that enclose a pole or
+ * have an ambiguous edge, per feature only) stored as u32 words (floats as their bit patterns), so the integer counts are never
  * reinterpreted as subnormal floats that a GPU may flush to zero.
  *
  * @internal
  */
-export const GEOMETRY_STATS_STRIDE = 15;
+export const GEOMETRY_STATS_STRIDE = 16;
 
 /** WGS84-derived constants of the authalic sphere, computed in f64. @internal */
 export function getAuthalicConstants(): {
@@ -352,6 +353,15 @@ ${WGS84_WGSL}`
     : ''
 }
 
+// A ring whose wrapped longitude steps sum beyond this encloses a pole (net winding of 360 degrees).
+const POLE_WINDING_LIMIT: f32 = 180.0;
+
+// A polygon edge spanning half the globe (shortest way is ambiguous) or a full turn (360 degrees,
+// which wraps to a zero-length step) has no well-defined interior side.
+fn isAmbiguousLongitudeStep(rawStep: f32, wrappedStep: f32) -> bool {
+  return abs(wrappedStep) >= 179.99 || abs(rawStep) >= 359.99;
+}
+
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
@@ -389,7 +399,9 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
     `  let crossSum = getCompensated(areaSum);
   let totalLength = getCompensated(lengthSum);
   let areaScale = select(1.0, AREA_RADIUS * AREA_RADIUS, IS_GEOGRAPHIC);
-  let signedArea = select(0.0, 0.5 * crossSum * areaScale, IS_POLYGON);
+  let invalidNan = bitcast<f32>(0x7fc00000u | (index & 0u));
+  let isInvalid = invalidRings > 0u;
+  let signedArea = select(select(0.0, 0.5 * crossSum * areaScale, IS_POLYGON), invalidNan, isInvalid);
   var centroid = vertexSum / f32(vertexCount);
   var centroidX = origin.x + centroid.x;
   var centroidY = origin.y + centroid.y;
@@ -411,8 +423,8 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
   writeStat(index, 0u, totalLength);
   writeStat(index, 1u, signedArea);
   writeStat(index, 2u, abs(signedArea));
-  writeStat(index, 3u, centroidX);
-  writeStat(index, 4u, centroidY);
+  writeStat(index, 3u, select(centroidX, invalidNan, isInvalid));
+  writeStat(index, 4u, select(centroidY, invalidNan, isInvalid));
   writeStat(index, 5u, origin.x + boundsMin.x);
   writeStat(index, 6u, origin.y + boundsMin.y);
   writeStat(index, 7u, origin.x + boundsMax.x);
@@ -421,8 +433,9 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
   featureStats[featureStatsOffset + index * STATS_STRIDE + 10u] = 1u;
   for (var slot = 0u; slot < 4u; slot++) {
     featureStats[featureStatsOffset + index * STATS_STRIDE + 11u + slot] = extremeRows[slot];
-  }`.replace(
-      /\b(areaSum|lengthSum|vertexSum|vertexCount|straightSum|momentX|momentY|lineMomentX|lineMomentY|boundsMin|boundsMax|extremeRows)\b/g,
+  }
+  featureStats[featureStatsOffset + index * STATS_STRIDE + 15u] = invalidRings;`.replace(
+      /\b(invalidRings|areaSum|lengthSum|vertexSum|vertexCount|straightSum|momentX|momentY|lineMomentX|lineMomentY|boundsMin|boundsMax|extremeRows)\b/g,
       name => `${prefix}${name}`
     );
 
@@ -491,6 +504,7 @@ ${getCooperativeSource({
     for (var slot = 11u; slot < 15u; slot++) {
       featureStats[featureStatsOffset + index * STATS_STRIDE + slot] = 0xffffffffu;
     }
+    featureStats[featureStatsOffset + index * STATS_STRIDE + 15u] = 0u;
     return;
   }
   var lengthSum = vec2<f32>(0.0);
@@ -505,6 +519,7 @@ ${getCooperativeSource({
   var vertexCount = 0u;
   var extremeRows = vec4<u32>(0xffffffffu);
   var straightSum = vec2<f32>(0.0);
+  var invalidRings = 0u;
   var isFirstRing = true;
   for (var ring = ringBegin; ring < ringEnd; ring++) {
     let rowBegin = min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
@@ -518,6 +533,8 @@ ${getCooperativeSource({
     var ringStraightArea = vec2<f32>(0.0);
     var ringMomentX = vec2<f32>(0.0);
     var ringMomentY = vec2<f32>(0.0);
+    var ringWinding = 0.0;
+    var ringAmbiguousEdges = 0u;
     let firstPosition = getPosition(rowBegin);
     // Local display coordinates (degrees for geographic, longitudes unwrapped along the ring).
     var local = firstPosition - origin;
@@ -581,6 +598,12 @@ ${getCooperativeSource({
         nextAreaX = nextLocal.x * GEODESIC_DEGREES_TO_RADIANS;
       }
       let nextAreaY = getAreaY(nextPosition, origin);
+      if (IS_POLYGON && IS_GEOGRAPHIC) {
+        let rawStep = nextPosition.x - position.x;
+        let wrappedStep = geodesicWrapLongitudeDelta(rawStep);
+        ringWinding += wrappedStep;
+        ringAmbiguousEdges += select(0u, 1u, isAmbiguousLongitudeStep(rawStep, wrappedStep));
+      }
       let edgeLength = getEdgeLength(position, nextPosition);
       addCompensated(&lengthSum, edgeLength);
       addCompensated(&lineMomentX, edgeLength * 0.5 * (local.x + nextLocal.x));
@@ -595,6 +618,9 @@ ${getCooperativeSource({
       local = nextLocal;
       areaX = nextAreaX;
       areaY = nextAreaY;
+    }
+    if (IS_POLYGON && IS_GEOGRAPHIC && (abs(ringWinding) > POLE_WINDING_LIMIT || ringAmbiguousEdges > 0u)) {
+      invalidRings += 1u;
     }
     var ringFactor = 1.0;
     if (FIRST_RING_EXTERIOR) {
@@ -737,7 +763,7 @@ export function createGroupSortPrepareNode<Parameters>(
 }
 
 const GROUP_WORKGROUP_SIZE = 128;
-const GROUP_SUM_SLOTS = 9;
+const GROUP_SUM_SLOTS = 11;
 
 /**
  * Reduces feature stats into group stats with one workgroup per group: strided per-thread partials
@@ -755,6 +781,8 @@ export function createGroupReduceNode<Parameters>(
     operation: string;
     isPolygon: boolean;
     isPoint?: boolean;
+    /** Longitude/latitude centroids: group centroids are weighted 3D unit-vector means. */
+    isGeographic?: boolean;
     groupCount: number;
     sortedIndices: GraphDataView<'uint32'>;
     groupOffsets: GraphDataView<'uint32'>;
@@ -779,8 +807,13 @@ export function createGroupReduceNode<Parameters>(
 const SUM_SLOTS: u32 = ${GROUP_SUM_SLOTS}u;
 const IS_POLYGON: bool = ${props.isPolygon};
 const IS_POINT: bool = ${props.isPoint ?? false};
+const IS_GEOGRAPHIC: bool = ${props.isGeographic ?? false};
 const ROW_COUNT: u32 = ${props.sortedIndices.length}u;
-// Slots: length, signedArea, area, weight, weightedX, weightedY, meanX, meanY, centroidCount.
+const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
+const RADIANS_TO_DEGREES: f32 = 57.2957795130823;
+// Slots: length, signedArea, area, weight, weightedX, weightedY, meanX, meanY, centroidCount,
+// weightedZ, meanZ. Geographic groups sum unit vectors (x, y, z) in the X, Y, Z slots, so the
+// centroid is the spherical mean and longitudes are never averaged naively across the antimeridian.
 var<workgroup> partialSums: array<array<f32, ${GROUP_SUM_SLOTS}>, ${GROUP_WORKGROUP_SIZE}>;
 var<workgroup> partialMinimum: array<vec2<f32>, ${GROUP_WORKGROUP_SIZE}>;
 var<workgroup> partialMaximum: array<vec2<f32>, ${GROUP_WORKGROUP_SIZE}>;
@@ -818,11 +851,20 @@ fn getFeatureStat(word: u32) -> f32 {
         if (IS_POINT) {
           weight = f32(vertexCount);
         }
+        var point = vec3<f32>(centroid.x, centroid.y, 0.0);
+        if (IS_GEOGRAPHIC) {
+          let longitude = centroid.x * DEGREES_TO_RADIANS;
+          let latitude = centroid.y * DEGREES_TO_RADIANS;
+          let cosLatitude = sin((90.0 - abs(centroid.y)) * DEGREES_TO_RADIANS);
+          point = vec3<f32>(cosLatitude * cos(longitude), cosLatitude * sin(longitude), sin(latitude));
+        }
         sums[3] += weight;
-        sums[4] += weight * centroid.x;
-        sums[5] += weight * centroid.y;
-        sums[6] += centroid.x;
-        sums[7] += centroid.y;
+        sums[4] += weight * point.x;
+        sums[5] += weight * point.y;
+        sums[9] += weight * point.z;
+        sums[6] += point.x;
+        sums[7] += point.y;
+        sums[10] += point.z;
         sums[8] += 1.0;
         minimum = min(minimum, vec2<f32>(getFeatureStat(base + 5u), getFeatureStat(base + 6u)));
         maximum = max(maximum, vec2<f32>(getFeatureStat(base + 7u), getFeatureStat(base + 8u)));
@@ -855,10 +897,23 @@ fn getFeatureStat(word: u32) -> f32 {
     let weight = partialSums[0][3];
     let centroidCount = partialSums[0][8];
     var centroid = vec2<f32>(nan);
+    var sumVector = vec3<f32>(nan);
     if (weight > 0.0) {
-      centroid = vec2<f32>(partialSums[0][4], partialSums[0][5]) / weight;
+      sumVector = vec3<f32>(partialSums[0][4], partialSums[0][5], partialSums[0][9]) / weight;
     } else if (centroidCount > 0.0) {
-      centroid = vec2<f32>(partialSums[0][6], partialSums[0][7]) / centroidCount;
+      sumVector = vec3<f32>(partialSums[0][6], partialSums[0][7], partialSums[0][10]) / centroidCount;
+    }
+    if (IS_GEOGRAPHIC) {
+      // Antipodal members cancel to a zero vector, which has no direction: NaN.
+      let horizontal = length(sumVector.xy);
+      if (horizontal + abs(sumVector.z) > 1e-6) {
+        centroid = vec2<f32>(
+          atan2(sumVector.y, sumVector.x) * RADIANS_TO_DEGREES,
+          atan2(sumVector.z, horizontal) * RADIANS_TO_DEGREES
+        );
+      }
+    } else {
+      centroid = sumVector.xy;
     }
     groupStats[base] = bitcast<u32>(partialSums[0][0]);
     groupStats[base + 1u] = bitcast<u32>(partialSums[0][1]);

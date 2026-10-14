@@ -5,8 +5,13 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 // GPUSegmentedReduction is not re-exported from the gpu-core index yet.
 import {GPUSegmentedReduction, type GPUSegmentedReductionOperation} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {TIME_WORDS_WGSL} from '../../gpu-dataframe/time-window-filter/time-words';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
 const OPERATION = 'GPUTrajectoryMetrics';
 
@@ -72,11 +77,11 @@ fn getTimeWords(row: u32) -> vec2<u32> {
 }
 
 fn timeDifferenceRows(a: u32, b: u32) -> f32 {
-  return timeWordsToF32(timeWordsSubtract(getTimeWords(a), getTimeWords(b)));
+  return timeWordsDifferenceToF32(getTimeWords(a), getTimeWords(b));
 }
 
 fn isTimeNonDecreasing(a: u32, b: u32) -> bool {
-  return !timeWordsIsNegative(timeWordsSubtract(getTimeWords(a), getTimeWords(b)));
+  return timeWordsCompare(getTimeWords(a), getTimeWords(b)) >= 0i;
 }
 `;
     case 'double-single':
@@ -143,19 +148,45 @@ fn findTrack(row: u32) -> u32 {
 }
 
 /**
+ * Sphere radius in meters when step distances are great-circle distances of longitude/latitude
+ * positions, or `undefined` for planar Euclidean distances. @internal
+ */
+export type TrajectoryGeodesicRadius = number | undefined;
+
+/**
  * WGSL helpers for step distance and slowness. Requires `positions` (f32 pairs) and the time
  * bindings and {@link getTrajectoryTimeSource} helpers, and `parameters` when `isSlowStep` is used. `row` must be a step row (not the first
  * row of its track).
  *
+ * With a `geodesicRadius` the positions are `(longitude, latitude)` degrees and
+ * `getStepDistance` is the great-circle distance in the units of the radius (meters for
+ * `GPU_EARTH_MEAN_RADIUS_METERS`); `getStepPosition(row)` is exported for heading kernels.
+ *
  * @internal
  */
-export function getStepSource(includeSlowStep: boolean = true): string {
-  const stepSource = /* wgsl */ `
+export function getStepSource(
+  includeSlowStep: boolean = true,
+  geodesicRadius?: TrajectoryGeodesicRadius
+): string {
+  const distanceSource =
+    geodesicRadius === undefined
+      ? /* wgsl */ `
 fn getStepDistance(row: u32) -> f32 {
   let deltaX = positions[positionsOffset + 2u * row] - positions[positionsOffset + 2u * (row - 1u)];
   let deltaY = positions[positionsOffset + 2u * row + 1u] - positions[positionsOffset + 2u * (row - 1u) + 1u];
   return sqrt(deltaX * deltaX + deltaY * deltaY);
 }
+`
+      : /* wgsl */ `${GEODESIC_WGSL}
+fn getStepPosition(row: u32) -> vec2<f32> {
+  return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
+}
+
+fn getStepDistance(row: u32) -> f32 {
+  return geodesicHaversineDistance(getStepPosition(row - 1u), getStepPosition(row), ${getWGSLFloatLiteral(geodesicRadius)});
+}
+`;
+  const stepSource = /* wgsl */ `${distanceSource}
 
 fn getStepDuration(row: u32) -> f32 {
   return timeDifferenceRows(row, row - 1u);
@@ -180,6 +211,8 @@ export type TrajectoryStepsProps = TrajectoryTimeViews & {
   trackOffsets: GraphDataView<'uint32'>;
   /** Present when any stop output is requested. */
   parameters?: GraphDataView<'float32'>;
+  /** Sphere radius in meters for great-circle step distances; omitted for planar. */
+  geodesicRadius?: TrajectoryGeodesicRadius;
   stepDistances?: GraphDataView<'float32'>;
   stepSpeeds?: GraphDataView<'float32'>;
   runStartFlags?: GraphDataView<'uint32'>;
@@ -222,6 +255,7 @@ export function createTrajectoryStepsNodes<Parameters>(
       timestampsLow: props.timestampsLow,
       trackOffsets: props.trackOffsets,
       parameters,
+      geodesicRadius: props.geodesicRadius,
       runStartFlags,
       runEndFlags
     })
@@ -268,7 +302,7 @@ function createTrajectoryStepsNode<Parameters>(
     invocationCount: props.positions.length,
     declarations: `${getTrackSearchSource(trackCount)}
 ${getTrajectoryTimeSource(getTrajectoryTimeMode(props))}
-${getStepSource(hasRuns)}`,
+${getStepSource(hasRuns, props.geodesicRadius)}`,
     body: /* wgsl */ `
   var stepDistance = 0.0;
   var stepSpeed = 0.0;
@@ -312,6 +346,8 @@ export type TrajectoryStepColumnsProps = TrajectoryTimeViews & {
   id: string;
   positions: GraphDataView<'float32x2'>;
   trackOffsets: GraphDataView<'uint32'>;
+  /** Sphere radius in meters for great-circle steps and bearings; omitted for planar. */
+  geodesicRadius?: TrajectoryGeodesicRadius;
   stepSpeeds?: GraphDataView<'float32'>;
   stepHeadings?: GraphDataView<'float32'>;
   stepAccelerations?: GraphDataView<'float32'>;
@@ -351,7 +387,7 @@ export function createTrajectoryStepColumnsNode<Parameters>(
     invocationCount: props.positions.length,
     declarations: `${getTrackSearchSource(trackCount)}
 ${getTrajectoryTimeSource(getTrajectoryTimeMode(props))}
-${getStepSource(false)}
+${getStepSource(false, props.geodesicRadius)}
 
 fn getStepSpeed(row: u32) -> f32 {
   let duration = getStepDuration(row);
@@ -369,10 +405,19 @@ fn getStepSpeed(row: u32) -> f32 {
     let trackStart = trackOffsets[trackOffsetsOffset + track];
     if (index > trackStart) {
       speed = getStepSpeed(index);
-      let deltaX = positions[positionsOffset + 2u * index] - positions[positionsOffset + 2u * (index - 1u)];
+      ${
+        props.geodesicRadius === undefined
+          ? `let deltaX = positions[positionsOffset + 2u * index] - positions[positionsOffset + 2u * (index - 1u)];
       let deltaY = positions[positionsOffset + 2u * index + 1u] - positions[positionsOffset + 2u * (index - 1u) + 1u];
       if (deltaX != 0.0 || deltaY != 0.0) {
         heading = atan2(deltaY, deltaX);
+      }`
+          : `if (getStepDistance(index) > 0.0) {
+        // The planar convention (counterclockwise from east) applied to the initial bearing
+        // (clockwise from north): atan2(cos(bearing), sin(bearing)) = pi / 2 - bearing, wrapped.
+        let bearing = geodesicInitialBearingDegrees(getStepPosition(index - 1u), getStepPosition(index)) * GEODESIC_DEGREES_TO_RADIANS;
+        heading = atan2(cos(bearing), sin(bearing));
+      }`
       }
       let duration = getStepDuration(index);
       if (index - 1u > trackStart && duration > 0.0) {

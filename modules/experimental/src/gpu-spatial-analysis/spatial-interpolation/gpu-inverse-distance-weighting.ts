@@ -25,6 +25,12 @@ import {
 import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
 import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import type {GPUSpatialContext} from '../contracts/index';
+import {
+  getSeparationWGSL,
+  resolveInterpolationSeparation,
+  type InterpolationSeparation
+} from './separation-wgsl';
 
 const OPERATION = 'GPUInverseDistanceWeighting';
 /** Largest compile-time nearest-neighbor capacity; each invocation keeps a private list this long. */
@@ -53,13 +59,26 @@ export type GPUInverseDistanceWeightingOutput = {
 export type GPUInverseDistanceWeightingProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'inverse-distance-weighting'`. */
   id?: string;
+  /**
+   * Coordinate space and metric of `positions`. Omitted means native planar coordinates
+   * (Euclidean distances; the search radius is in position units).
+   *
+   * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` uses haversine distances on
+   * a sphere (`sphereRadius`, else the IUGG mean Earth radius): positions are absolute
+   * `[longitude, latitude]` degrees, the grid index and output extent stay in degrees, and the
+   * search radius is in meters (kilometers with `units: 'kilometers'`). Neighbors and radius tests
+   * use the haversine term; f32 absolute lon/lat limits accuracy to about 1 m at Earth scale. The
+   * query box is conservative and does not wrap the antimeridian, and the nearest-k limit scans
+   * the whole box (no early stop). Other longitude/latitude metrics throw.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed sample positions in the same units as the extent and search radius. */
   positions: GraphDataView<'float32x2'>;
   /** Packed float32 sample values. NaN values are skipped. */
   values: GraphDataView<'float32'>;
   /** Optional packed `uint32` sample mask; zero skips the sample. */
   mask?: GraphDataView<'uint32'>;
-  /** Per-frame float32 view of at least 8 values written with `getGPUInverseDistanceWeightingParameterValues`. */
+  /** Per-frame float32 view of at least 9 values written with `getGPUInverseDistanceWeightingParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Output raster width in cells. */
   width: number;
@@ -85,7 +104,20 @@ export type GPUInverseDistanceWeightingProps = {
 };
 
 /**
- * Interpolates scattered samples onto a raster with inverse distance weighting, `w = 1 / d^p`.
+ * Interpolates scattered samples onto a raster with inverse distance weighting, `w = 1 / d^p`
+ * (Shepard 1968), or with the optional `'modified-shepard'` taper `w = ((R - d)+ / (R d))^p`
+ * (Franke and Nielson 1980), where `R` is the search radius. The taper removes the hard-radius
+ * discontinuity: a sample's weight falls to zero at `R` instead of jumping when it enters or
+ * leaves the neighborhood. It needs a finite radius, and a sample exactly at `R` has weight zero.
+ *
+ * Choosing parameters: `power` 2 is the conventional default, higher powers give flatter plateaus
+ * around samples and sharper local peaks, and none is validated against your data; compare
+ * candidates with leave-one-out error on a CPU subset or use `GPUKriging` cross-validation.
+ * `minimumNeighborCount` defaults to 1, so a single distant sample inside the radius paints a
+ * constant plateau equal to its value; raise it (3 or more) to turn sparse cells into nodata.
+ * Positions are planar (see `spatialContext`), and distances are computed from offsets relative
+ * to the extent minimum so large absolute coordinates (UTM northings) do not quantize them.
+ *
  *
  * Gather form, one invocation per output cell, so no atomics touch values. Every encoding rebuilds
  * a `GPUGridIndex` over the samples, sorts the sample IDs inside each index cell ascending (the
@@ -111,6 +143,9 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
   readonly props: GPUInverseDistanceWeightingProps;
   /** `width * height`. */
   readonly cellCount: number;
+  /** Resolved spatial context; native planar when none was given. */
+  readonly spatialContext: GPUSpatialContext;
+  private readonly separation: InterpolationSeparation;
   /** Compile-time nearest-neighbor capacity. */
   readonly maximumNeighborCount: number;
 
@@ -118,6 +153,8 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     this.id = props.id ?? 'inverse-distance-weighting';
     this.props = props;
     const {id} = this;
+    this.separation = resolveInterpolationSeparation(id, props.spatialContext);
+    this.spatialContext = this.separation.context;
     for (const [name, size] of [
       ['width', props.width],
       ['height', props.height],
@@ -347,8 +384,14 @@ const MAX_NEIGHBORS: u32 = ${maximumNeighborCount}u;
 const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[0])}, ${getWGSLFloatLiteral(indexBounds[1])});
 const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[2])}, ${getWGSLFloatLiteral(indexBounds[3])});
 ${GRID_COORDINATE_WGSL}
+${getSeparationWGSL(this.separation)}
 ${WEIGHT_ACCUMULATOR_WGSL}`,
-        body: getGatherBody(Boolean(props.mask), Boolean(output.counts), hasNeighborLimit)
+        body: getGatherBody(
+          Boolean(props.mask),
+          Boolean(output.counts),
+          hasNeighborLimit,
+          this.separation.geographic
+        )
       })
     );
     return nodes;
@@ -389,11 +432,19 @@ struct WeightAccumulator {
   isEmpty: bool,
 }
 
-fn addWeightedSample(accumulator: ptr<function, WeightAccumulator>, power: f32, distanceSquared: f32, value: f32) {
+fn addWeightedSample(accumulator: ptr<function, WeightAccumulator>, power: f32, radius: f32, useTaper: bool, distanceSquared: f32, value: f32) {
   if (distanceSquared == 0.0) {
     return;
   }
-  let logWeight = -0.5 * power * log2(distanceSquared);
+  var logWeight = -0.5 * power * log2(distanceSquared);
+  if (useTaper) {
+    // Franke-Nielson: w = ((R - d) / (R d))^p, zero at and beyond R.
+    let distance = sqrt(distanceSquared);
+    if (!(distance < radius)) {
+      return;
+    }
+    logWeight = power * (log2(radius - distance) - log2(radius * distance));
+  }
   if ((*accumulator).isEmpty) {
     (*accumulator).maximumLogWeight = logWeight;
     (*accumulator).weightSum = 1.0;
@@ -411,7 +462,12 @@ fn addWeightedSample(accumulator: ptr<function, WeightAccumulator>, power: f32, 
   }
 }`;
 
-function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: boolean): string {
+function getGatherBody(
+  hasMask: boolean,
+  hasCounts: boolean,
+  hasNeighborLimit: boolean,
+  geographic: boolean
+): string {
   const nearestDeclarations = hasNeighborLimit
     ? `var nearDistances: array<f32, MAX_NEIGHBORS>;
   var nearRows: array<u32, MAX_NEIGHBORS>;
@@ -420,7 +476,7 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
   const contribute = hasNeighborLimit
     ? `if (neighborLimit == 0u) {
           count += 1u;
-          addWeightedSample(&accumulator, power, distanceSquared, value);
+          addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(distanceSquared), value);
         } else {
           let last = neighborLimit - 1u;
           let isFull = nearCount >= neighborLimit;
@@ -445,13 +501,13 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
           }
         }`
     : `count += 1u;
-        addWeightedSample(&accumulator, power, distanceSquared, value);`;
+        addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(distanceSquared), value);`;
   const nearestFinish = hasNeighborLimit
     ? `if (neighborLimit > 0u) {
     count = nearCount;
     for (var near = 0u; near < nearCount; near++) {
       let row = nearRows[near];
-      addWeightedSample(&accumulator, power, nearDistances[near], sampleValues[sampleValuesOffset + row]);
+      addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(nearDistances[near]), sampleValues[sampleValuesOffset + row]);
     }
   }`
     : '';
@@ -461,8 +517,7 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
         }
         ${hasMask ? 'if (sampleMask[sampleMaskOffset + sample] == 0u) {\n          continue;\n        }' : ''}
         let position = vec2f(positions[positionsOffset + 2u * sample], positions[positionsOffset + 2u * sample + 1u]);
-        let delta = position - center;
-        let distanceSquared = dot(delta, delta);
+        let distanceSquared = getSeparationKey(position - origin, localCenter);
         if (!(distanceSquared <= radiusSquared)) {
           continue;
         }
@@ -482,12 +537,20 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
   let neighborLimit = u32(clamp(select(0.0, neighborLimitValue, isFiniteValue(neighborLimitValue)), 0.0, f32(MAX_NEIGHBORS)));
   let minimumNeighbors = max(u32(clamp(select(1.0, minimumNeighborValue, isFiniteValue(minimumNeighborValue)), 0.0, 4294967040.0)), 1u);
   let cellSize = (extentMax - extentMin) / vec2f(f32(WIDTH), f32(HEIGHT));
-  let center = extentMin + (vec2f(f32(column), f32(rasterRow)) + vec2f(0.5)) * cellSize;
-  let radiusSquared = radius * radius;
-  let queryMin = center - vec2f(radius);
-  let queryMax = center + vec2f(radius);
+  // Distances are differences of offsets from the extent minimum, so they stay accurate at large
+  // absolute coordinates; center (absolute) is used only to find index cells.
+  let cellOffset = (vec2f(f32(column), f32(rasterRow)) + vec2f(0.5)) * cellSize;
+  let center = extentMin + cellOffset;
+  // Great-circle distances take absolute lon/lat, so the origin is zero there.
+  let origin = ${geographic ? 'vec2f(0.0)' : 'extentMin'};
+  let localCenter = ${geographic ? 'center' : 'cellOffset'};
+  let useTaper = params[paramsOffset + 8u] > 0.5;
+  let radiusSquared = getRadiusKey(radius);
+  let queryBox = getQueryBox(center, radius);
+  let queryMin = queryBox.minimum;
+  let queryMax = queryBox.maximum;
   let valid = isFiniteValue(center.x) && isFiniteValue(center.y) && radius >= 0.0 &&
-    isFiniteValue(power) && power >= 0.0 &&
+    isFiniteValue(power) && power >= 0.0 && (!useTaper || isFiniteValue(radius)) &&
     all(queryMax >= DOMAIN_MIN) && all(queryMin <= DOMAIN_MAX);
   var accumulator = WeightAccumulator(0.0, 0.0, 0.0, true);
   var count = 0u;
@@ -509,7 +572,7 @@ function getGatherBody(hasMask: boolean, hasCounts: boolean, hasNeighborLimit: b
     // expanding-ring walk may stop early. Radius-only sums depend on the visiting order, so they
     // keep the fixed sorted row-major sweep.
     ${
-      hasNeighborLimit
+      hasNeighborLimit && !geographic
         ? `if (neighborLimit > 0u) {
       ${getRingScanWGSL(visit)}
     } else {

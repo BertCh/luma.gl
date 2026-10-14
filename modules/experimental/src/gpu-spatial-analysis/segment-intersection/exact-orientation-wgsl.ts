@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+
 /**
  * Exact 2D orientation predicate in WGSL, shared by the segment, relate and point-in-polygon kernels.
  *
@@ -24,7 +26,8 @@ export const EXACT_ORIENTATION_WGSL = /* wgsl */ `
 const ORIENT_MAXIMUM_SPAN: i32 = 200;
 const ORIENT_FLOAT_MAXIMUM: f32 = 3.402823466e+38;
 
-fn orientIsFinite(value: f32) -> bool { return value == value && abs(value) <= ORIENT_FLOAT_MAXIMUM; }
+${IS_FINITE_BITS_WGSL}
+fn orientIsFinite(value: f32) -> bool { return isFiniteBits(value); }
 
 // Exact 24-bit by 24-bit product as (low word, high word).
 fn multiply24(first: u32, second: u32) -> vec2u {

@@ -17,6 +17,18 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createSegmentSumNode, getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
+import {GET_NAN_WGSL} from '../../utils/wgsl-common';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {
+  createSphericalCellWeightsNode,
+  getRasterSphereRadius,
+  validateGeographicRaster
+} from './spherical-cell-area';
+import {getZoneAnchorNodes} from './zone-anchor-nodes';
 import {getKeyGroupNodes, KEY_PAIR_INVALID} from '../spatial-weights/key-pair-grouping';
 import {getBoundedKeyPairSortNodes} from './bounded-key-pair-sort';
 import {
@@ -25,6 +37,11 @@ import {
 } from '../spatial-weights/spatial-weights';
 
 const OPERATION = 'GPUArealInterpolation';
+/** Planar coordinates, or longitude/latitude rasters weighted by spherical cell area. */
+const SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+});
 const INVALID = `${KEY_PAIR_INVALID}u`;
 /** Consecutive cells folded into runs by one zone-count thread. */
 const ZONE_COUNT_CHUNK = 8;
@@ -34,6 +51,14 @@ export type GPUArealInterpolationKind = 'extensive' | 'intensive';
 
 /** Which area a share is divided by. */
 export type GPUArealInterpolationDenominator = 'zone' | 'overlap';
+
+/** Denominator per variable kind. Omitted kinds use their default. */
+export type GPUArealInterpolationDenominators = {
+  /** Default `'zone'` (tobler): mass that falls outside the target system is lost and reported. */
+  extensive?: GPUArealInterpolationDenominator;
+  /** Default `'overlap'`: a partly covered target is the mean of what covers it. */
+  intensive?: GPUArealInterpolationDenominator;
+};
 
 /** Per-target category shares of a categorical source variable. */
 export type GPUArealCategories = {
@@ -52,7 +77,7 @@ export type GPUArealCategories = {
 /**
  * Properties for {@link GPUArealInterpolation}.
  *
- * Compile-time: `sourceCount`, `targetCount`, `denominator`, `mode`, view lengths
+ * Compile-time: `sourceCount`, `targetCount`, `denominator`, `mode`, `spatialContext`, `width`, view lengths
  * and the pair capacity (`weights.neighbors.length`). Per-frame: the contents of the zone rasters,
  * `cellWeights`, source values and categories.
  */
@@ -82,13 +107,68 @@ export type GPUArealInterpolationProps = {
    */
   cellWeights?: GraphDataView<'float32'>;
   /**
-   * Which area the share is divided by. `'zone'` (default, tobler semantics) divides by the total
-   * area of the source (extensive) or target (intensive), including parts that do not overlap the
-   * other system, so mass that falls outside the other system is lost. `'overlap'` divides by the
-   * part of the zone that overlaps the other system, so extensive shares of a source sum to 1 over
-   * its targets and intensive shares of a target sum to 1 over its sources.
+   * Which area a share is divided by, as one value for both kinds or per kind. Default
+   * `{extensive: 'zone', intensive: 'overlap'}`.
+   *
+   * `'zone'` divides by the total area of the source (extensive) or target (intensive), including
+   * parts that do not overlap the other system. `'overlap'` divides by the part of the zone that
+   * overlaps the other system, so extensive shares of a source sum to 1 over its targets and
+   * intensive shares of a target sum to 1 over its sources.
+   *
+   * Why the kinds differ. An extensive variable (counts) keeps tobler's `'zone'`: the share of a
+   * source that falls outside every target is not invented onto the targets, and the lost fraction
+   * is reported in `sourceTransferredFractions`. An intensive variable (rate, mean) must not be
+   * diluted when a target is only partly covered by sources, so it defaults to `'overlap'` and is
+   * the mean of what covers the target. Earlier versions applied `'zone'` to both.
    */
-  denominator?: GPUArealInterpolationDenominator;
+  denominator?: GPUArealInterpolationDenominator | GPUArealInterpolationDenominators;
+  /**
+   * Coordinate space of the zone rasters. Omitted means native planar: every area is a cell count
+   * (or a sum of `cellWeights`). A `longitude-latitude` context (metric `'none'` or
+   * `'great-circle'`) means the rasters are longitude/latitude grids described by `extent` and
+   * `width`; each cell is then weighted by its spherical area in square meters,
+   * `R^2 dLon (sin(latTop) - sin(latBottom))` with `R` = `context.sphereRadius` or the WGS84
+   * authalic radius, times `cellWeights` when given, so a latitude band is not over-counted.
+   * Cell membership of the zones is by cell center in degrees. Other spaces throw.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * `longitude-latitude` only: the per-frame raster placement `[originLongitude, originLatitude,
+   * cellWidth, cellHeight]` in degrees (the same view as `GPUPolygonRasterization.extent`, row 0
+   * at the smallest latitude). Required for, and only valid with, a longitude/latitude context.
+   */
+  extent?: GraphDataView<'float32'>;
+  /** `longitude-latitude` only: raster columns. Compile-time; must divide the cell count. */
+  width?: number;
+  /**
+   * Optional per-source fallback cell (`sourceCount` rows of cell indices; out of range means
+   * none). A source zone that rasterized to no cell claims its anchor cell, for example the cell
+   * containing the zone's label point, so its mass is not lost. The claim happens in a transient
+   * copy of `sourceZones` and succeeds only if the cell belongs to no source or to a source that
+   * keeps another cell; shared anchors go to the lowest source row. Sources that still have no
+   * cell are counted in `invalidCount`.
+   */
+  sourceAnchorCells?: GraphDataView<'uint32'>;
+  /**
+   * Optional output, `sourceCount` rows: the whole raster area `A_s` of each source (cell count,
+   * or the sum of the cell weights; square meters on a longitude/latitude raster, after anchoring).
+   * 0 when the source rasterized to no cell.
+   */
+  sourceAreas?: GraphDataView<'float32'>;
+  /**
+   * Optional output, `sourceCount` rows: the conservation fraction of each source,
+   * `sum_t a_st / A_s` with the extensive denominator, where `a_st` sums over targets (before
+   * `weights` slot clamping). With `'zone'`, 1 means the source lies entirely inside the target
+   * system and its extensive mass is fully transferred, and `1 - f` is the lost fraction. With
+   * `'overlap'` it is 1 wherever the source overlaps any target and 0 where it does not. NaN when
+   * the source has no raster area (see `sourceAreas`).
+   */
+  sourceTransferredFractions?: GraphDataView<'float32'>;
+  /**
+   * Optional one-row output: the number of sources with no raster area after anchoring. Their mass
+   * is lost; this is the `invalidCount` of the status vocabulary.
+   */
+  invalidCount?: GraphDataView<'uint32'>;
   /**
    * Which normalization is written to `weights.weights`. Defaults to `'extensive'`. The other one
    * is written to `alternateWeights` when given.
@@ -104,7 +184,10 @@ export type GPUArealInterpolationProps = {
   weights: GPUSpatialWeights;
   /** Optional caller-owned weights (one per slot) holding the normalization that is not `mode`. */
   alternateWeights?: GraphDataView<'float32'>;
-  /** Optional caller-owned overlap area per slot (cell count, or the sum of `cellWeights`). */
+  /**
+   * Optional caller-owned overlap area per slot (cell count, or the sum of `cellWeights`; square
+   * meters on a longitude/latitude raster).
+   */
   areas?: GraphDataView<'float32'>;
   /** Caller-owned one-row flag: 1 when the pairs did not fit the slot capacity, else 0. */
   overflow: GraphDataView<'uint32'>;
@@ -136,7 +219,19 @@ export type GPUArealInterpolationProps = {
  *   target `t` is the area-weighted mean `sum_s w_ts x_s` of its sources.
  * - categorical: `share(t, k) = sum_{s in k} a_st / sum_s a_st` for each target, in `categories`.
  * `A_s` and `B_t` are the whole zone areas (`denominator: 'zone'`, tobler) or only their overlap
- * with the other system (`'overlap'`, which conserves mass over the shared extent).
+ * with the other system (`'overlap'`, which conserves mass over the shared extent). The default is
+ * `'zone'` for extensive and `'overlap'` for intensive variables (see `denominator`).
+ *
+ * Conservation diagnostics. `sourceAreas` and `sourceTransferredFractions` report per source how
+ * much of its raster area reached the targets, and `invalidCount` counts sources that rasterized
+ * to no cell (a source smaller than a cell, or a polygon the cell centers all miss): their mass is
+ * lost unless `sourceAnchorCells` gives them a fallback cell. Dropped mass is therefore reported,
+ * never silent.
+ *
+ * Coordinates. With a `longitude-latitude` `spatialContext` the areas are spherical cell areas in
+ * square meters, so the weights are ground-area shares on a geographic raster (a cell at 60 degrees
+ * latitude weighs half of one at the equator). Without it every cell weighs 1 (or `cellWeights`),
+ * which is only an equal-area share on a planar raster.
  *
  * Accuracy. The result is exact only for the rasterized zones, never for the polygon
  * intersection: each cell is assigned by its center point, so every area is a count of cell
@@ -169,11 +264,24 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUArealInterpolationProps;
+  /** Resolved coordinate context: native planar unless a longitude/latitude raster was declared. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Resolved denominator of extensive variables. */
+  readonly extensiveDenominator: GPUArealInterpolationDenominator;
+  /** Resolved denominator of intensive variables. */
+  readonly intensiveDenominator: GPUArealInterpolationDenominator;
 
   constructor(props: GPUArealInterpolationProps) {
     const id = props.id ?? 'areal-interpolation';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+    const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    if (geographic) {
+      validateGeographicRaster(id, props.extent, props.width, props.sourceZones.length);
+    } else if (props.extent || props.width !== undefined) {
+      throw new Error(`${id} extent and width need a longitude-latitude spatialContext`);
+    }
     const {sourceCount, targetCount} = props;
     for (const [name, value] of [
       ['sourceCount', sourceCount],
@@ -194,15 +302,34 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
         throw new Error(`${id} cellWeights length must equal the raster cell count`);
       }
     }
-    if (
-      props.denominator !== undefined &&
-      props.denominator !== 'zone' &&
-      props.denominator !== 'overlap'
-    ) {
-      throw new Error(`${id} denominator must be 'zone' or 'overlap'`);
+    const denominators = typeof props.denominator === 'object' ? props.denominator : undefined;
+    const single = typeof props.denominator === 'string' ? props.denominator : undefined;
+    this.extensiveDenominator = denominators?.extensive ?? single ?? 'zone';
+    this.intensiveDenominator = denominators?.intensive ?? single ?? 'overlap';
+    for (const denominator of [this.extensiveDenominator, this.intensiveDenominator]) {
+      if (denominator !== 'zone' && denominator !== 'overlap') {
+        throw new Error(`${id} denominator must be 'zone' or 'overlap'`);
+      }
     }
     if (props.mode !== undefined && props.mode !== 'extensive' && props.mode !== 'intensive') {
       throw new Error(`${id} mode must be 'extensive' or 'intensive'`);
+    }
+    if (props.sourceAnchorCells) {
+      validatePackedUint32View(props.sourceAnchorCells, `${id} sourceAnchorCells`);
+      if (props.sourceAnchorCells.length !== sourceCount) {
+        throw new Error(`${id} sourceAnchorCells must have sourceCount rows`);
+      }
+    }
+    for (const [name, view] of [
+      ['sourceAreas', props.sourceAreas],
+      ['sourceTransferredFractions', props.sourceTransferredFractions]
+    ] as const) {
+      if (view) {
+        validatePackedView(view, ['float32'], `${id} ${name}`);
+        if (view.length !== sourceCount) {
+          throw new Error(`${id} ${name} must have sourceCount rows`);
+        }
+      }
     }
     const rows = validateGPUSpatialWeights(id, props.weights);
     if (rows !== targetCount) {
@@ -222,7 +349,8 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['overflow', props.overflow],
-      ['totalPairs', props.totalPairs]
+      ['totalPairs', props.totalPairs],
+      ['invalidCount', props.invalidCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} ${name}`);
@@ -254,6 +382,8 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       props.sourceZones,
       props.targetZones,
       props.cellWeights,
+      props.extent,
+      props.sourceAnchorCells,
       props.categories?.sourceCategories
     ];
   }
@@ -269,6 +399,9 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       props.areas,
       props.overflow,
       props.totalPairs,
+      props.invalidCount,
+      props.sourceAreas,
+      props.sourceTransferredFractions,
       props.categories?.output
     ];
   }
@@ -279,33 +412,71 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    const {sourceZones, targetZones, sourceCount, targetCount, weights} = props;
-    const cellCount = sourceZones.length;
+    const {targetZones, sourceCount, targetCount, weights} = props;
+    const cellCount = props.sourceZones.length;
     const capacity = weights.neighbors.length;
     const slotCount = Math.min(capacity, cellCount);
-    const denominator = props.denominator ?? 'zone';
     const mode = props.mode ?? 'extensive';
-    const overlapOnly = denominator === 'overlap';
+    const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    const extensiveOverlap = this.extensiveDenominator === 'overlap';
+    const intensiveOverlap = this.intensiveDenominator === 'overlap';
+    const needSourceKey = extensiveOverlap || Boolean(props.sourceTransferredFractions);
+    const needTargetKey = intensiveOverlap;
+    const needOverlapKeys = needSourceKey || needTargetKey;
+
+    const nodes: GPUCommandNode<Parameters>[] = [];
+
+    // Source zones that rasterized to no cell claim their anchor cell in a transient copy.
+    let sourceZones = props.sourceZones;
+    if (props.sourceAnchorCells) {
+      const anchored = getZoneAnchorNodes(graph, {
+        id,
+        operation: OPERATION,
+        zones: props.sourceZones,
+        zoneCount: sourceCount,
+        anchorCells: props.sourceAnchorCells
+      });
+      sourceZones = anchored.zones;
+      nodes.push(...anchored.nodes);
+    }
+
+    // Longitude/latitude rasters: the effective cell weight includes the spherical cell area.
+    let cellWeights = props.cellWeights;
+    if (geographic) {
+      const areaWeights = createTransientView(graph, `${id}-area-weights`, 'float32', cellCount);
+      nodes.push(
+        createSphericalCellWeightsNode(graph, {
+          id: `${id}-area-weights`,
+          operation: OPERATION,
+          cellCount,
+          width: props.width!,
+          radius: getRasterSphereRadius(this.spatialContext),
+          extent: props.extent!,
+          cellWeights,
+          output: areaWeights
+        })
+      );
+      cellWeights = areaWeights;
+    }
 
     const keyHigh = createTransientView(graph, `${id}-key-high`, 'uint32', cellCount);
     const keyLow = createTransientView(graph, `${id}-key-low`, 'uint32', cellCount);
-    const fastPath = !props.cellWeights && props.unweightedFastPath !== false;
+    const fastPath = !cellWeights && props.unweightedFastPath !== false;
     const cellMask = fastPath
       ? undefined
       : createTransientView(graph, `${id}-cell-mask`, 'float32', cellCount);
-    const pairSourceKey = overlapOnly
+    const overlapSourceKey = needSourceKey
       ? createTransientView(graph, `${id}-source-key`, 'uint32', cellCount)
-      : sourceZones;
-    const pairTargetKey = overlapOnly
+      : undefined;
+    const overlapTargetKey = needTargetKey
       ? createTransientView(graph, `${id}-target-key`, 'uint32', cellCount)
-      : targetZones;
-    const {cellWeights} = props;
+      : undefined;
 
-    const nodes: GPUCommandNode<Parameters>[] = [
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-cell-keys`,
         operation: OPERATION,
-        variant: `cell-keys-${overlapOnly ? 'overlap' : 'zone'}${cellWeights ? '-masked' : ''}${fastPath ? '-fast' : ''}`,
+        variant: `cell-keys-${needSourceKey ? 's' : ''}${needTargetKey ? 't' : ''}${needOverlapKeys ? 'overlap' : 'zone'}${cellWeights ? '-masked' : ''}${fastPath ? '-fast' : ''}`,
         bindings: [
           {name: 'sourceZones', view: sourceZones, type: 'u32', access: 'read'},
           {name: 'targetZones', view: targetZones, type: 'u32', access: 'read'},
@@ -331,17 +502,21 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
                 }
               ]
             : []),
-          ...(overlapOnly
+          ...(overlapSourceKey
             ? [
                 {
                   name: 'sourceKey',
-                  view: pairSourceKey,
+                  view: overlapSourceKey,
                   type: 'u32' as const,
                   access: 'read_write' as const
-                },
+                }
+              ]
+            : []),
+          ...(overlapTargetKey
+            ? [
                 {
                   name: 'targetKey',
-                  view: pairTargetKey,
+                  view: overlapTargetKey,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -366,14 +541,10 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
   keyHigh[keyHighOffset + index] = select(${INVALID}, targetRow, valid);
   keyLow[keyLowOffset + index] = select(${INVALID}, source, valid);
   ${cellMask ? 'cellMask[cellMaskOffset + index] = weight;' : ''}
-  ${
-    overlapOnly
-      ? `sourceKey[sourceKeyOffset + index] = select(${INVALID}, source, valid);
-  targetKey[targetKeyOffset + index] = select(${INVALID}, targetRow, valid);`
-      : ''
-  }`
+  ${overlapSourceKey ? `sourceKey[sourceKeyOffset + index] = select(${INVALID}, source, valid);` : ''}
+  ${overlapTargetKey ? `targetKey[targetKeyOffset + index] = select(${INVALID}, targetRow, valid);` : ''}`
       })
-    ];
+    );
 
     // Pair runs, one per distinct (target, source), in ascending (target, source) order.
     // Zone ids need only log2(zoneCount) radix bits per half; invalid cells hold all ones.
@@ -505,8 +676,122 @@ const CHUNK: u32 = ${ZONE_COUNT_CHUNK}u;`,
       }
       return totals;
     };
-    const sourceTotals = zoneTotals('source', pairSourceKey, sourceCount);
-    const targetTotals = zoneTotals('target', pairTargetKey, targetCount);
+    // Each kind divides by its own denominator: extensive by source totals, intensive by target.
+    const sourceTotals = zoneTotals(
+      'source',
+      extensiveOverlap ? overlapSourceKey! : sourceZones,
+      sourceCount
+    );
+    const targetTotals = zoneTotals(
+      'target',
+      intensiveOverlap ? overlapTargetKey! : targetZones,
+      targetCount
+    );
+
+    // Conservation diagnostics per source.
+    const {sourceAreas, sourceTransferredFractions, invalidCount} = props;
+    if (sourceAreas || sourceTransferredFractions || invalidCount) {
+      const zoneAreas = extensiveOverlap
+        ? zoneTotals('source-zone', sourceZones, sourceCount)
+        : sourceTotals;
+      const overlapAreas = sourceTransferredFractions
+        ? extensiveOverlap
+          ? sourceTotals
+          : zoneTotals('source-overlap', overlapSourceKey!, sourceCount)
+        : undefined;
+      if (invalidCount) {
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-invalid-count-clear`,
+            operation: OPERATION,
+            view: invalidCount,
+            type: 'u32',
+            value: '0u',
+            componentCount: 1
+          })
+        );
+      }
+      // The same total can serve several roles (whole-zone area, denominator, overlap area); bind
+      // each distinct view once and refer to it by the first role's name.
+      const alias = {
+        zoneAreas: 'zoneAreas',
+        denominatorAreas: 'denominatorAreas',
+        overlapAreas: 'overlapAreas'
+      };
+      const roles: [keyof typeof alias, GraphDataView<'float32'> | undefined][] = [
+        ['zoneAreas', zoneAreas],
+        ['denominatorAreas', sourceTotals],
+        ['overlapAreas', overlapAreas]
+      ];
+      const bound = new Map<GraphDataView<'float32'>, string>();
+      for (const [role, view] of roles) {
+        if (view) {
+          alias[role] = bound.get(view) ?? role;
+          bound.set(view, alias[role]);
+        }
+      }
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-source-diagnostics`,
+          operation: OPERATION,
+          variant: 'source-diagnostics',
+          bindings: [
+            ...[...bound].map(([view, name]) => ({
+              name,
+              view,
+              type: 'f32' as const,
+              access: 'read' as const
+            })),
+            ...(sourceAreas
+              ? [
+                  {
+                    name: 'sourceAreas',
+                    view: sourceAreas,
+                    type: 'f32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(sourceTransferredFractions
+              ? [
+                  {
+                    name: 'fractions',
+                    view: sourceTransferredFractions,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(invalidCount
+              ? [
+                  {
+                    name: 'invalidCount',
+                    view: invalidCount,
+                    type: 'atomic<u32>' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          invocationCount: sourceCount,
+          declarations: GET_NAN_WGSL,
+          body: `let area = ${alias.zoneAreas}[${alias.zoneAreas}Offset + index];
+  let hasArea = area > 0.0;
+  ${sourceAreas ? 'sourceAreas[sourceAreasOffset + index] = select(0.0, area, hasArea);' : ''}
+  ${
+    sourceTransferredFractions
+      ? `let denominator = ${alias.denominatorAreas}[${alias.denominatorAreas}Offset + index];
+  var fraction = bitcast<u32>(getNaN());
+  if (hasArea) {
+    fraction = bitcast<u32>(select(0.0, ${alias.overlapAreas}[${alias.overlapAreas}Offset + index] / denominator, denominator > 0.0));
+  }
+  fractions[fractionsOffset + index] = fraction;`
+      : ''
+  }
+  ${invalidCount ? 'if (!hasArea) { atomicAdd(&invalidCount[invalidCountOffset], 1u); }' : ''}`
+        })
+      );
+    }
 
     const pairTarget = createTransientView(graph, `${id}-pair-target`, 'uint32', capacity);
     nodes.push(

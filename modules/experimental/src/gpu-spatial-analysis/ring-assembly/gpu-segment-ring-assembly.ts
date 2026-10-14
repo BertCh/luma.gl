@@ -24,6 +24,19 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import type {GPUPolygonGeometryPort} from '../contracts/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {getRingQuantizerWGSL} from './ring-vertex-quantizer';
+
+/** Planar coordinates, or longitude-latitude positions that only need a cos(latitude) turn scale. */
+const GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+  coordinateSpaces: ['planar', 'longitude-latitude'],
+  metrics: ['none', 'native']
+};
 
 const OPERATION = 'GPUSegmentRingAssembly';
 /** Lanes per workgroup; a workgroup owns this many rings and sums its larger rings cooperatively. */
@@ -115,7 +128,10 @@ export type GPUSegmentRingAssemblyOutput = {
   polygons?: GPUSegmentRingPolygonOutput;
   /** One-row scalar receiving the number of rings written. */
   count: GraphDataView<'uint32'>;
-  /** One-row scalar receiving 1 when ring or vertex capacity dropped rings. */
+  /**
+   * One-row scalar receiving 1 when ring or vertex capacity dropped rings, or when a valid
+   * segment has a non-finite coordinate (status `overflow`; such vertices cannot be matched).
+   */
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped ring count. */
   requiredCount?: GraphDataView<'uint32'>;
@@ -144,7 +160,8 @@ export type GPUSegmentRingAssemblyProps = {
    * Compile-time vertex matching distance (Chebyshev, input units). Two vertices match when
    * both coordinates differ by at most this value. Choose at least four times the f32 spacing of
    * the coordinates (7.6e-6 degrees near longitude 100) and well below the shortest segment.
-   * Defaults to 5e-5.
+   * Defaults to 5e-5. Vertex cells are never smaller than this, and grow with the frame extent so
+   * that projected coordinates cannot collide (see {@link GPUSegmentRingAssembly}).
    */
   vertexTolerance?: number;
   /**
@@ -159,10 +176,14 @@ export type GPUSegmentRingAssemblyProps = {
    */
   normalizeWinding?: boolean;
   /**
-   * Scale x differences by `cos(y)` when comparing turn angles at shared vertices (longitude and
-   * latitude in degrees). Defaults to true; set false for planar coordinates.
+   * Coordinate context of the segment endpoints, default native planar. A `longitude-latitude`
+   * context (metric `'none'`) scales x differences by `cos(y)` when comparing turn angles at
+   * shared vertices (degrees), so a turn is judged on the ground and not in stretched degrees;
+   * the factor is clamped at 0.01 near the poles. This replaces the former `geographic` flag,
+   * which defaulted to true: omitting the context is now planar. Antimeridian-crossing rings are
+   * not unwrapped. Only turn comparison is affected; `vertexTolerance` stays in position units.
    */
-  geographic?: boolean;
+  spatialContext?: GPUSpatialContext;
   /**
    * Remove pairs of exactly opposite segments (`a -> b` and `b -> a` in one group, within the
    * vertex tolerance) before chaining. Such pairs are zero-width slits or ridges where a region is
@@ -188,7 +209,11 @@ export type GPUSegmentRingAssemblyProps = {
  *
  * Every segment's end vertex is matched to the segment starting there (coordinates within
  * `vertexTolerance`, found through a sort of quantized vertex hashes and a 3 x 3 neighborhood
- * lookup). At a vertex shared by several rings (cells touching at a corner) the continuation is
+ * lookup). Vertices are quantized relative to the start vertex of segment row 0 into unsigned cell
+ * indices whose size is `max(vertexTolerance, extent * 2^-22)` (extent: the largest coordinate
+ * offset from that origin, measured on the GPU), so large projected coordinates (UTM, Web
+ * Mercator) hash to distinct cells at any tolerance; candidates are still compared by their true
+ * distance against `vertexTolerance`. Only non-finite coordinates set `output.overflow`. At a vertex shared by several rings (cells touching at a corner) the continuation is
  * the outgoing segment that turns tightest toward the interior side (the face-traversal rule, a
  * bijection on planar boundaries), which keeps regions that touch only at a point as separate
  * rings. Where a choice is still taken twice the lowest segment index wins, the loser is marked
@@ -221,9 +246,16 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSegmentRingAssemblyProps;
+  /** Resolved spatial context: planar, or longitude-latitude for cos(latitude) turn comparison. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUSegmentRingAssemblyProps) {
     this.id = props.id ?? 'segment-ring-assembly';
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT
+    );
     this.props = props;
     const id = this.id;
     const {output} = props;
@@ -361,7 +393,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     const flip = Boolean(props.normalizeWinding) && interiorSide === 'right';
     // Orientation sign of a shell in the written rings: +1 counter-clockwise.
     const shellSign = props.normalizeWinding || interiorSide === 'left' ? 1 : -1;
-    const geographic = props.geographic ?? true;
+    const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const hasGroups = Boolean(props.groups);
     const none = `${GPU_SEGMENT_RING_ASSEMBLY_NONE}u`;
     const transient = <Format extends 'uint32' | 'float32' | 'float32x2'>(
@@ -377,7 +409,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     const sortedIds = u32('sorted-ids');
     const claim = u32('claim');
     const cancelOpposing = Boolean(props.cancelOpposingSegments);
-    const counters = u32('counters', 3);
+    const counters = u32('counters', 6);
     const next = u32('next');
     const alternatives = u32('alternatives');
     const swapped = u32('swapped');
@@ -396,17 +428,11 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     const pointerSets = [u32('pointer-a'), u32('pointer-b')];
     const valueSets = [u32('value-a'), u32('value-b')];
 
-    const hashFunctions = `const INVERSE_CELL: f32 = ${getWGSLFloatLiteral(1 / tolerance)};
-fn ringQuantize(value: f32) -> i32 { return i32(floor(value * INVERSE_CELL)); }
-fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
-  var h = bitcast<u32>(qx) * 0x9E3779B1u;
-  h = h ^ (h >> 15u);
-  h = (h + bitcast<u32>(qy) * 0x85EBCA77u) * 0xC2B2AE3Du;
-  h = h ^ (h >> 13u);
-  h = (h + group * 0x27D4EB2Fu) * 0x165667B1u;
-  h = h ^ (h >> 16u);
-  return select(h, 0xfffffffeu, h == 0xffffffffu);
-}`;
+    const toleranceLiteral = getWGSLFloatLiteral(tolerance);
+    // counters[4] holds the frame extent (f32 bits); counters[5] holds the valid row count so that
+    // the match kernel can read both from one binding and stay within 8 storage buffers.
+    const hashFunctions = getRingQuantizerWGSL(toleranceLiteral, false, 4);
+    const atomicHashFunctions = getRingQuantizerWGSL(toleranceLiteral, true, 4);
     const validRows = (name: string) => `min(${name}[${name}Offset], ${segments}u)`;
     const countBinding: WGSLKernelBinding[] = props.count
       ? [{name: 'rowCount', view: props.count, type: 'u32', access: 'read'}]
@@ -439,6 +465,39 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
 
     const nodes: GPUCommandNode<Parameters>[] = [];
 
+    // 0. Zero the counters, then measure the frame extent: the largest |x - ox| or |y - oy| of any
+    // endpoint relative to the origin (non-negative f32 bits order like u32, so atomicMax works).
+    // Non-finite vertices are counted into counters[3] and reported as overflow.
+    nodes.push(
+      kernel(
+        'quantize-init',
+        [...countBinding, write('counters', counters)],
+        1,
+        `for (var slot = 0u; slot < 5u; slot++) { counters[countersOffset + slot] = 0u; }
+  counters[countersOffset + 5u] = ${validRowsExpression};`
+      ),
+      kernel(
+        'quantize-extent',
+        [
+          read('endpoints', props.endpoints, 'f32'),
+          ...countBinding,
+          {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        segments,
+        `if (index >= ${validRowsExpression}) { return; }
+  let origin = vec2f(endpoints[endpointsOffset], endpoints[endpointsOffset + 1u]);
+  let start = vec2f(endpoints[endpointsOffset + 4u * index], endpoints[endpointsOffset + 4u * index + 1u]) - origin;
+  let end = vec2f(endpoints[endpointsOffset + 4u * index + 2u], endpoints[endpointsOffset + 4u * index + 3u]) - origin;
+  if (!isFiniteValue(start.x) || !isFiniteValue(start.y) || !isFiniteValue(end.x) || !isFiniteValue(end.y)) {
+    atomicAdd(&counters[countersOffset + 3u], 1u);
+    return;
+  }
+  let extent = max(max(abs(start.x), abs(start.y)), max(abs(end.x), abs(end.y)));
+  atomicMax(&counters[countersOffset + 4u], bitcast<u32>(extent));`,
+        IS_FINITE_VALUE_WGSL
+      )
+    );
+
     // 1. Hash start vertices (invalid rows get the maximum key so they sort last).
     nodes.push(
       kernel(
@@ -455,11 +514,11 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
         segments,
         `ids[idsOffset + index] = index;
   claim[claimOffset + index] = 0xffffffffu;
-  if (index == 0u) { counters[countersOffset] = 0u; counters[countersOffset + 1u] = 0u; counters[countersOffset + 2u] = 0u; }
   var key = 0xffffffffu;
   if (index < ${validRowsExpression}) {
     let start = vec2f(endpoints[endpointsOffset + 4u * index], endpoints[endpointsOffset + 4u * index + 1u]);
-    key = ringHash(ringQuantize(start.x), ringQuantize(start.y), ${groupOf('index')});
+    let origin = ringOrigin();
+    key = ringHash(ringQuantize(start.x, origin.x), ringQuantize(start.y, origin.y), ${groupOf('index')});
   }
   keys[keysOffset + index] = key;`,
         hashFunctions
@@ -497,7 +556,7 @@ fn ringHash(qx: i32, qy: i32, group: u32) -> u32 {
     flags[flagsOffset + index] = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u;
     atomicAdd(&counters[countersOffset + 2u], 1u);
   }`,
-          `${hashFunctions}
+          `${atomicHashFunctions}
 const TOLERANCE: f32 = ${getWGSLFloatLiteral(tolerance)};
 fn ringStart(row: u32) -> vec2f {
   return vec2f(endpoints[endpointsOffset + 4u * row], endpoints[endpointsOffset + 4u * row + 1u]);
@@ -511,14 +570,15 @@ fn findReverse(index: u32) -> u32 {
   let origin = ringStart(index);
   let vertex = ringEnd(index);
   let group = ${groupOf('index')};
-  let qx = ringQuantize(vertex.x);
-  let qy = ringQuantize(vertex.y);
+  let cellOrigin = ringOrigin();
+  let qx = ringQuantize(vertex.x, cellOrigin.x);
+  let qy = ringQuantize(vertex.y, cellOrigin.y);
   var seen = array<u32, 9>();
   var seenCount = 0u;
   var best = ${none};
   for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
-      let hash = ringHash(qx + dx, qy + dy, group);
+      let hash = ringHash(qx + bitcast<u32>(dx), qy + bitcast<u32>(dy), group);
       var duplicate = false;
       for (var j = 0u; j < seenCount; j++) { duplicate = duplicate || seen[j] == hash; }
       if (duplicate) { continue; }
@@ -557,7 +617,7 @@ fn findReverse(index: u32) -> u32 {
         'match',
         [
           read('endpoints', props.endpoints, 'f32'),
-          ...countBinding,
+          read('counters', counters),
           ...groupBinding,
           read('sortedKeys', sortedKeys),
           read('sortedIds', sortedIds),
@@ -575,14 +635,15 @@ fn findReverse(index: u32) -> u32 {
   if (carried != 0u) { return; }`
       : 'flags[flagsOffset + index] = 0u;'
   }
-  let valid = ${validRowsExpression};
+  let valid = min(counters[countersOffset + 5u], ${segments}u);
   if (index >= valid) { return; }
   let origin = ringStart(index);
   let vertex = ringEnd(index);
   let group = ${groupOf('index')};
   let incoming = ringScaled(vertex - origin, vertex.y);
-  let qx = ringQuantize(vertex.x);
-  let qy = ringQuantize(vertex.y);
+  let cellOrigin = ringOrigin();
+  let qx = ringQuantize(vertex.x, cellOrigin.x);
+  let qy = ringQuantize(vertex.y, cellOrigin.y);
   var seen = array<u32, 9>();
   var seenCount = 0u;
   var best = ${none};
@@ -592,7 +653,7 @@ fn findReverse(index: u32) -> u32 {
   var second = ${none};
   for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
-      let hash = ringHash(qx + dx, qy + dy, group);
+      let hash = ringHash(qx + bitcast<u32>(dx), qy + bitcast<u32>(dy), group);
       var duplicate = false;
       for (var j = 0u; j < seenCount; j++) { duplicate = duplicate || seen[j] == hash; }
       if (duplicate) { continue; }
@@ -1300,6 +1361,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
         [
           read('ringScan', ringScan),
           read('ringCount', ringCount),
+          read('counters', counters),
           write('outCount', output.count),
           write('outOverflow', output.overflow),
           ...(output.requiredCount ? [write('outTotal', output.requiredCount)] : [])
@@ -1308,7 +1370,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
         `let total = ringScan[ringScanOffset + ${segments - 1}u];
   let written = ringCount[ringCountOffset];
   outCount[outCountOffset] = written;
-  outOverflow[outOverflowOffset] = select(0u, 1u, written < total);
+  outOverflow[outOverflowOffset] = select(0u, 1u, written < total || counters[countersOffset + 3u] != 0u);
   ${output.requiredCount ? 'outTotal[outTotalOffset] = total;' : ''}`
       )
     );

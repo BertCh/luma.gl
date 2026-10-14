@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GPUSegmentedReduction,
@@ -81,6 +82,13 @@ export type GPUGroupGeometryProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'group-geometry'`. */
   id?: string;
   /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * Planar points (fewer than `2^24` rows). Rows with a non-finite coordinate are excluded.
    * Statistics are Euclidean, so project longitude and latitude first.
    */
@@ -136,12 +144,18 @@ export type GPUGroupGeometryProps = {
  *
  * No float atomics. Every sum is a fixed-order sorted segmented sum, bitwise reproducible on one
  * device. The contributor never compiles, encodes, submits or reads back.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUGroupGeometry implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGroupGeometryProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of groups. */
   readonly groupCount: number;
   /** Medoid group size cap. */
@@ -150,6 +164,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   constructor(props: GPUGroupGeometryProps) {
     this.id = props.id ?? 'group-geometry';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
     for (const [name, view] of [

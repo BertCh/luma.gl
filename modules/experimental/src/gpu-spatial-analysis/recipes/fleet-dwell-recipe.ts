@@ -5,6 +5,7 @@
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
 import {GPUTrajectoryMetrics} from '../trajectory-analysis/index';
 import {GPUZoneEvents} from '../trajectory-zones/index';
@@ -148,6 +149,15 @@ export type GPUFleetDwellRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'fleet-dwell'`. */
   id?: string;
+  /**
+   * Coordinate space of the positions, stop centroids and zone polygons. The stops variant is planar only: the stop-to-zone join and the zone edges are straight lines in the coordinate plane,
+   * so degrees would give wrong containment near the antimeridian and poles, even though dwell is
+   * topological. A
+   * longitude-latitude context throws; project first with `createGPULocalFrame` and pass its
+   * `spatialContext` (planar, meters). Omitted means native planar. The resolved context is
+   * returned as `result.spatialContext`.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Planar sample positions sorted by track then time. */
   positions: GraphDataView<'float32x2'>;
   /** Sample times: float32 relative times (or float32 high parts with `timestampsLow`), or Int64 words. */
@@ -168,6 +178,8 @@ export type GPUFleetDwellRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addFleetDwellRecipe}. */
 export type GPUFleetDwellRecipeResult = GPURecipeResult & {
+  /** Resolved coordinate context shared by the metrics, join and zone stages. */
+  spatialContext: GPUSpatialContext;
   stops: {
     ids: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
@@ -188,12 +200,19 @@ export type GPUFleetDwellRecipeResult = GPURecipeResult & {
  * zones -> adapter mask (stop slots past the GPU-written stop count are excluded) ->
  * dense `GPUGroupStatistics` (`keyCount` = zone rows) of stop duration keyed by zone, one row per
  * zone. Stops outside every zone carry the reserved no-zone key and are skipped.
+ *
+ * Spatial context: the recipe resolves one planar `spatialContext` (default native planar; a
+ * `createGPULocalFrame` context for meters) and passes the same object to the metrics, join and
+ * zone stages. Previously it always emitted a native planar context to the metrics stage regardless
+ * of the caller's data. Stop durations use the timestamps' unit; the metrics stage speed threshold
+ * uses context length units per time unit. Longitude-latitude throws.
  */
 export function addFleetDwellRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUFleetDwellRecipeProps
 ): GPUFleetDwellRecipeResult {
   const id = props.id ?? 'fleet-dwell';
+  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
@@ -223,7 +242,7 @@ export function addFleetDwellRecipe<Parameters>(
   };
   builder.add(
     new GPUTrajectoryMetrics({
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+      spatialContext,
       id: `${id}-metrics`,
       positions: props.positions,
       timestamps: props.timestamps,
@@ -257,6 +276,7 @@ export function addFleetDwellRecipe<Parameters>(
   builder.add(
     new GPUPointInPolygonJoin({
       id: `${id}-join`,
+      spatialContext,
       points: stops.centroids,
       polygonPositions: props.zones.polygonPositions,
       featureOffsets: props.zones.featureOffsets,
@@ -288,6 +308,7 @@ export function addFleetDwellRecipe<Parameters>(
   const table = createZoneTable(graph, id, props.zoneCapacity ?? zoneCount, outputs.table);
   addZoneStatistics(builder, id, stopZones, mask, stops.durations, table);
   return {
+    spatialContext,
     contributors: builder.contributors,
     stops,
     stopZones,
@@ -326,6 +347,14 @@ export type GPUFleetDwellZoneEventsRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'fleet-dwell-zone-events'`. */
   id?: string;
+  /**
+   * Coordinate space of the positions and zone edges. The zone events variant is planar only: zone edges and track segments are straight lines in the coordinate plane,
+   * which is not the geometry of degrees. A
+   * longitude-latitude context throws; project first with `createGPULocalFrame` and pass its
+   * `spatialContext` (planar, meters). Omitted means native planar. The resolved context is
+   * returned as `result.spatialContext`.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Planar sample positions sorted by track then time. */
   positions: GraphDataView<'float32x2'>;
   /** Float32 relative times or Int64 words. */
@@ -350,6 +379,8 @@ export type GPUFleetDwellZoneEventsRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addFleetDwellZoneEventsRecipe}. */
 export type GPUFleetDwellZoneEventsRecipeResult = GPURecipeResult & {
+  /** Resolved coordinate context of the zone events stage. */
+  spatialContext: GPUSpatialContext;
   events: {
     ids: GraphDataView<'uint32'>;
     count: GraphDataView<'uint32'>;
@@ -396,6 +427,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   props: GPUFleetDwellZoneEventsRecipeProps
 ): GPUFleetDwellZoneEventsRecipeResult {
   const id = props.id ?? 'fleet-dwell-zone-events';
+  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
@@ -470,6 +502,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   builder.add(
     new GPUZoneEvents({
       id: `${id}-events`,
+      spatialContext,
       positions: props.positions,
       timestamps: props.timestamps,
       trackOffsets: props.trackOffsets,
@@ -523,6 +556,7 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   const table = createZoneTable(graph, id, zoneCount, outputs.table);
   addZoneStatistics(builder, id, cellZones, cellMask, dwellTimes, table);
   return {
+    spatialContext,
     contributors: builder.contributors,
     events,
     visitTable: scratch.visitTable,

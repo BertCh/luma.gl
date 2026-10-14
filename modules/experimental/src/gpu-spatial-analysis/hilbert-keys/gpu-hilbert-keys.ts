@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {
   createTransientView,
   GPUSort,
   GraphVectorView,
@@ -20,6 +25,12 @@ import {
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getBoundsReductionNodes} from './bounds-reduction';
 import {IS_FINITE_VALUE_WGSL, SPREAD_BITS_WGSL} from '../../utils/wgsl-common';
+
+/** Planar coordinates, or longitude/latitude used as plain coordinates (no metric). */
+const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native'] as const)
+});
 
 // Upstream has no Hilbert curve index (the radix sort of the keys is already `GPUSort`).
 const OPERATION = 'GPUHilbertKeys';
@@ -61,6 +72,12 @@ export type GPUHilbertKeysOutput = {
 export type GPUHilbertKeysProps = {
   /** Prefix for generated node IDs. Defaults to `'hilbert-keys'`. */
   id?: string;
+  /**
+   * Spatial context of the coordinates; omitted means native planar coordinates. Planar and
+   * longitude/latitude (metric `'none'`) are accepted. Longitude/latitude is treated as plain
+   * coordinates (no metric, no antimeridian wrap, boxes must have `minX <= maxX`).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Curve order (bits per axis, 1 to {@link GPU_HILBERT_MAXIMUM_ORDER}). Defaults to 16. */
   order?: number;
   /** Points to key. Provide this or `minima` and `maxima`. */
@@ -100,12 +117,18 @@ export type GPUHilbertKeysProps = {
  *
  * Cost: one pass over the items (plus one single-workgroup bounds reduction without `bounds`) and,
  * with `sortedRows`, a radix sort over `2 * order + 1` key bits. No atomics; deterministic.
+ *
+ * Coordinates only, no metric: `spatialContext` accepts planar coordinates or longitude/latitude with
+ * metric `'none'`; great-circle and other metric contexts throw. Longitude/latitude degrees are used
+ * as plain coordinates, so nothing wraps at the antimeridian (a box must have `minX <= maxX`).
  */
 export class GPUHilbertKeys implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUHilbertKeysProps;
+  /** Resolved spatial context (planar or longitude/latitude without metric). */
+  readonly spatialContext: GPUSpatialContext;
   /** Curve order. */
   readonly order: number;
   /** Number of items. */
@@ -115,6 +138,11 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
     const id = props.id ?? 'hilbert-keys';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.order = props.order ?? GPU_HILBERT_MAXIMUM_ORDER;
     if (
       !Number.isSafeInteger(this.order) ||

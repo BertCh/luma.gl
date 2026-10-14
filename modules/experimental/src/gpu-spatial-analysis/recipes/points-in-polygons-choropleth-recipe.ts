@@ -7,7 +7,13 @@ import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import type {GPUGroupStatisticsColumnOutput} from '../../gpu-dataframe/group-statistics/index';
 import {GPUClassBreaks, GPUColorScale} from '../../gpu-dataframe/column-classification/index';
 import type {GPUClassBreaksProps} from '../../gpu-dataframe/column-classification/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
+import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
 import {GPUZonalStatistics} from '../zonal-statistics/index';
 import {
   assertRecipe,
@@ -18,6 +24,10 @@ import {
 } from './recipe-utils';
 
 const ID = 'GPUPointsInPolygonsChoroplethRecipe';
+/** Planar points and polygons, or longitude/latitude degrees (topological containment only). */
+const SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const)
+});
 
 /** Statistic mapped to the choropleth. `'count'` needs no values. */
 export type GPUChoroplethStatistic = 'count' | 'sum' | 'mean' | 'minimum' | 'maximum';
@@ -79,7 +89,16 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
    * the feature count), so its tables already hold one row per feature.
    */
   backend?: 'zonal' | 'group';
-  /** Planar points. */
+  /**
+   * Coordinate context of the points and polygons. Omitted means native planar. The mapped
+   * statistics (count, sum, mean, minimum, maximum) are topological, so a `longitude-latitude`
+   * context is accepted: containment is tested with straight polygon edges in degrees (not
+   * geodesics) and polygons crossing the antimeridian must be split. The recipe maps no area
+   * statistic (no density), so no spherical area is needed. The resolved context is returned as
+   * `result.spatialContext`.
+   */
+  spatialContext?: GPUSpatialContext;
+  /** Points in the coordinates of `spatialContext` (planar unless declared otherwise). */
   points: GraphDataView<'float32x2'>;
   /** Per-point values. Required unless `statistic` is `'count'`. */
   values?: GraphDataView<'float32'>;
@@ -93,6 +112,8 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addPointsInPolygonsChoroplethRecipe}. */
 export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
+  /** Resolved coordinate context of the points and polygons. */
+  spatialContext: GPUSpatialContext;
   /** Number of polygon features, the row count of every per-feature output. */
   featureCount: number;
   /** Points per feature. */
@@ -118,12 +139,17 @@ export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
  * `GPUClassBreaks` -> `GPUColorScale`. Features with no points keep NaN (mean, minimum, maximum)
  * or 0 (count, sum); NaN rows are no-data in the color scale and are skipped by the class breaks.
  * Counts feed the classification as the `uint32` column they are, with no cast.
+ *
+ * Spatial context: planar by default; `longitude-latitude` is accepted because counts and value
+ * statistics are topological (see `spatialContext`). Density is not mapped, so no polygon area is
+ * involved.
  */
 export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPointsInPolygonsChoroplethRecipeProps
 ): GPUPointsInPolygonsChoroplethRecipeResult {
   const id = props.id ?? 'choropleth-recipe';
+  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
   const statistic = props.statistic ?? 'count';
   const backend = props.backend ?? 'zonal';
   const providedOutputs = props.outputs ?? {};
@@ -168,6 +194,7 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
     builder.add(
       new GPUZonalStatistics({
         id: `${id}-zonal`,
+        spatialContext,
         features: {kind: 'polygons', ...polygons},
         points,
         values: statistic === 'count' ? undefined : props.values,
@@ -188,6 +215,7 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
     builder.add(
       new GPUPointInPolygonJoin({
         id: `${id}-join`,
+        spatialContext: getPointInPolygonContainmentContext(spatialContext),
         points,
         ...polygons,
         pointFeatureIds: pointFeatureRows,
@@ -225,6 +253,7 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
 
   const result: GPUPointsInPolygonsChoroplethRecipeResult = {
     contributors: builder.contributors,
+    spatialContext,
     featureCount,
     counts,
     featureValues,

@@ -12,6 +12,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -32,7 +33,110 @@ import {
   GPU_QUADRAT_STATISTICS_LENGTH
 } from './point-pattern-indices-parameters';
 
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
+
 const OPERATION = 'GPUPointPatternIndices';
+
+/**
+ * `getNormalPValue(z, alternative)`: p-value of a standard-normal statistic. Alternative codes
+ * 0 two-sided, 1 greater (upper tail), 2 lesser (lower tail). Needs `erfcValue`.
+ */
+const NORMAL_P_VALUE_WGSL = /* wgsl */ `
+fn getNormalPValue(z: f32, alternative: u32) -> f32 {
+  let root = 0.70710678118655;
+  if (alternative == 1u) {
+    return 0.5 * erfcValue(z * root);
+  }
+  if (alternative == 2u) {
+    return 0.5 * erfcValue(-z * root);
+  }
+  return erfcValue(abs(z) * root);
+}
+`;
+
+/**
+ * `getChiSquarePValue(x, degreesOfFreedom, alternative)`: chi-square p-value. Exact regularized
+ * incomplete gamma function (series below `x < a + 1`, Lentz continued fraction above, with
+ * `a = df / 2`) for `df <= 100`; the Wilson-Hilferty cube-root normal approximation above, where
+ * f32 evaluation of the gamma prefactor is no longer accurate. The tail that is computed directly
+ * keeps full relative precision; its complement is `1 - tail`. Alternative codes as in
+ * `getNormalPValue`. Needs `erfcValue` and `getNormalPValue`.
+ */
+const CHI_SQUARE_P_VALUE_WGSL = /* wgsl */ `
+fn getLogGamma(value: f32) -> f32 {
+  var x = value;
+  var shift = 0.0;
+  loop {
+    if (x >= 8.0) { break; }
+    shift += log(x);
+    x += 1.0;
+  }
+  let inverse = 1.0 / x;
+  let inverseSquared = inverse * inverse;
+  return (x - 0.5) * log(x) - x + 0.91893853320467 +
+    inverse * (0.08333333333333 - inverseSquared * (0.00277777777778 - inverseSquared * 0.00079365079365)) - shift;
+}
+
+// Returns (lower tail P(a, x), upper tail Q(a, x)) of the regularized incomplete gamma function.
+fn getGammaTails(a: f32, x: f32) -> vec2<f32> {
+  if (x <= 0.0) {
+    return vec2<f32>(0.0, 1.0);
+  }
+  let prefix = exp(a * log(x) - x - getLogGamma(a));
+  if (x < a + 1.0) {
+    var term = 1.0 / a;
+    var sum = term;
+    var denominator = a;
+    for (var iteration = 0; iteration < 500; iteration++) {
+      denominator += 1.0;
+      term *= x / denominator;
+      sum += term;
+      if (abs(term) < abs(sum) * 1.0e-7) { break; }
+    }
+    let lower = clamp(sum * prefix, 0.0, 1.0);
+    return vec2<f32>(lower, 1.0 - lower);
+  }
+  var b = x + 1.0 - a;
+  var c = 1.0e30;
+  var d = 1.0 / b;
+  var h = d;
+  for (var iteration = 1; iteration < 500; iteration++) {
+    let an = -f32(iteration) * (f32(iteration) - a);
+    b += 2.0;
+    d = an * d + b;
+    if (abs(d) < 1.0e-30) { d = 1.0e-30; }
+    c = b + an / c;
+    if (abs(c) < 1.0e-30) { c = 1.0e-30; }
+    d = 1.0 / d;
+    let delta = d * c;
+    h *= delta;
+    if (abs(delta - 1.0) < 1.0e-7) { break; }
+  }
+  let upper = clamp(prefix * h, 0.0, 1.0);
+  return vec2<f32>(1.0 - upper, upper);
+}
+
+fn getChiSquarePValue(x: f32, degreesOfFreedom: f32, alternative: u32) -> f32 {
+  var lower: f32;
+  var upper: f32;
+  if (degreesOfFreedom <= 100.0) {
+    let tails = getGammaTails(0.5 * degreesOfFreedom, 0.5 * x);
+    lower = tails.x;
+    upper = tails.y;
+  } else {
+    let scale = 2.0 / (9.0 * degreesOfFreedom);
+    let z = (pow(x / degreesOfFreedom, 1.0 / 3.0) - (1.0 - scale)) / sqrt(scale);
+    lower = getNormalPValue(z, 2u);
+    upper = getNormalPValue(z, 1u);
+  }
+  if (alternative == 1u) { return upper; }
+  if (alternative == 2u) { return lower; }
+  return min(1.0, 2.0 * min(lower, upper));
+}
+`;
 
 /** Id written to `nearestNeighborIds` when a row has no nearest neighbor. */
 export const GPU_NO_NEAREST_NEIGHBOR = 0xffffffff;
@@ -47,6 +151,13 @@ export const GPU_NO_NEAREST_NEIGHBOR = 0xffffffff;
 export type GPUPointPatternIndicesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'point-pattern-indices'`. */
   id?: string;
+  /**
+   * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
+   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * `longitude-latitude` context throws at construction (project positions to a planar frame
+   * first).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -79,14 +190,14 @@ export type GPUPointPatternIndicesProps = {
   nearestNeighborIds?: GraphDataView<'uint32'>;
   /**
    * Optional caller-owned Clark-Evans summary `[n, observedMeanDistance, expectedMeanDistance,
-   * ratio, standardError, zScore]` (`GPU_CLARK_EVANS_LENGTH` rows).
+   * ratio, standardError, zScore, pValue]` (`GPU_CLARK_EVANS_LENGTH` rows).
    */
   clarkEvans?: GraphDataView<'float32'>;
   /** Optional caller-owned quadrat counts, `columns * rows` rows, row-major (`row * columns + column`). */
   quadratCounts?: GraphDataView<'uint32'>;
   /**
    * Optional caller-owned quadrat summary `[quadratCount, mean, variance, varianceToMeanRatio,
-   * chiSquare, degreesOfFreedom]` (`GPU_QUADRAT_STATISTICS_LENGTH` rows).
+   * chiSquare, degreesOfFreedom, pValue]` (`GPU_QUADRAT_STATISTICS_LENGTH` rows).
    */
   quadratStatistics?: GraphDataView<'float32'>;
 };
@@ -103,17 +214,35 @@ export type GPUPointPatternIndicesProps = {
  *   over the shared lattice cells that stops once the ring's smallest possible distance exceeds
  *   the best found. It is exact for any distance (isolated points search the whole lattice) and
  *   independent of `maximumDistance`, which only sizes the cells.
- * - Clark-Evans: `observed = mean of nearest-neighbor distances`, `expected = 0.5 / sqrt(n / A)`,
- *   `ratio R = observed / expected` (below 1 clustered, above 1 dispersed),
- *   `standardError = 0.26136 / sqrt(n^2 / A)`, `z = (observed - expected) / standardError`. All but
+ * - Clark-Evans: `observed = mean of nearest-neighbor distances`, `ratio R = observed / expected`
+ *   (below 1 clustered, above 1 dispersed), `z = (observed - expected) / standardError`. All but
  *   `n` are NaN when `n < 2` or the window has no area. The mean is a deterministic fixed-order
- *   tree sum of f32 distances.
+ *   tree sum of f32 distances. The expectation depends on the per-frame `clarkEvansCorrection`:
+ *   `'donnelly'` (default) is Donnelly (1978, in Hodder (ed.), Simulation Studies in Archaeology,
+ *   Cambridge University Press, pp. 91-95) for a rectangular window of area `A` and perimeter `P`:
+ *   `expected = 0.5 sqrt(A / n) + (0.0514 + 0.041 / sqrt(n)) P / n`,
+ *   `standardError = sqrt(0.0703 A / n^2 + 0.037 P sqrt(A / n^5))`. It removes the bias that makes
+ *   the plain index look clustered when the window is small or elongated, because nearest
+ *   neighbors of boundary points lie farther away than the infinite-plane theory assumes. (spatstat
+ *   `clarkevans(correction = "Donnelly")` uses the constant 0.0412 in place of 0.041; Donnelly's
+ *   published value is used here, the difference is at most 0.5% of the correction term.)
+ *   `'none'` is the infinite-plane `expected = 0.5 sqrt(A / n)` with
+ *   `standardError = 0.26136 sqrt(A) / n` (pointpats, ArcGIS Average Nearest Neighbor). The
+ *   `pValue` is the normal-theory p-value of `z` for the per-frame `alternative` (`'two-sided'`
+ *   default; `'greater'` tests for regularity, `'lesser'` for clustering). The rectangular
+ *   window is assumed to be the study area: a bounding box of an irregular region overstates `A`
+ *   and so makes patterns look clustered.
  * - Quadrats: the window splits into `columns x rows` equal rectangles (a point on the maximum
  *   edge belongs to the last one). With `m` quadrats and counts `c_q` (sum `n`): `mean = n / m`,
  *   sample `variance = sum (c_q - mean)^2 / (m - 1)`, `varianceToMeanRatio = variance / mean`
  *   (above 1 clustered), `chiSquare = (m - 1) * varianceToMeanRatio`, `degreesOfFreedom = m - 1`.
  *   Undefined values are NaN. The summary is one serial fixed-order loop over the counts, so it is
- *   bitwise reproducible. p-values are not computed.
+ *   bitwise reproducible. `pValue` is the chi-square p-value with `m - 1` degrees of freedom for
+ *   the per-frame `alternative`: `'two-sided'` (default) is `min(1, 2 min(P(X <= x), P(X >= x)))`,
+ *   `'greater'` the upper tail (clustered, spatstat `quadrat.test` alternative `"clustered"`),
+ *   `'lesser'` the lower tail (regular). It uses the exact regularized incomplete gamma function
+ *   up to 100 degrees of freedom and the Wilson-Hilferty approximation (absolute error below 2e-4)
+ *   above. The test assumes expected counts of about 5 or more per quadrat.
  *
  * Counts, ids and `n` are exact. Distances have f32 rounding only; quadrat counts are exact.
  */
@@ -122,11 +251,14 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUPointPatternIndicesProps;
+  /** Resolved spatial context (native planar unless the props say otherwise). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUPointPatternIndicesProps) {
     this.id = props.id ?? 'point-pattern-indices';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const rows = validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH
@@ -399,29 +531,44 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
             ],
             invocationCount: 1,
             declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
+${ERFC_VALUE_WGSL}
+${NORMAL_P_VALUE_WGSL}
 const CELL_COUNT: u32 = ${cellCount}u;`,
             body: `let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
-  let area = (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
-    (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]);
+  let width = parameters[parametersOffset + 2u] - parameters[parametersOffset];
+  let height = parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u];
+  let area = width * height;
+  let correction = u32(parameters[parametersOffset + 5u] + 0.5);
+  let alternative = u32(parameters[parametersOffset + 6u] + 0.5);
   let nan = getQuietNaN(index);
   var observed = nan;
   var expected = nan;
   var ratio = nan;
   var standardError = nan;
   var zScore = nan;
+  var pValue = nan;
   if (n >= 2.0 && isFiniteFloat(area) && area > 0.0) {
     observed = total[totalOffset] / n;
     expected = 0.5 * sqrt(area / n);
-    ratio = observed / expected;
     standardError = 0.26136 * sqrt(area) / n;
+    if (correction == 1u) {
+      // Donnelly (1978) edge correction for a rectangle of perimeter P. sqrt(A / n^5) is
+      // evaluated as sqrt(A) / (n^2 sqrt(n)) to stay inside the f32 range for large n.
+      let perimeter = 2.0 * (width + height);
+      expected += (0.0514 + 0.041 / sqrt(n)) * perimeter / n;
+      standardError = sqrt(0.0703 * area / (n * n) + 0.037 * perimeter * sqrt(area) / (n * n * sqrt(n)));
+    }
+    ratio = observed / expected;
     zScore = (observed - expected) / standardError;
+    pValue = getNormalPValue(zScore, alternative);
   }
   clarkEvans[clarkEvansOffset] = n;
   clarkEvans[clarkEvansOffset + 1u] = observed;
   clarkEvans[clarkEvansOffset + 2u] = expected;
   clarkEvans[clarkEvansOffset + 3u] = ratio;
   clarkEvans[clarkEvansOffset + 4u] = standardError;
-  clarkEvans[clarkEvansOffset + 5u] = zScore;`
+  clarkEvans[clarkEvansOffset + 5u] = zScore;
+  clarkEvans[clarkEvansOffset + 6u] = pValue;`
           })
         );
       }
@@ -474,6 +621,7 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
             variant: 'quadrat-statistics',
             bindings: [
               {name: 'quadratCounts', view: counts, type: 'u32', access: 'read'},
+              {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
               {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
               {
                 name: 'quadratStatistics',
@@ -484,6 +632,9 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
             ],
             invocationCount: 1,
             declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
+${ERFC_VALUE_WGSL}
+${NORMAL_P_VALUE_WGSL}
+${CHI_SQUARE_P_VALUE_WGSL}
 const CELL_COUNT: u32 = ${cellCount}u;
 const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
             body: `let nan = getQuietNaN(index);
@@ -503,8 +654,13 @@ const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
   quadratStatistics[quadratStatisticsOffset + 1u] = mean;
   quadratStatistics[quadratStatisticsOffset + 2u] = variance;
   quadratStatistics[quadratStatisticsOffset + 3u] = ratio;
-  quadratStatistics[quadratStatisticsOffset + 4u] = select(nan, (m - 1.0) * ratio, isFiniteFloat(ratio));
-  quadratStatistics[quadratStatisticsOffset + 5u] = m - 1.0;`
+  let chiSquare = select(nan, (m - 1.0) * ratio, isFiniteFloat(ratio));
+  quadratStatistics[quadratStatisticsOffset + 4u] = chiSquare;
+  quadratStatistics[quadratStatisticsOffset + 5u] = m - 1.0;
+  quadratStatistics[quadratStatisticsOffset + 6u] = select(
+    nan,
+    getChiSquarePValue(chiSquare, m - 1.0, u32(parameters[parametersOffset + 6u] + 0.5)),
+    isFiniteFloat(chiSquare));`
           })
         );
       }

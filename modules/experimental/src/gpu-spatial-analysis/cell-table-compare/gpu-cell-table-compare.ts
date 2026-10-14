@@ -126,6 +126,8 @@ export type GPUCellTableCompareProps = {
  * includes the input tables' own overflow flags. Rows past `count` hold the empty key, presence 0,
  * `before`/`after` 0 and NaN for derived columns. Keys that are the reserved all-ones key inside
  * `[0, count)` are not supported. Inputs must be single packed views.
+ *
+ * Consumes cell keys and table values only, so it takes no `spatialContext`.
  */
 export class GPUCellTableCompare implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

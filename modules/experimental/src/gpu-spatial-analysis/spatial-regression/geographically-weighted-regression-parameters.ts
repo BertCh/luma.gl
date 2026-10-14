@@ -2,8 +2,28 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** Largest predictor count (columns of `predictors`, without the intercept) of `GPUGeographicallyWeightedRegression`. */
-export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT = 7;
+/**
+ * Largest predictor count (columns of `predictors`, without the intercept) of
+ * `GPUGeographicallyWeightedRegression`: 11, a design of 12 columns with the intercept (it was 7).
+ *
+ * The 8-storage-binding limit does not depend on the predictor count: no kernel binds more than
+ * eight storage buffers (the heaviest bind seven), and per-row standard errors share the row-state
+ * buffer. The limit is per-thread private memory: the fit holds the `P x P` weighted Gram matrix,
+ * the `P x P` squared-weight Gram matrix (standard errors) and `P`-wide solve vectors, about
+ * `2 P^2 + 6 P` floats, 360 at `P = 12`, beside the 128-entry neighbour list. That stays within the
+ * 16-column limit of the shared Cholesky solver. Not exercised on hardware at the cap: lower this
+ * constant if an adapter rejects or slows the shader at 11.
+ */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT = 11;
+
+/** Default two-sided significance level of the adjusted-alpha critical value (mgwr uses 0.05). */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL = 0.05;
+
+/** Default number of bandwidth refinement passes after the caller ladder (see `refinementPassCount`). */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT = 2;
+
+/** Largest compile-time number of bandwidth refinement passes. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT = 4;
 
 /** Largest compile-time bandwidth ladder length. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH = 32;
@@ -63,30 +83,75 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE = {
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS = {
   /** The local system was solved. */
   OK: 0,
-  /** The local weighted system was singular, ill-conditioned, or the bandwidth was invalid. */
+  /**
+   * The local weighted system was singular, ill-conditioned, or the bandwidth was invalid. All
+   * per-row results of the row (coefficients, standard errors, fitted value, residual, hat) are NaN.
+   */
   SINGULAR: 1,
   /** The row is masked out or has a non-finite position, predictor or response. */
   EXCLUDED: 2
 } as const;
 
-/** Float32 slots of the `summary` output. */
+/**
+ * Float32 slots of the `summary` output. Statistics are taken over the rows whose local fit at the
+ * selected bandwidth succeeded (all included rows unless some are singular).
+ */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY = {
   /** Residual sum of squares at the selected bandwidth. */
   RESIDUAL_SUM_OF_SQUARES: 0,
-  /** Trace of the hat matrix, `sum(S_ii)`. */
+  /** Trace of the hat matrix, `sum(S_ii)`: the effective number of parameters (mgwr `ENP`, `tr_S`). */
   TRACE_OF_HAT: 1,
-  /** Corrected Akaike information criterion of the selected bandwidth. */
+  /** Corrected Akaike information criterion of the selected bandwidth (mgwr `aicc`). */
   AICC: 2,
-  /** `1 - RSS / TSS` over the included rows (global, not the mean of local R^2). */
+  /** `1 - RSS / TSS` over the non-singular rows (global, not the mean of local R^2; mgwr `R2`). */
   R_SQUARED: 3,
-  /** Number of included rows `n`. */
+  /** Number of rows `n` entering the statistics: included rows minus singular rows. */
   OBSERVATION_COUNT: 4,
   /** 1 when at least one ladder candidate had a finite AICc, otherwise 0. */
-  HAS_VALID_CANDIDATE: 5
+  HAS_VALID_CANDIDATE: 5,
+  /** Included rows whose local system was singular at the selected bandwidth. */
+  SINGULAR_ROW_COUNT: 6,
+  /** `RSS / (n - tr(S))`, the residual variance the standard errors use (mgwr `sigma2`). */
+  SIGMA_SQUARED: 7,
+  /**
+   * Da Silva-Fotheringham adjusted significance level `alpha * k / tr(S)` with `k` the design
+   * columns including the intercept (mgwr `adj_alpha` at the requested level, 0.05 by default).
+   */
+  ADJUSTED_ALPHA: 8,
+  /**
+   * Critical absolute t value `t.ppf(1 - adjustedAlpha / 2, n - 1)` (mgwr `critical_tval`); 0 when
+   * the adjusted alpha reaches 1.
+   */
+  CRITICAL_T: 9,
+  /** Gaussian log-likelihood `-n / 2 (ln(2 pi RSS / n) + 1)` (mgwr `llf`). */
+  LOG_LIKELIHOOD: 10,
+  /** Included rows (unmasked, finite), singular or not. */
+  INCLUDED_ROW_COUNT: 11
 } as const;
 
 /** Number of float32 elements in the `summary` output. */
-export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH = 6;
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH = 12;
+
+/** Float32 fields of one candidate in the `candidateTable` output, in order. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE = {
+  /** Ladder value evaluated (distance for fixed bandwidths, neighbour count for adaptive ones). */
+  VALUE: 0,
+  /** AICc over the non-singular rows; NaN for an invalid candidate or an unused slot. */
+  AICC: 1,
+  /** Included rows whose local system was singular. */
+  SINGULAR_ROW_COUNT: 2,
+  /** Residual sum of squares over the non-singular rows. */
+  RESIDUAL_SUM_OF_SQUARES: 3,
+  /** Trace of the hat matrix over the non-singular rows. */
+  TRACE_OF_HAT: 4,
+  /** Rows entering the AICc (included minus singular). */
+  OBSERVATION_COUNT: 5,
+  /** Included rows. */
+  INCLUDED_ROW_COUNT: 6
+} as const;
+
+/** Float32 values per candidate of the `candidateTable` output. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE = 7;
 
 /** Kernel names accepted by {@link getGPUGeographicallyWeightedRegressionParameterValues}. */
 export type GPUGeographicallyWeightedRegressionKernel =
@@ -104,9 +169,15 @@ export type GPUGeographicallyWeightedRegressionSettings = {
   bandwidthMode?: GPUGeographicallyWeightedRegressionBandwidthMode;
   /**
    * Candidate bandwidths: distances (`'fixed'`) or neighbour counts `k` (`'adaptive'`, rounded to
-   * integers). One value is a fixed bandwidth; several are searched by AICc.
+   * integers). One value is a fixed bandwidth; several are searched by AICc (and refined, see
+   * `refinementPassCount`).
    */
   bandwidths: ArrayLike<number>;
+  /**
+   * Two-sided significance level of the adjusted alpha and critical t value, in (0, 1). Defaults to
+   * 0.05. Per frame.
+   */
+  significanceLevel?: number;
 };
 
 /**
@@ -123,14 +194,14 @@ export function getGPUGeographicallyWeightedRegressionParameterLength(
 /**
  * Packs per-frame `GPUGeographicallyWeightedRegression` parameters.
  *
- * Layout (float32): `[kernel, bandwidthMode, candidateCount, 0, ladder...]`. Every value can change
+ * Layout (float32): `[kernel, bandwidthMode, candidateCount, significanceLevel (0 = default), ladder...]`. Every value can change
  * between encodings without rebuilding the graph.
  *
  * @param settings Kernel, bandwidth mode and ladder.
  * @param maximumBandwidthCount Ladder capacity of the contributor (its `maximumBandwidthCount`).
  * @param target Optional destination of at least the parameter length.
  * @throws If the ladder is empty, longer than the capacity, or has a non-finite value, or a name is
- * not recognized, or `target` is too short.
+ * not recognized, or `significanceLevel` is outside (0, 1), or `target` is too short.
  */
 export function getGPUGeographicallyWeightedRegressionParameterValues(
   settings: GPUGeographicallyWeightedRegressionSettings,
@@ -157,6 +228,13 @@ export function getGPUGeographicallyWeightedRegressionParameterValues(
   target[0] = kernel;
   target[1] = mode;
   target[2] = bandwidths.length;
+  const level = settings.significanceLevel;
+  if (level !== undefined) {
+    if (!(level > 0 && level < 1)) {
+      throw new Error('GWR significanceLevel must be in (0, 1)');
+    }
+    target[3] = level;
+  }
   for (let index = 0; index < bandwidths.length; index++) {
     if (!Number.isFinite(bandwidths[index])) {
       throw new Error('GWR bandwidths must be finite');

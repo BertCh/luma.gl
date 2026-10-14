@@ -84,11 +84,15 @@ export type GPUNeighborSearchKernel = keyof typeof GPU_NEIGHBOR_SEARCH_KERNEL;
 export type GPUNeighborSearchParameters = {
   /**
    * `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and queries outside it (or
-   * with non-finite coordinates) are excluded, so it must cover every point of interest.
+   * with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it
+   * must cover every point of interest (count the dropped rows with `invalidCount`). For a
+   * great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude,
+   * maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world).
    */
   bounds: readonly [number, number, number, number];
   /**
-   * Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite
+   * In the units of the spatial context (position units, or meters/kilometers of great-circle
+   * distance). Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite
    * radius yields empty rows. kNN mode: an optional maximum distance; `Infinity` (the default) or
    * any non-positive value means unbounded.
    */
@@ -107,6 +111,24 @@ export type GPUNeighborSearchParameters = {
   /** Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. */
   rowStandardize?: boolean;
 };
+
+/**
+ * The weight transform {@link GPUNeighborSearchParameters} select, for
+ * `GPUNeighborSearchProps.weightTransform`: `'row'` with `rowStandardize`, else `'binary'`,
+ * `'raw'` (inverse distance) or `'kernel'` from `weightKind`.
+ */
+export function getGPUNeighborSearchWeightTransform(
+  parameters: Pick<GPUNeighborSearchParameters, 'weightKind' | 'rowStandardize'>
+): 'binary' | 'raw' | 'kernel' | 'row' {
+  const weightKind = parameters.weightKind ?? 'binary';
+  if (!(weightKind in GPU_NEIGHBOR_SEARCH_WEIGHT_KIND)) {
+    throw new Error(`GPUNeighborSearch unknown weightKind ${weightKind}`);
+  }
+  if (parameters.rowStandardize) {
+    return 'row';
+  }
+  return weightKind === 'inverseDistance' ? 'raw' : weightKind === 'kernel' ? 'kernel' : 'binary';
+}
 
 /**
  * Packs {@link GPUNeighborSearchParameters} into the float32 layout read by the kernels.

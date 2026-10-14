@@ -4,6 +4,7 @@
 
 import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
+import {SPATIAL_GEODESIC_MAXIMUM_ANGLE, SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
 import {SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
 
@@ -16,6 +17,20 @@ export type SpatialPredicateSide = {
   /** Number of vertices in `positions`, used to clamp malformed offsets. */
   vertexCount: number;
 };
+
+/**
+ * Distance model of the `dwithin` kernels: planar Euclidean distance in coordinate units, or
+ * great-circle distance between longitude/latitude positions on a sphere. In great-circle mode the
+ * helpers `pointSegmentDistanceSq`, `segmentDistanceSq` and `distanceLimitSq` keep their names but
+ * work in central angle (radians): edges are straight in longitude/latitude (like the containment
+ * and intersection tests), the edge distance of two non-crossing edges is the smallest angle from
+ * an endpoint of one to the other edge, and the limit is the distance divided by the sphere radius.
+ *
+ * @internal
+ */
+export type SpatialDistanceMetric = {kind: 'planar'} | {kind: 'great-circle'; radius: number};
+
+const PLANAR_METRIC: SpatialDistanceMetric = {kind: 'planar'};
 
 /** Public predicates of the join. @internal */
 export type SpatialPredicateName =
@@ -54,9 +69,15 @@ export const SPATIAL_PREDICATE_COMMON_WGSL = getSpatialPredicateCommonWGSL(true)
  * coordinates, or product exponents spanning more than 200 bits. Callers must not use the
  * magnitude of the result.
  *
+ * With a great-circle `metric` the distance helpers measure central angles between longitude/latitude
+ * positions (see {@link SpatialDistanceMetric}); the orientation tests stay planar in degrees.
+ *
  * @internal
  */
-export function getSpatialPredicateCommonWGSL(trackUncertainty: boolean): string {
+export function getSpatialPredicateCommonWGSL(
+  trackUncertainty: boolean,
+  metric: SpatialDistanceMetric = PLANAR_METRIC
+): string {
   const orient = trackUncertainty
     ? `${EXACT_ORIENTATION_WGSL}
 var<private> uncertainOrientation: bool = false;
@@ -76,7 +97,22 @@ fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
     : `fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }`;
+  const pointSegmentDistance =
+    metric.kind === 'great-circle'
+      ? `// Central angle in radians from p to the segment a-b, straight in longitude/latitude.
+fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  return geodesicSegmentDistance(p, a, b, geodesicSegmentFraction(p, a, b), 1.0);
+}`
+      : `fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  let ab = b - a;
+  let lengthSq = dot(ab, ab);
+  if (lengthSq == 0.0) { let d = p - a; return dot(d, d); }
+  let t = clamp(dot(p - a, ab) / lengthSq, 0.0, 1.0);
+  let d = p - (a + ab * t);
+  return dot(d, d);
+}`;
   return /* wgsl */ `${SPATIAL_JOIN_WGSL_HELPERS}
+${metric.kind === 'great-circle' ? SPATIAL_GEODESIC_WGSL : ''}
 ${orient}
 // Differs from nearest-wgsl: range test first, orient() may flag an uncertain sign.
 fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
@@ -102,14 +138,7 @@ fn segmentsIntersect(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> bool {
   }
   return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
 }
-fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
-  let ab = b - a;
-  let lengthSq = dot(ab, ab);
-  if (lengthSq == 0.0) { let d = p - a; return dot(d, d); }
-  let t = clamp(dot(p - a, ab) / lengthSq, 0.0, 1.0);
-  let d = p - (a + ab * t);
-  return dot(d, d);
-}
+${pointSegmentDistance}
 fn segmentDistanceSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
   if (segmentsIntersect(a, b, c, d)) { return 0.0; }
   return min(
@@ -123,33 +152,46 @@ fn crossProduct(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
 fn edgeBreaks(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec3f {
   if (boxesDisjoint(a, b, c, d)) { return vec3f(0.0); }
   let ab = b - a;
-  let cd = d - c;
-  let denominator = crossProduct(ab, cd);
-  if (denominator == 0.0) {
-    if (orient(a, b, c) != 0.0 || orient(a, b, d) != 0.0) { return vec3f(0.0); }
+  // Every branch is decided by orientation signs only. Rounded arithmetic (the cross product of the
+  // two directions, divisions) only places a break that the signs already proved to exist: an f32
+  // \`denominator == 0\` test lost near-parallel crossings and missed exactly collinear overlaps.
+  let o1 = orient(a, b, c);
+  let o2 = orient(a, b, d);
+  if (o1 == 0.0 && o2 == 0.0) {
+    // Collinear: c and d break a-b where they lie strictly between a and b. On a common line the
+    // coordinate along a non-degenerate axis orders the points exactly.
+    let useX = a.x != b.x;
+    let low = select(min(a.y, b.y), min(a.x, b.x), useX);
+    let high = select(max(a.y, b.y), max(a.x, b.x), useX);
+    let cValue = select(c.y, c.x, useX);
+    let dValue = select(d.y, d.x, useX);
     let lengthSq = dot(ab, ab);
-    let tc = dot(c - a, ab) / lengthSq;
-    let td = dot(d - a, ab) / lengthSq;
     var count = 0.0;
     var first = 0.0;
     var second = 0.0;
-    if (tc > 0.0 && tc < 1.0) { first = tc; count = 1.0; }
-    if (td > 0.0 && td < 1.0) {
+    let tc = dot(c - a, ab) / lengthSq;
+    let td = dot(d - a, ab) / lengthSq;
+    // A break that rounds onto an endpoint is dropped: its piece is below the parameter resolution.
+    if (cValue > low && cValue < high && tc > 0.0 && tc < 1.0) { first = tc; count = 1.0; }
+    if (dValue > low && dValue < high && td > 0.0 && td < 1.0) {
       if (count == 0.0) { first = td; } else { second = td; }
       count = count + 1.0;
     }
     return vec3f(count, first, second);
   }
-  // Orientation signs decide whether c-d crosses the open segment a-b. The divisions below only
-  // place the break: deciding with them let a shared endpoint round to t = 0.99999994, whose
-  // sliver piece was then classified by a rounded midpoint.
+  if ((o1 > 0.0 && o2 > 0.0) || (o1 < 0.0 && o2 < 0.0)) { return vec3f(0.0); }
+  // c-d must cross the open segment a-b: a and b strictly on opposite sides of c-d.
   let o3 = orient(c, d, a);
   let o4 = orient(c, d, b);
   if (!((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0))) { return vec3f(0.0); }
-  let o1 = orient(a, b, c);
-  let o2 = orient(a, b, d);
-  if ((o1 > 0.0 && o2 > 0.0) || (o1 < 0.0 && o2 < 0.0)) { return vec3f(0.0); }
-  let t = crossProduct(c - a, cd) / denominator;
+  // t = s3 / (s3 - s4) with the signed areas of a and b against c-d. Algebraically equal to
+  // cross(c - a, cd) / cross(ab, cd), but it cannot divide by a denominator that rounded to zero,
+  // and when the rounded areas keep opposite signs t stays inside [0, 1].
+  let cd = d - c;
+  let s3 = crossProduct(cd, a - c);
+  let s4 = crossProduct(cd, b - c);
+  let span = s3 - s4;
+  let t = select(0.5, clamp(s3 / span, 0.0, 1.0), span != 0.0 && (s3 * s4) < 0.0);
   if (t > 0.0 && t < 1.0) { return vec3f(1.0, t, 0.0); }
   return vec3f(0.0);
 }
@@ -490,9 +532,30 @@ export type SpatialDistanceParameter = {
  * bound row on every call; a negative, NaN or infinite distance gives -1, which no pair satisfies.
  * Both squares are one f32 multiply, so the two forms agree bit for bit.
  *
+ * With a great-circle `metric` the distance is in meters and the function returns the central angle
+ * `distance / radius` in radians instead of a square. A distance above
+ * {@link SPATIAL_GEODESIC_MAXIMUM_ANGLE} (a per-frame value; a compile-time one is rejected by the
+ * join) gives -1.
+ *
  * @internal
  */
-export function getDistanceLimitWGSL(distance: number | SpatialDistanceParameter): string {
+export function getDistanceLimitWGSL(
+  distance: number | SpatialDistanceParameter,
+  metric: SpatialDistanceMetric = PLANAR_METRIC
+): string {
+  if (metric.kind === 'great-circle') {
+    const radius = getWGSLFloatLiteral(Math.fround(metric.radius));
+    const maximum = getWGSLFloatLiteral(Math.fround(SPATIAL_GEODESIC_MAXIMUM_ANGLE));
+    if (typeof distance === 'number') {
+      const angle = Math.fround(Math.fround(distance) / Math.fround(metric.radius));
+      return `fn distanceLimitSq() -> f32 { return ${getWGSLFloatLiteral(angle <= Math.fround(SPATIAL_GEODESIC_MAXIMUM_ANGLE) ? angle : -1)}; }`;
+    }
+    return `fn distanceLimitSq() -> f32 {
+  let distance = ${distance.expression};
+  let angle = distance / ${radius};
+  return select(-1.0, angle, distance >= 0.0 && angle <= ${maximum});
+}`;
+  }
   if (typeof distance === 'number') {
     const squared = Math.fround(Math.fround(distance) * Math.fround(distance));
     return `fn distanceLimitSq() -> f32 { return ${getWGSLFloatLiteral(squared)}; }`;
@@ -515,7 +578,8 @@ export function getSpatialPredicateWGSL(
   left: SpatialPredicateSide,
   right: SpatialPredicateSide,
   predicate: SpatialPredicateName,
-  distance: number | SpatialDistanceParameter
+  distance: number | SpatialDistanceParameter,
+  metric: SpatialDistanceMetric = PLANAR_METRIC
 ): string {
   let predicateWGSL: string;
   switch (predicate) {
@@ -534,14 +598,14 @@ fn pairMatches(l: u32, r: u32) -> bool { return pairContains(r, l); }`;
     case 'dwithin': {
       predicateWGSL = `${getIntersectsWGSL(left, right)}
 ${getDistanceWGSL(left)}
-${getDistanceLimitWGSL(distance)}
+${getDistanceLimitWGSL(distance, metric)}
 fn pairMatches(l: u32, r: u32) -> bool { return pairDistanceSq(l, r) <= distanceLimitSq(); }`;
       break;
     }
     default:
       throw new Error(`predicate ${predicate} is evaluated by the relate engine`);
   }
-  return `${SPATIAL_PREDICATE_COMMON_WGSL}
+  return `${metric.kind === 'planar' ? SPATIAL_PREDICATE_COMMON_WGSL : getSpatialPredicateCommonWGSL(true, metric)}
 ${getSideWGSL(left)}
 ${getSideWGSL(right)}
 ${predicateWGSL}`;

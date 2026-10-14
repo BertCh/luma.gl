@@ -24,6 +24,7 @@ import {
   createCleanupPointsNode,
   createCleanupPublishNode
 } from './geometry-edit-kernels';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUGeometryCleanup';
 
@@ -121,6 +122,13 @@ export type GPUGeometryCleanupOutput = GPUGeometryCleanupBaseOutput & {
 export type GPUGeometryCleanupProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-cleanup'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed vertex positions. Polygon rings repeat their first vertex as the last (GeoArrow). */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -176,9 +184,12 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeometryCleanupProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUGeometryCleanupProps) {
     this.id = props.id ?? 'geometry-cleanup';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const ringOffsets = 'ringOffsets' in props ? props.ringOffsets : undefined;

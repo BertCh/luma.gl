@@ -22,6 +22,7 @@ import {
 import type {GPUOptimizationStatusPort} from '../contracts/index';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {createStandardizeColumnsNode, createSymmetricAdjacency} from './regionalization-inputs';
 
 export const GPU_AZP_MAXIMUM_COLUMNS = 8;
 export const GPU_AZP_MAXIMUM_ITERATIONS = 256;
@@ -29,7 +30,7 @@ export const GPU_AZP_MAXIMUM_ITERATIONS = 256;
  * Largest supported row count. Each candidate invocation keeps a one-bit-per-row reachability
  * set in private memory, and WGSL caps private memory at 8192 bytes per shader.
  */
-const GPU_AZP_MAXIMUM_ROWS = 8192 * 8;
+export const GPU_AZP_MAXIMUM_ROWS = 8192 * 8;
 const AZP_REDUCTION_WORKGROUP_SIZE = 256;
 export const GPU_AZP_STATUS = {
   iterationCount: 0,
@@ -41,10 +42,35 @@ export const GPU_AZP_STATUS = {
 
 export type GPUAZPRegionsProps = {
   id?: string;
+  /**
+   * Spatial weights that define adjacency. Two rows are adjacent when either lists the other, so
+   * directed (for example k-nearest-neighbor) weights are symmetrized inside the contributor;
+   * weights that declare `info.symmetric === true` are used as they are.
+   */
   weights: GPUSpatialWeights;
   values: GraphDataView<'float32'>;
   columnCount?: number;
-  /** Contiguous initial labels over symmetric weights. Values must be below `regionCapacity`. */
+  /**
+   * Standardize every column to mean 0 and population standard deviation 1 (divisor `n`, the
+   * `StandardScaler` convention, over finite entries) before the search, so columns in different
+   * units weigh equally. Defaults to true; pass false when `values` is already on a common scale.
+   * `optimization.objective` is then in standardized units.
+   */
+  standardize?: boolean;
+  /**
+   * Optional non-negative extensive value per row. With `extensiveThreshold`, a row may only leave
+   * its region when the rest of that region keeps an extensive sum of at least the threshold (the
+   * max-p constraint). A region that is already below the threshold can receive rows but not lose
+   * any. Both props are required together.
+   */
+  extensiveValues?: GraphDataView<'float32'>;
+  /** One per-frame minimum extensive sum a region must keep after losing a row. */
+  extensiveThreshold?: GraphDataView<'float32'>;
+  /**
+   * Contiguous initial labels over the (symmetrized) weights. Values must be below
+   * `regionCapacity`. A region that is not connected is reported through `invalidCount` (the
+   * search then does not run).
+   */
   initialLabels: GraphDataView<'uint32'>;
   regionCapacity: number;
   minimumRegionSize?: number;
@@ -56,13 +82,24 @@ export type GPUAZPRegionsProps = {
 };
 
 /**
- * Bounded deterministic AZP local search. Starting from a caller-supplied contiguous partition,
- * each iteration selects the greatest reduction in total within-region squared error. Every
+ * Bounded deterministic greedy steepest-descent AZP. This is the greedy variant of AZP (Openshaw
+ * and Rao): it has no tabu list, simulated annealing or reactive escape, so it stops at the first
+ * local optimum and the result depends entirely on `initialLabels`. For several starts, run
+ * several instances from different initial partitions and keep the smallest `objective`.
+ *
+ * Starting from a caller-supplied contiguous partition (checked on the GPU: a disconnected region
+ * is counted in `invalidCount`), each iteration selects the greatest reduction in total
+ * within-region squared error. `optimization.objective` is that within-region sum of squares of
+ * the returned labels, in standardized units unless `standardize` is false (the same quantity as
+ * `withinSsd` of `GPURegionPartitionEvaluation` on the same table). Every
  * candidate removal runs an exact reachability search over its source region; requiring a
  * destination neighbor then preserves destination connectivity as well.
  * Ties use a stable seed-keyed row order and then the destination label. The search therefore
  * remains reproducible without random GPU state. It stops at a local optimum or the explicit
  * iteration budget and publishes objective and convergence status.
+ *
+ * Default change: columns are standardized (`standardize`, default true). Adjacency is the
+ * undirected union of the weights and their transpose.
  */
 export class GPUAZPRegions implements GPUCommandNodeProducer {
   readonly id: string;
@@ -110,6 +147,16 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rowCount * columnCount)
       throw new Error(`${id} values length must equal rows * columnCount`);
+    if (Boolean(props.extensiveValues) !== Boolean(props.extensiveThreshold))
+      throw new Error(`${id} extensiveValues and extensiveThreshold are required together`);
+    if (props.extensiveValues && props.extensiveThreshold) {
+      validatePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
+      validatePackedView(props.extensiveThreshold, ['float32'], `${id} extensiveThreshold`);
+      if (props.extensiveValues.length !== rowCount)
+        throw new Error(`${id} extensiveValues length must equal the weights row count`);
+      if (props.extensiveThreshold.length < 1)
+        throw new Error(`${id} extensiveThreshold must hold one value`);
+    }
     for (const [name, view] of [
       ['initialLabels', props.initialLabels],
       ['labels', props.labels],
@@ -134,7 +181,9 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
         props.weights.neighbors,
         props.weights.weights,
         props.values,
-        props.initialLabels
+        props.initialLabels,
+        props.extensiveValues,
+        props.extensiveThreshold
       ]
     );
   }
@@ -149,11 +198,27 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       props.weights.weights,
       props.values,
       props.initialLabels,
+      props.extensiveValues,
+      props.extensiveThreshold,
       props.labels,
       props.optimization.objective,
       props.optimization.status
     ]);
-    const regionStride = columnCount + 1;
+    const constrained = Boolean(props.extensiveValues);
+    // Region record: count, column sums and, under the extensive constraint, the extensive sum.
+    const regionStride = columnCount + 1 + (constrained ? 1 : 0);
+    const standardize = props.standardize !== false;
+    const table = standardize
+      ? createTransientView(graph, `${id}-table`, 'float32', rowCount * columnCount)
+      : props.values;
+    const adjacency = createSymmetricAdjacency(graph, {
+      id,
+      operation: 'GPUAZPRegions',
+      weights: props.weights,
+      rowCount
+    });
+    const componentA = createTransientView(graph, `${id}-component-a`, 'uint32', rowCount);
+    const componentB = createTransientView(graph, `${id}-component-b`, 'uint32', rowCount);
     const reachedWordCount = Math.ceil(rowCount / 32);
     const regions = createTransientView(
       graph,
@@ -162,7 +227,14 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       props.regionCapacity * regionStride
     );
     const minimumRegionSize = props.minimumRegionSize ?? 1;
-    const state = createTransientView(graph, `${id}-state`, 'uint32', 1);
+    // Word 0 is the stop flag. Under the extensive constraint the next `rowCount` words hold the
+    // row extensive values and the last word the threshold, as bit patterns of float32.
+    const state = createTransientView(
+      graph,
+      `${id}-state`,
+      'uint32',
+      constrained ? rowCount + 2 : 1
+    );
     const candidateDeltaA = createTransientView(
       graph,
       `${id}-candidate-delta-a`,
@@ -217,6 +289,19 @@ ${IS_FINITE_FLOAT_WGSL}
 fn regionCount(region: u32) -> u32 { return u32(regions[regionsOffset + region * REGION_STRIDE]); }
 fn regionSum(region: u32, column: u32) -> f32 { return regions[regionsOffset + region * REGION_STRIDE + 1u + column]; }`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...adjacency.nodes,
+      ...(standardize
+        ? [
+            createStandardizeColumnsNode<Parameters>(graph, {
+              id: `${id}-standardize`,
+              operation: 'GPUAZPRegions',
+              values: props.values,
+              scaled: table,
+              rowCount,
+              columnCount
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize-status`,
         operation: 'GPUAZPRegions',
@@ -239,6 +324,34 @@ fn regionSum(region: u32, column: u32) -> f32 { return regions[regionsOffset + r
   status[statusOffset + 2u] = 0u;
   status[statusOffset + 3u] = 0u;`
       }),
+      ...(constrained
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-pack-extensive`,
+              operation: 'GPUAZPRegions',
+              variant: 'pack-extensive',
+              invocationCount: rowCount + 1,
+              bindings: [
+                {name: 'extensive', view: props.extensiveValues!, type: 'f32', access: 'read'},
+                {name: 'threshold', view: props.extensiveThreshold!, type: 'f32', access: 'read'},
+                {name: 'state', view: state, type: 'u32', access: 'read_write'},
+                {
+                  name: 'status',
+                  view: props.optimization.status,
+                  type: 'atomic<u32>',
+                  access: 'read_write'
+                }
+              ],
+              declarations: `const ROWS: u32 = ${rowCount}u;
+${IS_FINITE_FLOAT_WGSL}`,
+              body: `// Slots 1..ROWS hold row extensive values and slot ROWS + 1 the threshold, as float bits.
+  var value = threshold[thresholdOffset];
+  if (index < ROWS) { value = extensive[extensiveOffset + index]; }
+  if (!isFiniteFloat(value) || value < 0.0) { atomicAdd(&status[statusOffset + 3u], 1u); }
+  state[stateOffset + 1u + index] = bitcast<u32>(value);`
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-validate-and-copy`,
         operation: 'GPUAZPRegions',
@@ -291,6 +404,85 @@ ${IS_FINITE_FLOAT_WGSL}`,
         sortedGroupKeys: sortedKeys,
         segmentOffsets: regionOffsets
       }),
+      // Initial labels must be contiguous: connected components of each region by min-label
+      // propagation (ping-pong, so a round never reads its own writes). A region with more than
+      // one component counts its extra components as invalid input.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-initial-contiguity`,
+        operation: 'GPUAZPRegions',
+        variant: 'initial-label-contiguity',
+        invocationCount: AZP_REDUCTION_WORKGROUP_SIZE,
+        workgroupSize: AZP_REDUCTION_WORKGROUP_SIZE,
+        guardIndex: false,
+        bindings: [
+          {name: 'offsets', view: adjacency.weights.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: adjacency.weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
+          {name: 'componentA', view: componentA, type: 'u32', access: 'read_write'},
+          {name: 'componentB', view: componentB, type: 'u32', access: 'read_write'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+          {name: 'regionOffsets', view: regionOffsets, type: 'u32', access: 'read'},
+          {
+            name: 'status',
+            view: props.optimization.status,
+            type: 'atomic<u32>',
+            access: 'read_write'
+          }
+        ],
+        declarations: `const ROWS: u32 = ${rowCount}u;
+const REGION_CAPACITY: u32 = ${props.regionCapacity}u;
+const LANES: u32 = ${AZP_REDUCTION_WORKGROUP_SIZE}u;
+var<workgroup> changedAtomic: atomic<u32>;
+var<workgroup> changedFlag: u32;
+fn readComponent(fromA: bool, row: u32) -> u32 {
+  if (fromA) { return componentA[componentAOffset + row]; }
+  return componentB[componentBOffset + row];
+}`,
+        body: `let lane = localInvocationIndex;
+  for (var row = lane; row < ROWS; row += LANES) {
+    componentA[componentAOffset + row] = row;
+    componentB[componentBOffset + row] = row;
+  }
+  storageBarrier();
+  workgroupBarrier();
+  var fromA = true;
+  for (var round = 0u; round <= ROWS; round++) {
+    for (var row = lane; row < ROWS; row += LANES) {
+      let own = readComponent(fromA, row);
+      var best = own;
+      let label = labels[labelsOffset + row];
+      if (label < REGION_CAPACITY) {
+        for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+          let neighbor = neighbors[neighborsOffset + slot];
+          if (neighbor < ROWS && labels[labelsOffset + neighbor] == label) {
+            best = min(best, readComponent(fromA, neighbor));
+          }
+        }
+        // The value is the smallest row id seen in the component, so jump through it too.
+        best = min(best, readComponent(fromA, best));
+      }
+      if (best != own) { atomicOr(&changedAtomic, 1u); }
+      if (fromA) { componentB[componentBOffset + row] = best; } else { componentA[componentAOffset + row] = best; }
+    }
+    storageBarrier();
+    workgroupBarrier();
+    if (lane == 0u) { changedFlag = atomicLoad(&changedAtomic); atomicStore(&changedAtomic, 0u); }
+    let anyChanged = workgroupUniformLoad(&changedFlag);
+    storageBarrier();
+    fromA = !fromA;
+    if (anyChanged == 0u) { break; }
+  }
+  // Each region's first row (smallest) is a component root; any other root is an extra component.
+  var extra = 0u;
+  for (var row = lane; row < ROWS; row += LANES) {
+    let label = labels[labelsOffset + row];
+    if (label < REGION_CAPACITY && readComponent(fromA, row) == row) {
+      let first = sortedRows[sortedRowsOffset + regionOffsets[regionOffsetsOffset + label]];
+      extra += select(0u, 1u, first != row);
+    }
+  }
+  if (extra > 0u) { atomicAdd(&status[statusOffset + 3u], extra); }`
+      }),
       // One pass over the rows in total: each region walks only its own segment. The sort is
       // stable, so every region still sums its members in ascending row order, exactly the float
       // order of the former full scan per region (the search below depends on exact sums).
@@ -302,8 +494,11 @@ ${IS_FINITE_FLOAT_WGSL}`,
         bindings: [
           {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
           {name: 'regionOffsets', view: regionOffsets, type: 'u32', access: 'read'},
-          {name: 'values', view: props.values, type: 'f32', access: 'read'},
-          {name: 'regions', view: regions, type: 'f32', access: 'read_write'}
+          {name: 'values', view: table, type: 'f32', access: 'read'},
+          {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
+          ...(constrained
+            ? [{name: 'state', view: state, type: 'u32' as const, access: 'read' as const}]
+            : [])
         ],
         declarations,
         body: `let region = index;
@@ -311,8 +506,10 @@ ${IS_FINITE_FLOAT_WGSL}`,
   let begin = regionOffsets[regionOffsetsOffset + region];
   let end = regionOffsets[regionOffsetsOffset + region + 1u];
   for (var column = 0u; column < COLUMNS; column++) { regions[base + 1u + column] = 0.0; }
+  ${constrained ? 'regions[base + 1u + COLUMNS] = 0.0;' : ''}
   for (var position = begin; position < end; position++) {
     let row = sortedRows[sortedRowsOffset + position];
+    ${constrained ? 'regions[base + 1u + COLUMNS] += bitcast<f32>(state[stateOffset + 1u + row]);' : ''}
     for (var column = 0u; column < COLUMNS; column++) {
       regions[base + 1u + column] += values[valuesOffset + row * COLUMNS + column];
     }
@@ -326,7 +523,7 @@ ${IS_FINITE_FLOAT_WGSL}`,
         invocationCount: rowCount,
         bindings: [
           {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
-          {name: 'values', view: props.values, type: 'f32', access: 'read'},
+          {name: 'values', view: table, type: 'f32', access: 'read'},
           {name: 'regions', view: regions, type: 'f32', access: 'read'},
           {name: 'deltaOut', view: candidateDeltaA, type: 'f32', access: 'read_write'},
           {name: 'status', view: props.optimization.status, type: 'u32', access: 'read'}
@@ -411,9 +608,9 @@ ${IS_FINITE_FLOAT_WGSL}`,
           variant: 'exact-connectivity-candidates',
           invocationCount: rowCount,
           bindings: [
-            {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
-            {name: 'values', view: props.values, type: 'f32', access: 'read'},
+            {name: 'offsets', view: adjacency.weights.offsets, type: 'u32', access: 'read'},
+            {name: 'neighbors', view: adjacency.weights.neighbors, type: 'u32', access: 'read'},
+            {name: 'values', view: table, type: 'f32', access: 'read'},
             {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
             {name: 'regions', view: regions, type: 'f32', access: 'read'},
             {name: 'state', view: state, type: 'u32', access: 'read'},
@@ -430,7 +627,17 @@ fn markReached(vertex: u32) { reached[vertex >> 5u] |= 1u << (vertex & 31u); }`,
   let source = labels[labelsOffset + row];
   var sourceCount = 0u;
   if (state[stateOffset] == 0u) { sourceCount = regionCount(source); }
-  let movable = sourceCount > MINIMUM_SIZE && state[stateOffset] == 0u;
+  var movable = sourceCount > MINIMUM_SIZE && state[stateOffset] == 0u;
+  ${
+    constrained
+      ? `if (movable) {
+    // The rest of the source region must still reach the extensive threshold.
+    let rowExtensive = bitcast<f32>(state[stateOffset + 1u + row]);
+    movable = regions[regionsOffset + source * REGION_STRIDE + 1u + COLUMNS] - rowExtensive >=
+      bitcast<f32>(state[stateOffset + 1u + ROWS]);
+  }`
+      : ''
+  }
   var bestDelta = LARGE_DELTA;
   var bestDestination = NONE;
   // Cheap exact delta first: only an improving move pays for the reachability search below.
@@ -574,7 +781,7 @@ fn isBetter(delta: f32, data: vec4<u32>, bestDelta: f32, best: vec4<u32>) -> boo
           bindings: [
             {name: 'delta', view: sourceDelta, type: 'f32', access: 'read'},
             {name: 'data', view: sourceData, type: 'u32', access: 'read'},
-            {name: 'values', view: props.values, type: 'f32', access: 'read'},
+            {name: 'values', view: table, type: 'f32', access: 'read'},
             {name: 'labels', view: props.labels, type: 'u32', access: 'read_write'},
             {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
             {name: 'state', view: state, type: 'u32', access: 'read_write'},
@@ -596,6 +803,13 @@ fn isBetter(delta: f32, data: vec4<u32>, bestDelta: f32, best: vec4<u32>) -> boo
   let destinationBase = regionsOffset + destination * REGION_STRIDE;
   regions[sourceBase] -= 1.0;
   regions[destinationBase] += 1.0;
+  ${
+    constrained
+      ? `let rowExtensive = bitcast<f32>(state[stateOffset + 1u + row]);
+  regions[sourceBase + 1u + COLUMNS] -= rowExtensive;
+  regions[destinationBase + 1u + COLUMNS] += rowExtensive;`
+      : ''
+  }
   for (var column = 0u; column < COLUMNS; column++) {
     let value = values[valuesOffset + row * COLUMNS + column];
     regions[sourceBase + 1u + column] -= value;

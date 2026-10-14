@@ -210,8 +210,12 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       );
     }
     this.coordinateSystem = spherical ? 'spherical' : 'planar';
+    // An explicit sphereRadius is in result units; the default sphere honours units: 'kilometers'.
     this.radius = spherical
-      ? (this.spatialContext.sphereRadius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS)
+      ? (this.spatialContext.sphereRadius ??
+        (this.spatialContext.units === 'kilometers'
+          ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
+          : GPU_GEODESIC_MEAN_EARTH_RADIUS))
       : 1;
     this.maximumRecords = props.maximumRecords ?? Math.max(1024, 4 * props.positions.length);
     const {id} = this;

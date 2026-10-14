@@ -21,6 +21,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {GET_NAN_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURegionPartitionEvaluation';
 /** Rows or labels reduced by one thread of a summary tile pass. */
@@ -50,8 +51,15 @@ export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
   crossLinkFraction: 6,
   /** Rows whose label is `0xffffffff` or at least `labelCapacity`, left out of every statistic. */
   ignoredRows: 7,
+  /**
+   * Pseudo-F (Calinski-Harabasz) statistic `(betweenSsd / (k - 1)) / (withinSsd / (n - k))` with
+   * `k` the region count and `n` the labelled rows, the `sklearn.metrics.calinski_harabasz_score`
+   * convention (1 when `withinSsd` is 0). NaN when `k < 2` or `n <= k`, where it is undefined.
+   * Larger is a better separated partition; it compares partitions of the same table.
+   */
+  pseudoF: 8,
   /** Total word count. */
-  length: 8
+  length: 9
 } as const;
 
 /**
@@ -90,7 +98,10 @@ export type GPURegionPartitionEvaluationProps = {
 
 /**
  * Evaluates a region partition on any label column: within-region and between-region sum of
- * squares, region sizes and a contiguity-graph boundary measure.
+ * squares, the pseudo-F (Calinski-Harabasz) statistic, region sizes and a contiguity-graph
+ * boundary measure. `GPUMaxPRegions`, `GPUAZPRegions` and `GPUWardRegions` report the same
+ * within-region sum of squares as their `objective`, so pass the table they used (the standardized
+ * one unless they ran with `standardize: false`) to compare.
  *
  * Rows are grouped by label with a stable radix sort (ascending row inside a label). Each label is
  * then reduced by one thread over its own rows (mean, then deviations). The summary is a tiled
@@ -479,7 +490,8 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
           {name: 'summary', view: props.summary, type: 'f32', access: 'read_write'}
         ],
         invocationCount: 1,
-        declarations: tileDeclarations,
+        declarations: `${tileDeclarations}
+${GET_NAN_WGSL}`,
         body: `var regionCount = 0u;
   var withinSsd = 0.0;
   var minimumSize = 0xffffffffu;
@@ -511,7 +523,16 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
   summary[summaryOffset + 4u] = f32(select(minimumSize, 0u, regionCount == 0u));
   summary[summaryOffset + 5u] = f32(maximumSize);
   summary[summaryOffset + 6u] = select(0.0, f32(cross) / f32(total), total > 0u);
-  summary[summaryOffset + 7u] = f32(ignored);`
+  summary[summaryOffset + 7u] = f32(ignored);
+  // Calinski-Harabasz: undefined below two regions or without more rows than regions.
+  let labelledRows = f32(ROWS - ignored);
+  let regions = f32(regionCount);
+  let between = max(totalSsd - withinSsd, 0.0);
+  var pseudoF = getNaN();
+  if (regionCount >= 2u && labelledRows > regions) {
+    pseudoF = select(between * (labelledRows - regions) / (withinSsd * (regions - 1.0)), 1.0, withinSsd == 0.0);
+  }
+  summary[summaryOffset + 8u] = pseudoF;`
       })
     );
     return nodes;

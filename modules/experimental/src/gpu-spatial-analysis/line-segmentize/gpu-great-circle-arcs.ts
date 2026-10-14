@@ -16,7 +16,12 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
+import {
+  getGPUSphereRadius,
+  GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 import {
   createArcCountNode,
   createArcEmitNode,
@@ -36,7 +41,7 @@ export const GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENTS = 256;
  * Properties for {@link GPUGreatCircleArcs}.
  *
  * Per-frame (no recompile): the contents of `parameters` (resolution) and of `sources` and
- * `targets`. Compile-time: the pair count, `radius`, `maximumSegments`, the output capacity, and
+ * `targets`. Compile-time: the pair count, `spatialContext`, `maximumSegments`, the output capacity, and
  * which optional outputs are present.
  */
 export type GPUGreatCircleArcsProps = {
@@ -46,8 +51,12 @@ export type GPUGreatCircleArcsProps = {
   sources: GraphDataView<'float32x2'>;
   /** Arc targets, longitude/latitude degrees, aligned with `sources`. */
   targets: GraphDataView<'float32x2'>;
-  /** Sphere radius. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS} (meters). */
-  radius?: number;
+  /**
+   * Longitude/latitude with a great-circle metric (the default, meters on the mean Earth radius).
+   * `sphereRadius` and `units` set the sphere and the length unit. Planar contexts throw.
+   * Replaces the former `radius` prop.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Compile-time cap on segments per arc. Default 256. `pairCount * (maximumSegments + 1)` must
    * fit in 32 bits.
@@ -68,7 +77,7 @@ export type GPUGreatCircleArcsProps = {
  *
  * Pair `i` becomes one path of `segments + 1` vertices, where
  * `segments = clamp(max(ceil(distance / maximumSegmentLength), minimumSegments), 1, maximumSegments)`
- * and `distance` is the haversine distance times `radius`. Interior vertices are slerped evenly in
+ * and `distance` is the haversine distance times the sphere radius. Interior vertices are slerped evenly in
  * angle; the first vertex is the source and the last is the target exactly.
  *
  * Antimeridian: longitudes are unwrapped to stay continuous from the source (for example a
@@ -84,7 +93,9 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGreatCircleArcsProps;
-  /** Resolved sphere radius. */
+  /** Resolved spatial context (great-circle longitude/latitude). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Resolved sphere radius in the context's length unit. */
   readonly radius: number;
   /** Resolved compile-time segment cap. */
   readonly maximumSegments: number;
@@ -92,7 +103,12 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
   constructor(props: GPUGreatCircleArcsProps) {
     this.id = props.id ?? 'great-circle-arcs';
     this.props = props;
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
+      {coordinateSpaces: ['longitude-latitude'], metrics: ['great-circle']}
+    );
+    this.radius = getGPUSphereRadius(this.spatialContext);
     this.maximumSegments = props.maximumSegments ?? GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENTS;
     const {id} = this;
     for (const [name, view] of [
@@ -112,9 +128,6 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
     }
     if (props.targets.length !== pairCount) {
       throw new Error(`${id} targets length must equal sources length`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
     }
     if (
       !Number.isSafeInteger(this.maximumSegments) ||

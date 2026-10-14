@@ -32,6 +32,9 @@ import {
 } from './spatial-join-passes';
 import {type GPUSpatialJoinGeometry, type GPUSpatialJoinPairs} from './spatial-join-types';
 import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUSpatialJoinCandidates';
 
@@ -77,6 +80,15 @@ export function getSpatialJoinCandidateNodes<Parameters>(
      * every encoding (a negative, NaN or infinite value counts as 0).
      */
     margin: number | GraphDataView<'float32'>;
+    /**
+     * When set, boxes hold longitude/latitude degrees and `margin` is a great-circle distance in
+     * meters on a sphere of this radius. Each left box is then expanded by the angular radius in
+     * latitude and by the widest longitude reach of that radius at the box's far latitude (the
+     * whole longitude range when the expansion reaches a pole), and a box that crosses the
+     * antimeridian also probes its copy shifted by 360 degrees. The expansion is conservative by
+     * 0.1% plus 1e-5 degrees.
+     */
+    sphereRadius?: number;
     state: GraphDataView<'uint32'>;
     candidatePairs: GraphDataView<'uint32x2'>;
   }
@@ -86,6 +98,7 @@ export function getSpatialJoinCandidateNodes<Parameters>(
   const leftCounts = createTransientView(graph, `${id}-left-counts`, 'uint32', leftCount);
   const leftOffsets = createTransientView(graph, `${id}-left-offsets`, 'uint32', leftCount);
   const marginView = typeof props.margin === 'number' ? undefined : props.margin;
+  const {sphereRadius} = props;
   const probeBindings = (extra: WGSLKernelBinding[]): WGSLKernelBinding[] => [
     {name: 'leftMinima', view: props.leftMinima, type: 'f32', access: 'read'},
     {name: 'leftMaxima', view: props.leftMaxima, type: 'f32', access: 'read'},
@@ -108,7 +121,48 @@ const INTERNAL_NODE_COUNT: u32 = ${tree.internalNodeCount}u;
 const RIGHT_COUNT: u32 = ${rightCount}u;
 const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
 ${marginWGSL}
-${NODE_OVERLAPS_WGSL}`;
+${NODE_OVERLAPS_WGSL}
+${
+  sphereRadius === undefined
+    ? ''
+    : `${GEODESIC_WGSL}
+const SPHERE_RADIUS: f32 = ${formatSpatialJoinFloat(sphereRadius)};
+const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
+}`;
+  const expansion =
+    sphereRadius === undefined
+      ? `let queryMinimum = boxMinimum - vec2f(margin);
+    let queryMaximum = boxMaximum + vec2f(margin);`
+      : `var queryMinimum = boxMinimum;
+    var queryMaximum = boxMaximum;
+    var wrapDown = false;
+    var wrapUp = false;
+    if (margin > 0.0) {
+      let angle = margin / SPHERE_RADIUS * 1.001;
+      let deltaLatitude = angle * GEODESIC_RADIANS_TO_DEGREES + 1.0e-5;
+      queryMinimum.y = boxMinimum.y - deltaLatitude;
+      queryMaximum.y = boxMaximum.y + deltaLatitude;
+      let farLatitude = max(abs(queryMinimum.y), abs(queryMaximum.y));
+      var ratio = 2.0;
+      if (farLatitude < 90.0) { ratio = sin(0.5 * angle) / geodesicCosLatitude(farLatitude); }
+      if (ratio < 1.0) {
+        let deltaLongitude = 2.0 * asin(ratio) * GEODESIC_RADIANS_TO_DEGREES + 1.0e-5;
+        queryMinimum.x = boxMinimum.x - deltaLongitude;
+        queryMaximum.x = boxMaximum.x + deltaLongitude;
+        wrapDown = queryMaximum.x > 180.0;
+        wrapUp = queryMinimum.x < -180.0;
+      } else {
+        // The cap reaches a pole (or is wider than a hemisphere in longitude): every longitude.
+        queryMinimum.x = -FLOAT32_MAXIMUM;
+        queryMaximum.x = FLOAT32_MAXIMUM;
+      }
+    }`;
+  const overlaps =
+    sphereRadius === undefined
+      ? 'nodeOverlaps(node, queryMinimum, queryMaximum)'
+      : `(nodeOverlaps(node, queryMinimum, queryMaximum) ||
+        (wrapDown && nodeOverlaps(node, queryMinimum - WRAP_SHIFT, queryMaximum - WRAP_SHIFT)) ||
+        (wrapUp && nodeOverlaps(node, queryMinimum + WRAP_SHIFT, queryMaximum + WRAP_SHIFT)))`;
   const probeBody = (
     leaf: string,
     prologue: string,
@@ -118,11 +172,10 @@ ${NODE_OVERLAPS_WGSL}`;
   ${prologue}
   if (boxMinimum.x <= boxMaximum.x && boxMinimum.y <= boxMaximum.y) {
     let margin = getMargin();
-    let queryMinimum = boxMinimum - vec2f(margin);
-    let queryMaximum = boxMaximum + vec2f(margin);
+    ${expansion}
     var node = 0u;
     loop {
-      if (nodeOverlaps(node, queryMinimum, queryMaximum)) {
+      if (${overlaps}) {
         if (node < INTERNAL_NODE_COUNT) {
           node = node * 2u + 1u;
           continue;
@@ -225,6 +278,12 @@ ${NODE_OVERLAPS_WGSL}`;
 export type GPUSpatialJoinCandidatesProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-join-candidates'`. */
   id?: string;
+  /**
+   * Coordinate space and metric of both sides. Omitted means native planar coordinates, with
+   * `distance` in coordinate units. `longitude-latitude` throws at construction: the box expansion
+   * here is planar. For great-circle candidates use `GPUSpatialPredicateJoin` with `dwithin`.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Left features. Their bounding boxes probe the right-hand tree. */
   left: GPUSpatialJoinGeometry;
   /** Right features, indexed by a BVH unless `prepared` supplies one. */
@@ -274,11 +333,14 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
   readonly candidateCapacity: number;
   /** Resolved BVH leaf capacity. */
   readonly leafCapacity: number;
+  /** Resolved spatial context: native planar coordinates. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUSpatialJoinCandidatesProps) {
     this.id = props.id ?? 'spatial-join-candidates';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validateSpatialJoinGeometry(id, 'left', props.left);
     validateSpatialJoinGeometry(id, 'right', props.right);
     this.leftCount = getSpatialJoinFeatureCount(props.left);

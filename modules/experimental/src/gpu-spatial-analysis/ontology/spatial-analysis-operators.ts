@@ -58,7 +58,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
   GPUSpatialPredicateJoin: {
     inputs: ['points', 'lines', 'polygons', 'parameters'],
     outputs: ['pairs', 'spatial-weights'],
-    coordinateModels: ['planar'],
+    coordinateModels: ['planar', 'spherical'],
     dimensionality: '2d',
     semantics: 'robust-exact',
     status: [...BOUNDED_STATUS, 'candidateOverflow', 'uncertainCount'],
@@ -185,7 +185,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: [...BOUNDED_STATUS, 'candidateOverflow', 'uncertainCount'],
     contract: 'GPUPolygonOverlayOutput & GPUGeneratedGeometryPort',
     evidence: 'proven',
-    tests: 'modules/experimental/test/gpu-spatial-analysis/polygon-overlay/polygon-overlay.spec.ts'
+    tests: 'modules/experimental/test/gpu-spatial-analysis/polygon-buffer/polygon-buffer.spec.ts'
   },
   GPUVoronoiDiagram: {
     inputs: ['points', 'render-geometry', 'parameters'],

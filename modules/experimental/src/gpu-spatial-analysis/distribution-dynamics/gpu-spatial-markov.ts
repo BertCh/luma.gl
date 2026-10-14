@@ -20,6 +20,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import type {GPUInferenceMetadata} from '../contracts/index';
 import {GPUClassAssignment} from './gpu-class-assignment';
 import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
 import {getPeriodView} from './period-views';
@@ -74,6 +75,11 @@ export type GPUSpatialMarkovProps = {
   lagMethods?: readonly GPUClassBreaksMethod[];
   /** Optional row selection (`rows` entries) applied to every period. */
   mask?: GraphDataView<'uint32'>;
+  /**
+   * Compile-time. A `(lag class, from)` state with fewer transitions than this is counted in
+   * `output.stateSparsity`. Defaults to 5.
+   */
+  minimumTransitions?: number;
   /** Caller-owned outputs. */
   output: GPUSpatialMarkovOutput;
 };
@@ -90,8 +96,22 @@ export type GPUSpatialMarkovProps = {
  * are f32 (fixed-order sums), so a lag within f32 rounding of an edge may fall in the neighboring
  * lag class compared with a double-precision evaluation.
  *
+ * Diagnostics, on request through `output` (see {@link GPUTransitionDiagnostics}):
+ * - `homogeneity`: giddy's `Q`, `Q_p_value`, `LR`, `LR_p_value`, `dof_hom`, the chi-square and
+ *   likelihood-ratio tests that the conditional matrices equal the pooled matrix. A small p-value
+ *   says the spatial lag matters; a large one says the conditional matrices cannot be told apart
+ *   from the pooled one, so do not read differences between them. Asymptotic and unreliable with
+ *   sparse rows: check `stateSparsity` and `rowTotals`. Lag classes that were not produced (past
+ *   `lagClassCount`) have zero counts and do not enter the test.
+ * - `steadyStates`: ergodic distribution of the pooled chain (rows `0..K-1`) and of each lag
+ *   class (rows `(1 + c) * K ..`), NaN where a chain is not ergodic. The pooled chain sums the
+ *   counted transitions over the lag classes, so unlike giddy's `s` it excludes rows without a
+ *   lag class (masked rows).
+ * - `stateSparsity`: how many `(lag class, from)` states have fewer than `minimumTransitions`
+ *   (default 5) transitions, and how many have none.
+ *
  * Not included: giddy's `relative` rescaling by the period mean (divide the values per period
- * before classification) and its homogeneity tests, which consume the counts on the CPU.
+ * before classification), mean first passage times and the permutation test `x2_rpvalue`.
  */
 export class GPUSpatialMarkov implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -129,6 +149,21 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
     }
   }
 
+  /**
+   * Describes the homogeneity tests of `output.homogeneity` for a legend: one analytic
+   * chi-square test (upper tail, `'greater'`) of the transition probabilities across lag classes
+   * for Q and for LR, with no multiple-testing correction.
+   */
+  getInferenceMetadata(): GPUInferenceMetadata {
+    return {
+      alternative: 'greater',
+      permutationCount: 0,
+      multipleTesting: 'none',
+      testedRowsDefinition:
+        'one homogeneity test per statistic (Q, LR) of the conditional transition matrices against the pooled matrix, over all counted transitions of unmasked rows with a valid class and lag class'
+    };
+  }
+
   /** Returns the lag, pooled-breaks, assignment and transition nodes in order. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -150,7 +185,11 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       output.lagBreaks,
       output.lagClassCount,
       output.lagValues,
-      output.lagClasses
+      output.lagClasses,
+      output.homogeneity,
+      output.steadyStates,
+      output.stateSparsity,
+      output.status?.converged
     ]);
     const total = rows * periods;
     const lagValues =
@@ -215,11 +254,16 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
         conditionClasses: lagClasses,
         conditionCount: props.lagMaximumClassCount,
         mask,
+        minimumTransitions: props.minimumTransitions,
         output: {
           counts: output.counts,
           probabilities: output.probabilities,
           rowTotals: output.rowTotals,
-          ignored: output.ignored
+          ignored: output.ignored,
+          homogeneity: output.homogeneity,
+          steadyStates: output.steadyStates,
+          stateSparsity: output.stateSparsity,
+          status: output.status
         }
       }).getCommandNodes(graph)
     );

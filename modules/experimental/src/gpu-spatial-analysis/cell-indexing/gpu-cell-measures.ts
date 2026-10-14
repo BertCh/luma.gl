@@ -12,11 +12,21 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {dggs} from '@luma.gl/shadertools';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../contracts/earth';
+import {
+  getGPUAreaUnit,
+  type GPUMeasureDescription,
+  type GPUSpatialUnit
+} from '../contracts/spatial-context';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import type {GPUCellWordOrder} from '../cell-aggregation/index';
 import {H3_BOUNDARY_WGSL} from './h3-boundary-wgsl';
@@ -24,20 +34,20 @@ import {H3_MEASURES_WGSL} from './h3-measures-wgsl';
 
 const OPERATION = 'GPUCellMeasures';
 
-/** Mean Earth radius in kilometers that H3 (`cellAreaKm2`, `edgeLengthKm`) uses. */
-export const GPU_CELL_MEASURES_EARTH_RADIUS_KM = 6371.007180918475;
-
 /** Most boundary edges an H3 cell has (hexagons 6, pentagons 5, distortion vertices up to 10). */
 export const GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT = 10;
 
 /** Caller-owned outputs of {@link GPUCellMeasures}, all row-aligned with the input cells. */
 export type GPUCellMeasuresOutput = {
-  /** One `float32` area per cell in square kilometers (H3 `cellAreaKm2`); 0 for invalid cells. */
+  /**
+   * One `float32` area per cell: square meters by default, square kilometers with `units:
+   * 'kilometers'` (H3 `cellAreaM2` / `cellAreaKm2`); 0 for invalid cells.
+   */
   areas?: GraphDataView<'float32'>;
-  /** One `float32` perimeter per cell in kilometers (sum of `edgeLengths`); 0 for invalid cells. */
+  /** One `float32` perimeter per cell in meters or kilometers (sum of `edgeLengths`); 0 for invalid cells. */
   perimeters?: GraphDataView<'float32'>;
   /**
-   * `rows * maximumEdgeCount` `float32` great-circle edge lengths in kilometers. Cell `row` owns
+   * `rows * maximumEdgeCount` `float32` great-circle edge lengths in meters (or kilometers). Cell `row` owns
    * entries `[row * maximumEdgeCount, (row + 1) * maximumEdgeCount)`; entry `i` joins vertex `i` to
    * vertex `i + 1` (cyclic) of H3 `cellToBoundary`. Entries past the cell's edge count are zero.
    */
@@ -71,18 +81,28 @@ export type GPUCellMeasuresProps = {
    * Defaults to 6. A smaller stride truncates the up to 10 edges of cells with distortion vertices.
    */
   maximumEdgeCount?: number;
+  /**
+   * Unit of `areas`, `perimeters` and `edgeLengths`: `'meters'` (default; square meters for areas)
+   * or `'kilometers'` (square kilometers). Before this option the outputs were always kilometers.
+   */
+  units?: Exclude<GPUSpatialUnit, 'native'>;
   /** Caller-owned outputs; at least one. */
   output: GPUCellMeasuresOutput;
 };
 
 /**
- * Exact spherical area, perimeter, edge lengths and pentagon flag of H3 cells (`cellAreaKm2`,
- * `edgeLengthKm`, `isPentagon`).
+ * Exact spherical area, perimeter, edge lengths and pentagon flag of H3 cells (`cellAreaM2`,
+ * `edgeLengthM`, `isPentagon`). Outputs are meters and square meters unless `units: 'kilometers'`;
+ * `measures` describes the model (exact spherical polygon areas with great-circle edges on the
+ * WGS84 authalic sphere, radius {@link GPU_EARTH_AUTHALIC_RADIUS_METERS}).
  *
  * One kernel; each thread decodes one cell. Areas are the sum of the spherical triangles between
  * the cell center and consecutive boundary vertices, as H3 `cellAreaRads2` defines them, scaled by
- * the squared Earth radius {@link GPU_CELL_MEASURES_EARTH_RADIUS_KM} (multiply by
- * `(radius / GPU_CELL_MEASURES_EARTH_RADIUS_KM) ** 2` for another sphere).
+ * the squared authalic Earth radius (multiply by `(radius / GPU_EARTH_AUTHALIC_RADIUS_METERS) ** 2`
+ * for another sphere).
+ *
+ * Cell identifiers carry no coordinates, so this class takes no `spatialContext`; its measure
+ * model is the discrete-grid H3 sphere, reported in `measures`.
  *
  * Precision, from `H3_MEASURES_WGSL`: hexagons whose boundary stays on the center's icosahedron
  * face (all but the 12 pentagons and the thin set of cells straddling an icosahedron edge) are
@@ -99,6 +119,10 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
   readonly props: GPUCellMeasuresProps;
   /** `edgeLengths` stride per cell. */
   readonly maximumEdgeCount: number;
+  /** Resolved output unit. */
+  readonly units: 'meters' | 'kilometers';
+  /** Machine-readable length and area models and units of the outputs. */
+  readonly measures: GPUMeasureDescription;
 
   constructor(props: GPUCellMeasuresProps) {
     this.id = props.id ?? 'cell-measures';
@@ -110,6 +134,16 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
     if (props.wordOrder && props.wordOrder !== 'little-endian' && props.wordOrder !== 'high-low') {
       throw new Error(`${id} wordOrder must be 'little-endian' or 'high-low'`);
     }
+    this.units = props.units ?? 'meters';
+    if (this.units !== 'meters' && this.units !== 'kilometers') {
+      throw new Error(`${id} units must be 'meters' or 'kilometers'`);
+    }
+    this.measures = {
+      lengthModel: 'great-circle',
+      areaModel: 'sphere-polygon',
+      lengthUnits: this.units,
+      areaUnits: getGPUAreaUnit(this.units)
+    };
     this.maximumEdgeCount = props.maximumEdgeCount ?? 6;
     if (
       !Number.isInteger(this.maximumEdgeCount) ||
@@ -208,14 +242,14 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
   ${
     needsMeasures
       ? `let measures = cellMeasuresGetH3(key);
-  ${output.areas ? 'areasOut[areasOutOffset + index] = measures.area * EARTH_RADIUS_KM * EARTH_RADIUS_KM;' : ''}
-  ${output.perimeters ? 'perimetersOut[perimetersOutOffset + index] = measures.perimeter * EARTH_RADIUS_KM;' : ''}
+  ${output.areas ? 'areasOut[areasOutOffset + index] = measures.area * EARTH_RADIUS * EARTH_RADIUS;' : ''}
+  ${output.perimeters ? 'perimetersOut[perimetersOutOffset + index] = measures.perimeter * EARTH_RADIUS;' : ''}
   ${output.edgeCounts ? 'edgeCountsOut[edgeCountsOutOffset + index] = measures.count;' : ''}
   ${
     output.edgeLengths
       ? `for (var edge = 0u; edge < MAXIMUM_EDGE_COUNT; edge++) {
     edgeLengthsOut[edgeLengthsOutOffset + index * MAXIMUM_EDGE_COUNT + edge] =
-      select(0.0, measures.edges[edge] * EARTH_RADIUS_KM, edge < measures.count);
+      select(0.0, measures.edges[edge] * EARTH_RADIUS, edge < measures.count);
   }`
       : ''
   }`
@@ -229,7 +263,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.cells.length,
         declarations: `const MAXIMUM_EDGE_COUNT: u32 = ${maximumEdgeCount}u;
-const EARTH_RADIUS_KM: f32 = ${GPU_CELL_MEASURES_EARTH_RADIUS_KM};
+const EARTH_RADIUS: f32 = ${getWGSLFloatLiteral(this.units === 'kilometers' ? GPU_EARTH_AUTHALIC_RADIUS_METERS / 1000 : GPU_EARTH_AUTHALIC_RADIUS_METERS)};
 ${dggs.source}
 ${CELL_KEY_WGSL}
 ${H3_BOUNDARY_WGSL}

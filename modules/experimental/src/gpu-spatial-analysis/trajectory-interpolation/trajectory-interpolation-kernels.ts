@@ -3,8 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {TIME_WORDS_WGSL} from '../../gpu-dataframe/time-window-filter/time-words';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {GPU_TRAJECTORY_PLAYHEAD_STATUS} from './trajectory-playhead-parameters';
 
 const PLAYHEAD_OPERATION = 'GPUTrajectoryPlayhead';
@@ -32,6 +37,69 @@ const STATUS_AFTER_END: u32 = ${GPU_TRAJECTORY_PLAYHEAD_STATUS.afterEnd}u;
 const STATUS_GAP: u32 = ${GPU_TRAJECTORY_PLAYHEAD_STATUS.gap}u;
 `;
 
+/**
+ * Sphere radius in meters when positions are `(longitude, latitude)` degrees interpolated along
+ * great circles, or `undefined` for planar linear interpolation. @internal
+ */
+export type TrajectoryInterpolationRadius = number | undefined;
+
+/**
+ * WGSL segment geometry over `vec2<f32>` positions, selected by `geodesicRadius`:
+ *
+ * - `interpolatePosition(a, b, fraction)`: `fraction >= 1` returns `b`. Planar: `a + (b - a) *
+ *   fraction`. Great-circle: spherical linear interpolation (`geodesicInterpolate`) with the
+ *   longitude continuous with `a`, so a segment that crosses the antimeridian yields longitudes
+ *   beyond +-180 instead of jumping; the end of such a segment is `b` shifted by a multiple of
+ *   360 degrees. A non-positive `fraction` returns `a` exactly.
+ * - `getSegmentLength(a, b)`: Euclidean length, or great-circle length in the units of the radius.
+ * - `getSegmentHeading(a, b)`: planar `atan2(dy, dx)`; great-circle the initial bearing expressed
+ *   in the same convention (radians counterclockwise from east, `pi / 2 - bearing`). Both are in
+ *   `(-pi, pi]` and 0 for a zero-length segment.
+ *
+ * @internal
+ */
+function getSegmentGeometrySource(geodesicRadius: TrajectoryInterpolationRadius): string {
+  if (geodesicRadius === undefined) {
+    return /* wgsl */ `
+fn interpolatePosition(a: vec2<f32>, b: vec2<f32>, fraction: f32) -> vec2<f32> {
+  return select(a + (b - a) * fraction, b, fraction >= 1.0);
+}
+
+fn getSegmentLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
+  return length(b - a);
+}
+
+fn getSegmentHeading(a: vec2<f32>, b: vec2<f32>) -> f32 {
+  let delta = b - a;
+  return select(0.0, atan2(delta.y, delta.x), delta.x != 0.0 || delta.y != 0.0);
+}
+`;
+  }
+  const radius = getWGSLFloatLiteral(geodesicRadius);
+  return /* wgsl */ `${GEODESIC_WGSL}
+fn interpolatePosition(a: vec2<f32>, b: vec2<f32>, fraction: f32) -> vec2<f32> {
+  if (fraction >= 1.0) {
+    // b shifted by whole turns to continue the longitude of a (exactly b without a shift).
+    return vec2<f32>(b.x - 360.0 * round((b.x - a.x) / 360.0), b.y);
+  }
+  if (fraction <= 0.0) {
+    return a;
+  }
+  return geodesicInterpolate(a, b, geodesicCentralAngle(a, b), fraction);
+}
+
+fn getSegmentLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
+  return geodesicHaversineDistance(a, b, ${radius});
+}
+
+fn getSegmentHeading(a: vec2<f32>, b: vec2<f32>) -> f32 {
+  // Planar convention (counterclockwise from east) of the initial bearing: pi / 2 - bearing, wrapped.
+  let bearing = geodesicInitialBearingDegrees(a, b) * GEODESIC_DEGREES_TO_RADIANS;
+  return select(0.0, atan2(cos(bearing), sin(bearing)), geodesicCentralAngle(a, b) > 0.0);
+}
+`;
+}
+
 /** Returns the `timestamps` storage binding. @internal */
 function getTimestampsBinding(timestamps: TrajectoryInterpolationTimestamps): WGSLKernelBinding {
   return {
@@ -54,7 +122,7 @@ fn getTimeWords(row: u32) -> vec2<u32> {
 }
 
 fn getRowTimeDifference(a: u32, b: u32) -> f32 {
-  return timeWordsToF32(timeWordsSubtract(getTimeWords(a), getTimeWords(b)));
+  return timeWordsDifferenceToF32(getTimeWords(a), getTimeWords(b));
 }
 `
     : /* wgsl */ `
@@ -276,6 +344,8 @@ export type TrajectoryGeometryProps = {
   currentElevations?: GraphDataView<'float32'>;
   headings?: GraphDataView<'float32'>;
   speeds?: GraphDataView<'float32'>;
+  /** Sphere radius in meters for great-circle interpolation; omitted for planar. */
+  geodesicRadius?: TrajectoryInterpolationRadius;
   trackCount: number;
 };
 
@@ -320,6 +390,7 @@ export function createTrajectoryGeometryNode<Parameters>(
     invocationCount: props.trackCount,
     declarations: `const BRACKET_STRIDE: u32 = ${TRAJECTORY_BRACKET_STRIDE}u;
 ${STATUS_CONSTANTS}
+${getSegmentGeometrySource(props.geodesicRadius)}
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }`,
@@ -336,8 +407,7 @@ fn getPosition(row: u32) -> vec2<f32> {
   if (status != STATUS_EMPTY) {
     let startPosition = getPosition(segmentRow);
     let endPosition = getPosition(nextRow);
-    let delta = endPosition - startPosition;
-    position = select(startPosition + delta * fraction, endPosition, fraction >= 1.0);
+    position = interpolatePosition(startPosition, endPosition, fraction);
     ${
       readsElevations
         ? `let startElevation = elevations[elevationsOffset + segmentRow];
@@ -349,11 +419,9 @@ fn getPosition(row: u32) -> vec2<f32> {
     );`
         : ''
     }
-    if (delta.x != 0.0 || delta.y != 0.0) {
-      heading = atan2(delta.y, delta.x);
-    }
+    heading = getSegmentHeading(startPosition, endPosition);
     if (status == STATUS_ACTIVE && duration > 0.0) {
-      speed = length(delta) / duration;
+      speed = getSegmentLength(startPosition, endPosition) / duration;
     }
   }
   ${props.currentPositions ? 'currentPositions[currentPositionsOffset + 2u * index] = position.x;\n  currentPositions[currentPositionsOffset + 2u * index + 1u] = position.y;' : ''}
@@ -425,6 +493,8 @@ export type TrajectoryArcLengthProps = {
   trackOffsets: GraphDataView<'uint32'>;
   /** One f32 per row; rows outside every track are left untouched. */
   cumulativeLengths: GraphDataView<'float32'>;
+  /** Sphere radius in meters for great-circle lengths; omitted for planar. */
+  geodesicRadius?: TrajectoryInterpolationRadius;
   rowCount: number;
   trackCount: number;
 };
@@ -459,16 +529,18 @@ export function createTrajectoryArcLengthNode<Parameters>(
       }
     ],
     invocationCount: props.trackCount,
-    declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;`,
+    declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
+${getSegmentGeometrySource(props.geodesicRadius)}
+fn getPosition(row: u32) -> vec2<f32> {
+  return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
+}`,
     body: /* wgsl */ `let track = index;
   ${TRACK_RANGE_SOURCE}
   if (trackEnd > trackStart) {
     var total = 0.0;
     cumulativeLengths[cumulativeLengthsOffset + trackStart] = 0.0;
     for (var row = trackStart + 1u; row < trackEnd; row++) {
-      let deltaX = positions[positionsOffset + 2u * row] - positions[positionsOffset + 2u * (row - 1u)];
-      let deltaY = positions[positionsOffset + 2u * row + 1u] - positions[positionsOffset + 2u * (row - 1u) + 1u];
-      total = total + sqrt(deltaX * deltaX + deltaY * deltaY);
+      total = total + getSegmentLength(getPosition(row - 1u), getPosition(row));
       cumulativeLengths[cumulativeLengthsOffset + row] = total;
     }
   }`
@@ -492,6 +564,8 @@ export type TrajectoryResampleNodeProps = {
    * `[startLow, startHigh, startFraction, stepBits]` for word timestamps.
    */
   clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /** Sphere radius in meters for great-circle interpolation; omitted for planar. */
+  geodesicRadius?: TrajectoryInterpolationRadius;
   rowCount: number;
   trackCount: number;
   sampleCount: number;
@@ -599,6 +673,7 @@ export function createTrajectoryResampleNode<Parameters>(
 const SAMPLE_COUNT: u32 = ${props.sampleCount}u;
 ${timestamps ? getRowTimeSource(isWordMode) : ''}
 ${isClock ? getClockSource(isWordMode) : ''}
+${getSegmentGeometrySource(props.geodesicRadius)}
 ${progressSource}
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -640,7 +715,9 @@ fn getPosition(row: u32) -> vec2<f32> {
         low = middle + 1u;
       }
     }
-    var row0 = lastRow;
+    // Past the last row: the end of the last segment, so a great-circle track keeps its longitude
+    // continuous across the antimeridian (planar: exactly the last row).
+    var row0 = select(lastRow, lastRow - 1u, lastRow > trackStart);
     var row1 = lastRow;
     var fraction = 1.0;
     if (low < trackEnd) {
@@ -655,7 +732,7 @@ fn getPosition(row: u32) -> vec2<f32> {
     }
     let startPosition = getPosition(row0);
     let endPosition = getPosition(row1);
-    position = select(startPosition + (endPosition - startPosition) * fraction, endPosition, fraction >= 1.0);
+    position = interpolatePosition(startPosition, endPosition, fraction);
     ${
       readsElevations
         ? `let startElevation = elevations[elevationsOffset + row0];

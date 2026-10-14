@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
+import {
   GraphVectorView,
   validatePackedUint32View,
   validatePackedView,
@@ -129,6 +133,12 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
   readonly props: GPUCellGeometryProps;
   /** Boundary stride per cell. */
   readonly maximumVertexCount: number;
+
+  /**
+   * Context of the decoded `centers` and `boundaries` (longitude/latitude, no metric). The class
+   * has no `spatialContext` prop: its input is cell identifiers, which carry no coordinates.
+   */
+  readonly outputSpatialContext: GPUSpatialContext = GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT;
 
   constructor(props: GPUCellGeometryProps) {
     this.id = props.id ?? 'cell-geometry';

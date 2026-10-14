@@ -27,12 +27,20 @@ import {
   type GPUPolygonizeOutput,
   type GPUTopologyPrecisionPolicy
 } from './topology-types';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUPolygonize';
 
 /** Properties for {@link GPUPolygonize}. */
 export type GPUPolygonizeProps = {
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Arbitrary finite planar linework; rings need not be pre-noded or consistently oriented. */
   lines: Omit<GPULineGeometryPort, 'positions' | 'sourceIds'> & {
     positions: GraphDataView<'float32x2'>;
@@ -59,13 +67,22 @@ export type GPUPolygonizeProps = {
  * traversal. Clockwise unbounded faces and zero-area walks are excluded from the polygon port.
  * Every polygon is one canonical polygon feature and `polygons.sourceIds` carries the source group
  * of its shell. Diagnostics remain aligned with noded source segments.
+ *
+ * Every bounded face is emitted (shapely `polygonize` semantics), including a face that fills the
+ * hole of a holed ring; no fill rule is applied. Use {@link GPUMakeValid} to keep faces by source
+ * parity. Status: `count` is the number of polygons written, `requiredCount` the unclamped
+ * ring-assembly requirement (the polygon ring capacity needed), `overflow` any capacity loss and
+ * `candidateOverflow` only an incomplete noding candidate list.
  */
 export class GPUPolygonize implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUPolygonizeProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUPolygonizeProps) {
     this.id = props.id ?? 'polygonize';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {output, precision} = props;
@@ -170,6 +187,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     nodes.push(
       ...new GPULineNoding({
         id: `${id}-noding`,
+        spatialContext: this.spatialContext,
         lines: props.lines,
         intersectionCapacity: props.intersectionCapacity,
         output: output.nodedSegments,
@@ -339,6 +357,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     nodes.push(
       ...new GPUSegmentRingAssembly({
         id: `${id}-faces`,
+        spatialContext: this.spatialContext,
         endpoints: output.directedEdges.endpoints,
         count: output.directedEdges.status.count,
         groups: directedGroups,
@@ -346,7 +365,6 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
         vertexTolerance: props.precision.vertexTolerance,
         interiorSide: 'left',
         normalizeWinding: true,
-        geographic: false,
         splitTouchingRings: true,
         output: {
           positions: ringPositions,
@@ -495,6 +513,7 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
         variant: 'publish-status',
         bindings: [
           {name: 'ringOverflow', view: ringOverflow, type: 'u32', access: 'read'},
+          {name: 'ringRequiredCount', view: ringRequiredCount, type: 'u32', access: 'read'},
           {
             name: 'nodingOverflow',
             view: output.nodedSegments.status.overflow,
@@ -514,7 +533,27 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
             type: 'u32',
             access: 'read_write'
           },
-          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        declarations: `const RING_CAPACITY: u32 = ${ringCapacity}u;`,
+        // requiredCount is the unclamped ring-assembly requirement (every face ring, including
+        // holes), the number to size the polygon ring capacity with.
+        body: `count[countOffset] = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
+  requiredCount[requiredCountOffset] = ringRequiredCount[ringRequiredCountOffset];
+  overflow[overflowOffset] = ringOverflow[ringOverflowOffset] | nodingOverflow[nodingOverflowOffset];`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-publish-candidate-overflow`,
+        operation: OPERATION,
+        variant: 'publish-candidate-overflow',
+        bindings: [
+          {
+            name: 'nodingCandidateOverflow',
+            view: output.nodedSegments.status.candidateOverflow,
+            type: 'u32',
+            access: 'read'
+          },
           {
             name: 'candidateOverflow',
             view: output.status.candidateOverflow,
@@ -523,13 +562,9 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
           }
         ],
         invocationCount: 1,
-        declarations: `const RING_CAPACITY: u32 = ${ringCapacity}u;`,
-        body: `let polygons = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
-  let incomplete = ringOverflow[ringOverflowOffset] | nodingOverflow[nodingOverflowOffset];
-  count[countOffset] = polygons;
-  requiredCount[requiredCountOffset] = polygons;
-  overflow[overflowOffset] = incomplete;
-  candidateOverflow[candidateOverflowOffset] = incomplete;`
+        // The noding flag only: it says the candidate substrate was incomplete, which is distinct
+        // from ring capacity overflow.
+        body: 'candidateOverflow[candidateOverflowOffset] = nodingCandidateOverflow[nodingCandidateOverflowOffset];'
       })
     );
     return nodes;

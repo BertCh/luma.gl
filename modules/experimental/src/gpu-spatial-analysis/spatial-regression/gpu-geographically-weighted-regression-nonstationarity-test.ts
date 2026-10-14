@@ -20,6 +20,7 @@ import {
 import {getGPUPermutationParameterValues} from '../permutation-inference/permutation-parameters';
 import {getPermutationParameterWGSL} from '../permutation-inference/permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
+import {PERMUTATION_SHUFFLE_WGSL} from '../permutation-inference/permutation-shuffle';
 import {
   createGridIndexNodes,
   getGridLookupWGSL,
@@ -32,14 +33,15 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT,
-  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH,
   getGPUGeographicallyWeightedRegressionParameterLength
 } from './geographically-weighted-regression-parameters';
 import {
+  GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT,
   GPU_GWR_NONSTATIONARITY_SUMMARY,
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
 } from './geographically-weighted-regression-nonstationarity-parameters';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGeographicallyWeightedRegressionNonstationarityTest';
@@ -51,6 +53,8 @@ const MAXIMUM_ROW_COUNT = 1048576;
 const MAXIMUM_PARTIAL_FLOATS = 16777216;
 const MAXIMUM_TILE_COUNT = 4096;
 const MINIMUM_TILE_ROWS = 8;
+/** Tiles of one permutation refitted by one workgroup of the permuted-refit pass. */
+const PERMUTED_WORKGROUP_SIZE = 64;
 
 /** Caller-owned outputs of {@link GPUGeographicallyWeightedRegressionNonstationarityTest}. */
 export type GPUGeographicallyWeightedRegressionNonstationarityTestOutput = {
@@ -86,7 +90,11 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
   positions: GraphDataView<'float32x2'>;
   /** The predictors given to the regression under test, row-major, without the intercept. */
   predictors: GraphDataView<'float32'>;
-  /** Number of predictor columns, 1 to 7. Compile-time. */
+  /**
+   * Number of predictor columns, 1 to `GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT` (7; the
+   * regression itself accepts 11, but the permutation kernels were sized and tested for 7).
+   * Compile-time.
+   */
   predictorCount: number;
   /** The response given to the regression under test. */
   response: GraphDataView<'float32'>;
@@ -97,7 +105,13 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
    * written with `getGPUGeographicallyWeightedRegressionParameterValues`.
    */
   bandwidthParameters: GraphDataView<'float32'>;
-  /** The regression's `output.selectedBandwidth`: the bandwidth every permuted refit reuses. */
+  /**
+   * The regression's `output.selectedBandwidth`: slot 1, the selected ladder value (a distance for
+   * fixed bandwidths, a neighbour count for adaptive ones), is the bandwidth every permuted refit
+   * reuses. Slot 0 is not read: with bandwidth refinement it can index a refined candidate that is
+   * not in `bandwidthParameters`. The value was selected on the observed data, so the test is
+   * conditional on it (the bandwidth is not re-selected per permutation), as in mgwr.
+   */
   selectedBandwidth: GraphDataView<'float32'>;
   /** The regression's `output.coefficients`; NaN rows are excluded from the observed spread. */
   coefficients: GraphDataView<'float32'>;
@@ -125,6 +139,11 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
    * refits scan every included row.
    */
   indexGridSize?: readonly [number, number] | false;
+  /**
+   * Coordinate space of `positions`. Planar only: a great-circle context of the regression under
+   * test is not supported here and throws with a hint to project first.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Caller-owned outputs. */
   output: GPUGeographicallyWeightedRegressionNonstationarityTestOutput;
 };
@@ -136,9 +155,10 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
  * For every coefficient the observed statistic is the standard deviation of its local estimates
  * over the fitted locations (population form, mgwr `np.std(params, axis=0)`). Permutation `p`
  * (1 to `P`) reassigns the observations `(X, y)` to the locations by a keyed pseudorandom bijection
- * of the included rows, the Philox 4x32-10 keyed Feistel permutation of the permutation tests (the
- * same seed and `p` give the same relabelling as `GPUGlobalPermutationTest`, and the TypeScript
- * mirror in `permutation-random` reproduces it exactly). Geometry is unchanged, so the kernel
+ * of the included rows, the Philox-keyed swap-or-not shuffle of `GPUGlobalPermutationTest`
+ * (Hoang, Morris and Rogaway 2012; the same seed and `p` give the same relabelling, and the
+ * TypeScript mirror in `permutation-shuffle` reproduces it exactly). It replaced a Feistel network
+ * that is measurably non-uniform on small row counts. Geometry is unchanged, so the kernel
  * weights are the original ones; this is equivalent to permuting the coordinates, as mgwr does.
  * Each permutation refits every location at the bandwidth the regression selected and records the
  * standard deviation of the local estimates (intercept in original coordinates, as the regression
@@ -192,13 +212,14 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     this.id = id;
     this.props = props;
     const {predictorCount, output, maximumPermutations} = props;
+    resolveGPUSpatialContext(id, props.spatialContext);
     if (
       !Number.isInteger(predictorCount) ||
       predictorCount < 1 ||
-      predictorCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT
+      predictorCount > GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT
     ) {
       throw new Error(
-        `${id} predictorCount must be an integer in [1, ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT}]`
+        `${id} predictorCount must be an integer in [1, ${GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT}]`
       );
     }
     if (
@@ -389,6 +410,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       indexGridSize
     } = this;
     const {output, predictorCount, maximumPermutations, mask} = props;
+    const tileGroupCount = Math.ceil(tileCount / PERMUTED_WORKGROUP_SIZE);
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.predictors,
@@ -613,8 +635,8 @@ ${indexGridSize ? getRingNeighborDistancesWGSL() : ''}`,
   if (index >= count) {
     return;
   }
-  let candidate = min(u32(max(selection[selectionOffset], 0.0)), LADDER - 1u);
-  let value = params[paramsOffset + HEADER + candidate];
+  // Slot 1 holds the selected ladder value, also for refined candidates outside the caller ladder.
+  let value = selection[selectionOffset + 1u];
   var bandwidth = -1.0;
   if (params[paramsOffset + 1u] < 0.5) {
     bandwidth = select(-1.0, value, value > 0.0);
@@ -716,19 +738,31 @@ ${COEFFICIENT_ROW_WGSL}`,
           write('partial', partial, 'f32'),
           ...gridBindings
         ],
-        invocationCount: tileCount * maximumPermutations,
+        // One workgroup refits PERMUTED_WORKGROUP_SIZE tiles of ONE permutation, so the
+        // swap-or-not round material of that permutation is drawn once into workgroup memory.
+        workgroupSize: PERMUTED_WORKGROUP_SIZE,
+        guardIndex: false,
+        invocationCount: tileGroupCount * PERMUTED_WORKGROUP_SIZE * maximumPermutations,
         declarations: `${permutationDeclarations}
 ${gridDeclarations}
+const TILE_GROUP_COUNT: u32 = ${tileGroupCount}u;
+const PERMUTED_WORKGROUP_SIZE: u32 = ${PERMUTED_WORKGROUP_SIZE}u;
 ${PERMUTATION_RANDOM_WGSL}
+${PERMUTATION_SHUFFLE_WGSL}
 ${getCholeskyWGSL(P)}
 ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
-        body: `let permutation = index / TILE_COUNT + 1u;
-  let tile = index % TILE_COUNT;
+        // No early return before the barrier: every invocation of the workgroup must reach it.
+        body: `let workgroup = index / PERMUTED_WORKGROUP_SIZE;
+  let permutation = workgroup / TILE_GROUP_COUNT + 1u;
+  let tile = (workgroup % TILE_GROUP_COUNT) * PERMUTED_WORKGROUP_SIZE + localInvocationIndex;
+  let count = u32(rows[rowsOffset + ${rowCountSlot}u]);
+  let runsPermutation = permutation <= readPermutationCount();
+  if (runsPermutation) {
+    loadSwapOrNotRounds(readSeedKey(), permutation, count, localInvocationIndex, PERMUTED_WORKGROUP_SIZE);
+  }
+  workgroupBarrier();
   var sums: array<f32, ${partialStride}>;
-  if (permutation <= readPermutationCount()) {
-    let count = u32(rows[rowsOffset + ${rowCountSlot}u]);
-    let roundKeys = getFeistelRoundKeys(readSeedKey(), permutation);
-    let halfBits = getFeistelHalfBits(max(count, 1u));
+  if (runsPermutation && tile < TILE_COUNT) {
     let firstRow = tile * TILE_ROWS;
     let endRow = min(firstRow + TILE_ROWS, count);
     for (var location = firstRow; location < endRow; location++) {
@@ -737,7 +771,7 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
         continue;
       }
       var estimate: array<f32, ${P}>;
-      if (!fitPermuted(location, bandwidth, count, halfBits, roundKeys, &estimate)) {
+      if (!fitPermuted(location, bandwidth, count, &estimate)) {
         continue;
       }
       sums[0] += 1.0;
@@ -869,7 +903,7 @@ fn isFiniteRow(row: u32) -> bool {
 
 /**
  * `fitPermuted`: weighted least squares at included location `location` with the observations
- * relabelled by the Feistel permutation. Kernel weights come from the (unchanged) geometry, the
+ * relabelled by the swap-or-not permutation (round material in workgroup memory). Kernel weights come from the (unchanged) geometry, the
  * data of included row `j` is that of row `permutation(j)`, and the design is centered on the
  * permuted focal observation exactly like the regression's own fit. Writes the estimates
  * (intercept in original coordinates, then slopes) to `estimate`; returns false when singular.
@@ -893,8 +927,6 @@ fn fitPermuted(
   location: u32,
   bandwidth: f32,
   count: u32,
-  halfBits: u32,
-  roundKeys: vec4<u32>,
   estimate: ptr<function, array<f32, ${P}>>
 ) -> bool {
   var a: array<f32, ${P * P}>;
@@ -902,7 +934,7 @@ fn fitPermuted(
   var z: array<f32, ${P}>;
   var scale: array<f32, ${P}>;
   let origin = vec2f(rows[rowsOffset + location * ROW_STRIDE], rows[rowsOffset + location * ROW_STRIDE + 1u]);
-  let focalBase = rowsOffset + getFeistelPermutationIndex(location, count, halfBits, roundKeys) * ROW_STRIDE;
+  let focalBase = rowsOffset + getSwapOrNotPermutationIndex(location, count) * ROW_STRIDE;
   z[0] = 1.0;
   ${
     hasGrid
@@ -929,7 +961,7 @@ fn fitPermuted(
       if (!(weight > 0.0)) {
         continue;
       }
-      let dataBase = rowsOffset + getFeistelPermutationIndex(row, count, halfBits, roundKeys) * ROW_STRIDE;
+      let dataBase = rowsOffset + getSwapOrNotPermutationIndex(row, count) * ROW_STRIDE;
       for (var column = 0u; column < PREDICTOR_COUNT; column++) {
         z[column + 1u] = rows[dataBase + 3u + column] - rows[focalBase + 3u + column];
       }
@@ -950,7 +982,7 @@ fn fitPermuted(
     if (!(weight > 0.0)) {
       continue;
     }
-    let dataBase = rowsOffset + getFeistelPermutationIndex(row, count, halfBits, roundKeys) * ROW_STRIDE;
+    let dataBase = rowsOffset + getSwapOrNotPermutationIndex(row, count) * ROW_STRIDE;
     for (var column = 0u; column < PREDICTOR_COUNT; column++) {
       z[column + 1u] = rows[dataBase + 3u + column] - rows[focalBase + 3u + column];
     }

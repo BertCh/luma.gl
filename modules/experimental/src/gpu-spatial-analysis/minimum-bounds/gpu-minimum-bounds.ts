@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GraphVectorView,
@@ -68,6 +69,13 @@ export type GPUMinimumBoundsOutput = {
 export type GPUMinimumBoundsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'minimum-bounds'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Planar points or vertices (fewer than `2^24` rows). Non-finite rows are excluded. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -124,12 +132,18 @@ export type GPUMinimumBoundsProps = {
  * Output is fixed size per group. Hulls over `maximumHullVertices` are flagged in `overflow`.
  *
  * The contributor never compiles, encodes, submits or reads back.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUMinimumBounds implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUMinimumBoundsProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of groups (features, or `groupCount`). */
   readonly groupCount: number;
   /** Resolved hull vertex cap. */
@@ -138,6 +152,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
   constructor(props: GPUMinimumBoundsProps) {
     this.id = props.id ?? 'minimum-bounds';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
     for (const [name, view] of [

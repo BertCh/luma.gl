@@ -151,7 +151,9 @@ export {
   GPU_EMERGING_HOT_SPOT_MAXIMUM_SLICE_COUNT,
   GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
   GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH,
-  GPUEmergingHotSpots
+  GPUEmergingHotSpots,
+  GPU_EMERGING_HOT_SPOT_DEFAULT_MINIMUM_TREND_SLICE_COUNT,
+  GPU_EMERGING_HOT_SPOT_NO_SLICE
 } from './emerging-hot-spots/index';
 export type {
   GPUEmergingHotSpotParameters,
@@ -182,7 +184,9 @@ export {
   GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS,
   GPUGeodesicDestination,
   GPUGeodesicPairs,
-  GPUGeometryMeasures
+  GPUGeometryMeasures,
+  GEODESIC_WGSL,
+  GPULocalFrameProjection
 } from './geometry-measures/index';
 export type {
   GPUGeodesicDestinationOutput,
@@ -194,7 +198,8 @@ export type {
   GPUGeometryHoleRule,
   GPUGeometryMeasuresGroupOutput,
   GPUGeometryMeasuresOutput,
-  GPUGeometryMeasuresProps
+  GPUGeometryMeasuresProps,
+  GPULocalFrameProjectionProps
 } from './geometry-measures/index';
 
 export {
@@ -278,13 +283,16 @@ export {
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,
   GPU_NEIGHBOR_SEARCH_WEIGHT_KIND,
-  GPUNeighborSearch
+  GPUNeighborSearch,
+  GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT,
+  getGPUNeighborSearchWeightTransform
 } from './neighbor-search/index';
 export type {
   GPUNeighborSearchKernel,
   GPUNeighborSearchParameters,
   GPUNeighborSearchProps,
-  GPUNeighborSearchWeightKind
+  GPUNeighborSearchWeightKind,
+  GPUNeighborSearchWeightTransform
 } from './neighbor-search/index';
 
 export {
@@ -298,7 +306,16 @@ export {
   GPUSpatialWeightsSummary,
   GPUSpatialWeightsTransform,
   GPUSpatialWeightsTranspose,
-  validateGPUSpatialWeights
+  validateGPUSpatialWeights,
+  describeGPUSpatialWeights,
+  getGPUSpatialWeightsCapacity,
+  getGPUSpatialWeightsKernelValue,
+  GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON,
+  GPU_SPATIAL_WEIGHTS_VIOLATION,
+  GPUSpatialWeightsValidation,
+  resolveGPUIslandPolicy,
+  GPU_DEFAULT_ISLAND_POLICY,
+  isGPUSpatialWeightsRowStandardized
 } from './spatial-weights/index';
 export type {
   GPUContiguityCriterion,
@@ -319,7 +336,12 @@ export type {
   GPUSpatialWeightsSummaryProps,
   GPUSpatialWeightsTransformOperation,
   GPUSpatialWeightsTransformProps,
-  GPUSpatialWeightsTransposeProps
+  GPUSpatialWeightsTransposeProps,
+  GPUSpatialWeightsValidationProps,
+  GPUIslandPolicy,
+  GPUSpatialWeightsInfo,
+  GPUSpatialWeightsProvenance,
+  GPUSpatialWeightsTransformState
 } from './spatial-weights/index';
 
 export {
@@ -330,15 +352,26 @@ export {
   GPU_LOCAL_PERMUTATION_NOT_TESTED,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPUGlobalPermutationTest,
-  GPULocalPermutationTest
+  GPULocalPermutationTest,
+  GPU_LOCAL_GEARY_CLASS
 } from './permutation-inference/index';
+
+export type {GPUMultipleTestingAdjustmentProps} from './multiple-testing/index';
+
+export {
+  getMultipleTestingAdjustedPValues,
+  GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
+  GPUMultipleTestingAdjustment,
+  resolveGPUMultipleTestingMethod
+} from './multiple-testing/index';
 export type {
   GPUGlobalPermutationStatistic,
   GPUGlobalPermutationTestProps,
   GPULocalPermutationStatistic,
   GPULocalPermutationTestProps,
   GPUPermutationAlternative,
-  GPUPermutationParameters
+  GPUPermutationParameters,
+  GPULocalJoinCountCase
 } from './permutation-inference/index';
 
 export {
@@ -348,7 +381,16 @@ export {
   getGPUPointDensityHexagonCenter,
   getGPUPointDensityHexagonGridSize,
   GPU_POINT_DENSITY_HEXAGON_WGSL,
-  GPUPointDensity
+  GPUPointDensity,
+  GPUKernelDensity,
+  getGPUKernelDensityParameterValues,
+  GPU_KERNEL_DENSITY_PARAMETER_LENGTH,
+  evaluateGPUKernelDensityKernel,
+  getGPUKernelDensitySupportRadius,
+  getGPUKernelDensityWindowMass,
+  getScottBandwidth,
+  getSilvermanBandwidth,
+  GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION
 } from './point-density/index';
 export type {
   GPUPointDensityBinning,
@@ -357,7 +399,15 @@ export type {
   GPUPointDensityProps,
   GPUPointDensitySmoothing,
   GPUPointDensityStatistic,
-  GPUPointDensitySumAccumulation
+  GPUPointDensitySumAccumulation,
+  GPUKernelDensityEdgeCorrection,
+  GPUKernelDensityNormalization,
+  GPUKernelDensityOutput,
+  GPUKernelDensityProps,
+  GPUKernelDensitySettings,
+  GPUKernelDensityBandwidth,
+  GPUKernelDensityKernel,
+  GPUKernelDensityWindow
 } from './point-density/index';
 
 export {
@@ -370,7 +420,8 @@ export {
   GPUPickRegionMask,
   GPURegionMask,
   GPURegionStatistics,
-  GPURegionStatisticsReadback
+  GPURegionStatisticsReadback,
+  GPU_REGION_SPATIAL_CONTEXT_SUPPORT
 } from './region-statistics/index';
 export type {
   GPUPickRegionMaskProps,
@@ -404,7 +455,13 @@ export {
   GPUHotSpotAnalysis,
   GPULocalGeary,
   GPULocalMoran,
-  GPUSpatialPearson
+  GPUSpatialPearson,
+  GPUAssuncaoReisStandardization,
+  GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH,
+  GPU_LEES_L_PERMUTATION_ADAPTERS,
+  GPU_LOCAL_BIVARIATE_JOIN_COUNT_PERMUTATION_ADAPTER,
+  GPU_LOCAL_BIVARIATE_MORAN_PERMUTATION_ADAPTER,
+  GPU_LOCAL_JOIN_COUNT_PERMUTATION_ADAPTER
 } from './spatial-autocorrelation/index';
 export type {
   GPUGammaOperation,
@@ -415,7 +472,8 @@ export type {
   GPULocalMoranQuadrantGating,
   GPUSpatialAutocorrelationFixedMoments,
   GPUSpatialAutocorrelationParameters,
-  GPUSpatialPearsonProps
+  GPUSpatialPearsonProps,
+  GPUAssuncaoReisStandardizationProps
 } from './spatial-autocorrelation/index';
 
 export {
@@ -425,7 +483,9 @@ export {
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUKMeans,
-  GPUSpatialClustering
+  GPUSpatialClustering,
+  getKMeansRestartSeed,
+  GPU_KMEANS_MAXIMUM_RESTARTS
 } from './spatial-clustering/index';
 export type {
   GPUKMeansInitialization,
@@ -443,7 +503,10 @@ export {
   GPU_KRIGING_PARAMETER_LENGTH,
   GPUFocalStatistics,
   GPUInverseDistanceWeighting,
-  GPUKriging
+  GPUKriging,
+  KRIGING_NEGATIVE_VARIANCE_TOLERANCE,
+  KRIGING_PIVOT_RATIO_TOLERANCE,
+  KRIGING_RELATIVE_PIVOT_TOLERANCE
 } from './spatial-interpolation/index';
 export type {
   GPUFocalStatisticsOutput,
@@ -455,7 +518,8 @@ export type {
   GPUInverseDistanceWeightingSettings,
   GPUKrigingOutput,
   GPUKrigingProps,
-  GPUKrigingSettings
+  GPUKrigingSettings,
+  GPUInverseDistanceWeightingTaper
 } from './spatial-interpolation/index';
 
 export {
@@ -473,7 +537,8 @@ export {
   GPUSpatialJoinPrepared,
   GPUSpatialPredicateJoin,
   packGPUSpatialRelate,
-  packGPUSpatialRelatePattern
+  packGPUSpatialRelatePattern,
+  GPU_SPATIAL_RELATE_UNCERTAIN_BIT
 } from './spatial-join/index';
 export type {
   GPUBufferSelectionProps,
@@ -498,7 +563,8 @@ export type {
   GPUSpatialPredicate,
   GPUSpatialPredicateJoinProps,
   GPUSpatialRelatePattern,
-  SpatialSortCurve
+  SpatialSortCurve,
+  GPUPointInPolygonBoundaryRule
 } from './spatial-join/index';
 
 export {
@@ -604,7 +670,121 @@ export {
   GPUSpatialErrorGM,
   GPUSpatialRegressionDiagnostics,
   GPUSpatialTwoStageLeastSquares,
-  SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
+  SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING,
+  getGPUOrdinaryLeastSquaresModelResult,
+  getStudentTSurvival,
+  getStudentTTwoSidedPValue,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT,
+  getGPUGeographicallyWeightedRegressionModelResult,
+  getSymmetricEigenvalueRangeOnCPU,
+  getSymmetricEigenvalueRangeWGSL,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
+  getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_F,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_PARTIAL_R_SQUARED,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_INSTRUMENT_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PRECISION_WARNING,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RHO_OUTSIDE_ADMISSIBLE_RANGE,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_WEIGHTS_INFINITY_NORM,
+  getGPUSpatialTwoStageLeastSquaresDiagnostics,
+  getGPUSpatialTwoStageLeastSquaresModelResult,
+  GPU_SPATIAL_ERROR_GM_DEFAULT_ESTIMATOR,
+  GPU_SPATIAL_ERROR_GM_LAMBDA_BOUND_FRACTION,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_APPROXIMATION,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA_AT_BOUND,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA_BOUND,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_PRECISION_WARNING,
+  getGPUSpatialErrorGMModelResult,
+  GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT,
+  GPUSpatialWeightsTraces,
+  GPUSpatialLagImpacts,
+  GPU_SPATIAL_LAG_IMPACTS_STRIDE,
+  GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_COLUMN_SQUARES,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTWW,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW_SQUARED,
+  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER,
+  getSpatialLagImpactsFromTraces,
+  getSpatialLogDeterminantFromTraces,
+  getSpatialLogDeterminantTruncationBound,
+  getSpatialLogDeterminantWGSL,
+  getSpatialMultiplierTotalFromPowerSums,
+  getSpatialMultiplierTotalWGSL,
+  getSpatialMultiplierTraceFromTraces,
+  getSpatialMultiplierTraceWGSL,
+  getSpatialMultiplierTruncationBound,
+  getSpatialWeightsTracesOnCPU,
+  getSpatialWeightsTracesProbeValue,
+  getSpatialWeightsTracesProbeWGSL,
+  GPUSpatialLagMaximumLikelihood,
+  GPUSpatialErrorMaximumLikelihood,
+  GPU_SPATIAL_ERROR_MAXIMUM_LIKELIHOOD_MAXIMUM_PREDICTOR_COUNT,
+  GPU_SPATIAL_LAG_MAXIMUM_LIKELIHOOD_MAXIMUM_PREDICTOR_COUNT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BISECTION_STEPS,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BOUND_FRACTION,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_DEFAULT_MAXIMUM_POWER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_MINIMUM_POWER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SCAN_STEPS,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SERIES_TOLERANCE,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_NON_FINITE,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_OK,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_SINGULAR,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_TOO_FEW_ROWS,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AIC,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_APPROXIMATION,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AT_BOUNDARY,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONVERGED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOCAL_MAXIMUM_COUNT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_DETERMINANT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_LIKELIHOOD,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PARAMETER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PARAMETER_BOUND,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PRECISION_WARNING,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED_SPATIAL,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_RESIDUAL_SUM_OF_SQUARES,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_ROW_COUNT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SCHWARZ,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SERIES_LIMITED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SIGMA_SQUARED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_VARIANCE_DEFINED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE,
+  getSpatialLogDeterminantDerivativeFromTraces,
+  getSpatialMaximumLikelihoodSeriesLimit,
+  getSpatialMaximumLikelihoodTraceOne,
+  getSpatialMaximumLikelihoodTraceTwo,
+  fitSpatialErrorMaximumLikelihoodOnCPU,
+  fitSpatialLagMaximumLikelihoodOnCPU,
+  getSpatialFrobeniusTraceOnCPU,
+  searchSpatialMaximumLikelihoodParameter,
+  getGPUSpatialErrorMaximumLikelihoodModelResult,
+  getGPUSpatialLagMaximumLikelihoodModelResult,
+  getGPUSpatialMaximumLikelihoodDiagnostics
 } from './spatial-regression/index';
 export type {
   GPUGeographicallyWeightedRegressionBandwidthMode,
@@ -621,7 +801,36 @@ export type {
   GPUSpatialRegressionDiagnosticsOutput,
   GPUSpatialRegressionDiagnosticsProps,
   GPUSpatialTwoStageLeastSquaresOutput,
-  GPUSpatialTwoStageLeastSquaresProps
+  GPUSpatialTwoStageLeastSquaresProps,
+  GPUOrdinaryLeastSquaresModelResultOptions,
+  GPUOrdinaryLeastSquaresReadback,
+  GPUGeographicallyWeightedRegressionModelResult,
+  GPUGeographicallyWeightedRegressionReadback,
+  GPUSpatialTwoStageLeastSquaresDiagnostics,
+  GPUSpatialTwoStageLeastSquaresModelResultOptions,
+  GPUSpatialTwoStageLeastSquaresReadback,
+  GPUSpatialErrorGMEstimator,
+  GPUSpatialErrorGMModelResultOptions,
+  GPUSpatialErrorGMReadback,
+  GPUSpatialWeightsTracesOutput,
+  GPUSpatialWeightsTracesProps,
+  GPUSpatialLagImpactsOutput,
+  GPUSpatialLagImpactsProps,
+  GPUSpatialWeightsTracesMode,
+  SpatialLagImpacts,
+  SpatialWeightsCSR,
+  SpatialWeightsTracesCPUOptions,
+  SpatialWeightsTracesCPUResult,
+  GPUSpatialLagMaximumLikelihoodOutput,
+  GPUSpatialLagMaximumLikelihoodProps,
+  GPUSpatialErrorMaximumLikelihoodOutput,
+  GPUSpatialErrorMaximumLikelihoodProps,
+  SpatialErrorMaximumLikelihoodCPUResult,
+  SpatialLagMaximumLikelihoodCPUResult,
+  SpatialMaximumLikelihoodCPUOptions,
+  GPUSpatialMaximumLikelihoodDiagnostics,
+  GPUSpatialMaximumLikelihoodModelResultOptions,
+  GPUSpatialMaximumLikelihoodReadback
 } from './spatial-regression/index';
 
 export {
@@ -670,7 +879,8 @@ export type {
 export {
   GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS,
   GPUArealInterpolation,
-  GPUPycnophylactic
+  GPUPycnophylactic,
+  getSphericalRasterCellArea
 } from './areal-interpolation/index';
 
 export type {
@@ -679,7 +889,8 @@ export type {
   GPUArealInterpolationKind,
   GPUArealInterpolationProps,
   GPUPycnophylacticKernel,
-  GPUPycnophylacticProps
+  GPUPycnophylacticProps,
+  GPUArealInterpolationDenominators
 } from './areal-interpolation/index';
 
 export {
@@ -717,7 +928,13 @@ export {
   GPUClassificationFit,
   GPULISAMarkov,
   GPUSpatialMarkov,
-  GPUTransitionMatrix
+  GPUTransitionMatrix,
+  GPUTransitionDiagnostics,
+  GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS,
+  GPU_TRANSITION_HOMOGENEITY,
+  GPU_TRANSITION_HOMOGENEITY_LENGTH,
+  GPU_TRANSITION_STATE_SPARSITY,
+  GPU_TRANSITION_STATE_SPARSITY_LENGTH
 } from './distribution-dynamics/index';
 
 export type {
@@ -729,7 +946,10 @@ export type {
   GPUSpatialMarkovOutput,
   GPUSpatialMarkovProps,
   GPUTransitionMatrixOutput,
-  GPUTransitionMatrixProps
+  GPUTransitionMatrixProps,
+  GPUTransitionDiagnosticsOutput,
+  GPUTransitionDiagnosticsProps,
+  GPULISAMarkovGating
 } from './distribution-dynamics/index';
 
 export {
@@ -753,7 +973,6 @@ export {
   getGPUShapeMinimumSegments,
   getGPUShapeVertexCount,
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
-  GPU_SHAPE_GENERATOR_EARTH_RADIUS,
   GPU_SHAPE_GENERATOR_PARAMETER_LENGTH,
   GPUGridGenerator,
   GPUShapeGenerator
@@ -881,7 +1100,20 @@ export {
   addSpatialRegressionRecipe,
   addStraightLineCatchmentsRecipe,
   GPU_DRIVE_TIME_CATCHMENT_NO_BAND,
-  GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH
+  GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH,
+  GPU_HOT_SPOT_DEFAULT_MINIMUM_NEIGHBORS,
+  GPU_HOT_SPOT_DEFAULT_MULTIPLE_TESTING,
+  GPU_RATE_CLUSTER_MAP_DEFAULT_MULTIPLE_TESTING,
+  getSpaceTimeDaysFromCivil,
+  getSpaceTimeSliceIndex,
+  getSpaceTimeStepIndex,
+  GPU_DRIVE_TIME_CATCHMENT_SPATIAL_CONTEXT_SUPPORT,
+  getSpatialRegressionSpecification,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_OLS,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_LAG,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_SPATIAL_ERROR,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_LAG_AND_ERROR,
+  GPU_SPATIAL_REGRESSION_SPECIFICATION_UNDETERMINED
 } from './recipes/index';
 
 export type {
@@ -925,13 +1157,16 @@ export type {
   GPUSpaceTimeHotSpotsRecipeProps,
   GPUSpaceTimeHotSpotsRecipeResult,
   GPUSpaceTimeLattice,
-  GPUSpaceTimeSliceField,
   GPUSpaceTimeSlices,
   GPUSpatialRegressionLocalFitOptions,
   GPUSpatialRegressionRecipeProps,
   GPUSpatialRegressionRecipeResult,
   GPUStraightLineCatchmentsRecipeProps,
-  GPUStraightLineCatchmentsRecipeResult
+  GPUStraightLineCatchmentsRecipeResult,
+  GPUHotSpotStudyArea,
+  GPUHotSpotDistanceBand,
+  GPUSpaceTimeStep,
+  GPUSpaceTimeOrigin
 } from './recipes/index';
 
 export {
@@ -988,13 +1223,16 @@ export {
   GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
   GPUKnoxTest,
-  GPUMantelTest
+  GPUMantelTest,
+  getGPUSpaceTimeInferenceMetadata,
+  getGPUSpaceTimeRelativeTimes
 } from './space-time-tests/index';
 
 export type {
   GPUKnoxTestProps,
   GPUMantelTestProps,
-  GPUSpaceTimeParameters
+  GPUSpaceTimeParameters,
+  GPUSpaceTimeRelativeTimes
 } from './space-time-tests/index';
 
 export {GPU_TRACK_SIMILARITY_STATUS, GPUTrackSimilarity} from './track-similarity/index';
@@ -1083,18 +1321,23 @@ export {
   GPU_SCAN_STATISTIC_MAXIMUM_CLUSTERS,
   GPU_SCAN_STATISTIC_MAXIMUM_PERMUTATIONS,
   GPU_SCAN_STATISTIC_MAXIMUM_TIME_BUCKETS,
-  GPU_SCAN_STATISTIC_MAXIMUM_WINDOW_ZONES,
   GPU_SCAN_STATISTIC_PARAMETER_LENGTH,
   GPU_SCAN_STATISTIC_STATISTIC_WORDS,
   GPU_SCAN_STATISTIC_SUMMARY,
   GPU_SCAN_STATISTIC_SUMMARY_LENGTH,
-  GPU_SCAN_STATISTIC_WINDOW_SHAPE
+  GPU_SCAN_STATISTIC_WINDOW_SHAPE,
+  getGPUSpatialScanLayout,
+  GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS,
+  GPU_SCAN_STATISTIC_RATE_DIRECTION
 } from './scan-statistics/index';
 
 export type {
   GPUSpatialScanStatisticParameters,
   GPUSpatialScanStatisticProps,
-  GPUSpatialScanWindowShape
+  GPUSpatialScanWindowShape,
+  GPUSpatialScanLayout,
+  GPUSpatialScanModel,
+  GPUSpatialScanRateDirection
 } from './scan-statistics/index';
 
 export {
@@ -1133,7 +1376,10 @@ export {
   GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS,
   GPUWardRegions,
   GPU_WARD_MAXIMUM_COLUMNS,
-  GPU_WARD_STATUS
+  GPU_WARD_STATUS,
+  GPU_AZP_MAXIMUM_ROWS,
+  GPU_MAX_P_DEFAULT_START_COUNT,
+  GPU_MAX_P_MAXIMUM_START_COUNT
 } from './spatial-regionalization/index';
 
 export type {
@@ -1148,7 +1394,10 @@ export type {
 
 export {
   GPULocationAllocation,
-  GPU_LOCATION_ALLOCATION_STATUS
+  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_DEFAULT_SWAP_ITERATIONS,
+  GPU_LOCATION_ALLOCATION_MAXIMUM_SWAP_ITERATIONS,
+  GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE
 } from './location-allocation/index';
 export type {
   GPULocationAllocationOperation,
@@ -1343,6 +1592,7 @@ export {GPUPolygonOverlay} from './polygon-overlay/index';
 export type {
   GPUPolygonOverlayBoundaryPort,
   GPUPolygonOverlayCapacity,
+  GPUPolygonOverlayFillRule,
   GPUPolygonOverlayOperation,
   GPUPolygonOverlayOutput,
   GPUPolygonOverlayProps
@@ -1381,10 +1631,6 @@ export {
 
 export type {GPUCellGridPathOutput, GPUCellGridPathProps} from './cell-topology/index';
 
-export {
-  GPUCellMeasures,
-  GPU_CELL_MEASURES_EARTH_RADIUS_KM,
-  GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT
-} from './cell-indexing/index';
+export {GPUCellMeasures, GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT} from './cell-indexing/index';
 
 export type {GPUCellMeasuresOutput, GPUCellMeasuresProps} from './cell-indexing/index';

@@ -21,7 +21,6 @@ export {
   getGPUShapeGeneratorParameterValues,
   getGPUShapeMinimumSegments,
   getGPUShapeVertexCount,
-  GPU_SHAPE_GENERATOR_EARTH_RADIUS,
   GPU_SHAPE_GENERATOR_PARAMETER_LENGTH,
   GPUShapeGenerator
 } from './gpu-shape-generator';

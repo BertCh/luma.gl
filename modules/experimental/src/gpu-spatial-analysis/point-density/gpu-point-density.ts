@@ -27,7 +27,11 @@ import {
   getGraphViewChunks,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSampledSurfacePort} from '../contracts/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSampledSurfacePort,
+  type GPUSpatialContext
+} from '../contracts/index';
 import {
   createPointDensityClearOverflowNode,
   createPointDensityClearSumsNode,
@@ -158,6 +162,12 @@ export type GPUPointDensityOutput = {
 export type GPUPointDensityProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'point-density'`. */
   id?: string;
+  /**
+   * Coordinate and metric contract of positions and bounds. Planar/native only (omitted means
+   * planar/native). Longitude/latitude throws at construction: project to a planar frame first, so
+   * a cell and a smoothing kernel have a consistent ground size.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed source positions (single view or chunked vector). */
   positions: GPUFloat32Positions;
   /** Optional per-point float32 weights with the same logical length as `positions`. */
@@ -199,6 +209,15 @@ export type GPUPointDensityProps = {
  * Bins points into a square or hexagonal grid and writes per-cell count, sum, mean, a heatmap
  * field, its extent and histogram, and an optional `r32float` texture, all on the GPU.
  *
+ * This is a binned count (or weight sum) per cell, optionally smoothed, and NOT a kernel density
+ * estimate: `output.values` is points (or summed weights) per cell, not intensity per unit area
+ * (it changes with `gridSize`), and not a probability density. Optional `smoothing` convolves the
+ * field with a kernel whose size and sigma are in CELLS (not ground units) using a zero boundary,
+ * so mass leaks out at the domain edge and the field is underestimated within about two sigma of
+ * the border; on a grid whose cells are not square on the ground the kernel is anisotropic. For
+ * intensity per unit area with a bandwidth in ground units, selectable kernels and edge correction,
+ * use {@link GPUKernelDensity}.
+ *
  * Square grids reuse `GPUGridBinning` and `GPUGridAggregation`; hexagons use one keys kernel and
  * `GPUGroupAggregation`. `GPUConvolution`, `GPUReduction`, `GPUHistogram`, and
  * `GPURasterBufferToTexture` are reused unchanged.
@@ -208,6 +227,8 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUPointDensityProps;
+  /** Resolved coordinate and metric contract (planar/native). */
+  readonly spatialContext: GPUSpatialContext;
   /** Resolved cell shape. */
   readonly binning: GPUPointDensityBinning;
   /** Resolved field statistic. */
@@ -222,6 +243,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
   constructor(props: GPUPointDensityProps) {
     this.id = props.id ?? 'point-density';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.binning = props.binning ?? 'grid';
     this.statistic = props.statistic ?? 'count';
     const id = this.id;

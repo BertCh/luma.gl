@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   GraphVectorView,
   validatePackedUint32View,
@@ -57,6 +58,13 @@ export type GPULabelPointOutput = {
 export type GPULabelPointProps = {
   /** Prefix for generated node IDs. Defaults to `'label-point'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed vertex positions in a planar coordinate system (project longitude/latitude first). */
   positions: GraphDataView<'float32x2'>;
   /** `ringCount + 1` monotonic vertex offsets, as in `GPUGeometryMeasures`. Rings close implicitly. */
@@ -120,12 +128,18 @@ export type GPULabelPointProps = {
  * lane walks all segments in the same order as the serial path) and cooperate on the bounds,
  * scanline seeds and seed distances, so latency is about `segments * (grid cells / 64)`. Both
  * paths pick the same candidates with the same tie rule and give identical results.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPULabelPoint implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULabelPointProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
   /** Resolved initial grid size. */
@@ -142,6 +156,7 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
   constructor(props: GPULabelPointProps) {
     this.id = props.id ?? 'label-point';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.initialGridSize = props.initialGridSize ?? GPU_LABEL_POINT_DEFAULT_INITIAL_GRID_SIZE;
     this.refinementGridSize =
       props.refinementGridSize ?? GPU_LABEL_POINT_DEFAULT_REFINEMENT_GRID_SIZE;

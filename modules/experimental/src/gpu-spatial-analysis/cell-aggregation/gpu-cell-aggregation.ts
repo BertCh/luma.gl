@@ -22,6 +22,7 @@ import {
   CELL_KEY_WGSL,
   getCellKeyLayout,
   QUADBIN_TILE_WGSL,
+  resolveCellSpatialContext,
   type CellKeyLayout,
   type GPUCellFamily
 } from './cell-keys';
@@ -35,6 +36,7 @@ import {
   type GPUCellTable
 } from './cell-table';
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUCellAggregation';
 
@@ -55,6 +57,14 @@ export type GPUCellAggregationProps = {
   family: GPUCellFamily;
   /** Resolution of the output table: Quadbin 0-26, H3 0-15. */
   resolution: number;
+  /**
+   * Coordinate space of the input rows. `positions` are longitude/latitude degrees, so the default
+   * is `{coordinateSpace: 'longitude-latitude', metric: 'none'}` and planar contexts throw. Pre-keyed
+   * `cells` default to `{coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: family}`;
+   * a given `gridFamily` must equal `family` and a given `gridResolution` (the finest resolution of
+   * the input keys) must be at least `resolution`. Nothing is measured, so metrics must be `'none'`.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Longitude/latitude degrees per row (Quadbin only). Longitude is clipped to [-180, 180] and
    * wraps 180 to column 0; latitude is clipped to ±85.051129. Rows with a NaN coordinate are
@@ -111,6 +121,8 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
   readonly layout: CellKeyLayout;
   /** Fixed-point scale of the sums. */
   readonly sumScale: number;
+  /** Resolved spatial context: longitude/latitude for `positions`, `discrete-grid` for `cells`. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCellAggregationProps) {
     this.id = props.id ?? 'cell-aggregation';
@@ -120,6 +132,13 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
       throw new Error(`${id} family must be 'quadbin' or 'h3'`);
     }
     this.layout = getCellKeyLayout(props.family, props.resolution);
+    this.spatialContext = resolveCellSpatialContext(
+      id,
+      props.family,
+      props.spatialContext,
+      props.positions ? 'points' : 'cells',
+      props.resolution
+    );
     this.sumScale = props.sumScale ?? GPU_CELL_DEFAULT_SUM_SCALE;
     validateSumScale(id, this.sumScale);
     if (Boolean(props.positions) === Boolean(props.cells)) {

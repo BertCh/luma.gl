@@ -23,7 +23,6 @@ export type {
 } from './gpu-cell-geometry';
 export {
   GPUCellMeasures,
-  GPU_CELL_MEASURES_EARTH_RADIUS_KM,
   GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT
 } from './gpu-cell-measures';
 export type {GPUCellMeasuresOutput, GPUCellMeasuresProps} from './gpu-cell-measures';

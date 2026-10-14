@@ -19,11 +19,17 @@ export {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KURTOSIS,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LOG_LIKELIHOOD,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RIDGE_LAMBDA,
@@ -32,7 +38,17 @@ export {
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SKEWNESS,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_TOTAL_SUM_OF_SQUARES
 } from './ordinary-least-squares-parameters';
-export {getChiSquareSurvival, getLogGammaOfHalfInteger} from './ordinary-least-squares-statistics';
+export {
+  getChiSquareSurvival,
+  getGPUOrdinaryLeastSquaresModelResult,
+  getLogGammaOfHalfInteger,
+  getStudentTSurvival,
+  getStudentTTwoSidedPValue
+} from './ordinary-least-squares-statistics';
+export type {
+  GPUOrdinaryLeastSquaresModelResultOptions,
+  GPUOrdinaryLeastSquaresReadback
+} from './ordinary-least-squares-statistics';
 export {
   GPUGeographicallyWeightedRegression,
   type GPUGeographicallyWeightedRegressionOutput,
@@ -43,10 +59,15 @@ export {
   getGPUGeographicallyWeightedRegressionParameterValues,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_ADAPTIVE_BANDWIDTH_FACTOR,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_KERNEL,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_VARIANCE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH,
@@ -58,7 +79,16 @@ export {
   type GPUGeographicallyWeightedRegressionSettings
 } from './geographically-weighted-regression-parameters';
 export {
+  getGPUGeographicallyWeightedRegressionModelResult,
+  type GPUGeographicallyWeightedRegressionModelResult,
+  type GPUGeographicallyWeightedRegressionReadback
+} from './geographically-weighted-regression-model-result';
+export {
+  getBelsleyConditionNumberOnCPU,
+  getBelsleyConditionNumberWGSL,
   getCholeskyWGSL,
+  getSymmetricEigenvalueRangeOnCPU,
+  getSymmetricEigenvalueRangeWGSL,
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
 } from './spatial-regression-solve';
 export {GPUSpatialRegressionDiagnostics} from './gpu-spatial-regression-diagnostics';
@@ -72,6 +102,7 @@ export {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_OK,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_SINGULAR,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_TOO_FEW_ROWS,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_INFORMATION,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_EXPECTATION,
@@ -100,7 +131,17 @@ export type {
   GPUSpatialTwoStageLeastSquaresProps
 } from './gpu-spatial-two-stage-least-squares';
 export {
+  getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_F,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_PARTIAL_R_SQUARED,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_INSTRUMENT_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PRECISION_WARNING,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RHO_OUTSIDE_ADMISSIBLE_RANGE,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_WEIGHTS_INFINITY_NORM,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_NON_FINITE,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_OK,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_STATUS_SINGULAR,
@@ -115,9 +156,27 @@ export {
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
 } from './spatial-two-stage-least-squares-parameters';
+export {
+  getGPUSpatialTwoStageLeastSquaresDiagnostics,
+  getGPUSpatialTwoStageLeastSquaresModelResult
+} from './spatial-two-stage-least-squares-model-result';
+export type {
+  GPUSpatialTwoStageLeastSquaresDiagnostics,
+  GPUSpatialTwoStageLeastSquaresModelResultOptions,
+  GPUSpatialTwoStageLeastSquaresReadback
+} from './spatial-two-stage-least-squares-model-result';
 export {GPUSpatialErrorGM} from './gpu-spatial-error-gm';
 export type {GPUSpatialErrorGMOutput, GPUSpatialErrorGMProps} from './gpu-spatial-error-gm';
 export {
+  GPU_SPATIAL_ERROR_GM_DEFAULT_ESTIMATOR,
+  GPU_SPATIAL_ERROR_GM_LAMBDA_BOUND_FRACTION,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_APPROXIMATION,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA_AT_BOUND,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA_BOUND,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_ERROR_GM_SUMMARY_PRECISION_WARNING,
   GPU_SPATIAL_ERROR_GM_MAXIMUM_PREDICTOR_COUNT,
   GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
   GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
@@ -132,13 +191,133 @@ export {
   GPU_SPATIAL_ERROR_GM_STATUS_TOO_FEW_ROWS,
   GPU_SPATIAL_ERROR_GM_STATUS_NON_FINITE
 } from './spatial-error-gm-parameters';
+export type {GPUSpatialErrorGMEstimator} from './spatial-error-gm-parameters';
+export {getGPUSpatialErrorGMModelResult} from './spatial-error-gm-model-result';
+export type {
+  GPUSpatialErrorGMModelResultOptions,
+  GPUSpatialErrorGMReadback
+} from './spatial-error-gm-model-result';
 export {GPUGeographicallyWeightedRegressionNonstationarityTest} from './gpu-geographically-weighted-regression-nonstationarity-test';
 export type {
   GPUGeographicallyWeightedRegressionNonstationarityTestOutput,
   GPUGeographicallyWeightedRegressionNonstationarityTestProps
 } from './gpu-geographically-weighted-regression-nonstationarity-test';
 export {
+  GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT,
   GPU_GWR_NONSTATIONARITY_SUMMARY,
   GPU_GWR_NONSTATIONARITY_TABLE,
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
 } from './geographically-weighted-regression-nonstationarity-parameters';
+export {GPUSpatialWeightsTraces} from './gpu-spatial-weights-traces';
+export type {
+  GPUSpatialWeightsTracesOutput,
+  GPUSpatialWeightsTracesProps
+} from './gpu-spatial-weights-traces';
+export {GPUSpatialLagImpacts, GPU_SPATIAL_LAG_IMPACTS_STRIDE} from './gpu-spatial-lag-impacts';
+export type {
+  GPUSpatialLagImpactsOutput,
+  GPUSpatialLagImpactsProps
+} from './gpu-spatial-lag-impacts';
+export {
+  GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_COLUMN_SQUARES,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTWW,
+  GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW_SQUARED,
+  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER,
+  getSpatialLagImpactsFromTraces,
+  getSpatialLogDeterminantFromTraces,
+  getSpatialLogDeterminantTruncationBound,
+  getSpatialLogDeterminantWGSL,
+  getSpatialMultiplierTotalFromPowerSums,
+  getSpatialMultiplierTotalWGSL,
+  getSpatialMultiplierTraceFromTraces,
+  getSpatialMultiplierTraceWGSL,
+  getSpatialMultiplierTruncationBound,
+  getSpatialWeightsTracesOnCPU,
+  getSpatialWeightsTracesProbeValue,
+  getSpatialWeightsTracesProbeWGSL
+} from './spatial-weights-traces-parameters';
+export type {
+  GPUSpatialWeightsTracesMode,
+  SpatialLagImpacts,
+  SpatialWeightsCSR,
+  SpatialWeightsTracesCPUOptions,
+  SpatialWeightsTracesCPUResult
+} from './spatial-weights-traces-parameters';
+export {GPUSpatialLagMaximumLikelihood} from './gpu-spatial-lag-maximum-likelihood';
+export type {
+  GPUSpatialLagMaximumLikelihoodOutput,
+  GPUSpatialLagMaximumLikelihoodProps
+} from './gpu-spatial-lag-maximum-likelihood';
+export {GPUSpatialErrorMaximumLikelihood} from './gpu-spatial-error-maximum-likelihood';
+export type {
+  GPUSpatialErrorMaximumLikelihoodOutput,
+  GPUSpatialErrorMaximumLikelihoodProps
+} from './gpu-spatial-error-maximum-likelihood';
+export {
+  GPU_SPATIAL_ERROR_MAXIMUM_LIKELIHOOD_MAXIMUM_PREDICTOR_COUNT,
+  GPU_SPATIAL_LAG_MAXIMUM_LIKELIHOOD_MAXIMUM_PREDICTOR_COUNT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BISECTION_STEPS,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BOUND_FRACTION,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_DEFAULT_MAXIMUM_POWER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_MINIMUM_POWER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SCAN_STEPS,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SERIES_TOLERANCE,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_NON_FINITE,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_OK,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_SINGULAR,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_TOO_FEW_ROWS,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AIC,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_APPROXIMATION,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AT_BOUNDARY,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONVERGED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOCAL_MAXIMUM_COUNT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_DETERMINANT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_LIKELIHOOD,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PARAMETER,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PARAMETER_BOUND,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PRECISION_WARNING,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED_SPATIAL,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_RESIDUAL_SUM_OF_SQUARES,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_ROW_COUNT,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SCHWARZ,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SERIES_LIMITED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SIGMA_SQUARED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_VARIANCE_DEFINED,
+  GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE,
+  getSpatialLogDeterminantDerivativeFromTraces,
+  getSpatialMaximumLikelihoodSeriesLimit,
+  getSpatialMaximumLikelihoodTraceOne,
+  getSpatialMaximumLikelihoodTraceTwo
+} from './spatial-maximum-likelihood-parameters';
+export {
+  fitSpatialErrorMaximumLikelihoodOnCPU,
+  fitSpatialLagMaximumLikelihoodOnCPU,
+  getSpatialFrobeniusTraceOnCPU,
+  searchSpatialMaximumLikelihoodParameter
+} from './spatial-maximum-likelihood-cpu';
+export type {
+  SpatialErrorMaximumLikelihoodCPUResult,
+  SpatialLagMaximumLikelihoodCPUResult,
+  SpatialMaximumLikelihoodCPUOptions
+} from './spatial-maximum-likelihood-cpu';
+export {
+  getGPUSpatialErrorMaximumLikelihoodModelResult,
+  getGPUSpatialLagMaximumLikelihoodModelResult,
+  getGPUSpatialMaximumLikelihoodDiagnostics
+} from './spatial-maximum-likelihood-model-result';
+export type {
+  GPUSpatialMaximumLikelihoodDiagnostics,
+  GPUSpatialMaximumLikelihoodModelResultOptions,
+  GPUSpatialMaximumLikelihoodReadback
+} from './spatial-maximum-likelihood-model-result';

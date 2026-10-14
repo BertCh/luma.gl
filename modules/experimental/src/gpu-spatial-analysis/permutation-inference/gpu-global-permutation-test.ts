@@ -16,7 +16,13 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
+import type {GPUInferenceAlternative, GPUInferenceMetadata} from '../contracts/index';
+import {
+  getGPUSpatialWeightsNeighborLoopWGSL,
+  resolveGPUIslandPolicy,
+  type GPUIslandPolicy,
+  type GPUSpatialWeights
+} from '../spatial-weights/spatial-weights';
 import {
   getPermutationInputNodes,
   getPermutationParameterWGSL,
@@ -26,12 +32,16 @@ import {
   validatePermutationInputs
 } from './permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from './permutation-random';
+import {PERMUTATION_SHUFFLE_WGSL} from './permutation-shuffle';
 import {
   getAlternativeMultiplier,
   getExceedanceCountWGSL,
-  resolvePermutationAlternative,
-  type GPUPermutationAlternative
+  resolvePermutationAlternative
 } from './permutation-alternative';
+import {
+  getGPUPermutationParameterValues,
+  type GPUPermutationParameters
+} from './permutation-parameters';
 
 const OPERATION = 'GPUGlobalPermutationTest';
 
@@ -42,8 +52,16 @@ const FINALIZE_WORKGROUP_SIZE = 256;
 const PAIR_BLOCK_ROWS = 2048;
 const PAIR_WORKGROUP_SIZE = 256;
 
-/** A global statistic tested by {@link GPUGlobalPermutationTest}. */
-export type GPUGlobalPermutationStatistic = 'moran' | 'geary' | 'getisOrdG' | 'bivariateMoran';
+/**
+ * A global statistic tested by {@link GPUGlobalPermutationTest}. `'leesL'` is Lee's spatial
+ * Pearson `L_xy` (esda `Spatial_Pearson`, element `[0, 1]`).
+ */
+export type GPUGlobalPermutationStatistic =
+  | 'moran'
+  | 'geary'
+  | 'getisOrdG'
+  | 'bivariateMoran'
+  | 'leesL';
 
 /** Fields of the `results` view of {@link GPUGlobalPermutationTest}. */
 export const GPU_GLOBAL_PERMUTATION_RESULT = {
@@ -53,7 +71,7 @@ export const GPU_GLOBAL_PERMUTATION_RESULT = {
   pseudoPValue: 1,
   /** Exceedance count `M` of the chosen `alternative` (an exact integer; folded for 'directed'). */
   exceedances: 2,
-  /** Permutation count `P` used. */
+  /** Permutation count `P` used; NaN (and every p-value NaN) when the requested count is outside `[1, maximumPermutations]`. */
   permutations: 3,
   /** Mean of the simulated statistics (esda `EI_sim`). */
   simulatedMean: 4,
@@ -67,6 +85,10 @@ export const GPU_GLOBAL_PERMUTATION_RESULT = {
   minimum: 8,
   /** Largest simulated statistic, the histogram's upper edge. */
   maximum: 9,
+  /** Number of islands among the included rows (included rows without a positive-weight included neighbor). */
+  islandCount: 10,
+  /** Number `n` of analysis rows used (islands excluded under `islands: 'exclude'`). */
+  analysisCount: 11,
   /** Number of float32 values in `results`. */
   length: 12
 } as const;
@@ -85,17 +107,27 @@ export type GPUGlobalPermutationTestProps = {
   weights: GPUSpatialWeights;
   /** Analysis values `x`, one per row. */
   values: GraphDataView<'float32'>;
-  /** Second variable `y` (permuted) of bivariate Moran's I. Required for `'bivariateMoran'`. */
+  /**
+   * Second variable `y` of bivariate Moran's I (permuted, `x` stays) or of Lee's L (`x` and `y` are
+   * permuted together, as esda `Spatial_Pearson`). Required for `'bivariateMoran'` and `'leesL'`.
+   */
   secondValues?: GraphDataView<'float32'>;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
   /** Global statistic. Compile-time. */
   statistic: GPUGlobalPermutationStatistic;
   /**
-   * Tail of the pseudo p-value (see {@link GPUPermutationAlternative}). Compile-time. Defaults to
-   * `'directed'`, the folded count of earlier releases and esda's legacy default.
+   * Tail of the pseudo p-value (see {@link GPUInferenceAlternative}). Compile-time. Defaults to
+   * `'two-sided'`. `'directed'` is esda's legacy default and is anti-conservative.
    */
-  alternative?: GPUPermutationAlternative;
+  alternative?: GPUInferenceAlternative;
+  /**
+   * Treatment of islands (included rows with no positive-weight included neighbor). Compile-time.
+   * `'exclude'` (default): not counted in `n`, the mean, the variance or `S0`. `'keep'` (esda):
+   * islands stay in `n` and the moments. Row-standardized weights are re-standardized over each
+   * row's active slots either way; see {@link GPUGlobalPermutationTest}.
+   */
+  islands?: GPUIslandPolicy;
   /**
    * Per-frame uint32 parameters of at least `GPU_PERMUTATION_PARAMETER_LENGTH` elements written with
    * `getGPUPermutationParameterValues`.
@@ -103,7 +135,10 @@ export type GPUGlobalPermutationTestProps = {
   parameters: GraphDataView<'uint32'>;
   /** Upper bound of the per-frame permutation count, at most 2^20. Compile-time; sizes dispatches. */
   maximumPermutations: number;
-  /** Caller-owned results, `GPU_GLOBAL_PERMUTATION_RESULT.length` float32 values. */
+  /**
+   * Caller-owned results, `GPU_GLOBAL_PERMUTATION_RESULT.length` float32 values, including the
+   * island and analysis row counts.
+   */
   results: GraphDataView<'float32'>;
   /**
    * Optional caller-owned reference distribution: the statistic of permutation `p` at index
@@ -116,24 +151,42 @@ export type GPUGlobalPermutationTestProps = {
 
 /**
  * Global permutation inference (esda `p_sim`, `z_sim`) for Moran's I, Geary's C, Getis-Ord General
- * G and bivariate Moran's I, with the reference distribution and its histogram.
+ * G, bivariate Moran's I and Lee's L, with the reference distribution and its histogram.
  *
- * Definitions over the `n` included rows (mask nonzero, finite values; excluded rows are neither
- * foci nor neighbors), with the statistic definitions of `GPUGlobalSpatialStatistics`:
- * - Permutation `p` (1 to `P`) relabels the included values by a keyed pseudorandom bijection of
- *   their compacted positions (a four-round Feistel network keyed by Philox 4x32-10 on the seed and
- *   `p`, with cycle walking): no sort per permutation and no `P x n` memory. Bivariate Moran keeps
- *   `x` and permutes `y`, as esda's `Moran_BV`.
+ * Definitions over the `n` analysis rows, with the statistic definitions of
+ * `GPUGlobalSpatialStatistics`:
+ * - A row is *included* when its mask is nonzero and its values are finite. An *active slot* has
+ *   a valid neighbor other than the row, a positive weight and an included neighbor; an *island*
+ *   is an included row without an active slot. Under `islands: 'exclude'` (default) islands are
+ *   not analysis rows (they are not foci or neighbors and are not in `n`, the mean or `S0`);
+ *   under `'keep'` they stay in `n` and the moments, as esda does. Excluded rows are neither foci
+ *   nor neighbors. There is no cascade: a row whose only neighbors were islands stays in `n` and
+ *   adds 0 to `S0`.
+ * - Row-standardized weights (`weights.info.transform === 'row'`) are re-standardized over each
+ *   row's active slots, in the pair sums and in `S0`, so masked or missing neighbors drop out
+ *   instead of shrinking the row sum below 1. Other transforms are used as given.
+ * - Permutation `p` (1 to `P`) relabels the analysis values by a keyed pseudorandom bijection of
+ *   their compacted positions: a swap-or-not shuffle (Hoang, Morris and Rogaway 2012) with
+ *   `6 ceil(log2 n) + 6` rounds whose keys come from Philox 4x32-10 on the seed and `p`: no sort
+ *   per permutation and no `P x n` memory. The earlier four-round Feistel network was measurably
+ *   non-uniform on small domains (see the documentation for the evidence). Bivariate Moran keeps
+ *   `x` and permutes `y`, as esda's `Moran_BV`. Lee's L permutes the pair `(x, y)` of each row, as esda's `Spatial_Pearson`; its
+ *   denominator is `1'W'W1` (`sum_i (sum_j w_ij)^2`).
  * - Each statistic is a positive constant times a pair sum `sum_i f(v_i, sum_j w_ij g(v_j))`. The
  *   observed value is the identity permutation run through the same kernel, so `larger =
- *   #{sim >= observed}` compares identically computed f32 pair sums; it is folded to `P - larger`
- *   when that is smaller, and `p_sim = (larger + 1) / (P + 1)`.
+ *   #{sim >= observed}` and `l = #{sim <= observed}` compare identically computed f32 pair sums;
+ *   the `alternative` (default `'two-sided'`, see {@link GPUInferenceAlternative}) defines the
+ *   exceedance count `M` and `p = min(m (M + 1), P + 1) / (P + 1)`.
+ * - The permutation count is never clamped: a count outside `[1, maximumPermutations]` writes NaN
+ *   for `permutations`, every p-value and every simulated summary (use `getParameterValues` to
+ *   validate on the CPU). Truncated weights (`weights.status.overflow`) analyze no row, so the
+ *   results are NaN.
  * - Pair sums are reduced in a fixed shape (one workgroup per permutation and row block, a
  *   shared-memory tree, then a fixed sequential sum over blocks). No float atomics: results are
  *   bitwise reproducible for a seed.
  *
  * Cost is `(P + 1)` pair sums, i.e. `(P + 1) * nnz` weighted terms, each evaluating the Feistel
- * bijection for the neighbor.
+ * shuffle for the neighbor.
  */
 export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -146,12 +199,16 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     validatePermutationInputs({...props, id, operation: OPERATION});
-    if (!['moran', 'geary', 'getisOrdG', 'bivariateMoran'].includes(props.statistic)) {
+    if (!['moran', 'geary', 'getisOrdG', 'bivariateMoran', 'leesL'].includes(props.statistic)) {
       throw new Error(`${id} unknown statistic ${props.statistic}`);
     }
     resolvePermutationAlternative(id, props.alternative);
-    if (props.statistic === 'bivariateMoran' && !props.secondValues) {
-      throw new Error(`${id} bivariateMoran requires secondValues`);
+    resolveGPUIslandPolicy(id, props.islands);
+    if (
+      (props.statistic === 'bivariateMoran' || props.statistic === 'leesL') &&
+      !props.secondValues
+    ) {
+      throw new Error(`${id} ${props.statistic} requires secondValues`);
     }
     validatePackedView(props.results, ['float32'], `${id} results`);
     if (props.results.length < GPU_GLOBAL_PERMUTATION_RESULT.length) {
@@ -181,9 +238,38 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
         props.values,
         props.secondValues,
         props.mask,
-        props.parameters
+        props.parameters,
+        props.weights.status?.overflow
       ]
     );
+  }
+
+  /**
+   * Packs and validates per-frame parameters against this test's `maximumPermutations`; throws
+   * when `permutations` exceeds it. The kernels never clamp the count.
+   */
+  getParameterValues(parameters: GPUPermutationParameters): Uint32Array {
+    return getGPUPermutationParameterValues(parameters, {
+      maximumPermutations: this.props.maximumPermutations
+    });
+  }
+
+  /** Describes how the p-value of a run with `parameters` was produced, for legends. */
+  getInferenceMetadata(parameters: GPUPermutationParameters): GPUInferenceMetadata {
+    // Validates the seed and the permutation count.
+    this.getParameterValues(parameters);
+    const keep = resolveGPUIslandPolicy(this.id, this.props.islands) === 'keep';
+    return {
+      alternative: resolvePermutationAlternative(this.id, this.props.alternative),
+      permutationCount: parameters.permutations,
+      seed: parameters.seed,
+      multipleTesting: 'none',
+      testedRowsDefinition:
+        'one global statistic over the analysis rows (nonzero mask, finite values; islands, ' +
+        (keep
+          ? 'rows without a positive-weight neighbor, are kept in n)'
+          : 'rows without a positive-weight neighbor, are excluded)')
+    };
   }
 
   /** Returns the permutation-test nodes in dependency order. */
@@ -200,23 +286,27 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       props.secondValues,
       props.mask,
       parameters,
+      weights.status?.overflow,
       props.results,
       props.referenceDistribution,
       props.histogram
     ]);
     const rows = props.values.length;
-    const bivariate = statistic === 'bivariateMoran';
+    const lee = statistic === 'leesL';
+    const bivariate = statistic === 'bivariateMoran' || lee;
     const alternative = resolvePermutationAlternative(id, props.alternative);
     const multiplier = getAlternativeMultiplier(alternative);
     const inputs = getPermutationInputNodes<Parameters>(graph, {
       ...props,
       secondValues: bivariate ? props.secondValues : undefined,
+      islands: props.islands,
       id: `${id}-inputs`,
       operation: OPERATION,
       centerX: statistic !== 'getisOrdG'
     });
     const nodes = inputs.nodes;
-    const {rowPositions, compactX, compactY, totals} = inputs;
+    const {rowPositions, compactX, compactY, totals, islandCount} = inputs;
+    const effectiveWeights = inputs.weights;
     const blockCount = Math.ceil(rows / PAIR_BLOCK_ROWS);
     const sumCount = maximumPermutations + 1;
     const partials = createTransientView(graph, `${id}-partials`, 'float32', sumCount * blockCount);
@@ -224,16 +314,23 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
 
     // Neighbor value g(v_j) and row term f(v_i, lag).
     const neighborValue = bivariate ? 'compactY' : 'compactX';
-    const termWGSL =
-      statistic === 'geary'
+    const termWGSL = lee
+      ? `let permutedNeighbor = getPermutedPosition(neighborPosition, permutation, count);
+        lag += weight * compactX[compactXOffset + permutedNeighbor];
+        lagY += weight * compactY[compactYOffset + permutedNeighbor];`
+      : statistic === 'geary'
         ? `let difference = focus - neighborValue;
         lag += weight * difference * difference;`
         : 'lag += weight * neighborValue;';
-    const rowWGSL = statistic === 'geary' ? 'partialSum += lag;' : 'partialSum += focus * lag;';
+    const rowWGSL = lee
+      ? 'partialSum += lag * lagY;'
+      : statistic === 'geary'
+        ? 'partialSum += lag;'
+        : 'partialSum += focus * lag;';
     const pairBindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
-      {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+      {name: 'weights', view: effectiveWeights, type: 'f32', access: 'read'},
       {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
       {name: 'compactX', view: compactX, type: 'f32', access: 'read'},
       ...(bivariate
@@ -260,49 +357,50 @@ const WORKGROUP_SIZE: u32 = ${PAIR_WORKGROUP_SIZE}u;
 var<workgroup> partialSums: array<f32, ${PAIR_WORKGROUP_SIZE}>;
 ${getPermutationParameterWGSL(maximumPermutations)}
 ${PERMUTATION_RANDOM_WGSL}
-fn getPermutedPosition(position: u32, permutation: u32, count: u32, halfBits: u32, roundKeys: vec4<u32>) -> u32 {
+${PERMUTATION_SHUFFLE_WGSL}
+fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
   if (permutation == 0u) {
     return position;
   }
-  return getFeistelPermutationIndex(position, count, halfBits, roundKeys);
+  return getSwapOrNotPermutationIndex(position, count);
 }`,
-        // No early return: every invocation of a workgroup must reach the barriers.
+        // No early return: every invocation of a workgroup must reach the barriers. A workgroup
+        // handles one permutation, so its shuffle rounds are drawn once into workgroup memory.
         body: `let workgroup = index / WORKGROUP_SIZE;
   let permutation = workgroup / BLOCK_COUNT;
   let block = workgroup % BLOCK_COUNT;
+  let count = rowPositions[rowPositionsOffset + ROWS];
+  let runsPermutation = index < INVOCATION_COUNT && permutation <= readValidPermutationCount();
+  if (runsPermutation && permutation > 0u) {
+    loadSwapOrNotRounds(readSeedKey(), permutation, count, localInvocationIndex, WORKGROUP_SIZE);
+  }
+  workgroupBarrier();
   var partialSum = 0.0;
-  if (index < INVOCATION_COUNT && permutation <= readPermutationCount()) {
-    let count = rowPositions[rowPositionsOffset + ROWS];
-    let halfBits = getFeistelHalfBits(count);
-    let roundKeys = getFeistelRoundKeys(readSeedKey(), permutation);
+  if (runsPermutation) {
     let rowEnd = min((block + 1u) * BLOCK_ROWS, ROWS);
     for (var row = block * BLOCK_ROWS + localInvocationIndex; row < rowEnd; row += WORKGROUP_SIZE) {
       let position = rowPositions[rowPositionsOffset + row];
       if (position == INVALID_POSITION) {
         continue;
       }
-      let focus = compactX[compactXOffset + ${
-        bivariate
-          ? 'position'
-          : 'getPermutedPosition(position, permutation, count, halfBits, roundKeys)'
-      }];
+      // Lee's L has no focus term: it is the product of the two lags.
+      let focus = ${
+        lee
+          ? '0.0'
+          : `compactX[compactXOffset + ${
+              bivariate ? 'position' : 'getPermutedPosition(position, permutation, count)'
+            }]`
+      };
       var lag = 0.0;
-      let begin = min(offsets[offsetsOffset + row], CAPACITY);
-      let end = min(offsets[offsetsOffset + row + 1u], CAPACITY);
-      for (var slot = begin; slot < end; slot++) {
-        let neighbor = neighbors[neighborsOffset + slot];
-        if (neighbor >= ROWS || neighbor == row) {
-          continue;
-        }
-        let neighborPosition = rowPositions[rowPositionsOffset + neighbor];
-        if (neighborPosition == INVALID_POSITION) {
-          continue;
-        }
-        let weight = weights[weightsOffset + slot];
+      var lagY = 0.0;
+      ${getGPUSpatialWeightsNeighborLoopWGSL(
+        'rowPositions[rowPositionsOffset + neighbor] != INVALID_POSITION',
+        `let neighborPosition = rowPositions[rowPositionsOffset + neighbor];
         let neighborValue = ${neighborValue}[${neighborValue}Offset +
-          getPermutedPosition(neighborPosition, permutation, count, halfBits, roundKeys)];
-        ${termWGSL}
-      }
+          getPermutedPosition(neighborPosition, permutation, count)];
+        ${termWGSL}`,
+        'row'
+      )}
       ${rowWGSL}
     }
   }
@@ -341,13 +439,17 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32, halfBits: u3
       moran: `count / (totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
       geary: `(count - 1.0) / (2.0 * totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
       getisOrdG: `1.0 / (count * (count - 1.0) * totals[totalsOffset + ${T.mean}u] * totals[totalsOffset + ${T.mean}u] - totals[totalsOffset + ${T.sumSquares}u])`,
-      bivariateMoran: `count / (totals[totalsOffset + ${T.s0}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`
+      bivariateMoran: `count / (totals[totalsOffset + ${T.s0}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`,
+      // L = z'(W'W)z / 1'(W'W)1 with z standardized by the population deviation: n / sqrt(SS_x SS_y) / S0sq.
+      leesL: `count / (totals[totalsOffset + ${T.s0Squared}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`
     }[statistic];
     const R = GPU_GLOBAL_PERMUTATION_RESULT;
     const bins = props.histogram?.length ?? 0;
     const finalizeBindings: WGSLKernelBinding[] = [
       {name: 'pairSums', view: pairSums, type: 'f32', access: 'read'},
       {name: 'totals', view: totals, type: 'f32', access: 'read'},
+      {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
+      {name: 'islandCount', view: islandCount, type: 'u32', access: 'read'},
       {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
       {name: 'results', view: props.results, type: 'f32', access: 'read_write'}
     ];
@@ -381,6 +483,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32, halfBits: u3
         guardIndex: false,
         declarations: `${getPermutationParameterWGSL(maximumPermutations)}
 ${PERMUTATION_FLOAT_WGSL}
+const ROWS: u32 = ${rows}u;
 const BINS: u32 = ${bins}u;
 const WORKGROUP_SIZE: u32 = ${FINALIZE_WORKGROUP_SIZE}u;
 var<workgroup> scratchFloat: array<f32, ${FINALIZE_WORKGROUP_SIZE}>;
@@ -416,7 +519,8 @@ fn reduceCount(local: u32, value: u32) -> u32 {
   return result;
 }`,
         body: `let local = localInvocationIndex;
-  let permutations = readPermutationCount();
+  // An invalid requested count is never clamped: no permutation is summed and the outputs are NaN.
+  let permutations = readValidPermutationCount();
   let count = totals[totalsOffset + ${T.count}u];
   let scale = ${scaleWGSL};
   let observedSum = pairSums[pairSumsOffset];
@@ -448,14 +552,14 @@ fn reduceCount(local: u32, value: u32) -> u32 {
   let total = reduceFloat(local, totalPart, 0u);
   let minimum = reduceFloat(local, minimumPart, 1u);
   let maximum = reduceFloat(local, maximumPart, 2u);
-  let mean = total / f32(permutations);
+  let mean = select(getQuietNaN(2u), total / f32(permutations), permutations > 0u);
   var squaresPart = 0.0;
   for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
     let deviation = scale * pairSums[pairSumsOffset + permutation] - mean;
     squaresPart += deviation * deviation;
   }
   let squares = reduceFloat(local, squaresPart, 0u);
-  let standardDeviation = sqrt(squares / f32(permutations));
+  let standardDeviation = select(getQuietNaN(3u), sqrt(squares / f32(permutations)), permutations > 0u);
   ${
     alternative === 'folded'
       ? `var foldedPart = 0u;
@@ -488,18 +592,20 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     let larger = ${getExceedanceCountWGSL(alternative)};
     let zSimulated = (observed - mean) / standardDeviation;
     let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
+    // Tested: a valid permutation count and an observed statistic that exists (n >= 2, not truncated).
+    let tested = permutations > 0u && isFiniteFloat(observed);
     results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed));
-    results[resultsOffset + ${R.pseudoPValue}u] = f32(min(${multiplier}u * (larger + 1u), permutations + 1u)) / f32(permutations + 1u);
-    results[resultsOffset + ${R.exceedances}u] = f32(larger);
-    results[resultsOffset + ${R.permutations}u] = f32(permutations);
+    results[resultsOffset + ${R.pseudoPValue}u] = select(getQuietNaN(1u), f32(min(${multiplier}u * (larger + 1u), permutations + 1u)) / f32(permutations + 1u), tested);
+    results[resultsOffset + ${R.exceedances}u] = select(getQuietNaN(1u), f32(larger), tested);
+    results[resultsOffset + ${R.permutations}u] = select(getQuietNaN(1u), f32(permutations), permutations > 0u);
     results[resultsOffset + ${R.simulatedMean}u] = mean;
     results[resultsOffset + ${R.simulatedStandardDeviation}u] = standardDeviation;
-    results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ);
-    results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), 0.5 * getTwoSidedPValue(zSimulated), validZ);
-    results[resultsOffset + ${R.minimum}u] = minimum;
-    results[resultsOffset + ${R.maximum}u] = maximum;
-    results[resultsOffset + 10u] = 0.0;
-    results[resultsOffset + 11u] = 0.0;
+    results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ && tested);
+    results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), 0.5 * getTwoSidedPValue(zSimulated), validZ && tested);
+    results[resultsOffset + ${R.minimum}u] = select(getQuietNaN(4u), minimum, permutations > 0u);
+    results[resultsOffset + ${R.maximum}u] = select(getQuietNaN(4u), maximum, permutations > 0u);
+    results[resultsOffset + ${R.islandCount}u] = f32(islandCount[islandCountOffset]);
+    results[resultsOffset + ${R.analysisCount}u] = f32(rowPositions[rowPositionsOffset + ROWS]);
   }`
       })
     );

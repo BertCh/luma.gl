@@ -18,7 +18,10 @@ export const GPU_SPATIAL_RELATE_CELLS = [
   'EE'
 ] as const;
 
-/** Bit that marks a relate value whose orientation tests could not all be certified. @internal */
+/**
+ * Bit 31 of a relate value (and of the `relate` output of `GPUSpatialPredicateJoin`) that marks a
+ * pair whose orientation tests could not all be certified. The 18 matrix bits are unaffected.
+ */
 export const GPU_SPATIAL_RELATE_UNCERTAIN_BIT = 0x80000000;
 
 /**

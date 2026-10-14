@@ -12,7 +12,10 @@ export type {
   GPUNearestFeatureSource
 } from './spatial-join-types';
 export {GPUPointInPolygonJoin} from './gpu-point-in-polygon-join';
-export type {GPUPointInPolygonJoinProps} from './gpu-point-in-polygon-join';
+export type {
+  GPUPointInPolygonBoundaryRule,
+  GPUPointInPolygonJoinProps
+} from './gpu-point-in-polygon-join';
 export {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
 export type {GPUNearestFeatureJoinProps} from './gpu-nearest-feature-join';
 export {GPUBufferSelection} from './gpu-buffer-selection';
@@ -34,6 +37,7 @@ export {
   formatGPUSpatialRelate,
   GPU_SPATIAL_RELATE_CELLS,
   GPU_SPATIAL_RELATE_PATTERN_WORDS,
+  GPU_SPATIAL_RELATE_UNCERTAIN_BIT,
   packGPUSpatialRelate,
   packGPUSpatialRelatePattern
 } from './spatial-relate-types';

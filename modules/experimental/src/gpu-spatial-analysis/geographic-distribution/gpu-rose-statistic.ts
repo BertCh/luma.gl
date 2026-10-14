@@ -20,6 +20,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import type {GPUCircularStatisticsContract} from '../contracts/index';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 /** Lanes of the workgroup that owns one group. */
 const ROSE_WORKGROUP_SIZE = 256;
@@ -39,6 +40,12 @@ export const GPU_ROSE_STATISTIC_SUMMARY = {
 
 export type GPURoseStatisticProps = {
   id?: string;
+  /**
+   * Coordinate space of `starts` and `ends`. Angles are measured in the plane of the coordinates,
+   * so only planar contexts are accepted; omitted means native planar. Longitude/latitude throws
+   * at construction (a degree-space angle is not a bearing): project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   starts: GraphDataView<'float32x2'>;
   ends: GraphDataView<'float32x2'>;
   weights?: GraphDataView<'float32'>;
@@ -68,10 +75,13 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURoseStatisticProps;
   readonly groupCount: number;
+  /** Resolved spatial context; always planar. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURoseStatisticProps) {
     this.id = props.id ?? 'rose-statistic';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.groupCount = props.groupCount ?? 1;
     const {id, groupCount} = this;
     validatePackedView(props.starts, ['float32x2'], `${id} starts`);

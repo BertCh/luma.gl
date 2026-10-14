@@ -23,6 +23,11 @@ import {
 } from './pair-statistics-grid';
 import {GPU_RIPLEY_PARAMETER_LENGTH} from './ripley-parameters';
 
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
+
 const OPERATION = 'GPURipley';
 
 /** Largest `radiusCount`. */
@@ -47,6 +52,13 @@ export const GPU_RIPLEY_WEIGHT_CAP = 100;
 export type GPURipleyProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley'`. */
   id?: string;
+  /**
+   * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
+   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * `longitude-latitude` context throws at construction (project positions to a planar frame
+   * first).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -101,19 +113,28 @@ export type GPURipleyProps = {
  * - `'none'`: `K(r) = A / (n (n - 1)) * #{(i, j): d_ij <= r}`.
  * - `'border'` (reduced sample, spatstat `Kborder`): with `b_i` the distance from `i` to the
  *   window boundary, `K(r) = sum_i 1{b_i >= r} #{j != i: d_ij <= r} / (lambda * sum_i 1{b_i >= r})`
- *   with `lambda = (n - 1) / A`. This is the conditional-on-n density that makes the estimator
- *   equal to `'none'` when no focus point is near the boundary. spatstat's `Kest` takes
- *   `lambda = n / A` for the border estimator as far as I recall, which differs by the constant
- *   factor `(n - 1) / n`. `K(r)` is NaN when no point is farther than `r` from the boundary.
+ *   with `lambda = n / A`, so `K(r) = A * numerator / (n * #{i: b_i >= r})`. This is spatstat's
+ *   `Kest` border estimator (`lambda <- npts / areaW`, `denKb <- lambda * denom.count`;
+ *   Baddeley, Rubak and Turner 2015, Spatial Point Patterns: Methodology and Applications with R,
+ *   section 7.4). Earlier versions used `(n - 1) / A`, which is larger than `n / A` by the factor
+ *   `n / (n - 1)` and made the border `K` smaller than spatstat's by `(n - 1) / n`; the border
+ *   estimator therefore no longer equals `'none'` when no focus point is near the boundary.
+ *   `K(r)` is NaN when no point is farther than `r` from the boundary.
  *   Implemented with per-focus difference arrays over radius indices in integer channels, with
  *   the prefix sums in the finishing kernel.
  * - `'isotropic'` (Ripley 1977): each pair is weighted `e_ij = 1 / f` where `f` is the fraction of
  *   the circle centered at `i` with radius `d_ij` that lies inside the window, computed exactly
  *   for a rectangle from the arcs cut off by each side, minus the overlap of arcs of adjacent sides
- *   (the corner is inside the circle). `f` is floored at `1 / GPU_RIPLEY_WEIGHT_CAP` (cap 100,
- *   which I believe matches spatstat's `edge.Ripley` guard but have not verified), so
- *   `e_ij <= 100`. `K(r) = A / (n (n - 1)) * sum_{d_ij <= r} e_ij`. Use `maximumDistance` of at
- *   most half the shorter window side for this estimator to be meaningful.
+ *   (the corner is inside the circle). `f` is floored at `1 / GPU_RIPLEY_WEIGHT_CAP` (cap 100, the
+ *   `maxweight = 100` default of spatstat.explore `edge.Ripley`), so `e_ij <= 100`.
+ *   `K(r) = A / (n (n - 1)) * sum_{d_ij <= r} e_ij`. The arc formula is exact for a center inside
+ *   the rectangle at every radius, not only up to half the shorter side: the arcs cut off by two
+ *   opposite sides can never overlap (each spans less than a half circle), so only adjacent sides
+ *   need the overlap term (checked against brute-force circle sampling to 1e-5 at radii up to 25
+ *   times a 12 x 7 window's half side). The estimator is unbiased in expectation at any radius; the
+ *   practical limits are variance, which grows as the fraction `f` shrinks, and the weight cap,
+ *   which biases `K` low once `f < 1 / 100`. spatstat's default `rmax` is therefore 0.25 of the
+ *   shorter side; keep `maximumDistance` well below the window size.
  * - `L(r) = sqrt(K(r) / pi)`, `L(r) - r`, and the pair correlation per annulus from differences
  *   of `K` (a noisy, unsmoothed estimator; spatstat's `pcf` smooths with a kernel).
  * - Undefined results (`n < 2`, an empty border set, zero window area) are quiet NaN.
@@ -123,18 +144,22 @@ export type GPURipleyProps = {
  * Isotropic weights are accumulated as `round(e * 2^17)`, an error of at most `2^-18` per pair
  * plus the f32 error of the weight itself. Results are bitwise reproducible.
  *
- * Monte Carlo CSR envelopes and cross-type K are not implemented.
+ * Monte Carlo CSR envelopes are provided by {@link GPURipleyEnvelope}; cross-type and
+ * inhomogeneous K are not implemented. The window is the bounds rectangle (no polygon windows).
  */
 export class GPURipley implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURipleyProps;
+  /** Resolved spatial context (native planar unless the props say otherwise). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURipleyProps) {
     this.id = props.id ?? 'ripley';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {...props, parameterLength: GPU_RIPLEY_PARAMETER_LENGTH});
     const {radiusCount} = props;
     if (!Number.isInteger(radiusCount) || radiusCount < 1 || radiusCount > MAXIMUM_RADIUS_COUNT) {
@@ -332,7 +357,8 @@ fn getPrefix(channel: u32, last: u32) -> vec2<u32> {
       let numerator = subtract64(getPrefix(0u, index), getPrefix(1u, index));
       let borderCount = n - toFloat64(getPrefix(2u, index));
       if (borderCount >= 1.0) {
-        kValue = area * toFloat64(numerator) / ((n - 1.0) * borderCount);
+        // spatstat Kest border: lambda = n / A.
+        kValue = area * toFloat64(numerator) / (n * borderCount);
       }
     } else if (mode == 2u) {
       kValue = area / (n * (n - 1.0)) * (toFloat64(getPrefix(4u, index)) / ISOTROPIC_SCALE);

@@ -17,7 +17,11 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {getSlotGroupingNodes} from './slot-grouping';
-import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {
+  getGPUSpatialWeightsNeighborLoopWGSL,
+  type GPUSpatialWeights,
+  validateGPUSpatialWeights
+} from './spatial-weights';
 
 const OPERATION = 'GPUSpatialWeightsSummary';
 
@@ -30,14 +34,18 @@ const SUMMARY_WORKGROUP_SIZE = 256;
 export const GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT = {
   /** Float32 `statistics`: `S0`, `S1`, `S2`. */
   statistics: {s0: 0, s1: 1, s2: 2, length: 3},
-  /** Uint32 `counts`: used slots, asymmetric slots, isolates, minimum and maximum cardinality. */
+  /**
+   * Uint32 `counts`: used slots, asymmetric slots, isolates (rows with no active slot), minimum
+   * and maximum cardinality (active slots per row) and empty rows (rows with no slot at all).
+   */
   counts: {
     slots: 0,
     asymmetricSlots: 1,
     isolates: 2,
     minimumCardinality: 3,
     maximumCardinality: 4,
-    length: 5
+    emptyRows: 5,
+    length: 6
   }
 } as const;
 
@@ -49,9 +57,9 @@ export type GPUSpatialWeightsSummaryProps = {
   weights: GPUSpatialWeights;
   /** Float32 output of at least 3 values, see {@link GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT}. */
   statistics: GraphDataView<'float32'>;
-  /** Uint32 output of at least 5 values, see {@link GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT}. */
+  /** Uint32 output of at least 6 values, see {@link GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT}. */
   counts: GraphDataView<'uint32'>;
-  /** Optional per-row cardinality (neighbor count), one uint32 per row. */
+  /** Optional per-row cardinality (active neighbor count), one uint32 per row. */
   cardinality?: GraphDataView<'uint32'>;
   /**
    * Absolute tolerance for calling `w_ij` and `w_ji` equal when counting asymmetric slots.
@@ -68,9 +76,18 @@ export type GPUSpatialWeightsSummaryProps = {
  * - `S1 = 1/2 sum_ij (w_ij + w_ji)^2`, a missing `w_ji` counting as 0
  * - `S2 = sum_i (sum_j w_ij + sum_j w_ji)^2`
  * - used slots (`offsets[rows]`), minimum and maximum cardinality, and per-row cardinality
+ * - cardinality: the number of ACTIVE slots of a row (positive weight, neighbor below the row
+ *   count, not the row itself; the neighbor definition of every statistic, see
+ *   `getGPUSpatialWeightsNeighborLoopWGSL`). libpysal `cardinalities` counts every listed
+ *   neighbor, zero weights included. We deviate on purpose: a zero-weight slot is not a
+ *   neighbor, so the counts agree with libpysal for a W built without zero-weight entries. Use
+ *   the used slots for the listed total.
  * - asymmetric slots: slots `(i, j)` whose reverse slot `(j, i)` is missing or differs by more
  *   than `symmetryTolerance` (a pair of different weights counts twice, a one-way link once)
- * - isolates: rows with no slot
+ * - isolates (the one island definition): rows with no active slot, which is libpysal `islands`
+ *   for a W without zero-weight entries. A row whose only slots are zero-weight or self slots
+ *   is an isolate here, as it is for every statistic.
+ * - empty rows: rows with no slot at all (`offsets[i + 1] == offsets[i]`), at most the isolates
  *
  * Sums are fixed-order (row sums in slot order, column sums over a stable sort, a tree
  * reduction), so the results are bitwise reproducible. Slots with a neighbor ID `>= rows` are
@@ -93,7 +110,7 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
     }
     validatePackedUint32View(props.counts, `${id} counts`);
     if (props.counts.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length) {
-      throw new Error(`${id} counts must hold at least 5 values`);
+      throw new Error(`${id} counts must hold at least 6 values`);
     }
     if (props.cardinality) {
       validatePackedUint32View(props.cardinality, `${id} cardinality`);
@@ -205,10 +222,12 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
           {name: 'rowSums', view: rowSums, type: 'f32', access: 'read_write'},
           {name: 's1Partials', view: s1Partials, type: 'f32', access: 'read_write'},
-          {name: 'asymmetric', view: asymmetric, type: 'u32', access: 'read_write'}
+          {name: 'asymmetric', view: asymmetric, type: 'u32', access: 'read_write'},
+          {name: 'cardinality', view: cardinality, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: `${constants}
+const CAPACITY: u32 = ${capacity}u;
 const TOLERANCE: f32 = ${tolerance};
 const MISSING: f32 = -1.0;
 
@@ -251,6 +270,10 @@ fn findWeight(row: u32, column: u32) -> f32 {
       }
     }
   }
+  // Cardinality counts active slots only (the shared neighbor definition).
+  var activeCount = 0u;
+  ${getGPUSpatialWeightsNeighborLoopWGSL('true', 'activeCount++;')}
+  cardinality[cardinalityOffset + index] = activeCount;
   rowSums[rowSumsOffset + index] = sum;
   s1Partials[s1PartialsOffset + index] = s1;
   asymmetric[asymmetricOffset + index] = unmatched;`
@@ -264,23 +287,25 @@ fn findWeight(row: u32, column: u32) -> f32 {
           {name: 'rowSums', view: rowSums, type: 'f32', access: 'read'},
           {name: 'columnSums', view: columnSums, type: 'f32', access: 'read'},
           {name: 's2Partials', view: s2Partials, type: 'f32', access: 'read_write'},
-          {name: 'cardinality', view: cardinality, type: 'u32', access: 'read_write'},
+          {name: 'cardinality', view: cardinality, type: 'u32', access: 'read'},
           {name: 'isolates', view: isolates, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
+        // The active cardinality was written by the rows kernel.
         body: `let count = offsets[offsetsOffset + index + 1u] - offsets[offsetsOffset + index];
   let total = rowSums[rowSumsOffset + index] + columnSums[columnSumsOffset + index];
   s2Partials[s2PartialsOffset + index] = total * total;
-  cardinality[cardinalityOffset + index] = count;
-  isolates[isolatesOffset + index] = select(0u, 1u, count == 0u);`
+  // 0: has an active slot, 1: isolate that lists slots, 2: empty row (no slot at all).
+  let isolate = cardinality[cardinalityOffset + index] == 0u;
+  isolates[isolatesOffset + index] = select(0u, select(1u, 2u, count == 0u), isolate);`
       })
     ];
-    // The seven global reductions (S0, S1, S2, asymmetric slots, isolates, minimum and maximum
-    // cardinality) share one blocked pass over the per-row values and one combining workgroup,
+    // The eight global reductions (S0, S1, S2, asymmetric slots, isolates, empty rows, minimum and
+    // maximum cardinality) share one blocked pass over the per-row values and one combining workgroup,
     // instead of seven separate reduction chains. Fixed-shape trees keep the sums reproducible.
     const blockCount = Math.ceil(rows / SUMMARY_BLOCK_ROWS);
     const floatPartials = view('float-partials', 'float32', 3 * blockCount);
-    const countPartials = view('count-partials', 'uint32', 4 * blockCount);
+    const countPartials = view('count-partials', 'uint32', 5 * blockCount);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-blocks`,
@@ -308,6 +333,7 @@ var<workgroup> partialS1: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialS2: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialAsymmetric: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialIsolates: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialEmpty: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialMinimum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
         // No early return: every invocation of a workgroup must reach the barriers.
@@ -319,6 +345,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
   var s2 = 0.0;
   var asymmetricCount = 0u;
   var isolateCount = 0u;
+  var emptyCount = 0u;
   var minimum = 0xffffffffu;
   var maximum = 0u;
   if (isInRange) {
@@ -328,7 +355,9 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
       s1 += s1Partials[s1PartialsOffset + row];
       s2 += s2Partials[s2PartialsOffset + row];
       asymmetricCount += asymmetric[asymmetricOffset + row];
-      isolateCount += isolates[isolatesOffset + row];
+      let isolateCode = isolates[isolatesOffset + row];
+      isolateCount += select(0u, 1u, isolateCode != 0u);
+      emptyCount += select(0u, 1u, isolateCode == 2u);
       let degree = cardinality[cardinalityOffset + row];
       minimum = min(minimum, degree);
       maximum = max(maximum, degree);
@@ -339,6 +368,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
   partialS2[local] = s2;
   partialAsymmetric[local] = asymmetricCount;
   partialIsolates[local] = isolateCount;
+  partialEmpty[local] = emptyCount;
   partialMinimum[local] = minimum;
   partialMaximum[local] = maximum;
   workgroupBarrier();
@@ -349,6 +379,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
       partialS2[local] += partialS2[local + stride];
       partialAsymmetric[local] += partialAsymmetric[local + stride];
       partialIsolates[local] += partialIsolates[local + stride];
+      partialEmpty[local] += partialEmpty[local + stride];
       partialMinimum[local] = min(partialMinimum[local], partialMinimum[local + stride]);
       partialMaximum[local] = max(partialMaximum[local], partialMaximum[local + stride]);
     }
@@ -362,6 +393,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
     countPartials[countPartialsOffset + BLOCK_COUNT + block] = partialIsolates[0];
     countPartials[countPartialsOffset + 2u * BLOCK_COUNT + block] = partialMinimum[0];
     countPartials[countPartialsOffset + 3u * BLOCK_COUNT + block] = partialMaximum[0];
+    countPartials[countPartialsOffset + 4u * BLOCK_COUNT + block] = partialEmpty[0];
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -386,6 +418,7 @@ var<workgroup> partialS1: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialS2: array<f32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialAsymmetric: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialIsolates: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
+var<workgroup> partialEmpty: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialMinimum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;
 var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
         body: `let local = localInvocationIndex;
@@ -394,6 +427,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
   var s2 = 0.0;
   var asymmetricCount = 0u;
   var isolateCount = 0u;
+  var emptyCount = 0u;
   var minimum = 0xffffffffu;
   var maximum = 0u;
   for (var block = local; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
@@ -404,12 +438,14 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
     isolateCount += countPartials[countPartialsOffset + BLOCK_COUNT + block];
     minimum = min(minimum, countPartials[countPartialsOffset + 2u * BLOCK_COUNT + block]);
     maximum = max(maximum, countPartials[countPartialsOffset + 3u * BLOCK_COUNT + block]);
+    emptyCount += countPartials[countPartialsOffset + 4u * BLOCK_COUNT + block];
   }
   partialS0[local] = s0;
   partialS1[local] = s1;
   partialS2[local] = s2;
   partialAsymmetric[local] = asymmetricCount;
   partialIsolates[local] = isolateCount;
+  partialEmpty[local] = emptyCount;
   partialMinimum[local] = minimum;
   partialMaximum[local] = maximum;
   workgroupBarrier();
@@ -420,6 +456,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
       partialS2[local] += partialS2[local + stride];
       partialAsymmetric[local] += partialAsymmetric[local + stride];
       partialIsolates[local] += partialIsolates[local + stride];
+      partialEmpty[local] += partialEmpty[local + stride];
       partialMinimum[local] = min(partialMinimum[local], partialMinimum[local + stride]);
       partialMaximum[local] = max(partialMaximum[local], partialMaximum[local + stride]);
     }
@@ -434,6 +471,7 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
     counts[countsOffset + 2u] = partialIsolates[0];
     counts[countsOffset + 3u] = partialMinimum[0];
     counts[countsOffset + 4u] = partialMaximum[0];
+    counts[countsOffset + 5u] = partialEmpty[0];
   }`
       })
     );

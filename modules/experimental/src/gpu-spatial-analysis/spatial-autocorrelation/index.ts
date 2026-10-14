@@ -21,7 +21,11 @@ export type {
 } from './spatial-autocorrelation-parameters';
 export {
   getGPUGammaPermutationAdapter,
+  GPU_LEES_L_PERMUTATION_ADAPTERS,
+  GPU_LOCAL_BIVARIATE_JOIN_COUNT_PERMUTATION_ADAPTER,
+  GPU_LOCAL_BIVARIATE_MORAN_PERMUTATION_ADAPTER,
   GPU_LOCAL_GEARY_PERMUTATION_ADAPTER,
+  GPU_LOCAL_JOIN_COUNT_PERMUTATION_ADAPTER,
   GPU_SPATIAL_PEARSON_PERMUTATION_ADAPTER,
   GPUGammaStatistic,
   GPULocalGeary,
@@ -33,3 +37,8 @@ export type {
   GPULocalGearyProps,
   GPUSpatialPearsonProps
 } from './gpu-additional-spatial-statistics';
+export {
+  GPUAssuncaoReisStandardization,
+  GPU_RATE_STANDARDIZATION_STATISTICS_LENGTH
+} from './gpu-rate-standardization';
+export type {GPUAssuncaoReisStandardizationProps} from './gpu-rate-standardization';

@@ -6,6 +6,7 @@ export {GPUPolygonOverlay} from './gpu-polygon-overlay';
 export type {
   GPUPolygonOverlayBoundaryPort,
   GPUPolygonOverlayCapacity,
+  GPUPolygonOverlayFillRule,
   GPUPolygonOverlayOperation,
   GPUPolygonOverlayOutput,
   GPUPolygonOverlayProps

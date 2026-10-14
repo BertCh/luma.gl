@@ -176,7 +176,13 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     for (const buffer of this.ownedBuffers) {
       buffer.destroy();
     }
+    if (this.ownedBuffers.length > 0) {
+      // The storage views pointed at the buffers just destroyed.
+      this.preparedStorage = undefined;
+    }
     this.ownedBuffers = [];
+    this.graph = undefined;
+    this.dirty = true;
   }
 
   private validateStorage(storage: GPUSpatialJoinPreparedStorage): void {
@@ -246,21 +252,25 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
           'a prepared handle belongs to one graph and is added once'
       );
     }
+    // Validate the caller's views before allocating, so a rejected call leaves nothing behind.
+    validateGraphViewsBelongToGraph(id, graph, getSpatialJoinGeometryViews(geometry));
+    if (this.preparedStorage) {
+      const caller = this.preparedStorage;
+      validateGraphViewsBelongToGraph(id, graph, [
+        caller.nodeMinima,
+        caller.nodeMaxima,
+        caller.nodeChildren,
+        caller.leafIds,
+        caller.count,
+        caller.overflow,
+        caller.featureRings
+      ]);
+    }
     this.graph = graph;
     if (!this.preparedStorage) {
       this.preparedStorage = this.allocateStorage(graph);
     }
     const storage = this.preparedStorage;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getSpatialJoinGeometryViews(geometry),
-      storage.nodeMinima,
-      storage.nodeMaxima,
-      storage.nodeChildren,
-      storage.leafIds,
-      storage.count,
-      storage.overflow,
-      storage.featureRings
-    ]);
 
     const minima = createTransientView(graph, `${id}-minima`, 'float32x2', featureCount);
     const maxima = createTransientView(graph, `${id}-maxima`, 'float32x2', featureCount);

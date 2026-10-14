@@ -25,6 +25,7 @@ import {
   type GPUGeometryValidityOrientation,
   type GPUGeometryValidityRingClosure
 } from './geometry-validity-types';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUGeometryValidity';
 
@@ -48,6 +49,13 @@ const RING_LANES = 64;
 export type GPUGeometryValidityProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-validity'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Polygon or multipolygon features in the GeoArrow layout of `GPUSpatialPredicateJoin`. Give
    * exactly one of `polygons`, `lines` and `points`.
@@ -112,6 +120,8 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeometryValidityProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features, `featureOffsets.length - 1`. */
   readonly featureCount: number;
   /** Number of rings, `ringOffsets.length - 1`. */
@@ -120,6 +130,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
 
   constructor(props: GPUGeometryValidityProps) {
     this.id = props.id ?? 'geometry-validity';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {polygons, lines, points} = props;

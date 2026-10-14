@@ -23,6 +23,14 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING,
   GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
 } from './ordinary-least-squares-parameters';
@@ -31,10 +39,13 @@ import {
   getLogGammaOfHalfInteger
 } from './ordinary-least-squares-statistics';
 import {
+  getBelsleyConditionNumberWGSL,
   getCholeskyWGSL,
+  getSymmetricEigenvalueRangeWGSL,
   SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
 } from './spatial-regression-solve';
 import type {GPUSolverStatusPort} from '../contracts/index';
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../contracts/model-result';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
@@ -51,9 +62,12 @@ export type GPUOrdinaryLeastSquaresOutput = GPUSolverStatusPort & {
   /** Coefficient t statistics, same layout as `coefficients`. */
   tStatistics: GraphDataView<'float32'>;
   /**
-   * At least 16 float32 values; see the `GPU_ORDINARY_LEAST_SQUARES_SUMMARY_*` slot constants:
+   * At least 22 float32 values; see the `GPU_ORDINARY_LEAST_SQUARES_SUMMARY_*` slot constants:
    * row count, R2, adjusted R2, sigma squared, log-likelihood, AIC, BIC, Jarque-Bera and p-value,
-   * Breusch-Pagan and p-value, RSS, TSS, skewness, kurtosis, ridge lambda.
+   * Koenker-Bassett and p-value, RSS, TSS, skewness, kurtosis, ridge lambda, Breusch-Pagan and
+   * p-value, Belsley condition number, correlation condition number, maximum variance inflation
+   * factor and the precision warning. `getGPUOrdinaryLeastSquaresModelResult` turns the read-back
+   * arrays into a `GPURegressionModelResult`.
    */
   summary: GraphDataView<'float32'>;
   /** Optional per-row residuals `y - fitted`; NaN for excluded rows and for a failed fit. */
@@ -98,7 +112,11 @@ export type GPUOrdinaryLeastSquaresProps = {
 /**
  * Ordinary least squares with an intercept and a regression report: coefficients, standard errors,
  * t statistics, R2, adjusted R2, sigma squared, log-likelihood, AIC, BIC, residual and fitted
- * columns, the Jarque-Bera normality test and the Breusch-Pagan heteroskedasticity test.
+ * columns, the Jarque-Bera normality test, the Koenker-Bassett and Breusch-Pagan
+ * heteroskedasticity tests, and collinearity and precision diagnostics.
+ *
+ * The number of predictors is capped at 15 (`predictorCount` 1 to 15, 16 coefficients with the
+ * intercept) by the 16-wide function-local Cholesky factorization of the solve.
  *
  * Rows with a non-finite predictor or response, or with a zero `mask`, are excluded. An optional
  * per-frame ridge penalty `lambda >= 0` shrinks the slopes (never the intercept).
@@ -126,11 +144,27 @@ export type GPUOrdinaryLeastSquaresProps = {
  *    Gaussian with `sigma2 = RSS / n`, floored at the smallest normal f32 so an exact fit stays
  *    finite. AIC and BIC count `p = predictorCount + 1` parameters (the GeoDa convention).
  * 6. Jarque-Bera uses the residual moments about zero (the mean is zero with an intercept):
- *    `JB = n/6 (S^2 + (K - 3)^2 / 4)` with p-value `exp(-JB / 2)`. Breusch-Pagan is the Koenker
- *    studentized form: the same accumulation, solve and a small finish kernel run again with
- *    `e^2` as the response, and the statistic is `n R2` of that regression with a chi-square
- *    p-value on `predictorCount` degrees of freedom (regularized upper incomplete gamma with a
- *    fixed iteration cap, mirrored on the CPU by `getChiSquareSurvival`).
+ *    `JB = n/6 (S^2 + (K - 3)^2 / 4)` with p-value `exp(-JB / 2)`. The same accumulation, solve and
+ *    a small finish kernel run again with `e^2` as the response (no ridge) and give `R2_aux` of
+ *    `e^2 ~ [1, X]`. Koenker-Bassett (studentized, no normality assumption) is `n R2_aux`; the
+ *    classic Breusch-Pagan (normal errors) is `0.5 R2_aux n (K - 1)` with the residual kurtosis
+ *    `K`, which equals the explained sum of squares over two of `e^2 / s2 - 1` on `[1, X]` with
+ *    `s2 = RSS / n`. Both use a chi-square p-value on `predictorCount` degrees of freedom
+ *    (regularized upper incomplete gamma with a fixed iteration cap, mirrored on the CPU by
+ *    `getChiSquareSurvival`). They differ strongly for non-normal errors, which is when
+ *    Jarque-Bera rejects: prefer Koenker-Bassett then.
+ * 7. Conditioning is computed in the finish kernel from the quantities already in the workspace:
+ *    the Belsley condition number of the raw `[1, X]` design with unit-length columns (spreg
+ *    `condition_index`), computed by one-sided Jacobi from the correlation Cholesky factor and the
+ *    column means (`getBelsleyConditionNumberWGSL`; the raw Gram eigenvalue route loses the small
+ *    eigenvalue to float32 rounding beyond a condition number of a few hundred), the condition number
+ *    of the predictor correlation matrix that the float32 Cholesky factors, and the largest
+ *    variance inflation factor (largest diagonal of its inverse). Eigenvalues come from the
+ *    cyclic Jacobi routine of `spatial-regression-solve`. The precision warning is 1 when the
+ *    correlation condition number exceeds `GPU_REGRESSION_PRECISION_CONDITION_LIMIT` (1e4, where
+ *    float32 normal equations may have lost over three of seven digits). A warning never changes
+ *    `status` and never NaNs the fit. With a ridge penalty the correlation condition number and
+ *    the variance inflation factors describe the penalized matrix that was factored.
  *
  * Inputs must be single packed views. Skipped-row masking, NaN propagation and the status word
  * make a failed fit leave every statistic NaN, never partial garbage.
@@ -247,8 +281,9 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
 
   /**
    * Returns the main chain (tile and merge means, tile and merge moments, solve, residuals,
-   * residual-moment tile and merge, finish) followed by the Breusch-Pagan chain (the same four
-   * accumulation nodes on `e^2`, a solve, a finish), in order.
+   * residual-moment tile and merge, finish) followed by the heteroskedasticity chain (the same
+   * four accumulation nodes on `e^2`, a solve, a finish for Koenker-Bassett and Breusch-Pagan),
+   * in order.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -418,12 +453,14 @@ const TILE_COUNT: u32 = ${tileCount}u;`,
         ],
         invocationCount: 1,
         declarations: `${getSharedWGSL(layout, false)}
-${getCholeskyWGSL(k)}`,
+${getCholeskyWGSL(k)}
+${getSymmetricEigenvalueRangeWGSL(k)}
+${getBelsleyConditionNumberWGSL(k)}`,
         body: getFinishBody(k)
       })
     );
 
-    // Breusch-Pagan: regress e^2 on the same predictors with no ridge, then n R2.
+    // Koenker-Bassett and Breusch-Pagan: regress e^2 on the same predictors with no ridge.
     const bpWorkspace = u32('bp-workspace', layout.length);
     nodes.push(
       ...getAccumulationNodes(graph, {
@@ -450,7 +487,11 @@ ${getCholeskyWGSL(k)}`,
       createKernel(graph, {
         id: `${id}-bp-finish`,
         variant: 'breusch-pagan',
-        bindings: [readWorkspace(bpWorkspace), write('summaryOut', output.summary, 'f32')],
+        bindings: [
+          readWorkspace(bpWorkspace),
+          read('mainWs', mainWorkspace, 'u32'),
+          write('summaryOut', output.summary, 'f32')
+        ],
         invocationCount: 1,
         declarations: `${getSharedWGSL(layout, false)}
 ${getChiSquareWGSL(k)}`,
@@ -815,9 +856,13 @@ function getFinishBody(k: number): string {
     quadratic = quadratic + (wsGet(W_MEANS + i) / wsGet(W_SCALE + i)) * u[i];
   }
   standardErrorsOut[standardErrorsOutOffset] = sqrt(max(sigmaSquared * (1.0 / n + quadratic), 0.0));
+  var maximumInflation = 0.0;
   for (var i = 0u; i < K; i++) {
     let scale = wsGet(W_SCALE + i);
-    let inverse = choleskyInverseDiagonal_${k}(&a, i) / (scale * scale);
+    // Diagonal of the inverse correlation matrix is the variance inflation factor of column i.
+    let correlationInverse = choleskyInverseDiagonal_${k}(&a, i);
+    maximumInflation = max(maximumInflation, correlationInverse);
+    let inverse = correlationInverse / (scale * scale);
     standardErrorsOut[standardErrorsOutOffset + 1u + i] = sqrt(max(sigmaSquared * inverse, 0.0));
   }
   for (var i = 0u; i < ${p}u; i++) {
@@ -861,7 +906,50 @@ function getFinishBody(k: number): string {
   summaryOut[summaryOutOffset + 12u] = totalSumSquares;
   summaryOut[summaryOutOffset + 13u] = skewness;
   summaryOut[summaryOutOffset + 14u] = kurtosis;
-  summaryOut[summaryOutOffset + 15u] = wsGet(W_LAMBDA);`;
+  summaryOut[summaryOutOffset + 15u] = wsGet(W_LAMBDA);
+
+  // Conditioning. Belsley (spreg condition_index) of the raw [1, X] design, from the Cholesky
+  // factor of the unpenalized predictor correlation matrix and the column means, never from the
+  // raw Gram matrix (its smallest eigenvalue is below float32 resolution once the condition
+  // number passes a few hundred). See getBelsleyConditionNumberWGSL.
+  var unpenalized: array<f32, ${k * k}>;
+  var alpha: array<f32, ${k}>;
+  var beta: array<f32, ${k}>;
+  for (var i = 0u; i < K; i++) {
+    for (var j = 0u; j < K; j++) {
+      unpenalized[i * K + j] = momentAt(i, j) / (wsGet(W_SCALE + i) * wsGet(W_SCALE + j));
+    }
+    let centered = momentAt(i, i);
+    let meanI = wsGet(W_MEANS + i);
+    let rawNorm = sqrt(n * meanI * meanI + centered);
+    alpha[i] = sqrt(n) * meanI / rawNorm;
+    beta[i] = sqrt(centered) / rawNorm;
+  }
+  var belsley = 3.0e38;
+  if (choleskyFactor_${k}(&unpenalized)) {
+    belsley = getBelsleyConditionNumber_${k}(&unpenalized, &alpha, &beta);
+  }
+  // The factored (optionally ridge-penalized) predictor correlation matrix.
+  var correlation: array<f32, ${k * k}>;
+  for (var i = 0u; i < K; i++) {
+    for (var j = 0u; j < K; j++) {
+      var entry = momentAt(i, j) / (wsGet(W_SCALE + i) * wsGet(W_SCALE + j));
+      if (i == j) {
+        entry = entry + wsGet(W_LAMBDA) / (wsGet(W_SCALE + i) * wsGet(W_SCALE + i));
+      }
+      correlation[i * K + j] = entry;
+    }
+  }
+  let correlationRange = getSymmetricEigenvalueRange_${k}(&correlation);
+  let correlationCondition = correlationRange.y / max(correlationRange.x, 1.0e-30);
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER}u] =
+    belsley;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER}u] =
+    correlationCondition;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR}u] =
+    maximumInflation;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING}u] =
+    select(0.0, 1.0, correlationCondition > ${getWGSLFloatLiteral(GPU_REGRESSION_PRECISION_CONDITION_LIMIT)});`;
 }
 
 /** Regularized upper incomplete gamma for the chi-square survival function, fixed iteration cap. */
@@ -921,8 +1009,10 @@ fn getChiSquareSurvival(value: f32) -> f32 {
 function getBreuschPaganBody(k: number): string {
   return /* wgsl */ `let status = ws[wsOffset + W_STATUS];
   let nan = getNaN();
-  var statistic = nan;
-  var pValue = nan;
+  var koenker = nan;
+  var koenkerP = nan;
+  var breusch = nan;
+  var breuschP = nan;
   let totalSumSquares = momentAt(K, K);
   if (status == 0u && totalSumSquares > 0.0) {
     var explained = 0.0;
@@ -930,11 +1020,22 @@ function getBreuschPaganBody(k: number): string {
       explained = explained + wsGet(W_SLOPES + i) * momentAt(i, K);
     }
     let rSquared = clamp(explained / totalSumSquares, 0.0, 1.0);
-    statistic = f32(ws[wsOffset + W_COUNT]) * rSquared;
-    pValue = getChiSquareSurvival(statistic);
+    let n = f32(ws[wsOffset + W_COUNT]);
+    koenker = n * rSquared;
+    koenkerP = getChiSquareSurvival(koenker);
+    // Classic Breusch-Pagan: 0.5 R2 (sum e^4 / s2^2 - n) = 0.5 R2 n (kurtosis - 1), s2 = RSS / n.
+    let residualSumSquares = bitcast<f32>(mainWs[mainWsOffset + W_RESIDUAL_SUMS]);
+    let sumFourth = bitcast<f32>(mainWs[mainWsOffset + W_RESIDUAL_SUMS + 2u]);
+    if (residualSumSquares > 0.0) {
+      let kurtosis = sumFourth * n / (residualSumSquares * residualSumSquares);
+      breusch = max(0.5 * rSquared * n * (kurtosis - 1.0), 0.0);
+      breuschP = getChiSquareSurvival(breusch);
+    }
   }
-  summaryOut[summaryOutOffset + 9u] = statistic;
-  summaryOut[summaryOutOffset + 10u] = pValue;`;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT}u] = koenker;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE}u] = koenkerP;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN}u] = breusch;
+  summaryOut[summaryOutOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE}u] = breuschP;`;
 }
 
 function read(name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding {

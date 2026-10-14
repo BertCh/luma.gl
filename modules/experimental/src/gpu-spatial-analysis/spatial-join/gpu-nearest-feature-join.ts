@@ -33,6 +33,7 @@ import {
 import {
   createSpatialJoinClearNode,
   createSpatialJoinFinalizeNode,
+  getChunkNodeId,
   getDefaultSpatialSort,
   type SpatialSortCurve,
   getNextPowerOfTwo,
@@ -51,11 +52,14 @@ import {
   getNearestGeometryViews,
   getNearestNeighborNodes
 } from './nearest-nodes';
-import type {
-  GPUNearestFeatureGeometry,
+import {
+  resolveNearestSpatialContext,
+  type GPUNearestFeatureGeometry,
   GPUNearestQueryGeometry,
   GPUNearestTieMode
 } from './nearest-types';
+
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUNearestFeatureJoin';
 
@@ -81,6 +85,27 @@ export type GPUNearestFeatureJoinProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'nearest-feature-join'`. */
   id?: string;
   /**
+   * Coordinate space and metric of the points and features.
+   *
+   * - Omitted, or planar: native planar coordinates; distances (`radius`, `maxDistance`,
+   *   `nearestDistances`, `neighborDistances`) are planar in coordinate units.
+   * - `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`: positions are longitude and
+   *   latitude in degrees and every distance is a great-circle distance in meters on the mean Earth
+   *   sphere (`GPU_EARTH_MEAN_RADIUS_METERS`; `sphereRadius` of the context overrides it, and
+   *   `units: 'kilometers'` is rejected). Both modes use the branch-and-bound BVH traversal with a
+   *   conservative great-circle lower bound on node boxes (latitude gap, longitude gap through the
+   *   antimeridian when shorter, and the cosine of the latitude farthest from the equator), so
+   *   `candidateCapacity` is not used (it is accepted but ignored, `candidateCount` reads 0) and a
+   *   pair across the antimeridian or near a pole is measured the short way round.
+   *   Edges are straight in longitude/latitude (longitude differences wrapped at +-180), the same
+   *   edge model as the planar-in-degrees containment and crossing tests, so densify long edges;
+   *   foot points are on the edge and longitudes are wrapped to +-180. A polygon that spans the
+   *   antimeridian is not split. Positions are float32, so distances carry the coordinate
+   *   quantization (about 1 m at longitude 100).
+   * - Any other longitude/latitude metric, or kilometers, throws at construction.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * Packed planar query points, possibly chunked. In neighbors mode set either `points` or
    * `queries`.
    */
@@ -100,7 +125,7 @@ export type GPUNearestFeatureJoinProps = {
   /** Optional stable feature IDs written instead of feature rows. */
   featureIds?: GraphDataView<'uint32'>;
   /**
-   * Per-frame search radius, one float32 row. NaN, negative, or infinite matches nothing.
+   * Per-frame search radius (coordinate units, or meters when great-circle), one float32 row. NaN, negative, or infinite matches nothing.
    * Required in nearest-feature mode unless `maxDistance` is given.
    */
   radius?: GraphDataView<'float32'>;
@@ -177,7 +202,7 @@ export type GPUNearestFeatureJoinProps = {
   neighborIds?: GraphDataView<'uint32'>;
   /** Neighbors mode, required with `neighborIds`: number of filled slots per query. Length `queryCount`. */
   neighborCounts?: GraphDataView<'uint32'>;
-  /** Neighbors mode: planar distance per slot, `-1` in unused slots. Same layout as `neighborIds`. */
+  /** Neighbors mode: distance per slot (planar, or meters when great-circle), `-1` in unused slots. Same layout as `neighborIds`. */
   neighborDistances?: GraphDataView<'float32'>;
   /**
    * Neighbors mode: the point of the feature nearest to the query per slot (the query point
@@ -201,7 +226,7 @@ export type GPUNearestFeatureJoinProps = {
    * vertex order is returned, which may differ from GEOS.
    */
   neighborQueryPoints?: GraphDataView<'float32x2'>;
-  /** Nearest-feature mode: optional per-point planar distance to the nearest feature, or -1. Chunked like `points`. */
+  /** Nearest-feature mode: optional per-point distance to the nearest feature (planar, or meters when great-circle), or -1. Chunked like `points`. */
   nearestDistances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** Nearest-feature mode: optional per-feature count of points whose nearest feature it is. */
   featureCounts?: GraphDataView<'uint32'>;
@@ -225,7 +250,7 @@ export type GPUNearestFeatureJoinProps = {
 };
 
 /**
- * Joins planar queries to their nearest features.
+ * Joins queries to their nearest features by planar or great-circle distance.
  *
  * Nearest-feature mode: a `GPUBVH` over feature bounds produces candidates inside the radius box,
  * `GPUPairwisePointSegmentDistance` measures them, and deterministic `atomicMin` passes keep the
@@ -262,11 +287,17 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
   readonly neighborCapacity: number;
   /** Resolved tie rule. */
   readonly ties: GPUNearestTieMode;
+  /** Resolved spatial context. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius in meters of a great-circle search, or undefined for planar distances. */
+  readonly sphereRadius: number | undefined;
 
   constructor(props: GPUNearestFeatureJoinProps) {
     this.id = props.id ?? 'nearest-feature-join';
     this.props = props;
     const {id} = this;
+    ({spatialContext: this.spatialContext, sphereRadius: this.sphereRadius} =
+      resolveNearestSpatialContext(id, props.spatialContext));
     this.mode = props.neighborIds ? 'neighbors' : 'nearest-feature';
     this.featureCount = getNearestGeometryCount(props.features);
     this.k = props.k ?? 1;
@@ -350,7 +381,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       this.queryCount = this.validateNeighbors();
     } else {
       this.neighborCapacity = 1;
-      this.candidateCapacity = props.candidateCapacity ?? 0;
+      this.candidateCapacity = this.sphereRadius === undefined ? (props.candidateCapacity ?? 0) : 0;
       this.queryCount = this.validateNearestFeature();
     }
     this.validateFilters();
@@ -491,7 +522,10 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
     if (props.matches) {
       validateCompactOutput(id, props.matches);
     }
-    if (!Number.isSafeInteger(this.candidateCapacity) || this.candidateCapacity < 1) {
+    if (
+      this.sphereRadius === undefined &&
+      (!Number.isSafeInteger(this.candidateCapacity) || this.candidateCapacity < 1)
+    ) {
       throw new Error(`${id} candidateCapacity must be a positive integer`);
     }
     return props.points.length;
@@ -533,10 +567,145 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         exclusive: props.exclusive,
         queryIds: props.queryIds,
         onAttribute: props.onAttribute,
-        overflow: props.overflow
+        overflow: props.overflow,
+        sphereRadius: this.sphereRadius
       }).nodes;
     }
-    return this.getNearestFeatureNodes(graph);
+    return this.sphereRadius === undefined
+      ? this.getNearestFeatureNodes(graph)
+      : this.getGreatCircleNearestFeatureNodes(graph);
+  }
+
+  /**
+   * Nearest-feature mode on longitude/latitude: the neighbors traversal with `k = 1` (ties to the
+   * smallest feature row) followed by the nearest-feature outputs (IDs, distances, counts,
+   * matches, overflow).
+   */
+  private getGreatCircleNearestFeatureNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {id, props, featureCount, queryCount} = this;
+    const points = props.points!;
+    const {matches} = props;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    const state = createTransientView(graph, `${id}-state`, 'uint32', 4);
+    const featureRows = createTransientView(graph, `${id}-feature-rows`, 'uint32', queryCount);
+    const rowCounts = createTransientView(graph, `${id}-row-counts`, 'uint32', queryCount);
+    const rowDistances = createTransientView(graph, `${id}-row-distances`, 'float32', queryCount);
+    const traversalOverflow = createTransientView(graph, `${id}-traversal-overflow`, 'uint32', 1);
+    // Clears the state and the per-feature counts before the traversal fills the rows.
+    nodes.push(
+      createSpatialJoinClearNode<Parameters>(graph, {
+        id: `${id}-clear-state`,
+        operation: OPERATION,
+        state,
+        assignment: featureRows,
+        pointCount: queryCount,
+        featureCounts: props.featureCounts
+      })
+    );
+    const {nodes: traversalNodes} = getNearestNeighborNodes<Parameters>(graph, {
+      id,
+      operation: OPERATION,
+      queries: {kind: 'points', points},
+      queryCount,
+      features: props.features,
+      featureCount,
+      k: 1,
+      capacity: 1,
+      leafCapacity: this.leafCapacity,
+      spatialSort: this.spatialSort,
+      spatialSortCurve: props.spatialSortCurve,
+      prepared: props.prepared,
+      maxDistance: (props.maxDistance ?? props.radius)!,
+      featureIds: props.featureIds,
+      neighborIds: featureRows,
+      neighborCounts: rowCounts,
+      neighborDistances: rowDistances,
+      exclusive: props.exclusive,
+      queryIds: props.queryIds,
+      onAttribute: props.onAttribute,
+      overflow: traversalOverflow,
+      sphereRadius: this.sphereRadius,
+      writeFeatureRows: true
+    });
+    nodes.push(...traversalNodes);
+
+    const distanceChunks = props.nearestDistances ? getGraphViewChunks(props.nearestDistances) : [];
+    let chunkFirstRow = 0;
+    for (const [chunkIndex, chunk] of getGraphViewChunks(props.nearestFeatureIds!).entries()) {
+      if (chunk.length > 0) {
+        const bindings: WGSLKernelBinding[] = [
+          {name: 'featureRows', view: featureRows, type: 'u32', access: 'read'},
+          {name: 'pointFeatureIds', view: chunk, type: 'u32', access: 'read_write'}
+        ];
+        if (props.featureIds) {
+          bindings.push({name: 'featureIds', view: props.featureIds, type: 'u32', access: 'read'});
+        }
+        if (props.featureCounts) {
+          bindings.push({
+            name: 'featureCounts',
+            view: props.featureCounts,
+            type: 'atomic<u32>',
+            access: 'read_write'
+          });
+        }
+        const distanceChunk = distanceChunks[chunkIndex];
+        if (distanceChunk) {
+          bindings.push(
+            {name: 'rowDistances', view: rowDistances, type: 'f32', access: 'read'},
+            {name: 'distances', view: distanceChunk, type: 'f32', access: 'read_write'}
+          );
+        }
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: getChunkNodeId(`${id}-assign`, props.nearestFeatureIds!, chunkIndex),
+            operation: OPERATION,
+            variant: 'assign-great-circle',
+            bindings,
+            invocationCount: chunk.length,
+            declarations: `const NO_FEATURE: u32 = 0xffffffffu;
+const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
+            body: `let row = CHUNK_FIRST_ROW + index;
+  let featureRow = featureRows[featureRowsOffset + row];
+  let matched = featureRow != NO_FEATURE;
+  var featureId = featureRow;
+  ${props.featureIds ? 'if (matched) { featureId = featureIds[featureIdsOffset + featureRow]; }' : ''}
+  pointFeatureIds[pointFeatureIdsOffset + index] = featureId;
+  ${props.featureCounts ? 'if (matched) { atomicAdd(&featureCounts[featureCountsOffset + featureRow], 1u); }' : ''}
+  ${distanceChunk ? 'distances[distancesOffset + index] = select(-1.0, rowDistances[rowDistancesOffset + row], matched);' : ''}`
+          })
+        );
+      }
+      chunkFirstRow += chunk.length;
+    }
+    if (matches) {
+      nodes.push(
+        ...getSpatialJoinCollectNodes<Parameters>(graph, {
+          id: `${id}-collect-matches`,
+          operation: OPERATION,
+          points,
+          assignment: featureRows,
+          state,
+          sourceIds: props.sourceIds,
+          matches
+        })
+      );
+    }
+    nodes.push(
+      createSpatialJoinFinalizeNode<Parameters>(graph, {
+        id: `${id}-finalize`,
+        operation: OPERATION,
+        state,
+        // The traversal clear pass already folds the BVH overflow into its overflow flag.
+        bvhOverflow: traversalOverflow,
+        candidateCapacity: 0,
+        overflow: props.overflow,
+        candidateCount: props.candidateCount,
+        matches
+      })
+    );
+    return nodes;
   }
 
   /** Nearest-feature mode: bounds, BVH, candidate, distance, reduction, assignment, finalize. */
@@ -713,7 +882,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       const featureId = props.featureIds
         ? 'featureIds[featureIdsOffset + candidateFeature]'
         : 'candidateFeature';
-      filterTests.push(`if (${queryId} == ${featureId}) { return; }`);
+      filterTests.push(`if (${queryId} == ${featureId}) { rejectCandidate(index); return; }`);
     }
     if (props.onAttribute) {
       filterBindings.push(
@@ -721,20 +890,47 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         {name: 'featureKeys', view: props.onAttribute.right, type: 'u32', access: 'read'}
       );
       filterTests.push(
-        'if (queryKeys[queryKeysOffset + pointRow] != featureKeys[featureKeysOffset + candidateFeature]) { return; }'
+        'if (queryKeys[queryKeysOffset + pointRow] != featureKeys[featureKeysOffset + candidateFeature]) { rejectCandidate(index); return; }'
       );
     }
-    const filterTest = filterTests.length
-      ? `let candidateFeature = candidatePairs[candidatePairsOffset + index * 2u + 1u];
+    if (filterTests.length) {
+      // A separate pass marks filtered candidates with distance -1, which the reductions reject.
+      // Folding the filter views into the reductions bound up to 10 storage buffers, above the
+      // default limit of 8.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-filter`,
+          operation: OPERATION,
+          variant: 'filter',
+          bindings: [
+            {name: 'state', view: state, type: 'u32', access: 'read'},
+            {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
+            {
+              name: 'candidateDistances',
+              view: candidateDistances,
+              type: 'f32',
+              access: 'read_write'
+            },
+            ...filterBindings
+          ],
+          invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
+          declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
+fn rejectCandidate(index: u32) { candidateDistances[candidateDistancesOffset + index] = -1.0; }`,
+          body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
+  if (index >= activeCount) { return; }
+  let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
+  let candidateFeature = candidatePairs[candidatePairsOffset + index * 2u + 1u];
   ${filterTests.join('\n  ')}`
-      : '';
+        })
+      );
+    }
     const reducePrologue = `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
   let distance = candidateDistances[candidateDistancesOffset + index];
   let searchRadius = radius[radiusOffset];
   if (!(distance >= 0.0 && distance <= searchRadius)) { return; }
-  ${filterTest}
   // Fold -0.0 so the bit pattern of non-negative distances is monotone.
   let distanceBits = select(bitcast<u32>(distance), 0u, distance == 0.0);`;
     nodes.push(
@@ -752,8 +948,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
             view: bestDistanceBits,
             type: 'atomic<u32>',
             access: 'read_write'
-          },
-          ...filterBindings
+          }
         ],
         invocationCount: candidateCapacity,
         condition: candidateDispatch.condition,
@@ -773,8 +968,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
           {name: 'candidateDistances', view: candidateDistances, type: 'f32', access: 'read'},
           {name: 'radius', view: radius, type: 'f32', access: 'read'},
           {name: 'bestDistanceBits', view: bestDistanceBits, type: 'u32', access: 'read'},
-          {name: 'assignment', view: assignment, type: 'atomic<u32>', access: 'read_write'},
-          ...filterBindings
+          {name: 'assignment', view: assignment, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: candidateCapacity,
         condition: candidateDispatch.condition,

@@ -3,8 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 
-/** Coordinate interpretation shared by the line contributors. */
+/**
+ * Kernel-level coordinate interpretation derived from a `spatialContext` (not a user prop):
+ * `'planar'` for planar contexts, `'spherical'` for longitude/latitude with a great-circle metric.
+ */
 export type GPULineCoordinateSystem =
   /** Planar positions (projected or tile-local units); straight segments, Euclidean lengths. */
   | 'planar'
@@ -13,6 +22,37 @@ export type GPULineCoordinateSystem =
    * central angle times the sphere radius.
    */
   | 'spherical';
+
+/**
+ * Resolves the `spatialContext` of a line operation: planar by default, or longitude/latitude
+ * with a `'great-circle'` metric (positions are degrees, lengths are in the context's unit on its
+ * sphere radius, meters on the mean Earth radius by default).
+ *
+ * @internal
+ */
+export function resolveLineSpatialContext(
+  id: string,
+  context: GPUSpatialContext | undefined
+): {
+  spatialContext: GPUSpatialContext;
+  coordinateSystem: GPULineCoordinateSystem;
+  radius: number;
+} {
+  const spatialContext = resolveGPUSpatialContext(
+    id,
+    context,
+    GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+  );
+  const isSpherical = spatialContext.coordinateSpace === 'longitude-latitude';
+  if (isSpherical && spatialContext.metric !== 'great-circle') {
+    throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
+  }
+  return {
+    spatialContext,
+    coordinateSystem: isSpherical ? 'spherical' : 'planar',
+    radius: isSpherical ? getGPUSphereRadius(spatialContext) : 1
+  };
+}
 
 /** Value written to `sourcePaths` / `sourceRows` rows that carry no source. */
 export const GPU_LINE_NO_SOURCE = 0xffffffff;

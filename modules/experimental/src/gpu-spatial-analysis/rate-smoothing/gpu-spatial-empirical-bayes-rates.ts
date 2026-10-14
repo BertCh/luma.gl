@@ -67,6 +67,12 @@ export type GPUSpatialEmpiricalBayesRatesProps = {
  *   `a = s2 - m / (B / n)`, clamped at zero.
  * - Smoothed rate: `w = a / (a + m / b_i)`, `r_i = w e_i / b_i + (1 - w) m`.
  *
+ * Clamping differs from the global estimator by design of esda: esda 2.10.0
+ * `Spatial_Empirical_Bayes` itself sets `r_var[r_var < 0] = 0` (verified in its source), so the
+ * clamp here is esda parity and needs no option, whereas esda's global `Empirical_Bayes` does not
+ * clamp (see `GPUEmpiricalBayesRates` `clampPriorVariance`). A neighborhood with `a = 0`
+ * and `m = 0` yields `w = 0` here where esda divides 0 by 0.
+ *
  * Verified against esda 2.10.0 source and values (lat2W 6x6 queen fixture, max relative error
  * under 2e-4 in float32). Deviations from esda: rows excluded by the mask or by a non-positive
  * population are skipped as neighbors instead of raising; a neighborhood with all-zero events gives

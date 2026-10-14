@@ -45,7 +45,12 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
   id?: string;
   /** Point coordinates interpreted by `spatialContext`. */
   positions: GraphDataView<'float32x2'>;
-  /** Canonical coordinate and metric contract used by hull measurement. */
+  /**
+   * Canonical coordinate and metric contract of `positions`, used by the clustering and by hull
+   * measurement. Planar contexts cluster with a Euclidean `epsilon`; a longitude/latitude
+   * great-circle context clusters with `epsilon` in meters (see `GPUSpatialClustering`, including
+   * its antimeridian rule). Other metrics throw at graph construction.
+   */
   spatialContext: GPUSpatialContext;
   /** `getGPUSpatialClusteringParameterValues` view: bounds, epsilon, minimum points. */
   clusteringParameters: GraphDataView<'float32'>;
@@ -135,6 +140,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
   builder.add(
     new GPUSpatialClustering({
       id: `${id}-clustering`,
+      spatialContext: props.spatialContext,
       positions: props.positions,
       parameters: props.clusteringParameters,
       gridSize: props.gridSize,

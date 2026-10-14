@@ -12,7 +12,11 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -20,12 +24,26 @@ import {
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
 import {
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT,
+  getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_F,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_PARTIAL_R_SQUARED,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_INSTRUMENT_CORRELATION_CONDITION_NUMBER,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PRECISION_WARNING,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RHO_OUTSIDE_ADMISSIBLE_RANGE,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_WEIGHTS_INFINITY_NORM,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
 } from './spatial-two-stage-least-squares-parameters';
-import {getCholeskyWGSL} from './spatial-regression-solve';
+import {
+  getBelsleyConditionNumberWGSL,
+  getCholeskyWGSL,
+  getSymmetricEigenvalueRangeWGSL
+} from './spatial-regression-solve';
 import type {GPUSolverStatusPort} from '../contracts/index';
+import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../contracts/model-result';
 import {ERFC_VALUE_WGSL, GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUSpatialTwoStageLeastSquares';
@@ -45,7 +63,7 @@ export type GPUSpatialTwoStageLeastSquaresOutput = GPUSolverStatusPort & {
    * coefficient, standard error, z statistic and two-sided normal p-value.
    */
   table: GraphDataView<'float32'>;
-  /** At least 7 float32 values; see the `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_*` slots. */
+  /** At least 16 float32 values; see the `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
   /** Optional per-row structural residuals `u = y - rho W y - X b`; NaN for a failed fit. */
   residuals?: GraphDataView<'float32'>;
@@ -71,7 +89,11 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
   predictors: GraphDataView<'float32'>;
   /** Response `y`, one value per row. */
   response: GraphDataView<'float32'>;
-  /** Number of predictor columns, compile-time, 1 to 8. The intercept is implicit. */
+  /**
+   * Number of predictor columns, compile-time, 1 to 8 with `instrumentOrder: 1` and 1 to 5 with
+   * `instrumentOrder: 2` (`(order + 1) * predictorCount <= 16`, the 16-wide Cholesky of the
+   * instrument system; the constant is centered out). The intercept is implicit.
+   */
   predictorCount: number;
   /**
    * Rows reduced by one invocation of the accumulation passes. Defaults to
@@ -114,7 +136,26 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
  * (`T = sum w_ij^2 + sum w_ij w_ji` only involves pairs present in both directions).
  *
  * `instrumentOrder: 2` adds `W^2 X` to the instruments (`w_lags = 2`). The robust and heteroskedastic variants, and spatial
- * error models (`GM_Error`) are not included here.
+ * error models (`GM_Error`) are not included here: the standard errors are the classical
+ * `sigma2 (Z'PZ)^-1`, and HAC or heteroskedasticity-robust standard errors are NOT provided.
+ *
+ * Diagnostics written to `summary` (none changes `status`):
+ * - Conditioning of the second-stage system `Z'PZ` (Belsley condition number, correlation
+ *   condition number, largest variance inflation factor) and of the instrument system `H'H`
+ *   (correlation condition number), with a precision warning when either correlation condition
+ *   number exceeds `GPU_REGRESSION_PRECISION_CONDITION_LIMIT` (1e4).
+ * - Admissibility of `rho`: `||W||_inf` (largest absolute row sum) and a flag for
+ *   `|rho| ||W||_inf >= 1`. The estimate is reported either way: 2SLS is unconstrained, and the
+ *   flag is information for the reader (impacts and the reduced form need `|rho| ||W||_inf < 1`),
+ *   not a numerical failure.
+ * - First-stage strength of `W y` on the instruments: the classical joint F statistic and the
+ *   partial R squared of the excluded instruments (`W X`, `W^2 X`), the quantities to compare with
+ *   the weak-instrument rule of thumb `F < 10`.
+ *
+ * Capacity: with the constant centered out the instrument solve factors `(order + 1) k` columns
+ * in a 16-wide Cholesky, so `k <= 8` for `instrumentOrder: 1` and `k <= 5` for `instrumentOrder:
+ * 2` (a previous version accepted `k` up to 8 with order 2 and failed when building the graph).
+ * No kernel binds more than 8 storage buffers.
  */
 export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -135,13 +176,19 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const {predictorCount, output} = props;
+    const instrumentOrder = props.instrumentOrder ?? 1;
+    if (instrumentOrder !== 1 && instrumentOrder !== 2) {
+      throw new Error(`${id} instrumentOrder must be 1 or 2`);
+    }
+    const maximumPredictorCount =
+      getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount(instrumentOrder);
     if (
       !Number.isInteger(predictorCount) ||
       predictorCount < 1 ||
-      predictorCount > GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT
+      predictorCount > maximumPredictorCount
     ) {
       throw new Error(
-        `${id} predictorCount must be an integer in [1, ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT}]`
+        `${id} predictorCount must be an integer in [1, ${maximumPredictorCount}] with instrumentOrder ${instrumentOrder}`
       );
     }
     for (const [name, view] of [
@@ -183,10 +230,6 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       if (output.residuals.length < rows) {
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
-    }
-    const instrumentOrder = props.instrumentOrder ?? 1;
-    if (instrumentOrder !== 1 && instrumentOrder !== 2) {
-      throw new Error(`${id} instrumentOrder must be 1 or 2`);
     }
     this.instrumentOrder = instrumentOrder;
     if (props.tileRowCount !== undefined) {
@@ -238,7 +281,8 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
     const momentCount = m * m + m * q + m + q;
     // Means: x (k), W x (k), W y, y, then W^2 x (k) for instrument order 2.
     const meanCount = (instrumentOrder + 1) * k + 2;
-    const workspaceLength = meanCount + q;
+    // Workspace: the means, then delta (q), then ||W||_inf.
+    const workspaceLength = meanCount + q + 1;
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const partialMeans = transient('partial-means', tileCount * meanCount);
@@ -248,6 +292,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
     const partialResiduals = transient('partial-residuals', tileCount * RESIDUAL_SUM_COUNT);
     const residualSums = transient('residual-sums', RESIDUAL_SUM_COUNT);
     const akCount = ANSELIN_KELEJIAN_FIXED_SUM_COUNT + q;
+    const partialNorm = transient('partial-weights-norm', tileCount);
     const partialAk = transient('partial-anselin-kelejian', tileCount * akCount);
     const akSums = transient('anselin-kelejian-sums', akCount);
     const residualView = output.residuals ?? transient('residuals', rowCount);
@@ -271,7 +316,8 @@ const TILE_ROWS: u32 = ${tileRowCount}u;
 const TILE_COUNT: u32 = ${tileCount}u;
 const MEAN_COUNT: u32 = ${meanCount}u;
 const MOMENTS: u32 = ${momentCount}u;
-const W_DELTA: u32 = ${meanCount}u;`;
+const W_DELTA: u32 = ${meanCount}u;
+const W_NORM: u32 = ${meanCount + q}u;`;
     const mergeLoop = (stride: number) => `var sum = 0.0;
   var compensation = 0.0;
   for (var tile = 0u; tile < TILE_COUNT; tile++) {
@@ -352,6 +398,38 @@ ${getCenteredRowWGSL()}`;
         `${mergeLoop(meanCount)}
   workspace[workspaceOffset + index] = sum / f32(ROWS);`
       ),
+      // ||W||_inf, the largest absolute row sum: the admissible interval of rho is |rho| ||W||_inf < 1.
+      kernel(
+        'weights-norm-tiles',
+        [rowBindings[0], rowBindings[1], rowBindings[2], f32('partial', partialNorm, 'read_write')],
+        tileCount,
+        constants,
+        `let firstRow = index * TILE_ROWS;
+  let lastRow = min(firstRow + TILE_ROWS, ROWS);
+  var largest = 0.0;
+  for (var row = firstRow; row < lastRow; row++) {
+    var rowSum = 0.0;
+    for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+      if (neighbors[neighborsOffset + slot] < ROWS) {
+        rowSum += abs(weights[weightsOffset + slot]);
+      }
+    }
+    largest = max(largest, rowSum);
+  }
+  partial[partialOffset + index] = largest;`,
+        TILE_WORKGROUP_SIZE
+      ),
+      kernel(
+        'weights-norm-merge',
+        [f32('partial', partialNorm, 'read'), f32('workspace', workspace, 'read_write')],
+        1,
+        constants,
+        `var largest = 0.0;
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    largest = max(largest, partial[partialOffset + tile]);
+  }
+  workspace[workspaceOffset + W_NORM] = largest;`
+      ),
       kernel(
         'moments-tiles',
         [
@@ -406,7 +484,8 @@ ${getSolveWGSL(m, q)}`,
   var meanQuadratic = 0.0;
   var unusedVector: array<f32, ${q}>;
   var unusedQuadratic = 0.0;
-  let ok = solveSystem(&delta, &inverseDiagonal, &meanQuadratic, &unusedVector, &unusedQuadratic);
+  var unusedDiagnostics: array<f32, 6>;
+  let ok = solveSystem(&delta, &inverseDiagonal, &meanQuadratic, &unusedVector, &unusedQuadratic, &unusedDiagnostics, false);
   for (var column = 0u; column < Q; column++) {
     workspace[workspaceOffset + W_DELTA + column] = select(getNaN(), delta[column], ok);
   }`
@@ -683,13 +762,20 @@ fn regressorMean(column: u32) -> f32 {
 
 ${getCholeskyWGSL(m)}
 ${q === m ? '' : getCholeskyWGSL(q)}
+${[...new Set([m, q])].map(size => getSymmetricEigenvalueRangeWGSL(size)).join('\n')}
+${getBelsleyConditionNumberWGSL(q)}
 
+// With wantDiagnostics, diagnostics = [Belsley condition number of [1, PZ], correlation condition
+// number of Z'PZ, largest variance inflation factor of Z'PZ, correlation condition number of the
+// instruments, first-stage F of the excluded instruments, their partial R squared].
 fn solveSystem(
   delta: ptr<function, array<f32, ${q}>>,
   inverseDiagonal: ptr<function, array<f32, ${q}>>,
   meanQuadratic: ptr<function, f32>,
   second: ptr<function, array<f32, ${q}>>,
-  secondQuadratic: ptr<function, f32>
+  secondQuadratic: ptr<function, f32>,
+  diagnostics: ptr<function, array<f32, 6>>,
+  wantDiagnostics: bool
 ) -> bool {
   let instrumentScalars = M * M + M * Q;
   var instrumentScale: array<f32, ${m}>;
@@ -714,8 +800,39 @@ fn solveSystem(
       factor[a * M + c] = moments[momentsOffset + a * M + c] * instrumentScale[a] * instrumentScale[c];
     }
   }
+  if (wantDiagnostics) {
+    var instrumentCorrelation = factor;
+    let instrumentRange = getSymmetricEigenvalueRange_${m}(&instrumentCorrelation);
+    (*diagnostics)[3] = instrumentRange.y / max(instrumentRange.x, 1.0e-30);
+  }
   if (!choleskyFactor_${m}(&factor)) {
     return false;
+  }
+  if (wantDiagnostics) {
+    // First stage of W y on the instruments: explained sums of squares from the forward
+    // substitution y = L^-1 (scaled H'z); the first K instruments are the included X.
+    var reduced: array<f32, ${m}>;
+    for (var a = 0u; a < M; a++) {
+      reduced[a] = moments[momentsOffset + M * M + a * Q + K] * instrumentScale[a];
+    }
+    var explainedFull = 0.0;
+    var explainedRestricted = 0.0;
+    for (var row = 0u; row < M; row++) {
+      var value = reduced[row];
+      for (var j = 0u; j < row; j++) {
+        value = value - factor[row * M + j] * reduced[j];
+      }
+      value = value / factor[row * M + row];
+      reduced[row] = value;
+      explainedFull += value * value;
+      if (row < K) {
+        explainedRestricted += value * value;
+      }
+    }
+    let total = moments[momentsOffset + instrumentScalars + M + K];
+    let excluded = explainedFull - explainedRestricted;
+    (*diagnostics)[4] = (excluded / f32(M - K)) / ((total - explainedFull) / (f32(ROWS) - f32(M) - 1.0));
+    (*diagnostics)[5] = excluded / (total - explainedRestricted);
   }
   // x1 = (H'H)^-1 H'Z column by column, x2 = (H'H)^-1 H'y (scaled instrument space).
   var projectedInstruments: array<f32, ${m * q}>;
@@ -750,8 +867,46 @@ fn solveSystem(
       normal[b * Q + c] = sum;
     }
   }
+  var normalDiagonal: array<f32, ${q}>;
+  if (wantDiagnostics) {
+    for (var b = 0u; b < Q; b++) {
+      normalDiagonal[b] = normal[b * Q + b];
+    }
+    // Correlation condition number of Z'PZ (unit diagonal) and Belsley's of the raw [1, PZ]
+    // design with unit columns, from the Cholesky factor of the correlation matrix and the column
+    // means (never the raw Gram matrix; see getBelsleyConditionNumberWGSL).
+    var secondCorrelation: array<f32, ${q * q}>;
+    var alpha: array<f32, ${q}>;
+    var beta: array<f32, ${q}>;
+    let sampleSize = f32(ROWS);
+    for (var b = 0u; b < Q; b++) {
+      let meanB = regressorMean(b);
+      let centered = normal[b * Q + b] / (regressorScale[b] * regressorScale[b]);
+      let rawNorm = sqrt(sampleSize * meanB * meanB + centered);
+      alpha[b] = sqrt(sampleSize) * meanB / rawNorm;
+      beta[b] = sqrt(centered) / rawNorm;
+      for (var c = 0u; c < Q; c++) {
+        secondCorrelation[b * Q + c] = select(normal[b * Q + c] / sqrt(normal[b * Q + b] * normal[c * Q + c]), 1.0, b == c);
+      }
+    }
+    var correlationEigen = secondCorrelation;
+    let correlationRange = getSymmetricEigenvalueRange_${q}(&correlationEigen);
+    (*diagnostics)[1] = correlationRange.y / max(correlationRange.x, 1.0e-30);
+    var belsley = 3.0e38;
+    if (choleskyFactor_${q}(&secondCorrelation)) {
+      belsley = getBelsleyConditionNumber_${q}(&secondCorrelation, &alpha, &beta);
+    }
+    (*diagnostics)[0] = belsley;
+  }
   if (!choleskyFactor_${q}(&normal)) {
     return false;
+  }
+  if (wantDiagnostics) {
+    var inflation = 0.0;
+    for (var b = 0u; b < Q; b++) {
+      inflation = max(inflation, choleskyInverseDiagonal_${q}(&normal, b) * normalDiagonal[b]);
+    }
+    (*diagnostics)[2] = inflation;
   }
   choleskySolve_${q}(&normal, &rhs);
   for (var b = 0u; b < Q; b++) {
@@ -796,7 +951,7 @@ fn fail(status: u32) {
   for (var slot = 0u; slot < ${(k + 2) * 4}u; slot++) {
     tableOut[tableOutOffset + slot] = nan;
   }
-  for (var slot = 0u; slot < 7u; slot++) {
+  for (var slot = 0u; slot < ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH}u; slot++) {
     summaryOut[summaryOutOffset + slot] = nan;
   }
   summaryOut[summaryOutOffset] = f32(ROWS);
@@ -826,7 +981,8 @@ fn finish() {
     productVector[b] = akSums[akSumsOffset + ${ANSELIN_KELEJIAN_FIXED_SUM_COUNT}u + b];
   }
   var productQuadratic = 0.0;
-  if (!solveSystem(&delta, &inverseDiagonal, &meanQuadratic, &productVector, &productQuadratic)) {
+  var diagnostics: array<f32, 6>;
+  if (!solveSystem(&delta, &inverseDiagonal, &meanQuadratic, &productVector, &productQuadratic, &diagnostics, true)) {
     fail(1u);
     return;
   }
@@ -869,6 +1025,20 @@ fn finish() {
   summaryOut[summaryOutOffset + 4u] = moranI;
   summaryOut[summaryOutOffset + 5u] = anselinKelejian;
   summaryOut[summaryOutOffset + 6u] = erfcValue(sqrt(max(anselinKelejian, 0.0) * 0.5));
+  // Conditioning of the second-stage and instrument systems; a warning never changes the status.
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER}u] = diagnostics[0];
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER}u] = diagnostics[1];
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR}u] = diagnostics[2];
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_INSTRUMENT_CORRELATION_CONDITION_NUMBER}u] = diagnostics[3];
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PRECISION_WARNING}u] =
+    select(0.0, 1.0, diagnostics[1] > ${getWGSLFloatLiteral(GPU_REGRESSION_PRECISION_CONDITION_LIMIT)} || diagnostics[3] > ${getWGSLFloatLiteral(GPU_REGRESSION_PRECISION_CONDITION_LIMIT)});
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_F}u] = diagnostics[4];
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_PARTIAL_R_SQUARED}u] = diagnostics[5];
+  // rho is the last delta; admissible when |rho| ||W||_inf < 1 (NaN compares false: flagged).
+  let weightsNorm = workspace[workspaceOffset + W_NORM];
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_WEIGHTS_INFINITY_NORM}u] = weightsNorm;
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RHO_OUTSIDE_ADMISSIBLE_RANGE}u] =
+    select(1.0, 0.0, abs(delta[K]) * weightsNorm < 1.0);
   statusOut[statusOutOffset] = 0u;
 }
 `;

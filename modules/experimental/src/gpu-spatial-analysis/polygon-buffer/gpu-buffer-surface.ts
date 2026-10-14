@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUScan,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -29,6 +30,8 @@ import {
   type GPUPolygonOverlayCapacity,
   type GPUPolygonOverlayOutput
 } from '../polygon-overlay/index';
+import type {GPUPolygonOverlayFillRule} from '../polygon-overlay/gpu-polygon-overlay';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUBufferSurface';
 
@@ -48,6 +51,13 @@ type PackedPolygons = Omit<GPUPolygonGeometryPort, 'positions' | 'sourceIds'> & 
 /** Properties for {@link GPUBufferSurface}. */
 export type GPUBufferSurfaceProps = {
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   geometry: PackedLines | PackedPolygons;
   /** `[distance, mitreLimit, 0, 0]`, matching `GPUOffsetCurve`. */
   parameters: GraphDataView<'float32'>;
@@ -63,20 +73,45 @@ export type GPUBufferSurfaceProps = {
 };
 
 /**
- * Builds topologically repaired polygon buffer surfaces for lines and polygons.
+ * Builds polygon buffer surfaces for lines and polygons.
  *
  * This is deliberately distinct from `GPUOffsetCurve`: offset curves are generated for both
  * sides of a line (with round, flat or square caps) or for every normalized polygon ring, then
- * the resulting boundaries are noded, dissolved and polygonized by `GPUPolygonOverlay`. Thus
- * self-crossing raw offsets, overlapping component buffers, collapsed holes and shared internal
- * boundaries are resolved into a surface instead of being exposed as render-only curves.
+ * the resulting raw boundaries are noded and dissolved by `GPUPolygonOverlay` into polygons.
+ *
+ * Ring preparation: consecutive duplicate vertices are dropped from every line and ring, and a
+ * polygon ring's closing vertex is dropped when it repeats the first one (GeoJSON and GeoArrow
+ * rings are closed; the offset curve requires open rings, and a repeated closing vertex would leave
+ * a notch there). Lines keep their endpoints, so a closed line stays a line with coincident ends.
+ *
+ * Fill rule: the raw offset boundary is dissolved with a WINDING rule, not even-odd, so regions
+ * the raw offset covers more than once (hairpins and switchbacks closer than twice the distance,
+ * self-crossing lines, polygon slots narrower than twice the distance) stay inside, as in
+ * `shapely.buffer`. Polygons are normalized to counter-clockwise shells and clockwise holes and
+ * dissolved with `'positive'` winding, which also discards the inverted loops a negative buffer
+ * leaves where a neck is thinner than twice the distance; lines emit a clockwise outline and use
+ * `'negative'`. Checked against `shapely.buffer` on hairpin, figure-eight, slot and thin-neck
+ * shapes with mitre joins.
+ *
+ * Known limitation: a polygon hole that the offset collapses (hole narrower than twice the
+ * distance for a positive buffer) is not removed. The raw offset of the hole keeps its clockwise
+ * orientation when it inverts, so it is carved out as a smaller reflected hole instead of
+ * disappearing. A "union of simple pieces" construction (polygon union ring strokes) would fix it
+ * and is deferred.
+ *
+ * Planar only: the distance is in position units, so buffering longitude/latitude degrees gives an
+ * ellipse on the ground and a longitude-latitude `spatialContext` throws. Project first, for example
+ * with `createGPULocalFrame` and `GPULocalFrameProjection`, and buffer in the frame's meters.
  *
  * Polygon distance is signed. Positive grows shells and shrinks holes; negative does the reverse.
  * A non-positive line distance emits an empty surface, matching ordinary planar buffer semantics.
+ * `output.status.requiredCount` is the unclamped ring requirement of the assembly.
  */
 export class GPUBufferSurface implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUBufferSurfaceProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   readonly joinStyle: GPUOffsetCurveJoinStyle;
   readonly capStyle: GPUBufferCapStyle;
   readonly quadSegments: number;
@@ -84,6 +119,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
 
   constructor(props: GPUBufferSurfaceProps) {
     this.id = props.id ?? 'buffer-surface';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     this.joinStyle = props.joinStyle ?? 'round';
     this.capStyle = props.capStyle ?? 'round';
@@ -149,6 +185,13 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     polygons: PackedPolygons
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    const prepared = this._getCompactionNodes(
+      graph,
+      'ring',
+      polygons.positions,
+      polygons.ringOffsets,
+      true
+    );
     const normalized = createTransientView(
       graph,
       `${id}-normalized`,
@@ -180,6 +223,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       polygons.ringOffsets.length
     );
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...prepared.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-polygon-parameters`,
         operation: OPERATION,
@@ -195,8 +239,9 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       }),
       ...new GPUGeometryOrientation({
         id: `${id}-orient`,
-        positions: polygons.positions,
-        ringOffsets: polygons.ringOffsets,
+        spatialContext: this.spatialContext,
+        positions: prepared.positions,
+        ringOffsets: prepared.offsets,
         polygonOffsets: polygons.polygonOffsets,
         mode: 'orient-polygons',
         parameters: orientationParameters,
@@ -204,8 +249,9 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       }).getCommandNodes(graph),
       ...new GPUOffsetCurve({
         id: `${id}-offset`,
+        spatialContext: this.spatialContext,
         positions: normalized,
-        pathOffsets: polygons.ringOffsets,
+        pathOffsets: prepared.offsets,
         geometryType: 'rings',
         joinStyle: this.joinStyle,
         quadSegments: this.quadSegments,
@@ -217,7 +263,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         operation: OPERATION,
         variant: 'polygon-offsets',
         bindings: [
-          {name: 'input', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+          {name: 'input', view: prepared.offsets, type: 'u32', access: 'read'},
           {name: 'output', view: rawRingOffsets, type: 'u32', access: 'read_write'}
         ],
         invocationCount: polygons.ringOffsets.length,
@@ -226,14 +272,18 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       })
     ];
     nodes.push(
-      ...this._getDissolveNodes(graph, {
-        kind: 'polygons',
-        positions: rawPositions,
-        featureOffsets: polygons.featureOffsets,
-        polygonOffsets: polygons.polygonOffsets,
-        ringOffsets: rawRingOffsets,
-        sourceIds: polygons.sourceIds
-      })
+      ...this._getDissolveNodes(
+        graph,
+        {
+          kind: 'polygons',
+          positions: rawPositions,
+          featureOffsets: polygons.featureOffsets,
+          polygonOffsets: polygons.polygonOffsets,
+          ringOffsets: rawRingOffsets,
+          sourceIds: polygons.sourceIds
+        },
+        'positive'
+      )
     );
     return nodes;
   }
@@ -243,6 +293,13 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     lines: PackedLines
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    const prepared = this._getCompactionNodes(
+      graph,
+      'line',
+      lines.positions,
+      lines.lineOffsets,
+      false
+    );
     const lineCount = lines.lineOffsets.length - 1;
     const sideRows = lines.positions.length * this.rowsPerVertex;
     const capRows =
@@ -266,6 +323,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       lineCount + 1
     );
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...prepared.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-line-parameters`,
         operation: OPERATION,
@@ -283,8 +341,9 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       }),
       ...new GPUOffsetCurve({
         id: `${id}-left-offset`,
-        positions: lines.positions,
-        pathOffsets: lines.lineOffsets,
+        spatialContext: this.spatialContext,
+        positions: prepared.positions,
+        pathOffsets: prepared.offsets,
         geometryType: 'lines',
         joinStyle: this.joinStyle,
         quadSegments: this.quadSegments,
@@ -293,8 +352,9 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       }).getCommandNodes(graph),
       ...new GPUOffsetCurve({
         id: `${id}-right-offset`,
-        positions: lines.positions,
-        pathOffsets: lines.lineOffsets,
+        spatialContext: this.spatialContext,
+        positions: prepared.positions,
+        pathOffsets: prepared.offsets,
         geometryType: 'lines',
         joinStyle: this.joinStyle,
         quadSegments: this.quadSegments,
@@ -306,7 +366,7 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
         operation: OPERATION,
         variant: 'line-topology',
         bindings: [
-          {name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'lineOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
           {name: 'ringOffsets', view: rawOffsets, type: 'u32', access: 'read_write'},
           {name: 'identityOffsets', view: identityOffsets, type: 'u32', access: 'read_write'}
         ],
@@ -321,8 +381,8 @@ const CAP_ROWS: u32 = ${capRows}u;`,
         operation: OPERATION,
         variant: `line-${this.capStyle}`,
         bindings: [
-          {name: 'positions', view: lines.positions, type: 'f32', access: 'read'},
-          {name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'positions', view: prepared.positions, type: 'f32', access: 'read'},
+          {name: 'lineOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
           {name: 'ringOffsets', view: rawOffsets, type: 'u32', access: 'read'},
           {name: 'parameters', view: positiveParameters, type: 'f32', access: 'read'},
           {name: 'leftPositions', view: leftPositions, type: 'f32', access: 'read'},
@@ -383,16 +443,123 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
       })
     ];
     nodes.push(
-      ...this._getDissolveNodes(graph, {
-        kind: 'polygons',
-        positions: rawPositions,
-        featureOffsets: identityOffsets,
-        polygonOffsets: identityOffsets,
-        ringOffsets: rawOffsets,
-        sourceIds: lines.sourceIds
-      })
+      ...this._getDissolveNodes(
+        graph,
+        {
+          kind: 'polygons',
+          positions: rawPositions,
+          featureOffsets: identityOffsets,
+          polygonOffsets: identityOffsets,
+          ringOffsets: rawOffsets,
+          sourceIds: lines.sourceIds
+        },
+        'negative'
+      )
     );
     return nodes;
+  }
+
+  /**
+   * Drops consecutive duplicate vertices (and, for rings, a closing vertex equal to the first)
+   * with a keep flag, an inclusive scan and a scatter, publishing compacted positions and offsets.
+   * Rows past the last offset are unused.
+   */
+  private _getCompactionNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    kind: 'line' | 'ring',
+    positions: GraphDataView<'float32x2'>,
+    offsets: GraphDataView<'uint32'>,
+    dropClosingVertex: boolean
+  ): {
+    nodes: GPUCommandNode<Parameters>[];
+    positions: GraphDataView<'float32x2'>;
+    offsets: GraphDataView<'uint32'>;
+  } {
+    const {id} = this;
+    const prefix = `${id}-${kind}-compact`;
+    const keep = createTransientView(graph, `${prefix}-keep`, 'uint32', positions.length);
+    const kept = createTransientView(graph, `${prefix}-kept`, 'uint32', positions.length);
+    const compactPositions = createTransientView(
+      graph,
+      `${prefix}-positions`,
+      'float32x2',
+      positions.length
+    );
+    const compactOffsets = createTransientView(
+      graph,
+      `${prefix}-offsets`,
+      'uint32',
+      offsets.length
+    );
+    const pathCount = offsets.length - 1;
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${prefix}-flags`,
+        operation: OPERATION,
+        variant: `${kind}-compact-flags`,
+        bindings: [
+          {name: 'positions', view: positions, type: 'f32', access: 'read'},
+          {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+          {name: 'keep', view: keep, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: positions.length,
+        declarations: `const PATH_COUNT: u32 = ${pathCount}u;
+const DROP_CLOSING: bool = ${dropClosingVertex};
+
+fn isSame(first: u32, second: u32) -> bool {
+  return positions[positionsOffset + 2u * first] == positions[positionsOffset + 2u * second] &&
+    positions[positionsOffset + 2u * first + 1u] == positions[positionsOffset + 2u * second + 1u];
+}`,
+        body: `var path = 0u;
+  var high = PATH_COUNT;
+  while (path + 1u < high) {
+    let middle = (path + high) / 2u;
+    if (offsets[offsetsOffset + middle] <= index) { path = middle; } else { high = middle; }
+  }
+  let begin = offsets[offsetsOffset + path];
+  let end = offsets[offsetsOffset + path + 1u];
+  var flag = index < end;
+  if (flag && index > begin && isSame(index - 1u, index)) { flag = false; }
+  if (flag && DROP_CLOSING && index + 1u == end && index > begin && isSame(begin, index)) { flag = false; }
+  keep[keepOffset + index] = select(0u, 1u, flag);`
+      }),
+      ...new GPUScan({
+        id: `${prefix}-scan`,
+        input: keep,
+        output: kept,
+        mode: 'inclusive'
+      }).getCommandNodes(graph),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${prefix}-offsets`,
+        operation: OPERATION,
+        variant: `${kind}-compact-offsets`,
+        bindings: [
+          {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+          {name: 'kept', view: kept, type: 'u32', access: 'read'},
+          {name: 'output', view: compactOffsets, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: offsets.length,
+        body: `let begin = offsets[offsetsOffset + index];
+  output[outputOffset + index] = select(kept[keptOffset + begin - 1u], 0u, begin == 0u);`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${prefix}-scatter`,
+        operation: OPERATION,
+        variant: `${kind}-compact-scatter`,
+        bindings: [
+          {name: 'positions', view: positions, type: 'f32', access: 'read'},
+          {name: 'keep', view: keep, type: 'u32', access: 'read'},
+          {name: 'kept', view: kept, type: 'u32', access: 'read'},
+          {name: 'output', view: compactPositions, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: positions.length,
+        body: `if (keep[keepOffset + index] == 0u) { return; }
+  let row = kept[keptOffset + index] - 1u;
+  output[outputOffset + 2u * row] = positions[positionsOffset + 2u * index];
+  output[outputOffset + 2u * row + 1u] = positions[positionsOffset + 2u * index + 1u];`
+      })
+    ];
+    return {nodes, positions: compactPositions, offsets: compactOffsets};
   }
 
   private _getCapWGSL(
@@ -423,13 +590,16 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
 
   private _getDissolveNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    raw: PackedPolygons
+    raw: PackedPolygons,
+    fillRule: GPUPolygonOverlayFillRule
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     return new GPUPolygonOverlay({
       id: `${id}-repair`,
+      spatialContext: this.spatialContext,
       left: raw,
       operation: 'dissolve',
+      fillRule,
       capacity: props.capacity,
       vertexTolerance: props.vertexTolerance,
       output: props.output,

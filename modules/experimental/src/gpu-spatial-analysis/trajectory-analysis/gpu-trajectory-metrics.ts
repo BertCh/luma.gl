@@ -20,7 +20,11 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../utils/gpu-contributor-utils';
-import {validateGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
+import type {GPUSpatialContext} from '../contracts/index';
+import {
+  getTrajectoryGeodesicRadius,
+  resolveTrajectorySpatialContext
+} from './trajectory-spatial-context';
 import {
   createTrajectoryCentroidOffsetsNode,
   createTrajectoryFinalizeNode,
@@ -72,9 +76,18 @@ export type GPUTrajectoryStopOutput = {
 export type GPUTrajectoryMetricsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'trajectory-metrics'`. */
   id?: string;
-  /** Planar metric context of the trajectory positions and derived distances. */
-  spatialContext: GPUSpatialContext;
-  /** Packed planar positions, one row per sample, sorted by track and then time. Compile-time length. */
+  /**
+   * Coordinate space and metric of the positions. Omitted means native planar coordinates and
+   * Euclidean distances in position units. `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` means positions are `(longitude, latitude)` degrees and distances are
+   * great-circle meters on a sphere of `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`),
+   * so speeds are meters per timestamp unit. Other contexts throw.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Packed positions, one row per sample, sorted by track and then time. Planar `(x, y)` or
+   * geographic `(longitude, latitude)` degrees, see `spatialContext`. Compile-time length.
+   */
   positions: GraphDataView<'float32x2'>;
   /**
    * Packed sample times, same length as `positions`. Three representations:
@@ -125,9 +138,12 @@ export type GPUTrajectoryMetricsProps = {
   stepSpeeds?: GraphDataView<'float32'>;
   /**
    * Optional per-row heading in radians of the step that ends at the row, `positions.length`
-   * rows: `atan2(deltaY, deltaX)` in `(-pi, pi]`, measured counter-clockwise from +x of the planar
-   * positions. Zero-distance steps, the first row of every track and rows outside every track
-   * are 0.
+   * rows, always in `(-pi, pi]`. Planar: `atan2(deltaY, deltaX)`, counter-clockwise from +x.
+   * Great-circle: the initial bearing of the step in the same convention, counterclockwise from
+   * east (`pi / 2 - bearing`, where `GPUGeodesicPairs` reports `bearing` in degrees clockwise from
+   * north), so the column means the same in every context and matches a run on positions
+   * projected with `createGPULocalFrame`. Zero-distance steps, the first row of every track and
+   * rows outside every track are 0.
    */
   stepHeadings?: GraphDataView<'float32'>;
   /**
@@ -184,7 +200,16 @@ export type GPUTrajectoryMetricsProps = {
  * `(aHigh - bHigh) + (aLow - bLow)` and the ordering test is exact. The step and qualify kernels
  * are split in two only when double-single times would push them past eight storage bindings.
  *
- * Non-goals: geodesic (haversine) distances (project upstream); map
+ * Spatial context: without `spatialContext` (or with a planar one) distances are Euclidean in
+ * position units and headings are `atan2(deltaY, deltaX)`. With `{coordinateSpace:
+ * 'longitude-latitude', metric: 'great-circle'}`, positions are `(longitude, latitude)` degrees,
+ * step distances are great-circle meters (`geodesicHaversineDistance` on `sphereRadius`, default
+ * `GPU_EARTH_MEAN_RADIUS_METERS`), speeds are meters per timestamp unit, and headings are initial
+ * bearings expressed counterclockwise from east (`pi / 2 - bearing`) in `(-pi, pi]`. Stop `centroids` are arithmetic means of
+ * the coordinates, so a dwell that straddles the antimeridian or a pole has a meaningless centroid
+ * in great-circle mode. Positions are f32 degrees (about 1 m resolution at mid-latitudes).
+ *
+ * Non-goals: ellipsoidal (Vincenty) distances; map
  * matching; trajectory simplification; resampling; tracks given as unsorted rows (sort upstream
  * with `GPUSort` or derive offsets with `GPUSegmentedLayout` or `GPURunLengthEncode`); chunked
  * inputs.
@@ -201,14 +226,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     this.id = props.id ?? 'trajectory-metrics';
     this.props = props;
     const id = this.id;
-    this.spatialContext = props.spatialContext;
-    validateGPUSpatialContext(id, this.spatialContext);
-    if (
-      this.spatialContext.coordinateSpace !== 'planar' ||
-      !['native', 'none'].includes(this.spatialContext.metric)
-    ) {
-      throw new Error(`${id} trajectory metrics require a planar spatial context`);
-    }
+    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     if (props.timestampsLow) {
@@ -375,6 +393,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     const maximumSegmentCount = graph.device.limits.maxComputeWorkgroupsPerDimension;
     const hasStops = Boolean(stops || props.trackStopCounts);
     const nodes: GPUCommandNode<Parameters>[] = [];
+    const geodesicRadius = getTrajectoryGeodesicRadius(this.spatialContext);
 
     const needsLengths = Boolean(props.trackLengths || props.averageSpeeds);
     const stepDistances = needsLengths
@@ -400,6 +419,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
         timestampsLow: props.timestampsLow,
         trackOffsets: props.trackOffsets,
         parameters: hasStops ? props.parameters : undefined,
+        geodesicRadius,
         stepDistances,
         stepSpeeds,
         runStartFlags,
@@ -415,6 +435,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
           timestamps: props.timestamps,
           timestampsLow: props.timestampsLow,
           trackOffsets: props.trackOffsets,
+          geodesicRadius,
           stepSpeeds: props.stepSpeeds,
           stepHeadings: props.stepHeadings,
           stepAccelerations: props.stepAccelerations

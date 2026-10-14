@@ -8,6 +8,8 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {SPATIAL_JOIN_WGSL_HELPERS} from '../spatial-join/spatial-join-passes';
 
 const OPERATION = 'GPUTrajectoryEncounters';
@@ -24,6 +26,12 @@ export type EncounterShape = {
   /** f32-rounded domain `[minX, minY, maxX, maxY]`. */
   bounds: readonly [number, number, number, number];
   cellSize: number;
+  /**
+   * Great-circle mode: `radius` is the sphere radius in meters, `maximumDistance` the largest
+   * distance in meters the lattice can search conservatively, and `wrapColumns` whether the
+   * columns span a full turn of longitude and wrap across the antimeridian.
+   */
+  geodesic?: {radius: number; maximumDistance: number; wrapColumns: boolean};
 };
 
 function getShapeConstants(shape: EncounterShape): string {
@@ -38,7 +46,7 @@ const MINIMUM_X: f32 = ${minX};
 const MINIMUM_Y: f32 = ${minY};
 const MAXIMUM_X: f32 = ${maxX};
 const MAXIMUM_Y: f32 = ${maxY};
-const CELL_SIZE: f32 = ${getWGSLFloatLiteral(shape.cellSize)};`;
+const CELL_SIZE: f32 = ${getWGSLFloatLiteral(shape.geodesic ? shape.geodesic.maximumDistance : shape.cellSize)};`;
 }
 
 /** Builds the `(x, y, bucket + 0.5)` positions of the 3D grid. Invalid tracks become NaN. @internal */
@@ -65,7 +73,8 @@ export function createEncounterPositionsNode<Parameters>(
     variant: 'positions',
     bindings,
     invocationCount: props.shape.trackCount * props.shape.bucketCount,
-    declarations: getShapeConstants(props.shape),
+    declarations: `${props.shape.geodesic?.wrapColumns ? IS_FINITE_VALUE_WGSL : ''}
+${getShapeConstants(props.shape)}`,
     body: `let track = index / BUCKET_COUNT;
   let bucket = index % BUCKET_COUNT;
   var x = samples[samplesOffset + index * 2u];
@@ -76,6 +85,14 @@ export function createEncounterPositionsNode<Parameters>(
     // A runtime expression keeps the quiet-NaN bit pattern out of const evaluation.
     x = bitcast<f32>(0x7fc00000u | (index & 0u));
     y = x;
+  }`
+      : ''
+  }
+  ${
+    props.shape.geodesic?.wrapColumns
+      ? `// Unwrapped longitudes (for example from a segment across the antimeridian) fold into [-180, 180].
+  if (isFiniteValue(x)) {
+    x = x - 360.0 * round(x / 360.0);
   }`
       : ''
   }
@@ -120,6 +137,7 @@ export function createEncounterScanNode<Parameters>(
     ],
     invocationCount: props.shape.trackCount * props.shape.bucketCount,
     declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
+${props.shape.geodesic ? GEODESIC_WGSL : ''}
 ${getShapeConstants(props.shape)}
 // Same rule as the GPUGridIndex build, so a point and its query agree on the cell.
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
@@ -153,11 +171,20 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   for (var shell = 0u; shell < 5u; shell++) {
     var neighborColumn = column;
     var neighborRow = row;
-    if (shell == 1u) { neighborColumn = column + 1u; }
+    ${
+      props.shape.geodesic?.wrapColumns
+        ? `// The columns span all longitudes, so the east and west neighbours wrap across the
+    // antimeridian (the lattice has at least three columns, so no cell is visited twice).
+    if (shell == 1u) { neighborColumn = (column + 1u) % COLUMNS; }
+    else if (shell == 2u) { neighborColumn = (column + COLUMNS - 1u) % COLUMNS; neighborRow = row + 1u; }
+    else if (shell == 3u) { neighborRow = row + 1u; }
+    else if (shell == 4u) { neighborColumn = (column + 1u) % COLUMNS; neighborRow = row + 1u; }`
+        : `if (shell == 1u) { neighborColumn = column + 1u; }
     else if (shell == 2u) { neighborColumn = column - 1u; neighborRow = row + 1u; }
     else if (shell == 3u) { neighborRow = row + 1u; }
     else if (shell == 4u) { neighborColumn = column + 1u; neighborRow = row + 1u; }
-    // Unsigned wrap of column - 1u at column 0 gives a value above COLUMNS, rejected here.
+    // Unsigned wrap of column - 1u at column 0 gives a value above COLUMNS, rejected here.`
+    }
     if (neighborColumn >= COLUMNS || neighborRow >= ROWS) { continue; }
     let cell = (bucket * ROWS + neighborRow) * COLUMNS + neighborColumn;
     let cellBegin = cellOffsets[cellOffsetsOffset + cell];
@@ -166,11 +193,19 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
       let other = objectIds[objectIdsOffset + entry];
       let otherTrack = other / BUCKET_COUNT;
       if (shell == 0u && otherTrack <= track) { continue; }
-      let offset = vec2f(
+      ${
+        props.shape.geodesic
+          ? `let separation = geodesicHaversineDistance(
+        vec2<f32>(x, y),
+        vec2<f32>(positions[positionsOffset + other * 3u], positions[positionsOffset + other * 3u + 1u]),
+        ${getWGSLFloatLiteral(props.shape.geodesic.radius)}
+      );`
+          : `let offset = vec2f(
         positions[positionsOffset + other * 3u] - x,
         positions[positionsOffset + other * 3u + 1u] - y
       );
-      let separation = length(offset);
+      let separation = length(offset);`
+      }
       if (separation <= limit) {
         let slot = atomicAdd(&state[stateOffset], 1u);
         if (slot < HIT_CAPACITY) {

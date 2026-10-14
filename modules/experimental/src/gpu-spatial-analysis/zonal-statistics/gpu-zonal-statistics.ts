@@ -20,13 +20,22 @@ import {
   validateGraphViewsBelongToGraph,
   validateGraphViewTopology
 } from '../../utils/gpu-contributor-utils';
-import {GPUPointInPolygonJoin} from '../spatial-join/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {GPUPointInPolygonJoin, type GPUPointInPolygonBoundaryRule} from '../spatial-join/index';
+import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
 import {validateDisjointOutputs} from '../spatial-join/spatial-join-passes';
 import {
   createTransientFloat32Rows,
   createZonalStatisticsAreaNode,
   createZonalStatisticsDensityNode,
+  createZonalStatisticsDeviationNode,
   createZonalStatisticsMeanNode,
+  createZonalStatisticsVarianceNode,
+  createZonalStatisticsWeightedDensityNode,
   createZonalStatisticsPrepareNodes,
   getZonalStatisticsExtentNodes,
   getZonalStatisticsPlan,
@@ -35,11 +44,16 @@ import {
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 
 const OPERATION = 'GPUZonalStatistics';
+/** Planar points and polygons, or longitude/latitude degrees with caller-supplied areas. */
+const SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const)
+});
 
 /**
  * Feature membership from polygon features: points are joined to polygons with
  * `GPUPointInPolygonJoin` every encoding. A point belongs to the containing feature with the
- * smallest row.
+ * smallest row; boundary points follow `boundaryRule` (half-open by default, so a point on a shared
+ * edge of a coverage is counted exactly once regardless of row order).
  *
  * Polygon geometry uses the GeoArrow-style layout of `GPUPointInPolygonJoin`; see that contributor for
  * the offset conventions. The polygon buffers' contents are per-frame; everything else here is
@@ -60,7 +74,20 @@ export type GPUZonalStatisticsPolygons = {
   candidateCapacity: number;
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. Compile-time. */
   leafCapacity?: number;
-  /** Count points on a ring boundary as contained. Defaults to `true`. Compile-time. */
+  /**
+   * How a point exactly on a polygon boundary is assigned; see
+   * `GPUPointInPolygonJoinProps.boundaryRule`. Defaults to `'half-open'`: a point on an edge or
+   * vertex shared by features of a valid coverage is counted exactly once, by the feature whose
+   * interior lies to its right/above, independent of the feature row order. Points on the outer
+   * right or top boundary of the coverage are counted by no feature. `'closed'` counts every
+   * boundary point (the smallest containing row wins, so shared-boundary ownership depends on row
+   * order); `'open'` counts only strict interiors. Compile-time.
+   */
+  boundaryRule?: GPUPointInPolygonBoundaryRule;
+  /**
+   * Legacy compile-time shorthand: `true` is `boundaryRule: 'closed'`, `false` is `'open'`. When
+   * neither is given the half-open rule applies.
+   */
   includeBoundary?: boolean;
 };
 
@@ -132,10 +159,27 @@ export type GPUZonalStatisticsOutput = {
   /** Maximum of the valid values, never weighted. NaN for features without valid rows. */
   maxima?: GraphDataView<'float32'>;
   /**
+   * Unbiased sample variance of the valid values. Unweighted: `sum (v - mean)^2 / (n - 1)`. With
+   * `weights`, which act as reliability weights: `sum w (v - m)^2 / (V1 - V2 / V1)` with
+   * `m` the weighted mean, `V1 = sum w` and `V2 = sum w^2`, which reduces to the unweighted form
+   * for unit weights (`numpy.cov(v, aweights=w, ddof=1)`). Two passes (mean first), so there is no
+   * catastrophic cancellation. Quiet NaN for features with fewer than two valid rows or a
+   * non-positive denominator. Requires packed (not chunked) point views.
+   */
+  variances?: GraphDataView<'float32'>;
+  /** `sqrt(variances)`; NaN where the variance is NaN. Same requirements as `variances`. */
+  standardDeviations?: GraphDataView<'float32'>;
+  /**
    * `counts / area` when the area is finite and positive, otherwise NaN. The area is `areas` when
-   * given, otherwise the GPU polygon area. Weighted density (`weightSums / area`) is not computed.
+   * given, otherwise the GPU polygon area (planar only: on a longitude/latitude context, pass
+   * spherical `areas`, for example from `GPUGeometryMeasures`).
    */
   densities?: GraphDataView<'float32'>;
+  /**
+   * `weightSums / area` (weighted density) when the area is finite and positive, otherwise NaN.
+   * Requires `weights`. Same area rules as `densities`.
+   */
+  weightedDensities?: GraphDataView<'float32'>;
   /**
    * GPU-computed polygon areas. Only valid for `kind: 'polygons'` without `areas`.
    * Per feature and polygon: `|area(shell)| - sum |area(hole)|`, summed over polygons, with each
@@ -189,6 +233,17 @@ export type GPUZonalStatisticsProps = {
   id?: string;
   /** Feature membership source. */
   features: GPUZonalStatisticsFeatures;
+  /**
+   * Coordinate context of the points and polygons. Omitted means native planar. Planar and
+   * `longitude-latitude` are accepted; other spaces throw. Membership is a point-in-polygon test
+   * in the coordinates as given, so in longitude/latitude it is topological with straight edges
+   * in degrees (not geodesics) and polygons crossing the antimeridian must be split. Areas are
+   * where the space matters: planar polygon area in degrees squared is wrong, so with a
+   * longitude/latitude context `densities`, `weightedDensities` and `featureAreas` from the GPU
+   * area are rejected at construction; pass spherical `areas` (square meters from
+   * `GPUGeometryMeasures`) instead. Counts, sums, means, extrema and variances are unaffected.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Planar points. Required for `kind: 'polygons'`, ignored for `kind: 'feature-rows'`. */
   points?: GPUFloat32Positions;
   /**
@@ -205,7 +260,8 @@ export type GPUZonalStatisticsProps = {
   weights?: GraphDataView<'float32'> | import('@luma.gl/gpgpu/gpu-core').GraphVectorView<'float32'>;
   /**
    * Optional per-feature areas (`featureCount` rows). They replace the GPU-computed polygon area
-   * and are required for densities with `kind: 'feature-rows'`. Per-frame contents.
+   * and are required for densities with `kind: 'feature-rows'` or a longitude/latitude context.
+   * Per-frame contents.
    */
   areas?: GraphDataView<'float32'>;
   /**
@@ -225,7 +281,10 @@ const PER_FEATURE_FLOAT_OUTPUTS = [
   'means',
   'minima',
   'maxima',
+  'variances',
+  'standardDeviations',
   'densities',
+  'weightedDensities',
   'featureAreas'
 ] as const;
 const PER_FEATURE_UINT32_OUTPUTS = ['counts', 'valueCounts'] as const;
@@ -255,7 +314,10 @@ const OUTPUT_NAMES = [
  * - Empty features (no valid rows) have `sums` 0, `weightSums` 0, `valueCounts` 0, and NaN
  *   `means`, `minima` and `maxima` (quiet NaN `0x7fc00000`, as `GPUGroupAggregation`). A weighted
  *   mean with a weight sum of 0 is NaN.
- * - Density is `counts[f] / area[f]` when the area is finite and positive, otherwise NaN.
+ * - Density is `counts[f] / area[f]` when the area is finite and positive, otherwise NaN. Weighted
+ *   density is `weightSums[f] / area[f]`.
+ * - Variance and standard deviation are the unbiased estimates described on
+ *   `GPUZonalStatisticsOutput.variances`, with NaN below two valid rows.
  * - The extent covers features with `counts > 0` and a finite statistic, and is `[0, 0]` when none
  *   qualifies.
  *
@@ -271,8 +333,9 @@ const OUTPUT_NAMES = [
  *
  * ## Non-goals
  *
- * No weighted density, no median or quantiles, no variance, no weighted minima or maxima, no
- * geographic (spherical) areas, and no union of overlapping polygons within one feature. The
+ * No median or quantiles (they need a per-feature sort of the values), no weighted minima or
+ * maxima, no GPU spherical polygon areas (pass `areas`), and no union of overlapping polygons
+ * within one feature. Membership is by point location, not by fractional coverage. The
  * contributor never compiles, encodes, submits, or reads back.
  */
 export class GPUZonalStatistics implements GPUCommandNodeProducer {
@@ -282,6 +345,8 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
   readonly props: GPUZonalStatisticsProps;
   /** Number of features, the row count of every per-feature output. */
   readonly featureCount: number;
+  /** Resolved coordinate context: native planar unless a longitude/latitude one was declared. */
+  readonly spatialContext: GPUSpatialContext;
   /** Accumulation order of sums and weight sums. */
   readonly sumOrder: GPUZonalStatisticsSumOrder;
   /** Number of points. */
@@ -295,6 +360,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     const {features, output, values, weights, areas} = props;
     this.sumOrder = props.sumOrder ?? getDefaultZonalSumOrder(props);
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
     if (this.sumOrder !== 'atomic' && this.sumOrder !== 'sorted') {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }
@@ -444,7 +510,10 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         maxima: Boolean(output.maxima),
         densities: Boolean(output.densities),
         featureAreas: Boolean(output.featureAreas),
-        extent: Boolean(output.extent)
+        extent: Boolean(output.extent),
+        weightedDensities: Boolean(output.weightedDensities),
+        variances: Boolean(output.variances),
+        standardDeviations: Boolean(output.standardDeviations)
       },
       extentStatistic: output.extentStatistic,
       hasWeights: Boolean(weights),
@@ -454,8 +523,34 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     if (this.plan.needValueStatistics && !values) {
       throw new Error(`${id} value statistics (sums, means, minima, maxima, ...) require values`);
     }
-    if (features.kind === 'feature-rows' && this.plan.needDensities && !areas) {
+    if (
+      features.kind === 'feature-rows' &&
+      (this.plan.needDensities || this.plan.needWeightedDensities) &&
+      !areas
+    ) {
       throw new Error(`${id} densities require areas with feature-rows features`);
+    }
+    if (output.weightedDensities && !weights) {
+      throw new Error(`${id} output.weightedDensities requires weights`);
+    }
+    if (this.spatialContext.coordinateSpace === 'longitude-latitude' && this.plan.needGPUAreas) {
+      // Planar shoelace area of degrees is wrong; the caller supplies spherical areas.
+      throw new Error(`${id} longitude-latitude densities need areas in square meters`);
+    }
+    if (this.plan.needVariances) {
+      for (const [name, view] of [
+        ['points', features.kind === 'polygons' ? props.points : undefined],
+        ['values', values],
+        ['weights', weights],
+        [
+          'pointFeatureRows',
+          features.kind === 'polygons' ? output.pointFeatureRows : features.pointFeatureRows
+        ]
+      ] as const) {
+        if (view instanceof GraphVectorView) {
+          throw new Error(`${id} variances require packed ${name}`);
+        }
+      }
     }
 
     if (this.sumOrder === 'sorted') {
@@ -537,6 +632,11 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     const minima = float32Rows('feature-minima', output.minima, plan.needMinima);
     const maxima = float32Rows('feature-maxima', output.maxima, plan.needMaxima);
     const densities = float32Rows('feature-densities', output.densities, plan.needDensities);
+    const weightedDensities = float32Rows(
+      'feature-weighted-densities',
+      output.weightedDensities,
+      plan.needWeightedDensities
+    );
 
     // 1. Membership.
     let pointFeatureRows: GPUUint32Rows;
@@ -548,6 +648,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       nodes.push(
         ...new GPUPointInPolygonJoin({
           id: `${id}-join`,
+          spatialContext: getPointInPolygonContainmentContext(this.spatialContext),
           points: props.points!,
           polygonPositions: features.polygonPositions,
           featureOffsets: features.featureOffsets,
@@ -555,6 +656,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           ringOffsets: features.ringOffsets,
           candidateCapacity: features.candidateCapacity,
           leafCapacity: features.leafCapacity,
+          boundaryRule: features.boundaryRule,
           includeBoundary: features.includeBoundary,
           pointFeatureIds: pointFeatureRows,
           featureCounts: counts,
@@ -723,6 +825,93 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           counts: counts!,
           areas: featureAreas!,
           densities: densities!
+        })
+      );
+    }
+
+    // 5b. Variances: a second pass over the points around the finished means.
+    if (plan.needVariances && valueMask && values) {
+      const packedValues = values as GraphDataView<'float32'>;
+      const packedWeights = weights as GraphDataView<'float32'> | undefined;
+      const deviations = createTransientView(graph, `${id}-deviations`, 'float32', this.pointCount);
+      const weightSquares = plan.needWeightSquareSums
+        ? createTransientView(graph, `${id}-weight-squares`, 'float32', this.pointCount)
+        : undefined;
+      const squaredDeviationSums = createTransientView(
+        graph,
+        `${id}-squared-deviation-sums`,
+        'float32',
+        featureCount
+      );
+      const weightSquareSums = weightSquares
+        ? createTransientView(graph, `${id}-weight-square-sums`, 'float32', featureCount)
+        : undefined;
+      nodes.push(
+        createZonalStatisticsDeviationNode<Parameters>(graph, {
+          id: `${id}-deviation`,
+          featureCount,
+          values: packedValues,
+          weights: packedWeights,
+          valueMask: valueMask as GraphDataView<'uint32'>,
+          pointFeatureRows: pointFeatureRows as GraphDataView<'uint32'>,
+          means: means!,
+          deviations,
+          weightSquares
+        })
+      );
+      if (sumOrder === 'sorted') {
+        nodes.push(
+          ...getSortedSegmentSumNodes<Parameters>(graph, {
+            id: `${id}-variance`,
+            operation: OPERATION,
+            segmentCount: featureCount,
+            segmentKeys: pointFeatureRows as GraphDataView<'uint32'>,
+            sumContributions: deviations,
+            weightContributions: weightSquares,
+            sums: squaredDeviationSums,
+            weightSums: weightSquareSums
+          })
+        );
+      } else {
+        for (const [name, source, destination] of [
+          ['deviation', deviations, squaredDeviationSums],
+          ['weight-square', weightSquares, weightSquareSums]
+        ] as const) {
+          if (source && destination) {
+            nodes.push(
+              ...new GPUGroupAggregation({
+                id: `${id}-${name}-aggregation`,
+                keys: pointFeatureRows,
+                values: source,
+                mask: valueMask,
+                output: destination,
+                operation: 'sum'
+              }).getCommandNodes(graph)
+            );
+          }
+        }
+      }
+      nodes.push(
+        createZonalStatisticsVarianceNode<Parameters>(graph, {
+          id: `${id}-variances`,
+          featureCount,
+          valueCounts: valueCounts!,
+          squaredDeviationSums,
+          weightSums: weightSquares ? weightSums : undefined,
+          weightSquareSums,
+          variances: output.variances,
+          standardDeviations: output.standardDeviations
+        })
+      );
+    }
+    if (plan.needWeightedDensities) {
+      nodes.push(
+        createZonalStatisticsWeightedDensityNode<Parameters>(graph, {
+          id: `${id}-weighted-densities`,
+          featureCount,
+          weightSums: weightSums!,
+          areas: featureAreas!,
+          weightedDensities: weightedDensities!
         })
       );
     }

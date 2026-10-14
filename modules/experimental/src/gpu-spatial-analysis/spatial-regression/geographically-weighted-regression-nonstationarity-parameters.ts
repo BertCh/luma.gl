@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/**
+ * Largest predictor count of the permutation test. The regression under test accepts more, but the
+ * per-thread private arrays of the permutation refits were sized and exercised for 7 predictors.
+ */
+export const GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT = 7;
+
 /** Float32 values per coefficient row of the `table` output. */
 export const GPU_GWR_NONSTATIONARITY_TABLE_STRIDE = 6;
 

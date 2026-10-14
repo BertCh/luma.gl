@@ -86,6 +86,9 @@ export type GPUHuffTradeAreasProps = {
  * `GPUNeighborSearch` gives the classic distance-decay Huff model. Rows accumulate in slot order,
  * so results are deterministic and match a sequential CPU evaluation within f32 rounding.
  * Facilities with zero attractiveness have probability 0.
+ *
+ * Spatial context: this operator reads no positions, only the weights, so it has no
+ * `spatialContext` prop; distance units and the coordinate space are those of the weights' producer.
  */
 export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

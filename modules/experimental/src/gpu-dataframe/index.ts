@@ -222,7 +222,14 @@ export {
   GPURipley,
   GPURipleyDistanceFunctions,
   GPUSpatialCorrelogram,
-  GPUVariogram
+  GPUVariogram,
+  GPURipleyEnvelope,
+  GPU_RIPLEY_ENVELOPE_MAXIMUM_SIMULATION_COUNT,
+  GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH,
+  GPU_RIPLEY_MAXIMUM_SEED,
+  GPU_RIPLEY_SEED_SLOT,
+  GPU_CLARK_EVANS_CORRECTION,
+  GPU_POINT_PATTERN_ALTERNATIVE
 } from './pair-statistics/index';
 export type {
   GPUPointPatternIndicesParameters,
@@ -243,7 +250,11 @@ export type {
   VariogramModelInput,
   VariogramModelOptions,
   VariogramModelType,
-  VariogramModelWeighting
+  VariogramModelWeighting,
+  GPURipleyEnvelopeProps,
+  GPURipleyEnvelopeStatistic,
+  GPUClarkEvansCorrection,
+  GPUPointPatternAlternative
 } from './pair-statistics/index';
 
 export {

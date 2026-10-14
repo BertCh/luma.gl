@@ -39,6 +39,18 @@ import {
 } from './spatial-clustering-kernels';
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} from './spatial-clustering-parameters';
+import {
+  getGPUSphereRadius,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+
+/** Planar (native) or longitude/latitude with the great-circle metric. */
+const CLUSTERING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+});
 
 const OPERATION = 'GPUSpatialClustering';
 
@@ -58,7 +70,25 @@ const OPERATION = 'GPUSpatialClustering';
 export type GPUSpatialClusteringProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-clustering'`. */
   id?: string;
-  /** Packed planar points, one row per point. Compile-time length; per-frame contents. */
+  /**
+   * Coordinate space and metric of `positions`. Omitted means native planar coordinates and a
+   * Euclidean `epsilon` in position units. `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` clusters `[longitude, latitude]` degrees with `epsilon` a great-circle distance
+   * in meters (kilometers with `units: 'kilometers'`) on a sphere of `sphereRadius` (mean Earth
+   * radius by default); `bounds` are then `[minLon, minLat, maxLon, maxLat]` degrees and must lie
+   * within `[-180, 180] x [-90, 90]` (otherwise every point is noise). The cell search is exact
+   * but does not wrap at the antimeridian: a cluster straddling +-180 is split in two, so keep
+   * `bounds` on one side of it (shift longitudes into a continuous range first). `denseBoxShortcut`
+   * is planar only. Other contexts and metrics throw.
+   *
+   * Precision (planar): positions are float32. Near a coordinate of magnitude `M` the spacing between
+   * representable values is about `M * 1.2e-7` (UTM northings of about 5e6 have 0.5 m spacing), so
+   * an `epsilon` below a few spacings is unreliable. Subtract a local origin from the coordinates
+   * before upload (and from `bounds`) to keep the representable spacing far below `epsilon`.
+   * Geographic float32 longitudes carry about 1e-5 degrees (1 m) of spacing at 180 degrees.
+   */
+  spatialContext?: GPUSpatialContext;
+  /** Packed points, one row per point. Compile-time length; per-frame contents. */
   positions: GraphDataView<'float32x2'>;
   /**
    * Per-frame parameters: packed float32 view of at least
@@ -158,7 +188,10 @@ export type GPUSpatialClusteringProps = {
  * larger root under the smaller, resolve and border kernels, `GPUFlagOffsets` for compact IDs,
  * and optional `GPUCompaction`, `GPUGroupAggregation` and publish nodes for cluster outputs.
  *
- * Non-goals: OPTICS or HDBSCAN, geodesic distances, 3D points, chunked positions, incremental
+ * Positions are float32, planar by default or longitude/latitude with a great-circle `epsilon` (see
+ * `spatialContext` for the quantization limit, local-origin advice and the antimeridian rule).
+ *
+ * Non-goals: OPTICS or HDBSCAN, ellipsoidal distances, 3D points, chunked positions, incremental
  * clustering across frames, and cluster shapes or hulls (compose `GPUGroupGeometry` and
  * `GPUGroupConvexHull` over the cluster labels).
  */
@@ -167,11 +200,33 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialClusteringProps;
+  /** Resolved spatial context (native planar when none was given). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius in the epsilon unit for a great-circle context, else undefined (planar). */
+  readonly geographicRadius?: number;
 
   constructor(props: GPUSpatialClusteringProps) {
     this.id = props.id ?? 'spatial-clustering';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      CLUSTERING_SPATIAL_CONTEXT_SUPPORT
+    );
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      this.spatialContext.metric !== 'great-circle'
+    ) {
+      throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
+    }
+    this.geographicRadius =
+      this.spatialContext.coordinateSpace === 'longitude-latitude'
+        ? getGPUSphereRadius(this.spatialContext)
+        : undefined;
+    if (this.geographicRadius !== undefined && props.denseBoxShortcut) {
+      throw new Error(`${id} denseBoxShortcut is planar only`);
+    }
     const rows = props.positions.length;
 
     if (
@@ -317,6 +372,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {positions, parameters, gridSize, clusters} = props;
+    const geographicRadius = this.geographicRadius;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       parameters,
@@ -421,6 +477,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         id: `${id}-grid-bounds`,
         parameters,
         gridSize,
+        geographicRadius,
         gridBounds
       }),
       createSpatialClusteringGridPositionsNode<Parameters>(graph, {
@@ -428,6 +485,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         positions,
         parameters,
         gridSize,
+        geographicRadius,
         gridPositions,
         rowIds
       }),
@@ -455,6 +513,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         id: `${id}-core`,
         ...gridViews,
         gridSize,
+        geographicRadius,
         coreFlags,
         boxCounts
       }),
@@ -466,6 +525,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         id: `${id}-union`,
         ...gridViews,
         gridSize,
+        geographicRadius,
         coreFlags,
         parents
       }),
@@ -479,6 +539,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         id: `${id}-border`,
         ...gridViews,
         gridSize,
+        geographicRadius,
         coreFlags,
         rootLabels
       }),

@@ -4,6 +4,8 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 import type {GPUGeometryHoleRule} from '../geometry-measures/index';
 
 /** Number of float32 elements in a `GPUShapeDescriptors` parameter buffer. */
@@ -94,6 +96,7 @@ export function createMomentsNode<Parameters>(
     ],
     invocationCount: props.featureCount,
     declarations: `${getRingDeclarations(props)}
+${IS_NAN_BITS_WGSL}
 const FIRST_RING_EXTERIOR: bool = ${props.holeRule === 'first-ring-exterior'};
 
 // accumulator = (sum, compensation).
@@ -116,7 +119,7 @@ fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
   var totalXY = vec2<f32>(0.0);
   var totalTwiceArea = 0.0;
   var firstArea = 0.0;
-  if (centroid.x == centroid.x && centroid.y == centroid.y) {
+  if (!isNanBits(centroid.x) && !isNanBits(centroid.y)) {
     for (var ring = ringStart; ring < ringEnd; ring++) {
       let rowStart = getRingRowStart(ring);
       let rowEnd = getRingRowEnd(ring);
@@ -163,7 +166,10 @@ fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
 /**
  * Per-feature convexity: area divided by the area of the convex hull of all feature vertices.
  * The hull comes from a gift-wrapping march with O(1) memory, so cost is O(vertices * hull
- * vertices) per feature. One invocation per feature, deterministic.
+ * vertices) per feature. One invocation per feature, deterministic. The hull march picks the next
+ * vertex with the exact orientation predicate on the original positions (not the
+ * origin-shifted ones, whose subtraction rounds), so collinear and near-collinear vertices are
+ * classified consistently; the area sums use the shifted values.
  *
  * @internal
  */
@@ -184,7 +190,8 @@ export function createConvexityNode<Parameters>(
       {name: 'convexities', view: props.convexities, type: 'f32', access: 'read_write'}
     ],
     invocationCount: props.featureCount,
-    declarations: getRingDeclarations(props),
+    declarations: `${getRingDeclarations(props)}
+${EXACT_ORIENTATION_WGSL}`,
     body: /* wgsl */ `let ringStart = getRingStart(index);
   let ringEnd = max(getRingEnd(index), ringStart);
   let rowStart = getRingRowStart(ringStart);
@@ -195,33 +202,41 @@ export function createConvexityNode<Parameters>(
     let origin = getPosition(rowStart);
     // Lowest point, leftmost among ties, lowest row among identical points.
     var startPoint = vec2<f32>(0.0);
+    var startRaw = origin;
     for (var row = rowStart; row < rowEnd; row++) {
-      let p = getPosition(row) - origin;
+      let raw = getPosition(row);
+      let p = raw - origin;
       if (row == rowStart || p.y < startPoint.y || (p.y == startPoint.y && p.x < startPoint.x)) {
         startPoint = p;
+        startRaw = raw;
       }
     }
     var current = startPoint;
+    var currentRaw = startRaw;
     var twiceArea = 0.0;
     for (var step = 0u; step < rowEnd - rowStart; step++) {
       var best = current;
+      var bestRaw = currentRaw;
       var hasBest = false;
       for (var row = rowStart; row < rowEnd; row++) {
-        let q = getPosition(row) - origin;
+        let qRaw = getPosition(row);
+        let q = qRaw - origin;
         if (q.x == current.x && q.y == current.y) {
           continue;
         }
         if (!hasBest) {
           best = q;
+          bestRaw = qRaw;
           hasBest = true;
           continue;
         }
         let toBest = best - current;
         let toQ = q - current;
-        let turn = toBest.x * toQ.y - toBest.y * toQ.x;
+        let turn = orientSign(currentRaw, bestRaw, qRaw);
         // q lies clockwise of best (all others must be left of the hull edge), or farther on a tie.
-        if (turn < 0.0 || (turn == 0.0 && dot(toQ, toQ) > dot(toBest, toBest))) {
+        if (turn < 0 || (turn == 0 && dot(toQ, toQ) > dot(toBest, toBest))) {
           best = q;
+          bestRaw = qRaw;
         }
       }
       if (!hasBest) {
@@ -229,6 +244,7 @@ export function createConvexityNode<Parameters>(
       }
       twiceArea += current.x * best.y - best.x * current.y;
       current = best;
+      currentRaw = bestRaw;
       if (current.x == startPoint.x && current.y == startPoint.y) {
         break;
       }

@@ -11,8 +11,13 @@ export const GPU_LOCAL_OUTLIER_FACTOR_DEFAULT_DENSITY_FLOOR = 1e-10;
 /** Per-frame parameters of {@link GPULocalOutlierFactor}, packed by {@link getGPULocalOutlierFactorParameterValues}. */
 export type GPULocalOutlierFactorParameters = {
   /**
-   * Rows with `lof > threshold` are flagged in the `outlier` mask and counted. Defaults to 1.5,
-   * a common cut: scores near 1 are inliers, scores well above 1 are locally sparse.
+   * Rows with `lof > threshold` are flagged in the `outlier` mask and counted. There is no default:
+   * LOF has no null distribution, so no cut is calibrated (Breunig et al. 2000 give none; values
+   * near 1 are as dense as their neighbors, well above 1 locally sparse, and the scale depends on
+   * `k` and the data). Choose it from the score distribution, for example a top fraction. When
+   * omitted the packed threshold is NaN, no row is flagged, the `outlier` mask is all 0 and
+   * `outlierCount` is 0; the `lof` scores are unaffected. The flag is exploratory, not a
+   * significance statement.
    */
   threshold?: number;
   /**
@@ -28,14 +33,14 @@ export type GPULocalOutlierFactorParameters = {
 /**
  * Packs {@link GPULocalOutlierFactorParameters} into the float32 layout read by the kernels.
  *
- * Layout: `[threshold, densityFloor, 0, 0]`.
+ * Layout: `[threshold (NaN when omitted: nothing is flagged), densityFloor, 0, 0]`.
  */
 export function getGPULocalOutlierFactorParameterValues(
   parameters: GPULocalOutlierFactorParameters = {}
 ): Float32Array {
-  const threshold = parameters.threshold ?? 1.5;
+  const threshold = parameters.threshold ?? Number.NaN;
   const densityFloor = parameters.densityFloor ?? GPU_LOCAL_OUTLIER_FACTOR_DEFAULT_DENSITY_FLOOR;
-  if (Number.isNaN(threshold)) {
+  if (parameters.threshold !== undefined && Number.isNaN(parameters.threshold)) {
     throw new Error('GPULocalOutlierFactor threshold must not be NaN');
   }
   if (!Number.isFinite(densityFloor) || !(Math.fround(densityFloor) > 0)) {

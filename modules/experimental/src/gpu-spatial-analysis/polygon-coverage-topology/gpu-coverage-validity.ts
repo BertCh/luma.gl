@@ -31,6 +31,8 @@ import {GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH} from './coverage-validity-parame
 import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
+
 const OPERATION = 'GPUCoverageValidity';
 /** Vertex count from which `spatialSort` defaults to on, as `GPUSegmentIntersection`. */
 const SPATIAL_SORT_MINIMUM_SLOTS = 1024;
@@ -88,6 +90,13 @@ export type GPUCoverageValidityOutput = {
 export type GPUCoverageValidityProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'coverage-validity'`. */
   id?: string;
+  /**
+   * Coordinate space and metric of the vertices. Omitted means native planar coordinates.
+   * `longitude-latitude` throws at construction: coverage topology is evaluated in the plane of the
+   * coordinates (edges are straight lines, gaps are measured in coordinate units). Project to a
+   * planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Flattened ring vertices (GeoArrow layout, as `GPUCoverageSimplification`). Finite coordinates. */
   positions: GraphDataView<'float32x2'>;
   /** Ring-to-vertex offsets with a terminal entry. Rings close implicitly. */
@@ -148,6 +157,13 @@ export type GPUCoverageValidityProps = {
  * interior test uses the f32 midpoint of a segment, so a matched edge lying inside a *third*
  * polygon is not flagged (that polygon's own segments are).
  *
+ * **Exactness.** Every orientation sign is exact for the f32 vertices: the pair tests use the shared
+ * segment predicates and the winding number of the interior probe uses `orientSign` (an f32 filter
+ * with an exact integer fallback), so a probe point exactly on a neighbor's edge is never
+ * misclassified by rounding. The probe point itself is the rounded f32 midpoint of the segment, which
+ * is not exactly on it. A pair with no decidable orientation (non-finite coordinate) sets the
+ * `uncertain` flag; the validity checker never silently decides it.
+ *
  * **Cost.** One BVH built over all segments; each segment probes it with its bounds inflated by
  * `gapWidth`. Output is one `uint32` row per vertex: nothing is capacity-bounded, nothing
  * overflows. Counts use integer atomics, so results are deterministic.
@@ -161,11 +177,14 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
   readonly leafCapacity: number;
   /** Whether segments are Morton sorted before the BVH build. */
   readonly spatialSort: boolean;
+  /** Resolved spatial context: native planar coordinates. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCoverageValidityProps) {
     const id = props.id ?? 'coverage-validity';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1 || props.positions.length >= 2 ** 30) {
       throw new Error(`${id} positions must hold between 1 and 2^30 - 1 vertices`);
@@ -423,10 +442,12 @@ fn windingContribution(other: u32, point: vec2f) -> i32 {
     start = end;
     end = swap;
   }
-  let side = (end.x - start.x) * (point.y - start.y) - (point.x - start.x) * (end.y - start.y);
+  // Exact side of the point relative to the segment (orientSign is 2 when no sign exists, which
+  // counts as neither side).
+  let side = orientSign(start, end, point);
   if (start.y <= point.y) {
-    if (end.y > point.y && side > 0.0) { return 1; }
-  } else if (end.y <= point.y && side < 0.0) {
+    if (end.y > point.y && side == 1) { return 1; }
+  } else if (end.y <= point.y && side == -1) {
     return -1;
   }
   return 0;

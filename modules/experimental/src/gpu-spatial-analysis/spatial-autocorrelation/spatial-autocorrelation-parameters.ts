@@ -51,8 +51,11 @@ export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialPara
   ]
 });
 
-/** Number of float32 rows written to an optional `globalStatistics` output. */
-export const GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH = 4;
+/**
+ * Number of float32 values written to an optional `globalStatistics` output:
+ * `[n, mean, variance, standardDeviation, islandCount]`.
+ */
+export const GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH = 5;
 
 /**
  * Two-sided standard normal critical values of the Getis-Ord Gi* confidence bins, in bin order
@@ -102,8 +105,9 @@ export type GPUSpatialAutocorrelationFixedMoments = {
  */
 export type GPUSpatialAutocorrelationParameters = {
   /**
-   * Two-sided significance level of `GPULocalMoran` quadrants, in `(0, 1)`. Defaults to `0.05`.
-   * `GPUHotSpotAnalysis` ignores it and always reports 90/95/99% bins.
+   * Two-sided significance level of `GPULocalMoran` quadrants, in `(0, 1)`, applied to the
+   * adjusted p-value when `multipleTesting` is set. Defaults to `0.05`. `GPUHotSpotAnalysis`
+   * ignores it and always reports 90/95/99% bins.
    */
   significanceLevel?: number;
   /** Optional moments that replace the moments of the current rows. */

@@ -118,6 +118,8 @@ var<workgroup> laneVertexSum: array<vec2<f32>, ${COOPERATIVE_LANES}>;
 var<workgroup> laneBoundsMin: array<vec2<f32>, ${COOPERATIVE_LANES}>;
 var<workgroup> laneBoundsMax: array<vec2<f32>, ${COOPERATIVE_LANES}>;
 var<workgroup> laneExtremeRows: array<vec4<u32>, ${COOPERATIVE_LANES}>;
+var<workgroup> laneWinding: array<f32, ${COOPERATIVE_LANES}>;
+var<workgroup> laneAmbiguousEdges: array<u32, ${COOPERATIVE_LANES}>;
 
 // Sums of one ring (or one lane's chunk of it): each is a Neumaier (sum, compensation) pair.
 struct RingAccumulators {
@@ -131,7 +133,9 @@ struct RingAccumulators {
   vertexSum: vec2<f32>,
   boundsMin: vec2<f32>,
   boundsMax: vec2<f32>,
-  extremeRows: vec4<u32>
+  extremeRows: vec4<u32>,
+  winding: f32,
+  ambiguousEdges: u32
 }
 
 struct FeatureAccumulators {
@@ -147,14 +151,15 @@ struct FeatureAccumulators {
   boundsMax: vec2<f32>,
   extremeRows: vec4<u32>,
   vertexCount: u32,
-  isFirstRing: bool
+  isFirstRing: bool,
+  invalidRings: u32
 }
 
 fn initRing() -> RingAccumulators {
   return RingAccumulators(
     vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0),
     vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(3.4e38), vec2<f32>(-3.4e38),
-    vec4<u32>(0xffffffffu)
+    vec4<u32>(0xffffffffu), 0.0, 0u
   );
 }
 
@@ -162,7 +167,7 @@ fn initFeature() -> FeatureAccumulators {
   return FeatureAccumulators(
     vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0),
     vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(3.4e38), vec2<f32>(-3.4e38),
-    vec4<u32>(0xffffffffu), 0u, true
+    vec4<u32>(0xffffffffu), 0u, true, 0u
   );
 }
 
@@ -239,6 +244,12 @@ fn accumulateRange(
       nextAreaX = nextLocal.x * GEODESIC_DEGREES_TO_RADIANS;
     }
     let nextAreaY = getAreaY(nextPosition, origin);
+    if (IS_POLYGON && IS_GEOGRAPHIC) {
+      let rawStep = nextPosition.x - position.x;
+      let wrappedStep = geodesicWrapLongitudeDelta(rawStep);
+      (*acc).winding += wrappedStep;
+      (*acc).ambiguousEdges += select(0u, 1u, isAmbiguousLongitudeStep(rawStep, wrappedStep));
+    }
     let edgeLength = getEdgeLength(position, nextPosition);
     addCompensated(&(*acc).lengthSum, edgeLength);
     addCompensated(&(*acc).lineMomentX, edgeLength * 0.5 * (local.x + nextLocal.x));
@@ -259,6 +270,9 @@ fn accumulateRange(
 // Folds a finished ring into the feature (the serial kernel's end-of-ring step).
 fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, RingAccumulators>, rowCount: u32) {
   (*feature).vertexCount += rowCount;
+  if (IS_POLYGON && IS_GEOGRAPHIC && (abs((*ring).winding) > POLE_WINDING_LIMIT || (*ring).ambiguousEdges > 0u)) {
+    (*feature).invalidRings += 1u;
+  }
   addCompensated(&(*feature).lengthSum, (*ring).lengthSum.x);
   addCompensated(&(*feature).lengthSum, (*ring).lengthSum.y);
   addCompensated(&(*feature).lineMomentX, (*ring).lineMomentX.x);
@@ -309,6 +323,8 @@ fn addLanePartial(ring: ptr<function, RingAccumulators>, laneIndex: u32) {
   addCompensated(&(*ring).momentY, laneMomentY[laneIndex].x);
   addCompensated(&(*ring).momentY, laneMomentY[laneIndex].y);
   (*ring).vertexSum += laneVertexSum[laneIndex];
+  (*ring).winding += laneWinding[laneIndex];
+  (*ring).ambiguousEdges += laneAmbiguousEdges[laneIndex];
   // Lanes own ascending chunks, so a strict comparison keeps the lowest row on ties.
   if (laneBoundsMin[laneIndex].x < (*ring).boundsMin.x) {
     (*ring).extremeRows.x = laneExtremeRows[laneIndex].x;
@@ -425,6 +441,8 @@ fn measureFeatureCooperatively(feature: u32, lane: u32) {
     laneBoundsMin[lane] = partial.boundsMin;
     laneBoundsMax[lane] = partial.boundsMax;
     laneExtremeRows[lane] = partial.extremeRows;
+    laneWinding[lane] = partial.winding;
+    laneAmbiguousEdges[lane] = partial.ambiguousEdges;
     workgroupBarrier();
     if (lane == 0u) {
       var combined = initRing();

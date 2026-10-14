@@ -20,6 +20,7 @@ import {
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
 import {
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH
 } from './spatial-regression-diagnostics-parameters';
@@ -35,6 +36,8 @@ const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
 /** Scalar moments after the five `p x p` matrices: S0, S2, Sww, e'e, e'We, e'Wy, v'v. */
 const SCALAR_MOMENT_COUNT = 7;
+/** Fitted-row count `n`, accumulated after the scalar moments and the `p` fitted-lag products. */
+const COUNT_MOMENT_COUNT = 1;
 
 /** Caller-owned outputs of {@link GPUSpatialRegressionDiagnostics}. */
 export type GPUSpatialRegressionDiagnosticsOutput = {
@@ -44,9 +47,9 @@ export type GPUSpatialRegressionDiagnosticsOutput = {
    */
   tests: GraphDataView<'float32'>;
   /**
-   * At least 12 float32 values: the intermediate quantities (`n`, sigma squared, `T`, `J`, `S0`,
-   * Moran's I with its expectation, variance, z and p-value, `e'We`, `e'Wy`); see the
-   * `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_*` slot constants.
+   * At least 13 float32 values: the intermediate quantities (`n`, sigma squared, `T`, `J`, `S0`,
+   * Moran's I with its expectation, variance, z and p-value, `e'We`, `e'Wy`) and the number of
+   * excluded rows; see the `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_*` slot constants.
    */
   summary: GraphDataView<'float32'>;
   /** One uint32; see the `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_*` constants. */
@@ -74,10 +77,24 @@ export type GPUSpatialRegressionDiagnosticsProps = {
   response: GraphDataView<'float32'>;
   /**
    * Residuals `e = y - Xb` of an ordinary least squares fit with an intercept, one per row, for
-   * example `GPUOrdinaryLeastSquares` `output.residuals`. They must be finite for every row; if
-   * the fit excluded rows (mask) or failed, the diagnostics report `NON_FINITE` and NaN.
+   * example `GPUOrdinaryLeastSquares` `output.residuals`. A row whose residual (or response, or
+   * any predictor) is not finite is excluded from the analysis, which is how a masked or
+   * partially missing OLS fit hands over its fitted rows (excluded rows have NaN residuals). If
+   * the fit failed, every residual is NaN and the diagnostics report `TOO_FEW_ROWS`.
    */
   residuals: GraphDataView<'float32'>;
+  /**
+   * Optional packed `uint32` row mask with the same meaning as the OLS `mask`: a zero excludes the
+   * row. Pass the mask of the OLS fit so the residual-based exclusion and the mask agree.
+   */
+  mask?: GraphDataView<'uint32'>;
+  /**
+   * When true, each fitted row's remaining weights (links to fitted rows) are rescaled to sum to
+   * 1, which is `libpysal.weights.w_subset` followed by `transform = 'r'`. Default false: the
+   * weights of the links that remain are used as given (`w_subset` with `transform = 'O'`).
+   * Rows left without any fitted neighbor keep an all-zero row either way.
+   */
+  restandardizeRows?: boolean;
   /** Number of predictor columns, compile-time, 1 to 15. The intercept is implicit. */
   predictorCount: number;
   /**
@@ -122,6 +139,20 @@ export type GPUSpatialRegressionDiagnosticsProps = {
  * variance) is accumulated over the rows of the transposed CSR, so a link `i -> j` without
  * `j -> i` is counted exactly as in the dense definition.
  *
+ * Masked and partially missing fits: a row is analyzed ("fitted") when its `mask` entry is not
+ * zero and its response, residual and predictors are finite. Excluded rows are removed from the
+ * whole analysis, not zero-filled: `n`, `S0`, `T`, every Gram matrix and every `W`-product run over
+ * the fitted rows only, and a link from a fitted row to an excluded row is dropped. This is
+ * `libpysal.weights.w_subset` on the fitted ids (`restandardizeRows` false, `transform = 'O'`) or
+ * followed by row standardization (`restandardizeRows` true, `transform = 'r'`), and the results
+ * match `spreg.OLS(..., spat_diag=True, moran=True)` on that subset. Choose `restandardizeRows`
+ * when the original `W` was row-standardized: dropping links leaves rows that no longer sum to 1.
+ * The number of excluded rows is reported in `summary` slot
+ * `GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT` (a count in the summary rather
+ * than a status port, because `status` is a single result code of this operator). `NON_FINITE`
+ * is now reported only for non-finite moments or an exactly zero residual sum of squares, and
+ * `TOO_FEW_ROWS` when no more than `predictorCount + 1` rows are fitted.
+ *
  * Not included: the Anselin-Kelejian test, which is defined on two-stage least squares residuals
  * and belongs with the spatial 2SLS contributor.
  */
@@ -154,7 +185,8 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['predictors', props.predictors],
       ['response', props.response],
-      ['residuals', props.residuals]
+      ['residuals', props.residuals],
+      ['mask', props.mask]
     ] as const) {
       if ((view as unknown) instanceof GraphVectorView) {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
@@ -172,6 +204,12 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
     }
     if (props.predictors.length !== rows * predictorCount) {
       throw new Error(`${id} predictors length must equal the weights row count * predictorCount`);
+    }
+    if (props.mask) {
+      validatePackedUint32View(props.mask, `${id} mask`);
+      if (props.mask.length !== rows) {
+        throw new Error(`${id} mask length must equal the weights row count`);
+      }
     }
     validatePackedView(output.tests, ['float32'], `${id} output.tests`);
     if (output.tests.length < GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH) {
@@ -206,6 +244,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
         props.predictors,
         props.response,
         props.residuals,
+        props.mask,
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights
@@ -227,6 +266,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       props.predictors,
       props.response,
       props.residuals,
+      props.mask,
       weights.offsets,
       weights.neighbors,
       weights.weights,
@@ -235,15 +275,18 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       output.status
     ]);
     const p = k + 1;
-    const momentCount = 5 * p * p + SCALAR_MOMENT_COUNT + p;
+    const momentCount = 5 * p * p + SCALAR_MOMENT_COUNT + p + COUNT_MOMENT_COUNT;
+    const restandardize = props.restandardizeRows === true;
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
-    const partialMeans = transient('partial-means', tileCount * k);
-    const means = transient('means', k);
+    const partialMeans = transient('partial-means', tileCount * (k + 1));
+    // Column means of the fitted rows, then the fitted-row count.
+    const means = transient('means', k + 1);
     const partialMoments = transient('partial-moments', tileCount * momentCount);
     const moments = transient('moments', momentCount);
     const rowTable = transient('row-table', rowCount * (p + 2));
     const transposedLagTable = transient('transposed-lag-table', rowCount * p);
+    const rowScale = restandardize ? transient('row-scale', rowCount) : undefined;
     const transposed: GPUSpatialWeights = {
       offsets: createTransientView(graph, `${id}-transpose-offsets`, 'uint32', rowCount + 1),
       neighbors: createTransientView(
@@ -265,6 +308,38 @@ const TABLE_WIDTH: u32 = ${p + 2}u;
 const P: u32 = ${p}u;
 const TILE_ROWS: u32 = ${tileRowCount}u;
 const TILE_COUNT: u32 = ${tileCount}u;`;
+    // Row validity for kernels that bind design, response, residuals and the optional rowMask.
+    const fittedFunctions = `${constants}
+${IS_FINITE_VALUE_WGSL}
+fn isFittedRow(row: u32) -> bool {
+  ${props.mask ? 'if (rowMask[rowMaskOffset + row] == 0u) {\n    return false;\n  }' : ''}
+  if (!isFiniteValue(response[responseOffset + row]) ||
+      !isFiniteValue(residuals[residualsOffset + row])) {
+    return false;
+  }
+  for (var column = 0u; column < K; column++) {
+    if (!isFiniteValue(design[designOffset + row * K + column])) {
+      return false;
+    }
+  }
+  return true;
+}`;
+    const maskBindings: WGSLKernelBinding[] = props.mask
+      ? [{name: 'rowMask', view: props.mask, type: 'u32', access: 'read'}]
+      : [];
+    const fittedBindings: WGSLKernelBinding[] = [
+      {name: 'design', view: props.predictors, type: 'f32', access: 'read'},
+      {name: 'response', view: props.response, type: 'f32', access: 'read'},
+      {name: 'residuals', view: props.residuals, type: 'f32', access: 'read'},
+      ...maskBindings
+    ];
+    const rowScaleBindings: WGSLKernelBinding[] = rowScale
+      ? [{name: 'rowScale', view: rowScale, type: 'f32', access: 'read'}]
+      : [];
+    // Weight multiplier of row r: 1 / (sum of its weights to fitted rows) when restandardizing.
+    const rowScaleWGSL = rowScale
+      ? 'fn getRowScale(row: u32) -> f32 {\n  return rowScale[rowScaleOffset + row];\n}'
+      : 'fn getRowScale(row: u32) -> f32 {\n  return 1.0;\n}';
     const mergeLoop = (stride: number) => `var sum = 0.0;
   var compensation = 0.0;
   for (var tile = 0u; tile < TILE_COUNT; tile++) {
@@ -291,22 +366,28 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
         variant: 'means-tiles',
         workgroupSize: TILE_WORKGROUP_SIZE,
         bindings: [
-          {name: 'design', view: props.predictors, type: 'f32', access: 'read'},
+          ...fittedBindings,
           {name: 'partial', view: partialMeans, type: 'f32', access: 'read_write'}
         ],
         invocationCount: tileCount,
-        declarations: constants,
+        declarations: fittedFunctions,
         body: `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
   var sums: array<f32, ${k}>;
+  var count = 0.0;
   for (var row = firstRow; row < lastRow; row++) {
+    if (!isFittedRow(row)) {
+      continue;
+    }
+    count = count + 1.0;
     for (var column = 0u; column < K; column++) {
       sums[column] = sums[column] + design[designOffset + row * K + column];
     }
   }
   for (var column = 0u; column < K; column++) {
-    partial[partialOffset + index * K + column] = sums[column];
-  }`
+    partial[partialOffset + index * ${k + 1}u + column] = sums[column];
+  }
+  partial[partialOffset + index * ${k + 1}u + K] = count;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-means-merge`,
@@ -316,26 +397,36 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
           {name: 'partial', view: partialMeans, type: 'f32', access: 'read'},
           {name: 'means', view: means, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: k,
+        invocationCount: k + 1,
         declarations: constants,
-        body: `${mergeLoop(k)}
-  means[meansOffset + index] = sum / f32(ROWS);`
+        body: `${mergeLoop(k + 1)}
+  var rows = 0.0;
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    rows = rows + partial[partialOffset + tile * ${k + 1}u + K];
+  }
+  means[meansOffset + index] = select(sum, select(0.0, sum / rows, rows > 0.0), index < K);`
       }),
-      // Row table: [1, centered predictors, y, e] per row, so later passes read one buffer.
+      // Row table: [1, centered predictors, y, e] per fitted row (zeros otherwise), so later passes
+      // read one buffer and an excluded row contributes nothing to any W-product.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-row-table`,
         operation: OPERATION,
         variant: 'row-table',
         bindings: [
-          {name: 'design', view: props.predictors, type: 'f32', access: 'read'},
-          {name: 'response', view: props.response, type: 'f32', access: 'read'},
-          {name: 'residuals', view: props.residuals, type: 'f32', access: 'read'},
+          ...fittedBindings,
           {name: 'means', view: means, type: 'f32', access: 'read'},
           {name: 'tableOut', view: rowTable, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rowCount,
-        declarations: constants,
+        declarations: fittedFunctions,
+        // An excluded row is all zeros, including the leading 1.0, which doubles as its flag.
         body: `let base = tableOutOffset + index * TABLE_WIDTH;
+  if (!isFittedRow(index)) {
+    for (var column = 0u; column < TABLE_WIDTH; column++) {
+      tableOut[base + column] = 0.0;
+    }
+    return;
+  }
   tableOut[base] = 1.0;
   for (var column = 0u; column < K; column++) {
     tableOut[base + 1u + column] =
@@ -344,6 +435,34 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
   tableOut[base + P] = response[responseOffset + index];
   tableOut[base + P + 1u] = residuals[residualsOffset + index];`
       }),
+      ...(rowScale
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-row-scale`,
+              operation: OPERATION,
+              variant: 'row-scale',
+              bindings: [
+                ...weightBindings,
+                rowTableBinding,
+                {name: 'scaleOut', view: rowScale, type: 'f32', access: 'read_write'}
+              ],
+              invocationCount: rowCount,
+              declarations: constants,
+              // 1 / (sum of weights to fitted neighbors) for a fitted row; 0 for an excluded row
+              // or a row with no fitted neighbor.
+              body: `var total = 0.0;
+  if (table[tableOffset + index * TABLE_WIDTH] > 0.5) {
+    for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+      let neighbor = neighbors[neighborsOffset + slot];
+      if (neighbor < ROWS && table[tableOffset + neighbor * TABLE_WIDTH] > 0.5) {
+        total += weights[weightsOffset + slot];
+      }
+    }
+  }
+  scaleOut[scaleOutOffset + index] = select(0.0, 1.0 / total, total > 0.0);`
+            })
+          ]
+        : []),
       ...transposeNodes,
       // W'Z row by row over the transposed CSR: (W'Z)_i = sum_j w_ji z_j, with j ascending.
       createWGSLKernelNode<Parameters>(graph, {
@@ -355,14 +474,17 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
           {name: 'neighbors', view: transposed.neighbors, type: 'u32', access: 'read'},
           {name: 'weights', view: transposed.weights, type: 'f32', access: 'read'},
           rowTableBinding,
+          ...rowScaleBindings,
           {name: 'lagOut', view: transposedLagTable, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rowCount,
-        declarations: constants,
+        declarations: `${constants}
+${rowScaleWGSL}`,
         body: `var sums: array<f32, ${p}>;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
-    let weight = weights[weightsOffset + slot];
+    // The transposed link j -> i carries w_ji, scaled by the row scale of its source row j.
+    let weight = weights[weightsOffset + slot] * getRowScale(neighbor);
     for (var column = 0u; column < P; column++) {
       sums[column] += weight * table[tableOffset + neighbor * TABLE_WIDTH + column];
     }
@@ -379,6 +501,7 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
         bindings: [
           ...weightBindings,
           rowTableBinding,
+          ...rowScaleBindings,
           {name: 'transposedLag', view: transposedLagTable, type: 'f32', access: 'read'},
           {name: 'partial', view: partialMoments, type: 'f32', access: 'read_write'}
         ],
@@ -386,6 +509,7 @@ const TILE_COUNT: u32 = ${tileCount}u;`;
         declarations: `${constants}
 const PP: u32 = ${p * p}u;
 const MOMENTS: u32 = ${momentCount}u;
+${rowScaleWGSL}
 ${getRowAccumulationWGSL()}`,
         body: `let base = partialOffset + index * MOMENTS;
   for (var slot = 0u; slot < MOMENTS; slot++) {
@@ -438,6 +562,11 @@ fn tableValue(row: u32, column: u32) -> f32 {
 }
 
 fn accumulateRow(row: u32, base: u32) {
+  // An excluded row (leading table entry 0) is outside the analysis.
+  if (tableValue(row, 0u) < 0.5) {
+    return;
+  }
+  let rowWeightScale = getRowScale(row);
   var z: array<f32, P>;
   var u: array<f32, P>;
   var v: array<f32, P>;
@@ -455,10 +584,11 @@ fn accumulateRow(row: u32, base: u32) {
   let residual = tableValue(row, P + 1u);
   for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
-    if (neighbor >= ROWS) {
+    // Links to excluded rows are dropped from the restricted W.
+    if (neighbor >= ROWS || tableValue(neighbor, 0u) < 0.5) {
       continue;
     }
-    let weight = weights[weightsOffset + slot];
+    let weight = weights[weightsOffset + slot] * rowWeightScale;
     // Reverse weight w_ji by binary search of this row in the neighbor's sorted row; it is 0 for
     // a one-way link, which then contributes nothing to tr(WW).
     var reverse = 0.0;
@@ -468,7 +598,7 @@ fn accumulateRow(row: u32, base: u32) {
       let middle = (low + high) / 2u;
       let candidate = neighbors[neighborsOffset + middle];
       if (candidate == row) {
-        reverse = weights[weightsOffset + middle];
+        reverse = weights[weightsOffset + middle] * getRowScale(neighbor);
         break;
       }
       if (candidate < row) {
@@ -510,6 +640,7 @@ fn accumulateRow(row: u32, base: u32) {
   for (var column = 0u; column < P; column++) {
     partial[scalars + 7u + column] += z[column] * lagFitted;
   }
+  partial[scalars + 7u + P] += 1.0;
 }
 `;
 }
@@ -573,15 +704,17 @@ fn writeTest(row: u32, statistic: f32, degreesOfFreedom: u32) {
   );
 }
 
-fn fail(status: u32) {
+fn fail(status: u32, fittedRows: f32) {
   let nan = getNaN();
   for (var slot = 0u; slot < 18u; slot++) {
     testsOut[testsOutOffset + slot] = nan;
   }
-  for (var slot = 0u; slot < 12u; slot++) {
+  for (var slot = 0u; slot < ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH}u; slot++) {
     summaryOut[summaryOutOffset + slot] = nan;
   }
-  summaryOut[summaryOutOffset] = f32(ROWS);
+  summaryOut[summaryOutOffset] = fittedRows;
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT}u] =
+    f32(ROWS) - fittedRows;
   for (var row = 0u; row < 5u; row++) {
     testsOut[testsOutOffset + row * 3u + 1u] = select(1.0, 2.0, row == 4u);
   }
@@ -590,8 +723,9 @@ fn fail(status: u32) {
 }
 
 fn finish() {
-  let n = f32(ROWS);
   let scalars = 5u * PP;
+  // Rows analyzed: finite and unmasked. Everything below runs over those rows only.
+  let n = moments[momentsOffset + scalars + 7u + P];
   let weightSum = moments[momentsOffset + scalars];
   let squareSum = moments[momentsOffset + scalars + 1u];
   let crossSum = moments[momentsOffset + scalars + 2u];
@@ -599,25 +733,25 @@ fn finish() {
   let residualLag = moments[momentsOffset + scalars + 4u];
   let responseLag = moments[momentsOffset + scalars + 5u];
   let fittedLagSquares = moments[momentsOffset + scalars + 6u];
-  if (ROWS <= P + 1u) {
-    fail(2u);
+  if (!(n > f32(P) + 1.0)) {
+    fail(2u, select(0.0, n, isFiniteValue(n)));
     return;
   }
   if (!isFiniteValue(residualSquares) || !isFiniteValue(residualLag) ||
       !isFiniteValue(responseLag) || !isFiniteValue(fittedLagSquares) ||
       !isFiniteValue(squareSum) || !isFiniteValue(crossSum) || !(residualSquares > 0.0)) {
-    fail(4u);
+    fail(4u, n);
     return;
   }
   let traceT = squareSum + crossSum;
   if (!(weightSum > 0.0) || !(traceT > 0.0)) {
-    fail(3u);
+    fail(3u, n);
     return;
   }
   for (var column = 0u; column < P; column++) {
     let diagonal = moments[momentsOffset + column * P + column];
     if (!(diagonal > 0.0) || !isFiniteValue(diagonal)) {
-      fail(1u);
+      fail(1u, n);
       return;
     }
     columnScale[column] = 1.0 / sqrt(diagonal);
@@ -629,7 +763,7 @@ fn finish() {
     }
   }
   if (!choleskyFactor_${p}(&factor)) {
-    fail(1u);
+    fail(1u, n);
     return;
   }
   var inverseC: array<f32, ${p * p}>;
@@ -726,6 +860,8 @@ fn finish() {
   summaryOut[summaryOutOffset + 9u] = moranP;
   summaryOut[summaryOutOffset + 10u] = residualLag;
   summaryOut[summaryOutOffset + 11u] = responseLag;
+  summaryOut[summaryOutOffset + ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT}u] =
+    f32(ROWS) - n;
   statusOut[statusOutOffset] = 0u;
 }
 `;

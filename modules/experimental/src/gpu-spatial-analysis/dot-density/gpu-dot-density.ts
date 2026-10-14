@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
 import {
   DEFAULT_DOT_MAXIMUM_ATTEMPTS,
   getDotSamplingNodes,
@@ -24,6 +25,13 @@ import {
 export type GPUDotDensityProps = GPUDotDensityPolygons & {
   /** Prefix for generated node and transient IDs. Defaults to `'dot-density'`. */
   id?: string;
+  /**
+   * Coordinate and metric contract of the polygon positions. Planar/native only (omitted means
+   * planar/native). Random placement is uniform in coordinate space, so longitude/latitude degrees
+   * would be uniform in degrees squared, not in area: project to an equal-area planar frame first.
+   * Other contexts throw at construction.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Values to draw as dots, `featureCount * categoryCount` rows, feature-major
    * (`row = feature * categoryCount + category`), for example population by group.
@@ -57,9 +65,18 @@ export type GPUDotDensityProps = GPUDotDensityPolygons & {
  * of its cell, which concentrates dots where the weight is high (dasymetric mapping).
  *
  * Dots are ordered by slot (feature, then category) and by rank within a slot, with offsets from an
- * exclusive prefix scan. A dot whose `maximumAttempts` candidates all miss (a thin polygon in a
- * large bounding box, or a mask that is zero over the polygon) keeps its slot with a NaN position
- * and is counted in `failedCount`.
+ * exclusive prefix scan. A dot whose `maximumAttempts` (default 32) candidates all miss keeps its
+ * slot with a NaN position and is counted in `output.failedCount`. The per-candidate acceptance
+ * probability is polygon area / bounding-box area (times the mask weight), so a dot fails with
+ * probability `(1 - p)^maximumAttempts`: thin, diagonal or concave polygons in a large bounding
+ * box (and masks that are near zero over a polygon) deterministically lose dots, which biases the
+ * map toward compact polygons. `failedCount` is the diagnostic; raise `maximumAttempts` (it is
+ * compile-time) until it is zero, or accept the thinning. Rejected dots are sampling failures, not
+ * invalid input rows, so they are reported as `failedCount` rather than `invalidCount`.
+ *
+ * Coordinates: positions are sampled uniformly in coordinate space, so the context must be
+ * planar/native (`spatialContext`); longitude/latitude throws because dots would be uniform in
+ * degrees squared rather than in area (project to an equal-area frame first).
  *
  * Containment is an even-odd crossing test over all rings of the feature, which equals
  * multipolygon containment for valid geometry (holes inside shells, parts not overlapping).
@@ -71,6 +88,8 @@ export type GPUDotDensityProps = GPUDotDensityPolygons & {
 export class GPUDotDensity implements GPUCommandNodeProducer {
   /** Prefix for graph node and transient IDs. */
   readonly id: string;
+  /** Resolved coordinate and metric contract (planar/native). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of polygon features. */
   readonly featureCount: number;
   /** Number of categories per feature. */
@@ -79,6 +98,7 @@ export class GPUDotDensity implements GPUCommandNodeProducer {
 
   constructor(props: GPUDotDensityProps) {
     const id = props.id ?? 'dot-density';
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     this.config = {
       id,
       operation: 'GPUDotDensity',
@@ -115,6 +135,13 @@ export class GPUDotDensity implements GPUCommandNodeProducer {
 export type GPURandomPointsInPolygonProps = GPUDotDensityPolygons & {
   /** Prefix for generated node and transient IDs. Defaults to `'random-points-in-polygon'`. */
   id?: string;
+  /**
+   * Coordinate and metric contract of the polygon positions. Planar/native only (omitted means
+   * planar/native). Random placement is uniform in coordinate space, so longitude/latitude degrees
+   * would be uniform in degrees squared, not in area: project to an equal-area planar frame first.
+   * Other contexts throw at construction.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Number of points to place in each feature, one row per feature. */
   counts: GraphDataView<'uint32'>;
   /** Per-frame uint32 parameters written with `getGPUDotDensityParameterValues`. */
@@ -139,12 +166,15 @@ export type GPURandomPointsInPolygonProps = GPUDotDensityPolygons & {
 export class GPURandomPointsInPolygon implements GPUCommandNodeProducer {
   /** Prefix for graph node and transient IDs. */
   readonly id: string;
+  /** Resolved coordinate and metric contract (planar/native). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of polygon features. */
   readonly featureCount: number;
   private readonly config: DotSamplingConfig;
 
   constructor(props: GPURandomPointsInPolygonProps) {
     const id = props.id ?? 'random-points-in-polygon';
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     this.config = {
       id,
       operation: 'GPURandomPointsInPolygon',

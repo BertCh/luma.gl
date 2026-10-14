@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {GPUDistanceField} from '../../gpu-raster/distance-field/index';
 import type {GPUDistanceFieldMode} from '../../gpu-raster/distance-field/index';
 import {GPURasterZonalStatistics} from '../../gpu-raster/raster-zonal-statistics/index';
@@ -35,6 +36,15 @@ export type GPUStraightLineCatchmentsRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'straight-line-catchments'`. */
   id?: string;
+  /**
+   * Coordinate space of the grid and facility positions. Planar only: the distance field computes
+   * Euclidean distances in ground units on a regular grid, which are not distances on the sphere
+   * for longitude/latitude degrees. A longitude-latitude context throws; project the facilities
+   * and choose the grid in a frame from `createGPULocalFrame` and pass its `spatialContext`, then
+   * `settings` cell sizes, `maxDistance` and the `distances` output are in meters. Omitted means
+   * native planar. The resolved context is returned as `result.spatialContext`.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Grid width in cells. */
   width: number;
   /** Grid height in cells (row 0 is the minimum-y edge). */
@@ -57,6 +67,8 @@ export type GPUStraightLineCatchmentsRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addStraightLineCatchmentsRecipe}. */
 export type GPUStraightLineCatchmentsRecipeResult = GPURecipeResult & {
+  /** Resolved coordinate context of the grid and facilities; always planar. */
+  spatialContext: GPUSpatialContext;
   /** Nearest facility id per cell (the Voronoi zone). */
   allocation: GraphDataView<'uint32'>;
   /** Euclidean distance from each cell to its facility. */
@@ -71,12 +83,16 @@ export type GPUStraightLineCatchmentsRecipeResult = GPURecipeResult & {
  * Chain: `GPUDistanceField` (Euclidean allocation, i.e. raster Voronoi) ->
  * `GPURasterZonalStatistics` over a value raster, with the allocation as the zone raster. Cells
  * with no facility within `maxDistance` carry `0xffffffff` and are ignored by the statistics.
+ *
+ * Spatial context: planar only (see `GPUStraightLineCatchmentsRecipeProps.spatialContext`).
+ * Distances are in the context's length unit, meters for a `createGPULocalFrame` context.
  */
 export function addStraightLineCatchmentsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUStraightLineCatchmentsRecipeProps
 ): GPUStraightLineCatchmentsRecipeResult {
   const id = props.id ?? 'straight-line-catchments';
+  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
   const builder = new RecipeBuilder(graph);
   const {width, height} = props;
   const cellCount = width * height;
@@ -155,6 +171,7 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
     })
   );
   return {
+    spatialContext,
     contributors: builder.contributors,
     allocation,
     distances,

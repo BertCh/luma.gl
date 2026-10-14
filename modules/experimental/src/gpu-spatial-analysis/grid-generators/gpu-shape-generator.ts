@@ -16,15 +16,22 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
+import {
+  getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUShapeGenerator';
 
 /** Number of float32 elements in a {@link GPUShapeGenerator} parameter buffer. */
 export const GPU_SHAPE_GENERATOR_PARAMETER_LENGTH = 2;
-
-/** Mean Earth radius in meters, the value turf uses for `units: 'meters'`. */
-export const GPU_SHAPE_GENERATOR_EARTH_RADIUS = 6371008.8;
 
 /**
  * Kind of ring produced by {@link GPUShapeGenerator}.
@@ -37,13 +44,13 @@ export const GPU_SHAPE_GENERATOR_EARTH_RADIUS = 6371008.8;
 export type GPUShapeType = 'circle' | 'sector' | 'ellipse';
 
 /**
- * How radii are measured.
+ * Kernel model of {@link GPUShapeGenerator}, derived from its `spatialContext` (not a prop).
  *
  * - `'planar'`: centers and radii share the coordinate units; bearings are degrees clockwise from
  *   +Y.
- * - `'geodesic'`: centers are `[longitude, latitude]` degrees, radii are meters on a sphere of
- *   {@link GPU_SHAPE_GENERATOR_EARTH_RADIUS}, bearings are degrees clockwise from north (turf
- *   `destination`).
+ * - `'geodesic'`: centers are `[longitude, latitude]` degrees, radii are in the context unit
+ *   (meters by default) on its sphere (mean Earth radius by default, the value turf uses), bearings
+ *   are degrees clockwise from north (turf `destination`).
  */
 export type GPUShapeCoordinateSystem = 'planar' | 'geodesic';
 
@@ -118,7 +125,7 @@ export type GPUShapeGeneratorOutput = {
  * Properties for {@link GPUShapeGenerator}.
  *
  * Per-frame (no recompile): `parameters` (segment count, radius scale) and the contents of the
- * input columns. Compile-time: `shape`, `coordinateSystem`, `ellipseSpacing`, `maximumSegments`,
+ * input columns. Compile-time: `shape`, `spatialContext`, `ellipseSpacing`, `maximumSegments`,
  * the feature count and which optional inputs and outputs are present.
  */
 export type GPUShapeGeneratorProps = {
@@ -126,8 +133,12 @@ export type GPUShapeGeneratorProps = {
   id?: string;
   /** Kind of ring. */
   shape: GPUShapeType;
-  /** How radii and bearings are interpreted. Defaults to `'planar'`. */
-  coordinateSystem?: GPUShapeCoordinateSystem;
+  /**
+   * Planar (default) or `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`, in which
+   * centers are degrees and radii are in the context unit (meters on the mean Earth radius by
+   * default). Replaces the former `coordinateSystem` prop.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Ellipse vertex spacing. Defaults to `'parameter'` (equal angles). `'arc-length'` uses
    * approximately equal distances along the unprojected ellipse, before rotation and spherical
@@ -180,6 +191,12 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUShapeGeneratorProps;
+  /** Resolved spatial context (planar unless given). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Kernel model derived from `spatialContext`. */
+  readonly coordinateSystem: GPUShapeCoordinateSystem;
+  /** Sphere radius in the context's length unit (1 for planar). */
+  readonly sphereRadius: number;
   /** Number of features. */
   readonly featureCount: number;
   /** Compile-time maximum segment count. */
@@ -192,13 +209,21 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     if (props.shape !== 'circle' && props.shape !== 'sector' && props.shape !== 'ellipse') {
       throw new Error(`${id} unknown shape ${String(props.shape)}`);
     }
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+    );
     if (
-      props.coordinateSystem !== undefined &&
-      props.coordinateSystem !== 'planar' &&
-      props.coordinateSystem !== 'geodesic'
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      this.spatialContext.metric !== 'great-circle'
     ) {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'geodesic'`);
+      throw new Error(`${id} longitude-latitude centers need the great-circle metric`);
     }
+    this.coordinateSystem =
+      this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'geodesic' : 'planar';
+    this.sphereRadius =
+      this.coordinateSystem === 'geodesic' ? getGPUSphereRadius(this.spatialContext) : 1;
     if (
       props.ellipseSpacing !== undefined &&
       (props.shape !== 'ellipse' ||
@@ -306,7 +331,7 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
       vertexCount
     ]);
     const {shape} = props;
-    const geodesic = props.coordinateSystem === 'geodesic';
+    const geodesic = this.coordinateSystem === 'geodesic';
     const arcLengths =
       props.ellipseSpacing === 'arc-length'
         ? createTransientView(graph, `${id}-arc-lengths`, 'float32', featureCount * 257)
@@ -407,7 +432,7 @@ fn getVertexCount(segments: u32) -> u32 {
         bindings: vertexBindings,
         invocationCount: featureCount * maximumVertices,
         declarations: `${constants}
-const EARTH_RADIUS: f32 = ${GPU_SHAPE_GENERATOR_EARTH_RADIUS};
+const EARTH_RADIUS: f32 = ${getWGSLFloatLiteral(this.sphereRadius)};
 const DEGREES: f32 = 0.017453292519943295;
 const TWO_PI: f32 = 6.283185307179586;
 const NOT_A_NUMBER: u32 = 0x7fc00000u;

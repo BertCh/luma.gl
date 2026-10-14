@@ -9,11 +9,20 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
-import type {GPUFloat32Positions} from '../../utils/gpu-contributor-types';
-import {getGraphViewChunks} from '../../utils/gpu-contributor-utils';
 import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
+import type {GPUFloat32Positions} from '../../utils/gpu-contributor-types';
+import {
+  getGraphViewChunks,
+  validateGPUStorageBindingByteLength
+} from '../../utils/gpu-contributor-utils';
+import {
+  NEAREST_BASE_WGSL,
   NEAREST_COMMON_WGSL,
+  NEAREST_GEODESIC_WGSL,
   NEAREST_HEADER_WORDS,
   NEAREST_NODE_WORDS,
   getNearestPairWGSL,
@@ -81,6 +90,17 @@ export type NearestNeighborNodeProps = {
   onAttribute?: GPUSpatialJoinOnAttribute;
   neighborSegmentIndices?: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
+  /**
+   * When set, positions are longitude/latitude degrees and distances are great-circle distances in
+   * the units of this sphere radius (meters for the mean Earth radius), including `maxDistance`
+   * and `neighborDistances`. Omitted means planar distances in coordinate units.
+   */
+  sphereRadius?: number;
+  /**
+   * Write feature rows (not `featureIds` values) to `neighborIds`; `featureIds` then only feeds
+   * the `exclusive` filter.
+   */
+  writeFeatureRows?: boolean;
 };
 
 /** Returns the number of feature rows of a nearest geometry. @internal */
@@ -207,7 +227,7 @@ function createBoundsNode<Parameters>(
         {name: 'featureMaxima', view: maxima, type: 'f32', access: 'read_write'}
       ],
       invocationCount: featureCount,
-      declarations: `${NEAREST_COMMON_WGSL}
+      declarations: `${NEAREST_BASE_WGSL}
 const VERTEX_COUNT: u32 = ${features.positions.length}u;`,
       body: `var minimum = vec2f(FLOAT32_MAXIMUM);
   var maximum = vec2f(-FLOAT32_MAXIMUM);
@@ -319,7 +339,9 @@ export function getNearestNeighborNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: NearestNeighborNodeProps
 ): {nodes: GPUCommandNode<Parameters>[]; bvh: NearestBVH} {
-  const {id, operation, features, featureCount, queryCount, k, capacity} = props;
+  const {id, operation, features, featureCount, queryCount, k, capacity, sphereRadius} = props;
+  const greatCircle = sphereRadius !== undefined;
+  const sphereRadiusLiteral = greatCircle ? getWGSLFloatLiteral(Math.fround(sphereRadius)) : '';
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   const {bvh, nodes: bvhNodes} = getNearestBVHNodes(graph, {
@@ -436,6 +458,13 @@ const FEATURE_COUNT: u32 = ${featureCount}u;`,
 
   // Result buffer: per query [count, flags, bound bits, (row, distance-squared bits) * capacity].
   const stride = NEAREST_HEADER_WORDS + 2 * capacity;
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'topk',
+    Math.max(queryCount, 1) * stride * 4,
+    'reduce the query count or k'
+  );
   const topk = createTransientView(graph, `${id}-topk`, 'uint32', Math.max(queryCount, 1) * stride);
   const clearBindings: WGSLKernelBinding[] = [
     {name: 'topk', view: topk, type: 'u32', access: 'read_write'},
@@ -449,12 +478,12 @@ const FEATURE_COUNT: u32 = ${featureCount}u;`,
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-clear`,
       operation,
-      variant: 'clear',
+      variant: greatCircle ? 'clear-great-circle' : 'clear',
       bindings: clearBindings,
       invocationCount: Math.max(queryCount, 1),
       declarations: `const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const QUERY_COUNT: u32 = ${queryCount}u;
-const STRIDE: u32 = ${stride}u;`,
+const STRIDE: u32 = ${stride}u;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${sphereRadiusLiteral};` : ''}`,
       body: `if (index == 0u) { overflow[overflowOffset] = bvhOverflow[bvhOverflowOffset]; }
   if (index < QUERY_COUNT) {
     // A NaN, negative or infinite maxDistance sets a negative bound that matches nothing.
@@ -462,7 +491,11 @@ const STRIDE: u32 = ${stride}u;`,
       props.maxDistance
         ? `let limit = maxDistance[maxDistanceOffset];
     var bound = -1.0;
-    if (limit >= 0.0 && limit <= FLOAT32_MAXIMUM) { bound = min(limit * limit, FLOAT32_MAXIMUM); }`
+    if (limit >= 0.0 && limit <= FLOAT32_MAXIMUM) { bound = ${
+      greatCircle
+        ? '// A central angle: the traversal compares angles, not squares.\n    limit / SPHERE_RADIUS'
+        : 'min(limit * limit, FLOAT32_MAXIMUM)'
+    }; }`
         : 'let bound = FLOAT32_MAXIMUM;'
     }
     let header = topkOffset + index * STRIDE;
@@ -535,6 +568,15 @@ const STRIDE: u32 = ${stride}u;`,
   const needsFootPass = Boolean(
     props.neighborFootPoints || props.neighborQueryPoints || props.neighborSegmentIndices
   );
+  if (needsFootPass) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'extras',
+      Math.max(queryCount, 1) * capacity * EXTRA_WORDS * 4,
+      'reduce the query count or k, or omit the neighbor foot-point outputs'
+    );
+  }
   const extras = needsFootPass
     ? createTransientView(
         graph,
@@ -553,6 +595,7 @@ const STRIDE: u32 = ${stride}u;`,
       stackSize,
       chunkFirstRow: dispatch.firstRow,
       queryKind: dispatch.kind,
+      greatCircle,
       filter: hasFilter
         ? {
             exclusive: Boolean(props.exclusive),
@@ -562,12 +605,12 @@ const STRIDE: u32 = ${stride}u;`,
           }
         : undefined
     });
-    const sideWGSL = `${NEAREST_COMMON_WGSL}${getNearestSideWGSL(dispatch.side)}${getNearestSideWGSL(featureSide)}${getNearestPairWGSL(dispatch.side, featureSide)}`;
+    const sideWGSL = `${greatCircle ? NEAREST_GEODESIC_WGSL : NEAREST_COMMON_WGSL}${getNearestSideWGSL(dispatch.side)}${getNearestSideWGSL(featureSide)}${getNearestPairWGSL(dispatch.side, featureSide)}`;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${dispatch.chunkId}-traverse`,
         operation,
-        variant: `traverse-${dispatch.kind}-${features.kind}`,
+        variant: `traverse-${dispatch.kind}-${features.kind}${greatCircle ? '-great-circle' : ''}`,
         bindings: [
           ...dispatch.bindings,
           nodeDataBinding,
@@ -584,7 +627,7 @@ const STRIDE: u32 = ${stride}u;`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${dispatch.chunkId}-foot-points`,
           operation,
-          variant: `foot-${dispatch.kind}-${features.kind}`,
+          variant: `foot-${dispatch.kind}-${features.kind}${greatCircle ? '-great-circle' : ''}`,
           bindings: [
             ...dispatch.bindings,
             ...featureBindings,
@@ -622,7 +665,7 @@ const CHUNK_FIRST_ROW: u32 = ${dispatch.firstRow}u;`,
       {name: 'neighborCounts', view: props.neighborCounts, type: 'u32', access: 'read_write'},
       {name: 'overflow', view: props.overflow, type: 'atomic<u32>', access: 'read_write'}
     ];
-    if (props.featureIds) {
+    if (props.featureIds && !props.writeFeatureRows) {
       columnBindings.push({
         name: 'featureIds',
         view: props.featureIds,
@@ -642,12 +685,12 @@ const CHUNK_FIRST_ROW: u32 = ${dispatch.firstRow}u;`,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-columns`,
         operation,
-        variant: 'columns',
+        variant: greatCircle ? 'columns-great-circle' : 'columns',
         bindings: columnBindings,
         invocationCount: queryCount * capacity,
         declarations: `const CAPACITY: u32 = ${capacity}u;
 const STRIDE: u32 = ${stride}u;
-const NO_FEATURE: u32 = 0xffffffffu;`,
+const NO_FEATURE: u32 = 0xffffffffu;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${sphereRadiusLiteral};` : ''}`,
         body: `let query = index / CAPACITY;
   let slot = index % CAPACITY;
   let header = topkOffset + query * STRIDE;
@@ -660,8 +703,8 @@ const NO_FEATURE: u32 = 0xffffffffu;`,
   var distance = -1.0;
   if (slot < count) {
     featureId = topk[header + 3u + slot * 2u];
-    ${props.featureIds ? 'featureId = featureIds[featureIdsOffset + featureId];' : ''}
-    distance = sqrt(bitcast<f32>(topk[header + 4u + slot * 2u]));
+    ${props.featureIds && !props.writeFeatureRows ? 'featureId = featureIds[featureIdsOffset + featureId];' : ''}
+    distance = ${greatCircle ? 'bitcast<f32>(topk[header + 4u + slot * 2u]) * SPHERE_RADIUS' : 'sqrt(bitcast<f32>(topk[header + 4u + slot * 2u]))'};
   }
   neighborIds[neighborIdsOffset + index] = featureId;
   ${props.neighborDistances ? 'neighborDistances[neighborDistancesOffset + index] = distance;' : ''}`

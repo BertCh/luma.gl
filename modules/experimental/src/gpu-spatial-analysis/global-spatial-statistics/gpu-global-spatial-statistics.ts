@@ -19,12 +19,23 @@ import {
 import {createSegmentSumNode} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
+  type GPUIslandPolicy,
   type GPUSpatialWeights,
+  getGPUSpatialWeightsNeighborLoopWGSL,
+  isGPUSpatialWeightsRowStandardized,
+  resolveGPUIslandPolicy,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {
+  GPU_DEFAULT_INFERENCE_ALTERNATIVE,
+  type GPUInferenceAlternative,
+  type GPUInferenceMetadata
+} from '../contracts/inference';
 import {getSlotGroupingNodes} from '../spatial-weights/slot-grouping';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {
@@ -75,12 +86,23 @@ const COLUMN = {
   binaryDegreeSquare: 21,
   degreeDeviation: 22,
   binaryDegreeDeviation: 23,
-  columnLagDeviation: 24
+  columnLagDeviation: 24,
+  deviationX: 25,
+  deviationY: 26
 } as const;
-const COLUMN_COUNT = 25;
+const COLUMN_COUNT = 27;
 const BATCH_A = {first: 0, count: 3} as const;
 const BATCH_B = {first: 3, count: 19} as const;
 const BATCH_C = {first: 22, count: 3} as const;
+/** Sums of the first-pass deviations from the batch-A means (second-pass mean correction). */
+const BATCH_D = {first: 25, count: 2} as const;
+
+/**
+ * Rows are counted in u32 but compared and divided as f32 in the finalize kernel, and degrees and
+ * counts are summed as f32 columns, which is exact only below 2^24. The local statistics use the
+ * same limit.
+ */
+const MAXIMUM_ROWS = 2 ** 24;
 
 /**
  * Properties for {@link GPUGlobalSpatialStatistics}.
@@ -103,6 +125,22 @@ export type GPUGlobalSpatialStatisticsProps = {
   /** Statistics to report. Compile-time; other result blocks hold quiet NaN. */
   statistics: readonly GPUGlobalSpatialStatistic[];
   /**
+   * Treatment of islands: included rows with no active neighbor (a slot with positive weight to
+   * another included row). `'exclude'` (default) removes them from `n`, the moments, `S0`, `S1`,
+   * `S2` and from the neighbors of other rows, in a single pass without cascade (a row whose only
+   * neighbors were islands keeps its place in `n` and contributes no weight). `'keep'` is esda's
+   * convention: islands stay in `n` and the moments. `summary.islandCount` reports the islands
+   * either way. Compile-time.
+   */
+  islands?: GPUIslandPolicy;
+  /**
+   * Tail of every analytic p-value in `results` (Moran, Geary, General G, bivariate Moran and
+   * join counts): `'two-sided'` (default), `'greater'` (upper tail of z, for example positive
+   * autocorrelation of Moran's I) or `'lesser'` (`'less'` is an alias, lower tail of z).
+   * `'directed'` and `'folded'` are permutation conventions and throw here. Compile-time.
+   */
+  alternative?: GPUInferenceAlternative;
+  /**
    * Caller-owned results, at least `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length` float32 values,
    * laid out by `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`.
    */
@@ -117,11 +155,27 @@ export type GPUGlobalSpatialStatisticsProps = {
 /**
  * Global spatial autocorrelation from a {@link GPUSpatialWeights} CSR and a value column: Moran's
  * I, Geary's C, Getis-Ord General G, bivariate Moran's I and join counts, each with its analytic
- * expectation, variance, z-score and two-sided normal p-value. Weights are used as given (apply
- * row standardization in `GPUNeighborSearch` if wanted).
+ * expectation, variance, z-score and normal p-value (`alternative`, default two-sided).
  *
- * Definitions (PySAL esda), over the `n` included rows (mask nonzero and every provided value
- * finite; excluded rows are neither foci nor neighbors), with `z = x - mean(x)`,
+ * Neighbors: a slot is a neighbor when its weight is positive, it points to another analysis row
+ * and it is not the row itself (zero-weight slots are not neighbors). Weights are used as given,
+ * except when `weights.info.transform === 'row'`: each row is then re-standardized over its
+ * active neighbors, `w'_ij = w_ij / sum_k w_ik`, everywhere (`S0`, `S1`, `S2`, the reverse
+ * weights `w'_ji` and the cross products), so masked, missing and island neighbors drop out and
+ * every remaining row still sums to 1 (identical to the input up to rounding without masking).
+ *
+ * Islands: an included row with no active neighbor. `islands: 'exclude'` (default) removes them
+ * from the analysis (`n`, moments, weight sums); `'keep'` reproduces esda, where islands count in
+ * `n`. The island rule looks at out-links only; for symmetric weights it equals the in-or-out
+ * rule. Parity with esda needs `islands: 'keep'`.
+ *
+ * Truncated weights: when `weights.status.overflow` is nonzero the weights are incomplete (rows
+ * after the overflow are empty), so every statistic block and the weight sums and moments of the
+ * summary are NaN. Only `count` and `islandCount` stay informative.
+ *
+ * Definitions (PySAL esda), over the `n` analysis rows (mask nonzero, every provided value finite
+ * and, for `'exclude'`, not an island; excluded rows are neither foci nor neighbors), with
+ * `z = x - mean(x)`,
  * `S0 = sum w_ij`, `S1 = 1/2 sum (w_ij + w_ji)^2`, `S2 = sum_i (w_i. + w_.i)^2`:
  * - Moran: `I = (n / S0) sum w_ij z_i z_j / sum z_i^2`, `E = -1/(n-1)`; `esda.Moran` variances
  *   `VI_norm` and `VI_rand` (with the sample kurtosis).
@@ -130,8 +184,9 @@ export type GPUGlobalSpatialStatisticsProps = {
  * - General G: `G = sum_{i != j} w_ij x_i x_j / sum_{i != j} x_i x_j`, `E = S0 / (n(n-1))`; the
  *   randomization variance equals `esda.G.VG` but is evaluated in centered form,
  *   `Var(x'Wx) = mean^2 Var(d'z) + 2 mean Cov(d'z, z'Wz) + Var(z'Wz)` with `d_i = w_i. + w_.i`,
- *   which avoids the catastrophic cancellation of `E[G^2] - E[G]^2` in f32. Values should be
- *   non-negative, as in esda. Only randomization fields are filled.
+ *   which avoids the catastrophic cancellation of `E[G^2] - E[G]^2` in f32. G needs non-negative
+ *   ratio-scale data: if any analysis value is negative the whole G block is NaN. Only
+ *   randomization fields are filled.
  * - Bivariate Moran (`esda.Moran_BV`, which permutes `y`):
  *   `I_BV = (n / S0) sum_ij w_ij zx_i zy_j / sqrt(sum zx^2 sum zy^2)`, which equals esda's value for
  *   row-standardized weights (`S0 = n`). Under randomization of `y`, `E = 0` and the exact
@@ -147,6 +202,11 @@ export type GPUGlobalSpatialStatisticsProps = {
  * Variances are NaN when `n < 4` (the randomization formulas divide by `n - 3`), `S0 = 0`, or the
  * values are constant; z and p are NaN where the variance is not positive.
  *
+ * Precision: `n` is counted in u32 (atomic integer adds), the mean gets a second-pass correction
+ * `mean += sum(x - mean) / n`, and deviations are formed from the corrected mean. Row counts must
+ * be below 2^24 (degrees and counts are f32 columns, exact only there), the same limit as the
+ * local statistics.
+ *
  * Algorithm: one gather pass per row over its CSR slots (binary search of `w_ji` in row `j`), a
  * deterministic transpose (stable sort of slots by neighbor) for column sums, and per-row partials
  * summed by fixed-order two-level workgroup trees. Join counts use u32 atomics. No float atomics,
@@ -157,14 +217,23 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGlobalSpatialStatisticsProps;
+  /** Resolved island policy. */
+  readonly islands: GPUIslandPolicy;
+  /** Resolved tail of the analytic p-values (`'less'` is reported as `'lesser'`). */
+  readonly alternative: 'two-sided' | 'greater' | 'lesser';
 
   constructor(props: GPUGlobalSpatialStatisticsProps) {
     const id = props.id ?? 'global-spatial-statistics';
     this.id = id;
     this.props = props;
+    this.islands = resolveGPUIslandPolicy(id, props.islands);
+    this.alternative = resolveAnalyticAlternative(id, props.alternative);
     const rows = validateGPUSpatialWeights(id, props.weights);
-    if (rows >= 2 ** 31) {
-      throw new Error(`${id} weights must hold fewer than 2^31 rows`);
+    if (rows >= MAXIMUM_ROWS) {
+      throw new Error(`${id} weights must hold fewer than 2^24 rows`);
+    }
+    if (props.weights.status?.overflow) {
+      validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
     }
     validatePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows) {
@@ -212,11 +281,27 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
+        props.weights.status?.overflow,
         props.values,
         props.secondValues,
         props.mask
       ]
     );
+  }
+
+  /**
+   * Describes how the analytic p-values in `results` were produced, enough to build a legend.
+   * Global statistics report p-values, never multiple-testing adjusted ones.
+   */
+  getInferenceMetadata(): GPUInferenceMetadata {
+    return {
+      alternative: this.alternative,
+      permutationCount: 0,
+      multipleTesting: 'none',
+      testedRowsDefinition: `included rows with finite values${
+        this.islands === 'exclude' ? ', islands excluded' : ' (islands kept, as esda)'
+      }; one test per statistic`
+    };
   }
 
   /** Returns the global-statistics nodes in dependency order. */
@@ -229,6 +314,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
+      weights.status?.overflow,
       values,
       secondValues,
       mask,
@@ -237,6 +323,9 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
     ]);
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
+    const overflow = weights.status?.overflow;
+    const standardized = isGPUSpatialWeightsRowStandardized(weights);
+    const keepIslands = this.islands === 'keep';
     const blockCount = Math.ceil(rows / BLOCK_ROWS);
     const constantsWGSL = `const ROWS: u32 = ${rows}u;
 const CAPACITY: u32 = ${capacity}u;
@@ -247,17 +336,30 @@ fn getMatrixIndex(column: u32, row: u32) -> u32 {
   return column * ROWS + row;
 }
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
+    // Neighbors are the shared active slots (positive weight, another row, analysis row).
+    const analysisNeighbor = 'isFiniteFloat(centered[centeredOffset + neighbor * 2u])';
 
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'matrix',
+      COLUMN_COUNT * rows * 4,
+      'reduce the row count'
+    );
     const matrix = createTransientView(graph, `${id}-matrix`, 'float32', COLUMN_COUNT * rows);
     const centered = createTransientView(graph, `${id}-centered`, 'float32', rows * 2);
     const totalsA = createTransientView(graph, `${id}-totals-a`, 'float32', BATCH_A.count);
     const totalsB = createTransientView(graph, `${id}-totals-b`, 'float32', BATCH_B.count);
     const totalsC = createTransientView(graph, `${id}-totals-c`, 'float32', BATCH_C.count);
+    const totalsD = createTransientView(graph, `${id}-totals-d`, 'float32', BATCH_D.count);
+    const baseStates = createTransientView(graph, `${id}-base-states`, 'uint32', rows);
+    // [n, analysis rows with a negative value, BB2, BW2, WW2], u32 so counts stay exact.
+    const counters = createTransientView(graph, `${id}-counters`, 'uint32', 5);
+    const rowScale = createTransientView(graph, `${id}-row-scale`, 'float32', rows);
     const slotRows = createTransientView(graph, `${id}-slot-rows`, 'uint32', capacity);
     const transposeKeys = createTransientView(graph, `${id}-transpose-keys`, 'uint32', capacity);
     const slotIds = createTransientView(graph, `${id}-slot-ids`, 'uint32', capacity);
     const columnOffsets = createTransientView(graph, `${id}-column-offsets`, 'uint32', rows + 1);
-    const joinCounters = createTransientView(graph, `${id}-join-counters`, 'uint32', 3);
 
     const optionalInputs: WGSLKernelBinding[] = [
       ...(secondValues
@@ -284,6 +386,13 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
     });
     const {sortedSlots} = grouping;
     const nodes: GPUCommandNode<Parameters>[] = [
+      createFillNode<Parameters>(graph, {
+        id: `${id}-counters-clear`,
+        operation: OPERATION,
+        view: counters,
+        type: 'u32',
+        value: '0u'
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-include`,
         operation: OPERATION,
@@ -291,6 +400,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
           ...optionalInputs,
+          {name: 'baseStates', view: baseStates, type: 'u32', access: 'read_write'},
           {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
@@ -298,9 +408,49 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         body: `let x = values[valuesOffset + index];
   let y = ${secondValues ? 'secondValues[secondValuesOffset + index]' : '0.0'};
   let included = ${mask ? 'mask[maskOffset + index] != 0u &&' : ''} isFiniteFloat(x) && isFiniteFloat(y);
-  matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] = select(0.0, 1.0, included);
+  baseStates[baseStatesOffset + index] = select(0u, 1u, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] = select(0.0, x, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] = select(0.0, y, included);`
+      }),
+      // Islands: included rows with no active slot to another included row. Rows left in the
+      // analysis (all included rows for 'keep', the non-islands for 'exclude') are counted in
+      // u32; the others leave the sums.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-islands`,
+        operation: OPERATION,
+        variant: 'islands',
+        bindings: [
+          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+          {name: 'baseStates', view: baseStates, type: 'u32', access: 'read'},
+          {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'},
+          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: constantsWGSL,
+        body: `let base = baseStates[baseStatesOffset + index] != 0u;
+  var hasNeighbor = false;
+  if (base) {
+    ${getGPUSpatialWeightsNeighborLoopWGSL(
+      'baseStates[baseStatesOffset + neighbor] != 0u',
+      'hasNeighbor = true;'
+    )}
+  }
+  let island = base && !hasNeighbor;
+  let included = base && ${keepIslands ? 'true' : '!island'};
+  if (included) {
+    atomicAdd(&counters[countersOffset], 1u);
+    if (matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] < 0.0) {
+      atomicAdd(&counters[countersOffset + 1u], 1u);
+    }
+  } else {
+    // Missing rows and excluded islands leave the sums.
+    matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)] = 0.0;
+    matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)] = 0.0;
+  }
+  matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] = select(0.0, 1.0, included);
+  matrix[matrixOffset + getMatrixIndex(COLUMN_ISLAND, index)] = select(0.0, 1.0, island);`
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-a`,
@@ -310,32 +460,56 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
         ...BATCH_A,
         totals: totalsA
       }),
+      // Second-pass mean: first-pass deviations from the batch-A mean, whose sum corrects it.
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-center`,
+        id: `${id}-deviate`,
         operation: OPERATION,
-        variant: 'center',
+        variant: 'deviate',
         bindings: [
-          {name: 'values', view: values, type: 'f32', access: 'read'},
-          ...(secondValues
-            ? [
-                {
-                  name: 'secondValues',
-                  view: secondValues,
-                  type: 'f32' as const,
-                  access: 'read' as const
-                }
-              ]
-            : []),
           {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
-          {name: 'centered', view: centered, type: 'f32', access: 'read_write'},
+          {name: 'counters', view: counters, type: 'u32', access: 'read'},
           {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: constantsWGSL,
         body: `let included = matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] != 0.0;
-  let count = totalsA[totalsAOffset];
-  let centeredX = values[valuesOffset + index] - totalsA[totalsAOffset + 1u] / count;
-  let centeredY = ${secondValues ? 'secondValues[secondValuesOffset + index] - totalsA[totalsAOffset + 2u] / count' : '0.0'};
+  let count = f32(counters[countersOffset]);
+  let x = matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)];
+  let y = matrix[matrixOffset + getMatrixIndex(COLUMN_Y, index)];
+  matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_X, index)] =
+    select(0.0, x - totalsA[totalsAOffset + 1u] / count, included);
+  matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_Y, index)] =
+    select(0.0, y - totalsA[totalsAOffset + 2u] / count, included);`
+      }),
+      ...getColumnSumNodes<Parameters>(graph, {
+        id: `${id}-sum-d`,
+        matrix,
+        rows,
+        blockCount,
+        ...BATCH_D,
+        totals: totalsD
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-center`,
+        operation: OPERATION,
+        variant: 'center',
+        bindings: [
+          {name: 'totalsD', view: totalsD, type: 'f32', access: 'read'},
+          {name: 'counters', view: counters, type: 'u32', access: 'read'},
+          {name: 'centered', view: centered, type: 'f32', access: 'read_write'},
+          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: constantsWGSL,
+        // Stored first-pass deviation minus the mean of the first-pass deviations. The deviation is
+        // read back from memory, not recomputed as (x - mean1) - mean2: the shader compiler may
+        // reassociate that to x - (mean1 + mean2), which rounds the corrected mean to the f32 grid
+        // of x and defeats the second pass.
+        body: `let included = matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] != 0.0;
+  let count = f32(counters[countersOffset]);
+  let x = matrix[matrixOffset + getMatrixIndex(COLUMN_X, index)];
+  let centeredX = matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_X, index)] - totalsD[totalsDOffset] / count;
+  let centeredY = ${secondValues ? 'matrix[matrixOffset + getMatrixIndex(COLUMN_DEVIATION_Y, index)] - totalsD[totalsDOffset + 1u] / count' : '0.0'};
   let square = centeredX * centeredX;
   centered[centeredOffset + index * 2u] = select(getQuietNaN(index), centeredX, included);
   centered[centeredOffset + index * 2u + 1u] = select(getQuietNaN(index), centeredY, included);
@@ -344,8 +518,33 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
   matrix[matrixOffset + getMatrixIndex(COLUMN_CENTERED_FOURTH, index)] = select(0.0, square * square, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_CENTERED_SQUARE_Y, index)] = select(0.0, centeredY * centeredY, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BLACK, index)] =
-    select(0.0, 1.0, included && values[valuesOffset + index] != 0.0);`
+    select(0.0, 1.0, included && x != 0.0);`
       }),
+      // Row re-standardization: the reciprocal sum of the active weights of every analysis row.
+      ...(standardized
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-row-scale`,
+              operation: OPERATION,
+              variant: 'row-scale',
+              bindings: [
+                {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+                {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+                {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+                {name: 'centered', view: centered, type: 'f32', access: 'read'},
+                {name: 'rowScale', view: rowScale, type: 'f32', access: 'read_write'}
+              ],
+              invocationCount: rows,
+              declarations: constantsWGSL,
+              // A row with no active weight keeps scale 0 (it contributes nothing).
+              body: `var sum = 0.0;
+  if (isFiniteFloat(centered[centeredOffset + index * 2u])) {
+    ${getGPUSpatialWeightsNeighborLoopWGSL(analysisNeighbor, 'sum += weight;')}
+  }
+  rowScale[rowScaleOffset + index] = select(0.0, 1.0 / sum, sum > 0.0);`
+            })
+          ]
+        : []),
       // Deterministic transpose: the source row of every slot, then a stable sort by neighbor.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-slot-rows`,
@@ -374,6 +573,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
           {name: 'slotRows', view: slotRows, type: 'u32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
           {name: 'centered', view: centered, type: 'f32', access: 'read'},
           {name: 'transposeKeys', view: transposeKeys, type: 'u32', access: 'read_write'},
           {name: 'slotIds', view: slotIds, type: 'u32', access: 'read_write'}
@@ -385,6 +585,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
   let neighbor = neighbors[neighborsOffset + index];
   var key = ROWS;
   if (source < ROWS && neighbor < ROWS && neighbor != source &&
+      weights[weightsOffset + index] > 0.0 &&
       isFiniteFloat(centered[centeredOffset + neighbor * 2u])) {
     key = neighbor;
   }
@@ -392,13 +593,6 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
   slotIds[slotIdsOffset + index] = index;`
       }),
       ...grouping.nodes,
-      createFillNode<Parameters>(graph, {
-        id: `${id}-join-clear`,
-        operation: OPERATION,
-        view: joinCounters,
-        type: 'u32',
-        value: '0u'
-      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-pairs`,
         operation: OPERATION,
@@ -408,9 +602,12 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
           {name: 'values', view: values, type: 'f32', access: 'read'},
+          ...(standardized
+            ? [{name: 'rowScale', view: rowScale, type: 'f32' as const, access: 'read' as const}]
+            : []),
           {name: 'centered', view: centered, type: 'f32', access: 'read'},
           {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'},
-          {name: 'joinCounters', view: joinCounters, type: 'atomic<u32>', access: 'read_write'}
+          {name: 'counters', view: counters, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: `${constantsWGSL}
@@ -418,7 +615,10 @@ fn getRowEnd(row: u32) -> u32 {
   return min(offsets[offsetsOffset + row + 1u], CAPACITY);
 }
 
-// Weight w_row,column by binary search of the ascending neighbor IDs of row, or -1 when absent.
+${getRowScaleWGSL(standardized)}
+
+// Effective weight w'_row,column by binary search of the ascending neighbor IDs of row, or -1 when
+// the slot is absent or not active (zero weight).
 fn findWeight(row: u32, column: u32) -> f32 {
   var low = min(offsets[offsetsOffset + row], CAPACITY);
   let end = getRowEnd(row);
@@ -432,7 +632,8 @@ fn findWeight(row: u32, column: u32) -> f32 {
     }
   }
   if (low < end && neighbors[neighborsOffset + low] == column) {
-    return weights[weightsOffset + low];
+    let weight = weights[weightsOffset + low];
+    return select(-1.0, weight * getRowScale(row), weight > 0.0);
   }
   return -1.0;
 }`,
@@ -451,42 +652,33 @@ fn findWeight(row: u32, column: u32) -> f32 {
   let x = values[valuesOffset + index];
   if (isFiniteFloat(centeredX)) {
     let black = x != 0.0;
-    let begin = min(offsets[offsetsOffset + index], CAPACITY);
-    let end = getRowEnd(index);
-    for (var slot = begin; slot < end; slot++) {
-      let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor >= ROWS || neighbor == index) {
-        continue;
-      }
-      let neighborX = centered[centeredOffset + neighbor * 2u];
-      if (!isFiniteFloat(neighborX)) {
-        continue;
-      }
-      let weight = weights[weightsOffset + slot];
+    let scale = getRowScale(index);
+    ${getGPUSpatialWeightsNeighborLoopWGSL(
+      analysisNeighbor,
+      `let neighborX = centered[centeredOffset + neighbor * 2u];
+      let scaled = weight * scale;
       let reverse = findWeight(neighbor, index);
-      rowWeight += weight;
-      s1 += select(weight * weight, 0.5 * (weight + reverse) * (weight + reverse), reverse >= 0.0);
-      lag += weight * neighborX;
+      rowWeight += scaled;
+      s1 += select(scaled * scaled, 0.5 * (scaled + reverse) * (scaled + reverse), reverse >= 0.0);
+      lag += scaled * neighborX;
       let difference = centeredX - neighborX;
-      gearySum += weight * difference * difference;
-      rawLag += weight * values[valuesOffset + neighbor];
-      lagY += weight * centered[centeredOffset + neighbor * 2u + 1u];
-      if (weight > 0.0) {
-        outDegree++;
-        binaryS1 += select(1u, 2u, reverse > 0.0);
-        let neighborBlack = values[valuesOffset + neighbor] != 0.0;
-        if (black && neighborBlack) {
-          blackBlack++;
-        } else if (black != neighborBlack) {
-          blackWhite++;
-        } else {
-          whiteWhite++;
-        }
-      }
-    }
-    atomicAdd(&joinCounters[joinCountersOffset], blackBlack);
-    atomicAdd(&joinCounters[joinCountersOffset + 1u], blackWhite);
-    atomicAdd(&joinCounters[joinCountersOffset + 2u], whiteWhite);
+      gearySum += scaled * difference * difference;
+      rawLag += scaled * values[valuesOffset + neighbor];
+      lagY += scaled * centered[centeredOffset + neighbor * 2u + 1u];
+      outDegree++;
+      binaryS1 += select(1u, 2u, reverse > 0.0);
+      let neighborBlack = values[valuesOffset + neighbor] != 0.0;
+      if (black && neighborBlack) {
+        blackBlack++;
+      } else if (black != neighborBlack) {
+        blackWhite++;
+      } else {
+        whiteWhite++;
+      }`
+    )}
+    atomicAdd(&counters[countersOffset + 2u], blackBlack);
+    atomicAdd(&counters[countersOffset + 3u], blackWhite);
+    atomicAdd(&counters[countersOffset + 4u], whiteWhite);
   }
   let included = isFiniteFloat(centeredX);
   matrix[matrixOffset + getMatrixIndex(COLUMN_ROW_WEIGHT, index)] = rowWeight;
@@ -507,11 +699,15 @@ fn findWeight(row: u32, column: u32) -> f32 {
           {name: 'sortedSlots', view: sortedSlots, type: 'u32', access: 'read'},
           {name: 'slotRows', view: slotRows, type: 'u32', access: 'read'},
           {name: 'weights', view: weights.weights, type: 'f32', access: 'read'},
+          ...(standardized
+            ? [{name: 'rowScale', view: rowScale, type: 'f32' as const, access: 'read' as const}]
+            : []),
           {name: 'centered', view: centered, type: 'f32', access: 'read'},
           {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
-        declarations: constantsWGSL,
+        declarations: `${constantsWGSL}
+${getRowScaleWGSL(standardized)}`,
         // Slots of one column are in ascending slot order (stable sort), so sums are fixed-order.
         body: `let included = isFiniteFloat(centered[centeredOffset + index * 2u]);
   let begin = columnOffsets[columnOffsetsOffset + index];
@@ -521,17 +717,18 @@ fn findWeight(row: u32, column: u32) -> f32 {
   var columnLag = 0.0;
   for (var position = begin; position < end; position++) {
     let slot = sortedSlots[sortedSlotsOffset + position];
-    let weight = weights[weightsOffset + slot];
+    // Only active slots are keyed into columns, so every weight here is positive.
+    let source = slotRows[slotRowsOffset + slot];
+    let weight = weights[weightsOffset + slot] * getRowScale(source);
     columnWeight += weight;
-    inDegree += select(0u, 1u, weight > 0.0);
-    columnLag += weight * centered[centeredOffset + slotRows[slotRowsOffset + slot] * 2u];
+    inDegree++;
+    columnLag += weight * centered[centeredOffset + source * 2u];
   }
   let degree = matrix[matrixOffset + getMatrixIndex(COLUMN_ROW_WEIGHT, index)] + columnWeight;
   let binaryDegree = matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_OUT_DEGREE, index)] + f32(inDegree);
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEGREE, index)] = select(0.0, degree, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_DEGREE, index)] = select(0.0, binaryDegree, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_COLUMN_LAG, index)] = select(0.0, columnLag, included);
-  matrix[matrixOffset + getMatrixIndex(COLUMN_ISLAND, index)] = select(0.0, 1.0, included && binaryDegree == 0.0);
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEGREE_SQUARE, index)] = select(0.0, degree * degree, included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_DEGREE_SQUARE, index)] =
     select(0.0, binaryDegree * binaryDegree, included);`
@@ -549,8 +746,8 @@ fn findWeight(row: u32, column: u32) -> f32 {
         operation: OPERATION,
         variant: 'deviations',
         bindings: [
-          {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
           {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'},
+          {name: 'counters', view: counters, type: 'u32', access: 'read'},
           {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
@@ -564,7 +761,7 @@ fn getSquaredDeviation(column: u32, row: u32, count: f32) -> f32 {
   return deviation * deviation;
 }`,
         body: `let included = matrix[matrixOffset + getMatrixIndex(COLUMN_INCLUDED, index)] != 0.0;
-  let count = totalsA[totalsAOffset];
+  let count = f32(counters[countersOffset]);
   matrix[matrixOffset + getMatrixIndex(COLUMN_DEGREE_DEVIATION, index)] =
     select(0.0, getSquaredDeviation(COLUMN_DEGREE, index, count), included);
   matrix[matrixOffset + getMatrixIndex(COLUMN_BINARY_DEGREE_DEVIATION, index)] =
@@ -588,7 +785,8 @@ fn getSquaredDeviation(column: u32, row: u32, count: f32) -> f32 {
           {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
           {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'},
           {name: 'totalsC', view: totalsC, type: 'f32', access: 'read'},
-          {name: 'joinCounters', view: joinCounters, type: 'u32', access: 'read'},
+          {name: 'totalsD', view: totalsD, type: 'f32', access: 'read'},
+          {name: 'counters', view: counters, type: 'u32', access: 'read'},
           {name: 'results', view: props.results, type: 'f32', access: 'read_write'},
           ...(props.joinCounts
             ? [
@@ -599,6 +797,9 @@ fn getSquaredDeviation(column: u32, row: u32, count: f32) -> f32 {
                   access: 'read_write' as const
                 }
               ]
+            : []),
+          ...(overflow
+            ? [{name: 'overflow', view: overflow, type: 'u32' as const, access: 'read' as const}]
             : [])
         ],
         invocationCount: 1,
@@ -606,6 +807,7 @@ fn getSquaredDeviation(column: u32, row: u32, count: f32) -> f32 {
 ${GLOBAL_STATISTICS_FINALIZE_WGSL}
 const BATCH_B_FIRST: u32 = ${BATCH_B.first}u;
 const BATCH_C_FIRST: u32 = ${BATCH_C.first}u;
+const BATCH_D_FIRST: u32 = ${BATCH_D.first}u;
 fn readTotal(column: u32) -> f32 {
   if (column < BATCH_B_FIRST) {
     return totalsA[totalsAOffset + column];
@@ -613,17 +815,41 @@ fn readTotal(column: u32) -> f32 {
   if (column < BATCH_C_FIRST) {
     return totalsB[totalsBOffset + column - BATCH_B_FIRST];
   }
-  return totalsC[totalsCOffset + column - BATCH_C_FIRST];
+  if (column < BATCH_D_FIRST) {
+    return totalsC[totalsCOffset + column - BATCH_C_FIRST];
+  }
+  return totalsD[totalsDOffset + column - BATCH_D_FIRST];
 }
+${getPValueWGSL(this.alternative)}
 fn writeBlock(offset: u32, block: array<f32, 8>, enabled: bool) {
   for (var field = 0u; field < 8u; field++) {
     results[resultsOffset + offset + field] = select(getQuietNaN(field), block[field], enabled);
   }
 }`,
-        body: getFinalizeBody(props)
+        body: getFinalizeBody(props, Boolean(overflow))
       })
     ];
     return nodes;
+  }
+}
+
+/** Validates the analytic tail and maps the `'less'` alias to `'lesser'`. */
+function resolveAnalyticAlternative(
+  id: string,
+  alternative: GPUInferenceAlternative | undefined
+): 'two-sided' | 'greater' | 'lesser' {
+  const resolved = alternative ?? GPU_DEFAULT_INFERENCE_ALTERNATIVE;
+  switch (resolved) {
+    case 'two-sided':
+    case 'greater':
+      return resolved;
+    case 'lesser':
+    case 'less':
+      return 'lesser';
+    default:
+      throw new Error(
+        `${id} analytic inference supports alternative 'two-sided', 'greater' or 'lesser', not '${resolved}'`
+      );
   }
 }
 
@@ -719,10 +945,6 @@ fn getZScore(statistic: f32, expected: f32, variance: f32) -> f32 {
   return select(getQuietNaN(0u), z, variance > 0.0 && isFiniteFloat(z));
 }
 
-fn getPValue(z: f32) -> f32 {
-  return select(getQuietNaN(0u), getTwoSidedPValue(z), isFiniteFloat(z));
-}
-
 // esda.Moran: (expected, VI_norm, VI_rand).
 fn getMoranMoments(n: f32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec3<f32> {
   let n2 = n * n;
@@ -763,13 +985,46 @@ fn getQuadraticFormVariance(
 }
 `;
 
+/** Row scale of the effective weights: the reciprocal active sum, or 1 for weights used as given. */
+function getRowScaleWGSL(standardized: boolean): string {
+  return standardized
+    ? `fn getRowScale(row: u32) -> f32 {
+  return rowScale[rowScaleOffset + row];
+}`
+    : `fn getRowScale(row: u32) -> f32 {
+  return 1.0;
+}`;
+}
+
+/** Normal p-value of a z-score for the tail, NaN where z is not finite. */
+function getPValueWGSL(alternative: 'two-sided' | 'greater' | 'lesser'): string {
+  const SQRT_HALF = '0.70710678118654752';
+  const expressions = {
+    'two-sided': 'getTwoSidedPValue(z)',
+    greater: `min(0.5 * erfcValue(z * ${SQRT_HALF}), 1.0)`,
+    lesser: `min(0.5 * erfcValue(-z * ${SQRT_HALF}), 1.0)`
+  };
+  return `${ERFC_VALUE_WGSL}
+fn getPValue(z: f32) -> f32 {
+  return select(getQuietNaN(0u), ${expressions[alternative]}, isFiniteFloat(z));
+}`;
+}
+
 /** Builds the finalize kernel body, writing only the requested blocks. */
-function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps): string {
+function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: boolean): string {
+  // Truncated weights (overflow) make every statistic NaN; General G also needs non-negative data.
   const enabled = (statistic: GPUGlobalSpatialStatistic) =>
-    props.statistics.includes(statistic) ? 'true' : 'false';
+    props.statistics.includes(statistic)
+      ? statistic === 'getisOrdG'
+        ? '!truncated && !hasNegative'
+        : '!truncated'
+      : 'false';
   const layout = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT;
-  return /* wgsl */ `let n = readTotal(COLUMN_INCLUDED);
-  let mean = divide(readTotal(COLUMN_X), n);
+  return /* wgsl */ `let n = f32(counters[countersOffset]);
+  let hasNegative = counters[countersOffset + 1u] > 0u;
+  let truncated = ${hasOverflow ? 'overflow[overflowOffset] != 0u' : 'false'};
+  // Mean with the second-pass correction sum(x - mean) / n.
+  let mean = divide(readTotal(COLUMN_X), n) + divide(readTotal(COLUMN_DEVIATION_X), n);
   let sumSquares = readTotal(COLUMN_CENTERED_SQUARE);
   let sumCubes = readTotal(COLUMN_CENTERED_CUBE);
   let sumFourths = readTotal(COLUMN_CENTERED_FOURTH);
@@ -782,11 +1037,11 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps): string {
   let valid = n >= 4.0 && s0 > 0.0 && sumSquares > 0.0;
 
   results[resultsOffset + ${layout.summary}u] = n;
-  results[resultsOffset + ${layout.summary + 1}u] = s0;
-  results[resultsOffset + ${layout.summary + 2}u] = s1;
-  results[resultsOffset + ${layout.summary + 3}u] = s2;
-  results[resultsOffset + ${layout.summary + 4}u] = getFinite(mean);
-  results[resultsOffset + ${layout.summary + 5}u] = divide(sumSquares, n);
+  results[resultsOffset + ${layout.summary + 1}u] = select(s0, getQuietNaN(1u), truncated);
+  results[resultsOffset + ${layout.summary + 2}u] = select(s1, getQuietNaN(2u), truncated);
+  results[resultsOffset + ${layout.summary + 3}u] = select(s2, getQuietNaN(3u), truncated);
+  results[resultsOffset + ${layout.summary + 4}u] = select(getFinite(mean), getQuietNaN(4u), truncated);
+  results[resultsOffset + ${layout.summary + 5}u] = select(divide(sumSquares, n), getQuietNaN(5u), truncated);
   results[resultsOffset + ${layout.summary + 6}u] = blackCount;
   results[resultsOffset + ${layout.summary + 7}u] = readTotal(COLUMN_ISLAND);
 
@@ -839,9 +1094,9 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps): string {
   // Join counts over the binarized weights.
   {
     let enabled = ${enabled('joinCount')};
-    let blackBlack2 = joinCounters[joinCountersOffset];
-    let blackWhite2 = joinCounters[joinCountersOffset + 1u];
-    let whiteWhite2 = joinCounters[joinCountersOffset + 2u];
+    let blackBlack2 = counters[countersOffset + 2u];
+    let blackWhite2 = counters[countersOffset + 3u];
+    let whiteWhite2 = counters[countersOffset + 4u];
     ${
       props.joinCounts
         ? `joinCounts[joinCountsOffset] = select(0u, blackBlack2, enabled);

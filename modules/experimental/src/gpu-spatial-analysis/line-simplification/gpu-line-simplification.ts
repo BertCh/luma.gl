@@ -43,6 +43,11 @@ import {
   createVisvalingamUnresolvedNode,
   type VisvalingamScratch
 } from './visvalingam-kernels';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  getTrajectoryGeodesicRadius,
+  resolveTrajectorySpatialContext
+} from '../trajectory-analysis/trajectory-spatial-context';
 
 const OPERATION = 'GPULineSimplification';
 
@@ -117,6 +122,23 @@ export type GPULineSimplificationSelection = {
 export type GPULineSimplificationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-simplification'`. */
   id?: string;
+  /**
+   * Native planar coordinates (default), or `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}`: positions are `[longitude, latitude]` degrees, the Douglas-Peucker distances
+   * (and so `tolerance` and `importance`) are great-circle meters on a sphere of `sphereRadius`
+   * (default `GPU_EARTH_MEAN_RADIUS_METERS`), and chords are straight in longitude/latitude, as in
+   * the rest of the package. The distance from a vertex to its chord is the haversine distance to
+   * the closest point of the chord, found in the local equirectangular frame of the vertex (exact
+   * to first order for chords of kilometers; simplify long edges after densifying them). Kilometers
+   * and other metrics throw. `method: 'visvalingam'` is planar only and throws in a great-circle
+   * context: its tolerance is an area, its parallel rounds mirror a bit-exact planar triangle
+   * area, and no spherical-excess variant is implemented; project to a planar frame first, for
+   * example with `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context. Great-circle distances use f32
+   * transcendental functions, so the bit-exactness described on {@link GPULineSimplification}
+   * holds for planar contexts only.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Packed planar positions, one row per vertex, sorted by line (track) and then vertex order. Use
    * tile- or view-local coordinates: distances are f32.
@@ -244,7 +266,7 @@ export type GPULineSimplificationProps = {
  * Visvalingam-Whyatt, not as bit-identical to the heap.
  *
  * Non-goals: topology preservation (simplified lines may self-intersect or cross each other),
- * topology-preserving Visvalingam (`simplify_coords_vwp`), geodesic distances (project first), double-single or Int64 timestamps for
+ * topology-preserving Visvalingam (`simplify_coords_vwp`), geodesic Visvalingam areas (project first), ellipsoidal distances, double-single or Int64 timestamps for
  * `'time-ratio'`, and chunked inputs.
  */
 export class GPULineSimplification implements GPUCommandNodeProducer {
@@ -252,6 +274,10 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineSimplificationProps;
+  /** Resolved spatial context: native planar, or longitude-latitude with the great-circle metric. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius in meters of a great-circle context, `undefined` for planar. */
+  readonly sphereRadius: number | undefined;
   /** Simplification algorithm. */
   readonly method: GPULineSimplificationMethod;
   /** Visvalingam neighborhood radius. */
@@ -267,6 +293,8 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
 
   constructor(props: GPULineSimplificationProps) {
     this.id = props.id ?? 'line-simplification';
+    this.spatialContext = resolveTrajectorySpatialContext(this.id, props.spatialContext);
+    this.sphereRadius = getTrajectoryGeodesicRadius(this.spatialContext);
     this.props = props;
     this.metric = props.metric ?? 'segment';
     this.method = props.method ?? 'douglas-peucker';
@@ -306,6 +334,11 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
       throw new Error(`${id} method must be 'douglas-peucker' or 'visvalingam'`);
     }
     if (method === 'visvalingam') {
+      if (this.sphereRadius !== undefined) {
+        throw new Error(
+          `${id} method 'visvalingam' is planar only; project positions to a planar frame first`
+        );
+      }
       if (metric !== 'segment') {
         throw new Error(`${id} method 'visvalingam' does not support metric '${metric}'`);
       }
@@ -566,7 +599,8 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           importance: props.importance,
           status: state.status,
           gate: getRasterIterationCondition<Parameters>(state, roundId),
-          finishSpanLimit: this.finishSpanLimit
+          finishSpanLimit: this.finishSpanLimit,
+          sphereRadius: this.sphereRadius
         }),
         createRasterIterationGateNode<Parameters>(graph, {
           id: `${roundId}-gate`,

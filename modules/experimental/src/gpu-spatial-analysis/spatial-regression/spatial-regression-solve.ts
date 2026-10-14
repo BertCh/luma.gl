@@ -131,6 +131,290 @@ export function solveCholeskyOnCPU(
   }
 }
 
+/** Cyclic Jacobi sweeps of {@link getSymmetricEigenvalueRangeWGSL} and its CPU mirror. */
+export const SYMMETRIC_EIGENVALUE_SWEEP_COUNT = 16;
+
+/**
+ * Returns WGSL for the extreme eigenvalues of a symmetric `p x p` matrix held in a function-local
+ * array, with `p` fixed at compile time.
+ *
+ * Generated function (suffix `_${p}`):
+ * - `getSymmetricEigenvalueRange_p(a: ptr<function, array<f32, p*p>>) -> vec2<f32>` returns
+ *   `(smallest, largest)` eigenvalue. `a` must hold BOTH triangles (row-major `a[row * p + column]`)
+ *   and is destroyed (it ends near-diagonal). Cyclic Jacobi rotations, at most
+ *   `SYMMETRIC_EIGENVALUE_SWEEP_COUNT` sweeps, stopping when the off-diagonal mass falls below
+ *   `1e-14` of the diagonal mass.
+ *
+ * Callers derive condition numbers from it: on a unit-diagonal (correlation-scaled) Gram matrix
+ * `largest / smallest` is the 2-norm condition number of the Gram matrix and its square root the
+ * condition number of the scaled design (Belsley's `condition_index`). The CPU mirror is
+ * {@link getSymmetricEigenvalueRangeOnCPU}.
+ */
+export function getSymmetricEigenvalueRangeWGSL(predictorCount: number): string {
+  validatePredictorCount(predictorCount);
+  const p = predictorCount;
+  return /* wgsl */ `
+fn getSymmetricEigenvalueRange_${p}(a: ptr<function, array<f32, ${p * p}>>) -> vec2<f32> {
+  for (var sweep = 0u; sweep < ${SYMMETRIC_EIGENVALUE_SWEEP_COUNT}u; sweep++) {
+    var offDiagonal = 0.0;
+    var diagonal = 0.0;
+    for (var row = 0u; row < ${p}u; row++) {
+      diagonal = diagonal + (*a)[row * ${p}u + row] * (*a)[row * ${p}u + row];
+      for (var column = row + 1u; column < ${p}u; column++) {
+        offDiagonal = offDiagonal + (*a)[row * ${p}u + column] * (*a)[row * ${p}u + column];
+      }
+    }
+    if (offDiagonal <= 1.0e-14 * diagonal) {
+      break;
+    }
+    for (var first = 0u; first + 1u < ${p}u; first++) {
+      for (var second = first + 1u; second < ${p}u; second++) {
+        let pivot = (*a)[first * ${p}u + second];
+        if (abs(pivot) < 1.0e-30) {
+          continue;
+        }
+        let theta = ((*a)[second * ${p}u + second] - (*a)[first * ${p}u + first]) / (2.0 * pivot);
+        let tangent = select(-1.0, 1.0, theta >= 0.0) / (abs(theta) + sqrt(theta * theta + 1.0));
+        let cosine = 1.0 / sqrt(tangent * tangent + 1.0);
+        let sine = tangent * cosine;
+        for (var k = 0u; k < ${p}u; k++) {
+          let left = (*a)[k * ${p}u + first];
+          let right = (*a)[k * ${p}u + second];
+          (*a)[k * ${p}u + first] = cosine * left - sine * right;
+          (*a)[k * ${p}u + second] = sine * left + cosine * right;
+        }
+        for (var k = 0u; k < ${p}u; k++) {
+          let top = (*a)[first * ${p}u + k];
+          let bottom = (*a)[second * ${p}u + k];
+          (*a)[first * ${p}u + k] = cosine * top - sine * bottom;
+          (*a)[second * ${p}u + k] = sine * top + cosine * bottom;
+        }
+      }
+    }
+  }
+  var smallest = (*a)[0];
+  var largest = (*a)[0];
+  for (var row = 1u; row < ${p}u; row++) {
+    smallest = min(smallest, (*a)[row * ${p}u + row]);
+    largest = max(largest, (*a)[row * ${p}u + row]);
+  }
+  return vec2<f32>(smallest, largest);
+}
+`;
+}
+
+/**
+ * Float64 CPU mirror of `getSymmetricEigenvalueRange_p`: the same rotation order and stopping
+ * rule. `matrix` holds both triangles row-major and is destroyed. Returns `[smallest, largest]`.
+ */
+export function getSymmetricEigenvalueRangeOnCPU(
+  matrix: Float64Array | number[],
+  predictorCount: number
+): [number, number] {
+  const p = predictorCount;
+  for (let sweep = 0; sweep < SYMMETRIC_EIGENVALUE_SWEEP_COUNT; sweep++) {
+    let offDiagonal = 0;
+    let diagonal = 0;
+    for (let row = 0; row < p; row++) {
+      diagonal += matrix[row * p + row] ** 2;
+      for (let column = row + 1; column < p; column++) {
+        offDiagonal += matrix[row * p + column] ** 2;
+      }
+    }
+    if (offDiagonal <= 1e-14 * diagonal) {
+      break;
+    }
+    for (let first = 0; first + 1 < p; first++) {
+      for (let second = first + 1; second < p; second++) {
+        const pivot = matrix[first * p + second];
+        if (Math.abs(pivot) < 1e-30) {
+          continue;
+        }
+        const theta = (matrix[second * p + second] - matrix[first * p + first]) / (2 * pivot);
+        const tangent = (theta >= 0 ? 1 : -1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+        const cosine = 1 / Math.sqrt(tangent * tangent + 1);
+        const sine = tangent * cosine;
+        for (let k = 0; k < p; k++) {
+          const left = matrix[k * p + first];
+          const right = matrix[k * p + second];
+          matrix[k * p + first] = cosine * left - sine * right;
+          matrix[k * p + second] = sine * left + cosine * right;
+        }
+        for (let k = 0; k < p; k++) {
+          const top = matrix[first * p + k];
+          const bottom = matrix[second * p + k];
+          matrix[first * p + k] = cosine * top - sine * bottom;
+          matrix[second * p + k] = sine * top + cosine * bottom;
+        }
+      }
+    }
+  }
+  let smallest = matrix[0];
+  let largest = matrix[0];
+  for (let row = 1; row < p; row++) {
+    smallest = Math.min(smallest, matrix[row * p + row]);
+    largest = Math.max(largest, matrix[row * p + row]);
+  }
+  return [smallest, largest];
+}
+
+/**
+ * Returns WGSL for the Belsley condition number (spreg / GeoDa `condition_index`) of a design
+ * `[1, X]` with `k` predictor columns, computed WITHOUT forming the raw Gram matrix.
+ *
+ * Forming `X'X` with unit diagonal and taking `sqrt(lambdaMax / lambdaMin)` needs `lambdaMin` to
+ * relative precision `1 / conditionNumber^2`, which float32 cannot hold beyond a condition number
+ * of a few hundred. Instead, with column means `m_j`, centered sums of squares `C_jj` and the lower
+ * Cholesky factor `L` of the predictor correlation matrix, each unit-length raw column is
+ * `alpha_j u0 + beta_j z_j` with `u0 = 1 / sqrt(n)`, unit centered `z_j`, `alpha_j = sqrt(n) m_j /
+ * sqrt(n m_j^2 + C_jj)` and `beta_j = sqrt(C_jj) / sqrt(n m_j^2 + C_jj)`. The scaled design then has
+ * the singular values of the `(k + 1) x (k + 1)` matrix `B` with `B[0][0] = 1`, `B[0][j] = alpha_j`
+ * and `B[1 + i][j] = beta_j L[j][i]` (`i <= j`), which one-sided (Hestenes) Jacobi rotations
+ * orthogonalize to about `float32 epsilon * conditionNumber` relative accuracy.
+ *
+ * Generated function (suffix `_${k}`):
+ * `getBelsleyConditionNumber_k(factor: ptr<function, array<f32, k*k>>, alpha: ptr<function,
+ * array<f32, k>>, beta: ptr<function, array<f32, k>>) -> f32`, `factor` holding `L` row-major in
+ * its lower triangle (as `choleskyFactor_k` leaves it). CPU mirror:
+ * {@link getBelsleyConditionNumberOnCPU}.
+ */
+export function getBelsleyConditionNumberWGSL(predictorCount: number): string {
+  validatePredictorCount(predictorCount + 1);
+  const k = predictorCount;
+  const p = k + 1;
+  return /* wgsl */ `
+fn getBelsleyConditionNumber_${k}(
+  factor: ptr<function, array<f32, ${k * k}>>,
+  alpha: ptr<function, array<f32, ${k}>>,
+  beta: ptr<function, array<f32, ${k}>>
+) -> f32 {
+  // Column-major B: b[column * ${p}u + row].
+  var b: array<f32, ${p * p}>;
+  b[0] = 1.0;
+  for (var column = 1u; column < ${p}u; column++) {
+    let j = column - 1u;
+    b[column * ${p}u] = (*alpha)[j];
+    for (var i = 0u; i <= j; i++) {
+      b[column * ${p}u + 1u + i] = (*beta)[j] * (*factor)[j * ${k}u + i];
+    }
+  }
+  for (var sweep = 0u; sweep < ${SYMMETRIC_EIGENVALUE_SWEEP_COUNT}u; sweep++) {
+    var rotated = false;
+    for (var first = 0u; first + 1u < ${p}u; first++) {
+      for (var second = first + 1u; second < ${p}u; second++) {
+        var normFirst = 0.0;
+        var normSecond = 0.0;
+        var product = 0.0;
+        for (var row = 0u; row < ${p}u; row++) {
+          let x = b[first * ${p}u + row];
+          let y = b[second * ${p}u + row];
+          normFirst = normFirst + x * x;
+          normSecond = normSecond + y * y;
+          product = product + x * y;
+        }
+        if (!(abs(product) > 1.0e-7 * sqrt(normFirst * normSecond))) {
+          continue;
+        }
+        rotated = true;
+        let zeta = (normSecond - normFirst) / (2.0 * product);
+        let tangent = select(-1.0, 1.0, zeta >= 0.0) / (abs(zeta) + sqrt(1.0 + zeta * zeta));
+        let cosine = 1.0 / sqrt(1.0 + tangent * tangent);
+        let sine = cosine * tangent;
+        for (var row = 0u; row < ${p}u; row++) {
+          let x = b[first * ${p}u + row];
+          let y = b[second * ${p}u + row];
+          b[first * ${p}u + row] = cosine * x - sine * y;
+          b[second * ${p}u + row] = sine * x + cosine * y;
+        }
+      }
+    }
+    if (!rotated) {
+      break;
+    }
+  }
+  var largest = 0.0;
+  var smallest = 3.0e38;
+  for (var column = 0u; column < ${p}u; column++) {
+    var norm = 0.0;
+    for (var row = 0u; row < ${p}u; row++) {
+      norm = norm + b[column * ${p}u + row] * b[column * ${p}u + row];
+    }
+    largest = max(largest, sqrt(norm));
+    smallest = min(smallest, sqrt(norm));
+  }
+  return largest / smallest;
+}
+`;
+}
+
+/**
+ * Float64 mirror of `getBelsleyConditionNumber_k` (same construction and rotation order).
+ * `factor` is the row-major lower Cholesky factor of the `k x k` predictor correlation matrix.
+ */
+export function getBelsleyConditionNumberOnCPU(
+  factor: ArrayLike<number>,
+  alpha: ArrayLike<number>,
+  beta: ArrayLike<number>,
+  predictorCount: number
+): number {
+  const k = predictorCount;
+  const p = k + 1;
+  const b = new Float64Array(p * p);
+  b[0] = 1;
+  for (let column = 1; column < p; column++) {
+    const j = column - 1;
+    b[column * p] = alpha[j];
+    for (let i = 0; i <= j; i++) {
+      b[column * p + 1 + i] = beta[j] * factor[j * k + i];
+    }
+  }
+  for (let sweep = 0; sweep < SYMMETRIC_EIGENVALUE_SWEEP_COUNT; sweep++) {
+    let rotated = false;
+    for (let first = 0; first + 1 < p; first++) {
+      for (let second = first + 1; second < p; second++) {
+        let normFirst = 0;
+        let normSecond = 0;
+        let product = 0;
+        for (let row = 0; row < p; row++) {
+          const x = b[first * p + row];
+          const y = b[second * p + row];
+          normFirst += x * x;
+          normSecond += y * y;
+          product += x * y;
+        }
+        if (!(Math.abs(product) > 1e-15 * Math.sqrt(normFirst * normSecond))) {
+          continue;
+        }
+        rotated = true;
+        const zeta = (normSecond - normFirst) / (2 * product);
+        const tangent = (zeta >= 0 ? 1 : -1) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta));
+        const cosine = 1 / Math.sqrt(1 + tangent * tangent);
+        const sine = cosine * tangent;
+        for (let row = 0; row < p; row++) {
+          const x = b[first * p + row];
+          const y = b[second * p + row];
+          b[first * p + row] = cosine * x - sine * y;
+          b[second * p + row] = sine * x + cosine * y;
+        }
+      }
+    }
+    if (!rotated) {
+      break;
+    }
+  }
+  let largest = 0;
+  let smallest = Infinity;
+  for (let column = 0; column < p; column++) {
+    let norm = 0;
+    for (let row = 0; row < p; row++) {
+      norm += b[column * p + row] ** 2;
+    }
+    largest = Math.max(largest, Math.sqrt(norm));
+    smallest = Math.min(smallest, Math.sqrt(norm));
+  }
+  return largest / smallest;
+}
+
 function validatePredictorCount(predictorCount: number): void {
   if (
     !Number.isInteger(predictorCount) ||

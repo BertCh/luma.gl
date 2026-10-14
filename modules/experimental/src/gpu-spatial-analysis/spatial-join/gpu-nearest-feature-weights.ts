@@ -94,6 +94,10 @@ export type GPUNearestFeatureWeightsProps = {
  * row's own ID, then sorts the kept IDs ascending as the CSR invariants require. Rows with fewer
  * than `k` available neighbors are simply shorter. The result is deterministic and exact.
  *
+ * Distances are in the units of the join: coordinate units for a planar join, meters for a join with
+ * a great-circle `spatialContext`, so `distanceFloor` and the inverse-distance weights are in
+ * meters there. The adapter reads no positions and needs no `spatialContext` of its own.
+ *
  * The weights are directed: a nearest-neighbor relation is generally not symmetric, so this
  * output does not meet the symmetric-pattern requirement of the `'symmetrize'` transform. Take the
  * union of the weights with their transpose (`GPUSpatialWeightsAlgebra` `'union'` with

@@ -2,10 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUNeighborSearch, GPU_NEIGHBOR_SEARCH_MAXIMUM_K} from './gpu-neighbor-search';
-export type {GPUNeighborSearchProps} from './gpu-neighbor-search';
+export {
+  GPUNeighborSearch,
+  GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT,
+  GPU_NEIGHBOR_SEARCH_MAXIMUM_K
+} from './gpu-neighbor-search';
+export type {
+  GPUNeighborSearchProps,
+  GPUNeighborSearchWeightTransform
+} from './gpu-neighbor-search';
 export {
   getGPUNeighborSearchParameterValues,
+  getGPUNeighborSearchWeightTransform,
   GPU_NEIGHBOR_SEARCH_KERNEL,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,

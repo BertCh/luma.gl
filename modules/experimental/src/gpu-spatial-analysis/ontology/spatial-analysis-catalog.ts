@@ -59,12 +59,12 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     domain: 'geometry',
     stage: 'analyze',
     summary:
-      'Computes distance, bearing, midpoint and destination pairs on spherical or ellipsoidal models.',
+      'Computes distance, bearing, midpoint and destination pairs on spherical or ellipsoidal models, and projects longitude/latitude into a local metric frame.',
     inputs: ['points', 'parameters'],
     outputs: ['points', 'attributes'],
     coordinateModels: ['spherical', 'ellipsoidal'],
     outputBound: 'source-sized',
-    operators: ['GPUGeodesicPairs', 'GPUGeodesicDestination'],
+    operators: ['GPUGeodesicPairs', 'GPUGeodesicDestination', 'GPULocalFrameProjection'],
     relatedCapabilities: ['line-processing', 'spatial-neighborhoods']
   },
   {
@@ -202,7 +202,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     summary: 'Builds candidate or exact feature pairs and gathers pair-aligned source values.',
     inputs: ['points', 'lines', 'polygons', 'attributes', 'parameters'],
     outputs: ['pairs', 'attributes', 'spatial-weights'],
-    coordinateModels: ['planar'],
+    coordinateModels: ['planar', 'spherical'],
     outputBound: 'capacity-bounded',
     operators: [
       'GPUSpatialJoinCandidates',
@@ -227,7 +227,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
       'Constructs, transforms, combines, summarizes and applies CSR spatial-weight matrices.',
     inputs: ['points', 'polygons', 'surface', 'attributes', 'spatial-weights', 'parameters'],
     outputs: ['spatial-weights', 'attributes', 'summary'],
-    coordinateModels: ['planar', 'grid', 'topological'],
+    coordinateModels: ['planar', 'spherical', 'grid', 'topological'],
     outputBound: 'capacity-bounded',
     operators: [
       'GPUNeighborSearch',
@@ -238,6 +238,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
       'GPUSpatialWeightsAlgebra',
       'GPUSpatialWeightsSummary',
       'GPUSpatialWeightsTranspose',
+      'GPUSpatialWeightsValidation',
       'GPUSpatialLag',
       'GPUMapColoring'
     ],
@@ -312,6 +313,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     outputBound: 'fixed-sized',
     operators: [
       'GPUPointDensity',
+      'GPUKernelDensity',
       'GPULineDensity',
       'GPULineLengthPerPolygon',
       'GPUInverseDistanceWeighting',
@@ -351,7 +353,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     summary: 'Clusters rows, constructs connected regions and measures or outlines labeled groups.',
     inputs: ['points', 'lines', 'polygons', 'attributes', 'spatial-weights', 'parameters'],
     outputs: ['regions', 'summary', 'points', 'polygons'],
-    coordinateModels: ['planar', 'topological'],
+    coordinateModels: ['planar', 'spherical', 'topological'],
     outputBound: 'capacity-bounded',
     operators: [
       'GPUSpatialClustering',
@@ -387,6 +389,8 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
       'GPUNeighborhoodSummary',
       'GPUEmpiricalBayesRates',
       'GPUSpatialEmpiricalBayesRates',
+      'GPUAssuncaoReisStandardization',
+      'GPUMultipleTestingAdjustment',
       'GPUSpatialScanStatistic',
       'GPUKnoxTest',
       'GPUMantelTest'
@@ -400,16 +404,20 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     domain: 'spatial-models',
     stage: 'infer',
     summary:
-      'Fits global, lag/error and geographically weighted regression models with diagnostics.',
+      'Fits global, lag/error (GMM and maximum likelihood) and geographically weighted regression models with diagnostics and impacts.',
     inputs: ['attributes', 'points', 'spatial-weights', 'parameters'],
     outputs: ['attributes', 'summary'],
-    coordinateModels: ['planar', 'topological'],
+    coordinateModels: ['planar', 'spherical', 'topological'],
     outputBound: 'fixed-sized',
     operators: [
       'GPUOrdinaryLeastSquares',
       'GPUSpatialRegressionDiagnostics',
       'GPUSpatialTwoStageLeastSquares',
       'GPUSpatialErrorGM',
+      'GPUSpatialLagMaximumLikelihood',
+      'GPUSpatialErrorMaximumLikelihood',
+      'GPUSpatialWeightsTraces',
+      'GPUSpatialLagImpacts',
       'GPUGeographicallyWeightedRegression',
       'GPUGeographicallyWeightedRegressionNonstationarityTest'
     ],
@@ -432,6 +440,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
       'GPUTransitionMatrix',
       'GPUSpatialMarkov',
       'GPULISAMarkov',
+      'GPUTransitionDiagnostics',
       'GPUEmergingHotSpots'
     ],
     relatedCapabilities: ['spatial-autocorrelation-and-inference', 'workflow-recipes']

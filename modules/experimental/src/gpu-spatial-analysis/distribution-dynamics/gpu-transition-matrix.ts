@@ -15,6 +15,10 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {
+  GPUTransitionDiagnostics,
+  type GPUTransitionDiagnosticsOutput
+} from './gpu-transition-diagnostics';
 
 const OPERATION = 'GPUTransitionMatrix';
 const MAXIMUM_CLASS_COUNT = 64;
@@ -24,7 +28,7 @@ const MAXIMUM_PRIVATE_CELLS = 2048;
 const PRIVATE_ITEMS_PER_INVOCATION = 16;
 
 /** Caller-owned outputs of {@link GPUTransitionMatrix}. */
-export type GPUTransitionMatrixOutput = {
+export type GPUTransitionMatrixOutput = GPUTransitionDiagnosticsOutput & {
   /**
    * Exact transition counts, `conditionCount * classCount * classCount` rows: row
    * `(c * classCount + from) * classCount + to` counts transitions from class `from` at period `t`
@@ -77,6 +81,11 @@ export type GPUTransitionMatrixProps = {
   conditionCount?: number;
   /** Optional row selection (`rows` entries): zero rows are skipped in every period. */
   mask?: GraphDataView<'uint32'>;
+  /**
+   * Compile-time. A `(condition, from)` state with fewer transitions than this is counted in
+   * `output.stateSparsity`. Defaults to 5.
+   */
+  minimumTransitions?: number;
   /** Caller-owned outputs. */
   output: GPUTransitionMatrixOutput;
 };
@@ -93,6 +102,14 @@ export type GPUTransitionMatrixProps = {
  *
  * Transitions are counted for `t = 0 .. periods - periodLag - 1`. The matrix is the maximum
  * likelihood estimate of the Markov transition probabilities, `p_ab = n_ab / n_a`.
+ *
+ * Optional diagnostics (see {@link GPUTransitionDiagnostics}): `output.homogeneity` (chi-square
+ * and likelihood-ratio tests that the conditional matrices equal the pooled one, giddy `Q`, `LR`,
+ * `dof_hom`; needs conditions), `output.steadyStates` (ergodic distribution of the pooled chain
+ * and of each conditional chain, NaN where not ergodic), `output.stateSparsity` (states with fewer
+ * than `minimumTransitions` transitions, default 5) and `output.status.converged`. Probabilities
+ * of a state without transitions stay 0, so check `rowTotals` or `stateSparsity` before reading
+ * a conditional matrix.
  */
 export class GPUTransitionMatrix implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -168,7 +185,16 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
         throw new Error(`${id} output.ignored must hold one row`);
       }
     }
-    const outputs = [output.counts, output.probabilities, output.rowTotals, output.ignored];
+    const outputs = [
+      output.counts,
+      output.probabilities,
+      output.rowTotals,
+      output.ignored,
+      output.homogeneity,
+      output.steadyStates,
+      output.stateSparsity,
+      output.status?.converged
+    ];
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       props.classes,
       props.conditionClasses,
@@ -178,9 +204,41 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
     if (new Set(buffers).size !== buffers.length) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
+    // Diagnostics validate their own shapes; construct once so errors surface at declaration.
+    this.diagnostics = this.hasDiagnostics()
+      ? new GPUTransitionDiagnostics(this.getDiagnosticsProps())
+      : undefined;
   }
 
-  /** Returns `clear`, `count` and, when requested, `normalize` nodes in order. */
+  /** Diagnostics producer when any diagnostic output is requested. */
+  private readonly diagnostics: GPUTransitionDiagnostics | undefined;
+
+  private hasDiagnostics(): boolean {
+    const {output} = this.props;
+    return Boolean(
+      output.homogeneity || output.steadyStates || output.stateSparsity || output.status
+    );
+  }
+
+  private getDiagnosticsProps() {
+    const {props, conditionCount, id} = this;
+    const {output} = props;
+    return {
+      id: `${id}-diagnostics`,
+      counts: output.counts,
+      classCount: props.classCount,
+      conditionCount,
+      minimumTransitions: props.minimumTransitions,
+      output: {
+        homogeneity: output.homogeneity,
+        steadyStates: output.steadyStates,
+        stateSparsity: output.stateSparsity,
+        status: output.status
+      }
+    };
+  }
+
+  /** Returns `clear`, `count` and, when requested, `normalize` and diagnostics nodes in order. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -193,7 +251,11 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
       output.counts,
       output.probabilities,
       output.rowTotals,
-      output.ignored
+      output.ignored,
+      output.homogeneity,
+      output.steadyStates,
+      output.stateSparsity,
+      output.status?.converged
     ]);
     const cellCount = conditionCount * classCount * classCount;
     const stateCount = conditionCount * classCount;
@@ -402,6 +464,9 @@ var<workgroup> tile: array<atomic<u32>, ${cellCount + 1}>;`,
   ${output.rowTotals ? 'rowTotals[rowTotalsOffset + index] = total;' : ''}`
         })
       );
+    }
+    if (this.diagnostics) {
+      nodes.push(...this.diagnostics.getCommandNodes(graph));
     }
     return nodes;
   }

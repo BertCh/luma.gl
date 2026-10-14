@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {NEIGHBOR_SEARCH_FLOAT_WGSL} from './neighbor-search-wgsl';
 
 /**
@@ -12,14 +13,40 @@ import {NEIGHBOR_SEARCH_FLOAT_WGSL} from './neighbor-search-wgsl';
  * neighborhood always holds the whole band. kNN mode spreads `gridSize` cells over the bounds and
  * searches expanding rings.
  *
+ * With `sphereRadius` (great-circle search) the lattice is in degrees of longitude and latitude, the
+ * radius is a great-circle distance in the units of `sphereRadius`, `valid` additionally needs
+ * a longitude span of at most 360 degrees, and `periodic` marks a lattice that covers the whole
+ * circle of longitudes. Radius-mode cells are at least the angular radius (in degrees) wide.
+ *
  * @internal
  */
 export function getNeighborSearchLatticeWGSL(
   mode: 'knn' | 'radius',
-  gridSize: readonly [number, number]
+  gridSize: readonly [number, number],
+  sphereRadius?: number
 ): string {
-  const cellSizeWGSL =
-    mode === 'radius'
+  const geodesic = sphereRadius !== undefined;
+  const geodesicCellSizeWGSL = `let radiusDegrees = min(degrees(radius / SPHERE_RADIUS) * CELL_MARGIN + 0.0001, 360.0);
+  lattice.valid = lattice.valid && isFiniteFloat(radius) && isFiniteFloat(radiusDegrees) && radius > 0.0;
+  if (!lattice.valid) {
+    return lattice;
+  }
+  lattice.radiusDegrees = min(radiusDegrees, 180.0);
+  lattice.cellWidth = max(width / f32(COLUMNS), radiusDegrees);
+  lattice.cellHeight = max(height / f32(ROWS), radiusDegrees);
+  lattice.columns = min(COLUMNS - 1u, u32(floor(width / lattice.cellWidth))) + 1u;
+  lattice.rows = min(ROWS - 1u, u32(floor(height / lattice.cellHeight))) + 1u;
+  lattice.bounded = true;`;
+  const geodesicKnnWGSL = `lattice.cellWidth = select(1.0, width / f32(COLUMNS), width > 0.0);
+  lattice.cellHeight = select(1.0, height / f32(ROWS), height > 0.0);
+  lattice.columns = COLUMNS;
+  lattice.rows = ROWS;
+  lattice.bounded = isFiniteFloat(radius) && radius > 0.0;`;
+  const cellSizeWGSL = geodesic
+    ? mode === 'radius'
+      ? geodesicCellSizeWGSL
+      : geodesicKnnWGSL
+    : mode === 'radius'
       ? `let cellRadius = radius * CELL_MARGIN;
   lattice.valid = lattice.valid && isFiniteFloat(radius) && isFiniteFloat(radiusSquared) &&
     isFiniteFloat(cellRadius) && radius > 0.0;
@@ -41,6 +68,7 @@ const COLUMNS: u32 = ${gridSize[0]}u;
 const ROWS: u32 = ${gridSize[1]}u;
 const CELL_COUNT: u32 = ${gridSize[0] * gridSize[1]}u;
 const CELL_MARGIN: f32 = 1.0009765625;
+${geodesic ? `const SPHERE_RADIUS: f32 = ${Number(sphereRadius).toPrecision(17)};` : ''}
 
 struct Lattice {
   valid: bool,
@@ -54,7 +82,9 @@ struct Lattice {
   columns: u32,
   rows: u32,
   radius: f32,
-  radiusSquared: f32
+  radiusSquared: f32,
+  radiusDegrees: f32,
+  periodic: bool
 }
 
 fn readParameter(slot: u32) -> f32 {
@@ -68,6 +98,8 @@ fn readLattice() -> Lattice {
   lattice.columns = 1u;
   lattice.rows = 1u;
   lattice.bounded = false;
+  lattice.radiusDegrees = 0.0;
+  lattice.periodic = false;
   let minimumX = readParameter(0u);
   let minimumY = readParameter(1u);
   let maximumX = readParameter(2u);
@@ -86,6 +118,12 @@ fn readLattice() -> Lattice {
     isFiniteFloat(minimumX) && isFiniteFloat(minimumY) && isFiniteFloat(maximumX) &&
     isFiniteFloat(maximumY) && isFiniteFloat(width) && isFiniteFloat(height) &&
     width >= 0.0 && height >= 0.0;
+  ${
+    geodesic
+      ? `lattice.valid = lattice.valid && width <= 360.001;
+  lattice.periodic = lattice.valid && abs(width - 360.0) <= 0.001;`
+      : ''
+  }
   if (!lattice.valid) {
     return lattice;
   }
@@ -93,10 +131,15 @@ fn readLattice() -> Lattice {
   return lattice;
 }
 
-fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
-  return lattice.valid && isFiniteFloat(x) && isFiniteFloat(y) &&
+// Finite and inside the bounds, independent of whether the radius or bounds form a usable lattice.
+fn isPointInBounds(lattice: Lattice, x: f32, y: f32) -> bool {
+  return isFiniteFloat(x) && isFiniteFloat(y) &&
     x >= lattice.minimumX && x <= lattice.maximumX &&
-    y >= lattice.minimumY && y <= lattice.maximumY;
+    y >= lattice.minimumY && y <= lattice.maximumY${geodesic ? ' && abs(y) <= 90.0' : ''};
+}
+
+fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
+  return lattice.valid && isPointInBounds(lattice, x, y);
 }
 
 fn getCellColumn(lattice: Lattice, x: f32) -> u32 {
@@ -121,6 +164,7 @@ fn getAxisGap(position: f32, minimum: f32, cellSize: f32, queryCell: i32, cell: 
 }
 
 ${NEIGHBOR_SEARCH_FLOAT_WGSL}
+${geodesic ? GEODESIC_WGSL + GEODESIC_WRAPPED_LONGITUDE_BOUND_WGSL : ''}
 `;
 }
 
@@ -374,20 +418,240 @@ fn getNeighborWeight(distance: f32, bandwidth: f32) -> f32 {
     weight = pow(max(distance, readParameter(7u)), -readParameter(6u));
   } else if (weightKind == 2u) {
     let z = select(0.0, distance / bandwidth, bandwidth > 0.0);
+    // 1 - z from the difference of the distances: for the adaptive k-th neighbor the bandwidth is
+    // d_k * 1.0000001, and 1 - d / bandwidth rounds to 0 in f32 for some rows, which would drop the
+    // slot (zero weights are not neighbors). The difference stays positive and accurate.
+    let oneMinusZ = select(1.0, (bandwidth - distance) / bandwidth, bandwidth > 0.0);
     let kernel = u32(readParameter(8u));
     if (kernel == 0u) {
       weight = exp(-0.5 * z * z) * 0.3989422804014327;
     } else if (kernel == 1u) {
-      weight = max(1.0 - z, 0.0);
+      weight = max(oneMinusZ, 0.0);
     } else if (kernel == 2u) {
-      weight = 0.75 * max(1.0 - z * z, 0.0);
+      weight = 0.75 * max(oneMinusZ * (1.0 + z), 0.0);
     } else if (kernel == 3u) {
-      let base = max(1.0 - z * z, 0.0);
+      let base = max(oneMinusZ * (1.0 + z), 0.0);
       weight = 0.9375 * base * base;
     } else {
       weight = 0.5;
     }
   }
   return select(0.0, weight, isFiniteFloat(weight) && weight >= 0.0);
+}
+`;
+
+/**
+ * Great-circle counterpart of {@link getRadiusNeighborLoopWGSL}: visits every valid target whose
+ * great-circle distance from `(x, y)` (longitude, latitude in degrees) is at most `lattice.radius`,
+ * running `action` with `neighbor` and `distance` (in the units of `SPHERE_RADIUS`) in scope.
+ *
+ * The band is a spherical cap of angular radius `a`. Its latitude span is `y +- a`. Its longitude
+ * half-span is `asin(sin a / cos y)`, the exact extent of a cap, and the full circle when the cap
+ * reaches a pole (`|y| + a >= 90`). Both are inflated (relative 2^-10 plus 1e-4 degree) to cover f32
+ * cell assignment. The longitude interval is tested against the bounds shifted by -360, 0 and +360
+ * degrees, so a band wrapping across +-180 visits the cells on both sides; overlapping column
+ * ranges are merged, so no cell is visited twice. Every candidate is tested with the exact
+ * haversine distance, so the cell ranges only need to be a superset.
+ *
+ * Requires the same bindings and locals as {@link getRadiusNeighborLoopWGSL}.
+ *
+ * @internal
+ */
+export function getGeodesicRadiusNeighborLoopWGSL(action: string): string {
+  return /* wgsl */ `
+  let reach = lattice.radiusDegrees;
+  let firstRow = getCellRow(lattice, max(y - reach, lattice.minimumY));
+  let lastRow = getCellRow(lattice, min(y + reach, lattice.maximumY));
+  var reachLongitude = 180.0;
+  if (abs(y) + reach < 90.0) {
+    let ratio = min(sin(radians(reach)) / geodesicCosLatitude(y), 1.0);
+    reachLongitude = min(degrees(asin(ratio)) * CELL_MARGIN + 0.0001, 180.0);
+  }
+  let queryPoint = vec2<f32>(x, y);
+  for (var cellRow = firstRow; cellRow <= lastRow; cellRow++) {
+    let rowBase = cellRow * COLUMNS;
+    var nextColumn = 0u;
+    for (var shiftIndex = 0u; shiftIndex < 3u; shiftIndex++) {
+      var lowLongitude = lattice.minimumX;
+      var highLongitude = lattice.maximumX;
+      if (reachLongitude < 180.0) {
+        let columnOffset = 360.0 * (f32(shiftIndex) - 1.0);
+        lowLongitude = max(x - reachLongitude + columnOffset, lattice.minimumX);
+        highLongitude = min(x + reachLongitude + columnOffset, lattice.maximumX);
+      } else if (shiftIndex != 1u) {
+        continue;
+      }
+      if (lowLongitude > highLongitude) {
+        continue;
+      }
+      let firstColumn = max(getCellColumn(lattice, lowLongitude), nextColumn);
+      let lastColumn = getCellColumn(lattice, highLongitude);
+      if (firstColumn > lastColumn) {
+        continue;
+      }
+      nextColumn = lastColumn + 1u;
+      let cellBegin = cellOffsets[cellOffsetsOffset + rowBase + firstColumn];
+      let cellEnd = cellOffsets[cellOffsetsOffset + rowBase + lastColumn + 1u];
+      for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
+        let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+        let targetPoint = vec2<f32>(
+          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]),
+          bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]));
+        let distance = geodesicHaversineDistance(queryPoint, targetPoint, SPHERE_RADIUS);
+        if (distance <= lattice.radius) {
+          ${action}
+        }
+      }
+    }
+  }`;
+}
+
+/**
+ * Great-circle counterpart of {@link getNearestNeighborSearchWGSL}: the same expanding rings and
+ * `(distance, id)` ordering, but the keys are great-circle distances (not squared) and the stop
+ * rule uses a spherical lower bound.
+ *
+ * Rings run over the degree lattice. A lattice that spans the full 360 degrees (`lattice.periodic`)
+ * wraps its columns, so a query next to +-180 meets the other side in ring 1 rather than at the far
+ * end; other lattices do not wrap.
+ *
+ * Stop rule (conservative; a looser bound only costs speed). After ring `r` the visited box has
+ * rows `[r0, r1]` and a virtual column arc. Any unvisited target is either
+ * (a) outside the box in latitude, so its latitude differs from the query by at least the clearance
+ *     `c` to the nearest unvisited row side and its distance is at least `R * c`
+ *     (haversine term at least `sin^2(c / 2)`), or
+ * (b) inside the box rows but outside the column arc, so its wrapped longitude difference is at least
+ *     `L`, the minimum over the unvisited longitude intervals of the sawtooth `min(d, 360 - d)`
+ *     (taken at the interval ends, or 0 when an end-to-end interval contains a multiple of 360), and
+ *     its latitude has `|latitude| <= m`, the largest absolute latitude of the box rows. The haversine
+ *     term is at least `cos(y) cos(m) sin^2(L / 2)` because the dropped latitude term is nonnegative.
+ * The smaller of the two terms gives a distance lower bound `2 R asin(sqrt(h))`, shrunk by 2^-13 and
+ * with every clearance reduced by an absolute degree slack for f32 cell assignment. The search stops
+ * when K candidates are held and the K-th distance is strictly below the bound, so ties at the K-th
+ * distance are always resolved by the lowest ID, or when the bound exceeds a finite radius cap.
+ *
+ * Requires bindings, locals and the constant `K` as {@link getNearestNeighborSearchWGSL}.
+ *
+ * @internal
+ */
+export function getGeodesicNearestNeighborSearchWGSL(selfCondition: string): string {
+  return /* wgsl */ `
+  let queryColumn = i32(getCellColumn(lattice, x));
+  let queryRow = i32(getCellRow(lattice, y));
+  let columnCount = i32(lattice.columns);
+  let lastColumn = columnCount - 1;
+  let lastRow = i32(lattice.rows) - 1;
+  let periodic = lattice.periodic;
+  let lowReach = select(queryColumn, columnCount / 2, periodic);
+  let highReach = select(lastColumn - queryColumn, columnCount - 1 - columnCount / 2, periodic);
+  let maximumRing = max(lattice.columns, lattice.rows);
+  let slack = (lattice.cellWidth + lattice.cellHeight) * 0.0009765625 +
+    (abs(lattice.minimumX) + abs(lattice.maximumX) + abs(lattice.minimumY) + abs(lattice.maximumY)) * 0.00000095367431640625;
+  let queryPoint = vec2<f32>(x, y);
+  let queryCosine = geodesicCosLatitude(y);
+  for (var ringIndex = 0u; ringIndex < maximumRing; ringIndex++) {
+    let ring = i32(ringIndex);
+    let lowExtent = min(ring, lowReach);
+    let highExtent = min(ring, highReach);
+    let firstRow = max(queryRow - ring, 0);
+    let endRow = min(queryRow + ring, lastRow);
+    for (var cellRow = firstRow; cellRow <= endRow; cellRow++) {
+      let rowBase = u32(cellRow) * COLUMNS;
+      let fullRow = abs(cellRow - queryRow) == ring;
+      // Full rows of the ring visit every column of the box; other rows only its two sides
+      // (a non-full row has ring > 0), each only while it still holds a column not seen before.
+      let columnStep = select(2 * ring, 1, fullRow);
+      let startOffset = select(-ring, -lowExtent, fullRow);
+      let stopOffset = select(ring, highExtent, fullRow);
+      for (var columnOffset = startOffset; columnOffset <= stopOffset; columnOffset += columnStep) {
+        if (!fullRow && ((columnOffset < 0 && ring > lowReach) || (columnOffset > 0 && ring > highReach))) {
+          continue;
+        }
+        var column = queryColumn + columnOffset;
+        if (periodic) {
+          column = ((column % columnCount) + columnCount) % columnCount;
+        }
+        let cell = rowBase + u32(column);
+        let cellBegin = cellOffsets[cellOffsetsOffset + cell];
+        let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
+        for (var cellSlot = cellBegin; cellSlot < cellEnd; cellSlot++) {
+          let neighbor = sortedTargets[sortedTargetsOffset + cellSlot * 3u + 2u];
+          if (${selfCondition}) {
+            let targetPoint = vec2<f32>(
+              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u]),
+              bitcast<f32>(sortedTargets[sortedTargetsOffset + cellSlot * 3u + 1u]));
+            let distance = geodesicHaversineDistance(queryPoint, targetPoint, SPHERE_RADIUS);
+            if (!lattice.bounded || distance <= lattice.radius) {
+              insertNeighbor(&bestDistances, &bestIds, &found, distance, neighbor);
+            }
+          }
+        }
+      }
+    }
+    // The visited box: rows [firstRow, endRow], virtual columns [queryColumn - lowExtent, queryColumn + highExtent].
+    let hasSouth = firstRow > 0;
+    let hasNorth = endRow < lastRow;
+    let arcFull = lowExtent + highExtent + 1 >= columnCount;
+    let hasWest = select(queryColumn - lowExtent > 0, !arcFull, periodic);
+    let hasEast = select(queryColumn + highExtent < lastColumn, !arcFull, periodic);
+    if (!(hasSouth || hasNorth || hasWest || hasEast)) {
+      break;
+    }
+    var hLatitude = 1.0;
+    if (hasSouth || hasNorth) {
+      var clearance = 360.0;
+      if (hasSouth) {
+        clearance = min(clearance, y - (lattice.minimumY + f32(firstRow) * lattice.cellHeight));
+      }
+      if (hasNorth) {
+        clearance = min(clearance, lattice.minimumY + f32(endRow + 1) * lattice.cellHeight - y);
+      }
+      let halfSine = sin(0.5 * radians(clamp(clearance - slack, 0.0, 180.0)));
+      hLatitude = halfSine * halfSine;
+    }
+    var hLongitude = 1.0;
+    if (hasWest || hasEast) {
+      let westEdge = lattice.minimumX + f32(queryColumn - lowExtent) * lattice.cellWidth;
+      let eastEdge = lattice.minimumX + f32(queryColumn + highExtent + 1) * lattice.cellWidth;
+      var longitudeBound = 360.0;
+      if (hasEast) {
+        let farEdge = select(lattice.maximumX, westEdge + 360.0, periodic);
+        longitudeBound = min(longitudeBound, getWrappedLongitudeBound(eastEdge - x - slack, farEdge - x + slack));
+      }
+      if (hasWest) {
+        let farEdge = select(lattice.minimumX, eastEdge - 360.0, periodic);
+        longitudeBound = min(longitudeBound, getWrappedLongitudeBound(x - westEdge - slack, x - farEdge + slack));
+      }
+      let southLatitude = lattice.minimumY + f32(firstRow) * lattice.cellHeight;
+      let northLatitude = min(lattice.minimumY + f32(endRow + 1) * lattice.cellHeight, lattice.maximumY);
+      let maximumLatitude = clamp(max(abs(southLatitude), abs(northLatitude)) + slack, 0.0, 90.0);
+      let halfSine = sin(0.5 * radians(clamp(longitudeBound, 0.0, 180.0)));
+      hLongitude = queryCosine * geodesicCosLatitude(maximumLatitude) * halfSine * halfSine;
+    }
+    let boundTerm = clamp(min(hLatitude, hLongitude), 0.0, 1.0);
+    let safeDistance = 2.0 * SPHERE_RADIUS * asin(sqrt(boundTerm)) * 0.9998779296875;
+    if (found == K && bestDistances[K - 1u] < safeDistance) {
+      break;
+    }
+    if (lattice.bounded && lattice.radius < safeDistance) {
+      break;
+    }
+  }`;
+}
+
+/**
+ * WGSL helper `getWrappedLongitudeBound(lowValue, highValue)` of {@link getGeodesicNearestNeighborSearchWGSL}:
+ * the smallest value of the wrapped longitude difference `min(d, 360 - d)` for `d` in `[lowValue, highValue]`
+ * degrees (`lowValue` is clamped at 0).
+ *
+ * @internal
+ */
+export const GEODESIC_WRAPPED_LONGITUDE_BOUND_WGSL = /* wgsl */ `
+fn getWrappedLongitudeBound(lowValue: f32, highValue: f32) -> f32 {
+  let lowEnd = max(lowValue, 0.0);
+  if (ceil(lowEnd / 360.0) * 360.0 <= highValue) {
+    return 0.0;
+  }
+  return min(abs(lowEnd - 360.0 * round(lowEnd / 360.0)), abs(highValue - 360.0 * round(highValue / 360.0)));
 }
 `;

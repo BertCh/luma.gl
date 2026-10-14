@@ -24,7 +24,11 @@ import {
   KEY_PAIR_INVALID,
   type KeyGroups
 } from './key-pair-grouping';
-import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {
+  describeGPUSpatialWeights,
+  type GPUSpatialWeights,
+  validateGPUSpatialWeights
+} from './spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUContiguityWeights';
@@ -71,7 +75,12 @@ export type GPUContiguityWeightsProps = {
   weights: GPUSpatialWeights;
   /** Caller-owned one-row flag: 1 when the pairs or the neighbors did not fit their capacity, else 0. */
   overflow: GraphDataView<'uint32'>;
-  /** Optional caller-owned one-row unclamped distinct neighbor-slot total (a lower bound after a pair overflow). */
+  /**
+   * Optional caller-owned one-row unclamped distinct neighbor-slot total. It is the
+   * `requiredCount` of `outputWeights.status`: exact unless the intermediate pair list overflowed
+   * `pairCapacity`, in which case it is a lower bound (see the capacity grow loop in the class
+   * documentation).
+   */
   totalNeighbors?: GraphDataView<'uint32'>;
   /**
    * Capacity of the intermediate directed polygon-pair list, which holds duplicates when polygons
@@ -108,6 +117,18 @@ export type GPUContiguityWeightsProps = {
  * gives the CSR offsets). Output is deterministic. A point shared by `m` distinct polygons costs
  * `O(m^2)` pairs, which is fine for map data but not for thousands of polygons touching one point.
  *
+ * Capacity grow loop: pass `totalNeighbors`, read it and `overflow` after a frame, and when
+ * `outputWeights.status.overflow` is 1 reallocate `weights.neighbors`, `weights.weights` (and
+ * `distances`) with `getGPUSpatialWeightsCapacity(requiredCount, capacity)` slots and rebuild.
+ * `pairCapacity` defaults to four times the slot capacity, so growing the slots grows it too; the
+ * required count is exact once no pair overflow happens, and a lower bound before that, so the
+ * loop converges after at most a few rebuilds.
+ *
+ * {@link GPUContiguityWeights.outputWeights} is the caller-owned `weights` with `info` (row
+ * count, `transform: 'binary'`, `symmetric: true`, provenance `{source: 'GPUContiguityWeights',
+ * criterion}`) and `status` (`overflow`, and `requiredCount` when `totalNeighbors` is given)
+ * attached; pass it to consumers so they can gate on truncation.
+ *
  * Polygons are the unit of the result. MultiPolygon features must be flattened to one polygon
  * row per part, or merged afterwards.
  */
@@ -116,6 +137,8 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUContiguityWeightsProps;
+  /** The output CSR with `info` and `status` attached, for consumers. */
+  readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUContiguityWeightsProps) {
     const id = props.id ?? 'contiguity-weights';
@@ -162,6 +185,19 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
         throw new Error(`${id} totalNeighbors must hold one uint32`);
       }
     }
+    this.outputWeights = describeGPUSpatialWeights(props.weights, {
+      info: {
+        rowCount: polygonCount,
+        transform: 'binary',
+        symmetric: true,
+        hasSelfWeights: false,
+        provenance: {source: OPERATION, criterion: props.criterion}
+      },
+      status: {
+        overflow: props.overflow,
+        requiredCount: props.totalNeighbors
+      }
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [

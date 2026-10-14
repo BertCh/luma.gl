@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GPUCompaction,
@@ -30,6 +31,13 @@ export type GPUVoronoiDiagramOutput = {
 /** Properties for {@link GPUVoronoiDiagram}. */
 export type GPUVoronoiDiagramProps = {
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   /** Delaunay triples; only the prefix selected by `triangleCount` is read. */
   triangles: GraphDataView<'uint32x3'>;
@@ -56,14 +64,21 @@ export function getVoronoiMaximumSegmentCount(triangleCapacity: number): number 
  * sort of undirected edge keys, so the build costs a sort rather than a scan of every triangle per edge. Exactly collinear triangles, and
  * triangles whose circumcenter overflows f32, are rejected and counted in `invalidCount` when that
  * canonical status field is supplied.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUVoronoiDiagramProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUVoronoiDiagramProps) {
     this.id = props.id ?? 'voronoi-diagram';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.triangles, ['uint32x3'], `${id} triangles`);

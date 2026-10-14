@@ -30,6 +30,12 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
 import {
   createBoundsNode,
   createFeatureRingsNode,
@@ -50,8 +56,10 @@ import {
   SPATIAL_JOIN_WGSL_HELPERS,
   validateDisjointOutputs
 } from './spatial-join-passes';
+import {SPATIAL_GEODESIC_MAXIMUM_ANGLE} from './spatial-geodesic-wgsl';
 import {
   getSpatialPredicateWGSL,
+  type SpatialDistanceMetric,
   type SpatialDistanceParameter,
   type SpatialLegacyPredicateName,
   type SpatialPredicateName,
@@ -85,6 +93,21 @@ import {
 } from './spatial-join-types';
 
 const OPERATION = 'GPUSpatialPredicateJoin';
+
+/** Bits of a matrix word copied to the `relate` output: the 18 matrix bits and the uncertain bit. */
+const RELATE_OUTPUT_MASK = (0x3ffff | GPU_SPATIAL_RELATE_UNCERTAIN_BIT) >>> 0;
+/** Storage buffers per shader stage on the default device limits. */
+const MAXIMUM_STORAGE_BUFFERS = 8;
+
+/**
+ * Spatial contexts of {@link GPUSpatialPredicateJoin}: planar coordinates, or longitude/latitude
+ * degrees. On longitude/latitude, `dwithin` takes `metric: 'great-circle'` (meters); every other
+ * predicate is topological and takes `metric: 'none'`.
+ */
+const SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+  coordinateSpaces: ['planar', 'longitude-latitude'],
+  metrics: ['none', 'native', 'great-circle']
+};
 
 /**
  * Predicates supported by {@link GPUSpatialPredicateJoin}: `intersects`, `contains`, `within`,
@@ -172,14 +195,45 @@ export type GPUSpatialPredicateJoinProps = {
    * Both are 3 to 15 times faster from about 32 vertices per feature (measured on polygons with
    * 200 to 1000 vertices). `'auto'` (default) picks `'relate'`
    * when neither side is points and the product of the average vertex counts per feature of the
-   * two sides is at least {@link SPATIAL_JOIN_RELATE_ENGINE_MINIMUM_VERTEX_PRODUCT}. Results are
-   * identical except for configurations the fast kernel's f32 orientation tests misjudge.
-   * Requesting the `relate` output always uses the relate engine.
+   * two sides is at least {@link SPATIAL_JOIN_RELATE_ENGINE_MINIMUM_VERTEX_PRODUCT}. Both engines
+   * use the same exact orientation signs (see {@link GPUSpatialPredicateJoin}), so the result of a
+   * predicate does not depend on the engine or on the feature size, including shared-edge and
+   * collinear configurations; only the cost differs.
+   * Requesting the `relate` output always uses the relate engine. A great-circle `dwithin` always
+   * uses the fast kernel (`'relate'` throws for it, `'auto'` picks `'fast'`).
    */
   engine?: 'auto' | 'fast' | 'relate';
   /**
-   * Planar distance in coordinate units for `'dwithin'` (inclusive). Required for it, ignored
-   * otherwise.
+   * Coordinate space and metric of both sides. Omitted means native planar coordinates.
+   *
+   * - Planar (default): all predicates work in the plane of the coordinates; `dwithin` distance is
+   *   in coordinate units.
+   * - `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`, `dwithin` only: positions
+   *   are longitude/latitude degrees and `distance` is a great-circle distance in meters on the mean
+   *   Earth sphere (`sphereRadius` of the context overrides the radius; `units: 'kilometers'` is
+   *   rejected). The candidate stage widens each left box by the angular radius in latitude and by
+   *   the matching longitude reach (all longitudes when the radius reaches a pole, plus a second
+   *   probe when the box crosses the antimeridian), and the exact test measures the central angle
+   *   between vertices and segments (straight in longitude/latitude, with longitude differences
+   *   wrapped), so a pair across the antimeridian or near a pole is measured the short way round. Pairs whose geometries intersect
+   *   in the degree plane count as distance 0. Distances up to about 8000 km are supported (a larger
+   *   compile-time value throws, a larger per-frame value selects nothing). Edges are straight
+   *   lines in longitude/latitude for distance, intersection and containment alike (the same edge
+   *   model as the network snapping contributors); the point-to-segment foot is found in the local
+   *   equirectangular frame of the point, accurate for edges of road length, so densify long edges
+   *   first. A polygon that
+   *   spans the antimeridian is not split.
+   * - `{coordinateSpace: 'longitude-latitude', metric: 'none'}`, every predicate except `dwithin`:
+   *   topology in the degree plane, as GEOS and PostGIS `geometry` do for coordinates in degrees.
+   *   There is no metric, so no distances are involved; polygons are not split at the antimeridian
+   *   and a polygon that spans it is a 358-degree-wide polygon. `dwithin` with this metric throws.
+   *
+   * Any other combination throws at construction.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Distance for `'dwithin'` (inclusive). Required for it, ignored otherwise. Planar distance in
+   * coordinate units, or meters with a great-circle `spatialContext`.
    *
    * A number is compile-time. A one-row float32 view makes the distance per-frame: it is read on
    * every encoding by the candidate probe (box expansion), the exact kernel and the workgroup
@@ -252,8 +306,10 @@ export type GPUSpatialPredicateJoinProps = {
    * Optional packed DE-9IM matrix of every matched pair, aligned with `pairs` (slot `k` belongs to
    * `(pairs.leftIds[k], pairs.rightIds[k])`). Requires `pairs` and the same length as
    * `pairs.leftIds`. Layout: see {@link packGPUSpatialRelate}; decode with
-   * {@link formatGPUSpatialRelate}. Not available for `'dwithin'`. Setting it makes every
-   * predicate evaluate through the relate engine.
+   * {@link formatGPUSpatialRelate}. Bit 31 ({@link GPU_SPATIAL_RELATE_UNCERTAIN_BIT}) of a value is
+   * set when an orientation of that pair had no sign (see `uncertainCount`); {@link formatGPUSpatialRelate}
+   * ignores it, mask with `value & 0x3ffff` to compare matrices. Not available for `'dwithin'`.
+   * Setting it makes every predicate evaluate through the relate engine.
    */
   relate?: GraphDataView<'uint32'>;
   /**
@@ -267,22 +323,32 @@ export type GPUSpatialPredicateJoinProps = {
   /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
   candidateCount?: GraphDataView<'uint32'>;
   /**
-   * Optional one-row count of candidates whose classification could not be certified. Those pairs
-   * are decided by an f32 test instead. A candidate counts here when
+   * Optional one-row count of candidates whose classification could not be certified. A candidate
+   * is counted here when
    * - the robust point/polygon classifier returned `uncertain` (point/polygon pairs), or
-   * - for the relate engine on any other kind pair, an orientation sign does not exist: a
-   *   non-finite coordinate, or product exponents spanning more than 200 bits. Every other
-   *   orientation is decided exactly (f32 filter, then exact integer arithmetic).
+   * - on any other kind pair, in either engine, an orientation sign does not exist: a non-finite
+   *   coordinate, or product exponents spanning more than 200 bits. Every other orientation is
+   *   decided exactly (f32 filter, then exact integer arithmetic).
    *
-   * Zero means every decision is certified. The legacy `intersects`, `contains`, `within` and
-   * `dwithin` kernels on non-point/polygon pairs do not track uncertainty and report 0.
+   * An uncertain pair is never dropped or decided at random. The undecidable orientation is treated
+   * as collinear (sign 0) and the predicate is evaluated with that value; for point/polygon pairs
+   * the f32 relate/predicate kernel decides. So an uncertain pair can be wrong in either
+   * direction, and the count says how many results to distrust. Zero means every decision is
+   * certified. The pairs themselves are identifiable through the `relate` output: bit 31
+   * ({@link GPU_SPATIAL_RELATE_UNCERTAIN_BIT}) of a matched pair's value is set when that pair was
+   * uncertain (a matched pair only; an uncertain pair that did not match is counted but has no
+   * row). Not tracked, so reported as 0: the workgroup `dwithin` kernel (`engine: 'relate'`) and
+   * the short-circuiting kernel of a polygon/polygon pair (its eight storage bindings leave no
+   * room for the counter).
    */
   uncertainCount?: GraphDataView<'uint32'>;
 };
 
 /**
- * Joins two sets of planar features by a spatial predicate: the GPU equivalent of a GeoPandas
- * `sjoin` or a PostGIS `JOIN ... ON ST_Intersects(l, r)`.
+ * Joins two sets of features by a spatial predicate: the GPU equivalent of a GeoPandas
+ * `sjoin` or a PostGIS `JOIN ... ON ST_Intersects(l, r)`. Coordinates are planar by default; a
+ * longitude/latitude `spatialContext` adds great-circle `dwithin` in meters and planar-in-degrees
+ * topology for the other predicates (see `spatialContext`).
  *
  * Pipeline: per-feature bounds, a `GPUBVH` over the right bounds (or a reused `prepared` one), a
  * counted and scanned bounding box probe from every left feature (candidates come out ordered by
@@ -306,8 +372,10 @@ export type GPUSpatialPredicateJoinProps = {
  *   inside; a point contains only an equal point; a lower-dimension geometry never contains a
  *   higher-dimension one.
  * - `within(a, b)`: `contains(b, a)`.
- * - `dwithin(a, b)`: the minimum planar distance between the closed geometries is at most
- *   `distance`. Zero distance counts, so it includes everything that intersects.
+ * - `dwithin(a, b)`: the minimum distance between the closed geometries is at most `distance`:
+ *   planar in coordinate units, or great-circle in meters with a longitude/latitude
+ *   `spatialContext` (see {@link GPUSpatialPredicateJoinProps.spatialContext}). Zero distance counts,
+ *   so it includes everything that intersects.
  * - `covers` / `coveredBy`: like `contains` / `within`, but boundary contact is allowed (a polygon
  *   covers a point on its boundary and a line lying on its boundary).
  * - `touches`: the geometries share boundary points but no interior points (never true for two
@@ -328,10 +396,13 @@ export type GPUSpatialPredicateJoinProps = {
  * `touches`, `crosses`, `overlaps`, `equals`, `containsProperly` and `relate` always use the matrix.
  *
  * Point/polygon pairs use the robust double-single classifier `GPUPairwisePointInPolygon` for the
- * point location in every predicate. Every other combination uses f32 orientation tests in the
- * legacy kernels and exact orientation signs in the relate engine (`orientSign`, an f32 filter
- * with an exact integer fallback); the relate engine counts pairs with no sign (non-finite input,
- * huge exponent span) in `uncertainCount` and decides them by the f32 result. Coordinates must be finite; empty or invalid features never match (their matrix is all `F`).
+ * point location in every predicate. Every other combination uses exact orientation signs in both
+ * the short-circuiting kernels and the relate engine (`orientSign`, an f32 filter with an exact
+ * 256-bit integer fallback, one inlined call per kernel), so `engine: 'fast'`, `'relate'` and the
+ * `'auto'` choice agree on shared-edge and collinear configurations. The exactness is with respect
+ * to the f32 vertices; distances and the piece midpoints used by `contains` on lines and polygons
+ * are f32. Pairs with no sign (non-finite input, exponent span over 200 bits) are counted in
+ * `uncertainCount` and treated as collinear; see `uncertainCount`. Coordinates must be finite; empty or invalid features never match (their matrix is all `F`).
  * Polygon-in-polygon containment assumes valid polygons; a polygon that coincides with a hole is
  * handled by probing both sides of shared edges.
  *
@@ -368,6 +439,10 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
   readonly usesRelateEngine: boolean;
   /** Whether `dwithin` is evaluated by the workgroup kernel (one workgroup per candidate). */
   readonly usesWorkgroupDistance: boolean;
+  /** Resolved spatial context (native planar when none was given). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius in meters of a great-circle `dwithin`, or undefined for planar distances. */
+  readonly sphereRadius: number | undefined;
 
   /** DE-9IM patterns that a candidate's matrix must match; empty when the engine is not used or the pattern is per-frame. */
   private readonly relatePatterns: readonly string[];
@@ -405,6 +480,40 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     } else if (!isLegacy && !(RELATE_PREDICATES as readonly string[]).includes(predicate)) {
       throw new Error(`${id} unknown predicate ${String(predicate)}`);
     }
+    const context = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT
+    );
+    this.spatialContext = context;
+    if (context.coordinateSpace === 'longitude-latitude') {
+      if (predicate === 'dwithin' && context.metric !== 'great-circle') {
+        throw new Error(
+          `${id} dwithin on longitude-latitude positions needs metric 'great-circle' (distance in meters)`
+        );
+      }
+      if (predicate !== 'dwithin' && context.metric !== 'none') {
+        throw new Error(
+          `${id} ${predicate} is topological: use metric 'none' on longitude-latitude positions (planar topology in degrees)`
+        );
+      }
+    }
+    if (context.metric === 'great-circle') {
+      if (context.units === 'kilometers') {
+        throw new Error(`${id} great-circle dwithin distances are in meters`);
+      }
+      this.sphereRadius = context.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS;
+      if (
+        typeof props.distance === 'number' &&
+        props.distance / this.sphereRadius > SPATIAL_GEODESIC_MAXIMUM_ANGLE
+      ) {
+        throw new Error(
+          `${id} great-circle dwithin distance must be at most ${Math.floor(SPATIAL_GEODESIC_MAXIMUM_ANGLE * this.sphereRadius)} meters`
+        );
+      }
+    } else {
+      this.sphereRadius = undefined;
+    }
     this.how = props.how ?? 'inner';
     if (this.how !== 'inner' && this.how !== 'anti') {
       throw new Error(`${id} unknown how ${String(this.how)}`);
@@ -428,11 +537,15 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         `${id} engine 'fast' is only available for intersects, contains, within and dwithin`
       );
     }
+    if (this.sphereRadius !== undefined && engine === 'relate') {
+      throw new Error(`${id} engine 'relate' is not available for great-circle dwithin`);
+    }
     const prefersWorkgroups =
       engine === 'relate' || (engine === 'auto' && prefersRelateEngine(props.left, props.right));
     this.usesRelateEngine =
       !isLegacy || props.relate !== undefined || (predicate !== 'dwithin' && prefersWorkgroups);
-    this.usesWorkgroupDistance = predicate === 'dwithin' && prefersWorkgroups;
+    this.usesWorkgroupDistance =
+      predicate === 'dwithin' && prefersWorkgroups && this.sphereRadius === undefined;
     if (this.patternView) {
       const words = this.patternView;
       validatePackedUint32View(words, `${id} pattern`);
@@ -828,6 +941,7 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         tree,
         candidateCapacity,
         margin: predicate === 'dwithin' ? (this.distanceView ?? (props.distance as number)) : 0,
+        sphereRadius: this.sphereRadius,
         state,
         candidatePairs
       })
@@ -886,6 +1000,10 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
 
     // Exact predicate per candidate slot.
     const sameRowTest = props.excludeSameRow ? ' && left != right' : '';
+    const metric: SpatialDistanceMetric =
+      this.sphereRadius === undefined
+        ? {kind: 'planar'}
+        : {kind: 'great-circle', radius: this.sphereRadius};
     const sideSpecs: SpatialPredicateSide[] = sides.map(side => ({
       prefix: side.name,
       kind: side.geometry.kind,
@@ -1093,15 +1211,22 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
         })
       );
     } else {
+      // The state binding for the uncertain count does not fit beside two polygon sides (eight
+      // storage buffers already), where the short-circuiting kernel does not track uncertainty.
+      const tracksUncertainty =
+        !this.usesWorkgroupDistance && sideBindings.length + 3 <= MAXIMUM_STORAGE_BUFFERS;
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-exact`,
           operation: OPERATION,
-          variant: `exact-${left.kind}-${right.kind}-${predicate}`,
+          variant: `exact-${left.kind}-${right.kind}-${predicate}${this.sphereRadius === undefined ? '' : '-great-circle'}`,
           bindings: [
             ...sideBindings,
             {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-            {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
+            {name: 'flags', view: flags, type: 'u32', access: 'read_write'},
+            ...(tracksUncertainty
+              ? [{name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'} as const]
+              : [])
           ],
           ...(this.usesWorkgroupDistance
             ? {
@@ -1126,13 +1251,17 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
                   sideSpecs[0],
                   sideSpecs[1],
                   predicate as SpatialLegacyPredicateName,
-                  distance
+                  distance,
+                  metric
                 ),
+                // An orientation with no sign (non-finite input) counts as collinear and is
+                // reported through the uncertain count.
                 body: `let left = candidatePairs[candidatePairsOffset + index * 2u];
   var matched = false;
   if (left != NO_FEATURE) {
     let right = candidatePairs[candidatePairsOffset + index * 2u + 1u];
     matched = pairMatches(left, right)${sameRowTest};
+    ${tracksUncertainty ? 'if (uncertainOrientation) { atomicAdd(&state[stateOffset + 1u], 1u); }' : ''}
   }
   flags[flagsOffset + index] = select(0u, 1u, matched);`
               })
@@ -1203,7 +1332,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
     if (slot < PAIR_CAPACITY) {
       leftIds[leftIdsOffset + slot] = candidatePairs[candidatePairsOffset + index * 2u];
       rightIds[rightIdsOffset + slot] = candidatePairs[candidatePairsOffset + index * 2u + 1u];
-      ${relate && matrices ? 'relateOut[relateOutOffset + slot] = matrices[matricesOffset + index] & 0x3ffffu;' : ''}
+      ${relate && matrices ? `relateOut[relateOutOffset + slot] = matrices[matricesOffset + index] & ${RELATE_OUTPUT_MASK}u;` : ''}
     }
   }`
         })

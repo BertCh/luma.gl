@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GPUScan,
@@ -79,6 +80,8 @@ export type GPULineSmoothProps = {
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets. */
   pathOffsets: GraphDataView<'uint32'>;
+  /** Planar only; a longitude/latitude context throws (project positions first). */
+  spatialContext?: GPUSpatialContext;
   /** Compile-time number of Chaikin iterations in `[1, 10]`. Each one doubles the vertex count. */
   iterations: number;
   /**
@@ -114,13 +117,15 @@ export type GPULineSmoothProps = {
  * ping-pong through two capacity-sized graph transients, which is enough because a vertex past the
  * capacity at one level only feeds vertices past the capacity at the next. Deterministic.
  *
- * Planar only: geographic coordinates are smoothed as planar longitude/latitude.
+ * Planar only: a longitude/latitude `spatialContext` throws at construction.
  */
 export class GPULineSmooth implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineSmoothProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Whether paths are closed rings. */
   readonly closed: boolean;
 
@@ -128,6 +133,7 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
     this.id = props.id ?? 'line-smooth';
     this.props = props;
     this.closed = props.closed ?? false;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     for (const [name, view] of [
       ['positions', props.positions],

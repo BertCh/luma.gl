@@ -33,6 +33,7 @@ import {
   type GPULineSimplificationProps
 } from '../line-simplification/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUCoverageSimplification';
 const INVALID = `${KEY_PAIR_INVALID}u`;
@@ -87,6 +88,13 @@ export type GPUCoverageSimplificationOutput = {
 export type GPUCoverageSimplificationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'coverage-simplification'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Flattened ring vertices (GeoArrow layout, as `GPUContiguityWeights`). Planar, finite
    * coordinates; use tile- or view-local units because distances are f32.
@@ -185,10 +193,13 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUCoverageSimplificationProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCoverageSimplificationProps) {
     const id = props.id ?? 'coverage-simplification';
     this.id = id;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1 || props.positions.length >= 2 ** 30) {
@@ -692,6 +703,7 @@ const RING_COUNT: u32 = ${ringCount}u;`,
     const selectionOverflow = view('selection-overflow', 1);
     const lineProps: GPULineSimplificationProps = {
       id: `${id}-arcs`,
+      spatialContext: this.spatialContext,
       positions: linePositions,
       trackOffsets,
       importance: lineImportance,

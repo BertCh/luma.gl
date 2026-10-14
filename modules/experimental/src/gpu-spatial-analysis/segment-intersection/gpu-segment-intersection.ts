@@ -28,6 +28,7 @@ import {getSegmentBVHNodes} from './segment-bvh';
 import {createSegmentTableNode, getSegmentSlotCount} from './segment-table';
 import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUSegmentIntersection';
 
@@ -43,6 +44,13 @@ const SPATIAL_SORT_MINIMUM_SLOTS = 1024;
 export type GPUSegmentIntersectionProps = GPUSegmentIntersectionColumns & {
   /** Prefix for generated node and transient IDs. Defaults to `'segment-intersection'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Left segments. Output rows are left segment IDs (start-vertex indices of `left`). */
   left: GPUSegmentGeometry;
   /**
@@ -119,6 +127,8 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSegmentIntersectionProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Whether the contributor intersects `left` with itself. */
   readonly isSelfMode: boolean;
   /** Number of left segment slots (vertices). */
@@ -134,6 +144,7 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
 
   constructor(props: GPUSegmentIntersectionProps) {
     this.id = props.id ?? 'segment-intersection';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     this.isSelfMode = !props.right;

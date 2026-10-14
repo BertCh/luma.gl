@@ -7,6 +7,7 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
 import {TIME_WORDS_WGSL} from '../../gpu-dataframe/time-window-filter/time-words';
 import {SPATIAL_JOIN_WGSL_HELPERS} from '../spatial-join/spatial-join-passes';
 import {NODE_OVERLAPS_WGSL} from '../../utils/wgsl-common';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 
 const OPERATION = 'GPUZoneEvents';
 /** Bit marking a candidate query row as a first-row point-in-polygon ray. @internal */
@@ -47,7 +48,7 @@ function getTimeSource(isWordMode: boolean): string {
 fn rowTimeDifference(a: u32, b: u32) -> f32 {
   let wordsA = vec2<u32>(timestamps[timestampsOffset + 2u * a], timestamps[timestampsOffset + 2u * a + 1u]);
   let wordsB = vec2<u32>(timestamps[timestampsOffset + 2u * b], timestamps[timestampsOffset + 2u * b + 1u]);
-  return timeWordsToF32(timeWordsSubtract(wordsA, wordsB));
+  return timeWordsDifferenceToF32(wordsA, wordsB);
 }`
     : /* wgsl */ `
 fn rowTimeDifference(a: u32, b: u32) -> f32 {
@@ -166,6 +167,61 @@ ${NODE_OVERLAPS_WGSL}`,
 }
 
 /**
+ * Boundary rule shared by the segment crossing and the initial-state ray, so that the parity of a
+ * track's crossings of a zone always equals the change of its inside flag. Every track sample
+ * `P = (x, y)` is read as the perturbed point `P' = (x - e^2, y - e)` for an infinitesimal `e > 0`;
+ * the polygon is not perturbed. Because the whole track moves by the same offset, a boundary touch
+ * is decided once and consistently (Simulation of Simplicity), and all remaining decisions are exact
+ * signs from `orientSign`:
+ *
+ * - Point `P'` against edge c-d: `sign(orient(c, d, P'))` is `orient(c, d, P)` when that is not
+ *   zero. When `P` is on the edge's line the sign is that of `cross(d - c, (-e^2, -e))`, that is
+ *   `-sign(dx)` for a non-vertical edge and `sign(dy)` for a vertical one. So a point on an edge
+ *   is slightly below it (inside when the interior is below the edge) and a point on a vertical
+ *   edge is slightly west of it.
+ * - Ray from `P'` toward +x against edge a-b: it crosses when `a.y >= y` differs from `b.y >= y`
+ *   (the edge straddles `y - e`) and `P'` is left of an upward edge or right of a downward edge.
+ * - Segment `p'q'` against edge c-d crosses when `p'` and `q'` are on opposite sides of c-d and
+ *   `c`, `d` are on opposite sides of `p'q'`. The second test breaks ties with
+ *   `sign(cross(q - p, c - p) - cross(q - p, (-e^2, -e)))`: `sign(dx)` for a non-vertical track
+ *   segment and `-sign(dy)` for a vertical one. Collinear overlaps give equal ties and so no crossing.
+ *
+ * Consequences: a track that only touches a polygon vertex or edge from outside has no crossing,
+ * one that runs through a vertex into the interior has exactly one, and a track that runs along an
+ * edge changes state only where it leaves the edge's line. A zero-length segment never crosses.
+ * Where `orientSign` cannot certify a sign (code 2, spans over 200 binary orders) the f32 cross
+ * product sign is used.
+ * @internal
+ */
+const ZONE_TIE_RULE_WGSL = /* wgsl */ `
+fn zoneOrient(a: vec2f, b: vec2f, c: vec2f) -> i32 {
+  let exact = orientSign(a, b, c);
+  if (exact != 2) { return exact; }
+  let direction = b - a;
+  let offset = c - a;
+  return i32(sign(direction.x * offset.y - direction.y * offset.x));
+}
+
+// Side of the perturbed point p' of the edge c-d: -1 right, 1 left. Never zero for a real edge.
+fn pointSide(c: vec2f, d: vec2f, p: vec2f) -> i32 {
+  let side = zoneOrient(c, d, p);
+  if (side != 0) { return side; }
+  let edge = d - c;
+  if (edge.x != 0.0) { return -i32(sign(edge.x)); }
+  return i32(sign(edge.y));
+}
+
+// Side of the vertex c of the perturbed segment p'q': -1 right, 1 left, 0 only for p == q.
+fn segmentSide(p: vec2f, q: vec2f, c: vec2f) -> i32 {
+  let side = zoneOrient(p, q, c);
+  if (side != 0) { return side; }
+  let direction = q - p;
+  if (direction.x != 0.0) { return i32(sign(direction.x)); }
+  return -i32(sign(direction.y));
+}
+`;
+
+/**
  * Exact crossing test per candidate. `candidateKinds` is 0 (none), 1 (segment crossing with
  * parameter in `candidateParameters`) or 2 (ray crossing). Every slot is rewritten. @internal
  */
@@ -206,6 +262,8 @@ export function createZoneCrossingNode<Parameters>(
     invocationCount: props.shape.candidateCapacity,
     declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 ${getTrackConstants(props.shape)}
+${EXACT_ORIENTATION_WGSL}
+${ZONE_TIE_RULE_WGSL}
 fn cross2(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }`,
     body: `candidateKinds[candidateKindsOffset + index] = 0u;
   candidateParameters[candidateParametersOffset + index] = 0.0;
@@ -220,24 +278,32 @@ fn cross2(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }`,
   let row = rowWord & 0x7fffffffu;
   let current = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
   if (isRay) {
-    if ((a.y > current.y) != (b.y > current.y)) {
-      let crossingX = a.x + (current.y - a.y) * (b.x - a.x) / (b.y - a.y);
-      if (current.x < crossingX) { candidateKinds[candidateKindsOffset + index] = 2u; }
+    // Straddle rule of the perturbed point (see ZONE_TIE_RULE_WGSL): a.y >= y differs from b.y >= y.
+    if ((a.y >= current.y) != (b.y >= current.y)) {
+      let side = pointSide(a, b, current);
+      if (select((side < 0), (side > 0), (b.y > a.y))) { candidateKinds[candidateKindsOffset + index] = 2u; }
     }
     return;
   }
   let previous = vec2f(positions[positionsOffset + (row - 1u) * 2u], positions[positionsOffset + (row - 1u) * 2u + 1u]);
+  if (pointSide(a, b, previous) == pointSide(a, b, current)) { return; }
+  if (segmentSide(previous, current, a) == segmentSide(previous, current, b)) { return; }
+  // Only the decision above is exact. The parameter places the event in time.
   let direction = current - previous;
   let edgeDirection = b - a;
-  let denominator = cross2(direction, edgeDirection);
-  if (denominator == 0.0) { return; }
   let offset = a - previous;
-  let along = cross2(offset, edgeDirection) / denominator;
-  let across = cross2(offset, direction) / denominator;
-  if (along >= 0.0 && along < 1.0 && across >= 0.0 && across < 1.0) {
-    candidateKinds[candidateKindsOffset + index] = 1u;
-    candidateParameters[candidateParametersOffset + index] = along;
-  }`
+  let denominator = cross2(direction, edgeDirection);
+  var along = 0.0;
+  if (denominator != 0.0) {
+    along = cross2(offset, edgeDirection) / denominator;
+  } else {
+    // Parallel track and edge: the perturbed crossing lies at the edge endpoint nearest the track.
+    let length2 = dot(direction, direction);
+    if (length2 > 0.0) { along = dot(offset, direction) / length2; }
+  }
+  along = select(0.0, clamp(along, 0.0, 1.0), isFiniteValue(along));
+  candidateKinds[candidateKindsOffset + index] = 1u;
+  candidateParameters[candidateParametersOffset + index] = along;`
   });
 }
 

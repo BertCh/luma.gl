@@ -189,6 +189,8 @@ fn getDescendantCount(compact: vec2u, resolution: u32, depth: u32) -> u32 {
  * Both outputs are capacity bounded: `count` is clamped, the first `count` cells in the order above
  * are kept, `overflow` is written on the GPU, and rows past `count` are zero. Integer arithmetic
  * only, so results are identical on every device.
+ *
+ * Consumes cell keys and flags only, so it takes no `spatialContext`.
  */
 export class GPUCellCompaction implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

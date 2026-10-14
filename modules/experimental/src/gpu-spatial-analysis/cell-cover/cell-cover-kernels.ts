@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {dggs} from '@luma.gl/shadertools';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 import {CELL_KEY_WGSL, QUADBIN_TILE_WGSL, getCellKeyLayout} from '../cell-aggregation/cell-keys';
 import {H3_INDEX_WGSL} from '../cell-indexing/h3-index-wgsl';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
@@ -92,14 +93,14 @@ function getPolygonBindings(context: CellCoverKernelContext): WGSLKernelBinding[
  * - `coverContains(feature, p)`: even-odd containment over every ring of every polygon.
  * - `coverEdgesHitRect(feature, lo, hi)`: whether any ring edge meets the OPEN rectangle `(lo, hi)`.
  */
-const COMMON_WGSL = /* wgsl */ `
+const COMMON_WGSL = /* wgsl */ `${IS_FINITE_BITS_WGSL}
 fn coverGetVertex(vertex: u32) -> vec2f {
   let rangeBase = polygonPositionsOffset + 2u * vertex;
   return vec2f(polygonPositions[rangeBase], polygonPositions[rangeBase + 1u]);
 }
 
 fn coverIsFinite(p: vec2f) -> bool {
-  return p.x == p.x && p.y == p.y && abs(p.x) < 1e30 && abs(p.y) < 1e30;
+  return isFiniteBits(p.x) && isFiniteBits(p.y) && abs(p.x) < 1e30 && abs(p.y) < 1e30;
 }
 
 /** Whether the closed segment a-b meets the open rectangle (lo, hi). */
@@ -378,9 +379,26 @@ export function createCoverCountNode<Parameters>(
   context: CellCoverKernelContext,
   counts: GraphDataView<'uint32'>,
   ranges: GraphDataView<'uint32'>,
-  slabNumbers?: GraphDataView<'uint32'>
+  slabNumbers?: GraphDataView<'uint32'>,
+  status: {
+    invalidCount?: GraphDataView<'uint32'>;
+    uncertainCount?: GraphDataView<'uint32'>;
+  } = {}
 ): GPUCommandNode<Parameters> {
   const {resolution, candidateCapacity, family} = context;
+  // A feature wider than 180 degrees of longitude is an antimeridian crossing in planar
+  // longitude/latitude (or a world-spanning ring): it gets no candidates and is counted invalid.
+  // A feature reaching the latitudes the lattice clamps to loses polar cells: counted uncertain.
+  const invalidStatement = status.invalidCount
+    ? 'if (isAntimeridian) { atomicAdd(&invalidCount[invalidCountOffset], 1u); }'
+    : '';
+  const polarLatitude = family === 'h3' ? CELL_COVER_H3_MAXIMUM_LATITUDE : 85.051129;
+  const uncertainStatement = status.uncertainCount
+    ? `if (!isAntimeridian && bounds.x <= bounds.z && (bounds.w > ${getWGSLFloatLiteral(polarLatitude)} || bounds.y < -${getWGSLFloatLiteral(polarLatitude)})) { atomicAdd(&uncertainCount[uncertainCountOffset], 1u); }`
+    : '';
+  const antimeridianSource = `let isAntimeridian = bounds.x <= bounds.z && (bounds.z - bounds.x) > 180.0;
+  ${invalidStatement}
+  ${uncertainStatement}`;
   const capacityPlusOne = candidateCapacity + 1;
   let declarations = `${POLYGON_WGSL}
 const CAPACITY_PLUS_ONE: u32 = ${capacityPlusOne}u;
@@ -400,7 +418,8 @@ fn coverClampCount(width: u32, height: u32) -> u32 {
   let bounds = info.bounds;
   let rangeBase = rangesOffset + index * RANGE_STRIDE;
   var count = 0u;
-  if (bounds.x <= bounds.z && bounds.y <= bounds.w) {
+  ${antimeridianSource}
+  if (!isAntimeridian && bounds.x <= bounds.z && bounds.y <= bounds.w) {
     let x0 = quadbinGetTileX(bounds.x, RESOLUTION);
     let x1 = quadbinGetTileX(bounds.z, RESOLUTION);
     let y0 = quadbinGetTileY(bounds.w, RESOLUTION);
@@ -429,8 +448,13 @@ fn coverToCount(value: f32) -> u32 {
   var count = 0u;
   let originLat = max(bounds.y - LATTICE_SPACING, -MAXIMUM_LATITUDE);
   let endLat = min(bounds.w + LATTICE_SPACING, MAXIMUM_LATITUDE);
-  if (bounds.x <= bounds.z && bounds.y <= bounds.w && originLat <= endLat) {
-    let spacingLng = LATTICE_SPACING / cos(max(abs(originLat), abs(endLat)) * DEGREES_TO_RADIANS);
+  ${antimeridianSource}
+  if (!isAntimeridian && bounds.x <= bounds.z && bounds.y <= bounds.w && originLat <= endLat) {
+    // Longitude spacing from the most equatorward latitude of the band, where a degree of longitude
+    // is longest: a spacing taken from the poleward edge is too coarse for the rows nearer the
+    // equator and loses cells there.
+    let equatorwardLat = select(min(abs(originLat), abs(endLat)), 0.0, originLat <= 0.0 && endLat >= 0.0);
+    let spacingLng = LATTICE_SPACING / cos(equatorwardLat * DEGREES_TO_RADIANS);
     let originLng = bounds.x - spacingLng;
     let width = coverToCount(ceil((bounds.z + spacingLng - originLng) / spacingLng) + 1.0);
     let height = coverToCount(ceil((endLat - originLat) / LATTICE_SPACING) + 1.0);
@@ -457,6 +481,26 @@ fn coverToCount(value: f32) -> u32 {
       {name: 'ranges', view: ranges, type: 'u32', access: 'read_write'},
       ...(slabNumbers
         ? [{name: 'slabNumbers', view: slabNumbers, type: 'u32', access: 'read_write'} as const]
+        : []),
+      ...(status.invalidCount
+        ? [
+            {
+              name: 'invalidCount',
+              view: status.invalidCount,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            } as const
+          ]
+        : []),
+      ...(status.uncertainCount
+        ? [
+            {
+              name: 'uncertainCount',
+              view: status.uncertainCount,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            } as const
+          ]
         : [])
     ],
     invocationCount: context.featureCount + 1,

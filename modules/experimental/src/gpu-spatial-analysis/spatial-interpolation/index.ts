@@ -7,7 +7,12 @@ export type {
   GPUInverseDistanceWeightingOutput,
   GPUInverseDistanceWeightingProps
 } from './gpu-inverse-distance-weighting';
-export {GPUKriging} from './gpu-kriging';
+export {
+  GPUKriging,
+  KRIGING_NEGATIVE_VARIANCE_TOLERANCE,
+  KRIGING_PIVOT_RATIO_TOLERANCE,
+  KRIGING_RELATIVE_PIVOT_TOLERANCE
+} from './gpu-kriging';
 export type {GPUKrigingOutput, GPUKrigingProps} from './gpu-kriging';
 export {GPUFocalStatistics} from './gpu-focal-statistics';
 export type {
@@ -28,5 +33,6 @@ export {
 export type {
   GPUFocalStatisticsSettings,
   GPUFocalStatisticsShape,
-  GPUInverseDistanceWeightingSettings
+  GPUInverseDistanceWeightingSettings,
+  GPUInverseDistanceWeightingTaper
 } from './spatial-interpolation-parameters';

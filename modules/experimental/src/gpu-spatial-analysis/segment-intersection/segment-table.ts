@@ -133,7 +133,7 @@ ${declarations}
 fn vertexAt(vertex: u32) -> vec2f {
   return vec2f(positions[positionsOffset + vertex * 2u], positions[positionsOffset + vertex * 2u + 1u]);
 }
-fn finiteValue(value: f32) -> bool { return value == value && abs(value) <= FLOAT32_MAXIMUM; }
+fn finiteValue(value: f32) -> bool { return isFiniteBits(value); }
 fn finitePoint(point: vec2f) -> bool { return finiteValue(point.x) && finiteValue(point.y); }
 // The vertex that ends the segment starting at vertex, or SEGMENT_NONE when there is none.
 fn nextVertex(vertex: u32, ringStart: u32, ringEnd: u32, closedLine: bool) -> u32 {

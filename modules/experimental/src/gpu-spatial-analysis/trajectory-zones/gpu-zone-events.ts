@@ -20,6 +20,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createSpatialJoinBoundsNode,
   getNextPowerOfTwo,
@@ -152,6 +153,14 @@ export type GPUZoneEventsDiagnostics = {
 export type GPUZoneEventsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'zone-events'`. */
   id?: string;
+  /**
+   * Coordinate space of positions and zone edges. Planar only: segments and zone edges are straight
+   * lines in the coordinate plane, which is not the geometry of longitude/latitude degrees (a great
+   * circle segment is not a straight line in degrees, and edges cross the antimeridian). Any
+   * longitude-latitude context throws; project positions and edges to a planar frame first.
+   * Defaults to native planar.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar positions, one row per sample, sorted by track and then time. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -216,17 +225,23 @@ export type GPUZoneEventsProps = {
  *
  * Zones are boundary edges tagged with a zone index. Every segment between consecutive samples of
  * a track queries a `GPUBVH` over the edge bounds; each bounding-box candidate is tested with an
- * exact segment-segment intersection, with half-open parameter ranges so a segment through a shared
- * vertex counts once. The crossing time is `t[r - 1] + s * (t[r] - t[r - 1])` where `s` is the
+ * exact crossing test built on `orientSign`, so decisions never depend on f32 rounding. The crossing time is `t[r - 1] + s * (t[r] - t[r - 1])` where `s` is the
  * intersection parameter, stored relative to the track's first timestamp (a duplicate-timestamp
  * segment yields its start time).
  *
  * Whether a crossing enters or leaves does not depend on ring orientation. The first sample of each
  * track probes the BVH with a ray toward +x (even-odd rule) to find which zones contain it; every
  * crossing then toggles the `(track, zone)` state. Holes (extra rings of the same zone) therefore
- * work, while overlapping rings of one zone do not. Orientation, ties and degenerate inputs: a
- * vertex lying exactly on a track sample or segment is resolved by half-open rules, never by
- * epsilons, and a track sample exactly on an edge may disagree with the CPU parity by one event.
+ * work, while overlapping rings of one zone do not.
+ *
+ * Boundary rule: every track sample `(x, y)` is treated as the point `(x - e^2, y - e)` for an
+ * infinitesimal `e > 0`, applied to the whole track and not to the polygon, with the same rule for
+ * the initial-state ray and the segment crossings. The crossings of a track against a zone are
+ * therefore always consistent with the inside flag: a track that only touches a polygon vertex or
+ * edge from outside has no event, one that runs through a vertex into the interior has one, and a
+ * sample exactly on an edge counts as just below it (so inside when the interior lies below the
+ * edge) and on a vertical edge as just west of it. Segments can still produce several events at
+ * one time (a track passing a vertex that connects edges on both sides of it).
  *
  * Composition: bounds and BVH build, one probe kernel per row, an exact crossing kernel, a ray
  * parity kernel, an event-time kernel, three stable `GPUSort` passes (edge row, time, track) giving
@@ -247,6 +262,9 @@ export type GPUZoneEventsProps = {
  * list with visits, total dwell, first enter and last exit, so large zone counts do not need to
  * read dense matrices back.
  *
+ * Spatial context: planar only (see `GPUZoneEventsProps.spatialContext`). Construction with a
+ * longitude-latitude context throws instead of intersecting segments in degree space.
+ *
  * Non-goals: geodesic crossings, zone polygons with orientation semantics, point-in-polygon tolerance for samples exactly on a
  * boundary, and Double-single timestamps.
  */
@@ -255,6 +273,8 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUZoneEventsProps;
+  /** Resolved coordinate context; always planar. */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of tracks. */
   readonly trackCount: number;
   /** Number of boundary edges. */
@@ -266,6 +286,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     this.id = props.id ?? 'zone-events';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validatePackedUint32View(props.trackOffsets, `${id} trackOffsets`);

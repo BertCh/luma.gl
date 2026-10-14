@@ -17,6 +17,7 @@ export type {GPURegionStatisticsReadbackProps} from './region-statistics-readbac
 export {
   GPU_REGION_STATISTICS_FLAGS,
   GPU_REGION_STATISTICS_HEADER_LENGTH,
+  GPU_REGION_SPATIAL_CONTEXT_SUPPORT,
   GPU_REGION_STATISTICS_SUMMARY_LAYOUT
 } from './region-statistics-types';
 export type {

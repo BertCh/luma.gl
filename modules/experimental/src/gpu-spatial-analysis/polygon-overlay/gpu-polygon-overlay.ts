@@ -21,8 +21,17 @@ import {
   type GPUNodedSegmentPort
 } from '../geometry-topology/index';
 import {GPUSegmentRingAssembly} from '../ring-assembly/index';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUPolygonOverlay';
+
+const FILL_RULES: readonly GPUPolygonOverlayFillRule[] = [
+  'even-odd',
+  'positive',
+  'negative',
+  'nonzero'
+];
 
 /** Boolean set operation applied by {@link GPUPolygonOverlay}. */
 export type GPUPolygonOverlayOperation =
@@ -31,6 +40,22 @@ export type GPUPolygonOverlayOperation =
   | 'difference'
   | 'symmetric-difference'
   | 'dissolve';
+
+/**
+ * Rule that decides whether a probe point is inside an operand.
+ *
+ * - `'even-odd'` (default): a polygon contains the points inside its first (shell) ring and outside
+ *   every other ring of the same polygon, using crossing parity per ring. This is the OGC
+ *   shell-and-holes reading of valid polygons.
+ * - `'positive'`, `'negative'` and `'nonzero'`: a point is inside when the signed sum of the
+ *   winding numbers of ALL rings of one polygon is greater than, less than, or different from zero
+ *   (counter-clockwise rings count +1, clockwise rings -1, computed with exact orientation and the
+ *   same half-open crossing rule as the parity test, so the rules agree on parity). A point is
+ *   inside the operand when it is inside any polygon. Use them for raw, self-overlapping boundaries
+ *   such as offset curves, where regions covered twice must stay inside (`'even-odd'` would carve
+ *   them out as holes).
+ */
+export type GPUPolygonOverlayFillRule = 'even-odd' | 'positive' | 'negative' | 'nonzero';
 
 /** Explicit capacities for the bounded arrangement built by {@link GPUPolygonOverlay}. */
 export type GPUPolygonOverlayCapacity = {
@@ -75,10 +100,22 @@ type PackedPolygons = Omit<GPUPolygonGeometryPort, 'positions' | 'sourceIds'> & 
 /** Properties for {@link GPUPolygonOverlay}. */
 export type GPUPolygonOverlayProps = {
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   left: PackedPolygons;
   /** Required except for `dissolve`, which unions every polygon in `left`. */
   right?: PackedPolygons;
   operation: GPUPolygonOverlayOperation;
+  /**
+   * Inside rule applied to both operands. Default `'even-odd'`. Compile-time. See
+   * {@link GPUPolygonOverlayFillRule}.
+   */
+  fillRule?: GPUPolygonOverlayFillRule;
   capacity: GPUPolygonOverlayCapacity;
   /** Chebyshev vertex identity tolerance for noding and ring assembly. */
   vertexTolerance: number;
@@ -131,18 +168,32 @@ function validateStatus(id: string, name: string, status: GPUPolygonOverlayOutpu
  * polygons, including holes. `dissolve` applies the same boundary rule to the union of `left`, so
  * shared and overlapping internal boundaries disappear rather than being returned as masked faces.
  *
+ * Operand membership uses the `fillRule` (default even-odd shells and holes; `'positive'`,
+ * `'negative'` and `'nonzero'` use exact winding numbers and keep regions a raw boundary covers
+ * twice, which `GPUBufferSurface` relies on).
+ *
  * Output and arrangement capacities are explicit. `candidateOverflow` means noding was incomplete;
  * `overflow` additionally covers boundary, ring or vertex capacity. Boundary provenance remains
  * aligned with the compact selected edge list. Coordinates and side tests use f32; exact-or-
  * uncertain segment predicates are inherited from `GPULineNoding`.
+ *
+ * `output.status.requiredCount` is the unclamped number of rings (shells plus holes) the assembly
+ * needed, so callers can size the ring capacity of `output.geometry`;
+ * `output.boundary.status.requiredCount` is the unclamped selected-edge count.
  */
 export class GPUPolygonOverlay implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUPolygonOverlayProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Resolved inside rule. */
+  readonly fillRule: GPUPolygonOverlayFillRule;
 
   constructor(props: GPUPolygonOverlayProps) {
     this.id = props.id ?? 'polygon-overlay';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
+    this.fillRule = props.fillRule ?? 'even-odd';
     const {id} = this;
     const {output} = props;
     validatePolygons(id, 'left', props.left);
@@ -155,6 +206,9 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
     }
     if (props.right) {
       validatePolygons(id, 'right', props.right);
+    }
+    if (props.fillRule && !FILL_RULES.includes(props.fillRule)) {
+      throw new Error(`${id} fillRule must be even-odd, positive, negative or nonzero`);
     }
     if (!(props.vertexTolerance > 0) || !Number.isFinite(props.vertexTolerance)) {
       throw new Error(`${id} vertexTolerance must be finite and positive`);
@@ -395,6 +449,7 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
     nodes.push(
       ...new GPULineNoding({
         id: `${id}-noding`,
+        spatialContext: this.spatialContext,
         lines: {
           kind: 'lines',
           positions: combinedPositions,
@@ -471,7 +526,7 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
           {name: 'membership', view: leftMembership, type: 'u32', access: 'read_write'}
         ],
         invocationCount: props.capacity.nodedSegments,
-        declarations: this._getMembershipWGSL(left.polygonOffsets.length - 1),
+        declarations: this._getMembershipWGSL(left.polygonOffsets.length - 1, this.fillRule),
         body: `var value = 0u;
   if (index < segmentCount[segmentCountOffset]) {
     let base = endpointsOffset + index * 4u;
@@ -506,7 +561,7 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
             {name: 'membership', view: rightMembership, type: 'u32', access: 'read_write'}
           ],
           invocationCount: props.capacity.nodedSegments,
-          declarations: this._getMembershipWGSL(right.polygonOffsets.length - 1),
+          declarations: this._getMembershipWGSL(right.polygonOffsets.length - 1, this.fillRule),
           body: `var value = 0u;
   if (index < segmentCount[segmentCountOffset]) {
     let base = endpointsOffset + index * 4u;
@@ -684,13 +739,13 @@ const NODED_CAPACITY: u32 = ${props.capacity.nodedSegments}u;`,
     nodes.push(
       ...new GPUSegmentRingAssembly({
         id: `${id}-assemble`,
+        spatialContext: this.spatialContext,
         endpoints: boundary.endpoints,
         count: boundary.status.count,
         groups: boundaryGroups,
         vertexTolerance: props.vertexTolerance,
         interiorSide: 'left',
         normalizeWinding: true,
-        geographic: false,
         cancelOpposingSegments: true,
         splitTouchingRings: true,
         output: {
@@ -727,6 +782,23 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-publish-required`,
+        operation: OPERATION,
+        variant: 'publish-required',
+        bindings: [
+          {name: 'ringRequiredCount', view: ringRequiredCount, type: 'u32', access: 'read'},
+          {
+            name: 'requiredCount',
+            view: output.status.requiredCount,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: 1,
+        // Unclamped ring requirement of the assembly (shells plus holes), for sizing capacity.
+        body: 'requiredCount[requiredCountOffset] = ringRequiredCount[ringRequiredCountOffset];'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
         variant: 'publish',
@@ -746,12 +818,6 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
           },
           {name: 'ringOverflow', view: ringOverflow, type: 'u32', access: 'read'},
           {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
-          {
-            name: 'requiredCount',
-            view: output.status.requiredCount,
-            type: 'u32',
-            access: 'read_write'
-          },
           {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
           {
             name: 'candidateOverflow',
@@ -765,7 +831,6 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
         body: `let featureCount = featureOffsets[featureOffsetsOffset + RING_CAPACITY];
   let incomplete = boundaryOverflow[boundaryOverflowOffset] | ringOverflow[ringOverflowOffset];
   count[countOffset] = featureCount;
-  requiredCount[requiredCountOffset] = featureCount;
   overflow[overflowOffset] = incomplete;
   candidateOverflow[candidateOverflowOffset] = candidateOverflowInput[candidateOverflowInputOffset];`
       })
@@ -841,7 +906,10 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
     }
   }
 
-  private _getMembershipWGSL(polygonCount: number): string {
+  private _getMembershipWGSL(polygonCount: number, fillRule: GPUPolygonOverlayFillRule): string {
+    if (fillRule !== 'even-odd') {
+      return this._getWindingMembershipWGSL(polygonCount, fillRule);
+    }
     return /* wgsl */ `
 const POLYGON_COUNT: u32 = ${polygonCount}u;
 
@@ -879,6 +947,60 @@ fn insidePolygons(point: vec2f) -> bool {
       }
     }
     if (inShell && !inHole) { return true; }
+  }
+  return false;
+}`;
+  }
+
+  /**
+   * Winding-number membership. Uses the half-open crossing rule of the parity test
+   * (`(a.y > y) != (b.y > y)` and the probe strictly left of the crossing), decided with exact
+   * orientation: an upward edge counts +1 when the probe is strictly left of it, a downward edge
+   * counts -1 when the probe is strictly right of it.
+   */
+  private _getWindingMembershipWGSL(
+    polygonCount: number,
+    fillRule: GPUPolygonOverlayFillRule
+  ): string {
+    const test =
+      fillRule === 'positive'
+        ? 'winding > 0'
+        : fillRule === 'negative'
+          ? 'winding < 0'
+          : 'winding != 0';
+    return /* wgsl */ `
+const POLYGON_COUNT: u32 = ${polygonCount}u;
+${EXACT_ORIENTATION_WGSL}
+
+fn insidePolygons(point: vec2f) -> bool {
+  for (var polygon = 0u; polygon < POLYGON_COUNT; polygon++) {
+    let firstRing = polygonOffsets[polygonOffsetsOffset + polygon];
+    let lastRing = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
+    var winding = 0;
+    for (var ring = firstRing; ring < lastRing; ring++) {
+      let begin = ringOffsets[ringOffsetsOffset + ring];
+      let end = ringOffsets[ringOffsetsOffset + ring + 1u];
+      let lowY = ringBounds[ringBoundsOffset + ring * 2u];
+      let highY = ringBounds[ringBoundsOffset + ring * 2u + 1u];
+      // A probe outside the ring's y extent cannot cross any edge.
+      if (end > begin + 2u && point.y >= lowY && point.y < highY) {
+        var previous = end - 1u;
+        for (var row = begin; row < end; row++) {
+          let a = vec2f(positions[positionsOffset + previous * 2u], positions[positionsOffset + previous * 2u + 1u]);
+          let b = vec2f(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
+          if ((a.y > point.y) != (b.y > point.y)) {
+            let side = orientSign(a, b, point);
+            if (b.y > a.y) {
+              if (side == 1) { winding += 1; }
+            } else if (side == -1) {
+              winding -= 1;
+            }
+          }
+          previous = row;
+        }
+      }
+    }
+    if (${test}) { return true; }
   }
   return false;
 }`;

@@ -12,6 +12,12 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  getGPUSphereRadius,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
@@ -20,9 +26,14 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
 
 const OPERATION = 'GPUOutlineGeometry';
+
+/** Planar coordinates, or longitude/latitude with a sphere (great-circle) metric. */
+const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['native', 'great-circle'] as const)
+});
 
 /** Number of float32 elements in a {@link GPUOutlineGeometry} parameter buffer. */
 export const GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH = 4;
@@ -42,8 +53,8 @@ export type GPUOutlineGeometryType =
 /** CPU description of the per-frame parameters of {@link GPUOutlineGeometry}. */
 export type GPUOutlineGeometryParameters = {
   /**
-   * Offset distance, in position units (`'planar'`) or meters of sphere of `radius`
-   * (`'spherical'`). Must be non-negative; `0` draws nothing visible.
+   * Offset distance, in position units (planar context) or in the context's `units` on its sphere
+   * (longitude/latitude context, meters by default). Must be non-negative; `0` draws nothing visible.
    */
   distance: number;
 };
@@ -95,12 +106,12 @@ export type GPUOutlineGeometryOutput = {
  * Properties for {@link GPUOutlineGeometry}.
  *
  * Per-frame (no recompile): the contents of `parameters` (distance) and every input buffer.
- * Compile-time: view lengths, `geometryType`, `coordinateSystem`, `radius`, `joinSegments`.
+ * Compile-time: view lengths, `geometryType`, `spatialContext`, `joinSegments`.
  */
 export type GPUOutlineGeometryProps = {
   /** Prefix for generated node IDs. Defaults to `'outline-geometry'`. */
   id?: string;
-  /** Packed positions: planar coordinates, or longitude/latitude degrees for `'spherical'`. */
+  /** Packed positions: planar coordinates, or longitude/latitude degrees for a sphere context. */
   positions: GraphDataView<'float32x2'>;
   /** Input geometry kind. */
   geometryType: GPUOutlineGeometryType;
@@ -111,14 +122,15 @@ export type GPUOutlineGeometryProps = {
    */
   pathOffsets?: GraphDataView<'uint32'>;
   /**
-   * `'planar'` (default): distances in position units. `'spherical'`: positions are
-   * longitude/latitude degrees and distances are meters on a sphere of `radius`, applied with the
-   * local east/north scale of each vertex (an equirectangular approximation, accurate for
-   * distances small against the radius, and wrong near the poles and across the antimeridian).
+   * Spatial context of `positions` and of the offset `distance`. Omitted means native planar
+   * coordinates with distances in position units. `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` makes positions longitude/latitude degrees and distances meters (or the
+   * context's `units`) on a sphere of `sphereRadius` (default the mean Earth radius), applied with
+   * the local east/north scale of each vertex: an equirectangular approximation, accurate for
+   * distances small against the radius and wrong near the poles and across the antimeridian.
+   * This replaces the removed `coordinateSystem` and `radius` props. Other contexts throw.
    */
-  coordinateSystem?: 'planar' | 'spherical';
-  /** Sphere radius of `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
-  radius?: number;
+  spatialContext?: GPUSpatialContext;
   /**
    * Triangles in each round join and cap disc, at least 3. Default
    * {@link GPU_OUTLINE_GEOMETRY_DEFAULT_JOIN_SEGMENTS}. The disc is inscribed, so the picture is
@@ -157,9 +169,9 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUOutlineGeometryProps;
-  /** Resolved coordinate system. */
-  readonly coordinateSystem: 'planar' | 'spherical';
-  /** Resolved sphere radius. */
+  /** Resolved spatial context (planar, or longitude/latitude with a great-circle metric). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius in the context's length unit; only used by longitude/latitude contexts. */
   readonly radius: number;
   /** Resolved join disc triangle count. */
   readonly joinSegments: number;
@@ -169,8 +181,12 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
   constructor(props: GPUOutlineGeometryProps) {
     this.id = props.id ?? 'outline-geometry';
     this.props = props;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
+    this.radius = getGPUSphereRadius(this.spatialContext);
     this.joinSegments = props.joinSegments ?? GPU_OUTLINE_GEOMETRY_DEFAULT_JOIN_SEGMENTS;
     this.verticesPerInput = getGPUOutlineGeometryVerticesPerInput(this.joinSegments);
     const {id} = this;
@@ -186,12 +202,6 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
     }
     if (!['points', 'lines', 'rings'].includes(props.geometryType)) {
       throw new Error(`${id} geometryType must be 'points', 'lines' or 'rings'`);
-    }
-    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
     }
     if (!Number.isInteger(this.joinSegments) || this.joinSegments < 3) {
       throw new Error(`${id} joinSegments must be an integer of at least 3`);
@@ -252,7 +262,7 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'outputPositions', view: props.output.positions, type: 'f32', access: 'read_write'}
     );
-    const spherical = this.coordinateSystem === 'spherical';
+    const spherical = this.spatialContext.coordinateSpace === 'longitude-latitude';
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-generate`,

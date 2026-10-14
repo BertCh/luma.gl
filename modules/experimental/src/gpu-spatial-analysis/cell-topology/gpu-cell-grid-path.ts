@@ -108,6 +108,8 @@ export type GPUCellGridPathProps = {
  *
  * Output rows are bounded by `maximumPathLength`; `counts` reports the true length so overflow is
  * `counts[row] > maximumPathLength`. Everything is integer arithmetic, deterministic on every device.
+ *
+ * Consumes cell keys only, so it takes no `spatialContext`.
  */
 export class GPUCellGridPath implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

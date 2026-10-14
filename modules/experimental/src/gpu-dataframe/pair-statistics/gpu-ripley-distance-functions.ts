@@ -28,6 +28,11 @@ import {
 } from './pair-statistics-grid';
 import {GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH} from './ripley-distance-parameters';
 
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
+
 const OPERATION = 'GPURipleyDistanceFunctions';
 
 /** Largest `radiusCount`. */
@@ -54,6 +59,13 @@ const CHANNEL_COUNT = 8;
 export type GPURipleyDistanceFunctionsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley-distance-functions'`. */
   id?: string;
+  /**
+   * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
+   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * `longitude-latitude` context throws at construction (project positions to a planar frame
+   * first).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -147,11 +159,14 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURipleyDistanceFunctionsProps;
+  /** Resolved spatial context (native planar unless the props say otherwise). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURipleyDistanceFunctionsProps) {
     this.id = props.id ?? 'ripley-distance-functions';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH

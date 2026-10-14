@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   validatePackedUint32View,
@@ -11,6 +12,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
@@ -40,6 +42,13 @@ const SPATIAL_SORT_MINIMUM_SLOTS = 1024;
 export type GPUMinimumClearanceProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'minimum-clearance'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Linestring or polygon features in the layouts of `GPUSpatialPredicateJoin`. Polygon rings may
    * be explicitly closed or not; rings with fewer than three vertices are ignored.
@@ -98,12 +107,18 @@ export type GPUMinimumClearanceProps = {
  *
  * **Differences from GEOS.** Polygon rings with fewer than three vertices are ignored and
  * `NaN` coordinates are skipped instead of poisoning the feature.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUMinimumClearance implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUMinimumClearanceProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
   /** Number of vertices, which is also the number of segment slots. */
@@ -116,6 +131,7 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
   constructor(props: GPUMinimumClearanceProps) {
     this.id = props.id ?? 'minimum-clearance';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {geometry} = props;
     validatePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
@@ -324,6 +340,7 @@ fn lastAtMost(kind: u32, count: u32, value: u32) -> u32 {
         ],
         invocationCount: vertexCount,
         declarations: `const SEGMENT_NONE: u32 = ${GPU_SEGMENT_NONE}u;
+${IS_NAN_BITS_WGSL}
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const VERTEX_COUNT: u32 = ${vertexCount}u;
 const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
@@ -373,7 +390,7 @@ fn boxDistanceSquared(node: u32, point: vec2f) -> f32 {
   var bestPoint = vec2f(0.0);
   var bestRow = SEGMENT_NONE;
   let point = vec2f(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
-  if (feature != SEGMENT_NONE && point.x == point.x && point.y == point.y) {
+  if (feature != SEGMENT_NONE && !isNanBits(point.x) && !isNanBits(point.y)) {
     // Seed the bound with this vertex's own segment and the previous slot (usually the other
     // incident segment). Any valid segment of the same feature is a legitimate candidate, so the
     // result is unchanged; the bound just starts at about the shortest incident edge, which

@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {
   createTransientView,
   GPUVisibilityWorkflow,
   validatePackedUint32View,
@@ -19,6 +24,12 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createPublishNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+
+/** Planar coordinates, or longitude/latitude used as plain coordinates (no metric). */
+const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native'] as const)
+});
 
 const OPERATION = 'GPUBoundsFilter';
 
@@ -85,6 +96,12 @@ export type GPUBoundsFilterProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'bounds-filter'`. */
   id?: string;
   /**
+   * Spatial context of the coordinates; omitted means native planar coordinates. Planar and
+   * longitude/latitude (metric `'none'`) are accepted. Longitude/latitude is treated as plain
+   * coordinates (no metric, no antimeridian wrap, boxes must have `minX <= maxX`).
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * Packed per-feature bounds `[minX, minY, maxX, maxY]`, for example `GPUGeometryMeasures`
    * bounds. Rows with a non-finite component (NaN or infinite, the empty-geometry marker) are
    * rejected in every mode.
@@ -111,18 +128,29 @@ export type GPUBoundsFilterProps = {
  * One mask kernel and a stable compaction publish the accepted row IDs, a clamped count and an
  * overflow flag. The box is read per frame, so a viewport or slider moves without recompiling.
  * Comparisons are closed (borders count) and exact in f32 (no arithmetic).
+ *
+ * Coordinates only, no metric: `spatialContext` accepts planar coordinates or longitude/latitude with
+ * metric `'none'`; great-circle and other metric contexts throw. Longitude/latitude degrees are used
+ * as plain coordinates, so nothing wraps at the antimeridian (a box must have `minX <= maxX`).
  */
 export class GPUBoundsFilter implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUBoundsFilterProps;
+  /** Resolved spatial context (planar or longitude/latitude without metric). */
+  readonly spatialContext: GPUSpatialContext;
   /** Resolved relation mode. */
   readonly mode: GPUBoundsFilterMode;
 
   constructor(props: GPUBoundsFilterProps) {
     this.id = props.id ?? 'bounds-filter';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.mode = props.mode ?? 'intersects';
     const {id} = this;
     if (!['intersects', 'within', 'contains'].includes(this.mode)) {

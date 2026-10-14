@@ -16,7 +16,12 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
+import {
+  getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 import {GPUNearestFeatureJoin} from '../spatial-join/gpu-nearest-feature-join';
 import {createPathPrefixNode} from '../line-segmentize/line-segmentize-kernels';
 import {
@@ -33,7 +38,7 @@ import {
 
 const OPERATION = 'GPULinearReferencing';
 
-/** Coordinate interpretation of {@link GPULinearReferencing}. */
+/** Kernel model of {@link GPULinearReferencing}, derived from its `spatialContext` (not a prop). */
 export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
 
 /**
@@ -41,7 +46,7 @@ export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
  * no path within the radius get `GPU_LINE_NO_SOURCE` indices, NaN fractions, foot points, measures,
  * normalized measures and signed offsets, distance `-1` and side `0`.
  *
- * With `coordinateSystem: 'spherical'`, foot points are longitude/latitude degrees, `fractions` is
+ * With a great-circle `spatialContext`, foot points are longitude/latitude degrees, `fractions` is
  * the angular fraction along the great-circle arc, and distances, measures and signed offsets are
  * in sphere-radius units (meters by default).
  */
@@ -75,25 +80,25 @@ export type GPULinearReferencingOutput = {
  * Properties for {@link GPULinearReferencing}.
  *
  * Per-frame (no recompile): `radius` and the contents of every input buffer. Compile-time: view
- * lengths, the path count, `coordinateSystem`, `sphereRadius`, `candidateCapacity`, `leafCapacity`,
+ * lengths, the path count, `spatialContext`, `candidateCapacity`, `leafCapacity`,
  * `spatialSort`, and which outputs are present.
  */
 export type GPULinearReferencingProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'linear-referencing'`. */
   id?: string;
   /**
-   * `'planar'` (default): Euclidean segments in position units. `'spherical'`: positions are
-   * longitude/latitude degrees, segments are great-circle arcs, and `radius`, distances, measures
-   * and offsets are in sphere-radius units (meters by default).
+   * Planar (default): Euclidean segments in position units. `{coordinateSpace: 'longitude-latitude',
+   * metric: 'great-circle'}`: positions are longitude/latitude degrees, segments are great-circle
+   * arcs, and measures, distances and offsets are in the context unit on its `sphereRadius`
+   * (meters on the mean Earth radius by default). Replaces the former `coordinateSystem` and
+   * `sphereRadius` props.
    */
-  coordinateSystem?: GPULinearReferencingCoordinateSystem;
-  /** Sphere radius for `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS} (meters). */
-  sphereRadius?: number;
-  /** Packed query points (longitude/latitude degrees for `'spherical'`). */
+  spatialContext?: GPUSpatialContext;
+  /** Packed query points (longitude/latitude degrees for a great-circle context). */
   points: GraphDataView<'float32x2'>;
   /**
-   * Packed path vertices sorted by path (longitude/latitude degrees for `'spherical'`; project
-   * geographic data first for `'planar'`).
+   * Packed path vertices sorted by path (longitude/latitude degrees for a great-circle context; project
+   * geographic data first for planar contexts).
    */
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets. */
@@ -131,7 +136,7 @@ export type GPULinearReferencingProps = {
  * each point onto its segment in segment-local coordinates; scatter kernels copy the requested
  * columns.
  *
- * `coordinateSystem: 'spherical'` treats positions as longitude/latitude degrees and segments as
+ * A great-circle `spatialContext` treats positions as longitude/latitude degrees and segments as
  * great-circle arcs (HaversineClosestPoint, cross-track and along-track distance): a per-row table
  * stores each arc's unit start vector, tangent and normal (built from the degree-difference
  * bearing, so meter-scale arcs stay well conditioned), and a brute-force kernel scans every arc per
@@ -150,16 +155,31 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
   readonly props: GPULinearReferencingProps;
   /** Number of paths. */
   readonly pathCount: number;
-  /** Resolved coordinate system. */
+  /** Resolved spatial context (planar unless given). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Kernel model derived from `spatialContext`; not a prop. */
   readonly coordinateSystem: GPULinearReferencingCoordinateSystem;
-  /** Resolved sphere radius. */
+  /** Resolved sphere radius in the context's length unit (1 for planar). */
   readonly sphereRadius: number;
 
   constructor(props: GPULinearReferencingProps) {
     this.id = props.id ?? 'linear-referencing';
     this.props = props;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
-    this.sphereRadius = props.sphereRadius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+    );
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      this.spatialContext.metric !== 'great-circle'
+    ) {
+      throw new Error(`${this.id} longitude-latitude positions need the great-circle metric`);
+    }
+    this.coordinateSystem =
+      this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';
+    this.sphereRadius =
+      this.coordinateSystem === 'spherical' ? getGPUSphereRadius(this.spatialContext) : 1;
     const {id} = this;
     const {output} = props;
     for (const [name, view] of Object.entries({
@@ -171,12 +191,6 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       if ((view as unknown) instanceof GraphVectorView) {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
       }
-    }
-    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
-    }
-    if (!Number.isFinite(this.sphereRadius) || this.sphereRadius <= 0) {
-      throw new Error(`${id} sphereRadius must be a positive finite number`);
     }
     if (
       this.coordinateSystem === 'planar' &&

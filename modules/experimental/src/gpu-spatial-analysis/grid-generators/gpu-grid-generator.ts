@@ -15,6 +15,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 
 const OPERATION = 'GPUGridGenerator';
@@ -177,6 +178,11 @@ export type GPUGridGeneratorProps = {
    * shifts odd columns up by half a cell. Compile time.
    */
   hexOrientation?: 'pointy' | 'flat';
+  /**
+   * Planar only (default): the lattice is Euclidean in position units, so a longitude/latitude
+   * context throws; project first or use a discrete global grid (`GPUPointToCell`).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Polygon the optional cell and corner intersection masks are computed against. Compile time. */
   extent?: GPUGridGeneratorExtent;
   /** Per-frame packed float32 view written with {@link getGPUGridGeneratorParameterValues}. */
@@ -206,6 +212,10 @@ export type GPUGridGeneratorProps = {
  *   `2c + 1` points down; odd rows are shifted by `w / 2` so the lattice has no T-junctions.
  * - point: cell centers of the square grid.
  *
+ * Every polygon vertex is computed from its integer lattice coordinates (the expression the
+ * `corners` output uses), so neighbouring cells share bit-identical vertices: a seam point is in
+ * exactly the cells whose closed boundaries contain it, with no 1-ulp cracks or overlaps.
+ *
  * Intersect mask: with `extent` and `output.intersects`, a second kernel tests every cell against
  * the extent polygon with the exact orientation predicate (segment contact, cell corner inside the
  * extent, or extent inside the cell), one thread per cell scanning all extent edges, so the cost is
@@ -227,6 +237,8 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGridGeneratorProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of output cells. */
   readonly cellCount: number;
   /** Vertices per polygon cell (0 for points). */
@@ -238,6 +250,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     this.id = props.id ?? 'grid-generator';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     this.verticesPerCell = getGPUGridVerticesPerCell(props.gridType);
     for (const [name, view] of Object.entries({
       parameters: props.parameters,
@@ -388,6 +401,7 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
           declarations: `const COLUMNS: u32 = ${props.columns}u;
 const SQRT3: f32 = 1.7320508;
 const CELLS_PER_ROW: u32 = ${props.gridType === 'triangle' ? 2 * props.columns : props.columns}u;
+${props.gridType === 'hex' && positions ? getHexLatticeVertexWGSL(isFlatHex) : ''}
 
 ${positions ? 'fn writeVertex(cell: u32, slot: u32, p: vec2<f32>) {\n  let base = positionsOutOffset + 2u * (cell * ' + this.verticesPerCell + 'u + slot);\n  positionsOut[base] = p.x;\n  positionsOut[base + 1u] = p.y;\n}' : ''}`,
           body: `let origin = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
@@ -413,7 +427,8 @@ ${getGridBody(props.gridType, Boolean(positions), isFlatHex)}
             {name: 'cornersOut', view: corners, type: 'f32', access: 'read_write'}
           ],
           invocationCount: this.cornerCount,
-          declarations: `const COLUMNS: u32 = ${isFlatHex ? props.rows : props.columns}u;`,
+          declarations: `const COLUMNS: u32 = ${isFlatHex ? props.rows : props.columns}u;
+${props.gridType === 'square' ? '' : getHexLatticeVertexWGSL(isFlatHex)}`,
           body: `let origin = vec2f(parameters[parametersOffset], parameters[parametersOffset + 1u]);
   let width = parameters[parametersOffset + 2u];
   let height = parameters[parametersOffset + 3u];
@@ -499,12 +514,25 @@ function getCornerBody(isSquare: boolean, isFlatHex: boolean): string {
       slot = 5u;
     }
   }
+  let corner = hexLatticeVertex(origin, width, column, row, slot);`;
+}
+
+/**
+ * WGSL for a hexagon vertex on the integer half-cell lattice that the corner output also uses. Every
+ * cell polygon computes its vertices from this one expression, so cells sharing a vertex write
+ * bit-identical coordinates (a per-cell `center + R * (cos, sin)` left 1-ulp cracks and overlaps).
+ * `latticeColumn`/`latticeRow` are in the pointy-top frame; flat-top hexagons swap the axes.
+ * @internal
+ */
+function getHexLatticeVertexWGSL(isFlatHex: boolean): string {
+  return /* wgsl */ `fn hexLatticeVertex(origin: vec2f, width: f32, latticeColumn: u32, latticeRow: u32, slot: u32) -> vec2f {
   let horizontal = array<i32, 6>(1, 0, -1, -1, 0, 1);
   let vertical = array<i32, 6>(1, 2, 1, -1, -2, -1);
-  let lattice = vec2f(f32(2u * column + (row & 1u)) + f32(horizontal[slot]) + 1.0,
-    f32(3u * row) + f32(vertical[slot]) + 2.0);
+  let lattice = vec2f(f32(2u * latticeColumn + (latticeRow & 1u)) + f32(horizontal[slot]) + 1.0,
+    f32(3u * latticeRow) + f32(vertical[slot]) + 2.0);
   let displacement = lattice * vec2f(0.5 * width, 0.5 * width / 1.7320508);
-  let corner = origin + displacement${isFlatHex ? '.yx' : ''};`;
+  return origin + displacement${isFlatHex ? '.yx' : ''};
+}`;
 }
 
 /** WGSL that tests one convex counter-clockwise cell against even-odd extent rings. @internal */
@@ -619,10 +647,12 @@ function getGridBody(gridType: GPUGridType, writeVertices: boolean, isFlatHex: b
       return gridType === 'point'
         ? body
         : `${body}
-  ${write(`writeVertex(index, 0u, lower);
-  writeVertex(index, 1u, lower + vec2<f32>(w, 0.0));
-  writeVertex(index, 2u, lower + vec2<f32>(w, h));
-  writeVertex(index, 3u, lower + vec2<f32>(0.0, h));`)}`;
+  ${write(`// Every vertex from the lattice expression (as the corner output), so neighbours share bits.
+  let upper = origin + vec2<f32>(f32(column + 1u) * w, f32(row + 1u) * h);
+  writeVertex(index, 0u, lower);
+  writeVertex(index, 1u, vec2<f32>(upper.x, lower.y));
+  writeVertex(index, 2u, upper);
+  writeVertex(index, 3u, vec2<f32>(lower.x, upper.y));`)}`;
     }
     case 'hex':
       if (isFlatHex) {
@@ -630,34 +660,36 @@ function getGridBody(gridType: GPUGridType, writeVertices: boolean, isFlatHex: b
   center = origin + vec2<f32>(circumradius + f32(column) * 1.5 * circumradius,
     0.5 * w + f32(row) * w + select(0.0, 0.5 * w, (column & 1u) == 1u));
   ${write(`for (var corner = 0u; corner < 6u; corner++) {
-    // Flat top: first corner at angle 0, counter-clockwise.
-    let angle = 1.0471976 * f32(corner);
-    writeVertex(index, corner, center + circumradius * vec2<f32>(cos(angle), sin(angle)));
+    // Flat top: first corner at angle 0, counter-clockwise. Pointy-frame slot (7 - corner) % 6 is
+    // that corner after the axis swap.
+    writeVertex(index, corner, hexLatticeVertex(origin, w, row, column, (7u - corner) % 6u));
   }`)}`;
       }
       return `let circumradius = w / SQRT3;
   center = origin + vec2<f32>(0.5 * w + f32(column) * w + shift, circumradius + f32(row) * 1.5 * circumradius);
   ${write(`for (var corner = 0u; corner < 6u; corner++) {
     // Pointy top: first corner at 30 degrees, counter-clockwise.
-    let angle = 0.5235988 + 1.0471976 * f32(corner);
-    writeVertex(index, corner, center + circumradius * vec2<f32>(cos(angle), sin(angle)));
+    writeVertex(index, corner, hexLatticeVertex(origin, w, column, row, corner));
   }`)}`;
     case 'triangle':
+      // Vertices on an integer half-width lattice (odd rows start one half step right), so cells
+      // that share a vertex compute it from the same expression and write the same bits.
       return `let pairIndex = column / 2u;
-  let x0 = origin.x + f32(pairIndex) * w + shift;
+  let half = 0.5 * w;
+  let step = 2u * pairIndex + (row & 1u);
   let y0 = origin.y + f32(row) * h;
-  let y1 = y0 + h;
+  let y1 = origin.y + f32(row + 1u) * h;
   var a: vec2<f32>;
   var b: vec2<f32>;
   var c: vec2<f32>;
   if ((column & 1u) == 0u) {
-    a = vec2<f32>(x0, y0);
-    b = vec2<f32>(x0 + w, y0);
-    c = vec2<f32>(x0 + 0.5 * w, y1);
+    a = vec2<f32>(origin.x + f32(step) * half, y0);
+    b = vec2<f32>(origin.x + f32(step + 2u) * half, y0);
+    c = vec2<f32>(origin.x + f32(step + 1u) * half, y1);
   } else {
-    a = vec2<f32>(x0 + w, y0);
-    b = vec2<f32>(x0 + 1.5 * w, y1);
-    c = vec2<f32>(x0 + 0.5 * w, y1);
+    a = vec2<f32>(origin.x + f32(step + 2u) * half, y0);
+    b = vec2<f32>(origin.x + f32(step + 3u) * half, y1);
+    c = vec2<f32>(origin.x + f32(step + 1u) * half, y1);
   }
   center = (a + b + c) / 3.0;
   ${write(`writeVertex(index, 0u, a);

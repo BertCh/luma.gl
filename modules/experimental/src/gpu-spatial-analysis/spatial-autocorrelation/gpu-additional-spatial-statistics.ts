@@ -16,9 +16,17 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import type {GPUInferenceResultPort, GPUPermutationStatisticAdapter} from '../contracts/index';
-import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {
+  isGPUSpatialWeightsRowStandardized,
+  resolveGPUIslandPolicy,
+  type GPUIslandPolicy,
+  type GPUSpatialWeights,
+  validateGPUSpatialWeights
+} from '../spatial-weights/index';
+import {
+  getSpatialAutocorrelationConstantsWGSL,
   getSpatialAutocorrelationInputNodes,
+  getSpatialWeightsNeighborLoopWGSL,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
@@ -40,35 +48,116 @@ type GPUEdgeAssociationProps = {
 /** Properties for {@link GPULocalGeary}. */
 export type GPULocalGearyProps = {
   id?: string;
+  /**
+   * Square self-join weights. Used as given, except that when `weights.info.transform` is `'row'`
+   * each row is re-standardized over the neighbors that remain after masking. A neighbor is a slot
+   * with a positive weight that points at another included row.
+   */
   weights: GPUSpatialWeights;
   values: GraphDataView<'float32'>;
   parameters: GraphDataView<'float32'>;
   mask?: GraphDataView<'uint32'>;
+  /**
+   * Compile-time. `'exclude'` (default) removes islands from the moments and writes NaN for them;
+   * `'keep'` keeps them in the moments (esda) with a local Geary value of 0. The count is
+   * reported in `globalStatistics[4]`.
+   */
+  islands?: GPUIslandPolicy;
   /** One local Geary value per weights row. */
   result: GPUInferenceResultPort;
+  /** Optional `[n, mean, variance, standardDeviation, islandCount]` used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
 };
 
-/** Local Geary plugs into the shared conditional-permutation contributor. */
+/**
+ * Local Geary plugs into the shared conditional-permutation contributor. Small `c_i` means
+ * similar neighbors (a cluster), so the tail that signals clustering is the lower one:
+ * `'lesser'`.
+ */
 export const GPU_LOCAL_GEARY_PERMUTATION_ADAPTER: GPUPermutationStatisticAdapter = {
   scope: 'local',
   statistic: 'localGeary',
   permutedVariable: 'values',
+  alternative: 'lesser'
+};
+
+/**
+ * Local bivariate Moran (esda `Moran_Local_BV`) runs in `GPULocalPermutationTest` with
+ * `statistic: 'localBivariateMoran'`: the focus keeps `x`, the neighbors' `y` are drawn.
+ */
+export const GPU_LOCAL_BIVARIATE_MORAN_PERMUTATION_ADAPTER: GPUPermutationStatisticAdapter = {
+  scope: 'local',
+  statistic: 'localBivariateMoran',
+  permutedVariable: 'secondValues',
   alternative: 'two-sided'
 };
 
 /**
+ * Local join counts (Anselin and Li 2019; esda `Join_Counts_Local`, `Join_Counts_Local_BV`) run in
+ * `GPULocalPermutationTest` with `statistic: 'localJoinCount'` or `'localBivariateJoinCount'`.
+ * Clustering is more joins than expected, so the tail is `'greater'`.
+ */
+export const GPU_LOCAL_JOIN_COUNT_PERMUTATION_ADAPTER: GPUPermutationStatisticAdapter = {
+  scope: 'local',
+  statistic: 'localJoinCount',
+  permutedVariable: 'values',
+  alternative: 'greater'
+};
+
+/** Bivariate local join counts permute `secondValues` (and the paired `values` of the drawn rows). */
+export const GPU_LOCAL_BIVARIATE_JOIN_COUNT_PERMUTATION_ADAPTER: GPUPermutationStatisticAdapter = {
+  scope: 'local',
+  statistic: 'localBivariateJoinCount',
+  permutedVariable: 'secondValues',
+  alternative: 'greater'
+};
+
+/**
+ * Lee's spatial Pearson (esda `Spatial_Pearson`, `Spatial_Pearson_Local`) runs in
+ * `GPUGlobalPermutationTest` (`statistic: 'leesL'`) and `GPULocalPermutationTest`
+ * (`statistic: 'localLeeL'`). Both permute the rows of `(x, y)` together, so the tests ask whether
+ * the spatial pattern of the pair is unusual given their pairing; esda's own p-value is the
+ * 'directed' one, which is anti-conservative. The default `'two-sided'` is kept.
+ */
+export const GPU_LEES_L_PERMUTATION_ADAPTERS: {
+  global: GPUPermutationStatisticAdapter;
+  local: GPUPermutationStatisticAdapter;
+} = {
+  global: {
+    scope: 'global',
+    statistic: 'leesL',
+    permutedVariable: 'values',
+    alternative: 'two-sided'
+  },
+  local: {
+    scope: 'local',
+    statistic: 'localLeeL',
+    permutedVariable: 'values',
+    alternative: 'two-sided'
+  }
+};
+
+/**
  * Local Geary `c_i = sum_j w_ij (z_i - z_j)^2`, where `z` is standardized by the population
- * variance of all included rows. Islands return zero and excluded rows return NaN. CSR slot order
- * fixes the summation order.
+ * variance of the analysis rows. The sum runs over active neighbors (positive weight, included
+ * row other than `i`); row-standardized weights are re-standardized over the neighbors that remain
+ * after masking. Excluded rows return NaN, as do islands under `islands: 'exclude'` (default);
+ * under `'keep'` an island returns 0. A constant variable (zero variance) returns NaN. CSR slot
+ * order fixes the summation order. There is no analytic classification; use permutation inference
+ * with `GPU_LOCAL_GEARY_PERMUTATION_ADAPTER` (`GPULocalPermutationTest` with `statistic:
+ * 'localGeary'` and its `classes` output gives the positive / negative association classes).
  */
 export class GPULocalGeary implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPULocalGearyProps;
 
+  /** Resolved island policy. */
+  readonly islands: GPUIslandPolicy;
+
   constructor(props: GPULocalGearyProps) {
     this.id = props.id ?? 'local-geary';
     this.props = props;
+    this.islands = resolveGPUIslandPolicy(this.id, props.islands);
     const rows = validateSpatialAutocorrelationInputs({...props, id: this.id});
     validatePackedView(props.result.statistic, ['float32'], `${this.id} result.statistic`);
     if (props.result.statistic.length !== rows) {
@@ -84,6 +173,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
+        props.weights.status?.overflow,
         props.values,
         props.parameters,
         props.mask
@@ -99,6 +189,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       props.weights.offsets,
       props.weights.neighbors,
       props.weights.weights,
+      props.weights.status?.overflow,
       props.values,
       props.parameters,
       props.mask,
@@ -109,6 +200,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
     const inputs = getSpatialAutocorrelationInputNodes(graph, {
       ...props,
       id,
+      islands: this.islands,
       operation: 'GPULocalGeary'
     });
     inputs.nodes.push(
@@ -124,7 +216,9 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
           {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
           {name: 'result', view: props.result.statistic, type: 'f32', access: 'read_write'}
         ],
-        declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}\nconst ROWS: u32 = ${rows}u;\nconst MOMENTS: u32 = ${rows}u;`,
+        declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${getSpatialAutocorrelationConstantsWGSL(rows, props.weights.neighbors.length)}
+const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(props.weights)};`,
         body: `let focus = statistics[statisticsOffset + index];
   if (!isFiniteFloat(focus)) {
     result[resultOffset + index] = getQuietNaN(index);
@@ -132,21 +226,17 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
   }
   let variance = statistics[statisticsOffset + MOMENTS + 2u];
   var sum = 0.0;
-  if (variance > 0.0 && isFiniteFloat(variance)) {
-    let begin = offsets[offsetsOffset + index];
-    let end = offsets[offsetsOffset + index + 1u];
-    for (var slot = begin; slot < end; slot++) {
-      let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor < ROWS && neighbor != index) {
-        let other = statistics[statisticsOffset + neighbor];
-        if (isFiniteFloat(other)) {
-          let difference = focus - other;
-          sum += weights[weightsOffset + slot] * difference * difference / variance;
-        }
-      }
-    }
+  var weightSum = 0.0;
+  ${getSpatialWeightsNeighborLoopWGSL(`let other = statistics[statisticsOffset + neighbor];
+    let difference = focus - other;
+    sum += weight * difference * difference;
+    weightSum += weight;`)}
+  if (STANDARDIZE && weightSum > 0.0) {
+    // Row-standardized weights are divided by what remains of their row sum.
+    sum = sum / weightSum;
   }
-  result[resultOffset + index] = sum;`
+  // A constant variable has no standardized values: the statistic is undefined, not zero.
+  result[resultOffset + index] = select(getQuietNaN(index), sum / variance, variance > 0.0 && isFiniteFloat(variance));`
       })
     );
     return inputs.nodes;
@@ -399,7 +489,7 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
       )
       .replaceAll(
         '%NEIGHBOR_OK%',
-        `neighbor >= ROWS || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])`
+        `neighbor >= ROWS || neighbor == row || !(weights[weightsOffset + slot] > 0.0) || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])`
       )
   });
 }

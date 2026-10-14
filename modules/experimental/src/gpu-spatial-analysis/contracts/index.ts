@@ -41,16 +41,43 @@ export {validateGPUCompactPairPort, validateGPUFeatureGeometryPort} from './port
 export type {
   GPUSpatialContext,
   GPUSpatialContextCompatibility,
+  GPUSpatialContextSupport,
   GPUSpatialCoordinateSpace,
   GPUSpatialEllipsoid,
   GPUSpatialMetric,
-  GPUSpatialUnit
+  GPUSpatialUnit,
+  GPUSpatialFrame,
+  GPUSpatialFrameKind,
+  GPUAreaModel,
+  GPUAreaUnit,
+  GPULengthModel,
+  GPUMeasureDescription
 } from './spatial-context';
 export {
   assertCompatibleGPUSpatialContexts,
   getGPUSpatialContextCompatibility,
-  validateGPUSpatialContext
+  GPU_PLANAR_SPATIAL_CONTEXT,
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  validateGPUSpatialContext,
+  getGPUAreaUnit,
+  getGPUSphereRadius,
+  GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
 } from './spatial-context';
+
+export {
+  GPU_EARTH_AUTHALIC_RADIUS_METERS,
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  GPU_WGS84_FLATTENING,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from './earth';
+
+export type {GPULocalFrame, GPULocalFrameKind, GPULocalFrameProps} from './local-frame';
+
+export {createGPULocalFrame} from './local-frame';
 
 export type {
   GPUSpatialParameterArray,
@@ -123,6 +150,7 @@ export {
 export type {
   GPUCircularStatisticsContract,
   GPUInferenceAlternative,
+  GPUInferenceMetadata,
   GPUInferenceResultPort,
   GPUMultipleTestingMethod,
   GPUOptimizationStatusPort,
@@ -130,3 +158,23 @@ export type {
   GPUPermutationStatisticAdapter,
   GPUSolverStatusPort
 } from './inference';
+export {GPU_DEFAULT_INFERENCE_ALTERNATIVE} from './inference';
+
+export {
+  createGPURegressionModelResult,
+  getGPURegressionPredictorNames,
+  GPU_REGRESSION_PRECISION_CONDITION_LIMIT
+} from './model-result';
+
+export type {
+  GPURegressionModelResult,
+  GPURegressionModelResultInput,
+  GPURegressionModelKind,
+  GPURegressionCoefficient,
+  GPURegressionCoefficientRole,
+  GPURegressionStatisticKind,
+  GPUSigmaSquaredConvention,
+  GPURegressionConditioning,
+  GPURegressionTest,
+  GPURegressionModelStatus
+} from './model-result';

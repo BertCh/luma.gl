@@ -16,6 +16,7 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {GPUSegmentIntersection} from '../segment-intersection/index';
 import type {GPUSpatialJoinLines} from '../spatial-join/index';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUSharedPaths';
 
@@ -71,6 +72,13 @@ export type GPUSharedPathsRuns = {
 export type GPUSharedPathsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'shared-paths'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Left linestrings. */
   left: GPUSpatialJoinLines;
   /** Right linestrings, indexed by a BVH. */
@@ -116,6 +124,8 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSharedPathsProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of left segment slots (vertices). */
   readonly leftVertexCount: number;
   /** Run capacity. */
@@ -125,6 +135,7 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
 
   constructor(props: GPUSharedPathsProps) {
     this.id = props.id ?? 'shared-paths';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {runs} = props;

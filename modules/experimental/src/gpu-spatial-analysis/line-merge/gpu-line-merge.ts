@@ -22,6 +22,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPULineMerge';
 
@@ -56,6 +57,13 @@ export type GPULineMergeOutput = {
 export type GPULineMergeProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-merge'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Vertices of every input linestring, concatenated. */
   positions: GraphDataView<'float32x2'>;
   /** Line-to-vertex offsets with `lineCount + 1` rows (GeoArrow layout). */
@@ -101,11 +109,14 @@ export class GPULineMerge implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineMergeProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of input lines. */
   readonly lineCount: number;
 
   constructor(props: GPULineMergeProps) {
     this.id = props.id ?? 'line-merge';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {output} = props;

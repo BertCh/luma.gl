@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GPUReduction,
@@ -83,6 +84,13 @@ export type GPUGroupConvexHullOutput = {
 export type GPUGroupConvexHullProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'group-convex-hull'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Planar points (fewer than `2^24` rows). Rows with a non-finite coordinate are excluded. */
   positions: GraphDataView<'float32x2'>;
   /** Label per row; labels `>= groupCount` or equal to `noiseLabel` are excluded. */
@@ -143,12 +151,18 @@ export type GPUGroupConvexHullProps = {
  * no longer runs a serial walk over every row. The result is identical for every level count.
  *
  * The contributor never compiles, encodes, submits or reads back.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGroupConvexHullProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of groups. */
   readonly groupCount: number;
   /** Resolved number of parallel prefilter levels. */
@@ -157,6 +171,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   constructor(props: GPUGroupConvexHullProps) {
     this.id = props.id ?? 'group-convex-hull';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
     for (const [name, view] of [

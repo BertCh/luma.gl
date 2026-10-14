@@ -15,6 +15,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {CELL_KEY_WGSL, getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
@@ -141,6 +142,8 @@ export function getCellTopologyStride(
  * search over {@link H3_NEIGHBOR_WGSL} in private arrays, so they are exact across icosahedron
  * faces and pentagons; use `k <= 8`. Everything is integer arithmetic, so results are identical
  * on every device and equal the h3-js and BigInt Quadbin references.
+ *
+ * Consumes cell keys only, so it takes no `spatialContext`.
  */
 export class GPUCellTopology implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -219,6 +222,14 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     const {family, operation, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [props.cells, props.mask, ...Object.values(output)]);
     const rows = props.cells.length;
+    // rows * stride uint32x2 entries in one binding (a k = 2 H3 disk passes 128 MiB near 880k rows).
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'output.cells',
+      rows * stride * 8,
+      'reduce the rows or the disk k'
+    );
     const isH3 = family === 'h3';
     const bindings: WGSLKernelBinding[] = [
       {name: 'cells', view: props.cells, type: 'u32', access: 'read'},

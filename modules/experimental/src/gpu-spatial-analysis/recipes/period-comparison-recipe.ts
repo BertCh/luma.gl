@@ -34,7 +34,11 @@ export type GPUPeriodRows = {
   mask?: GraphDataView<'uint32'>;
 };
 
-/** Column of the comparison that is classified and colored. */
+/**
+ * Column of the comparison that is classified and colored. `'ratio'` and `'percentChange'` are
+ * NaN where the earlier period is 0 (undefined, not 0); NaN rows are skipped by the class breaks
+ * and get the palette's no-data color. `'zScore'` is descriptive, not a significance test.
+ */
 export type GPUPeriodComparisonVariable = 'delta' | 'ratio' | 'percentChange' | 'zScore';
 
 /** Properties for {@link addPeriodComparisonRecipe}. */
@@ -69,9 +73,19 @@ export type GPUPeriodComparisonRecipeProps = GPURecipeOverrides<
   after: GPUPeriodRows;
   /** Compared column. Defaults to `'count'`. */
   measure?: GPUCellTableCompareMeasure;
-  /** Score written to `zScore`. */
+  /**
+   * Score written to `zScore`. Both choices are descriptive scores of the change, not hypothesis
+   * tests: `'poisson'` is `delta / sqrt(before + after)`, a Poisson-difference score, and
+   * `'standardized'` centers the deltas on their mean over the union rows. No multiple-testing
+   * correction applies and a threshold on them is not a significance level; use
+   * `addHotSpotAnalysisRecipe` or `addRateClusterMapRecipe` for inference.
+   */
   zScore?: GPUCellTableCompareZScore;
-  /** Classified column. Defaults to `'delta'`. */
+  /**
+   * Classified column. Defaults to `'delta'`, which is always defined. `'ratio'` and
+   * `'percentChange'` are NaN for cells with a zero earlier value; `'zScore'` is the descriptive
+   * score of `zScore`, not a p-value.
+   */
   classify?: GPUPeriodComparisonVariable;
   /**
    * `getGPUClassBreaksParameterValues` view. A diverging scheme uses edges symmetric about zero
@@ -121,6 +135,13 @@ export type GPUPeriodComparisonRecipeResult = GPURecipeResult & {
  * percent change and z-score) -> `GPUClassBreaks` of the chosen column -> `GPUColorScale`. The
  * compare node's `mask` output marks the unused tail of the capacity-bounded union table so it
  * never reaches the classification (the compare columns of the tail are undefined).
+ *
+ * Undefined values: `ratio` and `percentChange` are NaN where the earlier value is 0. The
+ * `zScore` column is a descriptive Poisson-difference (or standardized-delta) score with no null
+ * distribution or multiple-testing correction; it ranks change magnitude and must not be read as
+ * significance. A zero score for a zero denominator is written by `GPUCellTableCompare` (see its
+ * documentation); with `measure: 'count'` every union cell has `before + after > 0`, so the
+ * Poisson denominator is never zero.
  */
 export function addPeriodComparisonRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,

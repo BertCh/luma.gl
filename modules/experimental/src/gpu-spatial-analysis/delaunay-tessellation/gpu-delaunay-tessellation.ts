@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createTransientView,
   GPUCompaction,
@@ -290,6 +291,92 @@ fn inCircumcircle(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, point: vec2<f32>) ->
   return exact >= 0;
 }`;
 
+/**
+ * Symbolic super vertices. Bowyer-Watson needs a triangle that contains every site, and the old
+ * finite supertriangle (corners at the centre plus or minus 32 extents) dropped real hull
+ * triangles whose circumcircle contained a corner. The three super vertices are now points at
+ * infinity that are never materialized; every predicate that touches one is decided from exact
+ * comparisons of real coordinates.
+ *
+ * Geometry. Super vertex k sits at `c + R_k d_k`, where `c` is any finite centre (it never
+ * affects a sign), and the directions are slightly tilted axis directions with `e` infinitesimal:
+ * `d_0 = (1, -e)` (towards +x), `d_1 = (e, 1)` (towards +y), `d_2 = (-1, -e)` (towards -x). They
+ * positively span the plane, so the super triangle `(S0, S1, S2)` is counter-clockwise and
+ * contains every finite site. The radii grow faster than any polynomial in the earlier ones:
+ * `R_0 >> 1/e` and `R_(k+1) >> R_k^2 / e`. This is a real, finite configuration for small enough
+ * `e` and large enough `R_k`, so the Delaunay triangulation of the sites and the super vertices
+ * is a valid triangulation, and every sign below is the limit of the exact sign in it. Because
+ * `e` is a tie-breaker, the tilt is applied lexicographically: first the axis comparison, then
+ * the tilt term.
+ *
+ * Orientation `orient(x, y, p)` for a real site `p`:
+ * - Two real vertices: exact `orientSign`.
+ * - Real `r` and super `k`: `R_k cross(d_k, p - r)` dominates. For k = 0, 1, 2 the sign is
+ *   `sign(p.y - r.y)` then `sign(p.x - r.x)`; `-sign(p.x - r.x)` then `sign(p.y - r.y)`; and
+ *   `-sign(p.y - r.y)` then `sign(p.x - r.x)`. `p != r`, so it is never zero. Reversing the pair
+ *   negates it.
+ * - Two supers `i`, `j`: `R_i R_j cross(d_i, d_j)`, which is positive exactly when `j = i + 1
+ *   (mod 3)`.
+ *
+ * In-circle `inside(x, y, z, p)` for a counter-clockwise triangle whose farthest super vertex
+ * (highest index) is `z`, with `x`, `y` the other two in counter-clockwise order. A circle through
+ * a point at infinity `z` is the half-plane left of the line `x -> y`, so the test is
+ * `orient(x, y, p) > 0`: the leading term of the in-circle determinant is `|z|^2 orient(x, y, p)`.
+ * - Three supers: `x -> y` is `S0 -> S1`, always positive, so every site is inside.
+ * - Two supers: `orient` has one real vertex and one super, and is never zero.
+ * - One super: `x`, `y` are real. When `p` is exactly on the line `xy` the chord is inside the
+ *   circle for every radius, so `p` is inside iff it lies in the open segment `xy`, decided by
+ *   exact coordinate comparisons.
+ * Hull edges of the real sites therefore get a ghost triangle `(x, y, S)` that a site beyond the
+ * edge destroys, and the real hull triangles are never lost to a super vertex.
+ */
+const SYMBOLIC_SUPER_WGSL = /* wgsl */ `
+fn compareCoordinates(a: f32, b: f32) -> i32 {
+  return select(select(0, -1, a < b), 1, a > b);
+}
+// Sign of orient(r, S_k, p): the tilted direction d_k decides, axis comparison first.
+fn orientRealSuper(r: vec2<f32>, superIndex: u32, p: vec2<f32>) -> i32 {
+  let dx = compareCoordinates(p.x, r.x);
+  let dy = compareCoordinates(p.y, r.y);
+  if (superIndex == 0u) { return select(dx, dy, dy != 0); }
+  if (superIndex == 1u) { return select(dy, -dx, dx != 0); }
+  return select(dx, -dy, dy != 0);
+}
+// Sign of orient(point(a), point(b), point(p)) for a real site p; a and b may be super vertices.
+fn orientSymbolic(a: u32, b: u32, p: u32) -> i32 {
+  let point = pointAt(p);
+  if (a < POINT_COUNT && b < POINT_COUNT) { return orientSign(pointAt(a), pointAt(b), point); }
+  if (a < POINT_COUNT) { return orientRealSuper(pointAt(a), b - POINT_COUNT, point); }
+  if (b < POINT_COUNT) { return -orientRealSuper(pointAt(b), a - POINT_COUNT, point); }
+  return select(-1, 1, b - POINT_COUNT == (a - POINT_COUNT + 1u) % 3u);
+}`;
+
+const SYMBOLIC_INCIRCLE_WGSL = /* wgsl */ `
+// p is collinear with a and b: strictly inside the chord, exact comparisons only.
+fn isInsideOpenSegment(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> bool {
+  if (a.x != b.x) { return p.x > min(a.x, b.x) && p.x < max(a.x, b.x); }
+  return p.y > min(a.y, b.y) && p.y < max(a.y, b.y);
+}
+// True when site pRow is inside or on the circumcircle of the counter-clockwise triangle, with
+// super vertices handled symbolically (see SYMBOLIC_SUPER_WGSL).
+fn isInsideCircumcircle(v0: u32, v1: u32, v2: u32, pRow: u32) -> bool {
+  var rows = array<u32, 3>(v0, v1, v2);
+  var farthestSlot = 3u;
+  for (var slot = 0u; slot < 3u; slot++) {
+    if (rows[slot] >= POINT_COUNT && (farthestSlot == 3u || rows[slot] > rows[farthestSlot])) {
+      farthestSlot = slot;
+    }
+  }
+  if (farthestSlot == 3u) {
+    return inCircumcircle(pointAt(v0), pointAt(v1), pointAt(v2), pointAt(pRow));
+  }
+  let x = rows[(farthestSlot + 1u) % 3u];
+  let y = rows[(farthestSlot + 2u) % 3u];
+  let side = orientSymbolic(x, y, pRow);
+  if (side != 0) { return side > 0; }
+  return isInsideOpenSegment(pointAt(x), pointAt(y), pointAt(pRow));
+}`;
+
 /** Bounded Delaunay triangles and their exact completeness status. */
 export type GPUDelaunayTessellationOutput = {
   /** Counter-clockwise triples of input point indices. */
@@ -304,6 +391,13 @@ export type GPUDelaunayTessellationOutput = {
 export type GPUDelaunayTessellationProps = {
   /** Prefix for generated nodes and transients. Defaults to `'delaunay-tessellation'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed finite planar point coordinates. */
   positions: GraphDataView<'float32x2'>;
   /** Caller-owned bounded output. */
@@ -328,17 +422,32 @@ export function getDelaunayMaximumTriangleCount(pointCount: number): number {
  * incircle tests are adaptive exact, so near-degenerate input cannot break the topology. The output is
  * capacity bounded, but `status.requiredCount` always reports the exact final triangle count.
  *
+ * The triangulation starts from a super triangle whose three vertices are symbolic points at
+ * infinity (in the +x, +y and -x directions), not finite coordinates. Every orientation or
+ * incircle test that touches one reduces to exact comparisons of real coordinates, so the hull
+ * triangles whose circumcircle would contain a finite super vertex are never lost: the output is
+ * the complete Delaunay triangulation of the sites, `2n - 2 - h` triangles for `n` distinct sites
+ * with `h` points on the convex hull boundary. Triangles that touch a super vertex are discarded
+ * and only all-real triangles are emitted.
+ *
  * This contributor deliberately accepts one packed point set: partitioned inputs must select seam
  * ownership before tessellation, because independently triangulated halos do not define a global
  * Delaunay complex.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUDelaunayTessellationProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUDelaunayTessellationProps) {
     this.id = props.id ?? 'delaunay-tessellation';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
@@ -395,7 +504,6 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
       'uint32',
       scratchTriangleCapacity
     );
-    const bounds = createTransientView(graph, `${id}-bounds`, 'float32', 4);
     const duplicateFlags = createTransientView(
       graph,
       `${id}-duplicate-flags`,
@@ -438,7 +546,9 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
       output.duplicateCount ?? createTransientView(graph, `${id}-duplicate-count`, 'uint32', 1);
     const sharedDeclarations = getDelaunayCoreWGSL({pointCount, scratchTriangleCapacity});
     const cavityDeclarations = `${sharedDeclarations}
-${ADAPTIVE_INCIRCLE_WGSL}`;
+${EXACT_ORIENTATION_WGSL}
+${ADAPTIVE_INCIRCLE_WGSL}
+${SYMBOLIC_INCIRCLE_WGSL}`;
     const orientationDeclarations = `${sharedDeclarations}
 ${EXACT_ORIENTATION_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -540,24 +650,15 @@ fn coordinateKey(value: f32) -> u32 {
         operation: OPERATION,
         variant: 'initialize-supertriangle',
         bindings: [
-          {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-          {name: 'bounds', view: bounds, type: 'f32', access: 'read_write'},
           {name: 'triangles', view: trianglesA, type: 'u32', access: 'read_write'},
           {name: 'state', view: state, type: 'u32', access: 'read_write'},
           {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read'}
         ],
         invocationCount: 1,
         declarations: `const POINT_COUNT: u32 = ${pointCount}u;`,
-        body: `if (POINT_COUNT == 0u) { return; }
-  var minimum = vec2<f32>(positions[positionsOffset], positions[positionsOffset + 1u]);
-  var maximum = minimum;
-  for (var row = 1u; row < POINT_COUNT; row++) {
-    let point = vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
-    minimum = min(minimum, point); maximum = max(maximum, point);
-  }
-  bounds[boundsOffset] = minimum.x; bounds[boundsOffset + 1u] = minimum.y;
-  bounds[boundsOffset + 2u] = maximum.x; bounds[boundsOffset + 3u] = maximum.y;
-  if (POINT_COUNT >= 3u && invalidCount[invalidCountOffset] == 0u) {
+        // The super triangle (S0, S1, S2) is symbolic: its vertices are rows POINT_COUNT..+2 with no
+        // coordinates, and every predicate on them is exact (see SYMBOLIC_SUPER_WGSL).
+        body: `if (POINT_COUNT >= 3u && invalidCount[invalidCountOffset] == 0u) {
     triangles[trianglesOffset] = POINT_COUNT;
     triangles[trianglesOffset + 1u] = POINT_COUNT + 1u;
     triangles[trianglesOffset + 2u] = POINT_COUNT + 2u;
@@ -577,7 +678,6 @@ fn coordinateKey(value: f32) -> u32 {
           variant: 'parallel-cavity-classification',
           bindings: [
             {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-            {name: 'bounds', view: bounds, type: 'f32', access: 'read'},
             {name: 'triangles', view: sourceTriangles, type: 'u32', access: 'read'},
             {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
             {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read'},
@@ -589,11 +689,7 @@ fn coordinateKey(value: f32) -> u32 {
           body: `var bad = false;
   let insertionRow = atomicLoad(&state[stateOffset + 3u]);
   if (index < atomicLoad(&state[stateOffset]) && atomicLoad(&state[stateOffset + 1u]) == 0u && duplicateFlags[duplicateFlagsOffset + insertionRow] == 0u) {
-    let point = pointAt(insertionRow);
-    let a = pointAt(triangleVertex(index, 0u));
-    let b = pointAt(triangleVertex(index, 1u));
-    let c = pointAt(triangleVertex(index, 2u));
-    bad = inCircumcircle(a, b, c, point);
+    bad = isInsideCircumcircle(triangleVertex(index, 0u), triangleVertex(index, 1u), triangleVertex(index, 2u), insertionRow);
   }
   badFlags[badFlagsOffset + index] = select(0u, 1u, bad);
   if (bad) {
@@ -608,7 +704,6 @@ fn coordinateKey(value: f32) -> u32 {
           variant: 'parallel-cavity-boundary',
           bindings: [
             {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-            {name: 'bounds', view: bounds, type: 'f32', access: 'read'},
             {name: 'triangles', view: sourceTriangles, type: 'u32', access: 'read'},
             {name: 'state', view: state, type: 'u32', access: 'read'},
             {name: 'badFlags', view: badFlags, type: 'u32', access: 'read'},
@@ -635,7 +730,7 @@ fn coordinateKey(value: f32) -> u32 {
       }
     }
     // Exact: an edge collinear with the site would create a zero-area triangle.
-    boundary = boundary && orientSign(pointAt(a), pointAt(b), pointAt(insertionRow)) != 0;
+    boundary = boundary && orientSymbolic(a, b, insertionRow) != 0;
   }
   boundaryFlags[boundaryFlagsOffset + index] = select(0u, 1u, boundary);`
         }),
@@ -645,7 +740,6 @@ fn coordinateKey(value: f32) -> u32 {
           variant: 'stable-topology-rebuild',
           bindings: [
             {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-            {name: 'bounds', view: bounds, type: 'f32', access: 'read'},
             {name: 'triangles', view: sourceTriangles, type: 'u32', access: 'read'},
             {name: 'trianglesOut', view: destinationTriangles, type: 'u32', access: 'read_write'},
             {name: 'state', view: state, type: 'u32', access: 'read_write'},
@@ -701,7 +795,7 @@ ${REBUILD_SCAN_WGSL}`,
       let edge = candidate % 3u;
       var a = triangleVertex(triangle, edge);
       var b = triangleVertex(triangle, (edge + 1u) % 3u);
-      if (orientSign(pointAt(a), pointAt(b), pointAt(insertionRow)) < 0) {
+      if (orientSymbolic(a, b, insertionRow) < 0) {
         let swap = a; a = b; b = swap;
       }
       let destinationBase = trianglesOutOffset + 4u * slot;
@@ -817,19 +911,12 @@ function getDelaunayCoreWGSL(options: {
   return /* wgsl */ `
 const POINT_COUNT: u32 = ${options.pointCount}u;
 const SCRATCH_TRIANGLE_CAPACITY: u32 = ${options.scratchTriangleCapacity}u;
+// Real sites only: rows at or above POINT_COUNT are symbolic super vertices with no coordinates.
 fn pointAt(row: u32) -> vec2<f32> {
-  if (row < POINT_COUNT) {
-    return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
-  }
-  let minimum = vec2<f32>(bounds[boundsOffset], bounds[boundsOffset + 1u]);
-  let maximum = vec2<f32>(bounds[boundsOffset + 2u], bounds[boundsOffset + 3u]);
-  let center = 0.5 * (minimum + maximum);
-  let scale = max(max(maximum.x - minimum.x, maximum.y - minimum.y), 1.0);
-  if (row == POINT_COUNT) { return center + vec2<f32>(-32.0 * scale, -2.0 * scale); }
-  if (row == POINT_COUNT + 1u) { return center + vec2<f32>(32.0 * scale, -2.0 * scale); }
-  return center + vec2<f32>(0.0, 32.0 * scale);
+  return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
 fn triangleVertex(triangle: u32, vertex: u32) -> u32 {
   return triangles[trianglesOffset + 4u * triangle + vertex];
-}`;
+}
+${SYMBOLIC_SUPER_WGSL}`;
 }

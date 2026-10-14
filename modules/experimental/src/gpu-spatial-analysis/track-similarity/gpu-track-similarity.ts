@@ -11,6 +11,12 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+import {
+  getTrajectoryGeodesicRadius,
+  resolveTrajectorySpatialContext
+} from '../trajectory-analysis/trajectory-spatial-context';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
@@ -25,16 +31,15 @@ const MAXIMUM_FRECHET_VERTICES = 2048;
 const MAXIMUM_DENSIFY_SUBDIVISIONS = 4096;
 
 /**
- * WGSL: squared distance from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
+ * WGSL: metric value (squared planar distance, or great-circle meters) from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
  * Taha-Hanbury early break against `worst` and a rotating start (`hint`, updated to the nearest
  * segment found). Returns a value at most `worst` as soon as the point cannot raise the maximum.
  */
 function getDirectedPolylineSource(side: 'A' | 'B'): string {
-  return `// Squared distance from a point to polyline ${side}; may stop early once it is at most worst.
+  return `// Metric value (squared distance, or meters on the sphere) from a point to polyline ${side}; may stop early once it is at most worst.
 fn distanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, worst: f32, hint: ptr<function, u32>) -> f32 {
   if (count == 1u) {
-    let offset = point - load${side}(start);
-    return dot(offset, offset);
+    return pointMetric(point, load${side}(start));
   }
   let segments = count - 1u;
   var nearest = 3.402823466e+38;
@@ -43,7 +48,7 @@ fn distanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, worst: f3
   for (var step = 0u; step < segments; step++) {
     var j = first + step;
     if (j >= segments) { j -= segments; }
-    let squared = pointSegmentSquared(point, load${side}(start + j), load${side}(start + j + 1u));
+    let squared = pointSegmentMetric(point, load${side}(start + j), load${side}(start + j + 1u));
     if (squared < nearest) {
       nearest = squared;
       *hint = j;
@@ -56,11 +61,10 @@ fn distanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, worst: f3
 fn cooperativeDistanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, lane: u32) -> f32 {
   var nearest = 3.402823466e+38;
   if (count == 1u) {
-    let offset = point - load${side}(start);
-    return dot(offset, offset);
+    return pointMetric(point, load${side}(start));
   }
   for (var j = lane; j + 1u < count; j += WORKGROUP_SIZE) {
-    nearest = min(nearest, pointSegmentSquared(point, load${side}(start + j), load${side}(start + j + 1u)));
+    nearest = min(nearest, pointSegmentMetric(point, load${side}(start + j), load${side}(start + j + 1u)));
   }
   return nearest;
 }`;
@@ -117,6 +121,20 @@ export const GPU_TRACK_SIMILARITY_STATUS = {
 export type GPUTrackSimilarityProps = {
   /** Prefix for generated node IDs. Defaults to `'track-similarity'`. */
   id?: string;
+  /**
+   * Coordinate space of both vertex sets. Native planar (the default): distances are Euclidean in
+   * the f32 input coordinates. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`:
+   * vertices are `[longitude, latitude]` degrees and every distance (Hausdorff, Frechet and
+   * `maxDistance`) is a great-circle distance in meters on a sphere of `sphereRadius` (default
+   * `GPU_EARTH_MEAN_RADIUS_METERS`). Segments are straight in longitude/latitude (the edge model of
+   * the rest of the package): the point-to-segment distance is the haversine distance to the
+   * closest point of the segment, with the closest point found in the local equirectangular frame
+   * of the point, which is exact to first order for segments of kilometers; densify longer
+   * segments (see `densify`). Densified points interpolate longitude and latitude linearly with the
+   * longitude difference wrapped to +-180, so tracks may cross the antimeridian. Kilometers and
+   * other metrics throw.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar vertices of the first track set, sorted by track. */
   positionsA: GraphDataView<'float32x2'>;
   /** `trackCountA + 1` monotonic vertex offsets of the first set. */
@@ -150,7 +168,8 @@ export type GPUTrackSimilarityProps = {
    * `frechet_distance(a, b, densify)`: every segment is split into `round(1 / densify)` equal
    * parts and the extra points join the vertices (Hausdorff samples them, Frechet couples them).
    * 0 or undefined disables it. Compile-time, because it sets the subdivision count of the kernels
-   * and the densified track lengths; must be 0 or in `[1 / 4096, 1]`.
+   * and the densified track lengths; must be 0 or in `[1 / 4096, 1]`. In a great-circle context
+   * the extra points are linear in longitude/latitude (wrapped across the antimeridian).
    */
   densify?: number;
   /**
@@ -172,7 +191,10 @@ export type GPUTrackSimilarityProps = {
  * minimum over monotone couplings of the largest coupled distance between (densified) vertices.
  * `maxDistance` is the largest vertex-to-vertex distance (Sedona `ST_MaxDistance`). Polygon
  * boundaries are the open ring sequences with the repeated closing vertex, so Frechet is
- * orientation and start sensitive. Planar distances only, computed in the f32 input coordinates.
+ * orientation and start sensitive. Distances are planar in the f32 input coordinates by default,
+ * or great-circle meters with a `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
+ * `spatialContext` (see {@link GPUTrackSimilarityProps.spatialContext}); the planar kernels contain
+ * no geodesic code.
  *
  * Composition: one status kernel, then one workgroup per pair per requested measure. Hausdorff and
  * `maxDistance` use 64 lanes that stride over vertices and reduce with a workgroup max tree
@@ -189,6 +211,10 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTrackSimilarityProps;
+  /** Resolved coordinate context: native planar, or longitude-latitude with the great-circle metric. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Sphere radius in meters of a great-circle context, `undefined` for planar. */
+  readonly sphereRadius: number | undefined;
   /** Resolved Frechet vertex cap. */
   readonly maxFrechetVertices: number;
   /** Resolved subdivisions per segment, `round(1 / densify)`, 1 without densify. */
@@ -198,6 +224,8 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     this.id = props.id ?? 'track-similarity';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
+    this.sphereRadius = getTrajectoryGeodesicRadius(this.spatialContext);
     validatePackedView(props.positionsA, ['float32x2'], `${id} positionsA`);
     validatePackedUint32View(props.offsetsA, `${id} offsetsA`);
     if (props.offsetsA.length < 2) {
@@ -390,23 +418,50 @@ fn densifiedPointA(start: u32, count: u32, k: u32) -> vec2<f32> {
   let segment = k / DENSIFY;
   let subStep = k - segment * DENSIFY;
   if (subStep == 0u || segment + 1u >= count) { return loadA(start + min(segment, count - 1u)); }
-  let from0 = loadA(start + segment);
-  return from0 + (loadA(start + segment + 1u) - from0) * (f32(subStep) / f32(DENSIFY));
+  return interpolatePoint(loadA(start + segment), loadA(start + segment + 1u), f32(subStep) / f32(DENSIFY));
 }
 fn densifiedPointB(start: u32, count: u32, k: u32) -> vec2<f32> {
   let segment = k / DENSIFY;
   let subStep = k - segment * DENSIFY;
   if (subStep == 0u || segment + 1u >= count) { return loadB(start + min(segment, count - 1u)); }
-  let from0 = loadB(start + segment);
-  return from0 + (loadB(start + segment + 1u) - from0) * (f32(subStep) / f32(DENSIFY));
+  return interpolatePoint(loadB(start + segment), loadB(start + segment + 1u), f32(subStep) / f32(DENSIFY));
 }
-fn pointSegmentSquared(point: vec2<f32>, from0: vec2<f32>, to0: vec2<f32>) -> f32 {
+${
+  this.sphereRadius === undefined
+    ? `fn pointMetric(a: vec2<f32>, b: vec2<f32>) -> f32 {
+  let offset = a - b;
+  return dot(offset, offset);
+}
+fn finishMetric(value: f32) -> f32 {
+  return sqrt(value);
+}
+fn interpolatePoint(from0: vec2<f32>, to0: vec2<f32>, fraction: f32) -> vec2<f32> {
+  return from0 + (to0 - from0) * fraction;
+}
+fn pointSegmentMetric(point: vec2<f32>, from0: vec2<f32>, to0: vec2<f32>) -> f32 {
   let edge = to0 - from0;
   let lengthSquared = dot(edge, edge);
   var t = 0.0;
   if (lengthSquared > 0.0) { t = clamp(dot(point - from0, edge) / lengthSquared, 0.0, 1.0); }
   let offset = point - (from0 + edge * t);
   return dot(offset, offset);
+}`
+    : `${GEODESIC_WGSL}
+const SPHERE_RADIUS: f32 = ${this.sphereRadius};
+fn pointMetric(a: vec2<f32>, b: vec2<f32>) -> f32 {
+  return geodesicHaversineDistance(a, b, SPHERE_RADIUS);
+}
+fn finishMetric(value: f32) -> f32 {
+  return value;
+}
+// Linear in longitude/latitude with the longitude difference wrapped across the antimeridian.
+fn interpolatePoint(from0: vec2<f32>, to0: vec2<f32>, fraction: f32) -> vec2<f32> {
+  return from0 + vec2<f32>(geodesicWrapLongitudeDelta(to0.x - from0.x), to0.y - from0.y) * fraction;
+}
+fn pointSegmentMetric(point: vec2<f32>, from0: vec2<f32>, to0: vec2<f32>) -> f32 {
+  let t = geodesicSegmentFraction(point, from0, to0);
+  return geodesicSegmentDistance(point, from0, to0, t, SPHERE_RADIUS);
+}`
 }`;
 
     if (props.hausdorff) {
@@ -455,7 +510,7 @@ ${getDirectedPolylineSource('B')}`,
     workgroupBarrier();
   }
   if (lane == 0u && pair < PAIR_COUNT) {
-    distances[distancesOffset + pair] = select(sqrt(partials[0]), notANumber, skipped);
+    distances[distancesOffset + pair] = select(finishMetric(partials[0]), notANumber, skipped);
   }`
         })
       );
@@ -483,16 +538,14 @@ ${trackHelpers}`,
     for (var i = lane; i < countA; i += WORKGROUP_SIZE) {
       let point = loadA(startA + i);
       for (var j = 0u; j < countB; j++) {
-        let offset = point - loadB(startB + j);
-        farthest = max(farthest, dot(offset, offset));
+        farthest = max(farthest, pointMetric(point, loadB(startB + j)));
       }
     }
   } else {
     for (var j = lane; j < countB; j += WORKGROUP_SIZE) {
       let point = loadB(startB + j);
       for (var i = 0u; i < countA; i++) {
-        let offset = point - loadA(startA + i);
-        farthest = max(farthest, dot(offset, offset));
+        farthest = max(farthest, pointMetric(point, loadA(startA + i)));
       }
     }
   }
@@ -503,7 +556,7 @@ ${trackHelpers}`,
     workgroupBarrier();
   }
   if (lane == 0u && pair < PAIR_COUNT) {
-    distances[distancesOffset + pair] = select(sqrt(partials[0]), notANumber, skipped);
+    distances[distancesOffset + pair] = select(finishMetric(partials[0]), notANumber, skipped);
   }`
         })
       );
@@ -528,15 +581,12 @@ var<workgroup> boundaryRow: array<f32, ${this.maxFrechetVertices}>;
 var<workgroup> sharedLongCount: u32;
 var<workgroup> sharedShortCount: u32;
 ${trackHelpers}
-// Squared distance between densified vertex rowLong of the longer track and rowShort of the other.
+// Metric value between densified vertex rowLong of the longer track and rowShort of the other.
 fn coupledSquared(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u32, rowLong: u32, rowShort: u32) -> f32 {
-  var offset = vec2<f32>(0.0);
   if (swapped) {
-    offset = densifiedPointB(startB, countB, rowLong) - densifiedPointA(startA, countA, rowShort);
-  } else {
-    offset = densifiedPointA(startA, countA, rowLong) - densifiedPointB(startB, countB, rowShort);
+    return pointMetric(densifiedPointB(startB, countB, rowLong), densifiedPointA(startA, countA, rowShort));
   }
-  return dot(offset, offset);
+  return pointMetric(densifiedPointA(startA, countA, rowLong), densifiedPointB(startB, countB, rowShort));
 }`,
           // The longer (densified) track runs along the lanes in strips of LANES rows; the dynamic
           // program sweeps each strip by anti-diagonals and hands its last row to the next strip
@@ -601,7 +651,7 @@ fn coupledSquared(swapped: bool, startA: u32, countA: u32, startB: u32, countB: 
     }
   }
   if (!skipped && longCount > 0u && lane == (longCount - 1u) % LANES) {
-    distances[distancesOffset + pair] = sqrt(finalValue);
+    distances[distancesOffset + pair] = finishMetric(finalValue);
   } else if (skipped && lane == 0u && pair < PAIR_COUNT) {
     distances[distancesOffset + pair] = notANumber;
   }`

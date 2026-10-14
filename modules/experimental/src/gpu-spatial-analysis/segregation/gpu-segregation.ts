@@ -19,6 +19,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {GET_NAN_WGSL} from '../../utils/wgsl-common';
 import {getGPUSegregationLayout} from './segregation-layout';
 
 const OPERATION = 'GPUSegregation';
@@ -126,12 +127,18 @@ export type GPUSegregationProps = {
  *   (PySAL `Isolation`, `Interaction`; Lieberson). `xPx_g + sum_{h != g} xPy_gh = 1`.
  * - Atkinson of group `g` (PySAL `Atkinson`, parameter `b`):
  *   `A_g = 1 - P_g / (1 - P_g) * | sum_i (1 - pi_ig)^(1 - b) pi_ig^b t_i / (P_g T) |^(1 / (1 - b))`.
- * Indices that are undefined (empty total, a group with zero or all of the population, `E = 0`,
- * `I = 0`) are written as 0.
+ * Indices that are undefined are written as NaN, never 0 (0 means perfectly even): H and the
+ * diversity `E` with an empty total (H also with `E = 0`, a single present group), D with an empty
+ * total or `I = 0`, `D_g` and `A_g` for a group with zero or all of the population (or an empty
+ * total), and isolation / interaction of a group that has no population. The diversity `E` is 0,
+ * a defined value, when only one group is present.
  *
  * Local indices (optional `local` outputs) are the per-unit terms of these sums, so they add up to
  * the global index of the same scale: environment composition, local entropy, and the unit
- * contributions to `D_g` and to H. Multiscale: one global result per scale, from the aspatial
+ * contributions to `D_g` and to H. A unit whose environment is empty (no population in it or its
+ * neighbors) has no composition: all its local values are NaN and it contributes nothing to the
+ * global sums, so sum local values with a NaN-skipping sum to reproduce the globals. The unit
+ * contributions to `D_g` and H are also NaN when that global index is undefined. Multiscale: one global result per scale, from the aspatial
  * scale through growing bandwidths, shows at which distance the segregation arises.
  *
  * Algorithm: one fused pass over each CSR for the environments (this does not compose
@@ -143,7 +150,17 @@ export type GPUSegregationProps = {
  * materialized, so the sums cost one read of the environment instead of a write and a read of
  * `(2 + 2K + K^2)` columns. Cost per scale is O(nonzeros * K + units * K^2).
  * Precision is float32: indices are sums over units, so expect about 1e-5 relative error against
- * a float64 reference for moderate populations.
+ * a float64 reference for moderate populations. Counts and totals are float32, so integer
+ * populations are exact only up to 2^24 (16,777,216) in total; above that the totals `T` and
+ * `X_m` round and shares carry a relative error near 6e-8 per addition.
+ *
+ * Small-sample bias. The indices are computed from the observed counts and are not bias
+ * corrected: `D` and `H` are biased upward when units are small (few people per unit), because
+ * sampling noise alone makes unit compositions differ from the global one even when people are
+ * assigned to units at random (Cortese, Falk and Cohen 1976; Winship 1977; Carrington and Troske
+ * 1997). Compare units of similar size, or against a random-allocation null, before reading small
+ * `D` / `H` values as segregation; the isolation and interaction indices are less affected but
+ * depend on the group share. Permutation / bootstrap inference is not part of this operator.
  */
 export class GPUSegregation implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -249,7 +266,8 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     const termCount = 2 + 2 * K + K * K;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    const declarations = `const UNITS: u32 = ${unitCount}u;
+    const declarations = `${GET_NAN_WGSL}
+const UNITS: u32 = ${unitCount}u;
 const K: u32 = ${K}u;
 const TERM_COUNT: u32 = ${termCount}u;
 const ATKINSON_B: f32 = ${getWGSLFloatLiteral(b)};
@@ -538,7 +556,8 @@ fn getDiversity() -> f32 {
           declarations: reductionDeclarations(termCount, environmentDeclarations),
           body: `let lane = localInvocationIndex;
   let group = (index - lane) / LANES;
-  if (index < UNITS) {
+  // A unit whose environment is empty has no composition: it contributes nothing to any sum.
+  if (index < UNITS && environmentTotal[environmentTotalOffset + index] > 0.0) {
     let unitPopulation = unitTotal(index);
     var entropy = 0.0;
     var absolute = 0.0;
@@ -589,27 +608,39 @@ fn getDiversity() -> f32 {
             invocationCount: unitCount,
             declarations: environmentDeclarations,
             body: `let unitPopulation = unitTotal(index);
+  // An empty environment has no composition, so every local value of the unit is NaN.
+  let hasEnvironment = environmentTotal[environmentTotalOffset + index] > 0.0;
   let populationTotal = totals[totalsOffset + K];
   let diversity = getDiversity();
   var entropy = 0.0;
   for (var group = 0u; group < K; group++) {
     let share = getShare(index, group);
     entropy += entropyTerm(share);
-    ${local.environment ? `localEnvironment[localEnvironmentOffset + (${scaleIndex}u * UNITS + index) * K + group] = share;` : ''}
+    ${
+      local.environment
+        ? `localEnvironment[localEnvironmentOffset + (${scaleIndex}u * UNITS + index) * K + group] =
+      select(getNaN(), share, hasEnvironment);`
+        : ''
+    }
     ${
       local.dissimilarity
         ? `let populationShare = getPopulationShare(group);
     let scale = 2.0 * populationTotal * populationShare * (1.0 - populationShare);
     localDissimilarity[localDissimilarityOffset + (${scaleIndex}u * UNITS + index) * K + group] =
-      select(0.0, unitPopulation * abs(share - populationShare) / scale, scale > 0.0);`
+      select(getNaN(), unitPopulation * abs(share - populationShare) / scale, scale > 0.0 && hasEnvironment);`
         : ''
     }
   }
-  ${local.entropy ? `localEntropy[localEntropyOffset + ${scaleIndex}u * UNITS + index] = entropy;` : ''}
+  ${
+    local.entropy
+      ? `localEntropy[localEntropyOffset + ${scaleIndex}u * UNITS + index] =
+    select(getNaN(), entropy, hasEnvironment);`
+      : ''
+  }
   ${
     local.theil
       ? `localTheil[localTheilOffset + ${scaleIndex}u * UNITS + index] =
-    select(0.0, unitPopulation * (diversity - entropy) / (diversity * populationTotal), diversity > 0.0 && populationTotal > 0.0);`
+    select(getNaN(), unitPopulation * (diversity - entropy) / (diversity * populationTotal), diversity > 0.0 && populationTotal > 0.0 && hasEnvironment);`
       : ''
   }`
           })
@@ -628,7 +659,8 @@ fn getDiversity() -> f32 {
           {name: 'indices', view: indices, type: 'f32', access: 'read_write'}
         ],
         invocationCount: scales.length,
-        declarations: `const K: u32 = ${K}u;
+        declarations: `${GET_NAN_WGSL}
+const K: u32 = ${K}u;
 const TERM_COUNT: u32 = ${termCount}u;
 const STRIDE: u32 = ${layout.stride}u;
 const ATKINSON_B: f32 = ${getWGSLFloatLiteral(b)};
@@ -647,23 +679,23 @@ fn entropyTerm(share: f32) -> f32 {
   }
   let hasPopulation = populationTotal > 0.0;
   indices[indicesOffset + base + ${layout.entropy}u] = select(
-    0.0, 1.0 - allSums[allSumsOffset + sums] / (diversity * populationTotal), hasPopulation && diversity > 0.0);
+    getNaN(), 1.0 - allSums[allSumsOffset + sums] / (diversity * populationTotal), hasPopulation && diversity > 0.0);
   indices[indicesOffset + base + ${layout.multiGroupDissimilarity}u] = select(
-    0.0, allSums[allSumsOffset + sums + 1u] / (2.0 * populationTotal * variance), hasPopulation && variance > 0.0);
-  indices[indicesOffset + base + ${layout.diversity}u] = diversity;
+    getNaN(), allSums[allSumsOffset + sums + 1u] / (2.0 * populationTotal * variance), hasPopulation && variance > 0.0);
+  indices[indicesOffset + base + ${layout.diversity}u] = select(getNaN(), diversity, hasPopulation);
   for (var group = 0u; group < K; group++) {
     let groupTotal = allTotals[allTotalsOffset + index * (K + 1u) + group];
     let share = select(0.0, groupTotal / populationTotal, hasPopulation);
     let isMixed = hasPopulation && share > 0.0 && share < 1.0;
     let spread = 2.0 * populationTotal * share * (1.0 - share);
     indices[indicesOffset + base + ${layout.dissimilarity}u + group] = select(
-      0.0, allSums[allSumsOffset + sums + 2u + group] / spread, isMixed);
+      getNaN(), allSums[allSumsOffset + sums + 2u + group] / spread, isMixed);
     let ratio = abs(allSums[allSumsOffset + sums + 2u + K + group] / max(share * populationTotal, 1e-30));
     let atkinson = 1.0 - share / (1.0 - share) * pow(ratio, 1.0 / (1.0 - ATKINSON_B));
-    indices[indicesOffset + base + ${layout.atkinson}u + group] = select(0.0, atkinson, isMixed);
+    indices[indicesOffset + base + ${layout.atkinson}u + group] = select(getNaN(), atkinson, isMixed);
     for (var other = 0u; other < K; other++) {
       let exposure = allSums[allSumsOffset + sums + 2u + 2u * K + group * K + other];
-      let value = select(0.0, exposure / groupTotal, groupTotal > 0.0);
+      let value = select(getNaN(), exposure / groupTotal, groupTotal > 0.0);
       indices[indicesOffset + base + ${layout.interaction}u + group * K + other] = value;
       if (other == group) {
         indices[indicesOffset + base + ${layout.isolation}u + group] = value;

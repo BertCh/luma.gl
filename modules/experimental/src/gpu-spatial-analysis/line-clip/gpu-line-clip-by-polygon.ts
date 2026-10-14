@@ -20,6 +20,7 @@ import {GPUPointInPolygonJoin, GPU_SPATIAL_JOIN_NO_FEATURE} from '../spatial-joi
 import type {GPUSpatialJoinLines, GPUSpatialJoinPolygons} from '../spatial-join/index';
 import type {GPULineSplitPieces} from '../line-split/index';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPULineClipByPolygon';
 
@@ -43,6 +44,13 @@ const FLAG_VALID = 4;
 export type GPULineClipByPolygonProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-clip-by-polygon'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Linestrings to clip. */
   lines: GPUSpatialJoinLines;
   /**
@@ -112,6 +120,8 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineClipByPolygonProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of vertices (segment slots) of the input lines. */
   readonly vertexCount: number;
   /** Number of input linestrings. */
@@ -125,6 +135,7 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
 
   constructor(props: GPULineClipByPolygonProps) {
     this.id = props.id ?? 'line-clip-by-polygon';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {lines, polygons, pieces} = props;

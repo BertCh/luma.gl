@@ -17,10 +17,23 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {validateGPUSpatialContext, type GPUSpatialContext} from '../contracts/index';
+import {
+  createFillNode,
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
+import type {GPUStatusScalar} from '../contracts/index';
+import {
+  getGPUAreaUnit,
+  validateGPUSpatialContext,
+  type GPUAreaModel,
+  type GPULengthModel,
+  type GPUMeasureDescription,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {createSortedSegmentOffsetsNode} from '../../utils/sorted-segment-offsets';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from './geodesic-wgsl';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
 import {COOPERATIVE_RING_ROWS} from './feature-measures-cooperative';
 import {
   createFeatureMeasuresNode,
@@ -75,8 +88,8 @@ export type GPUGeometryMeasuresGroupOutput = Omit<GPUGeometryMeasuresOutput, 'ex
  * Properties for {@link GPUGeometryMeasures}.
  *
  * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
- * feature and group counts, `geometryType`, `coordinateSystem`, `radius`, `holeRule`, and which
- * outputs are present.
+ * feature and group counts, `geometryType`, `spatialContext`, `ellipsoidalEdgeModel`, `holeRule`,
+ * and which outputs are present.
  */
 export type GPUGeometryMeasuresProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-measures'`. */
@@ -84,8 +97,8 @@ export type GPUGeometryMeasuresProps = {
   /** Coordinate, metric and output-unit contract of the geometry. */
   spatialContext: GPUSpatialContext;
   /**
-   * Packed vertex positions: planar coordinates, or longitude/latitude degrees for `'spherical'`
-   * `'wgs84'` and `'geodesic'`.
+   * Packed vertex positions: planar coordinates, or longitude/latitude degrees for geographic
+   * contexts.
    */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -107,16 +120,10 @@ export type GPUGeometryMeasuresProps = {
    */
   featureRingOffsets?: GraphDataView<'uint32'>;
   /**
-   * `'planar'` (default): Euclidean lengths and shoelace areas in position units.
-   * `'spherical'`: haversine lengths and Chamberlain-Duquette areas on a sphere of `radius`.
-   * `'wgs84'`: Vincenty edge lengths on the WGS84 ellipsoid (Lambert's formula where Vincenty does
-   * not converge) and areas on the WGS84 authalic sphere.
-   * `'geodesic'`: the same lengths and perimeters (geodesic edges on the WGS84 ellipsoid), and
-   * polygon areas whose edges follow geodesics too, as `pyproj.Geod.geometry_area_perimeter`
-   * and GeographicLib. Edges of 20 km or more are sampled along the geodesic (see
-   * {@link GPUGeometryMeasures}); centroids still use straight edges of the equal-area projection.
+   * Ellipsoidal polygon-edge interpretation, for `metric: 'ellipsoidal'` contexts only. Defaults to
+   * `'geodesic'`: edges of 20 km or more follow geodesics, as `pyproj.Geod.geometry_area_perimeter`.
+   * `'coordinate-linear'`: straight edges in the equal-area mapping of the WGS84 authalic sphere.
    */
-  /** Ellipsoidal polygon-edge interpretation. Defaults to geodesic edges. */
   ellipsoidalEdgeModel?: 'coordinate-linear' | 'geodesic';
   /**
    * How rings of one polygon feature combine. `'winding'` (default) sums signed ring areas, so
@@ -139,6 +146,13 @@ export type GPUGeometryMeasuresProps = {
   groupCount?: number;
   /** Per-group outputs. Requires `groupIds`. */
   groupOutput?: GPUGeometryMeasuresGroupOutput;
+  /**
+   * Optional status. `invalidCount` receives the exact number of polygon features rejected because
+   * a ring encloses a pole or has an edge spanning 180 degrees of longitude (geographic contexts).
+   * Rejected features report NaN `areas`, `signedAreas` and `centroids`; lengths, bounds and
+   * vertex counts stay valid. Written every encoding.
+   */
+  status?: {invalidCount?: GPUStatusScalar};
 };
 
 /**
@@ -166,14 +180,28 @@ export type GPUGeometryMeasuresProps = {
  * and the radius by the authalic radius (exact equal-area mapping of the ellipsoid). Polygon
  * centroids are area-weighted in the same projection; line centroids are length-weighted
  * longitude/latitude midpoints. Rings that enclose a pole or span 180 degrees of longitude per
- * edge are not supported.
+ * edge have no well-defined interior: they are detected (see **Invalid geographic polygons**),
+ * not measured.
+ *
+ * **Invalid geographic polygons.** Longitude steps are wrapped per edge, so a ring that crosses
+ * the antimeridian (an edge with a longitude difference above 180 degrees, such as Fiji's
+ * 179 to -179) is measured correctly. A ring whose wrapped steps sum to +-360 degrees encloses a
+ * pole, and an edge whose wrapped step reaches 180 degrees (or whose raw step is a full 360)
+ * is ambiguous; features owning such a ring report NaN area and centroid and are counted in
+ * `status.invalidCount`. Split such polygons at the antimeridian or project them first.
+ *
+ * **Measure model.** {@link GPUGeometryMeasures.measures} describes the length and area models and
+ * units of the outputs (planar: native units; geographic: meters and square meters unless the
+ * context asks for kilometers on a sphere).
  *
  * **Groups.** Features are stably sorted by group ID; one workgroup per group reduces its
  * features with a fixed tree (bitwise reproducible). Group centroids are the area- or
- * length-weighted mean of feature centroids; geographic group centroids average longitudes
- * naively and are wrong for groups straddling the antimeridian.
+ * length-weighted mean of feature centroids. Geographic group centroids are the weighted mean of
+ * the feature centroids as 3D unit vectors (a spherical centroid, correct across the
+ * antimeridian); an antipodal group with no mean direction reports NaN. Planar groups are
+ * unchanged. A group that contains an invalid feature reports NaN area and centroid.
  *
- * **Geodesic areas.** `coordinateSystem: 'geodesic'` replaces every edge of 20 km or more by its
+ * **Geodesic areas.** An `'ellipsoidal'` context with the default `ellipsoidalEdgeModel` replaces every edge of 20 km or more by its
  * geodesic, sampled with Vincenty's direct solution at the ends and midpoint of spans of at most
  * 250 km (at most 16 spans) and summed as a chord plus its exact parabolic-segment bulge, in the
  * same equal-area coordinates (local origin) as `'wgs84'`, so the f32 sum never subtracts two
@@ -196,7 +224,9 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Number of features. */
   readonly featureCount: number;
-  /** Resolved coordinate system. */
+  /** Machine-readable length and area models and units of the outputs. */
+  readonly measures: GPUMeasureDescription;
+  /** Internal kernel model resolved from `spatialContext`; not a prop. */
   readonly coordinateSystem: GPUGeometryCoordinateSystem;
   /** Resolved hole rule. */
   readonly holeRule: GPUGeometryHoleRule;
@@ -215,12 +245,13 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       this.spatialContext,
       props.ellipsoidalEdgeModel
     );
+    this.measures = describeGeometryMeasures(this.coordinateSystem, this.spatialContext);
     this.holeRule = props.holeRule ?? 'winding';
     this.radius =
       this.spatialContext.sphereRadius ??
       (this.spatialContext.units === 'kilometers'
-        ? GPU_GEODESIC_MEAN_EARTH_RADIUS / 1000
-        : GPU_GEODESIC_MEAN_EARTH_RADIUS);
+        ? GPU_EARTH_MEAN_RADIUS_METERS / 1000
+        : GPU_EARTH_MEAN_RADIUS_METERS);
     this.cooperativeRingRows = props.cooperativeRingRows ?? COOPERATIVE_RING_ROWS;
     const {id} = this;
     const output = props.output ?? {};
@@ -283,12 +314,19 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     } else if (hasGroupOutput) {
       throw new Error(`${id} groupOutput requires groupIds`);
     }
+    const invalidCount = props.status?.invalidCount;
+    if (invalidCount) {
+      validatePackedUint32View(invalidCount, `${id} status.invalidCount`);
+      if (invalidCount.length < 1) {
+        throw new Error(`${id} status.invalidCount must contain one uint32 row`);
+      }
+    }
     if (!Object.values(output).some(Boolean) && !hasGroupOutput) {
       throw new Error(`${id} requires at least one output column`);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [...Object.values(output), ...Object.values(groupOutput)],
+      [...Object.values(output), ...Object.values(groupOutput), invalidCount],
       [props.positions, props.ringOffsets, props.featureRingOffsets, props.groupIds]
     );
   }
@@ -308,6 +346,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       props.ringOffsets,
       props.featureRingOffsets,
       props.groupIds,
+      props.status?.invalidCount,
       ...Object.values(output),
       ...Object.values(groupOutput)
     ]);
@@ -332,6 +371,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       radius: this.radius,
       featureStats
     };
+    const invalidCount = props.status?.invalidCount;
     // Rings of at most the threshold can never make a feature cooperative.
     const hasCooperativeFeatures =
       this.cooperativeRingRows > 0 && props.positions.length > this.cooperativeRingRows;
@@ -349,6 +389,18 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
           cooperative: true,
           cooperativeRingRows: this.cooperativeRingRows
         })
+      );
+    }
+    if (invalidCount) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-clear-invalid-count`,
+          operation: OPERATION,
+          view: invalidCount,
+          type: 'u32',
+          value: '0u'
+        }),
+        createInvalidCountNode<Parameters>(graph, id, featureCount, featureStats, invalidCount)
       );
     }
     if (Object.values(output).some(Boolean)) {
@@ -431,6 +483,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
         operation: OPERATION,
         isPolygon: this.props.geometryType === 'polygons',
         isPoint: this.props.geometryType === 'points',
+        isGeographic: this.coordinateSystem !== 'planar',
         groupCount,
         sortedIndices,
         groupOffsets,
@@ -446,6 +499,55 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       })
     ];
   }
+}
+
+function describeGeometryMeasures(
+  coordinateSystem: GPUGeometryCoordinateSystem,
+  spatialContext: GPUSpatialContext
+): GPUMeasureDescription {
+  const areaModels: Record<GPUGeometryCoordinateSystem, GPUAreaModel> = {
+    planar: 'planar',
+    spherical: 'sphere-equal-area',
+    wgs84: 'wgs84-authalic',
+    geodesic: 'geodesic'
+  };
+  const lengthModels: Record<GPUGeometryCoordinateSystem, GPULengthModel> = {
+    planar: 'planar',
+    spherical: 'great-circle',
+    wgs84: 'ellipsoidal-geodesic',
+    geodesic: 'ellipsoidal-geodesic'
+  };
+  const lengthUnits = coordinateSystem === 'planar' ? 'native' : (spatialContext.units ?? 'meters');
+  return {
+    lengthModel: lengthModels[coordinateSystem],
+    areaModel: areaModels[coordinateSystem],
+    lengthUnits,
+    areaUnits: getGPUAreaUnit(lengthUnits)
+  };
+}
+
+function createInvalidCountNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  featureCount: number,
+  featureStats: GraphDataView<'uint32'>,
+  invalidCount: GPUStatusScalar
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'featureStats', view: featureStats, type: 'u32', access: 'read'},
+    {name: 'invalidCount', view: invalidCount, type: 'atomic<u32>', access: 'read_write'}
+  ];
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: `${id}-invalid-count`,
+    operation: OPERATION,
+    variant: 'invalid-count',
+    bindings,
+    invocationCount: featureCount,
+    declarations: `const STATS_STRIDE: u32 = ${GEOMETRY_STATS_STRIDE}u;`,
+    body: `if (featureStats[featureStatsOffset + index * STATS_STRIDE + 15u] > 0u) {
+    atomicAdd(&invalidCount[invalidCountOffset], 1u);
+  }`
+  });
 }
 
 function resolveGeometryMeasureCoordinateSystem(

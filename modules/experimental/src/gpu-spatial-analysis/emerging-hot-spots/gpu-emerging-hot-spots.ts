@@ -20,6 +20,13 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
+import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/inference';
+import {
+  GPUMultipleTestingAdjustment,
+  GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
+  resolveGPUMultipleTestingMethod
+} from '../multiple-testing/index';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
@@ -50,8 +57,9 @@ const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
  *
  * Per-frame (no rebuild or recompile): the contents of `values`, `mask`, `weights` and `parameters`
  * (radius in lattice mode, temporal window, critical z, trend significance and persistence
- * thresholds). Compile-time: `gridWidth`, `gridHeight`, `sliceCount`, `maximumRadius`,
- * `selfWeight`, the value format, and which optional views are present.
+ * thresholds, minimum trend length, confidence level). Compile-time: `gridWidth`, `gridHeight`,
+ * `sliceCount`, `maximumRadius`, `selfWeight`, `multipleTesting`, `finalSlice`, the value format,
+ * and which optional views are present.
  */
 export type GPUEmergingHotSpotsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'emerging-hot-spots'`. */
@@ -96,19 +104,53 @@ export type GPUEmergingHotSpotsProps = {
    * `getGPUEmergingHotSpotParameterValues`.
    */
   parameters: GraphDataView<'float32'>;
+  /**
+   * Compile-time multiple-testing correction of the per-bin hot and cold decision. Defaults to
+   * `'benjamini-hochberg'` (ESRI applies FDR in emerging hot spot analysis; it was uncorrected).
+   *
+   * The two-sided normal p-value of every valid Gi* bin is adjusted over the whole family of valid
+   * bins of the cube (never a display mask), and a bin is hot or cold when its adjusted p-value is
+   * at most `1 - confidenceLevel`, with the sign of z. Bins within a temporal window overlap and
+   * neighboring cells share observations, so the tests are dependent: `'benjamini-yekutieli'` is
+   * the method that controls the false discovery rate under arbitrary dependence, at a cost in
+   * power of about `ln m`. `'none'` reproduces the pre-correction rule `|z| >= criticalZ` exactly
+   * and is the only method that accepts the `criticalZ` parameter. The family size is limited to
+   * fewer than 2^24 bins unless `'none'` is used without `pValues` and `adjustedPValues`.
+   */
+  multipleTesting?: GPUMultipleTestingMethod;
+  /**
+   * Compile-time. How the cell's final slice is chosen. `'require'` (default): the final slice is
+   * the last slice of the cube, and a cell whose last slice is missing (NaN) gets
+   * `GPU_EMERGING_HOT_SPOT_CATEGORIES.UNDETERMINED`. `'last-valid'`: the final slice is the last
+   * finite one, so a stale cell can be labelled New or Persistent for a period it has no data in
+   * (the previous behavior).
+   */
+  finalSlice?: 'require' | 'last-valid';
   /** Caller-owned per-bin Gi* z-scores in cube layout; NaN for missing bins. */
   giZScores: GraphDataView<'float32'>;
+  /** Optional caller-owned per-bin two-sided normal p-value of the Gi* z, cube layout, NaN for missing bins. */
+  pValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned per-bin `multipleTesting`-adjusted p-value in cube layout; NaN for
+   * missing bins. Equals `pValues` for `'none'`.
+   */
+  adjustedPValues?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned per-cell index of the last finite slice, or
+   * `GPU_EMERGING_HOT_SPOT_NO_SLICE` (`0xffffffff`) for a cell without any.
+   */
+  lastValidSlice?: GraphDataView<'uint32'>;
   /** Caller-owned per-cell Mann-Kendall z of the Gi* series (continuity corrected). */
   trendZ: GraphDataView<'float32'>;
   /** Caller-owned per-cell two-sided Mann-Kendall p-value. */
   trendP: GraphDataView<'float32'>;
   /** Caller-owned per-cell Mann-Kendall statistic `S`, an exact integer. */
   trendS: GraphDataView<'sint32'>;
-  /** Caller-owned per-cell category code from `GPU_EMERGING_HOT_SPOT_CATEGORIES`. */
+  /** Caller-owned per-cell category code from `GPU_EMERGING_HOT_SPOT_CATEGORIES` (0 to 17). */
   category: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell count of significant hot slices (`z >= criticalZ`). */
+  /** Caller-owned per-cell count of significant hot slices (`z > 0` and adjusted p at most `1 - confidenceLevel`). */
   hotSliceCount: GraphDataView<'uint32'>;
-  /** Caller-owned per-cell count of significant cold slices (`z <= -criticalZ`). */
+  /** Caller-owned per-cell count of significant cold slices (`z < 0` and adjusted p at most `1 - confidenceLevel`). */
   coldSliceCount: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation]` of the valid bins. */
   globalStatistics?: GraphDataView<'float32'>;
@@ -137,12 +179,17 @@ export type GPUEmergingHotSpotsProps = {
  *    groups of exactly equal f32 values, `z = (S - sign(S)) / sqrt(Var)` (0 when `S = 0` or
  *    `Var <= 0`), and the two-sided p-value `erfc(|z| / sqrt(2))` with the Numerical Recipes
  *    `erfcc` Chebyshev fit (relative error below 1.2e-7); `p = 1` when `Var <= 0`.
- * 4. Classification into the 17 {@link GPU_EMERGING_HOT_SPOT_CATEGORIES}.
+ * 3b. Between 2 and 3: two-sided normal p-values `erfc(|z| / sqrt(2))` of every valid Gi* bin,
+ *    adjusted by {@link GPUMultipleTestingAdjustment} over all valid bins (`multipleTesting`).
+ * 4. Classification into the 17 {@link GPU_EMERGING_HOT_SPOT_CATEGORIES} plus `UNDETERMINED`.
  *
- * Classification rules, evaluated on the finite z series (NaN slices skipped; the "final slice" is
- * the last finite one). A slice is hot when `z >= criticalZ` and cold when `z <= -criticalZ`; `N` is
- * the finite slice count, `H` and `C` the hot and cold counts, and "90%" is
- * `persistentFraction * N`. The trend is significant when `trendP <= trendSignificanceLevel`.
+ * Classification rules, evaluated on the finite z series (NaN slices skipped). A slice is hot when
+ * its adjusted p-value is at most `1 - confidenceLevel` and `z > 0`, and cold with `z < 0`
+ * (without a correction, `multipleTesting: 'none'`, hot is `z >= criticalZ` and cold
+ * `z <= -criticalZ`, the same two-sided critical values). `N` is the finite slice count, `H` and
+ * `C` the hot and cold counts, and "90%" is `persistentFraction * N`. The trend is significant
+ * when `trendP <= trendSignificanceLevel`. The final slice is the last slice of the cube
+ * (`finalSlice: 'require'`, default) or the last finite one (`'last-valid'`).
  * The final slice picks the track, then rules apply in order:
  * - Final slice hot: New (`H = 1`), Consecutive (trailing hot run of at least 2, `H` equal to the
  *   run, `H < 90%`), Intensifying / Diminishing / Persistent (`H >= 90%`, significant upward /
@@ -157,22 +204,54 @@ export type GPUEmergingHotSpotsProps = {
  * its earlier slices were hot; mixed hot and cold history without a significant final slice has
  * no pattern.
  *
+ * Undetermined cells (`UNDETERMINED`, 17): with `finalSlice: 'require'`, a cell with at least one
+ * finite slice whose last slice is missing; and a cell that is persistent in one direction
+ * (the Intensifying / Persistent / Diminishing branches) but has fewer finite slices than
+ * `minimumTrendSliceCount` (default 10, ESRI guidance), because its trend class would rest on a
+ * Mann-Kendall test that is not supported by enough data. Such cells have NaN `trendZ` and
+ * `trendP`. They are never silently reported as Persistent. Cells without any finite slice are
+ * `NO_PATTERN`.
+ *
+ * Statistical caveats. Consecutive Gi* z values share `temporalWindow` slices, so the series is
+ * serially correlated and the Mann-Kendall p-value is anti-conservative (ESRI has the same
+ * property); `trendSignificanceLevel` is a screening threshold, not an error rate. Bins within a
+ * temporal window overlap and neighboring cells share observations, so the per-bin tests are
+ * dependent: Benjamini-Hochberg is only guaranteed under positive dependence, and
+ * `'benjamini-yekutieli'` is the method that is valid under arbitrary dependence.
+ *
+ * Legend contract: category codes never change meaning with `multipleTesting`, `confidenceLevel`
+ * or `finalSlice`; those options only change which bins count as hot or cold and which cells are
+ * undetermined. Use {@link GPUEmergingHotSpots.getInferenceMetadata} to label the legend.
+ *
  * Determinism: all sums run in a fixed order and integer statistics are exact, so repeated
  * encodings on one device are bitwise identical.
  *
- * Non-goals: permutation p-values, FDR correction, building the weights, time-step intervals
- * other than one slice.
+ * Non-goals: permutation p-values, building the weights, and time-step intervals other than one
+ * slice per cube column (aggregate to the interval before building the cube, as the space-time
+ * hot spots recipe does).
  */
 export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUEmergingHotSpotsProps;
+  /** Resolved correction method (`'benjamini-hochberg'` when the prop is omitted). */
+  readonly multipleTesting: GPUMultipleTestingMethod;
+  /** Resolved final slice rule (`'require'` when the prop is omitted). */
+  readonly finalSlice: 'require' | 'last-valid';
 
   constructor(props: GPUEmergingHotSpotsProps) {
     this.id = props.id ?? 'emerging-hot-spots';
     this.props = props;
     const id = this.id;
+    this.multipleTesting = resolveGPUMultipleTestingMethod(
+      id,
+      props.multipleTesting ?? 'benjamini-hochberg'
+    );
+    this.finalSlice = props.finalSlice ?? 'require';
+    if (this.finalSlice !== 'require' && this.finalSlice !== 'last-valid') {
+      throw new Error(`${id} finalSlice must be 'require' or 'last-valid'`);
+    }
     const {gridWidth, gridHeight, sliceCount} = props;
     const hasLattice = gridWidth !== undefined || gridHeight !== undefined;
     if (hasLattice === (props.weights !== undefined)) {
@@ -236,6 +315,30 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     if (props.giZScores.length !== binCount) {
       throw new Error(`${id} giZScores length must equal values length`);
     }
+    for (const [name, view] of [
+      ['pValues', props.pValues],
+      ['adjustedPValues', props.adjustedPValues]
+    ] as const) {
+      if (view) {
+        validatePackedView(view, ['float32'], `${id} ${name}`);
+        if (view.length !== binCount) {
+          throw new Error(`${id} ${name} length must equal values length`);
+        }
+      }
+    }
+    if (
+      (this.multipleTesting !== 'none' || props.pValues || props.adjustedPValues) &&
+      binCount >= GPU_MULTIPLE_TESTING_MAXIMUM_ROWS
+    ) {
+      // The adjustment ranks bins as exact f32 integers.
+      throw new Error(`${id} multiple testing needs fewer than 2^24 bins`);
+    }
+    if (props.lastValidSlice) {
+      validatePackedUint32View(props.lastValidSlice, `${id} lastValidSlice`);
+      if (props.lastValidSlice.length !== cellCount) {
+        throw new Error(`${id} lastValidSlice length must equal the cell count`);
+      }
+    }
     validatePackedView(props.trendZ, ['float32'], `${id} trendZ`);
     validatePackedView(props.trendP, ['float32'], `${id} trendP`);
     validatePackedView(props.trendS, ['sint32'], `${id} trendS`);
@@ -266,6 +369,9 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       id,
       [
         props.giZScores,
+        props.pValues,
+        props.adjustedPValues,
+        props.lastValidSlice,
         props.trendZ,
         props.trendP,
         props.trendS,
@@ -283,6 +389,20 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         props.weights?.weights
       ]
     );
+  }
+
+  /**
+   * CPU-side description of the inference behind the hot and cold bins, for building a legend.
+   * `significanceLevel` is omitted: the confidence level is a per-frame parameter
+   * (`1 - confidenceLevel`, default 0.05), so the caller that writes it knows it.
+   */
+  getInferenceMetadata(): GPUInferenceMetadata {
+    return {
+      alternative: 'two-sided',
+      permutationCount: 0,
+      multipleTesting: this.multipleTesting,
+      testedRowsDefinition: 'valid space-time bins'
+    };
   }
 
   /** Returns the emerging-hot-spot nodes in dependency order. */
@@ -304,12 +424,20 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       giZScores,
       props.trendZ,
       props.trendP,
+      props.pValues,
+      props.adjustedPValues,
+      props.lastValidSlice,
       props.trendS,
       props.category,
       props.hotSliceCount,
       props.coldSliceCount,
       props.globalStatistics
     ]);
+    const {finalSlice, multipleTesting} = this;
+    // Without a correction the classifier compares z with the critical z and needs no p-values.
+    const usesAdjustment = multipleTesting !== 'none';
+    const needsPValues =
+      usesAdjustment || props.pValues !== undefined || props.adjustedPValues !== undefined;
     const maximumRadius = props.maximumRadius ?? 4;
     const cellCount = weights ? weights.offsets.length - 1 : gridWidth * gridHeight;
     const binCount = cellCount * sliceCount;
@@ -502,6 +630,44 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
     }
     giZScores[giZScoresOffset + cell * SLICE_COUNT + slice] = zScore;
   }`;
+    const pValues =
+      props.pValues ??
+      (needsPValues
+        ? createTransientView(graph, `${id}-p-values`, 'float32', binCount)
+        : undefined);
+    const adjustedPValues =
+      props.adjustedPValues ??
+      (needsPValues
+        ? createTransientView(graph, `${id}-adjusted-p-values`, 'float32', binCount)
+        : undefined);
+    // Two-sided normal p-value of every valid Gi* bin, then the correction over all valid bins.
+    const getPValueNodes = (): GPUCommandNode<Parameters>[] => [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-p-values`,
+        operation: OPERATION,
+        variant: 'two-sided-p-values',
+        bindings: [
+          {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
+          {name: 'pValues', view: pValues!, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: binCount,
+        declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${ERFC_VALUE_WGSL}`,
+        body: `let zScore = giZScores[giZScoresOffset + index];
+  // erfc(|z| / sqrt(2)); NaN z (missing bin) stays NaN and is excluded from the family.
+  pValues[pValuesOffset + index] = select(
+    getQuietNaN(index),
+    min(erfcValue(abs(zScore) * 0.7071067811865476), 1.0),
+    isFiniteFloat(zScore)
+  );`
+      }),
+      ...new GPUMultipleTestingAdjustment({
+        id: `${id}-adjustment`,
+        pValues: pValues!,
+        method: multipleTesting,
+        adjustedPValues: adjustedPValues!
+      }).getCommandNodes(graph)
+    ];
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     nodes.push(
@@ -691,6 +857,54 @@ var<workgroup> instantWeight: array<f32, ${GI_WORKGROUP_SIZE}>;
 var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
         body: giBody
       }),
+      ...(needsPValues ? getPValueNodes() : []),
+      // Hot and cold slice counts and the last finite slice, per cell. A separate pass keeps the
+      // Mann-Kendall kernel within the storage buffer limit.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-slice-counts`,
+        operation: OPERATION,
+        variant: 'slice-counts',
+        bindings: [
+          parametersBinding,
+          {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
+          ...(usesAdjustment
+            ? [
+                {
+                  name: 'adjustedPValues',
+                  view: adjustedPValues!,
+                  type: 'f32',
+                  access: 'read'
+                } satisfies WGSLKernelBinding
+              ]
+            : []),
+          {name: 'hotSliceCount', view: props.hotSliceCount, type: 'u32', access: 'read_write'},
+          {name: 'coldSliceCount', view: props.coldSliceCount, type: 'u32', access: 'read_write'},
+          ...(props.lastValidSlice
+            ? [
+                {
+                  name: 'lastValidSlice',
+                  view: props.lastValidSlice,
+                  type: 'u32',
+                  access: 'read_write'
+                } satisfies WGSLKernelBinding
+              ]
+            : [])
+        ],
+        invocationCount: cellCount,
+        declarations: `const SLICE_COUNT: u32 = ${sliceCount}u;
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${getSliceStateWGSL(usesAdjustment)}`,
+        body: `let base = index * SLICE_COUNT;
+  ${getSliceCountingWGSL({
+    valueExpression: 'giZScores[giZScoresOffset + base + slice]',
+    adjustedExpression: 'adjustedPValues[adjustedPValuesOffset + base + slice]',
+    usesAdjustment,
+    collectSeries: false
+  })}
+  hotSliceCount[hotSliceCountOffset + index] = hot;
+  coldSliceCount[coldSliceCountOffset + index] = cold;
+  ${props.lastValidSlice ? 'lastValidSlice[lastValidSliceOffset + index] = lastValid;' : ''}`
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-mann-kendall`,
         operation: OPERATION,
@@ -698,6 +912,16 @@ var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
         bindings: [
           parametersBinding,
           {name: 'giZScores', view: giZScores, type: 'f32', access: 'read'},
+          ...(usesAdjustment
+            ? [
+                {
+                  name: 'adjustedPValues',
+                  view: adjustedPValues!,
+                  type: 'f32',
+                  access: 'read'
+                } satisfies WGSLKernelBinding
+              ]
+            : []),
           {
             name: 'trendZ',
             view: props.trendZ,
@@ -714,18 +938,6 @@ var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
             name: 'trendS',
             view: props.trendS,
             type: 'i32',
-            access: 'read_write'
-          },
-          {
-            name: 'hotSliceCount',
-            view: props.hotSliceCount,
-            type: 'u32',
-            access: 'read_write'
-          },
-          {
-            name: 'coldSliceCount',
-            view: props.coldSliceCount,
-            type: 'u32',
             access: 'read_write'
           },
           {
@@ -753,9 +965,11 @@ var<workgroup> partialTieTerms: array<u32, ${MANN_KENDALL_WORKGROUP_SIZE}>;
 var<workgroup> sharedSeries: array<f32, ${sliceCount}>;
 var<workgroup> tieCandidates: array<u32, ${sliceCount}>;
 var<workgroup> equalBeforeBits: array<atomic<u32>, ${Math.ceil(sliceCount / 32)}>;
-${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${getSliceStateWGSL(usesAdjustment)}`
           : `const SLICE_COUNT: u32 = ${sliceCount}u;
-${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
+${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+${getSliceStateWGSL(usesAdjustment)}`,
         body: cooperativeMannKendall
           ? `let cell = index / MANN_KENDALL_LANES;
   let lane = localInvocationIndex;
@@ -812,27 +1026,88 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
     workgroupBarrier();
   }
   if (lane == 0u && isActiveCell) {
-  let criticalZ = parameters[parametersOffset + 2u];
-  let trendLevel = parameters[parametersOffset + 3u];
-  let fraction = parameters[parametersOffset + 4u];
   let statistic = partialStatistics[0];
   let tieTerm = partialTieTerms[0];
+  ${getSliceCountingWGSL({
+    valueExpression: 'sharedSeries[slice]',
+    adjustedExpression: 'adjustedPValues[adjustedPValuesOffset + base + slice]',
+    usesAdjustment,
+    collectSeries: false
+  })}
+  ${getClassificationWGSL({cellName: 'cell', finalSlice})}
+  }`
+          : getSerialMannKendallBody({sliceCount, usesAdjustment, finalSlice})
+      })
+    );
+    return nodes;
+  }
+}
+
+/**
+ * WGSL `getSliceState`: 1 for a hot bin, 2 for a cold bin, 0 otherwise. Without a correction it
+ * compares z with the critical z (the pre-correction behavior); with one, a bin is hot or cold
+ * when its adjusted p-value is at most the significance level, with the sign of z.
+ */
+function getSliceStateWGSL(usesAdjustment: boolean): string {
+  return usesAdjustment
+    ? `fn getSliceState(z: f32, adjustedP: f32, level: f32) -> u32 {
+  if (adjustedP <= level) {
+    if (z > 0.0) {
+      return 1u;
+    }
+    if (z < 0.0) {
+      return 2u;
+    }
+  }
+  return 0u;
+}`
+    : `fn getSliceState(z: f32, criticalZ: f32) -> u32 {
+  if (z >= criticalZ) {
+    return 1u;
+  }
+  if (z <= -criticalZ) {
+    return 2u;
+  }
+  return 0u;
+}`;
+}
+
+/**
+ * WGSL pass over one cell's slices that declares `valid`, `hot`, `cold`, `trailingHot`,
+ * `trailingCold`, `finalState` and `lastValid` (the last finite slice, `0xffffffff` for none), and
+ * `series` when `collectSeries` is set. Reads the parameters it needs itself.
+ */
+function getSliceCountingWGSL(options: {
+  valueExpression: string;
+  adjustedExpression: string;
+  usesAdjustment: boolean;
+  collectSeries: boolean;
+}): string {
+  const state = options.usesAdjustment
+    ? `getSliceState(value, ${options.adjustedExpression}, significanceLevel)`
+    : 'getSliceState(value, criticalZ)';
+  return /* wgsl */ `let criticalZ = parameters[parametersOffset + 2u];
+  let significanceLevel = parameters[parametersOffset + 6u];
   var valid = 0u;
   var hot = 0u;
   var cold = 0u;
   var trailingHot = 0u;
   var trailingCold = 0u;
   var finalState = 0u;
+  var lastValid = 0xffffffffu;
   for (var slice = 0u; slice < SLICE_COUNT; slice++) {
-    let value = sharedSeries[slice];
+    let value = ${options.valueExpression};
     if (isFiniteFloat(value)) {
+      ${options.collectSeries ? 'series[valid] = value;' : ''}
       valid++;
-      if (value >= criticalZ) {
+      lastValid = slice;
+      let state = ${state};
+      if (state == 1u) {
         hot++;
         trailingHot++;
         trailingCold = 0u;
         finalState = 1u;
-      } else if (value <= -criticalZ) {
+      } else if (state == 2u) {
         cold++;
         trailingCold++;
         trailingHot = 0u;
@@ -843,7 +1118,24 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
         finalState = 0u;
       }
     }
-  }
+  }`;
+}
+
+/**
+ * WGSL tail shared by both Mann-Kendall paths: from `statistic`, `tieTerm` and the slice counts it
+ * writes the trend outputs, the slice counts and the category. See {@link GPUEmergingHotSpots} for
+ * the rules; `UNDETERMINED` (17) replaces Intensifying/Persistent/Diminishing for cells with fewer
+ * than `minimumTrendSliceCount` finite slices, and every pattern of a cell whose last slice is
+ * missing when `finalSlice` is `'require'`.
+ */
+function getClassificationWGSL(options: {
+  cellName: string;
+  finalSlice: 'require' | 'last-valid';
+}): string {
+  const {cellName} = options;
+  return /* wgsl */ `let trendLevel = parameters[parametersOffset + 3u];
+  let fraction = parameters[parametersOffset + 4u];
+  let minimumTrendSliceCount = parameters[parametersOffset + 5u];
   var numerator = 0u;
   if (valid >= 2u) {
     numerator = valid * (valid - 1u) * (2u * valid + 5u) - tieTerm;
@@ -859,11 +1151,15 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
     }
     trendPValue = getTwoSidedPValue(trendZScore);
   }
-  trendZ[trendZOffset + cell] = trendZScore;
-  trendP[trendPOffset + cell] = trendPValue;
-  trendS[trendSOffset + cell] = statistic;
-  hotSliceCount[hotSliceCountOffset + cell] = hot;
-  coldSliceCount[coldSliceCountOffset + cell] = cold;
+  // Too few finite slices for a Mann-Kendall decision: no trend z or p, and no trend category.
+  let isTrendKnown = f32(valid) >= minimumTrendSliceCount;
+  if (!isTrendKnown) {
+    trendZScore = getQuietNaN(${cellName});
+    trendPValue = getQuietNaN(${cellName});
+  }
+  trendZ[trendZOffset + ${cellName}] = trendZScore;
+  trendP[trendPOffset + ${cellName}] = trendPValue;
+  trendS[trendSOffset + ${cellName}] = statistic;
   let threshold = fraction * f32(valid);
   let hotPersistent = f32(hot) >= threshold;
   let coldPersistent = f32(cold) >= threshold;
@@ -878,7 +1174,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
       } else if (trailingHot >= 2u && trailingHot == hot && !hotPersistent) {
         result = 2u;
       } else if (hotPersistent) {
-        result = select(select(4u, 5u, trendDown), 3u, trendUp);
+        result = select(17u, select(select(4u, 5u, trendDown), 3u, trendUp), isTrendKnown);
       } else {
         result = select(7u, 6u, cold == 0u);
       }
@@ -888,7 +1184,7 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
       } else if (trailingCold >= 2u && trailingCold == cold && !coldPersistent) {
         result = 10u;
       } else if (coldPersistent) {
-        result = select(select(12u, 13u, trendUp), 11u, trendDown);
+        result = select(17u, select(select(12u, 13u, trendUp), 11u, trendDown), isTrendKnown);
       } else {
         result = select(15u, 14u, hot == 0u);
       }
@@ -901,54 +1197,36 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
     } else if (cold > 0u && hot == 0u) {
       result = 14u;
     }
+    ${
+      options.finalSlice === 'require'
+        ? `// A missing final slice makes the pattern undecidable instead of silently shifting it.
+    if (lastValid != SLICE_COUNT - 1u) {
+      result = 17u;
+    }`
+        : ''
+    }
   }
-  category[categoryOffset + cell] = result;
-  }`
-          : getSerialMannKendallBody(sliceCount)
-      })
-    );
-    return nodes;
-  }
+  category[categoryOffset + ${cellName}] = result;`;
 }
 
 /** Serial exact pass retained for short series where cooperative setup would dominate. */
-function getSerialMannKendallBody(sliceCount: number): string {
-  return /* wgsl */ `let criticalZ = parameters[parametersOffset + 2u];
-  let trendLevel = parameters[parametersOffset + 3u];
-  let fraction = parameters[parametersOffset + 4u];
-  let base = index * SLICE_COUNT;
+function getSerialMannKendallBody(options: {
+  sliceCount: number;
+  usesAdjustment: boolean;
+  finalSlice: 'require' | 'last-valid';
+}): string {
+  const {sliceCount} = options;
+  return /* wgsl */ `let base = index * SLICE_COUNT;
   var series: array<f32, SLICE_COUNT>;
   var hasEqualBefore: array<u32, ${Math.ceil(sliceCount / 32)}>;
+  ${getSliceCountingWGSL({
+    valueExpression: 'giZScores[giZScoresOffset + base + slice]',
+    adjustedExpression: 'adjustedPValues[adjustedPValuesOffset + base + slice]',
+    usesAdjustment: options.usesAdjustment,
+    collectSeries: true
+  })}
   var statistic = 0;
-  var valid = 0u;
-  var hot = 0u;
-  var cold = 0u;
   var tieTerm = 0u;
-  var trailingHot = 0u;
-  var trailingCold = 0u;
-  var finalState = 0u;
-  for (var slice = 0u; slice < SLICE_COUNT; slice++) {
-    let value = giZScores[giZScoresOffset + base + slice];
-    if (isFiniteFloat(value)) {
-      series[valid] = value;
-      valid++;
-      if (value >= criticalZ) {
-        hot++;
-        trailingHot++;
-        trailingCold = 0u;
-        finalState = 1u;
-      } else if (value <= -criticalZ) {
-        cold++;
-        trailingCold++;
-        trailingHot = 0u;
-        finalState = 2u;
-      } else {
-        trailingHot = 0u;
-        trailingCold = 0u;
-        finalState = 0u;
-      }
-    }
-  }
   for (var first = 0u; first < valid; first++) {
     let firstValue = series[first];
     var groupSize = 1u;
@@ -965,63 +1243,8 @@ function getSerialMannKendallBody(sliceCount: number): string {
       tieTerm += groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
     }
   }
-  var numerator = 0u;
-  if (valid >= 2u) {
-    numerator = valid * (valid - 1u) * (2u * valid + 5u) - tieTerm;
-  }
-  var trendZScore = 0.0;
-  var trendPValue = 1.0;
-  if (numerator > 0u) {
-    let deviation = sqrt(f32(numerator) / 18.0);
-    if (statistic > 0) {
-      trendZScore = f32(statistic - 1) / deviation;
-    } else if (statistic < 0) {
-      trendZScore = f32(statistic + 1) / deviation;
-    }
-    trendPValue = getTwoSidedPValue(trendZScore);
-  }
-  trendZ[trendZOffset + index] = trendZScore;
-  trendP[trendPOffset + index] = trendPValue;
-  trendS[trendSOffset + index] = statistic;
-  hotSliceCount[hotSliceCountOffset + index] = hot;
-  coldSliceCount[coldSliceCountOffset + index] = cold;
-  let threshold = fraction * f32(valid);
-  let hotPersistent = f32(hot) >= threshold;
-  let coldPersistent = f32(cold) >= threshold;
-  let trendSignificant = trendPValue <= trendLevel;
-  let trendUp = trendSignificant && trendZScore > 0.0;
-  let trendDown = trendSignificant && trendZScore < 0.0;
-  var result = 0u;
-  if (valid > 0u) {
-    if (finalState == 1u) {
-      if (hot == 1u) {
-        result = 1u;
-      } else if (trailingHot >= 2u && trailingHot == hot && !hotPersistent) {
-        result = 2u;
-      } else if (hotPersistent) {
-        result = select(select(4u, 5u, trendDown), 3u, trendUp);
-      } else {
-        result = select(7u, 6u, cold == 0u);
-      }
-    } else if (finalState == 2u) {
-      if (cold == 1u) {
-        result = 9u;
-      } else if (trailingCold >= 2u && trailingCold == cold && !coldPersistent) {
-        result = 10u;
-      } else if (coldPersistent) {
-        result = select(select(12u, 13u, trendUp), 11u, trendDown);
-      } else {
-        result = select(15u, 14u, hot == 0u);
-      }
-    } else if (hot > 0u && hotPersistent) {
-      result = 8u;
-    } else if (cold > 0u && coldPersistent) {
-      result = 16u;
-    } else if (hot > 0u && cold == 0u) {
-      result = 6u;
-    } else if (cold > 0u && hot == 0u) {
-      result = 14u;
-    }
-  }
-  category[categoryOffset + index] = result;`;
+  ${getClassificationWGSL({
+    cellName: 'index',
+    finalSlice: options.finalSlice
+  })}`;
 }

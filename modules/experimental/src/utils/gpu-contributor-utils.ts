@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, type Device} from '@luma.gl/core';
+import {assert, Buffer, type Device} from '@luma.gl/core';
 import {
   createGPUComputeCommandNode,
   createGPUCopyCommandNode,
@@ -81,6 +81,8 @@ export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameter
 
   /** Overwrites elements starting at `firstElement`; visible to the next submitted encoding. */
   write(values: Float32Array | Uint32Array | Int32Array, firstElement: number = 0): void {
+    // The written range must lie inside the buffer's `length` elements.
+    assert(firstElement >= 0 && firstElement + values.length <= this.length);
     this.buffer.write(values, firstElement * Uint32Array.BYTES_PER_ELEMENT);
   }
 
@@ -260,4 +262,31 @@ export function getNextPowerOfTwo(value: number): number {
     result *= 2;
   }
   return result;
+}
+
+/**
+ * Throws when one storage binding of `byteLength` bytes exceeds the device's
+ * `maxStorageBufferBindingSize` (128 MiB on default WebGPU devices). Without this check WebGPU
+ * rejects the bind group at dispatch with a validation error; call it where row-proportional
+ * scratch is sized, with `hint` naming the prop to change.
+ *
+ * @param device Device whose limit applies.
+ * @param id Contributor ID, for the message.
+ * @param name Binding or scratch name, for the message.
+ * @param byteLength Bytes the binding needs.
+ * @param hint What to reduce, for the message.
+ */
+export function validateGPUStorageBindingByteLength(
+  device: Device,
+  id: string,
+  name: string,
+  byteLength: number,
+  hint: string
+): void {
+  const limit = device.limits.maxStorageBufferBindingSize;
+  if (byteLength > limit) {
+    throw new Error(
+      `${id} ${name} needs ${byteLength} bytes in one binding (limit ${limit}); ${hint}`
+    );
+  }
 }

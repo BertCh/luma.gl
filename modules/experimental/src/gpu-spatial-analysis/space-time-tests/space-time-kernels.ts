@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
+import {PERMUTATION_SHUFFLE_WGSL} from '../permutation-inference/permutation-shuffle';
 import {GPU_SPACE_TIME_SUMMARY} from './space-time-parameters';
 
 /** Largest number of row blocks one (permutation, block) kernel splits the rows into. @internal */
@@ -11,6 +14,17 @@ export const SPACE_TIME_MAXIMUM_BLOCKS = 256;
 /** Largest compile-time `maximumPermutations`. @internal */
 export const SPACE_TIME_MAXIMUM_PERMUTATIONS = 2 ** 16;
 
+/** Workgroup size of the (permutation, block) kernels; one workgroup shares one permutation. @internal */
+export const SPACE_TIME_WORKGROUP_SIZE = 64;
+
+/** Domains of 2^24 rows or more exceed the swap-or-not round capacity. @internal */
+export const SPACE_TIME_MAXIMUM_ROWS = 2 ** 24 - 1;
+
+/** Returns the number of workgroups per permutation for `blocks` row blocks. @internal */
+export function getSpaceTimeGroupsPerSlot(blocks: number): number {
+  return Math.ceil(blocks / SPACE_TIME_WORKGROUP_SIZE);
+}
+
 /** Returns `[blocks, rowsPerBlock]` for `rows` rows. @internal */
 export function getSpaceTimeBlocks(rows: number): [number, number] {
   const blocks = Math.min(SPACE_TIME_MAXIMUM_BLOCKS, rows);
@@ -18,9 +32,71 @@ export function getSpaceTimeBlocks(rows: number): [number, number] {
 }
 
 /**
+ * Creates the `pair-mask` node: writes 1 into `pairMask[entry]` for every CSR entry that is the
+ * representative of its unordered pair `{row, other}` and 0 otherwise, so a statistic that sums
+ * over entries with `pairMask != 0` visits each unordered pair exactly once.
+ *
+ * An entry `(row, other)` is the representative when `other` is a different valid row, it is the
+ * first occurrence of `other` in `row`'s list (duplicates are ignored), and either `other > row`
+ * or `row` is absent from `other`'s list. A symmetric list therefore takes each pair from its
+ * lower row (as before), and a pair listed only from the higher row, as with a k-nearest-neighbor
+ * list, is counted from that row instead of being dropped. The mask depends only on the pair list,
+ * so it is computed once per evaluation and shared by every permutation. Lists need not be sorted;
+ * the cost is a bounded scan of two rows per entry.
+ *
+ * @internal
+ */
+export function createSpaceTimePairMaskNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    rows: number;
+    offsets: GraphDataView<'uint32'>;
+    neighbors: GraphDataView<'uint32'>;
+    pairMask: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: `${props.id}-pair-mask`,
+    operation: props.operation,
+    variant: 'pair-mask',
+    bindings: [
+      {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
+      {name: 'pairMask', view: props.pairMask, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.rows,
+    declarations: `const ROWS: u32 = ${props.rows}u;`,
+    body: `let start = offsets[offsetsOffset + index];
+  let end = offsets[offsetsOffset + index + 1u];
+  for (var entry = start; entry < end; entry++) {
+    let other = neighbors[neighborsOffset + entry];
+    var counted = other < ROWS && other != index;
+    if (counted) {
+      for (var earlier = start; earlier < entry; earlier++) {
+        if (neighbors[neighborsOffset + earlier] == other) {
+          counted = false;
+          break;
+        }
+      }
+    }
+    if (counted && other < index) {
+      for (var mirror = offsets[offsetsOffset + other]; mirror < offsets[offsetsOffset + other + 1u]; mirror++) {
+        if (neighbors[neighborsOffset + mirror] == index) {
+          counted = false;
+          break;
+        }
+      }
+    }
+    pairMask[pairMaskOffset + entry] = select(0u, 1u, counted);
+  }`
+  });
+}
+
+/**
  * WGSL common to the space-time kernels. Requires a `parameters` `u32` binding and defines
- * `ROWS`, `BLOCKS`, `ROWS_PER_BLOCK`, `MAXIMUM_PERMUTATIONS`; `getPermutedRow(row, slot, keys,
- * halfBits)` maps a row through permutation `slot - 1` (slot 0 is the identity).
+ * `ROWS`, `BLOCKS`, `ROWS_PER_BLOCK`, `MAXIMUM_PERMUTATIONS`.
  *
  * @internal
  */
@@ -45,14 +121,49 @@ fn readPermutationCount() -> u32 {
 fn readTimeThreshold() -> f32 {
   return bitcast<f32>(parameters[parametersOffset + 3u]);
 }
-fn getPermutedRow(row: u32, slot: u32, keys: vec4<u32>, halfBits: u32) -> u32 {
+`;
+}
+
+/**
+ * WGSL of the swap-or-not shuffle for the (permutation, block) kernels (append after
+ * {@link getSpaceTimeCommonWGSL}). Defines `SPACE_TIME_WORKGROUP_SIZE`, `GROUPS_PER_SLOT` and
+ * `getPermutedRow(row, slot)`, which maps a row through permutation number `slot` of the
+ * swap-or-not shuffle (slot 0 is the identity). The round material of the workgroup's slot must
+ * have been loaded with `loadSwapOrNotRounds` followed by a `workgroupBarrier()`.
+ *
+ * @internal
+ */
+export function getSpaceTimeShuffleWGSL(blocks: number): string {
+  return /* wgsl */ `
+${PERMUTATION_SHUFFLE_WGSL}
+const SPACE_TIME_WORKGROUP_SIZE: u32 = ${SPACE_TIME_WORKGROUP_SIZE}u;
+const GROUPS_PER_SLOT: u32 = ${getSpaceTimeGroupsPerSlot(blocks)}u;
+fn getPermutedRow(row: u32, slot: u32) -> u32 {
   if (slot == 0u) {
     return row;
   }
-  return getFeistelPermutationIndex(row, ROWS, halfBits, keys);
+  return getSwapOrNotPermutationIndex(row, ROWS);
 }
 `;
 }
+
+/**
+ * Body prologue of the (permutation, block) kernels: declares `slot`, `block`, `permutations` and
+ * `runsSlot` (the workgroup runs a permutation and this invocation owns a block), loads the shuffle
+ * rounds and reaches the barrier in uniform control flow. Use with `guardIndex: false` and
+ * `invocationCount = slotCount * groupsPerSlot * SPACE_TIME_WORKGROUP_SIZE`.
+ *
+ * @internal
+ */
+export const SPACE_TIME_SLOT_PROLOGUE_WGSL = /* wgsl */ `let workgroup = index / SPACE_TIME_WORKGROUP_SIZE;
+  let slot = workgroup / GROUPS_PER_SLOT;
+  let block = (workgroup - slot * GROUPS_PER_SLOT) * SPACE_TIME_WORKGROUP_SIZE + localInvocationIndex;
+  let permutations = readPermutationCount();
+  if (slot > 0u && slot <= permutations) {
+    loadSwapOrNotRounds(readSeedKey(), slot, ROWS, localInvocationIndex, SPACE_TIME_WORKGROUP_SIZE);
+  }
+  workgroupBarrier();
+  let runsSlot = slot <= permutations && block < BLOCKS;`;
 
 /**
  * WGSL of the summary kernel body. Bindings: `statistics` (`array<STAT>`), `parameters`, and

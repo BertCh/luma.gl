@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUCalendarBuckets} from '../../gpu-dataframe/calendar-buckets/index';
 import {GPUColorScale} from '../../gpu-dataframe/column-classification/index';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
+import type {GPUInferenceMetadata, GPUMultipleTestingMethod} from '../contracts/inference';
 import {GPU_EMERGING_HOT_SPOT_CATEGORIES, GPUEmergingHotSpots} from '../emerging-hot-spots/index';
 import {
   createFillNode,
@@ -23,27 +24,100 @@ import {
 
 const ID = 'addSpaceTimeHotSpotsRecipe';
 
-/** Calendar column that defines the time slices of the cube. */
-export type GPUSpaceTimeSliceField =
-  | 'year'
-  | 'month'
-  | 'dayOfMonth'
-  | 'hour'
-  | 'minute'
-  | 'weekday'
-  | 'dayOfYear'
-  | 'isoWeek'
-  | 'quarter';
+/** Calendar unit of one time step of the cube. */
+export type GPUSpaceTimeStep = 'year' | 'quarter' | 'month' | 'week' | 'day' | 'hour';
 
-/** Slice definition: slice `s` holds the rows whose calendar `field` equals `firstValue + s`. */
+/**
+ * First instant of slice 0 in the local calendar (the same UTC-offset semantics as
+ * `GPUCalendarBuckets`). Unset fields default to the start of the step: month 1, day 1, hour 0.
+ */
+export type GPUSpaceTimeOrigin = {
+  year: number;
+  /** 1 to 12. Used by every step finer than `'year'`. */
+  month?: number;
+  /** Day of the month, 1 to 31. Used by `'week'`, `'day'` and `'hour'`; a week starts on this day. */
+  day?: number;
+  /** 0 to 23. Used by `'hour'`. */
+  hour?: number;
+};
+
+/**
+ * Absolute time-step slicing of the cube (ESRI "time step interval"). Slice
+ * `floor((stepIndex(t) - stepIndex(origin)) / (interval * stepsPerUnit))` holds the events at local
+ * time `t`, where `stepIndex` counts whole calendar steps (`year`, `year * 4 + quarter - 1`,
+ * `year * 12 + month - 1`, days since the epoch for `'day'` and `'week'`, hours since the epoch for
+ * `'hour'`) and a `'week'` is 7 days anchored to the origin day. Events before the origin or past
+ * the last slice are skipped and counted in the `slice-range` `invalidCount` status.
+ *
+ * Cyclic calendar fields (month of year, weekday, hour of day, day of year) are not accepted:
+ * `month = 1` would pool every January of a multi-year range, and a Mann-Kendall trend over hour
+ * or weekday is meaningless. Cyclic profiles belong in a non-trend summary such as the
+ * `hourWeekdayCounts` of `GPUCalendarBuckets`.
+ */
 export type GPUSpaceTimeSlices = {
-  /** Calendar column read from `GPUCalendarBuckets`. */
-  field: GPUSpaceTimeSliceField;
-  /** Calendar value of slice 0, for example 1 for January with `'month'`. */
-  firstValue: number;
+  /** Calendar unit of one step. */
+  step: GPUSpaceTimeStep;
+  /** Steps per slice, a positive integer. Defaults to 1. */
+  interval?: number;
+  /** Start of slice 0. */
+  origin: GPUSpaceTimeOrigin;
   /** Number of slices (compile-time, at most 256). */
   count: number;
 };
+
+/**
+ * Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's `days_from_civil`), in integer
+ * arithmetic with truncating division, the same formula the adapter kernel evaluates.
+ */
+export function getSpaceTimeDaysFromCivil(year: number, month: number, day: number): number {
+  const adjustedYear = month <= 2 ? year - 1 : year;
+  const era = Math.trunc((adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400);
+  const yearOfEra = adjustedYear - era * 400;
+  const shiftedMonth = (month + 9) % 12;
+  const dayOfYear = Math.trunc((153 * shiftedMonth + 2) / 5) + day - 1;
+  const dayOfEra =
+    yearOfEra * 365 + Math.trunc(yearOfEra / 4) - Math.trunc(yearOfEra / 100) + dayOfYear;
+  return era * 146097 + dayOfEra - 719468;
+}
+
+/** Whole-step index of a local calendar time for `step` (see {@link GPUSpaceTimeSlices}). */
+export function getSpaceTimeStepIndex(
+  step: GPUSpaceTimeStep,
+  fields: {year: number; month?: number; day?: number; hour?: number}
+): number {
+  const {year, month = 1, day = 1, hour = 0} = fields;
+  switch (step) {
+    case 'year':
+      return year;
+    case 'quarter':
+      return year * 4 + Math.trunc((month - 1) / 3);
+    case 'month':
+      return year * 12 + month - 1;
+    case 'week':
+    case 'day':
+      return getSpaceTimeDaysFromCivil(year, month, day);
+    case 'hour':
+      return getSpaceTimeDaysFromCivil(year, month, day) * 24 + hour;
+  }
+}
+
+/**
+ * Slice index of a local calendar time, or `-1` when it falls before the origin or past the last
+ * slice. The CPU twin of the adapter kernel, used by tests and by callers that bin on the CPU.
+ */
+export function getSpaceTimeSliceIndex(
+  slices: GPUSpaceTimeSlices,
+  fields: {year: number; month?: number; day?: number; hour?: number}
+): number {
+  const difference =
+    getSpaceTimeStepIndex(slices.step, fields) - getSpaceTimeStepIndex(slices.step, slices.origin);
+  const slice = Math.trunc(difference / getSliceDivisor(slices));
+  return difference >= 0 && slice < slices.count ? slice : -1;
+}
+
+function getSliceDivisor(slices: GPUSpaceTimeSlices): number {
+  return (slices.interval ?? 1) * (slices.step === 'week' ? 7 : 1);
+}
 
 /** Cells given as a precomputed index per event. Spatial neighbors then come from `weights`. */
 export type GPUSpaceTimeCellIds = {
@@ -85,12 +159,27 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
     category?: GraphDataView<'uint32'>;
     hotSliceCount?: GraphDataView<'uint32'>;
     coldSliceCount?: GraphDataView<'uint32'>;
+    /** Per-bin two-sided Gi* p-values, cube layout. */
+    pValues?: GraphDataView<'float32'>;
+    /** Per-bin `multipleTesting`-adjusted p-values, cube layout. */
+    adjustedPValues?: GraphDataView<'float32'>;
+    /** Per-cell last finite slice index (`0xffffffff` for none). */
+    lastValidSlice?: GraphDataView<'uint32'>;
+    /**
+     * One-row count of events that have a valid cell and time but fall before `slices.origin` or
+     * past the last slice. It is the `invalidCount` of the `slice-range` status stage.
+     */
+    skippedEventCount?: GraphDataView<'uint32'>;
     colors?: GraphDataView<'uint32'>;
     /** Group-statistics overflow flag; setting it selects the sorted counting path. */
     groupOverflow?: GraphDataView<'uint32'>;
   },
   {
-    calendarField?: GraphDataView<'sint32'> | GraphDataView<'uint32'>;
+    /** Calendar columns the step needs (year always; month, day of month and hour as needed). */
+    calendarYear?: GraphDataView<'sint32'>;
+    calendarMonth?: GraphDataView<'uint32'>;
+    calendarDayOfMonth?: GraphDataView<'uint32'>;
+    calendarHour?: GraphDataView<'uint32'>;
     /** Per-event cube key; setting it selects the sorted counting path. */
     keys?: GraphDataView<'uint32'>;
     /** Per-event key validity; setting it selects the sorted counting path. */
@@ -120,15 +209,26 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   cells: GPUSpaceTimeCellIds | GPUSpaceTimeLattice;
   /** Optional per-cell mask (one row per cell). */
   cellMask?: GraphDataView<'uint32'>;
-  /** `getGPUEmergingHotSpotParameterValues` view. */
+  /**
+   * `getGPUEmergingHotSpotParameterValues` view. Write it with the same `multipleTesting` as this
+   * recipe so `criticalZ` is only combined with `'none'`.
+   */
   parameters: GraphDataView<'float32'>;
+  /**
+   * Multiple-testing correction of the hot and cold decision, passed to `GPUEmergingHotSpots`.
+   * Defaults to `'benjamini-hochberg'`; `'benjamini-yekutieli'` is valid under the dependence of
+   * overlapping temporal windows and neighboring cells.
+   */
+  multipleTesting?: GPUMultipleTestingMethod;
+  /** Final-slice rule passed to `GPUEmergingHotSpots`. Defaults to `'require'`. */
+  finalSlice?: 'require' | 'last-valid';
   /** Category colors; skipped when absent. */
   color?: {
-    /** Packed rgba8 palette indexed by category code, at least 17 entries. */
+    /** Packed rgba8 palette indexed by category code, at least 18 entries (0 to 17). */
     palette: GraphDataView<'uint32'>;
     /** `getGPUColorScaleParameterValues({scale: 'ordinal', ...})` view. */
     parameters: GraphDataView<'float32'>;
-    /** Compile-time palette bound. Defaults to the 17 categories. */
+    /** Compile-time palette bound. Defaults to the 18 category codes. */
     maximumPaletteCount?: number;
   };
 };
@@ -145,8 +245,14 @@ export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
   category: GraphDataView<'uint32'>;
   hotSliceCount: GraphDataView<'uint32'>;
   coldSliceCount: GraphDataView<'uint32'>;
+  /** Present when the matching output override was given. */
+  pValues?: GraphDataView<'float32'>;
+  adjustedPValues?: GraphDataView<'float32'>;
+  lastValidSlice?: GraphDataView<'uint32'>;
   /** Present when `color` was requested. */
   colors?: GraphDataView<'uint32'>;
+  /** How the hot and cold bins were decided, for building a legend (a plain object). */
+  inference: GPUInferenceMetadata;
 };
 
 /**
@@ -156,6 +262,12 @@ export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
  * `cell * sliceCount + slice` of a zeroed dense `cell x slice` cube (`uint32`, the layout
  * `GPUEmergingHotSpots` reads) with an integer `atomicAdd`, `GPUEmergingHotSpots` classifies every
  * cell, and `GPUColorScale` (ordinal) colors the categories.
+ *
+ * Slices are absolute time steps (`slices.step`, `slices.interval`, `slices.origin`), so the
+ * Mann-Kendall trend runs over a monotone time axis. Events outside the slice range are skipped
+ * and counted in the `slice-range` stage `invalidCount`. `multipleTesting`, `finalSlice` and the
+ * other options of `GPUEmergingHotSpots` apply as documented there, and the result carries a plain
+ * `inference` object (`GPUInferenceMetadata`).
  *
  * Passing any of `scratch.keys`, `scratch.keyMask`, `scratch.groupKeys`, `scratch.groupCounts`,
  * `scratch.groupCount` or `outputs.groupOverflow` selects the sorted path instead: an adapter
@@ -182,32 +294,68 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   const sliceCount = slices.count;
   assertRecipe(
     ID,
+    !('field' in slices),
+    'slices.field is no longer accepted: cyclic calendar fields cannot carry a trend, use slices.step with an origin'
+  );
+  assertRecipe(
+    ID,
     Number.isInteger(sliceCount) && sliceCount >= 1,
     'slices.count must be a positive integer'
   );
+  const interval = slices.interval ?? 1;
+  assertRecipe(
+    ID,
+    Number.isInteger(interval) && interval >= 1,
+    'slices.interval must be a positive integer'
+  );
+  assertRecipe(
+    ID,
+    ['year', 'quarter', 'month', 'week', 'day', 'hour'].includes(slices.step),
+    'slices.step must be year, quarter, month, week, day or hour'
+  );
+  const {origin} = slices;
+  for (const [name, value, minimum, maximum] of [
+    ['year', origin.year, -1_000_000, 1_000_000],
+    ['month', origin.month ?? 1, 1, 12],
+    ['day', origin.day ?? 1, 1, 31],
+    ['hour', origin.hour ?? 0, 0, 23]
+  ] as const) {
+    assertRecipe(
+      ID,
+      Number.isInteger(value) && value >= minimum && value <= maximum,
+      `slices.origin.${name} must be an integer in ${minimum}..${maximum}`
+    );
+  }
   const cellCount = cells.kind === 'ids' ? cells.cellCount : cells.width * cells.height;
   const cubeLength = cellCount * sliceCount;
   assertRecipe(ID, cubeLength < 0xfffffffe, 'cellCount * sliceCount is too large for a u32 key');
 
-  // 1. Calendar columns of the event times.
-  const calendarOutput: Record<string, GraphDataView<'sint32'> | GraphDataView<'uint32'>> = {};
-  const fieldIsSigned = slices.field === 'year';
-  const calendarView = fieldIsSigned
+  // 1. Calendar columns of the event times: only the ones the step needs.
+  const needsMonth = slices.step !== 'year';
+  const needsDay = slices.step === 'week' || slices.step === 'day' || slices.step === 'hour';
+  const needsHour = slices.step === 'hour';
+  const calendarYear = getOrCreateView(
+    graph,
+    `${id}-calendar-year`,
+    'sint32',
+    eventCount,
+    scratch.calendarYear
+  );
+  const calendarMonth = needsMonth
+    ? getOrCreateView(graph, `${id}-calendar-month`, 'uint32', eventCount, scratch.calendarMonth)
+    : undefined;
+  const calendarDay = needsDay
     ? getOrCreateView(
         graph,
-        `${id}-calendar-field`,
-        'sint32',
-        eventCount,
-        scratch.calendarField?.format === 'sint32' ? scratch.calendarField : undefined
-      )
-    : getOrCreateView(
-        graph,
-        `${id}-calendar-field`,
+        `${id}-calendar-day-of-month`,
         'uint32',
         eventCount,
-        scratch.calendarField?.format === 'uint32' ? scratch.calendarField : undefined
-      );
-  calendarOutput[slices.field] = calendarView;
+        scratch.calendarDayOfMonth
+      )
+    : undefined;
+  const calendarHour = needsHour
+    ? getOrCreateView(graph, `${id}-calendar-hour`, 'uint32', eventCount, scratch.calendarHour)
+    : undefined;
   builder.add(
     new GPUCalendarBuckets({
       id: `${id}-calendar`,
@@ -215,7 +363,12 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       mask: props.mask,
       utcOffsets: props.utcOffsets,
       parameters: props.calendarParameters,
-      output: calendarOutput
+      output: {
+        year: calendarYear,
+        ...(calendarMonth ? {month: calendarMonth} : {}),
+        ...(calendarDay ? {dayOfMonth: calendarDay} : {}),
+        ...(calendarHour ? {hour: calendarHour} : {})
+      }
     })
   );
 
@@ -235,17 +388,84 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   let fy = floor((py - ${getWGSLFloatLiteral(cells.bounds[1])}) / ${getWGSLFloatLiteral((cells.bounds[3] - cells.bounds[1]) / cells.height)});
   let cellValid = fx >= 0.0 && fy >= 0.0 && fx < ${cells.width}.0 && fy < ${cells.height}.0;
   let cell = select(0u, u32(fy) * ${cells.width}u + u32(fx), cellValid);`;
+  const stepsPerSlice = getSliceDivisor(slices);
+  const originStep = getSpaceTimeStepIndex(slices.step, origin);
+  const stepExpression = {
+    year: 'year',
+    quarter: 'year * 4 + (month - 1) / 3',
+    month: 'year * 12 + month - 1',
+    week: 'daysFromCivil(year, month, day)',
+    day: 'daysFromCivil(year, month, day)',
+    hour: 'daysFromCivil(year, month, day) * 24 + hour'
+  }[slices.step];
   const eventBinSource = `${cellSource}
-  let value = i32(calendarField[calendarFieldOffset + index]);
-  let slice = value - ${Math.trunc(slices.firstValue)};
-  let sliceValid = value != bitcast<i32>(0x80000000u) && slice >= 0 && slice < ${sliceCount};
+  let year = calendarYear[calendarYearOffset + index];
+  ${calendarMonth ? 'let month = i32(calendarMonth[calendarMonthOffset + index]);' : ''}
+  ${calendarDay ? 'let day = i32(calendarDay[calendarDayOffset + index]);' : ''}
+  ${calendarHour ? 'let hour = i32(calendarHour[calendarHourOffset + index]);' : ''}
+  let isCalendarValid = year != bitcast<i32>(0x80000000u);
+  let stepOffset = select(-1, ${stepExpression} - (${originStep}), isCalendarValid);
+  let slice = stepOffset / ${stepsPerSlice};
+  let sliceValid = stepOffset >= 0 && slice < ${sliceCount};
   let valid = cellValid && sliceValid;`;
-  const calendarBinding = {
-    name: 'calendarField',
-    view: calendarView,
-    type: fieldIsSigned ? 'i32' : 'u32',
-    access: 'read'
-  } as const;
+  const calendarBindings = [
+    {name: 'calendarYear', view: calendarYear, type: 'i32', access: 'read'} as const,
+    ...(calendarMonth
+      ? [{name: 'calendarMonth', view: calendarMonth, type: 'u32', access: 'read'} as const]
+      : []),
+    ...(calendarDay
+      ? [{name: 'calendarDay', view: calendarDay, type: 'u32', access: 'read'} as const]
+      : []),
+    ...(calendarHour
+      ? [{name: 'calendarHour', view: calendarHour, type: 'u32', access: 'read'} as const]
+      : [])
+  ];
+  // Hinnant's days_from_civil in i32 arithmetic with truncating division.
+  const calendarDeclarations = `fn daysFromCivil(year: i32, month: i32, day: i32) -> i32 {
+  let adjustedYear = select(year, year - 1, month <= 2);
+  let era = select(adjustedYear, adjustedYear - 399, adjustedYear < 0) / 400;
+  let yearOfEra = adjustedYear - era * 400;
+  let shiftedMonth = (month + 9) % 12;
+  let dayOfYear = (153 * shiftedMonth + 2) / 5 + day - 1;
+  let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+  return era * 146097 + dayOfEra - 719468;
+}`;
+
+  // Events with a valid cell and time that fall before the origin or past the last slice.
+  const skippedCount = getOrCreateView(
+    graph,
+    `${id}-skipped-count`,
+    'uint32',
+    1,
+    outputOverrides.skippedEventCount
+  );
+  graph.add(
+    createFillNode<Parameters>(graph, {
+      id: `${id}-skipped-count-clear`,
+      operation: 'GPUSpaceTimeHotSpotsCube',
+      view: skippedCount,
+      type: 'u32',
+      value: '0u'
+    })
+  );
+  graph.add(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-skipped-count`,
+      operation: 'GPUSpaceTimeHotSpotsCube',
+      variant: 'slice-range',
+      bindings: [
+        ...calendarBindings,
+        ...cellBindings,
+        {name: 'skippedOutput', view: skippedCount, type: 'atomic<u32>', access: 'read_write'}
+      ],
+      invocationCount: eventCount,
+      declarations: calendarDeclarations,
+      body: `${eventBinSource}
+  if (cellValid && isCalendarValid && !sliceValid) {
+    atomicAdd(&skippedOutput[skippedOutputOffset], 1u);
+  }`
+    })
+  );
 
   // 3. Dense cube of event counts, zeroed first: both paths only write bins that hold events.
   const cube = getOrCreateView(graph, `${id}-cube`, 'uint32', cubeLength, outputOverrides.cube);
@@ -273,9 +493,14 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     scratch.groupCount !== undefined ||
     outputOverrides.groupOverflow !== undefined;
   let intermediates: GPUSpaceTimeHotSpotsRecipeResult['intermediates'] = {
-    calendarField: calendarView
+    calendarYear,
+    ...(calendarMonth ? {calendarMonth} : {}),
+    ...(calendarDay ? {calendarDayOfMonth: calendarDay} : {}),
+    ...(calendarHour ? {calendarHour} : {})
   };
-  let status: GPUSpaceTimeHotSpotsRecipeResult['status'] = {stages: []};
+  let status: GPUSpaceTimeHotSpotsRecipeResult['status'] = {
+    stages: [{stage: 'slice-range', status: {invalidCount: skippedCount}}]
+  };
   if (!useGroupStatistics) {
     graph.add(
       createWGSLKernelNode<Parameters>(graph, {
@@ -283,11 +508,12 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
         operation: 'GPUSpaceTimeHotSpotsCube',
         variant: 'atomic-count',
         bindings: [
-          calendarBinding,
+          ...calendarBindings,
           ...cellBindings,
           {name: 'cubeOutput', view: cube, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: eventCount,
+        declarations: calendarDeclarations,
         body: `${eventBinSource}
   if (valid) {
     atomicAdd(&cubeOutput[cubeOutputOffset + cell * ${sliceCount}u + u32(slice)], 1u);
@@ -303,12 +529,13 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
         id: `${id}-keys`,
         operation: 'GPUSpaceTimeHotSpotsKeys',
         bindings: [
-          calendarBinding,
+          ...calendarBindings,
           ...cellBindings,
           {name: 'keyOutput', view: keys, type: 'u32', access: 'read_write'},
           {name: 'keyMaskOutput', view: keyMask, type: 'u32', access: 'read_write'}
         ],
         invocationCount: eventCount,
+        declarations: calendarDeclarations,
         body: `${eventBinSource}
   keyOutput[keyOutputOffset + index] = select(0xffffffffu, cell * ${sliceCount}u + u32(slice), valid);
   keyMaskOutput[keyMaskOutputOffset + index] = select(0u, 1u, valid);`
@@ -368,7 +595,10 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     );
     intermediates = {...intermediates, keys, keyMask, groupKeys, groupCounts, groupCount};
     status = {
-      stages: [{stage: 'cube-counts', status: {count: groupCount, overflow: groupOverflow}}]
+      stages: [
+        ...status.stages,
+        {stage: 'cube-counts', status: {count: groupCount, overflow: groupOverflow}}
+      ]
     };
   }
 
@@ -406,7 +636,12 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       outputOverrides.coldSliceCount
     )
   };
-  builder.add(
+  const optionalOutputs = {
+    ...(outputOverrides.pValues ? {pValues: outputOverrides.pValues} : {}),
+    ...(outputOverrides.adjustedPValues ? {adjustedPValues: outputOverrides.adjustedPValues} : {}),
+    ...(outputOverrides.lastValidSlice ? {lastValidSlice: outputOverrides.lastValidSlice} : {})
+  };
+  const emerging = builder.add(
     new GPUEmergingHotSpots({
       id: `${id}-emerging`,
       values: cube,
@@ -420,7 +655,10 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       sliceCount,
       mask: props.cellMask,
       parameters: props.parameters,
-      ...outputs
+      multipleTesting: props.multipleTesting,
+      finalSlice: props.finalSlice,
+      ...outputs,
+      ...optionalOutputs
     })
   );
 
@@ -430,9 +668,11 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     sliceCount,
     cube,
     ...outputs,
-    outputs: {cube, ...outputs},
+    ...optionalOutputs,
+    outputs: {cube, ...outputs, ...optionalOutputs},
     intermediates,
-    status
+    status,
+    inference: emerging.getInferenceMetadata()
   };
 
   // 5. Category colors (ordinal scale).

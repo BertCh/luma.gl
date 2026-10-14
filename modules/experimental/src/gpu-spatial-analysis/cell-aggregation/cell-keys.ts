@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+
 /** Discrete global grid families keyed by {@link GPUCellAggregation}. */
 export type GPUCellFamily = 'quadbin' | 'h3';
 
@@ -10,6 +16,55 @@ export const GPU_CELL_MAXIMUM_RESOLUTION: Readonly<Record<GPUCellFamily, number>
   quadbin: 26,
   h3: 15
 };
+
+const CELL_POINT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['longitude-latitude'] as const),
+  metrics: Object.freeze(['none'] as const)
+});
+
+const CELL_KEYED_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['discrete-grid'] as const),
+  metrics: Object.freeze(['none'] as const)
+});
+
+/**
+ * Resolves the spatial context of a cell operation. Point rows are longitude/latitude degrees
+ * (the Quadbin keying is defined on them), so planar contexts throw. Pre-keyed rows and tables are
+ * `discrete-grid` contexts whose `gridFamily` must match `family` and whose `gridResolution`, when
+ * given, must not be coarser than `minimumResolution`. Omitted contexts default to the matching
+ * one.
+ *
+ * @internal
+ */
+export function resolveCellSpatialContext(
+  id: string,
+  family: GPUCellFamily,
+  context: GPUSpatialContext | undefined,
+  rows: 'points' | 'cells',
+  minimumResolution: number
+): GPUSpatialContext {
+  if (rows === 'points') {
+    return resolveGPUSpatialContext(
+      id,
+      context ?? {coordinateSpace: 'longitude-latitude', metric: 'none'},
+      CELL_POINT_SUPPORT
+    );
+  }
+  const resolved = resolveGPUSpatialContext(
+    id,
+    context ?? {coordinateSpace: 'discrete-grid', metric: 'none', gridFamily: family},
+    CELL_KEYED_SUPPORT
+  );
+  if (resolved.gridFamily?.toLowerCase() !== family) {
+    throw new Error(`${id} spatialContext.gridFamily must be ${family}`);
+  }
+  if (resolved.gridResolution !== undefined && resolved.gridResolution < minimumResolution) {
+    throw new Error(
+      `${id} spatialContext.gridResolution is coarser than the output resolution ${minimumResolution}`
+    );
+  }
+  return resolved;
+}
 
 /**
  * Bit layout of the hierarchical part of a 64-bit cell key at one resolution.

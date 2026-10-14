@@ -16,7 +16,13 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogram';
+import {
+  getPairHistogramNodes,
+  getPairHistogramReadWGSL,
+  PAIR_HISTOGRAM_LARGE_TERM_SHIFT,
+  validatePairHistogramShape
+} from './pair-histogram';
+import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
 import {
   getPairStatisticsInputNodes,
   getPairStatisticsTotalSumNodes,
@@ -29,16 +35,32 @@ import {
   GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
 } from './spatial-correlogram-parameters';
 
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
+import {
+  validateGPUStatusPort,
+  type GPUStatusScalar
+} from '../../gpu-spatial-analysis/contracts/status';
+
 const OPERATION = 'GPUSpatialCorrelogram';
 
 /** Largest band count: each focus row keeps one private neighbor counter per band. */
 const MAXIMUM_BAND_COUNT = 64;
 
-/** Fixed-point full scale of one pair product. */
-const FIXED_POINT_SCALE = 16777216;
+/**
+ * Fixed-point units per variance of one pair product `c_i c_j`: the typical product has magnitude
+ * of the order of the variance, so the rounding unit never depends on the largest deviation.
+ */
+const PRODUCT_UNITS_PER_VARIANCE = 16777216;
 
-/** Accumulator channels: ordered pairs, positive and negative products, and `k^2` in 12-bit limbs. */
-const CHANNEL_COUNT = 6;
+/**
+ * Accumulator channels: ordered pairs (0), positive (1) and negative (2) products, `k^2` in 12-bit
+ * limbs (3 to 5) and the positive (6) and negative (7) products above `2^32 - 256` units, which are
+ * held in units of `2^PAIR_HISTOGRAM_LARGE_TERM_SHIFT`.
+ */
+const CHANNEL_COUNT = 8;
 
 /**
  * A variance below this fraction of the magnitude of its summed terms is reported as undefined:
@@ -66,6 +88,13 @@ export type GPUSpatialCorrelogramBandMode = 'cumulative' | 'annulus';
 export type GPUSpatialCorrelogramProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-correlogram'`. */
   id?: string;
+  /**
+   * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
+   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * `longitude-latitude` context throws at construction (project positions to a planar frame
+   * first).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /** Packed analysis values, one per row. Rows with a non-finite value are excluded. */
@@ -115,6 +144,13 @@ export type GPUSpatialCorrelogramProps = {
    * n * sum c^4 / (sum c^2)^2`).
    */
   statistics?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned one-row status: 1 when the integer sums are incomplete, because a
+   * product sum carried out of 64 bits (beyond `2^40` robust variances for products below 256,
+   * `2^52` for larger ones), a single product was beyond the clamp (`2^51` robust variances), or a band
+   * pair count reached `2^32 - 1` (`pairCounts` then saturates). 0 otherwise.
+   */
+  overflow?: GPUStatusScalar;
 };
 
 /**
@@ -139,16 +175,27 @@ export type GPUSpatialCorrelogramProps = {
  *   (for example a band holding every pair, whose exact variance is 0).
  *
  * Determinism and precision: pair products are accumulated as exact 64-bit integer sums of a
- * fixed-point quantization at `2^24 / max|c|^2`, split into positive and negative parts, so the
- * result is bitwise reproducible. Each product carries at most `max|c|^2 * 2^-25` absolute error,
- * so `|I|` errs by at most `n * max|c|^2 * 2^-25 / M2`. The analytic variance is evaluated in f32
- * and loses relative accuracy when a band holds most pairs.
+ * fixed-point quantization at `2^24 / u`, split into positive and negative parts, so the result
+ * is bitwise reproducible. `u` is the robust variance `(IQR / 1.349)^2` of the included values
+ * (exact quartiles), clamped to `[variance * 2^-32, variance]` with `variance = M2 / n`. The unit
+ * comes from the typical product, never from the maximum, and not from the plain variance either
+ * (which grows as `outlier^2 / n`), so one outlier or sentinel of any size cannot round every
+ * typical product to zero. Each product below 256 `u` (a deviation product up to 16 robust
+ * standard deviations squared) carries at most `u * 2^-25` absolute error, so `|I|` errs by at
+ * most `2^-25 * u / variance` (`n / S0 * S0 * u * 2^-25 / M2`). A larger product is added exactly in a second channel at
+ * `2^12` units, with a relative rounding error of at most `2^-21`, so the error of `I` from such
+ * products is at most `2^-21` of their own contribution. Sums beyond the 64-bit capacity (`2^40`
+ * `u`, `2^52` for the large channel) or a product beyond the clamp (`2^51` `u`) raise
+ * the `overflow` status instead of wrapping. The analytic variance is evaluated in f32 and loses
+ * relative accuracy when a band holds most pairs.
  */
 export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialCorrelogramProps;
+  /** Resolved spatial context (native planar unless the props say otherwise). */
+  readonly spatialContext: GPUSpatialContext;
   /** Band layout. */
   readonly bandMode: GPUSpatialCorrelogramBandMode;
 
@@ -156,6 +203,7 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     this.id = props.id ?? 'spatial-correlogram';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH
@@ -170,6 +218,9 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       throw new Error(`${id} bandCount must be an integer from 1 to ${MAXIMUM_BAND_COUNT}`);
     }
     validatePairHistogramShape(id, bandCount, CHANNEL_COUNT);
+    if (props.overflow) {
+      validateGPUStatusPort(id, {overflow: props.overflow});
+    }
     for (const [name, view] of [
       ['moransI', props.moransI],
       ['zScores', props.zScores],
@@ -214,7 +265,8 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
         props.varianceI,
         props.pairCounts,
         props.peakBands,
-        props.statistics
+        props.statistics,
+        props.overflow
       ],
       [props.positions, props.values, props.parameters, props.mask]
     );
@@ -238,7 +290,8 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       props.varianceI,
       props.pairCounts,
       props.peakBands,
-      props.statistics
+      props.statistics,
+      props.overflow
     ]);
     const rows = positions.length;
     const cumulative = bandMode === 'cumulative';
@@ -253,14 +306,24 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     });
     const statistics = inputs.statistics!;
     const nodes = inputs.nodes;
+    const unit = getPairStatisticsUnitVarianceNodes<Parameters>(graph, {
+      id,
+      operation: OPERATION,
+      values: props.values,
+      mask: props.mask,
+      statistics
+    });
+    nodes.push(...unit.nodes);
+    const unitVariance = unit.unitVariance;
     const momentsWGSL = `const MOMENTS: u32 = ${rows}u;
 const BAND_COUNT: u32 = ${bandCount}u;
-const FIXED_POINT_SCALE: f32 = ${FIXED_POINT_SCALE}.0;
+const PRODUCT_UNITS_PER_VARIANCE: f32 = ${PRODUCT_UNITS_PER_VARIANCE}.0;
+const LARGE_TERM_UNIT: f32 = ${2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT}.0;
 
+// Fixed-point units per unit of product, from the typical magnitude (the variance), not the maximum.
 fn getProductScale() -> f32 {
-  let maximumAbsolute = statistics[statisticsOffset + MOMENTS + 5u];
-  let maximumProduct = maximumAbsolute * maximumAbsolute;
-  return select(0.0, FIXED_POINT_SCALE / maximumProduct, maximumProduct > 0.0);
+  let unitVariance = unitVarianceView[unitVarianceViewOffset];
+  return select(0.0, PRODUCT_UNITS_PER_VARIANCE / unitVariance, unitVariance > 0.0);
 }`;
 
     // Fourth central moment for the randomization variance: a deterministic tree sum of c^4.
@@ -300,7 +363,10 @@ fn getProductScale() -> f32 {
       slotCount: bandCount,
       channelCount: CHANNEL_COUNT,
       pairOrder: 'ordered',
-      extraBindings: [{name: 'statistics', view: statistics, type: 'f32', access: 'read'}],
+      extraBindings: [
+        {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
+        {name: 'unitVarianceView', view: unitVariance, type: 'f32', access: 'read'}
+      ],
       declarations: momentsWGSL,
       focusPrologue: `let productScale = getProductScale();
     let focusValue = statistics[statisticsOffset + focus];
@@ -309,7 +375,8 @@ fn getProductScale() -> f32 {
             degree[band] += 1u;
             let product = focusValue * statistics[statisticsOffset + neighbor];
             accumulate(band, 0u, 1u);
-            accumulate(band, select(2u, 1u, product >= 0.0), quantizePairAmount(abs(product) * productScale));`,
+            let positive = product >= 0.0;
+            accumulateScaled(band, select(2u, 1u, positive), select(7u, 6u, positive), abs(product) * productScale);`,
       // k^2 can exceed 32 bits: split k (< 2^24) into 12-bit limbs, k = a * 2^12 + c, and
       // accumulate a^2, 2ac and c^2, weighted 2^24, 2^12 and 1 when read.
       focusEpilogue: `var runningDegree = 0u;
@@ -341,6 +408,7 @@ fn getProductScale() -> f32 {
         bindings: [
           {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
           {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
+          {name: 'unitVarianceView', view: unitVariance, type: 'f32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
           {name: 'fourthTotal', view: fourthTotal, type: 'f32', access: 'read'},
           {name: 'bandResults', view: bandResults, type: 'f32', access: 'read_write'},
@@ -379,11 +447,10 @@ fn toFloat(sum: vec2<u32>) -> f32 {
   bandCounts[bandCountsOffset + index] =
     select(0xffffffffu, (orderedPairs.y << 31u) | (orderedPairs.x >> 1u), orderedPairs.y < 2u);
   let weightSum = toFloat(orderedPairs);
-  let productSum = select(
-    0.0,
-    (toFloat(sumChannel(firstBand, index, 1u)) - toFloat(sumChannel(firstBand, index, 2u))) / productScale,
-    productScale > 0.0
-  );
+  // The large channels hold products in units of LARGE_TERM_UNIT fixed-point units.
+  let positiveSum = toFloat(sumChannel(firstBand, index, 1u)) + toFloat(sumChannel(firstBand, index, 6u)) * LARGE_TERM_UNIT;
+  let negativeSum = toFloat(sumChannel(firstBand, index, 2u)) + toFloat(sumChannel(firstBand, index, 7u)) * LARGE_TERM_UNIT;
+  let productSum = select(0.0, (positiveSum - negativeSum) / productScale, productScale > 0.0);
   // Squared neighbor counts are per band (already cumulative when the bands are).
   let degreeSquares = toFloat(sumChannel(index, index, 3u)) * 16777216.0 +
     toFloat(sumChannel(index, index, 4u)) * 4096.0 + toFloat(sumChannel(index, index, 5u));
@@ -484,6 +551,49 @@ ${TWO_SIDED_P_VALUE_WGSL}`,
   ${outputLines.join('\n  ')}`
       })
     );
+
+    if (props.overflow) {
+      // One row: the histogram overflow word, a saturated band count, or (cumulative bands) a
+      // product channel whose sum over the bands carries out of 64 bits.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-overflow`,
+          operation: OPERATION,
+          variant: 'overflow',
+          bindings: [
+            {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
+            {name: 'bandCounts', view: bandCounts, type: 'u32', access: 'read'},
+            {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          declarations: getPairHistogramReadWGSL('accumulators', CHANNEL_COUNT, '', bandCount),
+          body: `var flagged = readPairOverflow();
+  for (var band = 0u; band < ${bandCount}u; band++) {
+    flagged = flagged || bandCounts[bandCountsOffset + band] == 0xffffffffu;
+  }
+  ${
+    cumulative
+      ? `for (var channelIndex = 0u; channelIndex < 4u; channelIndex++) {
+    let channel = select(channelIndex + 4u, channelIndex + 1u, channelIndex < 2u);
+    var low = 0u;
+    var high = 0u;
+    for (var band = 0u; band < ${bandCount}u; band++) {
+      let word = (band * ${CHANNEL_COUNT}u + channel) * 2u;
+      let previousLow = low;
+      low += accumulators[accumulatorsOffset + word];
+      let withLow = high + select(0u, 1u, low < previousLow);
+      flagged = flagged || withLow < high;
+      let nextHigh = withLow + accumulators[accumulatorsOffset + word + 1u];
+      flagged = flagged || nextHigh < withLow;
+      high = nextHigh;
+    }
+  }`
+      : ''
+  }
+  overflow[overflowOffset] = select(0u, 1u, flagged);`
+        })
+      );
+    }
 
     if (props.peakBands) {
       nodes.push(

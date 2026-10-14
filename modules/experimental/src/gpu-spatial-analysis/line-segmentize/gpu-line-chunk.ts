@@ -17,7 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 import {createPathPrefixNode} from './line-segmentize-kernels';
 import {
   createPieceCountNode,
@@ -28,7 +28,11 @@ import {
   LINE_PIECE_STRIDE,
   type LinePieceMode
 } from './line-chunk-kernels';
-import type {GPULineCoordinateSystem, GPULinePathOutput} from './line-segmentize-types';
+import {
+  resolveLineSpatialContext,
+  type GPULineCoordinateSystem,
+  type GPULinePathOutput
+} from './line-segmentize-types';
 import {getLinePathOutputViews, validateLinePathOutput} from './line-path-output';
 
 const OPERATION = 'GPULineChunk';
@@ -76,13 +80,13 @@ export function getGPULineChunkParameterValues(
  * Properties for {@link GPULineChunk}.
  *
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Compile-time:
- * view lengths, the path count, `mode`, `coordinateSystem`, `radius`, the vertex and path
+ * view lengths, the path count, `mode`, `spatialContext`, the vertex and path
  * capacities, and which optional outputs are present.
  */
 export type GPULineChunkProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-chunk'`. */
   id?: string;
-  /** Packed positions sorted by path (longitude/latitude degrees for `'spherical'`). */
+  /** Packed positions sorted by path (longitude/latitude degrees for a great-circle `spatialContext`). */
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets. */
   pathOffsets: GraphDataView<'uint32'>;
@@ -92,10 +96,12 @@ export type GPULineChunkProps = {
    * `ST_LineSubstring` by distance).
    */
   mode: LinePieceMode;
-  /** `'planar'` (default) or `'spherical'` (great-circle measures and interpolation). */
-  coordinateSystem?: GPULineCoordinateSystem;
-  /** Sphere radius for `'spherical'`. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
-  radius?: number;
+  /**
+   * Planar (default), or `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` for
+   * great-circle measures and interpolation in the context unit (meters by default). Replaces the
+   * former `coordinateSystem` and `radius` props.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Per-frame packed float32 view of at least {@link GPU_LINE_CHUNK_PARAMETER_LENGTH} elements
    * written with `getGPULineChunkParameterValues`.
@@ -112,7 +118,7 @@ export type GPULineChunkProps = {
 /**
  * Splits paths into fixed-length chunks, or extracts a measure range from every path, on the GPU.
  *
- * Measures are cumulative path lengths (planar, or great-circle times `radius`) from a per-path
+ * Measures are cumulative path lengths (planar, or great-circle times the sphere radius, meters by default) from a per-path
  * Neumaier-compensated prefix. Chunk `i` of a path of length `L` covers
  * `[i * chunkLength, min((i + 1) * chunkLength, L)]`; a path gets `ceil(L / chunkLength)` chunks,
  * capped at the path capacity plus one so a tiny chunk length overflows instead of wrapping counts.
@@ -130,9 +136,11 @@ export class GPULineChunk implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineChunkProps;
-  /** Resolved coordinate system. */
+  /** Resolved spatial context (planar unless given). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Kernel model derived from `spatialContext`. */
   readonly coordinateSystem: GPULineCoordinateSystem;
-  /** Resolved sphere radius. */
+  /** Resolved sphere radius in the context's length unit (1 for planar). */
   readonly radius: number;
   /** Number of output path slots. */
   readonly pathCapacity: number;
@@ -140,8 +148,10 @@ export class GPULineChunk implements GPUCommandNodeProducer {
   constructor(props: GPULineChunkProps) {
     this.id = props.id ?? 'line-chunk';
     this.props = props;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    const resolved = resolveLineSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolved.spatialContext;
+    this.coordinateSystem = resolved.coordinateSystem;
+    this.radius = resolved.radius;
     const {id} = this;
     for (const [name, view] of [
       ['positions', props.positions],
@@ -154,12 +164,6 @@ export class GPULineChunk implements GPUCommandNodeProducer {
     }
     if (props.mode !== 'chunk' && props.mode !== 'substring') {
       throw new Error(`${id} mode must be 'chunk' or 'substring'`);
-    }
-    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
     }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;

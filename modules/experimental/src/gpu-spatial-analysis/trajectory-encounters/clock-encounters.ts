@@ -29,7 +29,10 @@ export type AddClockEncountersProps = Omit<
 > & {
   /** Prefix for generated node and transient IDs. Defaults to `'clock-encounters'`. */
   id?: string;
-  /** Packed planar positions, one row per sample, sorted by track and then time. */
+  /**
+   * Packed positions (planar, or longitude/latitude degrees per `spatialContext`), one row per
+   * sample, sorted by track and then time.
+   */
   positions: GraphDataView<'float32x2'>;
   /** Packed sample times, float32 relative or `uint32x2` Int64 words, sorted inside each track. */
   timestamps: GraphDataView<'float32'> | GraphDataView<'uint32x2'>;
@@ -104,6 +107,7 @@ export function addClockEncounters<Parameters>(
     : undefined;
   const resample = new GPUTrajectoryResample({
     id: `${id}-resample`,
+    spatialContext: props.spatialContext,
     positions,
     timestamps,
     trackOffsets,

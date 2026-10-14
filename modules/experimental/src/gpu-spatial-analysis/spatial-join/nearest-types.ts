@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
 import type {
   GPUNearestFeatureSource,
   GPUSpatialJoinGeometry,
@@ -51,3 +57,36 @@ export type NearestSide = {
 
 /** Packed rows used by a polygon side after ring ranges are precomputed. @internal */
 export type NearestPolygonRings = GraphDataView<'uint32x2'>;
+
+/** Contexts of the nearest-feature operations: planar, or great-circle on longitude/latitude. @internal */
+export const NEAREST_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+  coordinateSpaces: ['planar', 'longitude-latitude'],
+  metrics: ['none', 'native', 'great-circle']
+};
+
+/**
+ * Resolves the spatial context of a nearest-feature operation and its sphere radius in meters
+ * (`undefined` for planar distances). Longitude/latitude positions need `metric: 'great-circle'`;
+ * `units: 'kilometers'` is rejected because distances are meters.
+ *
+ * @internal
+ */
+export function resolveNearestSpatialContext(
+  id: string,
+  context: GPUSpatialContext | undefined
+): {spatialContext: GPUSpatialContext; sphereRadius: number | undefined} {
+  const spatialContext = resolveGPUSpatialContext(id, context, NEAREST_SPATIAL_CONTEXT_SUPPORT);
+  if (spatialContext.coordinateSpace !== 'longitude-latitude') {
+    return {spatialContext, sphereRadius: undefined};
+  }
+  if (spatialContext.metric !== 'great-circle') {
+    throw new Error(`${id} longitude-latitude positions need metric 'great-circle' (meters)`);
+  }
+  if (spatialContext.units === 'kilometers') {
+    throw new Error(`${id} great-circle distances are in meters`);
+  }
+  return {
+    spatialContext,
+    sphereRadius: spatialContext.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS
+  };
+}

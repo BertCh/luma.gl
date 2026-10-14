@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUGridIndexView, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
 
 /** Number of `uint32` header words at the start of a region statistics summary. */
 export const GPU_REGION_STATISTICS_HEADER_LENGTH = 8;
@@ -183,3 +188,33 @@ export type GPURegionStatisticsResult = {
   /** Whether the grid candidate path may have missed rows. Always false without `spatialIndex`. */
   candidatesTruncated: boolean;
 };
+
+/**
+ * Spatial contexts accepted by region selections. Rectangle, lasso and pick selections are
+ * topological tests, so they work on planar coordinates or on longitude/latitude degrees (edges
+ * are straight lines in degree space, with no antimeridian handling). Radius selections measure a
+ * planar distance and reject longitude/latitude, see {@link resolveGPURegionSpatialContext}.
+ */
+export const GPU_REGION_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native'] as const)
+});
+
+/**
+ * Validates a region operation's spatial context. A `'radius'` selection throws in
+ * longitude/latitude because its radius is a planar distance in position units.
+ * @internal
+ */
+export function resolveGPURegionSpatialContext(
+  id: string,
+  context: GPUSpatialContext | undefined,
+  selectionKind: GPURegionSelection['kind'] | undefined
+): GPUSpatialContext {
+  const resolved = resolveGPUSpatialContext(id, context, GPU_REGION_SPATIAL_CONTEXT_SUPPORT);
+  if (selectionKind === 'radius' && resolved.coordinateSpace === 'longitude-latitude') {
+    throw new Error(
+      `${id} radius selections need planar coordinates; project positions to a planar frame first or use a rectangle or lasso`
+    );
+  }
+  return resolved;
+}

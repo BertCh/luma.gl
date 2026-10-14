@@ -21,7 +21,7 @@ export const GPU_ORDINARY_LEAST_SQUARES_STATUS_TOO_FEW_ROWS = 2;
 export const GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE = 1e-3;
 
 /** Number of float32 elements `output.summary` must hold. */
-export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH = 16;
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH = 22;
 
 /** `summary` slot: number of rows used (finite, unmasked), stored as a float32 integer. */
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT = 0;
@@ -41,10 +41,14 @@ export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BIC = 6;
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA = 7;
 /** `summary` slot: Jarque-Bera p-value, `exp(-JB / 2)` (chi-square with 2 degrees of freedom). */
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_JARQUE_BERA_P_VALUE = 8;
-/** `summary` slot: Breusch-Pagan statistic, Koenker studentized form `n R2` of `e^2 ~ X`. */
-export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN = 9;
-/** `summary` slot: Breusch-Pagan p-value (chi-square with `predictorCount` degrees of freedom). */
-export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE = 10;
+/**
+ * `summary` slot: Koenker-Bassett (studentized Breusch-Pagan) statistic `n R2` of the auxiliary
+ * regression `e^2 ~ [1, X]`. It does not assume normal errors (spreg `koenker_bassett`, with
+ * `z = [1, X]`).
+ */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT = 9;
+/** `summary` slot: Koenker-Bassett p-value (chi-square with `predictorCount` degrees of freedom). */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KOENKER_BASSETT_P_VALUE = 10;
 /** `summary` slot: residual sum of squares. */
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES = 11;
 /** `summary` slot: total (centered) sum of squares of the response. */
@@ -55,6 +59,38 @@ export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SKEWNESS = 13;
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_KURTOSIS = 14;
 /** `summary` slot: ridge `lambda` the fit used (0 without a parameter view). */
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_RIDGE_LAMBDA = 15;
+/**
+ * `summary` slot: classic Breusch-Pagan statistic (normal errors), `ESS / 2` of `g = e^2 / s2 - 1`
+ * regressed on `[1, X]` with `s2 = RSS / n`, which equals `0.5 R2_aux (sum e^4 / s2^2 - n)`
+ * (spreg `breusch_pagan` with `z = [1, X]`). It is not robust to non-normal errors: compare with
+ * the Koenker-Bassett slot, which is.
+ */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN = 16;
+/** `summary` slot: Breusch-Pagan p-value (chi-square with `predictorCount` degrees of freedom). */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE = 17;
+/**
+ * `summary` slot: Belsley multicollinearity condition number of the design with its intercept,
+ * `sqrt(lambdaMax / lambdaMin)` of the raw `[1, X]` Gram matrix scaled to unit diagonal (spreg
+ * `OLS.mulColli`). Values above about 30 indicate harmful collinearity. Ridge is not included.
+ */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER = 18;
+/**
+ * `summary` slot: `lambdaMax / lambdaMin` of the predictor correlation matrix that the float32
+ * Cholesky solve factors (with the ridge penalty when one is set). The relative error of the
+ * float32 coefficients is about this value times `6e-8`.
+ */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_CORRELATION_CONDITION_NUMBER = 19;
+/**
+ * `summary` slot: largest variance inflation factor, the largest diagonal entry of the inverse of
+ * the factored predictor correlation matrix (`max_j 1 / (1 - R_j^2)`).
+ */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR = 20;
+/**
+ * `summary` slot: 1 when the correlation condition number exceeds
+ * `GPU_REGRESSION_PRECISION_CONDITION_LIMIT` (1e4: float32 normal equations may have lost more than
+ * about three of seven digits), else 0. A warning never changes `status` and never NaNs the fit.
+ */
+export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING = 21;
 
 /**
  * Packs the per-frame parameters of `GPUOrdinaryLeastSquares`.

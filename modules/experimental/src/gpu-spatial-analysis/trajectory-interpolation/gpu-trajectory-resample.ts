@@ -15,6 +15,11 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  getTrajectoryGeodesicRadius,
+  resolveTrajectorySpatialContext
+} from '../trajectory-analysis/trajectory-spatial-context';
 import {GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH} from './trajectory-clock-parameters';
 import {
   createTrajectoryArcLengthNode,
@@ -33,8 +38,17 @@ export type GPUTrajectoryResampleSpacing = 'time' | 'arc-length' | 'clock';
 export type GPUTrajectoryResampleProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'trajectory-resample'`. */
   id?: string;
-  /** Packed planar positions, one row per sample, sorted by track and then time. */
+  /** Packed positions (planar, or longitude/latitude degrees), one row per sample, sorted by track and then time. */
   positions: GraphDataView<'float32x2'>;
+  /**
+   * Coordinate space and metric of `positions`. Omitted means native planar coordinates, linear
+   * interpolation and planar arc length. `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` means `(longitude, latitude)` degrees interpolated along great circles
+   * (spherical linear interpolation) on a sphere of `sphereRadius` (default
+   * `GPU_EARTH_MEAN_RADIUS_METERS`), with `'arc-length'` spacing measured in great-circle meters.
+   * Other contexts throw.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Optional packed elevation (z) per sample. Required for `sampleElevations`. */
   elevations?: GraphDataView<'float32'>;
   /**
@@ -48,7 +62,7 @@ export type GPUTrajectoryResampleProps = {
   sampleCount: number;
   /**
    * `'time'` (default) spaces samples uniformly between the first and last timestamp;
-   * `'arc-length'` spaces them uniformly along the planar path length; `'clock'` samples every
+   * `'arc-length'` spaces them uniformly along the path length (planar, or great-circle meters); `'clock'` samples every
    * track at the shared instants `start + k * step` of `clock` (see below).
    */
   spacing?: GPUTrajectoryResampleSpacing;
@@ -88,6 +102,12 @@ export type GPUTrajectoryResampleProps = {
  * and for empty tracks, the position (and elevation) is NaN, which downstream contributors read as
  * "absent". `sampleCount` is then the number of clock steps.
  *
+ * Spatial context: with a great-circle `spatialContext`, samples lie on the great-circle arc of
+ * the bracketing segment and are interpolated with spherical linear interpolation instead of a
+ * linear blend of degrees. Sample longitudes are continuous with the start row of the bracketing
+ * segment, so a segment crossing the antimeridian yields longitudes beyond +-180 (the segment end
+ * is `b` shifted by a multiple of 360); wrap downstream if needed. Absent clock samples stay NaN.
+ *
  * Composition: in arc-length mode one per-track kernel sums step lengths sequentially in row order
  * (deterministic, but O(track length) per invocation); then one kernel with one invocation per
  * output sample.
@@ -99,10 +119,13 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
   readonly props: GPUTrajectoryResampleProps;
   /** Resolved spacing. */
   readonly spacing: GPUTrajectoryResampleSpacing;
+  /** Resolved coordinate and metric context; native planar when `props.spatialContext` is omitted. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUTrajectoryResampleProps) {
     this.id = props.id ?? 'trajectory-resample';
     this.props = props;
+    this.spatialContext = resolveTrajectorySpatialContext(this.id, props.spatialContext);
     this.spacing = props.spacing ?? 'time';
     const id = this.id;
     const rowCount = props.positions.length;
@@ -194,6 +217,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     const rowCount = props.positions.length;
     const trackCount = props.trackOffsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
+    const geodesicRadius = getTrajectoryGeodesicRadius(this.spatialContext);
     let cumulativeLengths: GraphDataView<'float32'> | undefined;
     if (this.spacing === 'arc-length') {
       cumulativeLengths = createTransientView(
@@ -208,6 +232,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
           positions: props.positions,
           trackOffsets: props.trackOffsets,
           cumulativeLengths,
+          geodesicRadius,
           rowCount,
           trackCount
         })
@@ -226,6 +251,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         samples: props.samples,
         sampleElevations: props.sampleElevations,
         sampleTimes: props.sampleTimes,
+        geodesicRadius,
         rowCount,
         trackCount,
         sampleCount: props.sampleCount

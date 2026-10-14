@@ -22,6 +22,12 @@ import {validateCellIndexResolution, type GPUCellIndexFamily} from './cell-index
 import {GEOHASH_INDEX_WGSL, QUADKEY_INDEX_WGSL, S2_INDEX_WGSL} from './cell-index-wgsl';
 import {H3_INDEX_WGSL} from './h3-index-wgsl';
 import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+import {
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUPointToCell';
 
@@ -49,6 +55,11 @@ export type GPUPointToCellProps = {
    * geohash 1-12, S2 0-30.
    */
   resolution: number;
+  /**
+   * Coordinate contract of `positions`. Defaults to, and must be, longitude/latitude without a
+   * metric; planar contexts throw (project-first does not apply: grids index geographic positions).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Longitude/latitude degrees per row. */
   positions: GraphDataView<'float32x2'>;
   /** Optional per-row mask; zero produces a zero key. */
@@ -94,10 +105,17 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUPointToCellProps;
+  /** Resolved spatial context (longitude/latitude, no metric). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUPointToCellProps) {
     this.id = props.id ?? 'point-to-cell';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext ?? GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+      GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
+    );
     const id = this.id;
     validateCellIndexResolution(id, props.family, props.resolution);
     for (const [name, view] of [

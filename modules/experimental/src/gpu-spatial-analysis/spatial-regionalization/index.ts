@@ -26,6 +26,7 @@ export {
   GPUAZPRegions,
   GPU_AZP_MAXIMUM_COLUMNS,
   GPU_AZP_MAXIMUM_ITERATIONS,
+  GPU_AZP_MAXIMUM_ROWS,
   GPU_AZP_STATUS
 } from './gpu-azp-regions';
 export type {GPUAZPRegionsProps} from './gpu-azp-regions';
@@ -37,7 +38,9 @@ export {
 export type {GPUWardRegionsProps} from './gpu-ward-regions';
 export {
   GPUMaxPRegions,
+  GPU_MAX_P_DEFAULT_START_COUNT,
   GPU_MAX_P_MAXIMUM_COLUMNS,
+  GPU_MAX_P_MAXIMUM_START_COUNT,
   GPU_MAX_P_STATUS
 } from './gpu-max-p-regions';
 export type {GPUMaxPRegionsOutput, GPUMaxPRegionsProps} from './gpu-max-p-regions';

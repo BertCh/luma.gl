@@ -4,10 +4,12 @@
 
 export {
   GPULocalPermutationTest,
+  GPU_LOCAL_GEARY_CLASS,
   GPU_LOCAL_PERMUTATION_MAXIMUM_NEIGHBORS,
   GPU_LOCAL_PERMUTATION_NOT_TESTED
 } from './gpu-local-permutation-test';
 export type {
+  GPULocalJoinCountCase,
   GPULocalPermutationStatistic,
   GPULocalPermutationTestProps
 } from './gpu-local-permutation-test';

@@ -18,6 +18,7 @@ import {
 import {
   getPairHistogramNodes,
   getPairHistogramReadWGSL,
+  PAIR_HISTOGRAM_LARGE_TERM_SHIFT,
   validatePairHistogramShape
 } from './pair-histogram';
 import {
@@ -25,15 +26,35 @@ import {
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs
 } from './pair-statistics-grid';
+import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
 import {
   GPU_VARIOGRAM_PARAMETER_LENGTH,
   GPU_VARIOGRAM_STATISTICS_LENGTH
 } from './variogram-parameters';
 
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
+import {
+  validateGPUStatusPort,
+  type GPUStatusScalar
+} from '../../gpu-spatial-analysis/contracts/status';
+
 const OPERATION = 'GPUVariogram';
 
-/** Fixed-point full scale of one pair term: terms are scaled to at most `2^24` before rounding. */
+/**
+ * Fixed-point full scale of the distance and robust terms: they are scaled to at most `2^24`
+ * before rounding (both are bounded by known quantities, `maximumDistance` and `sqrt(range)`).
+ */
 const FIXED_POINT_SCALE = 16777216;
+
+/**
+ * Matheron fixed-point units per unit variance: the typical pair term `(z_i - z_j)^2 / 2` has mean
+ * equal to the variance, so a term of one (robust) variance maps to `2^24` units and the rounding
+ * unit never depends on the largest value in the data (an outlier or sentinel cannot swamp it).
+ */
+const SEMIVARIANCE_UNITS_PER_VARIANCE = 16777216;
 
 /**
  * Properties for {@link GPUVariogram}.
@@ -45,6 +66,13 @@ const FIXED_POINT_SCALE = 16777216;
 export type GPUVariogramProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'variogram'`. */
   id?: string;
+  /**
+   * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
+   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * `longitude-latitude` context throws at construction (project positions to a planar frame
+   * first).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /** Packed observed values, one per row. Rows with a non-finite value are excluded. */
@@ -64,7 +92,8 @@ export type GPUVariogramProps = {
   lagCount: number;
   /**
    * Number of direction sectors over `[0, pi)`. Compile-time. Defaults to 1 (omnidirectional).
-   * `lagCount * directionCount` must be at most 512.
+   * `lagCount * directionCount` must be at most 512 (409 with `robustSemivariances`: the
+   * accumulators are limited to 2048 bins x channels).
    */
   directionCount?: number;
   /** Optional row selection: nonzero includes the row. */
@@ -89,6 +118,14 @@ export type GPUVariogramProps = {
    * sill reference for a stationary field.
    */
   statistics?: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned one-row status: 1 when the integer sums are incomplete, either because
+   * an accumulator carried out of 64 bits (sums beyond `2^40` robust variances for terms below
+   * 256, or `2^52` for larger terms, for example an enormous sentinel with very many neighbors), a
+   * single term was beyond the clamp (`2^51` robust variances of `(z_i - z_j)^2 / 2`), or a bin pair count reached `2^32 - 1` (`pairCounts` then saturates at
+   * `0xffffffff`). 0 otherwise.
+   */
+  overflow?: GPUStatusScalar;
 };
 
 /**
@@ -110,19 +147,44 @@ export type GPUVariogramProps = {
  *
  * Determinism and precision: every pair term is accumulated as an exact 64-bit integer sum of a
  * fixed-point quantization (see the shared pair histogram), so results are bitwise reproducible
- * and independent of scheduling. Each term is scaled so its largest possible value maps to `2^24`
- * (for the semivariance `(max - min)^2 / 2` from the GPU-computed value extremes, for distances
- * `maximumDistance`, for the robust term `sqrt(max - min)`) and rounded to the nearest integer, so
- * the absolute error of a bin mean is at most `2^-25` of that full scale, for example
- * `(max - min)^2 * 2^-26` for `gamma`, plus f32 rounding of the term itself.
+ * and independent of scheduling.
+ * - Matheron `gamma`: the unit is derived from the typical term, never the maximum. A term
+ *   `(z_i - z_j)^2 / 2` is multiplied by `2^24 / u` and rounded to the nearest integer, where `u`
+ *   is the robust variance `(IQR / 1.349)^2` of the included values (exact quartiles of the
+ *   masked finite values), clamped to `[variance * 2^-32, variance]` so that it is never coarser
+ *   than the population variance (`variance * 2^-12` when the IQR is 0, i.e. over half of the
+ *   values are tied). The absolute error of a
+ *   bin mean is at most `u * 2^-25` (at most `variance * 2^-25`), plus f32 rounding of the term
+ *   (relative `2^-24`). That is below the former `(max - min)^2 * 2^-26` bound for every data set
+ *   (the variance is at most a quarter of the squared range), and unlike the plain variance (which
+ *   grows as `outlier^2 / n`) it does not degrade when one outlier or sentinel of any size
+ *   inflates the range: the interquartile range ignores a quarter of contaminated rows. A rare
+ *   term above `2^32 - 256` units (about 256 variances, a difference beyond 22 standard
+ *   deviations) is added exactly as a 64-bit amount in a second channel at `2^12` units, with a
+ *   relative rounding error of at most `2^-21` (a bin's contribution from such terms is accurate
+ *   to relative `5e-7`). The worst-case relative error of `gamma` in a bin is therefore
+ *   `max(u * 2^-25 / gamma, 5e-7 + 2^-24)`.
+ * - Capacity (in units of `u`): the first channel holds sums up to `2^40` and the second up to
+ *   `2^52`; a term is clamped at `2^51`. With `u` at the variance of typical data that is about
+ *   `1e12` pairs of typical terms. A bin beyond that, or a term beyond the clamp, raises the
+ *   `overflow` status instead of wrapping.
+ * - Distances: unit `maximumDistance * 2^-24`, absolute error at most `maximumDistance * 2^-25`.
+ * - Cressie-Hawkins: unit `sqrt(max - min) * 2^-24` for `|z_i - z_j|^(1/2)`, which grows only as
+ *   the square root of the range, so a single outlier of 1e6 variances changes it by 1e3.
  *
- * Model fitting is a CPU step on the read-back bins: see `fitVariogramModel`.
+ * `pairCounts` saturate at `0xffffffff` (`2^32 - 1`) per bin, and `overflow` is raised when they do.
+ *
+ * Model fitting is a CPU step: `fitVariogramModel` runs on the CPU over the read-back bins
+ * (semivariances, pair counts and mean distances); the GPU only produces the empirical variogram.
+ * Because saturated counts would distort its pair weights, check `overflow` before fitting.
  */
 export class GPUVariogram implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUVariogramProps;
+  /** Resolved spatial context (native planar unless the props say otherwise). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of direction sectors (1 when omnidirectional). */
   readonly directionCount: number;
 
@@ -130,6 +192,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     this.id = props.id ?? 'variogram';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH
@@ -146,7 +209,11 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     if (binCount > 512) {
       throw new Error(`${id} lagCount * directionCount must be at most 512`);
     }
-    validatePairHistogramShape(id, binCount, 4);
+    // Count, Matheron, distance, the large-term Matheron channel and optionally Cressie-Hawkins.
+    validatePairHistogramShape(id, binCount, props.robustSemivariances ? 5 : 4);
+    if (props.overflow) {
+      validateGPUStatusPort(id, {overflow: props.overflow});
+    }
     for (const [name, view] of [
       ['semivariances', props.semivariances],
       ['meanDistances', props.meanDistances],
@@ -178,7 +245,8 @@ export class GPUVariogram implements GPUCommandNodeProducer {
         props.pairCounts,
         props.meanDistances,
         props.robustSemivariances,
-        props.statistics
+        props.statistics,
+        props.overflow
       ],
       [props.positions, props.values, props.parameters, props.mask]
     );
@@ -199,12 +267,15 @@ export class GPUVariogram implements GPUCommandNodeProducer {
       props.pairCounts,
       props.meanDistances,
       props.robustSemivariances,
-      props.statistics
+      props.statistics,
+      props.overflow
     ]);
     const rows = positions.length;
     const binCount = lagCount * directionCount;
     const robust = Boolean(props.robustSemivariances);
-    const channelCount = robust ? 4 : 3;
+    // Channels: 0 pair count, 1 Matheron, 2 distance, [3 robust,] then the large Matheron terms.
+    const largeChannel = robust ? 4 : 3;
+    const channelCount = largeChannel + 1;
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
@@ -216,6 +287,15 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     });
     const statistics = inputs.statistics!;
     const nodes = inputs.nodes;
+    const unit = getPairStatisticsUnitVarianceNodes<Parameters>(graph, {
+      id,
+      operation: OPERATION,
+      values: props.values,
+      mask: props.mask,
+      statistics
+    });
+    nodes.push(...unit.nodes);
+    const unitVariance = unit.unitVariance;
     // Scales derive from the GPU moments and parameters, so the pair and finishing kernels compute
     // bitwise identical values.
     const scaleWGSL = /* wgsl */ `
@@ -223,6 +303,8 @@ const MOMENTS: u32 = ${rows}u;
 const LAG_COUNT: u32 = ${lagCount}u;
 const DIRECTION_COUNT: u32 = ${directionCount}u;
 const FIXED_POINT_SCALE: f32 = ${FIXED_POINT_SCALE}.0;
+const SEMIVARIANCE_UNITS_PER_VARIANCE: f32 = ${SEMIVARIANCE_UNITS_PER_VARIANCE}.0;
+const LARGE_TERM_UNIT: f32 = ${2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT}.0;
 const PI: f32 = 3.14159265358979;
 
 struct VariogramScales {
@@ -234,7 +316,9 @@ struct VariogramScales {
 fn getVariogramScales() -> VariogramScales {
   let valueRange = statistics[statisticsOffset + MOMENTS + 4u] - statistics[statisticsOffset + MOMENTS + 3u];
   var scales: VariogramScales;
-  scales.semivariance = select(0.0, FIXED_POINT_SCALE / (0.5 * valueRange * valueRange), valueRange > 0.0);
+  // The Matheron unit comes from the typical term (the robust variance), not from the value range.
+  let unitVariance = unitVarianceView[unitVarianceViewOffset];
+  scales.semivariance = select(0.0, SEMIVARIANCE_UNITS_PER_VARIANCE / unitVariance, unitVariance > 0.0);
   scales.robust = select(0.0, FIXED_POINT_SCALE / sqrt(valueRange), valueRange > 0.0);
   scales.distance = FIXED_POINT_SCALE / parameters[parametersOffset + 4u];
   return scales;
@@ -250,7 +334,10 @@ fn getVariogramScales() -> VariogramScales {
       slotCount: binCount,
       channelCount,
       pairOrder: 'unordered',
-      extraBindings: [{name: 'statistics', view: statistics, type: 'f32', access: 'read'}],
+      extraBindings: [
+        {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
+        {name: 'unitVarianceView', view: unitVariance, type: 'f32', access: 'read'}
+      ],
       declarations: scaleWGSL,
       focusPrologue: `let scales = getVariogramScales();
     let focusValue = statistics[statisticsOffset + focus];
@@ -265,7 +352,7 @@ fn getVariogramScales() -> VariogramScales {
             let bin = sector * LAG_COUNT + lag;
             let difference = statistics[statisticsOffset + neighbor] - focusValue;
             accumulate(bin, 0u, 1u);
-            accumulate(bin, 1u, quantizePairAmount(0.5 * difference * difference * scales.semivariance));
+            accumulateScaled(bin, 1u, ${largeChannel}u, 0.5 * difference * difference * scales.semivariance);
             accumulate(bin, 2u, quantizePairAmount(pairDistance * scales.distance));
             ${robust ? 'accumulate(bin, 3u, quantizePairAmount(sqrt(abs(difference)) * scales.robust));' : ''}`
     });
@@ -274,6 +361,7 @@ fn getVariogramScales() -> VariogramScales {
     const finishBindings: WGSLKernelBinding[] = [
       {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
       {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
+      {name: 'unitVarianceView', view: unitVariance, type: 'f32', access: 'read'},
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
       {name: 'semivariances', view: props.semivariances, type: 'f32', access: 'read_write'}
     ];
@@ -310,13 +398,14 @@ fn getVariogramScales() -> VariogramScales {
         invocationCount: binCount,
         declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
 ${scaleWGSL}
-${getPairHistogramReadWGSL('accumulators', channelCount)}`,
+${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
         body: `let scales = getVariogramScales();
   let pairCount = readPairAccumulator(index, 0u);
   let hasPairs = pairCount > 0.0;
   let nan = getQuietNaN(index);
-  let semivarianceSum = readPairAccumulator(index, 1u);
-  // A zero value range means every difference is 0 (scale 0, sum 0).
+  // The large channel holds terms in units of LARGE_TERM_UNIT fixed-point units.
+  let semivarianceSum = readPairAccumulator(index, 1u) + readPairAccumulator(index, ${largeChannel}u) * LARGE_TERM_UNIT;
+  // A zero variance means every difference is 0 (scale 0, sum 0).
   let semivariance = select(0.0, semivarianceSum / scales.semivariance / pairCount, scales.semivariance > 0.0);
   semivariances[semivariancesOffset + index] = select(nan, semivariance, hasPairs);
   ${props.pairCounts ? 'pairCounts[pairCountsOffset + index] = readPairCount(index, 0u);' : ''}
@@ -336,6 +425,28 @@ ${getPairHistogramReadWGSL('accumulators', channelCount)}`,
   }`
       })
     );
+
+    if (props.overflow) {
+      // One row: the histogram overflow word, or any bin whose pair count left the low word.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-overflow`,
+          operation: OPERATION,
+          variant: 'overflow',
+          bindings: [
+            {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
+            {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          declarations: getPairHistogramReadWGSL('accumulators', channelCount, '', binCount),
+          body: `var flagged = readPairOverflow();
+  for (var bin = 0u; bin < ${binCount}u; bin++) {
+    flagged = flagged || readPairCount(bin, 0u) == 0xffffffffu;
+  }
+  overflow[overflowOffset] = select(0u, 1u, flagged);`
+        })
+      );
+    }
 
     if (props.statistics) {
       nodes.push(

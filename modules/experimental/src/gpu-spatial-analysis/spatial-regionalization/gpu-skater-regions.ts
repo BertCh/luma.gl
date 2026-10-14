@@ -73,6 +73,9 @@ export type GPUSkaterRegionsProps = {
   /**
    * Attribute table the cuts minimise the within-region sum of squares of, row-major with
    * `columnCount` columns. Pass the tree's `standardizedValues` so cuts and tree share a metric.
+   * That table is centered and scaled per column (population standard deviation), which also
+   * keeps the f32 subtree-sum subtraction well conditioned: raw attributes with a large mean
+   * relative to their spread lose digits when a deep region's sums are subtracted.
    */
   values: GraphDataView<'float32'>;
   /** Number of attribute columns. Defaults to 1; at most 16. */
@@ -129,6 +132,12 @@ export type GPUSkaterRegionsProps = {
  * oracle in f64 agrees except where two candidates' gains differ by less than f32 rounding.
  * `spopt` breaks ties by its own order and its stopping rule (it can return fewer regions than
  * requested when a floor binds) is reproduced here by leaving the region count below target.
+ *
+ * **Attributes and adjacency.** Neither SKATER nor the tree standardizes by itself: the MST node
+ * does (`standardize`, default true) and exposes the centered table as `standardizedValues`. Feed
+ * that table to `values`. The forest is defined over the weights slots, so the weights must list
+ * every link in both rows (for directed weights, build the undirected union with
+ * `GPUSpatialWeightsTranspose` first); the minimum size is a row count, not an extensive floor.
  *
  * Non-goals: other tree-cut criteria, trace output of every intermediate partition, and weights
  * that are not symmetric.

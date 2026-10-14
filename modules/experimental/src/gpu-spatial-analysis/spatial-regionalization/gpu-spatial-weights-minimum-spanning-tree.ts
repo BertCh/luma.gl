@@ -102,7 +102,8 @@ export type GPUSpatialWeightsMinimumSpanningTreeProps = {
  * own rules (scipy by traversal order), so on data with exact cost ties the edge sets can differ
  * while the total cost is identical.
  *
- * Non-goals: asymmetric weights, and edge costs other than squared Euclidean distance.
+ * Non-goals: asymmetric weights (a link listed in one row only is scanned from one end, so the
+ * forest is not guaranteed minimum; build the undirected union with `GPUSpatialWeightsTranspose` first), and edge costs other than squared Euclidean distance.
  */
 export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

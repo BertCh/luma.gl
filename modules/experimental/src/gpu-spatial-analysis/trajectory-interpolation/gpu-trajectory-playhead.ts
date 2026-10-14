@@ -25,6 +25,11 @@ import {
   createTrajectoryGeometryNode,
   TRAJECTORY_BRACKET_STRIDE
 } from './trajectory-interpolation-kernels';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  getTrajectoryGeodesicRadius,
+  resolveTrajectorySpatialContext
+} from '../trajectory-analysis/trajectory-spatial-context';
 import {GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH} from './trajectory-playhead-parameters';
 
 /**
@@ -38,8 +43,16 @@ import {GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH} from './trajectory-playhead-pa
 export type GPUTrajectoryPlayheadProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'trajectory-playhead'`. */
   id?: string;
-  /** Packed planar positions, one row per sample, sorted by track and then time. */
+  /** Packed positions (planar, or longitude/latitude degrees), one row per sample, sorted by track and then time. */
   positions: GraphDataView<'float32x2'>;
+  /**
+   * Coordinate space and metric of `positions`. Omitted means native planar coordinates with
+   * linear interpolation. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` means
+   * `(longitude, latitude)` degrees interpolated along great circles (spherical linear
+   * interpolation) on a sphere of `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`); lengths
+   * and speeds are then meters. Other contexts throw.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Optional packed elevation (z) per sample, same length as `positions`. */
   elevations?: GraphDataView<'float32'>;
   /**
@@ -67,11 +80,17 @@ export type GPUTrajectoryPlayheadProps = {
   /** Optional interpolated elevation per track. Requires `elevations`. */
   currentElevations?: GraphDataView<'float32'>;
   /**
-   * Optional heading per track in radians, `atan2(dy, dx)` of the bracketing segment: 0 points
-   * along +x and angles grow counterclockwise. 0 for an empty track or a zero-length segment.
+   * Optional heading per track in radians, in `(-pi, pi]`. Planar: `atan2(dy, dx)` of the
+   * bracketing segment, 0 along +x, growing counterclockwise. Great-circle: the initial bearing of
+   * the bracketing segment in the same convention (0 due east, growing counterclockwise, i.e.
+   * `pi / 2 - bearing`). 0 for an empty track or a zero-length
+   * segment.
    */
   headings?: GraphDataView<'float32'>;
-  /** Optional planar speed of the bracketing segment for active tracks, otherwise 0. */
+  /**
+   * Optional speed of the bracketing segment for active tracks, otherwise 0: planar distance, or
+   * great-circle meters, per timestamp unit.
+   */
   speeds?: GraphDataView<'float32'>;
   /** Optional `GPU_TRAJECTORY_PLAYHEAD_STATUS` value per track. */
   status?: GraphDataView<'uint32'>;
@@ -109,14 +128,23 @@ export type GPUTrajectoryPlayheadProps = {
  * - Exact sample times: `p == t[k]` gives fraction 0 on segment `[k, k + 1]` and position
  *   `positions[k]` bit-exactly.
  *
- * Speed is planar distance over duration in the timestamps' unit and is only non-zero for active
- * tracks. Heading and speed come from the bracketing segment, so they are piecewise constant.
+ * Speed is segment length (planar, or great-circle meters) over duration in the timestamps' unit
+ * and is only non-zero for active tracks.
+ *
+ * Spatial context: with a great-circle `spatialContext`, positions are interpolated along the
+ * great-circle arc of each segment instead of linearly in degrees. Interpolated longitudes are
+ * continuous with the segment's start row, so a segment crossing the antimeridian produces
+ * longitudes beyond +-180 (`end = b` shifted by a multiple of 360) rather than jumping; wrap them
+ * downstream if needed. Fraction 0 returns the start row exactly and fraction 1 the end row
+ * exactly (up to that 360-degree shift).
+ *
+ * Heading and speed come from the bracketing segment, so they are piecewise constant.
  *
  * Composition: one search kernel writing an internal per-track bracket, one geometry kernel, one
  * column kernel, and for `activeTracks` a stable `GPUCompaction` of active track indices and one
  * publish kernel that clamps the count. Moving the playhead only rewrites `parameters`.
  *
- * Non-goals: geodesic interpolation and antimeridian handling (project upstream), curved
+ * Non-goals: ellipsoidal (geodesic on the ellipsoid) interpolation, curved
  * (spline) interpolation, unsorted rows, chunked inputs, double-single timestamps.
  */
 export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
@@ -124,11 +152,14 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUTrajectoryPlayheadProps;
+  /** Resolved coordinate and metric context; native planar when `props.spatialContext` is omitted. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUTrajectoryPlayheadProps) {
     this.id = props.id ?? 'trajectory-playhead';
     this.props = props;
     const id = this.id;
+    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
     const rowCount = props.positions.length;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
@@ -257,6 +288,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
           currentElevations: props.currentElevations,
           headings: props.headings,
           speeds: props.speeds,
+          geodesicRadius: getTrajectoryGeodesicRadius(this.spatialContext),
           trackCount
         })
       );

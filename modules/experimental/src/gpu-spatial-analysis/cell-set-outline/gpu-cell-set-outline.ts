@@ -27,6 +27,7 @@ import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
 import {H3_NEIGHBOR_WGSL} from '../cell-topology/h3-neighbor-wgsl';
 import {QUADBIN_TOPOLOGY_WGSL} from '../cell-topology/cell-topology-wgsl';
+import {GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT} from '../contracts/spatial-context';
 import {GPUSegmentRingAssembly} from '../ring-assembly/index';
 import type {
   GPUSegmentRingAssemblyInteriorSide,
@@ -144,6 +145,11 @@ export type GPUCellSetOutlineRings = {
  *
  * Draw `output.endpoints` as line segments (`count` rows), or set `rings` to chain them into closed
  * rings (`GPUSegmentRingAssembly`).
+ *
+ * Consumes H3 or Quadbin cell keys only, so it takes no `spatialContext`. Its output segments are
+ * longitude/latitude degrees (straight edges between cell vertices, the
+ * `GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT` convention); the cells are not positions, so there is
+ * nothing to validate or project.
  */
 export class GPUCellSetOutline implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -396,6 +402,8 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
           vertexTolerance: props.rings.vertexTolerance,
           normalizeWinding: props.rings.normalizeWinding,
           interiorSide: this.interiorSide,
+          // Outline segments are longitude/latitude degrees: compare turns with cos(latitude).
+          spatialContext: GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
           output: props.rings.output
         }).getCommandNodes(graph)
       : [];

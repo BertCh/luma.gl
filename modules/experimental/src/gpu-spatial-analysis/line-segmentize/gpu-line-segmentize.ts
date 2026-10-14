@@ -17,7 +17,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 import {
   createIdentitySourcePathsNode,
   createPathOffsetsPublishNode,
@@ -26,7 +26,11 @@ import {
   createSegmentizeEmitNode
 } from './line-segmentize-kernels';
 import {GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} from './line-segmentize-parameters';
-import type {GPULineCoordinateSystem, GPULinePathOutput} from './line-segmentize-types';
+import {
+  resolveLineSpatialContext,
+  type GPULineCoordinateSystem,
+  type GPULinePathOutput
+} from './line-segmentize-types';
 import {getLinePathOutputViews, validateLinePathOutput} from './line-path-output';
 
 const OPERATION = 'GPULineSegmentize';
@@ -38,23 +42,26 @@ export const GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECES = 1024;
  * Properties for {@link GPULineSegmentize}.
  *
  * Per-frame (no recompile): the contents of `parameters` (maximum segment length) and of every
- * input buffer. Compile-time: view lengths, the path count, `coordinateSystem`, `radius`,
+ * input buffer. Compile-time: view lengths, the path count, `spatialContext`,
  * `maximumPiecesPerSegment`, the output capacity, and which optional outputs are present.
  */
 export type GPULineSegmentizeProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'line-segmentize'`. */
   id?: string;
   /**
-   * Packed positions sorted by path: planar coordinates, or longitude/latitude degrees for
-   * `'spherical'`.
+   * Packed positions sorted by path: planar coordinates, or longitude/latitude degrees with a
+   * great-circle `spatialContext`.
    */
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
   pathOffsets: GraphDataView<'uint32'>;
-  /** `'planar'` (default) lerps straight segments; `'spherical'` slerps great-circle arcs. */
-  coordinateSystem?: GPULineCoordinateSystem;
-  /** Sphere radius for `'spherical'` lengths. Defaults to {@link GPU_GEODESIC_MEAN_EARTH_RADIUS}. */
-  radius?: number;
+  /**
+   * Planar (default, straight segments) or `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` (slerped great-circle arcs, lengths in the context unit on its
+   * `sphereRadius`, meters on the mean Earth radius by default). Replaces the former
+   * `coordinateSystem` and `radius` props.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Compile-time cap on output pieces per input segment, so a tiny maximum length cannot explode
    * counts. Default 1024. `positions.length * maximumPiecesPerSegment` must fit in 32 bits.
@@ -75,8 +82,8 @@ export type GPULineSegmentizeProps = {
  *
  * Every input segment of length `L` is split into
  * `clamp(ceil(L / maximumSegmentLength), 1, maximumPiecesPerSegment)` equal pieces; input vertices
- * are always kept. `'planar'` lerps; `'spherical'` treats positions as longitude/latitude degrees,
- * measures haversine lengths times `radius`, and slerps interior points evenly in angle along the
+ * are always kept. A planar context lerps; a great-circle longitude/latitude context treats
+ * positions as degrees, measures haversine lengths times the sphere radius (meters by default), and slerps interior points evenly in angle along the
  * great circle. Spherical output longitudes are unwrapped so each path stays continuous across
  * the antimeridian (values may leave `[-180, 180]`), which deck.gl `PathLayer` handles with
  * `wrapLongitude` or as-is in a globe view.
@@ -93,9 +100,11 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULineSegmentizeProps;
-  /** Resolved coordinate system. */
+  /** Resolved spatial context (planar unless given). */
+  readonly spatialContext: GPUSpatialContext;
+  /** Kernel model derived from `spatialContext`. */
   readonly coordinateSystem: GPULineCoordinateSystem;
-  /** Resolved sphere radius. */
+  /** Resolved sphere radius in the context's length unit (1 for planar). */
   readonly radius: number;
   /** Resolved compile-time piece cap. */
   readonly maximumPiecesPerSegment: number;
@@ -103,8 +112,10 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
   constructor(props: GPULineSegmentizeProps) {
     this.id = props.id ?? 'line-segmentize';
     this.props = props;
-    this.coordinateSystem = props.coordinateSystem ?? 'planar';
-    this.radius = props.radius ?? GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    const resolved = resolveLineSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolved.spatialContext;
+    this.coordinateSystem = resolved.coordinateSystem;
+    this.radius = resolved.radius;
     this.maximumPiecesPerSegment =
       props.maximumPiecesPerSegment ?? GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECES;
     const {id} = this;
@@ -116,12 +127,6 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
       if ((view as unknown) instanceof GraphVectorView) {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
       }
-    }
-    if (this.coordinateSystem !== 'planar' && this.coordinateSystem !== 'spherical') {
-      throw new Error(`${id} coordinateSystem must be 'planar' or 'spherical'`);
-    }
-    if (!Number.isFinite(this.radius) || this.radius <= 0) {
-      throw new Error(`${id} radius must be a positive finite number`);
     }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;

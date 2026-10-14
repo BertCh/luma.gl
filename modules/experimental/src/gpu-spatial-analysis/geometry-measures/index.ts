@@ -26,3 +26,6 @@ export type {
 } from './gpu-geodesic-destination';
 export {GPU_GEODESIC_DEFAULT_ITERATIONS} from './geodesic-kernels';
 export type {GPUGeodesicModel} from './geodesic-kernels';
+export {GPULocalFrameProjection} from './gpu-local-frame-projection';
+export type {GPULocalFrameProjectionProps} from './gpu-local-frame-projection';
+export {GEODESIC_WGSL} from './geodesic-wgsl';

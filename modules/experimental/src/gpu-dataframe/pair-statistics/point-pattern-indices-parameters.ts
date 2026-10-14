@@ -7,11 +7,36 @@ import {validatePairStatisticsBounds} from './pair-statistics-parameters';
 /** Number of float32 elements in a `GPUPointPatternIndices` parameter buffer. */
 export const GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH = 8;
 
-/** Number of float32 rows of the `clarkEvans` summary of `GPUPointPatternIndices`. */
-export const GPU_CLARK_EVANS_LENGTH = 6;
+/**
+ * Number of float32 rows of the `clarkEvans` summary of `GPUPointPatternIndices`:
+ * `[n, observed, expected, ratio, standardError, zScore, pValue]`.
+ */
+export const GPU_CLARK_EVANS_LENGTH = 7;
 
-/** Number of float32 rows of the `quadratStatistics` summary of `GPUPointPatternIndices`. */
-export const GPU_QUADRAT_STATISTICS_LENGTH = 6;
+/**
+ * Number of float32 rows of the `quadratStatistics` summary of `GPUPointPatternIndices`:
+ * `[quadratCount, mean, variance, varianceToMeanRatio, chiSquare, degreesOfFreedom, pValue]`.
+ */
+export const GPU_QUADRAT_STATISTICS_LENGTH = 7;
+
+/**
+ * Clark-Evans edge correction codes stored in parameter slot 5. `'none'` is the plain
+ * infinite-plane expectation; `'donnelly'` is Donnelly (1978) for a rectangular window.
+ */
+export const GPU_CLARK_EVANS_CORRECTION = {none: 0, donnelly: 1} as const;
+
+/** Clark-Evans edge correction name. */
+export type GPUClarkEvansCorrection = keyof typeof GPU_CLARK_EVANS_CORRECTION;
+
+/** Tail codes stored in parameter slot 6. */
+export const GPU_POINT_PATTERN_ALTERNATIVE = {'two-sided': 0, greater: 1, lesser: 2} as const;
+
+/**
+ * Tail of the Clark-Evans and quadrat p-values. `'greater'` tests for a statistic above its
+ * complete-spatial-randomness expectation (Clark-Evans: regular; quadrat chi-square: clustered),
+ * `'lesser'` for one below it. `'less'` is accepted as an alias of `'lesser'`.
+ */
+export type GPUPointPatternAlternative = 'two-sided' | 'greater' | 'lesser' | 'less';
 
 /** Largest quadrat count (`columns * rows`) of `GPUPointPatternIndices`. */
 export const GPU_QUADRAT_MAXIMUM_COUNT = 65536;
@@ -32,16 +57,29 @@ export type GPUPointPatternIndicesParameters = {
    * it, only speed: a value near the expected nearest-neighbor distance is fastest.
    */
   maximumDistance: number;
+  /**
+   * Clark-Evans edge correction. Defaults to `'donnelly'` (Donnelly 1978: expected mean distance
+   * `0.5 sqrt(A / n) + (0.0514 + 0.041 / sqrt(n)) P / n`, variance
+   * `0.0703 A / n^2 + 0.037 P sqrt(A / n^5)`, `P` the window perimeter), because the plain
+   * expectation is biased toward apparent clustering for windows with a large perimeter.
+   * `'none'` gives the classic `0.5 sqrt(A / n)` with standard error `0.26136 sqrt(A) / n`
+   * (pointpats, ArcGIS).
+   */
+  clarkEvansCorrection?: GPUClarkEvansCorrection;
+  /**
+   * Tail of the Clark-Evans z-test and the quadrat chi-square test. Defaults to `'two-sided'`.
+   */
+  alternative?: GPUPointPatternAlternative;
 };
 
 /**
  * Packs `GPUPointPatternIndices` parameters into the 8-element float32 layout
- * `[minX, minY, maxX, maxY, maximumDistance, 0, 0, 0]`.
+ * `[minX, minY, maxX, maxY, maximumDistance, clarkEvansCorrectionCode, alternativeCode, 0]`.
  *
  * @param parameters Parameters to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
- * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, or `target`
- * is too short.
+ * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, the correction
+ * or alternative is unknown, or `target` is too short.
  */
 export function getGPUPointPatternIndicesParameterValues(
   parameters: GPUPointPatternIndicesParameters,
@@ -53,6 +91,21 @@ export function getGPUPointPatternIndicesParameterValues(
     );
   }
   validatePairStatisticsBounds('Point pattern', parameters.bounds, parameters.maximumDistance);
-  target.set([...parameters.bounds, parameters.maximumDistance, 0, 0, 0]);
+  const correction = parameters.clarkEvansCorrection ?? 'donnelly';
+  if (!Object.prototype.hasOwnProperty.call(GPU_CLARK_EVANS_CORRECTION, correction)) {
+    throw new Error(`Point pattern clarkEvansCorrection must be 'none' or 'donnelly'`);
+  }
+  const alternative = parameters.alternative ?? 'two-sided';
+  const alternativeName = alternative === 'less' ? 'lesser' : alternative;
+  if (!Object.prototype.hasOwnProperty.call(GPU_POINT_PATTERN_ALTERNATIVE, alternativeName)) {
+    throw new Error(`Point pattern alternative must be 'two-sided', 'greater' or 'lesser'`);
+  }
+  target.set([
+    ...parameters.bounds,
+    parameters.maximumDistance,
+    GPU_CLARK_EVANS_CORRECTION[correction],
+    GPU_POINT_PATTERN_ALTERNATIVE[alternativeName as keyof typeof GPU_POINT_PATTERN_ALTERNATIVE],
+    0
+  ]);
   return target;
 }

@@ -17,6 +17,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createRingOrientationNode, createRingReverseNode} from './geometry-edit-kernels';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUGeometryOrientation';
 
@@ -71,6 +72,13 @@ export type GPUGeometryOrientationOutput = {
 export type GPUGeometryOrientationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-orientation'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed vertex positions. Rings may repeat their first vertex as the last. */
   positions: GraphDataView<'float32x2'>;
   /** `ringCount + 1` monotonic vertex offsets; ring (or path) `r` owns `[ringOffsets[r], ringOffsets[r + 1])`. */
@@ -79,6 +87,8 @@ export type GPUGeometryOrientationProps = {
    * `'reverse'` reverses the vertex order of every ring and path (`shapely.reverse`).
    * `'orient-polygons'` reverses only rings that wind the wrong way for their role, exterior or
    * hole (`shapely.orient_polygons`).
+   * Winding is judged at the ring's lexicographically smallest vertex with exact orientation, so
+   * sliver rings are not misjudged by f32 area cancellation.
    */
   mode: 'reverse' | 'orient-polygons';
   /**
@@ -116,9 +126,12 @@ export class GPUGeometryOrientation implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUGeometryOrientationProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUGeometryOrientationProps) {
     this.id = props.id ?? 'geometry-orientation';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     for (const [name, view] of Object.entries({

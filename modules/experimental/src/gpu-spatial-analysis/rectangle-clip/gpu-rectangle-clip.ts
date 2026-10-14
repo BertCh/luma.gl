@@ -30,6 +30,7 @@ import {
   createPolygonStageOffsetsNode,
   GPU_RECTANGLE_CLIP_PARAMETER_LENGTH
 } from './rectangle-clip-kernels';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPURectangleClip';
 
@@ -85,6 +86,13 @@ export function getGPURectangleClipParameterValues(
 export type GPURectangleClipProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'rectangle-clip'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar vertex positions. */
   positions: GraphDataView<'float32x2'>;
   /** `'lines'`: open paths clipped with Liang-Barsky. `'polygons'`: closed rings clipped with Sutherland-Hodgman. */
@@ -134,9 +142,12 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPURectangleClipProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURectangleClipProps) {
     this.id = props.id ?? 'rectangle-clip';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     for (const [name, view] of Object.entries({

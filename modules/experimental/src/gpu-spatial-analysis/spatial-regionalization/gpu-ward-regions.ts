@@ -27,6 +27,7 @@ import {
 import type {GPUOptimizationStatusPort} from '../contracts/index';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {createStandardizeColumnsNode, createSymmetricAdjacency} from './regionalization-inputs';
 
 export const GPU_WARD_MAXIMUM_COLUMNS = 8;
 const GPU_WARD_REDUCTION_WORKGROUP_SIZE = 256;
@@ -41,11 +42,22 @@ export const GPU_WARD_STATUS = {
 
 export type GPUWardRegionsProps = {
   id?: string;
-  /** Symmetric spatial weights that constrain which regions may merge. */
+  /**
+   * Spatial weights that constrain which regions may merge. Two rows are adjacent when either
+   * lists the other, so directed (for example k-nearest-neighbor) weights are symmetrized inside
+   * the contributor; weights that declare `info.symmetric === true` are used as they are.
+   */
   weights: GPUSpatialWeights;
   /** Row-major feature values. */
   values: GraphDataView<'float32'>;
   columnCount?: number;
+  /**
+   * Standardize every column to mean 0 and population standard deviation 1 (divisor `n`, the
+   * `StandardScaler` convention, over finite entries) before merging, so columns in different
+   * units weigh equally. Defaults to true; pass false when `values` is already on a common scale.
+   * `optimization.objective` is then in standardized units.
+   */
+  standardize?: boolean;
   targetRegionCount: number;
   /** Maximum adjacent-region merges. Must not exceed `rowCount - targetRegionCount`. */
   maximumIterations: number;
@@ -57,6 +69,14 @@ export type GPUWardRegionsProps = {
 
 /**
  * Spatially constrained Ward agglomeration with an explicit merge budget.
+ *
+ * `optimization.objective` is the within-region sum of squared deviations of the returned
+ * partition (every row starts as its own region with zero, each merge adds its Ward increase),
+ * the same quantity as `withinSsd` of `GPURegionPartitionEvaluation` on the same table.
+ *
+ * Default change: columns are standardized (`standardize`, default true); the previous raw-value
+ * behavior is `standardize: false`. Adjacency is the undirected union of the weights and their
+ * transpose, so a directed link is a link in both directions.
  *
  * Every row begins as its own region. Each iteration merges the adjacent region pair with the
  * smallest Ward increase in within-region squared error. Ties use a stable seed-keyed pair order.
@@ -144,6 +164,16 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
     const regionStride = columnCount + 1;
     const regions = createTransientView(graph, `${id}-regions`, 'float32', rowCount * regionStride);
     const state = createTransientView(graph, `${id}-state`, 'uint32', 1);
+    const standardize = props.standardize !== false;
+    const table = standardize
+      ? createTransientView(graph, `${id}-table`, 'float32', rowCount * columnCount)
+      : props.values;
+    const adjacency = createSymmetricAdjacency(graph, {
+      id,
+      operation: 'GPUWardRegions',
+      weights: props.weights,
+      rowCount
+    });
     const candidateCostA = createTransientView(
       graph,
       `${id}-candidate-cost-a`,
@@ -267,6 +297,19 @@ fn pairKey(first: u32, second: u32) -> u32 {
   return value ^ (value >> 16u);
 }`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...adjacency.nodes,
+      ...(standardize
+        ? [
+            createStandardizeColumnsNode<Parameters>(graph, {
+              id: `${id}-standardize`,
+              operation: 'GPUWardRegions',
+              values: props.values,
+              scaled: table,
+              rowCount,
+              columnCount
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize-status`,
         operation: 'GPUWardRegions',
@@ -302,6 +345,7 @@ fn pairKey(first: u32, second: u32) -> u32 {
           {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
           {name: 'values', view: props.values, type: 'f32', access: 'read'},
+          {name: 'table', view: table, type: 'f32', access: 'read'},
           {name: 'labels', view: props.labels, type: 'u32', access: 'read_write'},
           {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
           {
@@ -317,9 +361,8 @@ fn pairKey(first: u32, second: u32) -> u32 {
   regions[regionBase] = 1.0;
   var invalidCount = 0u;
   for (var column = 0u; column < COLUMN_COUNT; column++) {
-    let value = values[valuesOffset + index * COLUMN_COUNT + column];
-    invalidCount += select(0u, 1u, !isFiniteFloat(value));
-    regions[regionBase + 1u + column] = value;
+    invalidCount += select(0u, 1u, !isFiniteFloat(values[valuesOffset + index * COLUMN_COUNT + column]));
+    regions[regionBase + 1u + column] = table[tableOffset + index * COLUMN_COUNT + column];
   }
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     invalidCount += select(0u, 1u, neighbors[neighborsOffset + slot] >= ROW_COUNT);
@@ -338,8 +381,8 @@ fn pairKey(first: u32, second: u32) -> u32 {
           workgroupSize: rowWorkgroupSize,
           ...getGate(0),
           bindings: [
-            {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
+            {name: 'offsets', view: adjacency.weights.offsets, type: 'u32', access: 'read'},
+            {name: 'neighbors', view: adjacency.weights.neighbors, type: 'u32', access: 'read'},
             {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
             {name: 'regions', view: regions, type: 'f32', access: 'read'},
             {name: 'costOut', view: candidateCostA, type: 'f32', access: 'read_write'},

@@ -21,6 +21,8 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH} from './outlier-detection-parameters';
 
+import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
+
 const OPERATION = 'GPULocalOutlierFactor';
 
 /**
@@ -36,9 +38,13 @@ export type GPULocalOutlierFactorProps = {
    * Square neighbor table with `distances`: row `i` lists the neighbors of point `i` and their
    * distances. Typically the k-nearest-neighbor CSR written by `GPUNeighborSearch` in `'knn'`
    * mode (self join, `weights.distances` set; the weight values are unused), or one uploaded
-   * from a CPU index. The neighbor count of each row is its `k`; rows should come from kNN so
-   * the row's largest distance is the k-distance. Neighbor IDs at or above the row count are
-   * skipped.
+   * from a CPU index. The neighbor count of each row is its `k`; rows must come from kNN so the
+   * row's largest distance is the k-distance. A radius-mode list is not a kNN list and gives a
+   * different, density-dependent statistic. With ties at the k-th distance the k-distance
+   * neighborhood has more than `k` members (Breunig et al. 2000); a list cut at exactly `k`
+   * entries drops the tied points and changes the scores (scikit-learn does the same). Distances
+   * are used as given: compute them in a projected planar frame, because raw lon/lat degrees distort
+   * with latitude. Neighbor IDs at or above the row count are skipped.
    */
   neighbors: GPUSpatialWeights;
   /**
@@ -56,7 +62,10 @@ export type GPULocalOutlierFactorProps = {
   localReachabilityDensity: GraphDataView<'float32'>;
   /** Caller-owned local outlier factor per row. 1 for a row with no neighbors. */
   lof: GraphDataView<'float32'>;
-  /** Optional caller-owned mask: 1 where `lof > threshold`, else 0. */
+  /**
+   * Optional caller-owned mask: 1 where `lof > threshold`, else 0. All 0 when no `threshold` was
+   * packed (there is no default threshold).
+   */
   outlier?: GraphDataView<'uint32'>;
   /** Optional caller-owned one-row count of rows with `lof > threshold`. */
   outlierCount?: GraphDataView<'uint32'>;
@@ -72,7 +81,19 @@ export type GPULocalOutlierFactorProps = {
  * - `reach(i, j) = max(kDistance(j), d(i, j))`.
  * - `localReachabilityDensity(i) = 1 / (mean_j reach(i, j) + densityFloor)`.
  * - `lof(i) = mean_j lrd(j) / lrd(i)`.
- * Scores near 1 are as dense as their neighbors; scores well above 1 are outliers.
+ * Scores near 1 are as dense as their neighbors; scores well above 1 are locally sparse.
+ *
+ * Exploratory, not inferential: LOF has no null distribution, so there is no p-value, no default
+ * cut and no "significant" outlier. The optional `outlier` mask applies a threshold the caller
+ * supplies in `getGPULocalOutlierFactorParameterValues` (without one the mask is all 0), and
+ * `lof` itself is the result to inspect. Guidance on `k` (the neighbor count of the table):
+ * use `k >= 10` so scores are stable, and larger than the smallest group of points that should
+ * count as a cluster rather than as outliers (Breunig et al. 2000); the score scale shifts with
+ * `k`, so compare scores only across runs with the same `k`.
+ *
+ * Coordinates: the class reads only the neighbor table and its distances, not positions, so it
+ * takes no `spatialContext`; the neighbor search that produced the distances owns that choice, and
+ * planar (projected) distances are expected.
  *
  * Duplicates: `densityFloor` (default 1e-10, scikit-learn's value) keeps a cluster of coincident
  * points, whose mean reachability is 0, finite at density `1 / densityFloor`; points whose
@@ -281,7 +302,12 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
               : [])
           ],
           invocationCount: rows,
-          body: `let flagged = lof[lofOffset + index] > parameters[parametersOffset];
+          declarations: IS_NAN_BITS_WGSL,
+          // A NaN threshold means none was given: nothing is flagged (checked on the bits, since
+          // NaN comparisons may be folded away).
+          body: `let threshold = parameters[parametersOffset];
+  let hasThreshold = !isNanBits(threshold);
+  let flagged = hasThreshold && lof[lofOffset + index] > threshold;
   outlier[outlierOffset + index] = select(0u, 1u, flagged);
   ${
     props.outlierCount

@@ -10,6 +10,7 @@ import type {
   GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
 /** Distance measured by the Douglas-Peucker importance pass. */
 export type GPULineSimplificationMetric = 'segment' | 'time-ratio';
@@ -153,6 +154,42 @@ fn lineTimeRatioDistance(
 }
 `;
 
+/**
+ * Great-circle metric helpers, appended to {@link LINE_SIMPLIFICATION_METRIC_WGSL} for a
+ * longitude-latitude context. Distances are meters on a sphere of `radius`; chords are straight in
+ * longitude/latitude. They use f32 transcendental functions, so unlike the planar helpers they are
+ * not reproducible bit for bit by a CPU mirror.
+ *
+ * @internal
+ */
+export function getLineGeodesicMetricWGSL(radius: number): string {
+  return `${GEODESIC_WGSL}
+const LINE_SPHERE_RADIUS: f32 = ${radius};
+
+fn lineGeodesicSegmentDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -> f32 {
+  let fraction = geodesicSegmentFraction(point, start, end);
+  return geodesicSegmentDistance(point, start, end, fraction, LINE_SPHERE_RADIUS);
+}
+
+// Great-circle distance to the chord position linearly interpolated (longitude difference wrapped)
+// at the timestamp of the point.
+fn lineGeodesicTimeRatioDistance(
+  point: vec2<f32>, pointTime: f32, start: vec2<f32>, startTime: f32, end: vec2<f32>, endTime: f32
+) -> f32 {
+  let duration = endTime - startTime;
+  if (!(duration > 0.0)) {
+    return geodesicHaversineDistance(point, start, LINE_SPHERE_RADIUS);
+  }
+  let ratio = (pointTime - startTime) / duration;
+  let expected = start + vec2<f32>(
+    geodesicWrapLongitudeDelta(end.x - start.x),
+    end.y - start.y
+  ) * ratio;
+  return geodesicHaversineDistance(point, expected, LINE_SPHERE_RADIUS);
+}
+`;
+}
+
 /** Graph-owned scratch columns of the importance loop. @internal */
 export type LineImportanceScratch = {
   /** Left anchor row of the open interval holding each row; the row itself once decided. */
@@ -293,6 +330,8 @@ export function createLineImportanceRoundNodes<Parameters>(
     gate: LineRoundGate<Parameters>;
     /** Open intervals with at most this many interior rows are solved whole; 0 disables. */
     finishSpanLimit?: number;
+    /** Sphere radius in meters: distances are great-circle meters on longitude/latitude rows. */
+    sphereRadius?: number;
   }
 ): GPUCommandNode<Parameters>[] {
   const {scratch, gate} = props;
@@ -353,12 +392,22 @@ export function createLineImportanceRoundNodes<Parameters>(
   const position = (row: string, component: 0 | 1) =>
     `positions[positionsOffset + 2u * ${row} + ${component}u]`;
   const time = (row: string) => `timestamps[timestampsOffset + ${row}]`;
+  const point = (row: string) => `vec2<f32>(${position(row, 0)}, ${position(row, 1)})`;
+  const metricWGSL =
+    props.sphereRadius === undefined
+      ? LINE_SIMPLIFICATION_METRIC_WGSL
+      : `${LINE_SIMPLIFICATION_METRIC_WGSL}${getLineGeodesicMetricWGSL(props.sphereRadius)}`;
+  const metricVariant = props.sphereRadius === undefined ? props.metric : `${props.metric}-sphere`;
   const getDistanceExpression = (row: string, left: string, right: string) =>
-    isTimeRatio
-      ? `lineTimeRatioDistance(${position(row, 0)}, ${position(row, 1)}, ${time(row)},
+    props.sphereRadius !== undefined
+      ? isTimeRatio
+        ? `lineGeodesicTimeRatioDistance(${point(row)}, ${time(row)}, ${point(left)}, ${time(left)}, ${point(right)}, ${time(right)})`
+        : `lineGeodesicSegmentDistance(${point(row)}, ${point(left)}, ${point(right)})`
+      : isTimeRatio
+        ? `lineTimeRatioDistance(${position(row, 0)}, ${position(row, 1)}, ${time(row)},
       ${position(left, 0)}, ${position(left, 1)}, ${time(left)},
       ${position(right, 0)}, ${position(right, 1)}, ${time(right)})`
-      : `lineSegmentDistance(${position(row, 0)}, ${position(row, 1)},
+        : `lineSegmentDistance(${position(row, 0)}, ${position(row, 1)},
       ${position(left, 0)}, ${position(left, 1)},
       ${position(right, 0)}, ${position(right, 1)})`;
   const distanceExpression = getDistanceExpression('index', 'leftAnchor', 'rightAnchor');
@@ -368,7 +417,7 @@ export function createLineImportanceRoundNodes<Parameters>(
       ? createWGSLKernelNode<Parameters>(graph, {
           ...gated,
           id: `${props.id}-reset`,
-          variant: `importance-reset-finish-${props.metric}`,
+          variant: `importance-reset-finish-${metricVariant}`,
           bindings: [
             {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
             {
@@ -390,7 +439,7 @@ export function createLineImportanceRoundNodes<Parameters>(
               ? [{name: 'timestamps', view: props.timestamps, type: 'f32', access: 'read'} as const]
               : [])
           ],
-          declarations: `${LINE_SIMPLIFICATION_METRIC_WGSL}
+          declarations: `${metricWGSL}
 const FINISH_SPAN_LIMIT: u32 = ${finishSpanLimit}u;
 
 // Distance key of a row against the chord (left, right), as in the distance node.
@@ -485,9 +534,9 @@ fn finishInterval(first: u32, last: u32) {
     createWGSLKernelNode<Parameters>(graph, {
       ...gated,
       id: `${props.id}-distance`,
-      variant: `importance-distance-${props.metric}`,
+      variant: `importance-distance-${metricVariant}`,
       bindings: distanceBindings,
-      declarations: LINE_SIMPLIFICATION_METRIC_WGSL,
+      declarations: metricWGSL,
       body: `${UNDECIDED_WGSL('index')}
   lineOpaqueZero = leftAnchor >> 31u;
   let distance = ${distanceExpression};

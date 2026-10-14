@@ -11,8 +11,10 @@ export {
 } from './spatial-clustering-parameters';
 export type {GPUSpatialClusteringParameters} from './spatial-clustering-parameters';
 export {
+  getKMeansRestartSeed,
   GPUKMeans,
   GPU_KMEANS_MAXIMUM_CLUSTERS,
-  GPU_KMEANS_MAXIMUM_ITERATIONS
+  GPU_KMEANS_MAXIMUM_ITERATIONS,
+  GPU_KMEANS_MAXIMUM_RESTARTS
 } from './gpu-kmeans';
 export type {GPUKMeansInitialization, GPUKMeansProps} from './gpu-kmeans';

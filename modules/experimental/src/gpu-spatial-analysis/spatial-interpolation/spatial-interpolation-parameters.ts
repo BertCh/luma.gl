@@ -3,19 +3,31 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /** Number of float32 elements in a {@link GPUInverseDistanceWeighting} parameter view. */
-export const GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH = 8;
+export const GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH = 9;
 
 /** Number of float32 elements in a {@link GPUFocalStatistics} parameter view. */
 export const GPU_FOCAL_STATISTICS_PARAMETER_LENGTH = 4;
 
+/**
+ * Weight taper of {@link GPUInverseDistanceWeighting}: `'none'` is `w = 1 / d^p` inside the
+ * search radius (a hard cutoff); `'modified-shepard'` is `w = ((R - d)+ / (R d))^p` with `R` the
+ * search radius (Franke and Nielson 1980), which falls to zero at `R`.
+ */
+export type GPUInverseDistanceWeightingTaper = 'none' | 'modified-shepard';
+
 /** Per-frame settings of {@link GPUInverseDistanceWeighting}. */
 export type GPUInverseDistanceWeightingSettings = {
-  /** Output raster extent `[minX, minY, maxX, maxY]` in sample units. Cell centers are sampled. */
+  /** Output raster extent `[minX, minY, maxX, maxY]` in position units. Cell centers are sampled. */
   extent: readonly [number, number, number, number];
-  /** Search radius in sample units. `Infinity` searches the whole index domain. */
+  /**
+   * Search radius in position units. `Infinity` searches the whole index domain, except with the
+   * `'modified-shepard'` taper, which needs a finite radius.
+   */
   searchRadius: number;
   /** Distance power `p` in `w = 1 / d^p`. Zero gives an unweighted mean. Defaults to 2. */
   power?: number;
+  /** Weight taper at the search radius. Defaults to `'none'` (hard cutoff). */
+  taper?: GPUInverseDistanceWeightingTaper;
   /**
    * Nearest-neighbor limit `k`; zero (default) uses every sample within the radius. Values above
    * the contributor's compile-time `maximumNeighborCount` are clamped to it.
@@ -29,11 +41,12 @@ export type GPUInverseDistanceWeightingSettings = {
  * Packs per-frame {@link GPUInverseDistanceWeighting} parameters.
  *
  * Layout (float32): `[minX, minY, maxX, maxY, searchRadius, power, neighborCount,
- * minimumNeighborCount]`.
+ * minimumNeighborCount, taper (0 none, 1 modified-shepard)]`.
  *
- * @param settings Extent, search radius, power, and neighbor limits.
- * @param target Optional destination of at least 8 elements.
- * @throws If the target is too short or a count is not a non-negative integer.
+ * @param settings Extent, search radius, power, taper, and neighbor limits.
+ * @param target Optional destination of at least 9 elements.
+ * @throws If the target is too short, a count is not a non-negative integer, the taper is unknown,
+ *   or the `'modified-shepard'` taper is requested with a non-finite radius.
  */
 export function getGPUInverseDistanceWeightingParameterValues(
   settings: GPUInverseDistanceWeightingSettings,
@@ -54,11 +67,19 @@ export function getGPUInverseDistanceWeightingParameterValues(
       throw new Error(`Inverse distance weighting ${name} must be a non-negative integer`);
     }
   }
+  const taper = settings.taper ?? 'none';
+  if (taper !== 'none' && taper !== 'modified-shepard') {
+    throw new Error("Inverse distance weighting taper must be 'none' or 'modified-shepard'");
+  }
+  if (taper === 'modified-shepard' && !Number.isFinite(settings.searchRadius)) {
+    throw new Error('Inverse distance weighting taper needs a finite searchRadius');
+  }
   target.set(settings.extent, 0);
   target[4] = settings.searchRadius;
   target[5] = settings.power ?? 2;
   target[6] = neighborCount;
   target[7] = minimumNeighborCount;
+  target[8] = taper === 'modified-shepard' ? 1 : 0;
   return target;
 }
 

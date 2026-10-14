@@ -31,6 +31,7 @@ import {
   WEISZFELD_COINCIDENT_DISTANCE_SQUARED
 } from './geographic-distribution-kernels';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from './geographic-distribution-parameters';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {GROUPED_SUM_MAXIMUM_GROUPS, getGroupedSumNodes} from './grouped-sum-reduction';
 
 const OPERATION = 'GPUGeographicDistribution';
@@ -114,6 +115,13 @@ export type GPUGeographicDistributionOutput = {
 export type GPUGeographicDistributionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geographic-distribution'`. */
   id?: string;
+  /**
+   * Coordinate space of `positions` and `lineEnds`. Every statistic here is Euclidean, so only
+   * planar contexts (native metric) are accepted; omitted means native planar coordinates.
+   * Longitude/latitude throws at construction: project to a planar frame first (for example
+   * `createGPULocalFrame`). Results are in the units of the planar coordinates.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Planar points. The caller projects longitude/latitude (for example to Web Mercator or a local
    * equal-distance projection) because every statistic is Euclidean. Fewer than `2^24` rows.
@@ -206,6 +214,21 @@ export type GPUGeographicDistributionProps = {
  * are bitwise reproducible across encodings on one device. Sums differ from a sequential CPU sum only by
  * float32 rounding.
  *
+ * ## Coordinates
+ *
+ * Planar only (see `spatialContext`): longitude/latitude input throws instead of being averaged as
+ * if degrees were metres, which is wrong near the poles and across the antimeridian. A spherical
+ * mean centre (normalised mean of 3D unit vectors) and a great-circle standard distance would need
+ * a second implementation of every reduction pass in both the chunked and the sorted path, so they
+ * are deferred; project to a local equal-distance frame first.
+ *
+ * ## Small samples
+ *
+ * Variances divide by `W`, not `W - 1`, and the ellipse is not corrected for degrees of freedom
+ * (ArcGIS does the same). For small `n` the spread is biased low by `sqrt((n - 1) / n)`; multiply
+ * `standardDeviations` accordingly if an unbiased estimate matters. No confidence interval or
+ * significance test is computed.
+ *
  * ## Non-goals
  *
  * No central feature (argmin of summed distances), no geodesic distances, no per-feature
@@ -225,11 +248,14 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   readonly polygonVertexCount: number;
   /** Resolved reduction strategy. */
   readonly reduction: 'chunked' | 'sorted';
+  /** Resolved spatial context; always planar. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUGeographicDistributionProps) {
     this.id = props.id ?? 'geographic-distribution';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {output} = props;
     for (const [name, view] of [
       ['positions', props.positions],

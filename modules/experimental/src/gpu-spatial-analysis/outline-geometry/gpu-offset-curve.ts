@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   GraphVectorView,
   validatePackedUint32View,
@@ -105,6 +106,13 @@ export type GPUOffsetCurveOutput = {
 export type GPUOffsetCurveProps = {
   /** Prefix for generated node IDs. Defaults to `'offset-curve'`. */
   id?: string;
+  /**
+   * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
+   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
+   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar positions. */
   positions: GraphDataView<'float32x2'>;
   /** `pathCount + 1` monotonic row offsets; path `p` owns rows `[pathOffsets[p], pathOffsets[p + 1])`. */
@@ -144,12 +152,18 @@ export type GPUOffsetCurveProps = {
  * Output size is fixed up front ({@link getGPUOffsetCurveRowsPerVertex} rows per input vertex), so
  * there is no capacity, overflow flag or scan; one invocation per vertex, no atomics, deterministic.
  * The distance and mitre limit are read per frame. Precision: f32 from the f32 positions.
+ *
+ * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
+ * context throws at construction. Project first, for example with `createGPULocalFrame` and
+ * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
  */
 export class GPUOffsetCurve implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUOffsetCurveProps;
+  /** Resolved spatial context (planar). */
+  readonly spatialContext: GPUSpatialContext;
   /** Resolved geometry kind. */
   readonly geometryType: GPUOffsetCurveGeometryType;
   /** Resolved join style. */
@@ -162,6 +176,7 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
   constructor(props: GPUOffsetCurveProps) {
     this.id = props.id ?? 'offset-curve';
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.geometryType = props.geometryType ?? 'lines';
     this.joinStyle = props.joinStyle ?? 'round';
     this.quadSegments = props.quadSegments ?? GPU_OFFSET_CURVE_DEFAULT_QUAD_SEGMENTS;

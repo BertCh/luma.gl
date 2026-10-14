@@ -36,6 +36,8 @@ export const GPU_EMPIRICAL_BAYES_SUMMARY = {
   weightedRateVariance: 4,
   /** Estimated variance of the true rates, `a = s2 - m / mean(b)` (esda `ebi_a`, `r_var`); may be negative. */
   priorVariance: 5,
+  /** `max(a, 0)`, the prior variance the clamped smoothed rate uses (Marshall 1991). */
+  clampedPriorVariance: 6,
   /** Number of float32 values in `summary`. */
   length: 8
 } as const;
@@ -63,6 +65,15 @@ export type GPUEmpiricalBayesRatesProps = {
   standardizedRates?: GraphDataView<'float32'>;
   /** Optional caller-owned global empirical-Bayes smoothed rate per row (esda `Empirical_Bayes`), NaN if excluded. */
   smoothedRates?: GraphDataView<'float32'>;
+  /**
+   * Compile-time. Clamp the estimated prior variance at zero in `smoothedRates` (Marshall 1991,
+   * GeoDa), so the shrinkage weight `w = a / (a + m / b)` stays in `[0, 1]`: when the counts are
+   * no more dispersed than Poisson (`a <= 0`) every rate shrinks fully to the pooled rate `m`.
+   * Defaults to `true`. `false` reproduces esda `Empirical_Bayes` exactly, where `a < 0` pushes the
+   * smoothed rate away from `m` and possibly below zero. `standardizedRates` and `summary.priorVariance`
+   * are never clamped (esda `assuncao_rate` keeps its own `a + m / b < 0` guard).
+   */
+  clampPriorVariance?: boolean;
   /** Optional caller-owned raw rate `e / b` per row, NaN if excluded. */
   rawRates?: GraphDataView<'float32'>;
   /** Optional caller-owned moments, `GPU_EMPIRICAL_BAYES_SUMMARY.length` float32 values. */
@@ -80,8 +91,13 @@ export type GPUEmpiricalBayesRatesProps = {
  * - `m = sum e / sum b`, `s2 = sum b (y - m)^2 / sum b`, `a = s2 - m / mean(b)`.
  * - Standardized rate: `z = (y - m) / sqrt(v)` with `v = a + m / b`, replaced by `m / b` when
  *   `a + m / b < 0` (esda's guard), exactly `assuncao_rate`.
- * - Smoothed rate: `r = w y + (1 - w) m` with `w = a / (a + m / b)`, exactly `Empirical_Bayes.r`;
- *   esda does not clamp `a`, so `w` can leave `[0, 1]` when `a < 0`, and `summary` exposes `a`.
+ * - Smoothed rate: `r = w y + (1 - w) m` with `w = a / (a + m / b)`. By default (`clampPriorVariance`
+ *   true) `a` is replaced by `max(a, 0)` as in Marshall (1991) and GeoDa, so `w` stays in `[0, 1]`
+ *   and `a <= 0` shrinks every rate to `m`. With `clampPriorVariance: false` this is exactly esda
+ *   `Empirical_Bayes.r`, which does not clamp, so `w` can leave `[0, 1]` when `a < 0`. `summary`
+ *   exposes the unclamped `a` (`priorVariance`) and the clamped one (`clampedPriorVariance`).
+ *   A default change: results with `a < 0` differ from earlier versions and from esda unless
+ *   `clampPriorVariance: false`.
  *
  * The totals are reduced in a fixed order (a workgroup tree per block of rows, then a tree over
  * the block partials), straight from `events` and `populations` with no intermediate table, so
@@ -168,6 +184,7 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
       props.summary ??
       createTransientView(graph, `${id}-summary`, 'float32', GPU_EMPIRICAL_BAYES_SUMMARY.length);
     const S = GPU_EMPIRICAL_BAYES_SUMMARY;
+    const clampPriorVariance = props.clampPriorVariance ?? true;
     const constants = `const ROWS: u32 = ${rows}u;
 const LANES: u32 = ${LANES}u;
 const GROUPS: u32 = ${groups}u;
@@ -303,8 +320,10 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
     summary[summaryOffset + ${S.populationSum}u] = populationSum;
     summary[summaryOffset + ${S.pooledRate}u] = pooledRate;
     summary[summaryOffset + ${S.weightedRateVariance}u] = weightedVariance;
-    summary[summaryOffset + ${S.priorVariance}u] = weightedVariance - pooledRate / (populationSum / count);
-    for (var field = ${S.priorVariance + 1}u; field < ${S.length}u; field++) {
+    let priorVariance = weightedVariance - pooledRate / (populationSum / count);
+    summary[summaryOffset + ${S.priorVariance}u] = priorVariance;
+    summary[summaryOffset + ${S.clampedPriorVariance}u] = max(priorVariance, 0.0);
+    for (var field = ${S.clampedPriorVariance + 1}u; field < ${S.length}u; field++) {
       summary[summaryOffset + field] = 0.0;
     }
   }`
@@ -353,7 +372,13 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
   let rawVariance = priorVariance + noise;
   let variance = select(rawVariance, noise, rawVariance < 0.0);
   let standardized = (rate - pooledRate) / sqrt(variance);
-  let weight = priorVariance / rawVariance;
+  ${
+    clampPriorVariance
+      ? `let clampedVariance = summary[summaryOffset + ${S.clampedPriorVariance}u];
+  let clampedDenominator = clampedVariance + noise;
+  let weight = select(0.0, clampedVariance / clampedDenominator, clampedDenominator > 0.0);`
+      : 'let weight = priorVariance / rawVariance;'
+  }
   let smoothed = weight * rate + (1.0 - weight) * pooledRate;
   ${outputWGSL.join('\n  ')}`
       })

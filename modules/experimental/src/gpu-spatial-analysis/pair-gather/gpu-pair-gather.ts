@@ -115,6 +115,8 @@ export type GPUPairGatherProps = {
  * With `neighbors`, filled slots (`slot < counts[query]`, feature not `GPU_SPATIAL_JOIN_NO_FEATURE`)
  * are flattened by a stable compaction. Columns are copied as raw 32-bit words, so NaN payloads
  * survive. Bounded by `output.leftRows.length`; surplus rows set `overflow`. Deterministic, no atomics.
+ *
+ * Consumes join row indices and attribute columns only, so it takes no `spatialContext`.
  */
 export class GPUPairGather implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

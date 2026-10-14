@@ -16,6 +16,7 @@ import {getCellKeyLayout} from './cell-keys';
 import {getCellTableFirstRow, validateCellTable, type GPUCellTable} from './cell-table';
 import {GPUCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggregation';
 import {GPUCellRollup} from './gpu-cell-rollup';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
 
 /** One level of a {@link GPUCellPyramid}. */
 export type GPUCellPyramidLevel = {
@@ -57,6 +58,8 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUCellPyramidProps;
+  /** Resolved spatial context of the input rows, see {@link GPUCellAggregation}. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCellPyramidProps) {
     this.id = props.id ?? 'cell-pyramid';
@@ -79,7 +82,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
       }
     }
     // Validate the finest level eagerly; roll-ups validate when nodes are built.
-    this.createAggregation(props.levels[0].output, []);
+    this.spatialContext = this.createAggregation(props.levels[0].output, []).spatialContext;
   }
 
   /** Row offset of each level's `cells` within its buffer, for {@link GPUCellLevelSelection}. */

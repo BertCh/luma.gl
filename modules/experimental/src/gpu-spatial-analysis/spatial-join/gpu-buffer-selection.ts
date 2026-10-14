@@ -34,6 +34,9 @@ import {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
 import type {SpatialSortCurve} from './spatial-join-passes';
 import {GPU_SPATIAL_JOIN_NO_FEATURE, type GPUNearestFeatureSource} from './spatial-join-types';
 
+import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {resolveNearestSpatialContext} from './nearest-types';
+
 const OPERATION = 'GPUBufferSelection';
 
 /**
@@ -46,6 +49,16 @@ const OPERATION = 'GPUBufferSelection';
 export type GPUBufferSelectionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'buffer-selection'`. */
   id?: string;
+  /**
+   * Coordinate space and metric of the points and features, forwarded to
+   * {@link GPUNearestFeatureJoin}. Omitted means native planar coordinates, with `distance` and
+   * `distances` in coordinate units. `{coordinateSpace: 'longitude-latitude', metric:
+   * 'great-circle'}` selects points within a great-circle distance in meters (mean Earth sphere,
+   * or `sphereRadius` of the context; kilometers are rejected), with segment features straight in
+   * longitude/latitude; `candidateCapacity` is then ignored. Other longitude/latitude metrics
+   * throw at construction.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar points to test. Contents are per-frame. At least one row is required. */
   points: GPUFloat32Positions;
   /** Optional stable IDs written to `output.ids`, with the chunk topology of `points`. Row indices are used when omitted. */
@@ -93,7 +106,7 @@ export type GPUBufferSelectionProps = {
    * Requires `output`.
    */
   drawInstanceCount?: GraphDataView<'uint32'>;
-  /** Optional per-point planar distance to the nearest feature, or -1 outside. Chunked like `points`. */
+  /** Optional per-point distance to the nearest feature (planar, or meters when great-circle), or -1 outside. Chunked like `points`. */
   distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** Optional per-point nearest feature row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like `points`. */
   nearestFeatureIds?: GPUUint32Rows;
@@ -112,8 +125,8 @@ export type GPUBufferSelectionProps = {
  * buffer selection publishes a source-aligned 0/1 mask and stable IDs in ascending row order, so
  * results are deterministic and can drive highlighting or draw-call instancing directly.
  *
- * Non-goals: polygon buffers, per-feature distances, and geodesic distance. Distances are planar,
- * in the units of the input coordinates.
+ * Non-goals: polygon buffers and per-feature distances. Distances are planar in the units of the
+ * input coordinates, or great-circle meters with a longitude/latitude `spatialContext`.
  */
 export class GPUBufferSelection implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -122,11 +135,14 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
   readonly props: GPUBufferSelectionProps;
   /** Number of points. */
   readonly pointCount: number;
+  /** Resolved spatial context. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUBufferSelectionProps) {
     this.id = props.id ?? 'buffer-selection';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveNearestSpatialContext(id, props.spatialContext).spatialContext;
     const {points, sourceIds, outputMask, output, distances, nearestFeatureIds, overflow} = props;
     if (!outputMask && !output) {
       throw new Error(`${id} requires outputMask or output`);
@@ -201,6 +217,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     nodes.push(
       ...new GPUNearestFeatureJoin({
         id: `${id}-join`,
+        spatialContext: this.spatialContext,
         points,
         features: props.features,
         radius: props.distance,

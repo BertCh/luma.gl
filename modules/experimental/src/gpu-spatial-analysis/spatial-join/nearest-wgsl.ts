@@ -4,6 +4,8 @@
 
 import type {NearestSide} from './nearest-types';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
+import {SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
 
 /** Slots of the per-query header in the traversal result buffer: count, flags, bound bits. @internal */
 export const NEAREST_HEADER_WORDS = 3;
@@ -12,39 +14,62 @@ export const NEAREST_HEADER_WORDS = 3;
 export const NEAREST_NODE_WORDS = 5;
 
 /**
- * Planar f32 helpers shared by the nearest kernels: segment/segment distance, the foot point on
- * the second segment, and constants.
- *
- * `orient` is exact whenever its products and their difference are exactly representable
- * (integers, dyadic rationals); near-degenerate float input may be classified either way.
+ * Constants and finite checks shared by every nearest kernel, including the bounds kernels that do
+ * not evaluate geometry.
  *
  * @internal
  */
-export const NEAREST_COMMON_WGSL = /* wgsl */ `
+export const NEAREST_BASE_WGSL = /* wgsl */ `
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 const NO_FEATURE: u32 = 0xffffffffu;
 const NO_SEGMENT: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}
-fn orient(a: vec2f, b: vec2f, c: vec2f) -> f32 {
-  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+`;
+
+const NEAREST_ORIENTATION_WGSL = /* wgsl */ `${NEAREST_BASE_WGSL}
+${EXACT_ORIENTATION_WGSL}
+// Exact sign (-1, 0, 1) of cross(b - a, c - a).
+fn orientSide(a: vec2f, b: vec2f, c: vec2f) -> i32 {
+  if (a.x == b.x && a.y == b.y) { return 0; }
+  let sign = orientSign(a, b, c);
+  if (sign != 2) { return sign; }
+  let determinant = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  return select(select(0, -1, determinant < 0.0), 1, determinant > 0.0);
 }
-// Collinearity first; spatial-predicate-wgsl tests the range first so uncertain signs are never reported.
-fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
-  return orient(a, b, q) == 0.0 &&
-    q.x >= min(a.x, b.x) && q.x <= max(a.x, b.x) &&
+fn inSegmentBox(a: vec2f, b: vec2f, q: vec2f) -> bool {
+  return q.x >= min(a.x, b.x) && q.x <= max(a.x, b.x) &&
     q.y >= min(a.y, b.y) && q.y <= max(a.y, b.y);
 }
+// Each orientation is evaluated once; a zero sign plus the range test is the on-segment test.
 fn segmentsIntersect(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> bool {
-  let o1 = orient(a, b, c);
-  let o2 = orient(a, b, d);
-  let o3 = orient(c, d, a);
-  let o4 = orient(c, d, b);
-  if (((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) &&
-      ((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0))) {
+  let o1 = orientSide(a, b, c);
+  let o2 = orientSide(a, b, d);
+  let o3 = orientSide(c, d, a);
+  let o4 = orientSide(c, d, b);
+  if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+      ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) {
     return true;
   }
-  return onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
+  return (o1 == 0 && inSegmentBox(a, b, c)) || (o2 == 0 && inSegmentBox(a, b, d)) ||
+    (o3 == 0 && inSegmentBox(c, d, a)) || (o4 == 0 && inSegmentBox(c, d, b));
 }
+fn crossProduct(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
+`;
+
+/**
+ * Planar helpers shared by the nearest kernels: segment/segment distance, the foot point on the
+ * second segment, and the topological tests (on-segment, segment intersection, containment).
+ *
+ * Distances and foot points are plain f32. Every orientation sign is exact: `orientSide` wraps the
+ * shared `orientSign` (an f32 filter with an exact 256-bit integer fallback, see
+ * `exact-orientation-wgsl.ts`), so "distance 0" agrees with the point-in-polygon join and the
+ * predicate join for the same vertices, including points exactly on an edge. Only an orientation
+ * with no exact sign (non-finite coordinate, product exponents spanning more than 200 bits) falls
+ * back to the sign of the f32 determinant.
+ *
+ * @internal
+ */
+export const NEAREST_COMMON_WGSL = /* wgsl */ `${NEAREST_ORIENTATION_WGSL}
 fn closestPointOnSegment(p: vec2f, a: vec2f, b: vec2f) -> vec2f {
   let ab = b - a;
   let lengthSq = dot(ab, ab);
@@ -56,7 +81,6 @@ fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
   let d = p - closestPointOnSegment(p, a, b);
   return dot(d, d);
 }
-fn crossProduct(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
 fn segmentPairDistanceSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
   if (a.x == b.x && a.y == b.y) { return pointSegmentDistanceSq(a, c, d); }
   if (c.x == d.x && c.y == d.y) { return pointSegmentDistanceSq(c, a, b); }
@@ -84,6 +108,98 @@ fn segmentFoot(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec2f {
   let thirdSq = pointSegmentDistanceSq(c, a, b);
   if (thirdSq < bestSq) { best = c; bestSq = thirdSq; }
   if (pointSegmentDistanceSq(d, a, b) < bestSq) { best = d; }
+  return best;
+}
+`;
+
+/**
+ * Great-circle counterpart of the distance half of {@link NEAREST_COMMON_WGSL}, with the same
+ * function names. Positions are `vec2f(longitude, latitude)` in degrees and every "distance
+ * squared" is a central angle in radians (the traversal compares and bounds angles; multiply by the
+ * sphere radius for meters).
+ *
+ * Edges are straight in longitude/latitude with the longitude difference wrapped at +-180 (the same
+ * edge model as the containment and crossing tests and as the network snapping contributors).
+ * Point-to-edge distances use `geodesicSegmentFraction` and `geodesicSegmentDistance` of
+ * `GEODESIC_WGSL`. The crossing and containment tests stay exact and planar in degrees; before the
+ * crossing test the second edge is moved by a multiple of 360 degrees to overlap the first, so an
+ * edge across the antimeridian still crosses its neighbors.
+ *
+ * @internal
+ */
+export const NEAREST_GEODESIC_WGSL = /* wgsl */ `${NEAREST_ORIENTATION_WGSL}
+${SPATIAL_GEODESIC_WGSL}
+fn unwrapLongitude(x: f32, reference: f32) -> f32 {
+  return x + 360.0 * round((reference - x) / 360.0);
+}
+fn wrapLongitude(x: f32) -> f32 {
+  return x - 360.0 * round(x / 360.0);
+}
+struct AlignedEdges { b: vec2f, c: vec2f, d: vec2f, overlaps: bool }
+// Edges a-b and c-d with b, c and d shifted by multiples of 360 degrees so that b is within 180 of
+// a, c within 180 of a and d within 180 of c, and c-d on the copy that overlaps a-b in longitude.
+// Coordinates that need no shift are returned unchanged.
+fn alignEdges(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> AlignedEdges {
+  let alignedB = vec2f(unwrapLongitude(b.x, a.x), b.y);
+  var alignedC = vec2f(unwrapLongitude(c.x, a.x), c.y);
+  var alignedD = vec2f(unwrapLongitude(d.x, alignedC.x), d.y);
+  let low = min(a.x, alignedB.x);
+  let high = max(a.x, alignedB.x);
+  var overlaps = max(alignedC.x, alignedD.x) >= low && min(alignedC.x, alignedD.x) <= high;
+  if (!overlaps) {
+    let shift = select(360.0, -360.0, alignedC.x > a.x);
+    alignedC.x = alignedC.x + shift;
+    alignedD.x = alignedD.x + shift;
+    overlaps = max(alignedC.x, alignedD.x) >= low && min(alignedC.x, alignedD.x) <= high;
+  }
+  return AlignedEdges(alignedB, alignedC, alignedD, overlaps);
+}
+fn edgesIntersect(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> bool {
+  let edges = alignEdges(a, b, c, d);
+  return edges.overlaps && segmentsIntersect(a, edges.b, edges.c, edges.d);
+}
+fn closestPointOnSegment(p: vec2f, a: vec2f, b: vec2f) -> vec2f {
+  let fraction = geodesicSegmentFraction(p, a, b);
+  if (fraction <= 0.0) { return a; }
+  if (fraction >= 1.0) { return b; }
+  let foot = a + vec2f(geodesicWrapLongitudeDelta(b.x - a.x), b.y - a.y) * fraction;
+  return vec2f(wrapLongitude(foot.x), foot.y);
+}
+// Central angle from p to the segment a-b.
+fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  return geodesicSegmentDistance(p, a, b, geodesicSegmentFraction(p, a, b), 1.0);
+}
+fn segmentPairDistanceSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
+  if (a.x == b.x && a.y == b.y) { return pointSegmentDistanceSq(a, c, d); }
+  if (c.x == d.x && c.y == d.y) { return pointSegmentDistanceSq(c, a, b); }
+  if (edgesIntersect(a, b, c, d)) { return 0.0; }
+  return min(
+    min(pointSegmentDistanceSq(a, c, d), pointSegmentDistanceSq(b, c, d)),
+    min(pointSegmentDistanceSq(c, a, b), pointSegmentDistanceSq(d, a, b))
+  );
+}
+// The point of segment c-d nearest to segment a-b (the crossing point when they cross).
+fn segmentFoot(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec2f {
+  if (c.x == d.x && c.y == d.y) { return c; }
+  if (a.x == b.x && a.y == b.y) { return closestPointOnSegment(a, c, d); }
+  let edges = alignEdges(a, b, c, d);
+  if (edges.overlaps) {
+    let ab = edges.b - a;
+    let cd = edges.d - edges.c;
+    let denominator = crossProduct(cd, ab);
+    if (denominator != 0.0 && segmentsIntersect(a, edges.b, edges.c, edges.d)) {
+      let crossing = edges.c + cd * clamp(crossProduct(a - edges.c, ab) / denominator, 0.0, 1.0);
+      return vec2f(wrapLongitude(crossing.x), crossing.y);
+    }
+  }
+  var best = closestPointOnSegment(a, c, d);
+  var bestAngle = geodesicCentralAngle(a, best);
+  let second = closestPointOnSegment(b, c, d);
+  let secondAngle = geodesicCentralAngle(b, second);
+  if (secondAngle < bestAngle) { best = second; bestAngle = secondAngle; }
+  let thirdAngle = pointSegmentDistanceSq(c, a, b);
+  if (thirdAngle < bestAngle) { best = c; bestAngle = thirdAngle; }
+  if (pointSegmentDistanceSq(d, a, b) < bestAngle) { best = d; }
   return best;
 }
 `;
@@ -168,8 +284,8 @@ fn ${p}Contains(q: vec2f, f: u32) -> bool {
     'a',
     'b',
     `if ((a.y > q.y) != (b.y > q.y)) {
-      let t = (q.y - a.y) / (b.y - a.y);
-      if (q.x < a.x + t * (b.x - a.x)) { inside = !inside; }
+      let side = orientSide(a, b, q);
+      if ((b.y > a.y && side > 0) || (b.y < a.y && side < 0)) { inside = !inside; }
     }`
   )}
   return inside;
@@ -278,7 +394,47 @@ export type NearestTraversalOptions = {
    * `queryBase`, then per feature row from `featureBase` (word offsets inside `nodeData`).
    */
   filter?: {exclusive: boolean; onAttribute: boolean; queryBase: number; featureBase: number};
+  /**
+   * Measure distances as great-circle central angles between longitude/latitude positions instead
+   * of squared planar distances; the node bounds are then lower-bounded with
+   * `boxLowerAngle`. The kernel must include {@link NEAREST_GEODESIC_WGSL}.
+   */
+  greatCircle?: boolean;
 };
+
+/**
+ * Lower bound, as a central angle in radians, of the great-circle distance between two
+ * longitude/latitude boxes, for the great-circle traversal.
+ *
+ * The haversine of any two points is `hav(dlat) + cos(lat1) cos(lat2) hav(dlon)`. With the latitude
+ * gap of the boxes, the circular longitude gap (through the antimeridian when shorter) and the
+ * cosine of the latitude farthest from the equator over both boxes (a lower bound of both
+ * cosines), the sum never overestimates. A box 180 degrees or wider in longitude is treated as
+ * covering every longitude, which also covers features whose box straddles the antimeridian.
+ *
+ * @internal
+ */
+export const NEAREST_BOX_LOWER_ANGLE_WGSL = /* wgsl */ `
+fn boxLowerAngle(
+  nodeMinimum: vec2f, nodeMaximum: vec2f, queryMinimum: vec2f, queryMaximum: vec2f
+) -> f32 {
+  let latitudeGap = max(max(nodeMinimum.y - queryMaximum.y, queryMinimum.y - nodeMaximum.y), 0.0);
+  var longitudeGap = 0.0;
+  if (nodeMaximum.x - nodeMinimum.x < 180.0 && queryMaximum.x - queryMinimum.x < 180.0) {
+    let direct = max(nodeMinimum.x - queryMaximum.x, queryMinimum.x - nodeMaximum.x);
+    let around = 360.0 - (max(nodeMaximum.x, queryMaximum.x) - min(nodeMinimum.x, queryMinimum.x));
+    longitudeGap = max(min(direct, around), 0.0);
+  }
+  let farLatitude = max(
+    max(abs(nodeMinimum.y), abs(nodeMaximum.y)),
+    max(abs(queryMinimum.y), abs(queryMaximum.y))
+  );
+  let cosine = geodesicCosLatitude(farLatitude);
+  let sinHalfLatitude = sin(0.5 * latitudeGap * GEODESIC_DEGREES_TO_RADIANS);
+  let sinHalfLongitude = sin(0.5 * longitudeGap * GEODESIC_DEGREES_TO_RADIANS);
+  let term = sinHalfLatitude * sinHalfLatitude + cosine * cosine * sinHalfLongitude * sinHalfLongitude;
+  return 2.0 * asin(sqrt(clamp(term, 0.0, 1.0)));
+}`;
 
 /**
  * Declarations and body of the per-query branch-and-bound BVH traversal.
@@ -307,14 +463,19 @@ const INTERNAL_NODE_COUNT: u32 = ${options.internalNodeCount}u;
 const STACK_SIZE: u32 = ${options.stackSize}u;
 const CHUNK_FIRST_ROW: u32 = ${options.chunkFirstRow}u;
 const BOUND_SLACK: f32 = 1.000001;
-// Squared distance from the query box to a node box, or FLOAT32_MAXIMUM for an empty node.
+${options.greatCircle ? NEAREST_BOX_LOWER_ANGLE_WGSL : ''}
+// ${options.greatCircle ? 'Central-angle lower bound' : 'Squared distance'} from the query box to a node box, or FLOAT32_MAXIMUM for an empty node.
 fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
   let base = nodeDataOffset + node * ${NEAREST_NODE_WORDS}u;
   let nodeMinimum = vec2f(bitcast<f32>(nodeData[base]), bitcast<f32>(nodeData[base + 1u]));
   let nodeMaximum = vec2f(bitcast<f32>(nodeData[base + 2u]), bitcast<f32>(nodeData[base + 3u]));
   if (nodeMinimum.x > nodeMaximum.x || nodeMinimum.y > nodeMaximum.y) { return FLOAT32_MAXIMUM; }
-  let gap = max(max(nodeMinimum - queryMaximum, queryMinimum - nodeMaximum), vec2f(0.0));
-  return dot(gap, gap);
+  ${
+    options.greatCircle
+      ? 'return boxLowerAngle(nodeMinimum, nodeMaximum, queryMinimum, queryMaximum);'
+      : `let gap = max(max(nodeMinimum - queryMaximum, queryMinimum - nodeMaximum), vec2f(0.0));
+  return dot(gap, gap);`
+  }
 }`;
   const body = `let row = CHUNK_FIRST_ROW + index;
   let header = topkOffset + row * STRIDE;

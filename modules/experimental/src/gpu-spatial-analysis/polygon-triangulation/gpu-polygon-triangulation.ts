@@ -15,6 +15,7 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 import type {GPUSpatialJoinPolygons} from '../spatial-join/index';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUPolygonTriangulation';
 
@@ -48,6 +49,13 @@ export function getPolygonTriangulationIndexCount(
 export type GPUPolygonTriangulationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'polygon-triangulation'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Polygons in GeoArrow layout. Every polygon needs a shell of at least three vertices; the first
    * ring of a polygon is the shell and later rings are holes. Rings close implicitly, a repeated
@@ -123,6 +131,8 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUPolygonTriangulationProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of polygons, `polygonOffsets.length - 1`. */
   readonly polygonCount: number;
   /** Number of rings, `ringOffsets.length - 1`. */
@@ -132,6 +142,7 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
 
   constructor(props: GPUPolygonTriangulationProps) {
     this.id = props.id ?? 'polygon-triangulation';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     const {polygons} = props;

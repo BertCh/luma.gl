@@ -26,6 +26,7 @@ import {getBoundedKeyPairSortNodes} from '../areal-interpolation/bounded-key-pai
 import {GPUSegmentRingAssembly, type GPUSegmentRingAssemblyOutput} from '../ring-assembly/index';
 import {createRingOrientationNode} from './coverage-topology-kernels';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUCoverageDissolve';
 const INVALID = `${KEY_PAIR_INVALID}u`;
@@ -53,6 +54,13 @@ export type GPUCoverageDissolveOutput = GPUSegmentRingAssemblyOutput & {
 export type GPUCoverageDissolveProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'coverage-dissolve'`. */
   id?: string;
+  /**
+   * Coordinate space and metric of the vertices. Omitted means native planar coordinates.
+   * `longitude-latitude` throws at construction: coverage topology is evaluated in the plane of the
+   * coordinates (edges are straight lines, gaps are measured in coordinate units). Project to a
+   * planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Flattened ring vertices (GeoArrow layout, as `GPUCoverageSimplification`). Planar, finite
    * coordinates; use tile- or view-local units because the output keeps f32 coordinates.
@@ -125,11 +133,14 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUCoverageDissolveProps;
+  /** Resolved spatial context: native planar coordinates. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUCoverageDissolveProps) {
     const id = props.id ?? 'coverage-dissolve';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1 || props.positions.length >= 2 ** 30) {
       throw new Error(`${id} positions must hold between 1 and 2^30 - 1 vertices`);
@@ -502,7 +513,7 @@ fn quantise(value: f32) -> u32 {
         groups: segmentGroups,
         vertexTolerance,
         interiorSide: 'left',
-        geographic: false,
+        spatialContext: this.spatialContext,
         splitTouchingRings: props.splitTouchingRings,
         output: ringOutput
       }).getCommandNodes(graph)

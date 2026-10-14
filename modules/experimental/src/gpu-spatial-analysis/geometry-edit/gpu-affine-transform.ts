@@ -19,6 +19,7 @@ import {
 import {GPUGeometryMeasures} from '../geometry-measures/gpu-geometry-measures';
 import type {GPUGeometryHoleRule} from '../geometry-measures/geometry-measures-kernels';
 import {createAffineTransformNode} from './geometry-edit-kernels';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 const OPERATION = 'GPUAffineTransform';
 
@@ -129,6 +130,13 @@ export type GPUAffineTransformOutput = {
 export type GPUAffineTransformProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'affine-transform'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar vertex positions. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -191,6 +199,8 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUAffineTransformProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features, or 0 when no ring offsets are given. */
   readonly featureCount: number;
   /** Resolved geometry type. */
@@ -200,6 +210,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
 
   constructor(props: GPUAffineTransformProps) {
     this.id = props.id ?? 'affine-transform';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     this.geometryType = props.geometryType ?? 'lines';
     this.origins = props.origins ?? [];
@@ -321,7 +332,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
         : undefined;
       nodes.push(
         ...new GPUGeometryMeasures({
-          spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
+          spatialContext: {...this.spatialContext, metric: 'native', units: 'native'},
           id: `${id}-measures`,
           positions: props.positions,
           geometryType: this.geometryType === 'polygons' ? 'polygons' : 'lines',

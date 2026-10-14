@@ -25,9 +25,9 @@ export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_LM_SARMA = 4;
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_MORAN_RESIDUALS = 5;
 
 /** Number of float32 values `output.summary` of `GPUSpatialRegressionDiagnostics` must hold. */
-export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH = 12;
+export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH = 13;
 
-/** `summary` slot: number of rows `n`, stored as a float32 integer. */
+/** `summary` slot: number of analyzed (fitted) rows `n`, stored as a float32 integer. */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_ROW_COUNT = 0;
 /** `summary` slot: residual variance `e'e / n` (spreg `sig2n`). */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_SIGMA_SQUARED = 1;
@@ -51,14 +51,23 @@ export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_MORAN_P_VALUE = 9;
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_RESIDUAL_LAG_PRODUCT = 10;
 /** `summary` slot: `e'Wy`, the residual cross-product with the lagged response. */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_RESPONSE_LAG_PRODUCT = 11;
+/**
+ * `summary` slot: number of rows excluded from the analysis (zero `mask` entry, or a non-finite
+ * response, residual or predictor), stored as a float32 integer. `n` plus this value is the weights
+ * row count. It is also reported when the status is not OK.
+ */
+export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT = 12;
 
 /** `status` value: diagnostics computed. */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_OK = 0;
 /** `status` value: the (centered) design is singular or ill-conditioned. */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_SINGULAR = 1;
-/** `status` value: too few rows, `n <= predictorCount + 1`. */
+/** `status` value: too few analyzed rows, `n <= predictorCount + 1` (also a failed OLS fit). */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_TOO_FEW_ROWS = 2;
 /** `status` value: degenerate weights (`S0 <= 0` or `T <= 0`, for example no neighbors at all). */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_DEGENERATE_WEIGHTS = 3;
-/** `status` value: a non-finite input, or residuals that are exactly zero (a perfect fit). */
+/**
+ * `status` value: non-finite moments, or fitted-row residuals that are exactly zero (a perfect
+ * fit). Rows with a non-finite input are excluded, not reported here.
+ */
 export const GPU_SPATIAL_REGRESSION_DIAGNOSTICS_STATUS_NON_FINITE = 4;

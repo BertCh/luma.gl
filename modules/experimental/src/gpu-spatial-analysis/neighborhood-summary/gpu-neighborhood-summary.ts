@@ -21,6 +21,7 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
+import {isGPUSpatialWeightsRowStandardized} from '../spatial-weights/spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 
 const OPERATION = 'GPUNeighborhoodSummary';
@@ -104,9 +105,17 @@ export type GPUNeighborhoodSummaryProps = {
  * lag family (momepy `describe`, libpysal `lag_categorical`).
  *
  * Members of row `i` are, in this fixed order: the focal row (with `includeFocal`, weight
- * `focalWeight`), then the CSR slots of the row in slot order, skipping a listed self slot, slots
- * outside `[0, rows)`, neighbors with a zero mask and, for the numeric statistics, neighbors with
- * a non-finite value. A row with a zero mask is not summarized: `count` is 0 and every other
+ * `focalWeight`), then the active CSR slots of the row in slot order. A slot is active when its
+ * weight is positive; a listed self slot, slots outside `[0, rows)`, neighbors with a zero mask
+ * and, for the numeric statistics, neighbors with a non-finite value are skipped. Zero-weight
+ * slots are therefore not members: `count`, `min`, `max`, `median` and the categorical outputs
+ * ignore them. This deliberately differs from libpysal `lag_spatial` and momepy, which count
+ * every listed neighbor including zero-weight ones (identical when no zero weights are listed).
+ * When `weights.info.transform === 'row'` the slot weights are re-standardized over the active
+ * members (`w_s / sum of active slot weights`, the focal weight is unchanged), so `sum` (the lag)
+ * stays a weighted average when neighbors are masked or non-finite instead of shrinking toward 0.
+ * When `weights.status.overflow` is nonzero the weights are truncated and every output is NaN
+ * (`count` too; `modes` holds `GPU_NEIGHBORHOOD_SUMMARY_NO_MODE`). A row with a zero mask is not summarized: `count` is 0 and every other
  * column is quiet NaN (`modes` holds `GPU_NEIGHBORHOOD_SUMMARY_NO_MODE`). A focal row's own value
  * is only used with `includeFocal`. With `k` members, weights `w_s` and values `x_s`:
  * - `count` is `k`; `weightSum` is `W = sum w_s`; `sum` is `sum w_s x_s` (the lag).
@@ -212,6 +221,9 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
     }
+    if (props.weights.status?.overflow) {
+      validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
+    }
     const focalWeight = props.focalWeight ?? 1;
     if (!Number.isFinite(focalWeight) || focalWeight < 0) {
       throw new Error(`${id} focalWeight must be finite and non-negative`);
@@ -223,6 +235,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
+        props.weights.status?.overflow,
         props.values,
         props.categories,
         props.mask
@@ -240,6 +253,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
+      weights.status?.overflow,
       props.values,
       props.categories,
       mask,
@@ -251,6 +265,8 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
     const rows = weights.offsets.length - 1;
     const statistics = props.statistics ?? [];
     const includeFocal = Boolean(props.includeFocal);
+    const truncation = weights.status?.overflow;
+    const standardized = isGPUSpatialWeightsRowStandardized(weights);
     const maximumNeighbors = props.maximumNeighbors ?? 32;
     const constants = `const ROWS: u32 = ${rows}u;
 const CAPACITY: u32 = ${weights.neighbors.length}u;
@@ -271,18 +287,35 @@ fn getMemberRange(row: u32) -> vec2<u32> {
       mask ? `mask[maskOffset + ${rowExpression}] != 0u` : 'true';
     // Member `visit` of a row: the focal row first (if requested), then CSR slots in order.
     const getMemberWGSL = (validExpression: (row: string) => string) => `
-fn getMember(row: u32, begin: u32, visit: u32) -> Member {
+fn getMember(row: u32, begin: u32, visit: u32, scale: f32) -> Member {
   var member = Member(row, FOCAL_WEIGHT, false);
   if (visit >= FOCAL_COUNT) {
     let slot = begin + visit - FOCAL_COUNT;
     member.row = neighbors[neighborsOffset + slot];
     member.weight = weights[weightsOffset + slot];
-    if (member.row >= ROWS || member.row == row) {
+    // Only active slots are members: another row with a positive weight.
+    if (member.row >= ROWS || member.row == row || !(member.weight > 0.0)) {
       return member;
     }
+    member.weight = member.weight * scale;
   }
   member.valid = ${maskedWGSL('member.row')} && ${validExpression('member.row')};
   return member;
+}
+// Reciprocal sum of the valid slot weights of a row-standardized row (1 for weights as given).
+fn getRowScale(row: u32, begin: u32, visits: u32) -> f32 {
+  ${
+    standardized
+      ? `var sum = 0.0;
+  for (var visit = FOCAL_COUNT; visit < visits; visit++) {
+    let member = getMember(row, begin, visit, 1.0);
+    if (member.valid) {
+      sum += member.weight;
+    }
+  }
+  return select(0.0, 1.0 / sum, sum > 0.0);`
+      : 'return 1.0;'
+  }
 }`;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -299,7 +332,10 @@ fn getMember(row: u32, begin: u32, visit: u32) -> Member {
         ...(mask
           ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
           : []),
-        {name: 'output', view: output!, type: 'f32', access: 'read_write'}
+        {name: 'output', view: output!, type: 'f32', access: 'read_write'},
+        ...(truncation
+          ? [{name: 'truncation', view: truncation, type: 'u32' as const, access: 'read' as const}]
+          : [])
       ];
       if (wants('median')) {
         bindings.push({
@@ -346,6 +382,9 @@ fn getMember(row: u32, begin: u32, visit: u32) -> Member {
             `output[outputOffset + index * ${columns}u + ${column}u] = ${statistic === 'count' ? '0.0' : 'nan'};`
         )
         .join('\n    ');
+      const truncatedWGSL = statistics
+        .map((_, column) => `output[outputOffset + index * ${columns}u + ${column}u] = nan;`)
+        .join('\n    ');
       const resultWGSL = statistics
         .map(
           (statistic, column) =>
@@ -367,8 +406,18 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
     ${excludedWGSL}
     return;
   }
+  ${
+    truncation
+      ? `// Truncated weights: no statistic from them is trustworthy.
+  if (truncation[truncationOffset] != 0u) {
+    ${truncatedWGSL}
+    return;
+  }`
+      : ''
+  }
   let range = getMemberRange(index);
   let visits = range.y - range.x + FOCAL_COUNT;
+  let scale = getRowScale(index, range.x, visits);
   var count = 0u;
   var weightSum = 0.0;
   var weightedSum = 0.0;
@@ -376,7 +425,7 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
   var maximum = -3.0e38;
   ${wants('median') ? `var sorted: array<f32, ${maximumNeighbors}>;` : ''}
   for (var visit = 0u; visit < visits; visit++) {
-    let member = getMember(index, range.x, visit);
+    let member = getMember(index, range.x, visit, scale);
     if (!member.valid) {
       continue;
     }
@@ -407,7 +456,7 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
   ${
     wants('standardDeviation')
       ? `for (var visit = 0u; visit < visits; visit++) {
-    let member = getMember(index, range.x, visit);
+    let member = getMember(index, range.x, visit, scale);
     if (member.valid) {
       let deviation = values[valuesOffset + member.row] - mean;
       squares += member.weight * deviation * deviation;
@@ -459,6 +508,9 @@ ${getMemberWGSL(row => `isFiniteFloat(values[valuesOffset + ${row}])`)}`,
                 access: 'read_write' as const
               }
             ]
+          : []),
+        ...(truncation
+          ? [{name: 'truncation', view: truncation, type: 'u32' as const, access: 'read' as const}]
           : [])
       ];
       nodes.push(
@@ -478,8 +530,19 @@ ${getMemberWGSL(() => 'true')}`,
     ${props.entropy ? 'entropy[entropyOffset + index] = nan;' : ''}
     return;
   }
+  ${
+    truncation
+      ? `// Truncated weights: no statistic from them is trustworthy.
+  if (truncation[truncationOffset] != 0u) {
+    ${props.modes ? 'modes[modesOffset + index] = NO_MODE;' : ''}
+    ${props.entropy ? 'entropy[entropyOffset + index] = nan;' : ''}
+    return;
+  }`
+      : ''
+  }
   let range = getMemberRange(index);
   let visits = range.y - range.x + FOCAL_COUNT;
+  let scale = getRowScale(index, range.x, visits);
   // Decode the members once. Up to MAXIMUM_NEIGHBORS of them are kept in private arrays so the
   // quadratic frequency scan below reads registers instead of re-decoding every member (four
   // global loads) for every pair; larger rows take the unbounded decoding scan.
@@ -488,7 +551,7 @@ ${getMemberWGSL(() => 'true')}`,
   var memberCount = 0u;
   var weightSum = 0.0;
   for (var visit = 0u; visit < visits; visit++) {
-    let member = getMember(index, range.x, visit);
+    let member = getMember(index, range.x, visit, scale);
     if (member.valid) {
       weightSum += member.weight;
       if (memberCount < MAXIMUM_NEIGHBORS) {
@@ -530,7 +593,7 @@ ${getMemberWGSL(() => 'true')}`,
     }
   } else {
     for (var visit = 0u; visit < visits; visit++) {
-      let member = getMember(index, range.x, visit);
+      let member = getMember(index, range.x, visit, scale);
       if (!member.valid) {
         continue;
       }
@@ -539,7 +602,7 @@ ${getMemberWGSL(() => 'true')}`,
       var frequency = 0.0;
       var firstOccurrence = true;
       for (var other = 0u; other < visits; other++) {
-        let candidate = getMember(index, range.x, other);
+        let candidate = getMember(index, range.x, other, scale);
         if (candidate.valid && categories[categoriesOffset + candidate.row] == category) {
           if (other < visit) {
             firstOccurrence = false;

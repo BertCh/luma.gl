@@ -15,9 +15,11 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
+import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 
 /** Reference count above which the global mode searches a BVH instead of scanning every row. */
 const BVH_MINIMUM_REFERENCES = 64;
@@ -77,6 +79,13 @@ export type GPUVertexSnapOutput = {
 export type GPUVertexSnapProps = {
   /** Prefix for generated node IDs. Defaults to `'vertex-snap'`. */
   id?: string;
+  /**
+   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
+   * construction: project positions to a planar frame first, for example with
+   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (`geometry-measures`), and pass the frame's context.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Packed planar positions of the geometry to snap (any layout: rows are independent). */
   positions: GraphDataView<'float32x2'>;
   /** Packed reference vertices. */
@@ -122,9 +131,12 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUVertexSnapProps;
+  /** Resolved spatial context (planar only). */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUVertexSnapProps) {
     this.id = props.id ?? 'vertex-snap';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
     const {id} = this;
     for (const [name, view] of Object.entries({
@@ -256,6 +268,7 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
 const FEATURE_COUNT: u32 = ${props.featureOffsets ? props.featureOffsets.length - 1 : 0}u;
 const REFERENCE_COUNT: u32 = ${props.referencePositions.length}u;
 const NO_REFERENCE: u32 = 0xffffffffu;
+${IS_NAN_BITS_WGSL}
 ${
   useBVH
     ? `const INTERNAL_NODE_COUNT: u32 = ${bvhInternalNodeCount}u;
@@ -312,7 +325,7 @@ fn findFeature(row: u32) -> u32 {
     useBVH
       ? `// Branch and bound over the reference BVH. A box distance never exceeds the squared distance of
   // any vertex inside it, so pruning on '>' keeps equal-distance rows and the lowest row wins ties.
-  if (vertex.x == vertex.x && vertex.y == vertex.y) {
+  if (!isNanBits(vertex.x) && !isNanBits(vertex.y)) {
     var stack: array<u32, 64>;
     var stackLower: array<f32, 64>;
     var depth = 1u;

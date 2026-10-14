@@ -96,6 +96,8 @@ export type GPUMapColoringProps = {
  *
  * **Verification.** `conflictCount` counts neighbor pairs that share a color; it is 0 for a symmetric
  * pattern. `converged` reports whether every row finished within `maximumRounds`.
+ *
+ * Consumes a contiguity (adjacency) pattern only, so it takes no `spatialContext`.
  */
 export class GPUMapColoring implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

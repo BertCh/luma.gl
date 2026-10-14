@@ -5,6 +5,7 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
 const OPERATION = 'GPUSpatialClustering';
 
@@ -27,10 +28,34 @@ export type SpatialClusteringGridViews = {
  * at least epsilon wide (with a 2^-10 relative margin against rounding), which makes the 3x3 cell
  * neighborhood of a point always contain all of its epsilon-neighbors.
  *
+ * With `geographicRadius` the positions are longitude/latitude degrees and epsilon is a
+ * great-circle distance in the units of the radius. The neighbor test is the haversine term
+ * against `sin^2(epsilon / (2 R))`; the minimum cell height is `epsilon / R` of latitude and the
+ * minimum cell width is `2 asin(sin(epsilon / (2 R)) / cos(maxAbsLatitude))` of longitude (360
+ * degrees when that ratio nears 1, so close to a pole one column spans the extent). Both are
+ * exact bounds for any two points inside the bounds, so the 3x3 walk stays exact. The walk does
+ * not wrap at the antimeridian.
+ *
  * @internal
  */
-export function getSpatialClusteringSharedWGSL(columns: number, rows: number): string {
+export function getSpatialClusteringSharedWGSL(
+  columns: number,
+  rows: number,
+  geographicRadius?: number
+): string {
+  const geographic = geographicRadius !== undefined;
+  const radiusLiteral = geographic ? String(Math.fround(geographicRadius)) : '1';
+  const withinEpsilonBody = geographic
+    ? `return geodesicHaversineTerm(vec2<f32>(ax, ay), vec2<f32>(bx, by)) <= lattice.epsilonSquared;`
+    : `let deltaX = bx - ax;
+  let deltaY = by - ay;
+  return deltaX * deltaX + deltaY * deltaY <= lattice.epsilonSquared;`;
   return /* wgsl */ `
+${geographic ? GEODESIC_WGSL : ''}
+const GEOGRAPHIC: bool = ${geographic};
+const SPHERE_RADIUS: f32 = ${/[.e]/.test(radiusLiteral) ? radiusLiteral : `${radiusLiteral}.0`};
+const DEGREES_PER_RADIAN: f32 = 57.2957795130823;
+const RADIANS_PER_DEGREE: f32 = 0.0174532925199433;
 const COLUMNS: u32 = ${columns}u;
 const ROWS: u32 = ${rows}u;
 const NOISE: u32 = 0xffffffffu;
@@ -68,13 +93,29 @@ fn readLattice() -> Lattice {
   let minimumPointsValue = parameters[parametersOffset + 5u];
   let width = maximumX - minimumX;
   let height = maximumY - minimumY;
-  let epsilonSquared = epsilon * epsilon;
-  let cellEpsilon = epsilon * CELL_MARGIN;
-  lattice.valid =
+  // Planar: neighbors satisfy dx^2 + dy^2 <= epsilon^2, so a cell must be epsilon wide. Geographic:
+  // the haversine term of neighbors is at most sin^2(epsilon / (2 R)).
+  var epsilonSquared = epsilon * epsilon;
+  var cellStepX = epsilon * CELL_MARGIN;
+  var cellStepY = cellStepX;
+  var inRange = true;
+  if (GEOGRAPHIC) {
+    let halfAngle = 0.5 * epsilon / SPHERE_RADIUS;
+    let sinHalf = sin(halfAngle);
+    epsilonSquared = sinHalf * sinHalf;
+    cellStepY = 2.0 * halfAngle * DEGREES_PER_RADIAN * CELL_MARGIN;
+    let cosLatitude = cos(max(abs(minimumY), abs(maximumY)) * RADIANS_PER_DEGREE);
+    let ratio = sinHalf / max(cosLatitude, 1e-6);
+    cellStepX = select(2.0 * asin(ratio) * DEGREES_PER_RADIAN * CELL_MARGIN, 360.0, ratio >= 0.99);
+    inRange = minimumX >= -180.0 && maximumX <= 180.0 && minimumY >= -90.0 && maximumY <= 90.0 &&
+      halfAngle < 1.5707963;
+  }
+  lattice.valid = inRange &&
     isFiniteFloat(minimumX) && isFiniteFloat(minimumY) && isFiniteFloat(maximumX) &&
     isFiniteFloat(maximumY) && isFiniteFloat(epsilon) && isFiniteFloat(minimumPointsValue) &&
     isFiniteFloat(width) && isFiniteFloat(height) && isFiniteFloat(epsilonSquared) &&
-    isFiniteFloat(cellEpsilon) && epsilon > 0.0 && width >= 0.0 && height >= 0.0;
+    isFiniteFloat(cellStepX) && isFiniteFloat(cellStepY) && epsilon > 0.0 && width >= 0.0 &&
+    height >= 0.0;
   if (!lattice.valid) {
     return lattice;
   }
@@ -82,13 +123,17 @@ fn readLattice() -> Lattice {
   lattice.minimumY = minimumY;
   lattice.maximumX = maximumX;
   lattice.maximumY = maximumY;
-  lattice.cellWidth = max(width / f32(COLUMNS), cellEpsilon);
-  lattice.cellHeight = max(height / f32(ROWS), cellEpsilon);
+  lattice.cellWidth = max(width / f32(COLUMNS), cellStepX);
+  lattice.cellHeight = max(height / f32(ROWS), cellStepY);
   lattice.columns = min(COLUMNS - 1u, u32(floor(width / lattice.cellWidth))) + 1u;
   lattice.rows = min(ROWS - 1u, u32(floor(height / lattice.cellHeight))) + 1u;
   lattice.epsilonSquared = epsilonSquared;
   lattice.minimumPoints = u32(max(minimumPointsValue, 0.0));
   return lattice;
+}
+
+fn isWithinEpsilon(lattice: Lattice, ax: f32, ay: f32, bx: f32, by: f32) -> bool {
+  ${withinEpsilonBody}
 }
 
 fn isPointValid(lattice: Lattice, x: f32, y: f32) -> bool {
@@ -128,9 +173,8 @@ function getNeighborLoopWGSL(action: string, keepGoing: string = 'true'): string
       let end = cellOffsets[cellOffsetsOffset + cell + 1u];
       for (var slot = start; slot < end && ${keepGoing}; slot++) {
         let neighbor = sortedRows[sortedRowsOffset + slot];
-        let deltaX = positions[positionsOffset + neighbor * 2u] - x;
-        let deltaY = positions[positionsOffset + neighbor * 2u + 1u] - y;
-        if (deltaX * deltaX + deltaY * deltaY <= lattice.epsilonSquared) {
+        if (isWithinEpsilon(lattice, x, y, positions[positionsOffset + neighbor * 2u],
+            positions[positionsOffset + neighbor * 2u + 1u])) {
           ${action}
         }
       }
@@ -170,6 +214,8 @@ export function createSpatialClusteringGridBoundsNode<Parameters>(
     id: string;
     parameters: GraphDataView<'float32'>;
     gridSize: readonly [number, number];
+    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
+    geographicRadius?: number;
     gridBounds: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -182,7 +228,11 @@ export function createSpatialClusteringGridBoundsNode<Parameters>(
       {name: 'gridBounds', view: props.gridBounds, type: 'f32', access: 'read_write'}
     ],
     invocationCount: 1,
-    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    declarations: getSpatialClusteringSharedWGSL(
+      props.gridSize[0],
+      props.gridSize[1],
+      props.geographicRadius
+    ),
     body: `let lattice = readLattice();
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
   gridBounds[gridBoundsOffset] = select(invalid, lattice.minimumX, lattice.valid);
@@ -206,6 +256,8 @@ export function createSpatialClusteringGridPositionsNode<Parameters>(
     positions: GraphDataView<'float32x2'>;
     parameters: GraphDataView<'float32'>;
     gridSize: readonly [number, number];
+    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
+    geographicRadius?: number;
     gridPositions: GraphDataView<'float32x2'>;
     rowIds: GraphDataView<'uint32'>;
   }
@@ -221,7 +273,11 @@ export function createSpatialClusteringGridPositionsNode<Parameters>(
       {name: 'rowIds', view: props.rowIds, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    declarations: getSpatialClusteringSharedWGSL(
+      props.gridSize[0],
+      props.gridSize[1],
+      props.geographicRadius
+    ),
     body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
@@ -243,6 +299,8 @@ export function createSpatialClusteringCoreNode<Parameters>(
   props: SpatialClusteringGridViews & {
     id: string;
     gridSize: readonly [number, number];
+    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
+    geographicRadius?: number;
     coreFlags: GraphDataView<'uint32'>;
     boxCounts?: GraphDataView<'uint32'>;
   }
@@ -260,7 +318,11 @@ export function createSpatialClusteringCoreNode<Parameters>(
         : [])
     ],
     invocationCount: props.positions.length,
-    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    declarations: getSpatialClusteringSharedWGSL(
+      props.gridSize[0],
+      props.gridSize[1],
+      props.geographicRadius
+    ),
     body: `${THREAD_TO_POINT_WGSL}
   let lattice = readLattice();
   let x = positions[positionsOffset + point * 2u];
@@ -296,6 +358,8 @@ export function createSpatialClusteringBoxKeysNode<Parameters>(
     positions: GraphDataView<'float32x2'>;
     parameters: GraphDataView<'float32'>;
     gridSize: readonly [number, number];
+    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
+    geographicRadius?: number;
     boxHigh: GraphDataView<'uint32'>;
     boxLow: GraphDataView<'uint32'>;
   }
@@ -311,7 +375,7 @@ export function createSpatialClusteringBoxKeysNode<Parameters>(
       {name: 'boxLow', view: props.boxLow, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1])}
+    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1], props.geographicRadius)}
 const BOX_SIDE_FACTOR: f32 = 0.7;
 const MAXIMUM_BOX_INDEX: f32 = 65536.0;`,
     body: `let lattice = readLattice();
@@ -394,6 +458,8 @@ export function createSpatialClusteringUnionNode<Parameters>(
   props: SpatialClusteringGridViews & {
     id: string;
     gridSize: readonly [number, number];
+    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
+    geographicRadius?: number;
     coreFlags: GraphDataView<'uint32'>;
     parents: GraphDataView<'uint32'>;
   }
@@ -408,7 +474,7 @@ export function createSpatialClusteringUnionNode<Parameters>(
       {name: 'parents', view: props.parents, type: 'atomic<u32>', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1])}
+    declarations: `${getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1], props.geographicRadius)}
 // Path halving: a visited node is a non-root forever, so any ancestor is a valid parent for it.
 fn findRoot(start: u32) -> u32 {
   var current = start;
@@ -503,6 +569,8 @@ export function createSpatialClusteringBorderNode<Parameters>(
   props: SpatialClusteringGridViews & {
     id: string;
     gridSize: readonly [number, number];
+    /** Sphere radius when positions are longitude/latitude degrees; omitted for planar. */
+    geographicRadius?: number;
     coreFlags: GraphDataView<'uint32'>;
     rootLabels: GraphDataView<'uint32'>;
   }
@@ -517,7 +585,11 @@ export function createSpatialClusteringBorderNode<Parameters>(
       {name: 'rootLabels', view: props.rootLabels, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: getSpatialClusteringSharedWGSL(props.gridSize[0], props.gridSize[1]),
+    declarations: getSpatialClusteringSharedWGSL(
+      props.gridSize[0],
+      props.gridSize[1],
+      props.geographicRadius
+    ),
     body: `${THREAD_TO_POINT_WGSL}
   if (coreFlags[coreFlagsOffset + point] != 0u) {
     return;

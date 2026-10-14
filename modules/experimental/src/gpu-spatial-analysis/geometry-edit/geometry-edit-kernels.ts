@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 
 /**
  * WGSL source of `readPoint(row)`, reading `positions` (a `float32x2` view bound as
@@ -54,7 +55,7 @@ export type RingOrientationNodeProps = {
 
 /**
  * Builds the per-ring node that decides which rings to reverse. One invocation per ring sums the
- * shoelace area in coordinates relative to the ring's first vertex.
+ * winding at the ring's lexicographically smallest vertex with exact orientation.
  *
  * @internal
  */
@@ -86,6 +87,7 @@ ${
   isOrient
     ? `const POLYGON_COUNT: u32 = ${props.polygonOffsets!.length - 1}u;
 ${READ_POINT_SOURCE}
+${EXACT_ORIENTATION_WGSL}
 ${getUpperBoundSource('findPolygon', 'polygonOffsets', 'POLYGON_COUNT')}`
     : ''
 }`,
@@ -95,14 +97,37 @@ ${getUpperBoundSource('findPolygon', 'polygonOffsets', 'POLYGON_COUNT')}`
   let end = min(ringOffsets[ringOffsetsOffset + index + 1u], VERTEX_COUNT);
   var shouldReverse = false;
   if (end > start && end - start >= 3u) {
-    let origin = readPoint(start);
-    var previous = vec2<f32>(0.0, 0.0);
-    var twiceArea = 0.0;
+    // Winding at the lexicographically smallest vertex (first on ties), decided by exact
+    // orientation so sliver rings are not misjudged by f32 shoelace cancellation.
+    var extreme = start;
+    var center = readPoint(start);
     for (var row = start + 1u; row < end; row++) {
-      let current = readPoint(row) - origin;
-      twiceArea += previous.x * current.y - current.x * previous.y;
-      previous = current;
+      let candidate = readPoint(row);
+      if (candidate.x < center.x || (candidate.x == center.x && candidate.y < center.y)) {
+        extreme = row;
+        center = candidate;
+      }
     }
+    let count = end - start;
+    var previous = center;
+    var next = center;
+    var foundPrevious = false;
+    var foundNext = false;
+    for (var step = 1u; step < count; step++) {
+      if (!foundPrevious) {
+        previous = readPoint(start + (extreme - start + count - step) % count);
+        foundPrevious = any(previous != center);
+      }
+      if (!foundNext) {
+        next = readPoint(start + (extreme - start + step) % count);
+        foundNext = any(next != center);
+      }
+      if (foundPrevious && foundNext) { break; }
+    }
+    var winding = 0;
+    if (foundPrevious && foundNext) { winding = orientSign(previous, center, next); }
+    // Non-finite or uncertain winding leaves the ring as stored.
+    if (winding == 2) { winding = 0; }
     var isExterior = true;
     if (index >= polygonOffsets[polygonOffsetsOffset] &&
         index < polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT]) {
@@ -110,7 +135,7 @@ ${getUpperBoundSource('findPolygon', 'polygonOffsets', 'POLYGON_COUNT')}`
     }
     let exteriorClockwise = parameters[parametersOffset] != 0.0;
     let wantClockwise = select(!exteriorClockwise, exteriorClockwise, isExterior);
-    shouldReverse = (twiceArea > 0.0 && wantClockwise) || (twiceArea < 0.0 && !wantClockwise);
+    shouldReverse = (winding > 0 && wantClockwise) || (winding < 0 && !wantClockwise);
   }
   ringFlags[ringFlagsOffset + index] = select(0u, 1u, shouldReverse);`
       : `ringFlags[ringFlagsOffset + index] = 1u;`

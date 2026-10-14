@@ -8,6 +8,7 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from './point-density-hexagon';
 
 const OPERATION = 'GPUPointDensity';
@@ -265,6 +266,7 @@ export function createPointDensityGridKeysNode<Parameters>(
     declarations: `const KEY_START: u32 = ${props.keyStart}u;
 const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
+${IS_FINITE_BITS_WGSL}
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value == minimum) { return 0u; }
   if (value == maximum) { return size - 1u; }
@@ -284,11 +286,9 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   var key = 0xffffffffu;
-  let finite = x == x && y == y && abs(x) <= 3.402823466e+38 && abs(y) <= 3.402823466e+38;
-  let finiteBounds = minimumX == minimumX && minimumY == minimumY &&
-    maximumX == maximumX && maximumY == maximumY &&
-    abs(minimumX) <= 3.402823466e+38 && abs(minimumY) <= 3.402823466e+38 &&
-    abs(maximumX) <= 3.402823466e+38 && abs(maximumY) <= 3.402823466e+38;
+  let finite = isFiniteBits(x) && isFiniteBits(y);
+  let finiteBounds = isFiniteBits(minimumX) && isFiniteBits(minimumY) &&
+    isFiniteBits(maximumX) && isFiniteBits(maximumY);
   let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
   let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
   if (finiteBounds && maximumX >= minimumX && maximumY >= minimumY && finite && inX && inY) {
@@ -352,6 +352,7 @@ export function createPointDensityWorkgroupSumNode<Parameters>(
     guardIndex: false,
     declarations: `const KEY_START: u32 = ${props.keyStart}u;
 const CELL_COUNT: u32 = ${props.sums.length}u;
+${IS_FINITE_BITS_WGSL}
 var<workgroup> sortKeys: array<u32, ${size}>;
 var<workgroup> sortValues: array<f32, ${size}>;
 fn atomicAddFloat(destination: ptr<storage, atomic<u32>, read_write>, value: f32) {
@@ -370,7 +371,7 @@ fn atomicAddFloat(destination: ptr<storage, atomic<u32>, read_write>, value: f32
   if (index < INVOCATION_COUNT) {
     let weight = weights[weightsOffset + index];
     let rowKey = keys[keysOffset + KEY_START + index];
-    if (weight == weight && abs(weight) <= 3.402823466e+38 && rowKey < CELL_COUNT) {
+    if (isFiniteBits(weight) && rowKey < CELL_COUNT) {
       key = rowKey;
       value = weight;
     }

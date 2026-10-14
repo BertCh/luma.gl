@@ -18,7 +18,11 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {getSlotGroupingNodes} from './slot-grouping';
-import {type GPUSpatialWeights, validateGPUSpatialWeights} from './spatial-weights';
+import {
+  describeGPUSpatialWeights,
+  type GPUSpatialWeights,
+  validateGPUSpatialWeights
+} from './spatial-weights';
 
 const OPERATION = 'GPUSpatialWeightsTranspose';
 
@@ -66,6 +70,12 @@ export type GPUSpatialWeightsTransposeProps = {
  * zero. `distances` are carried along when present.
  *
  * Optionally reports whether `W` is symmetric (`asymmetricSlots`).
+ *
+ * {@link GPUSpatialWeightsTranspose.outputWeights} is `output` with `info` and `status` attached.
+ * The transpose of `W` is symmetric exactly when `W` is, so `symmetric` is carried over. A
+ * `'row'` or `'variance'` transform state becomes `'unknown'` (the transpose is column, not row,
+ * standardized); other states are unchanged. The input `status` (for example `overflow` of a
+ * truncated `W`) is carried over, because a truncated `W` gives a truncated `W'`.
  */
 export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -76,6 +86,8 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
   readonly rowCount: number;
   /** Columns of `W` (rows of the transpose). */
   readonly columnCount: number;
+  /** The `output` CSR with `info` and `status` attached, for consumers. */
+  readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsTransposeProps) {
     const id = props.id ?? 'spatial-weights-transpose';
@@ -117,6 +129,18 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
     }
     this.rowCount = rows;
     this.columnCount = columns;
+    const inputTransform = weights.info?.transform ?? 'unknown';
+    this.outputWeights = describeGPUSpatialWeights(output, {
+      info: {
+        rowCount: columns,
+        transform:
+          inputTransform === 'row' || inputTransform === 'variance' ? 'unknown' : inputTransform,
+        symmetric: rows === columns ? (weights.info?.symmetric ?? 'unknown') : 'unknown',
+        hasSelfWeights: weights.info?.hasSelfWeights,
+        provenance: {...weights.info?.provenance, source: OPERATION, criterion: 'transpose'}
+      },
+      status: weights.status
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.offsets, output.neighbors, output.weights, output.distances, props.asymmetricSlots],

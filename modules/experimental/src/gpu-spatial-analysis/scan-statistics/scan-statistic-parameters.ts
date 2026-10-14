@@ -5,8 +5,12 @@
 /** Number of uint32 elements in a scan statistic parameter view. */
 export const GPU_SCAN_STATISTIC_PARAMETER_LENGTH = 8;
 
-/** Largest compile-time `maximumWindowZones` (one bit per window size in a 32-bit mask). */
-export const GPU_SCAN_STATISTIC_MAXIMUM_WINDOW_ZONES = 32;
+/**
+ * Largest size of each of the two per-center neighbor tables (zone indices and squared distances),
+ * in words: `zones * listLength <= 2^24`, so 64 MiB per table. All zones fit up to 4096 zones; beyond
+ * that the compile-time `maximumWindowZones` capacity shrinks and truncated windows are reported.
+ */
+export const GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS = 2 ** 24;
 
 /** Largest compile-time `timeBuckets`. */
 export const GPU_SCAN_STATISTIC_MAXIMUM_TIME_BUCKETS = 32;
@@ -26,6 +30,60 @@ export const GPU_SCAN_STATISTIC_STATISTIC_WORDS = 8;
 /** Number of uint32 elements in the `summary` output. */
 export const GPU_SCAN_STATISTIC_SUMMARY_LENGTH = 4;
 
+/** Probability models of {@link GPUSpatialScanStatistic}. */
+export type GPUSpatialScanModel = 'poisson' | 'bernoulli' | 'space-time-permutation';
+
+/** Direction of the rate anomaly a scan looks for. */
+export const GPU_SCAN_STATISTIC_RATE_DIRECTION = {
+  /** Windows whose rate exceeds the rate outside (`c > e`). */
+  high: 0,
+  /** Windows whose rate is below the rate outside (`c < e`). */
+  low: 1,
+  /** Both. */
+  both: 2
+} as const;
+
+/** Rate direction name of {@link GPUSpatialScanStatisticParameters}. */
+export type GPUSpatialScanRateDirection = keyof typeof GPU_SCAN_STATISTIC_RATE_DIRECTION;
+
+/** Compile-time layout of the per-center neighbor tables. */
+export type GPUSpatialScanLayout = {
+  /** Windows may hold up to this many zones (the compile-time capacity). */
+  usableZones: number;
+  /**
+   * Rows per center of the neighbor tables: `usableZones`, plus one look-ahead zone that tells
+   * whether the last window ends between two distances, when not every zone fits.
+   */
+  listLength: number;
+};
+
+/**
+ * Resolves the compile-time neighbor-table layout. `maximumWindowZones` defaults to every zone
+ * when `zones * zones <= GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS`, else to the largest capacity
+ * that fits. Throws when an explicit capacity does not fit.
+ */
+export function getGPUSpatialScanLayout(
+  zones: number,
+  maximumWindowZones?: number
+): GPUSpatialScanLayout {
+  if (!Number.isInteger(zones) || zones < 1) {
+    throw new Error('scan statistic needs at least one zone');
+  }
+  const words = GPU_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS;
+  const defaultZones = zones * zones <= words ? zones : Math.max(1, Math.floor(words / zones) - 1);
+  const usableZones = Math.min(maximumWindowZones ?? defaultZones, zones);
+  if (!Number.isInteger(usableZones) || usableZones < 1) {
+    throw new Error('scan statistic maximumWindowZones must be a positive integer');
+  }
+  const listLength = usableZones < zones ? usableZones + 1 : zones;
+  if (listLength * zones > words) {
+    throw new Error(
+      `scan statistic zones * (maximumWindowZones + 1) must not exceed ${words}; lower maximumWindowZones`
+    );
+  }
+  return {usableZones, listLength};
+}
+
 /** Indices into one `clusterIndices` record. */
 export const GPU_SCAN_STATISTIC_CLUSTER_INDEX = {
   /** Zone at the center of the circular window. */
@@ -40,7 +98,7 @@ export const GPU_SCAN_STATISTIC_CLUSTER_INDEX = {
 
 /** Indices into one `clusterStatistics` record. */
 export const GPU_SCAN_STATISTIC_CLUSTER = {
-  /** Poisson log-likelihood ratio of the cluster. */
+  /** Log-likelihood ratio of the cluster under the contributor's model. */
   logLikelihoodRatio: 0,
   /** Observed cases in the cluster. */
   observedCases: 1,
@@ -51,7 +109,12 @@ export const GPU_SCAN_STATISTIC_CLUSTER = {
   /** Radius of the window: the distance from the center to its farthest zone. */
   radius: 4,
   /** `observedCases / expectedCases`. */
-  observedOverExpected: 5
+  observedOverExpected: 5,
+  /**
+   * 1 when the compile-time `maximumWindowZones` capacity cut the windows of the cluster's center
+   * (larger windows were within the population fraction but not evaluated), else 0.
+   */
+  truncatedByZoneCap: 6
 } as const;
 
 /** Indices into the `summary` output. */
@@ -61,7 +124,12 @@ export const GPU_SCAN_STATISTIC_SUMMARY = {
   /** Total observed cases `C` over all zones and buckets. */
   totalCases: 1,
   /** Monte Carlo replicates run. */
-  permutations: 2
+  permutations: 2,
+  /**
+   * `overflow`: centers whose windows were cut by the compile-time `maximumWindowZones` capacity
+   * rather than by the population fraction or the per-frame limits. 0 means no window was truncated.
+   */
+  overflow: 3
 } as const;
 
 /** Spatial window shapes. */
@@ -86,18 +154,27 @@ export type GPUSpatialScanStatisticParameters = {
    * adding the next zone would exceed it. Defaults to 0.5.
    */
   maximumPopulationFraction?: number;
-  /** Largest number of zones per window, clamped to the contributor's `maximumWindowZones`. */
+  /**
+   * Largest number of zones per window, clamped to the contributor's compile-time capacity.
+   * Defaults to the capacity (every zone unless the neighbor tables are bounded), so the population
+   * fraction governs.
+   */
   maximumWindowZones?: number;
-  /** Longest cylinder in time buckets, clamped to `timeBuckets`. Defaults to all buckets. */
+  /**
+   * Longest cylinder in time buckets, clamped to `timeBuckets`. Defaults to 50% of the study
+   * period, `max(1, floor(timeBuckets / 2))`, as in SaTScan.
+   */
   maximumTimeBuckets?: number;
   /** Window shape. Defaults to `'circle'`. */
   windowShape?: GPUSpatialScanWindowShape;
+  /** Which anomalies count as clusters. Defaults to `'high'`. */
+  rateDirection?: GPUSpatialScanRateDirection;
 };
 
 /**
  * Packs {@link GPUSpatialScanStatisticParameters} into the uint32 layout read by the kernels:
  * `[seedLow, seedHigh, permutations, float32 bits of maximumPopulationFraction,
- * maximumWindowZones, maximumTimeBuckets, windowShape, 0]`.
+ * maximumWindowZones, maximumTimeBuckets (0: 50% of the study period), windowShape, rateDirection]`.
  */
 export function getGPUSpatialScanParameterValues(
   parameters: GPUSpatialScanStatisticParameters
@@ -119,7 +196,11 @@ export function getGPUSpatialScanParameterValues(
   values[2] = permutations;
   values[3] = new Uint32Array(new Float32Array([fraction]).buffer)[0];
   values[4] = Math.max(1, Math.floor(parameters.maximumWindowZones ?? 2 ** 31));
-  values[5] = Math.max(1, Math.floor(parameters.maximumTimeBuckets ?? 2 ** 31));
+  values[5] =
+    parameters.maximumTimeBuckets === undefined
+      ? 0
+      : Math.max(1, Math.floor(parameters.maximumTimeBuckets));
   values[6] = GPU_SCAN_STATISTIC_WINDOW_SHAPE[parameters.windowShape ?? 'circle'];
+  values[7] = GPU_SCAN_STATISTIC_RATE_DIRECTION[parameters.rateDirection ?? 'high'];
   return values;
 }

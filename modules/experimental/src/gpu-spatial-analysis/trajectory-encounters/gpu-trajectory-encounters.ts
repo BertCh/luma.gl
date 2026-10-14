@@ -19,8 +19,14 @@ import {createPublishNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-n
 import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../contracts/spatial-context';
+import {
+  getTrajectoryGeodesicRadius,
+  resolveTrajectorySpatialContext
+} from '../trajectory-analysis/trajectory-spatial-context';
 import {
   createEncounterClearNode,
   createEncounterCompositeKeyNode,
@@ -75,6 +81,15 @@ export type GPUTrajectoryEncountersProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'trajectory-encounters'`. */
   id?: string;
   /**
+   * Coordinate space and metric of `samples`, `distance`, `cellSize` and `bounds`. Omitted means
+   * native planar coordinates: `distance` and `cellSize` are position units and distances are
+   * Euclidean. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` means samples are
+   * `(longitude, latitude)` degrees, `distance` is great-circle meters on a sphere of
+   * `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`), `cellSize` and `bounds` stay in
+   * degrees, and the reported distances are meters. Other contexts throw.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * Dense `[trackCount * bucketCount]` positions on a common clock: row `track * bucketCount +
    * bucket` is the position of the track at time bucket `bucket`, the layout of
    * `GPUTrajectoryResample.samples`. Samples with a non-finite coordinate, or outside `bounds`, are
@@ -91,18 +106,28 @@ export type GPUTrajectoryEncountersProps = {
    */
   trackValid?: GraphDataView<'uint32'>;
   /**
-   * Per-frame distance, one float32 row. A pair is an encounter in a bucket when the planar
-   * distance of its two samples is at most this value. It is clamped to `cellSize`. Negative or NaN
-   * matches nothing.
+   * Per-frame distance, one float32 row. A pair is an encounter in a bucket when the distance of
+   * its two samples (planar, or great-circle meters) is at most this value. It is clamped to
+   * `cellSize` (planar) or to {@link GPUTrajectoryEncounters.maximumDistance} (great-circle).
+   * Negative or NaN matches nothing.
    */
   distance: GraphDataView<'float32'>;
   /**
-   * Compile-time grid cell width in position units, at least the largest `distance` you will use.
-   * The lattice has `floor(extent / cellSize)` columns and rows (at least 1), so cells are never
-   * narrower than this.
+   * Compile-time grid cell width in position units (degrees for a great-circle context), chosen
+   * so that cells are at least as wide as the largest `distance` you will use (planar), or so that
+   * {@link GPUTrajectoryEncounters.maximumDistance} covers it (great-circle). The lattice has
+   * `floor(extent / cellSize)` columns and rows (at least 1), so cells are never narrower than
+   * this. In a great-circle context it must be below 90 degrees, and below 120 degrees when the
+   * bounds span all longitudes.
    */
   cellSize: number;
-  /** Finite domain `[minX, minY, maxX, maxY]` of the lattice. Samples outside are absent. */
+  /**
+   * Finite domain `[minX, minY, maxX, maxY]` of the lattice. Samples outside are absent. In a
+   * great-circle context longitudes lie in `[-180, 180]`, latitudes in `(-90, 90)`; bounds of
+   * exactly `[-180, 180]` in longitude make the lattice wrap across the antimeridian (sample
+   * longitudes are folded into that range first), otherwise pairs across the antimeridian are not
+   * found.
+   */
   bounds: readonly [number, number, number, number];
   /**
    * Maximum `(track, partner, bucket)` hits per encoding. Also the length of the sorted hit
@@ -136,6 +161,18 @@ export type GPUTrajectoryEncountersProps = {
  * for tracks with different time windows, or supply your own table and mark absent samples with
  * NaN or `trackValid`.
  *
+ * Spatial context: with a great-circle context the test is the great-circle distance in meters
+ * (`geodesicHaversineDistance`) between the two samples of the same bucket; there is no
+ * segment-closest-approach computation, so the discrete-approximation caveat above is unchanged
+ * and no tangent-plane approximation is involved. Candidate pruning is conservative in degrees:
+ * two points within angular distance `theta` of each other, one at latitude at most `L`, differ in
+ * latitude by at most `theta` and in longitude by at most `asin(sin(theta) / cos(L))` (for
+ * `L + theta < 90 degrees`). With `L = max(|minY|, |maxY|)` of `bounds`, the largest searchable
+ * distance is therefore `maximumDistance = radius * asin(sin(cellSize) * cos(L))` (scaled by
+ * `1 - 1e-6` for rounding) and `distance` is clamped to it. Choose latitude bounds that exclude
+ * the polar caps, since `maximumDistance` shrinks to 0 as `L` approaches 90 degrees. Reported
+ * `minimumDistances` are meters.
+ *
  * Bounds: `pairs.candidateOverflow` is 1 when the hit scratch or grid index overflowed, after
  * which pairs may be missing or have too-small counts. `pairs.output.overflow` is independently 1
  * only when the final pair capacity is too small. The lattice must hold at most 2^27 cells.
@@ -149,11 +186,22 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
   readonly columns: number;
   /** Lattice rows. */
   readonly rows: number;
+  /** Resolved coordinate and metric context; native planar when `props.spatialContext` is omitted. */
+  readonly spatialContext: GPUSpatialContext;
+  /**
+   * Largest `distance` the lattice searches conservatively, in the units of `distance`: `cellSize`
+   * for a planar context, meters for a great-circle context. Larger per-frame distances are clamped.
+   */
+  readonly maximumDistance: number;
+  /** Great-circle lattice parameters, or `undefined` for a planar context. */
+  private readonly geodesic?: {radius: number; maximumDistance: number; wrapColumns: boolean};
 
   constructor(props: GPUTrajectoryEncountersProps) {
     this.id = props.id ?? 'trajectory-encounters';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveTrajectorySpatialContext(id, props.spatialContext);
+    const geodesicRadius = getTrajectoryGeodesicRadius(this.spatialContext);
     for (const [name, value] of [
       ['trackCount', props.trackCount],
       ['bucketCount', props.bucketCount],
@@ -191,6 +239,28 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       !(Math.fround(minY) < Math.fround(maxY))
     ) {
       throw new Error(`${id} bounds must be finite with minima below maxima`);
+    }
+    if (geodesicRadius === undefined) {
+      this.maximumDistance = props.cellSize;
+    } else {
+      const maximumLatitude = Math.max(Math.abs(minY), Math.abs(maxY));
+      if (minX < -180 || maxX > 180 || maximumLatitude >= 90) {
+        throw new Error(
+          `${id} great-circle bounds need longitudes within [-180, 180] and latitudes within (-90, 90)`
+        );
+      }
+      const wrapColumns = minX === -180 && maxX === 180;
+      if (props.cellSize >= (wrapColumns ? 120 : 90)) {
+        throw new Error(
+          `${id} great-circle cellSize must be below ${wrapColumns ? 120 : 90} degrees`
+        );
+      }
+      const cellRadians = (props.cellSize * Math.PI) / 180;
+      const latitudeRadians = (maximumLatitude * Math.PI) / 180;
+      // Conservative: the largest angle whose longitude reach at latitude L fits one cell.
+      const maximumAngle = Math.asin(Math.sin(cellRadians) * Math.cos(latitudeRadians));
+      this.maximumDistance = geodesicRadius * maximumAngle * (1 - 1e-6);
+      this.geodesic = {radius: geodesicRadius, maximumDistance: this.maximumDistance, wrapColumns};
     }
     this.columns = Math.max(
       1,
@@ -279,7 +349,8 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       columns,
       rows,
       bounds,
-      cellSize: props.cellSize
+      cellSize: props.cellSize,
+      geodesic: this.geodesic
     };
     const sampleCount = props.trackCount * props.bucketCount;
     const capacity = props.hitCapacity;
@@ -290,6 +361,13 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     const positions = createTransientView(graph, `${id}-positions`, 'float32x3', sampleCount);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'cell-offsets',
+      (columns * rows * props.bucketCount + 1) * 4,
+      'raise cellSize or lower bucketCount'
+    );
     const cellOffsets = u32('cell-offsets', columns * rows * props.bucketCount + 1);
     const objectIds = u32('object-ids', sampleCount);
     const gridCount = u32('grid-count', 1);

@@ -13,6 +13,12 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
+import {
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../contracts/spatial-context';
 import {createFillNode, createPublishNode} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
@@ -63,6 +69,18 @@ export type GPUCellCoverOutput = {
   candidateOverflow: GraphDataView<'uint32'>;
   /** Optional unclamped accepted count; exact only when `candidateOverflow` is zero. */
   requiredCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row scalar receiving the number of features rejected because their bounding box is
+   * wider than 180 degrees of longitude (an antimeridian crossing, or an edge with a longitude
+   * difference above 180 degrees). Rejected features produce no cells.
+   */
+  invalidCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row scalar receiving the number of covered features whose bounding box reaches
+   * beyond the cover's latitude limit (89 degrees for H3, the Web Mercator limit of 85.051129 for
+   * Quadbin), so cells there are missing or clipped.
+   */
+  uncertainCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -76,6 +94,11 @@ export type GPUCellCoverProps = {
   id?: string;
   /** Cell family. `'quadbin'` supports every containment; `'h3'` supports only `'center'`. */
   family: GPUCellFamily;
+  /**
+   * Coordinate contract of `polygonPositions`. Defaults to, and must be, longitude/latitude without
+   * a metric; the cover is planar in degrees, like `h3.polygonToCells` and turf.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Cell resolution (topology): Quadbin 0 to 26, H3 0 to 15. */
   resolution: number;
   /**
@@ -128,8 +151,13 @@ const EDGE_SLAB_DEFAULT_WORK = 4_000_000;
 /**
  * Polyfills polygon features with Quadbin or H3 cells.
  *
- * Geometry is planar in longitude/latitude degrees (like `h3.polygonToCells` and turf); polygons
- * must not cross the antimeridian and rings are even-odd (holes by nesting). Pipeline: per-feature
+ * Geometry is planar in longitude/latitude degrees (like `h3.polygonToCells` and turf) and rings
+ * are even-odd (holes by nesting). Polygons must not cross the antimeridian: a feature whose
+ * bounding box is wider than 180 degrees of longitude (which includes any edge with a longitude
+ * difference above 180) gets no cells and is counted in `output.invalidCount`; split such
+ * polygons at +-180 first. Features reaching beyond the latitude limit (H3 lattices are clamped to
+ * 89 degrees, Quadbin to the Web Mercator limit) lose their polar cells and are counted in
+ * `output.uncertainCount`. Pipeline: per-feature
  * candidate count, exclusive scan, per-candidate test, inclusive scan of accept flags, write. No
  * atomic append is used, so output is deterministic.
  *
@@ -144,14 +172,18 @@ const EDGE_SLAB_DEFAULT_WORK = 4_000_000;
  * cell center to the polygon, so it can differ from `h3.polygonToCells` for centers within about
  * 1e-5 degrees of an edge, and for the f32 forward index mismatches described in `H3_INDEX_WGSL`.
  * With `output.core`, cells provably inside the polygon are flagged so joins can skip the exact
- * test for them (see {@link GPUCellCoverOutput.core}). H3 lattices are clamped to latitudes within 89 degrees, and cost grows as longitude spacing
- * divided by cos(latitude).
+ * test for them (see {@link GPUCellCoverOutput.core}). H3 lattices are clamped to latitudes within 89 degrees. The
+ * lattice's longitude spacing is taken at the feature's most equatorward latitude, so a tall
+ * feature reaching high latitudes is oversampled near its poleward edge: cost grows as
+ * 1 / cos(most equatorward latitude) times the feature's longitude span.
  */
 export class GPUCellCover implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUCellCoverProps;
+  /** Resolved spatial context (longitude/latitude, no metric). */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of features, `featureOffsets.length - 1`. */
   readonly featureCount: number;
   /** Resolved containment. */
@@ -163,6 +195,11 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     this.id = props.id ?? DEFAULT_ID;
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext ?? GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+      GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
+    );
     if (props.family !== 'quadbin' && props.family !== 'h3') {
       throw new Error(`${id} family must be 'quadbin' or 'h3'`);
     }
@@ -231,7 +268,9 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       ['count', output.count],
       ['overflow', output.overflow],
       ['candidateOverflow', output.candidateOverflow],
-      ['requiredCount', output.requiredCount]
+      ['requiredCount', output.requiredCount],
+      ['invalidCount', output.invalidCount],
+      ['uncertainCount', output.uncertainCount]
     ] as const) {
       if (view) {
         validatePackedUint32View(view, `${id} output.${name}`);
@@ -249,7 +288,9 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         output.count,
         output.overflow,
         output.candidateOverflow,
-        output.requiredCount
+        output.requiredCount,
+        output.invalidCount,
+        output.uncertainCount
       ],
       [
         props.polygonPositions,
@@ -417,8 +458,26 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       );
       slabViews = {slabOffsets, slabEntries, nextVertex, slabNumbers};
     }
+    const statusNodes = (['invalidCount', 'uncertainCount'] as const).flatMap(name => {
+      const view = output[name];
+      return view
+        ? [
+            createFillNode<Parameters>(graph, {
+              id: `${id}-clear-${name}`,
+              operation: 'GPUCellCover',
+              view,
+              type: 'u32',
+              value: '0u'
+            })
+          ]
+        : [];
+    });
     return [
-      createCoverCountNode<Parameters>(graph, context, counts, ranges, slabViews?.slabNumbers),
+      ...statusNodes,
+      createCoverCountNode<Parameters>(graph, context, counts, ranges, slabViews?.slabNumbers, {
+        invalidCount: output.invalidCount,
+        uncertainCount: output.uncertainCount
+      }),
       ...new GPUScan({
         id: `${id}-candidate-scan`,
         input: counts,

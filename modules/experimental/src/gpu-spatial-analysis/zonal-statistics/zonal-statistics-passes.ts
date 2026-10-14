@@ -47,6 +47,12 @@ export type ZonalStatisticsPlan = {
   needMaxima: boolean;
   /** Per-feature densities are needed. */
   needDensities: boolean;
+  /** Per-feature weight-sum densities are needed. */
+  needWeightedDensities: boolean;
+  /** Per-feature variances or standard deviations are needed. */
+  needVariances: boolean;
+  /** Per-feature sums of squared weights are needed (weighted variances). */
+  needWeightSquareSums: boolean;
   /** The GPU must compute polygon areas (otherwise caller `areas` are used or areas are not needed). */
   needGPUAreas: boolean;
   /** Any statistic that depends on a per-point value is needed. */
@@ -67,6 +73,9 @@ export type ZonalStatisticsPlanInput = {
     densities: boolean;
     featureAreas: boolean;
     extent: boolean;
+    weightedDensities?: boolean;
+    variances?: boolean;
+    standardDeviations?: boolean;
   };
   /** Statistic that `extent` summarizes. */
   extentStatistic?: ZonalStatisticsExtentStatistic;
@@ -82,25 +91,33 @@ export type ZonalStatisticsPlanInput = {
 export function getZonalStatisticsPlan(input: ZonalStatisticsPlanInput): ZonalStatisticsPlan {
   const {outputs, extentStatistic, hasWeights, hasAreas} = input;
   const extent = outputs.extent ? extentStatistic : undefined;
-  const needMeans = outputs.means || extent === 'mean';
+  const needVariances = Boolean(outputs.variances || outputs.standardDeviations);
+  const needWeightedDensities = Boolean(outputs.weightedDensities);
+  const needMeans = outputs.means || extent === 'mean' || needVariances;
   const needDensities = outputs.densities || extent === 'density';
   const needMinima = outputs.minima || extent === 'minimum';
   const needMaxima = outputs.maxima || extent === 'maximum';
   const needSums = outputs.sums || needMeans || extent === 'sum';
-  const needValueCounts = outputs.valueCounts || (needMeans && !hasWeights);
-  const needWeightSums = outputs.weightSums || (needMeans && hasWeights);
+  const needValueCounts = outputs.valueCounts || ((needMeans || needVariances) && !hasWeights);
+  const needWeightSums =
+    outputs.weightSums || ((needMeans || needVariances) && hasWeights) || needWeightedDensities;
   const needCounts = outputs.counts || needDensities || outputs.extent || extent === 'count';
   return {
     needCounts,
-    needValueCounts,
+    // Variances need the valid-row count to require at least two rows, weighted or not.
+    needValueCounts: needValueCounts || needVariances,
     needSums,
     needWeightSums,
     needMeans,
     needMinima,
     needMaxima,
     needDensities,
-    needGPUAreas: outputs.featureAreas || (needDensities && !hasAreas),
-    needValueStatistics: needValueCounts || needSums || needWeightSums || needMinima || needMaxima
+    needWeightedDensities,
+    needVariances,
+    needWeightSquareSums: needVariances && hasWeights,
+    needGPUAreas: outputs.featureAreas || ((needDensities || needWeightedDensities) && !hasAreas),
+    needValueStatistics:
+      needValueCounts || needVariances || needSums || needWeightSums || needMinima || needMaxima
   };
 }
 
@@ -436,4 +453,161 @@ export function getZonalStatisticsExtentNodes<Parameters>(
     }).getCommandNodes(graph)
   );
   return nodes;
+}
+
+/** Writes `weightSum / area` where the area is finite and positive, NaN otherwise. @internal */
+export function createZonalStatisticsWeightedDensityNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    featureCount: number;
+    weightSums: GraphDataView<'float32'>;
+    areas: GraphDataView<'float32'>;
+    weightedDensities: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'weighted-densities',
+    bindings: [
+      {name: 'weightSums', view: props.weightSums, type: 'f32', access: 'read'},
+      {name: 'areas', view: props.areas, type: 'f32', access: 'read'},
+      {name: 'densities', view: props.weightedDensities, type: 'u32', access: 'read_write'}
+    ],
+    invocationCount: props.featureCount,
+    declarations: FINITE_HELPERS,
+    body: `let area = areas[areasOffset + index];
+  var density = ${ZONAL_STATISTICS_NAN_BITS};
+  if (isFiniteValue(area) && area > 0.0) {
+    density = bitcast<u32>(weightSums[weightSumsOffset + index] / area);
+  }
+  densities[densitiesOffset + index] = density;`
+  });
+}
+
+/**
+ * Writes the per-point terms of the second variance pass: `w * (v - mean)^2` and, with weights,
+ * `w^2`, for valid rows assigned to a feature, else 0. Packed views only. @internal
+ */
+export function createZonalStatisticsDeviationNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    featureCount: number;
+    values: GraphDataView<'float32'>;
+    weights?: GraphDataView<'float32'>;
+    valueMask: GraphDataView<'uint32'>;
+    pointFeatureRows: GraphDataView<'uint32'>;
+    means: GraphDataView<'float32'>;
+    deviations: GraphDataView<'float32'>;
+    weightSquares?: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'values', view: props.values, type: 'f32', access: 'read'}
+  ];
+  if (props.weights) {
+    bindings.push({name: 'weights', view: props.weights, type: 'f32', access: 'read'});
+  }
+  bindings.push(
+    {name: 'valueMask', view: props.valueMask, type: 'u32', access: 'read'},
+    {name: 'pointFeatureRows', view: props.pointFeatureRows, type: 'u32', access: 'read'},
+    {name: 'means', view: props.means, type: 'f32', access: 'read'},
+    {name: 'deviations', view: props.deviations, type: 'f32', access: 'read_write'}
+  );
+  if (props.weightSquares) {
+    bindings.push({
+      name: 'weightSquares',
+      view: props.weightSquares,
+      type: 'f32',
+      access: 'read_write'
+    });
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'deviations',
+    bindings,
+    invocationCount: props.values.length,
+    declarations: `${FINITE_HELPERS}
+const FEATURE_COUNT: u32 = ${props.featureCount}u;`,
+    body: `let row = pointFeatureRows[pointFeatureRowsOffset + index];
+  let valid = row < FEATURE_COUNT && valueMask[valueMaskOffset + index] != 0u;
+  ${props.weights ? 'let weight = weights[weightsOffset + index];' : 'let weight = 1.0;'}
+  let deviation = values[valuesOffset + index] - means[meansOffset + select(0u, row, valid)];
+  let term = weight * deviation * deviation;
+  // Terms that overflow float32 are dropped, as products are in the sums.
+  deviations[deviationsOffset + index] = select(0.0, term, valid && isFiniteValue(term));
+  ${props.weightSquares ? 'weightSquares[weightSquaresOffset + index] = select(0.0, weight * weight, valid);' : ''}`
+  });
+}
+
+/**
+ * Writes unbiased variances and standard deviations from the squared-deviation sums. Unweighted:
+ * `ssd / (n - 1)`. With reliability weights: `ssd / (V1 - V2 / V1)` with `V1 = sum w` and
+ * `V2 = sum w^2` (numpy `cov(aweights=w, ddof=1)`). NaN with fewer than two valid rows or a
+ * non-positive denominator. @internal
+ */
+export function createZonalStatisticsVarianceNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    featureCount: number;
+    valueCounts: GraphDataView<'uint32'>;
+    squaredDeviationSums: GraphDataView<'float32'>;
+    weightSums?: GraphDataView<'float32'>;
+    weightSquareSums?: GraphDataView<'float32'>;
+    variances?: GraphDataView<'float32'>;
+    standardDeviations?: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const weighted = Boolean(props.weightSums && props.weightSquareSums);
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'valueCounts', view: props.valueCounts, type: 'u32', access: 'read'},
+    {name: 'squaredDeviationSums', view: props.squaredDeviationSums, type: 'f32', access: 'read'}
+  ];
+  if (weighted) {
+    bindings.push(
+      {name: 'weightSums', view: props.weightSums!, type: 'f32', access: 'read'},
+      {name: 'weightSquareSums', view: props.weightSquareSums!, type: 'f32', access: 'read'}
+    );
+  }
+  if (props.variances) {
+    bindings.push({name: 'variances', view: props.variances, type: 'u32', access: 'read_write'});
+  }
+  if (props.standardDeviations) {
+    bindings.push({
+      name: 'standardDeviations',
+      view: props.standardDeviations,
+      type: 'u32',
+      access: 'read_write'
+    });
+  }
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: weighted ? 'variances-weighted' : 'variances',
+    bindings,
+    invocationCount: props.featureCount,
+    body: `let valueCount = valueCounts[valueCountsOffset + index];
+  var variance = ${ZONAL_STATISTICS_NAN_BITS};
+  var deviation = ${ZONAL_STATISTICS_NAN_BITS};
+  var denominator = 0.0;
+  ${
+    weighted
+      ? `let weightSum = weightSums[weightSumsOffset + index];
+  if (weightSum != 0.0) {
+    denominator = weightSum - weightSquareSums[weightSquareSumsOffset + index] / weightSum;
+  }`
+      : 'denominator = f32(valueCount) - 1.0;'
+  }
+  if (valueCount >= 2u && denominator > 0.0) {
+    let result = squaredDeviationSums[squaredDeviationSumsOffset + index] / denominator;
+    variance = bitcast<u32>(result);
+    deviation = bitcast<u32>(sqrt(result));
+  }
+  ${props.variances ? 'variances[variancesOffset + index] = variance;' : ''}
+  ${props.standardDeviations ? 'standardDeviations[standardDeviationsOffset + index] = deviation;' : ''}`
+  });
 }

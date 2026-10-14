@@ -13,12 +13,18 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {
+  getGeodesicNearestNeighborSearchWGSL,
+  getGeodesicRadiusNeighborLoopWGSL,
   getInsertNeighborWGSL,
   getNearestNeighborSearchWGSL,
   getNeighborSearchLatticeWGSL,
@@ -27,11 +33,36 @@ import {
 } from './neighbor-search-kernels';
 import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from './neighbor-search-parameters';
 import {
+  describeGPUSpatialWeights,
   type GPUSpatialWeights,
+  type GPUSpatialWeightsTransformState,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON} from '../spatial-weights/gpu-spatial-weights-transform';
+import {
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/index';
 
 const OPERATION = 'GPUNeighborSearch';
+
+/**
+ * Spatial contexts {@link GPUNeighborSearch} accepts: native planar coordinates, or longitude/latitude
+ * degrees with the `'great-circle'` metric. Pass it to `resolveGPUSpatialContext` to validate a
+ * context before building the node.
+ */
+export const GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+});
+
+/** Weight transform states a caller can declare for {@link GPUNeighborSearchProps.weightTransform}. */
+export type GPUNeighborSearchWeightTransform = Extract<
+  GPUSpatialWeightsTransformState,
+  'binary' | 'raw' | 'kernel' | 'row'
+>;
 
 /** Largest supported compile-time `k`. */
 export const GPU_NEIGHBOR_SEARCH_MAXIMUM_K = 32;
@@ -46,6 +77,17 @@ export const GPU_NEIGHBOR_SEARCH_MAXIMUM_K = 32;
 export type GPUNeighborSearchProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'neighbor-search'`. */
   id?: string;
+  /**
+   * Coordinate space and metric of `positions`. Compile-time. Omitted means native planar
+   * coordinates with Euclidean distance (unchanged behavior). The great-circle path is
+   * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle', units?: 'meters' | 'kilometers',
+   * sphereRadius?}`: positions are `[longitude, latitude]` degrees, `bounds` are
+   * `[minLongitude, minLatitude, maxLongitude, maxLatitude]` degrees (longitude span at most 360),
+   * `radius`, `distanceFloor` and the output `distances` are great-circle distances in `units`
+   * (default meters), and `sphereRadius` is in meters (default `GPU_EARTH_MEAN_RADIUS_METERS`).
+   * Any other space or metric throws; project to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /** `'knn'`: the `k` nearest targets per query. `'radius'`: every target within `radius`. */
   mode: 'knn' | 'radius';
   /** Packed planar target points. At least one and fewer than 2^31 rows. */
@@ -85,25 +127,81 @@ export type GPUNeighborSearchProps = {
   totalNeighbors?: GraphDataView<'uint32'>;
   /** Optional caller-owned unclamped neighbor count per query row. */
   neighborCounts?: GraphDataView<'uint32'>;
+  /**
+   * Optional caller-owned one-row count of rows that took part by mask but were dropped because a
+   * coordinate is not finite or lies outside the per-frame `bounds` (or, for great-circle search,
+   * has a latitude beyond +-90). Such rows are silently empty and never a neighbor, so a nonzero
+   * count means `bounds` is too small or the data has missing coordinates. Counts target rows, plus
+   * the query rows of a cross join (`queryPositions`). It is `outputWeights.status.invalidCount`.
+   */
+  invalidCount?: GraphDataView<'uint32'>;
+  /**
+   * Declares the weight function the per-frame parameters will select, so `outputWeights.info` can
+   * say what the weights are. Weight kind and row standardization are per-frame parameters that
+   * the node cannot read at construction, so this is metadata the caller keeps true (derive it from
+   * the same parameters with `getGPUNeighborSearchWeightTransform`). Omitted means `'unknown'`.
+   */
+  weightTransform?: GPUNeighborSearchWeightTransform;
+  /**
+   * Compile-time row standardization. When given, it is the single source of truth: the weights
+   * kernel uses it as a constant and ignores the per-frame `rowStandardize` parameter, and
+   * `outputWeights.info.transform` is `'row'` for `true`, else `weightTransform` (or `'unknown'`).
+   * Consumers re-standardize rows over the neighbors left after masking only when the transform is
+   * `'row'`, so set this (rather than the per-frame field) for any row-standardized band. Passing
+   * `true` with a `weightTransform` other than `'row'`, or `false` with `'row'`, throws. When
+   * omitted, the per-frame `rowStandardize` parameter applies and `weightTransform` is the
+   * caller's declaration.
+   */
+  rowStandardize?: boolean;
 };
 
 /**
- * Exact k-nearest-neighbor and distance-band queries between planar points, written as a
+ * Exact k-nearest-neighbor and distance-band queries between points, written as a
  * {@link GPUSpatialWeights} CSR: the reusable spatial-weights structure of the statistics contributors.
+ * Points are planar (default) or longitude/latitude degrees with great-circle distances; see
+ * {@link GPUNeighborSearchProps.spatialContext}.
  *
  * Definition, which the GPU result matches exactly (IDs and offsets) or within f32 rounding
  * (distances, weights):
  * - A target is valid when its mask is nonzero, its coordinates are finite and it lies inside the
  *   per-frame bounds; queries likewise with `queryMask`. A self join skips the row itself.
- * - Distances are Euclidean, `d^2 = dx^2 + dy^2` in f32 with `dx = target - query`.
+ * - Planar distances are Euclidean, `d^2 = dx^2 + dy^2` in f32 with `dx = target - query`. Planar
+ *   f32 coordinates keep about 7 significant digits, so UTM northings (~4e6 m, ulp 0.5 m) or Web
+ *   Mercator coordinates (~1e7, ulp 1 m) quantize `dx` and make ties and band edges noisy. Project
+ *   to a local frame (`createGPULocalFrame`) or subtract an origin before upload; the node cannot
+ *   recover precision lost in its f32 inputs.
+ * - Great-circle distances (`spatialContext` longitude-latitude) are haversine/central-angle
+ *   distances on a sphere (`GEODESIC_WGSL`, f32, the inputs' own f32 quantization is the limit:
+ *   about 1 m at longitude 180) in `units`, and `radius` is in `units`. The lattice stays in
+ *   degrees. Radius mode visits every cell that can hold a target in the cap: the latitude span is
+ *   `radius / R`, the longitude span is the exact cap extent `asin(sin(a) / cos(latitude))` (the
+ *   whole circle when the cap reaches a pole) and bands wrap across +-180. kNN visits expanding
+ *   rings (wrapping columns when `bounds` span exactly 360 degrees) and stops only when a
+ *   conservative spherical lower bound of the distance to every unvisited cell exceeds the K-th
+ *   distance, so results do not depend on `gridSize`; a looser bound only costs speed (queries near
+ *   the poles or narrow longitude spans scan more cells). Points with latitude beyond +-90 are invalid.
+ * - Point and query rows that are not valid never take part. Report them with `invalidCount`.
  * - kNN: the `k` valid targets with the smallest `(d^2, id)` (ties go to the lowest ID), optionally
  *   only those with `d <= radius`. Fewer valid targets give a shorter row.
  * - Radius: every valid target with `d <= radius`.
  * - Each row lists its neighbors by ascending ID, with `distances` and `weights` aligned.
  * - Weights: binary `1`; inverse distance `max(d, distanceFloor)^-power`; or a kernel `K(d / h)`
  *   with bandwidth `h = radius` (radius mode) or the row's k-th neighbor distance (kNN, PySAL's
- *   adaptive bandwidth). Non-finite weights are written as 0. Row standardization divides by the
- *   row sum (summed in slot order).
+ *   adaptive bandwidth, `h_i` = the row's k-th neighbor distance times 1.0000001 =
+ *   `GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON`, as libpysal `Kernel(fixed=False)` after
+ *   removing the self slot; a row with fewer than `k` neighbors uses its farthest listed neighbor).
+ *   Non-finite weights are written as 0. Row standardization divides by the row sum (summed in
+ *   slot order). Rows never list themselves: the kernel's self weight `K(0)` is the consumer's
+ *   `selfWeight` (`getGPUSpatialWeightsKernelValue(kernel, 0)`). A slot whose weight is 0 (for
+ *   example a triangular kernel at `d = radius`, or coincident points with inverse distance and no
+ *   floor) is NOT a neighbor under the stream-wide definition: consumers skip zero-weight slots.
+ * - `outputWeights` is `weights` with `info` (`rowCount`, `transform` from `weightTransform` or
+ *   `'unknown'`; `'row'` when `rowStandardize: true`, `symmetric` true only for an unmasked-query
+ *   planar radius self join with a declared unstandardized transform, else `'unknown'`, `provenance` criterion `'knn'` or `'distance-band'`
+ *   with `k`) and `status` (`overflow`, `requiredCount` = `totalNeighbors`, `invalidCount`) attached.
+ *   `'adaptive'` kernel transforms accept it because kNN output has criterion `'knn'`. For PySAL's
+ *   `min_threshold_distance` (the smallest band keeping every unit connected), run kNN with `k = 1`
+ *   and take the maximum of the returned `distances`.
  * - Capacity: rows are laid out in query order; slots past `neighbors.length` are dropped. Offsets
  *   are clamped to the capacity, so a reader always sees consistent (possibly truncated) rows,
  *   and `overflow` is set. `totalNeighbors` and `neighborCounts` stay unclamped.
@@ -122,11 +220,29 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNeighborSearchProps;
+  /** Resolved coordinate space and metric (native planar when `spatialContext` was omitted). */
+  readonly spatialContext: GPUSpatialContext;
+  /** The output CSR with `info` and `status` attached, for consumers. */
+  readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUNeighborSearchProps) {
     const id = props.id ?? 'neighbor-search';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT
+    );
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      this.spatialContext.metric !== 'great-circle'
+    ) {
+      throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
+    }
+    if (this.spatialContext.coordinateSpace === 'planar' && this.spatialContext.metric === 'none') {
+      throw new Error(`${id} planar positions need the native metric`);
+    }
     if (props.mode !== 'knn' && props.mode !== 'radius') {
       throw new Error(`${id} mode must be 'knn' or 'radius'`);
     }
@@ -198,9 +314,56 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
         throw new Error(`${id} neighborCounts length must equal the query row count`);
       }
     }
+    if (props.invalidCount) {
+      validatePackedUint32View(props.invalidCount, `${id} invalidCount`);
+      if (props.invalidCount.length < 1) {
+        throw new Error(`${id} invalidCount must hold one uint32`);
+      }
+    }
+    if (
+      props.weightTransform !== undefined &&
+      !['binary', 'raw', 'kernel', 'row'].includes(props.weightTransform)
+    ) {
+      throw new Error(`${id} weightTransform must be 'binary', 'raw', 'kernel' or 'row'`);
+    }
+    if (
+      props.rowStandardize !== undefined &&
+      props.weightTransform !== undefined &&
+      props.rowStandardize !== (props.weightTransform === 'row')
+    ) {
+      throw new Error(
+        `${id} rowStandardize ${props.rowStandardize} conflicts with weightTransform '${props.weightTransform}'`
+      );
+    }
+    const transform = props.rowStandardize ? 'row' : (props.weightTransform ?? 'unknown');
+    const planarSelfJoin =
+      this.spatialContext.coordinateSpace === 'planar' &&
+      props.mode === 'radius' &&
+      !props.queryPositions &&
+      !props.queryMask;
+    this.outputWeights = describeGPUSpatialWeights(props.weights, {
+      info: {
+        rowCount: queryRows,
+        transform,
+        symmetric:
+          planarSelfJoin && transform !== 'unknown' && transform !== 'row' ? true : 'unknown',
+        hasSelfWeights: false,
+        provenance: {
+          source: OPERATION,
+          criterion: props.mode === 'knn' ? 'knn' : 'distance-band',
+          k: props.mode === 'knn' ? props.k : undefined
+        }
+      },
+      status: {
+        overflow: props.overflow,
+        requiredCount: props.totalNeighbors,
+        invalidCount: props.invalidCount
+      }
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [
+        props.invalidCount,
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
@@ -236,14 +399,23 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       weights.distances,
       props.overflow,
       props.totalNeighbors,
-      props.neighborCounts
+      props.neighborCounts,
+      props.invalidCount
     ]);
     const targetRows = positions.length;
     const queryRows = this.getQueryRows();
     const capacity = weights.neighbors.length;
     const cellCount = gridSize[0] * gridSize[1];
     const k = props.k ?? 1;
-    const latticeWGSL = getNeighborSearchLatticeWGSL(mode, gridSize);
+    const {spatialContext} = this;
+    const geodesic = spatialContext.coordinateSpace === 'longitude-latitude';
+    // Sphere radius in the context's length unit; `sphereRadius` is given in meters.
+    const sphereRadius = geodesic
+      ? (spatialContext.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS) /
+        (spatialContext.units === 'kilometers' ? 1000 : 1)
+      : undefined;
+    const latticeWGSL = getNeighborSearchLatticeWGSL(mode, gridSize, sphereRadius);
+    const radiusLoop = geodesic ? getGeodesicRadiusNeighborLoopWGSL : getRadiusNeighborLoopWGSL;
     const crossJoin = Boolean(queryPositions);
     const queryBinding: WGSLKernelBinding[] = queryPositions
       ? [{name: 'queryPositions', view: queryPositions, type: 'f32', access: 'read'}]
@@ -561,7 +733,11 @@ ${getInsertNeighborWGSL(k)}`,
   var bestIds: array<u32, ${k}>;
   if (counts[countsOffset + queryIndex] != 0u) {
     let lattice = readLattice();
-    ${getNearestNeighborSearchWGSL(selfCondition)}
+    ${
+      geodesic
+        ? getGeodesicNearestNeighborSearchWGSL(selfCondition)
+        : getNearestNeighborSearchWGSL(selfCondition)
+    }
   }
   // Re-sort the selected neighbors by ID (insertion sort over at most K entries).
   for (var slot = 1u; slot < found; slot++) {
@@ -578,7 +754,9 @@ ${getInsertNeighborWGSL(k)}`,
   }
   for (var slot = 0u; slot < found; slot++) {
     knnIds[knnIdsOffset + queryIndex * K + slot] = bestIds[slot];
-    knnDistances[knnDistancesOffset + queryIndex * K + slot] = sqrt(bestDistances[slot]);
+    knnDistances[knnDistancesOffset + queryIndex * K + slot] = ${
+      geodesic ? 'bestDistances[slot]' : 'sqrt(bestDistances[slot])'
+    };
   }
   counts[countsOffset + queryIndex] = found;`
         })
@@ -599,7 +777,7 @@ ${getInsertNeighborWGSL(k)}`,
   var count = 0u;
   if (counts[countsOffset + queryIndex] != 0u) {
     let lattice = readLattice();
-    ${getRadiusNeighborLoopWGSL(`if (${selfCondition}) {
+    ${radiusLoop(`if (${selfCondition}) {
           count++;
         }`)}
   }
@@ -693,9 +871,9 @@ const CAPACITY: u32 = ${capacity}u;`,
   if (end > begin) {
     let lattice = readLattice();
     var next = begin;
-    ${getRadiusNeighborLoopWGSL(`if (${selfCondition} && next < end) {
+    ${radiusLoop(`if (${selfCondition} && next < end) {
           neighbors[neighborsOffset + next] = neighbor;
-          distances[distancesOffset + next] = sqrt(distanceSquared);
+          distances[distancesOffset + next] = ${geodesic ? 'distance' : 'sqrt(distanceSquared)'};
           next++;
         }`)}
   }`
@@ -728,13 +906,94 @@ const CAPACITY: u32 = ${capacity}u;`,
       );
     }
 
+    if (props.invalidCount) {
+      // Included rows (mask nonzero) with a non-finite coordinate or outside the bounds, summed
+      // with a scan so no atomics are needed. Self joins count targets; cross joins add queries.
+      const flagRows = targetRows + (crossJoin ? queryRows : 0);
+      const invalidFlags = createTransientView(graph, `${id}-invalid-flags`, 'uint32', flagRows);
+      const invalidStarts = createTransientView(graph, `${id}-invalid-starts`, 'uint32', flagRows);
+      const readPoint = (
+        name: string,
+        row: string
+      ) => `let x = ${name}[${name}Offset + ${row} * 2u];
+    let y = ${name}[${name}Offset + ${row} * 2u + 1u];`;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-invalid-flags`,
+          operation: OPERATION,
+          variant: 'invalid-flags',
+          bindings: [
+            {name: 'positions', view: positions, type: 'f32', access: 'read'},
+            ...queryBinding,
+            {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+            ...(props.mask
+              ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
+              : []),
+            ...(crossJoin && props.queryMask
+              ? [
+                  {
+                    name: 'queryMask',
+                    view: props.queryMask,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {name: 'invalidFlags', view: invalidFlags, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: flagRows,
+          declarations: `${latticeWGSL}
+const TARGET_ROWS: u32 = ${targetRows}u;`,
+          body: `let lattice = readLattice();
+  var included = true;
+  var inside = false;
+  if (index < TARGET_ROWS) {
+    ${readPoint('positions', 'index')}
+    included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
+    inside = isPointInBounds(lattice, x, y);
+  } else {
+    ${
+      crossJoin
+        ? `let queryRow = index - TARGET_ROWS;
+    ${readPoint('queryPositions', 'queryRow')}
+    included = ${crossJoin && props.queryMask ? 'queryMask[queryMaskOffset + queryRow] != 0u' : 'true'};
+    inside = isPointInBounds(lattice, x, y);`
+        : ''
+    }
+  }
+  invalidFlags[invalidFlagsOffset + index] = select(0u, 1u, included && !inside);`
+        }),
+        ...new GPUScan({
+          id: `${id}-invalid-scan`,
+          input: invalidFlags,
+          output: invalidStarts,
+          mode: 'exclusive'
+        }).getCommandNodes(graph),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-invalid-count`,
+          operation: OPERATION,
+          variant: 'invalid-count',
+          bindings: [
+            {name: 'invalidFlags', view: invalidFlags, type: 'u32', access: 'read'},
+            {name: 'invalidStarts', view: invalidStarts, type: 'u32', access: 'read'},
+            {name: 'invalidCount', view: props.invalidCount, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: `invalidCount[invalidCountOffset] =
+    invalidStarts[invalidStartsOffset + ${flagRows - 1}u] + invalidFlags[invalidFlagsOffset + ${flagRows - 1}u];`
+        })
+      );
+    }
+
     const bandwidthWGSL =
       mode === 'radius'
         ? 'let bandwidth = readParameter(4u);'
-        : `var bandwidth = 0.0;
+        : // Adaptive bandwidth: the k-th neighbor distance (the row maximum) times libpysal's epsilon.
+          `var bandwidth = 0.0;
   for (var slot = begin; slot < end; slot++) {
     bandwidth = max(bandwidth, distances[distancesOffset + slot]);
-  }`;
+  }
+  bandwidth = bandwidth * ${getWGSLFloatLiteral(GPU_SPATIAL_WEIGHTS_ADAPTIVE_BANDWIDTH_EPSILON)};`;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-weights`,
@@ -758,7 +1017,9 @@ ${NEIGHBOR_WEIGHT_WGSL}`,
     weights[weightsOffset + slot] = weight;
     sum += weight;
   }
-  if (readParameter(9u) != 0.0 && sum > 0.0 && isFiniteFloat(sum)) {
+  if (${
+    props.rowStandardize === undefined ? 'readParameter(9u) != 0.0' : String(props.rowStandardize)
+  } && sum > 0.0 && isFiniteFloat(sum)) {
     for (var slot = begin; slot < end; slot++) {
       weights[weightsOffset + slot] = weights[weightsOffset + slot] / sum;
     }

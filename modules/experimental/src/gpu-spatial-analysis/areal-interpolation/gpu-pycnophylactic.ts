@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUGather,
+  GPUReduction,
   GPUScan,
   GPUSort,
   validatePackedUint32View,
@@ -20,8 +21,24 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
+import {
+  getRasterSphereRadius,
+  getSphericalCellAreaWGSL,
+  validateGeographicRaster
+} from './spherical-cell-area';
+import {getZoneAnchorNodes} from './zone-anchor-nodes';
 
 const OPERATION = 'GPUPycnophylactic';
+/** Planar coordinates, or longitude/latitude rasters smoothed as density per spherical cell area. */
+const SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+});
 
 /** Maximum number of smoothing iterations of {@link GPUPycnophylactic}. */
 export const GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS = 512;
@@ -32,8 +49,9 @@ export type GPUPycnophylacticKernel = 'rook' | 'box';
 /**
  * Properties for {@link GPUPycnophylactic}.
  *
- * Compile-time: `width`, `height`, `zoneCount`, `iterations`, `kernel`. Per-frame: the contents of
- * `zones` and `totals`.
+ * Compile-time: `width`, `height`, `zoneCount`, `iterations`, `kernel`, `spatialContext` and which
+ * optional views exist. Per-frame: the contents of `zones`, `totals`, `extent`, `zoneAnchorCells`
+ * and `tolerance`.
  */
 export type GPUPycnophylacticProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'pycnophylactic'`. */
@@ -52,8 +70,57 @@ export type GPUPycnophylacticProps = {
   zoneCount: number;
   /** Per-zone totals to preserve (`zoneCount` rows). Negative or non-finite totals count as 0. */
   totals: GraphDataView<'float32'>;
-  /** Number of smoothing iterations, in `[0, GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS]`. */
+  /**
+   * Maximum number of smoothing iterations, in `[0, GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS]`. All of
+   * them run unless `tolerance` stops the surface earlier.
+   */
   iterations: number;
+  /**
+   * Optional one-row relative tolerance. After each iteration the largest change of any cell,
+   * divided by the mean density of its zone (`totals[z] / area(z)`), is compared with it. Once the
+   * change is at most `tolerance`, the surface is final and every remaining iteration is a no-op
+   * (deterministic, but the compiled iteration count is unchanged). Required for `converged` and
+   * `iterationLimitReached`. Per-frame; a NaN or negative tolerance never converges.
+   */
+  tolerance?: GraphDataView<'float32'>;
+  /**
+   * Optional one-row output: 1 when the change fell to `tolerance` within `iterations`, else 0.
+   * Requires `tolerance`. Also 0 when `iterations` is 0.
+   */
+  converged?: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row output: 1 when `iterations` ran out before the change reached `tolerance`,
+   * else 0. Requires `tolerance`.
+   */
+  iterationLimitReached?: GraphDataView<'uint32'>;
+  /**
+   * Coordinate space of the raster. Omitted means native planar: every cell has the same area, so
+   * mass and density coincide. A `longitude-latitude` context (metric `'none'` or `'great-circle'`)
+   * means a longitude/latitude grid described by `extent`: the surface smoothed is the DENSITY
+   * (mass per square meter) and the zone totals are enforced on mass = density times the spherical
+   * cell area `R^2 dLon (sin(latTop) - sin(latBottom))`, with `R` = `context.sphereRadius` or the
+   * WGS84 authalic radius. `output` is then mass per cell and `density` the surface itself.
+   * Smoothing neighbors are still cell-index neighbors, so the focal mean is anisotropic on the
+   * ground away from the equator. Other spaces throw.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * `longitude-latitude` only: per-frame raster placement `[originLongitude, originLatitude,
+   * cellWidth, cellHeight]` in degrees (the view of `GPUPolygonRasterization.extent`; row 0 at the
+   * smallest latitude). Required for, and only valid with, a longitude/latitude context.
+   */
+  extent?: GraphDataView<'float32'>;
+  /**
+   * Optional per-zone fallback cell (`zoneCount` rows of cell indices; out of range means none).
+   * A zone that rasterized to no cell claims its anchor cell, for example the cell containing the
+   * zone's label point, so its total is not lost. The claim is made in a transient copy of `zones`
+   * and only succeeds if the cell belongs to no zone or to a zone that keeps another cell; shared
+   * anchors go to the lowest zone row. Zones that still have no cell are counted in `invalidCount`
+   * and their total is lost.
+   */
+  zoneAnchorCells?: GraphDataView<'uint32'>;
+  /** Optional one-row output: zones with no cell (or no area) after anchoring, whose total is lost. */
+  invalidCount?: GraphDataView<'uint32'>;
   /**
    * Focal mean: `'rook'` (default, Tobler 1979) averages the 4 edge neighbors inside the study
    * area; `'box'` averages the 3x3 block including the cell itself.
@@ -62,43 +129,74 @@ export type GPUPycnophylacticProps = {
   /**
    * Caller-owned `width * height` result: the mass per cell. The cells of zone `z` sum to
    * `totals[z]` (to float32 accuracy) and are non-negative. Cells outside the study area and cells
-   * of zones without cells are 0.
+   * of zones without cells are 0. On a longitude/latitude raster this is density times cell area;
+   * see `density`.
    */
   output: GraphDataView<'float32'>;
+  /**
+   * Optional caller-owned `width * height` density surface (mass per unit area: per cell on a
+   * planar raster, per square meter on a longitude/latitude raster), the quantity that is smoothed.
+   */
+  density?: GraphDataView<'float32'>;
 };
 
 /**
  * Tobler's pycnophylactic (volume-preserving) interpolation on a raster: a smooth density surface
- * whose mass in every zone equals the zone total.
+ * whose mass in every zone equals the zone total. Reference: Tobler, W. R. (1979), "Smooth
+ * pycnophylactic interpolation for geographical regions", JASA 74(367), 519-530.
  *
- * Algorithm (fixed iteration count, deterministic):
- * 1. Initialize every cell of zone `z` to `totals[z] / cells(z)`.
- * 2. Repeat `iterations` times: replace every cell by the focal mean of its in-area neighbors
- *    (`kernel`); add `(totals[z] - sum_z) / cells(z)` to every cell of each zone so the total is
- *    restored; clamp negative values to 0; multiply the cells of each zone by
- *    `totals[z] / sum_z` (a zone whose sum is 0 is filled uniformly). The last step guarantees the
- *    totals and non-negativity exactly after every iteration.
+ * Algorithm (at most `iterations` iterations, deterministic). With `a(c)` the cell area (1 on a
+ * planar raster, the spherical cell area on a longitude/latitude raster), `A(z)` the zone area and
+ * `T(z)` the zone total:
+ * 1. Initialize the density of every cell of zone `z` to `T(z) / A(z)`.
+ * 2. Replace every cell by the focal mean of its in-area neighbors (`kernel`); add
+ *    `(T(z) - M(z)) / A(z)` to every density of zone `z`, where `M(z) = sum a(c) density(c)`, so
+ *    the mass is restored; clamp negative densities to 0; multiply the densities of the zone by
+ *    `T(z) / M(z)` (a zone whose mass is 0 is filled uniformly). The last step guarantees the
+ *    totals and non-negativity after every iteration.
+ * 3. With `tolerance`: stop (further iterations become no-ops) when the largest change of any cell
+ *    relative to its zone's mean density is at most `tolerance`; `converged` and
+ *    `iterationLimitReached` report which happened.
+ *
+ * Deviation from Tobler (1979). Tobler alternates the smoothing with a volume-restoring
+ * adjustment; the restoring step here is additive then clamped then multiplicative. The
+ * multiplicative step is kept because it is the only variant that keeps both the exact totals and
+ * non-negativity without a second clamp; where the additive step clamped, it can leave flat
+ * plateaus that a purely additive scheme would not. An additive-only variant would give negative
+ * densities in zones next to much larger zones.
+ *
+ * Zones without cells. A zone smaller than a cell has no raster cell and its total would be lost.
+ * `zoneAnchorCells` gives such a zone a fallback cell; zones that still have none are counted in
+ * `invalidCount`. Totals of zones with no cell never appear in `output`.
+ *
+ * Longitude/latitude rasters. With a `longitude-latitude` `spatialContext` the smoothed quantity is
+ * the density per square meter and the totals are enforced on density times the spherical cell
+ * area, so the surface is a density per ground area and total mass is exact per zone. Without it,
+ * every cell counts the same, which is only correct on an equal-area raster.
  *
  * Zone sums use a fixed-order segmented reduction over cells sorted once by zone, so results are
- * bitwise reproducible. There is no convergence test: iterate a fixed number of times, as the
- * smoothing converges geometrically with the zone size. Cost is `iterations` times a few passes
- * over the cells plus one radix sort of the cells.
+ * bitwise reproducible. Smoothing converges geometrically with the zone size, so use `tolerance`
+ * rather than guessing `iterations`. Counts are float32 sums, exact up to 2^24 cells per zone;
+ * larger zones lose count precision (the mass still sums to float32 accuracy).
  *
  * Together with `GPUArealInterpolation` this covers the tobler pycnophylactic and area
  * interpolation workloads. Unlike areal weighting, the surface is smooth across zone borders.
  * Limitation: no ancillary (dasymetric) initial surface and no barriers; the study area is the
- * union of the zone cells.
+ * union of the zone cells, and the focal mean is by cell index, not by ground distance.
  */
 export class GPUPycnophylactic implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUPycnophylacticProps;
+  /** Resolved coordinate context: native planar unless a longitude/latitude raster was declared. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUPycnophylacticProps) {
     const id = props.id ?? 'pycnophylactic';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
     for (const [name, value] of [
       ['width', props.width],
       ['height', props.height],
@@ -133,7 +231,61 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
     if (props.totals.length !== props.zoneCount) {
       throw new Error(`${id} totals must contain zoneCount rows`);
     }
-    validateGraphOutputsDisjointFromInputs(id, [props.output], [props.zones, props.totals]);
+    if (this.spatialContext.coordinateSpace === 'longitude-latitude') {
+      validateGeographicRaster(id, props.extent, props.width, cellCount);
+    } else if (props.extent) {
+      throw new Error(`${id} extent needs a longitude-latitude spatialContext`);
+    }
+    if (props.density) {
+      validatePackedView(props.density, ['float32'], `${id} density`);
+      if (props.density.length !== cellCount) {
+        throw new Error(`${id} density must contain width * height rows`);
+      }
+    }
+    if (props.zoneAnchorCells) {
+      validatePackedUint32View(props.zoneAnchorCells, `${id} zoneAnchorCells`);
+      if (props.zoneAnchorCells.length !== props.zoneCount) {
+        throw new Error(`${id} zoneAnchorCells must have zoneCount rows`);
+      }
+    }
+    if (props.tolerance) {
+      validatePackedView(props.tolerance, ['float32'], `${id} tolerance`);
+      if (props.tolerance.length < 1) {
+        throw new Error(`${id} tolerance must hold one float32`);
+      }
+    }
+    for (const [name, view] of [
+      ['converged', props.converged],
+      ['iterationLimitReached', props.iterationLimitReached],
+      ['invalidCount', props.invalidCount]
+    ] as const) {
+      if (view) {
+        validatePackedUint32View(view, `${id} ${name}`);
+        if (view.length < 1) {
+          throw new Error(`${id} ${name} must hold one uint32`);
+        }
+      }
+    }
+    if ((props.converged || props.iterationLimitReached) && !props.tolerance) {
+      throw new Error(`${id} converged and iterationLimitReached need a tolerance`);
+    }
+    validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+  }
+
+  private getInputViews(): (GraphDataView | undefined)[] {
+    const {props} = this;
+    return [props.zones, props.totals, props.extent, props.zoneAnchorCells, props.tolerance];
+  }
+
+  private getOutputViews(): (GraphDataView | undefined)[] {
+    const {props} = this;
+    return [
+      props.output,
+      props.density,
+      props.converged,
+      props.iterationLimitReached,
+      props.invalidCount
+    ];
   }
 
   /** Returns the sort, initialization and per-iteration smoothing and rescaling nodes. */
@@ -141,11 +293,27 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {width, height, zones, totals, zoneCount, iterations, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [zones, totals, output]);
+    const {width, height, totals, zoneCount, iterations, output} = props;
+    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const cellCount = width * height;
     const kernel = props.kernel ?? 'rook';
+    const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    const {tolerance} = props;
     const nodes: GPUCommandNode<Parameters>[] = [];
+
+    // Zones without cells claim their anchor cell in a transient copy of the raster.
+    let zones = props.zones;
+    if (props.zoneAnchorCells) {
+      const anchored = getZoneAnchorNodes(graph, {
+        id,
+        operation: OPERATION,
+        zones,
+        zoneCount,
+        anchorCells: props.zoneAnchorCells
+      });
+      zones = anchored.zones;
+      nodes.push(...anchored.nodes);
+    }
 
     // Cells sorted once by zone; zone sums are then fixed-order segmented sums.
     const counts = createTransientView(graph, `${id}-zone-counts`, 'uint32', zoneCount);
@@ -218,6 +386,7 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
     const scratch = createTransientView(graph, `${id}-scratch`, 'float32', cellCount);
     const sortedValues = createTransientView(graph, `${id}-sorted-values`, 'float32', cellCount);
     const zoneSums = createTransientView(graph, `${id}-zone-sums`, 'float32', zoneCount);
+    const zoneAreas = createTransientView(graph, `${id}-zone-areas`, 'float32', zoneCount);
 
     const sharedDeclarations = `const ZONE_COUNT: u32 = ${zoneCount}u;
 const WIDTH: u32 = ${width}u;
@@ -228,7 +397,11 @@ fn getTotal(zone: u32) -> f32 {
   let isFinite = (bitcast<u32>(total) & 0x7f800000u) != 0x7f800000u;
   return select(0.0, total, isFinite && total > 0.0);
 }`;
-    const getSumNodes = (label: string, values: GraphDataView<'float32'>) => [
+    const getSumNodes = (
+      label: string,
+      values: GraphDataView<'float32'>,
+      sums: GraphDataView<'float32'>
+    ) => [
       // `sortedIndices` is a permutation of the cells, so no index is out of range.
       ...new GPUGather({
         id: `${id}-${label}-gather`,
@@ -242,16 +415,120 @@ fn getTotal(zone: u32) -> f32 {
         segmentCount: zoneCount,
         input: sortedValues,
         segmentOffsets,
-        output: zoneSums,
+        output: sums,
         // Exclusive scan of per-zone counts of valid cells, so the last offset is at most `cellCount`.
         offsetsWithinInput: true
       })
     ];
 
-    // The last iteration writes `output`; earlier ones alternate with the scratch raster.
+    // Cell areas: 1 per cell on a planar raster (the zone area is then the cell count).
+    const cellAreas = geographic
+      ? createTransientView(graph, `${id}-cell-areas`, 'float32', cellCount)
+      : undefined;
+    if (cellAreas) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-cell-areas`,
+          operation: OPERATION,
+          variant: 'cell-areas',
+          bindings: [
+            {name: 'zones', view: zones, type: 'u32', access: 'read'},
+            {name: 'extent', view: props.extent!, type: 'f32', access: 'read'},
+            {name: 'cellAreas', view: cellAreas, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          declarations: `const ZONE_COUNT: u32 = ${zoneCount}u;
+const WIDTH: u32 = ${width}u;
+${getSphericalCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
+          body: `var area = getCellArea(index / WIDTH);
+  // Cells outside the zones and cells without a positive finite area carry no area.
+  if (zones[zonesOffset + index] >= ZONE_COUNT || (bitcast<u32>(area) & 0x7f800000u) == 0x7f800000u || !(area > 0.0)) {
+    area = 0.0;
+  }
+  cellAreas[cellAreasOffset + index] = area;`
+        }),
+        ...getSumNodes('zone-areas', cellAreas, zoneAreas)
+      );
+    } else {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-zone-areas`,
+          operation: OPERATION,
+          variant: 'zone-areas-from-counts',
+          bindings: [
+            {name: 'counts', view: counts, type: 'u32', access: 'read'},
+            {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: zoneCount,
+          body: 'zoneAreas[zoneAreasOffset + index] = f32(counts[countsOffset + index]);'
+        })
+      );
+    }
+    // Mass of the surface `values` (density times area), summed per zone into `zoneSums`.
+    const getMassSumNodes = (label: string, values: GraphDataView<'float32'>) => {
+      if (!cellAreas) {
+        return getSumNodes(label, values, zoneSums);
+      }
+      const mass = createTransientView(graph, `${id}-${label}-mass`, 'float32', cellCount);
+      return [
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-${label}-mass`,
+          operation: OPERATION,
+          variant: 'mass',
+          bindings: [
+            {name: 'values', view: values, type: 'f32', access: 'read'},
+            {name: 'cellAreas', view: cellAreas, type: 'f32', access: 'read'},
+            {name: 'mass', view: mass, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: cellCount,
+          body: 'mass[massOffset + index] = values[valuesOffset + index] * cellAreas[cellAreasOffset + index];'
+        }),
+        ...getSumNodes(label, mass, zoneSums)
+      ];
+    };
+
+    if (props.invalidCount) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-invalid-count-clear`,
+          operation: OPERATION,
+          view: props.invalidCount,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-invalid-count`,
+          operation: OPERATION,
+          variant: 'invalid-count',
+          bindings: [
+            {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
+            {
+              name: 'invalidCount',
+              view: props.invalidCount,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: zoneCount,
+          body: `if (!(zoneAreas[zoneAreasOffset + index] > 0.0)) {
+    atomicAdd(&invalidCount[invalidCountOffset], 1u);
+  }`
+        })
+      );
+    }
+
+    // The final surface is a density. Planar rasters without a density output write it straight
+    // into `output` (mass equals density); otherwise a conversion pass writes mass and density.
+    const needsConversion = geographic || Boolean(props.density);
+    const finalSurface = needsConversion
+      ? createTransientView(graph, `${id}-surface`, 'float32', cellCount)
+      : output;
+    // The last iteration writes `finalSurface`; earlier ones alternate with the scratch raster.
     const bufferFor = (iteration: number) =>
-      (iterations - 1 - iteration) % 2 === 0 ? output : scratch;
-    const initial = iterations === 0 ? output : bufferFor(0) === output ? scratch : output;
+      (iterations - 1 - iteration) % 2 === 0 ? finalSurface : scratch;
+    const initial =
+      iterations === 0 ? finalSurface : bufferFor(0) === finalSurface ? scratch : finalSurface;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize`,
@@ -260,7 +537,7 @@ fn getTotal(zone: u32) -> f32 {
         bindings: [
           {name: 'zones', view: zones, type: 'u32', access: 'read'},
           {name: 'totals', view: totals, type: 'f32', access: 'read'},
-          {name: 'counts', view: counts, type: 'u32', access: 'read'},
+          {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
           {name: 'destination', view: initial, type: 'f32', access: 'read_write'}
         ],
         invocationCount: cellCount,
@@ -268,11 +545,33 @@ fn getTotal(zone: u32) -> f32 {
         body: `let zone = zones[zonesOffset + index];
   var value = 0.0;
   if (zone < ZONE_COUNT) {
-    value = getTotal(zone) / f32(counts[countsOffset + zone]);
+    let area = zoneAreas[zoneAreasOffset + zone];
+    value = select(0.0, getTotal(zone) / area, area > 0.0);
   }
   destination[destinationOffset + index] = value;`
       })
     );
+
+    // Convergence flag: set once the largest relative change falls to the tolerance.
+    const flag = tolerance
+      ? createTransientView(graph, `${id}-converged-flag`, 'uint32', 1)
+      : undefined;
+    if (flag) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-converged-flag-clear`,
+          operation: OPERATION,
+          view: flag,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        })
+      );
+    }
+    const flagBinding = flag
+      ? [{name: 'flag', view: flag, type: 'u32' as const, access: 'read' as const}]
+      : [];
+    const flagGuard = flag ? 'if (flag[flagOffset] != 0u) {\n    return;\n  }\n  ' : '';
 
     let source = initial;
     for (let iteration = 0; iteration < iterations; iteration++) {
@@ -282,16 +581,26 @@ fn getTotal(zone: u32) -> f32 {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${label}-smooth`,
           operation: OPERATION,
-          variant: `smooth-${kernel}`,
+          variant: `smooth-${kernel}${flag ? '-guarded' : ''}`,
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},
             {name: 'source', view: source, type: 'f32', access: 'read'},
-            {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
+            {name: 'destination', view: destination, type: 'f32', access: 'read_write'},
+            ...flagBinding
           ],
           invocationCount: cellCount,
           declarations: sharedDeclarations,
-          body: `let zone = zones[zonesOffset + index];
+          body: `${
+            flag
+              ? `if (flag[flagOffset] != 0u) {
+    // Converged: the remaining iterations keep the surface.
+    destination[destinationOffset + index] = source[sourceOffset + index];
+    return;
+  }
+  `
+              : ''
+          }let zone = zones[zonesOffset + index];
   var result = 0.0;
   if (zone < ZONE_COUNT) {
     let column = i32(index % WIDTH);
@@ -321,54 +630,188 @@ fn getTotal(zone: u32) -> f32 {
   }
   destination[destinationOffset + index] = result;`
         }),
-        ...getSumNodes(`${label}-restore`, destination),
+        ...getMassSumNodes(`${label}-restore`, destination),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${label}-restore-apply`,
           operation: OPERATION,
-          variant: 'restore-and-clamp',
+          variant: `restore-and-clamp${flag ? '-guarded' : ''}`,
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},
-            {name: 'counts', view: counts, type: 'u32', access: 'read'},
+            {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
             {name: 'zoneSums', view: zoneSums, type: 'f32', access: 'read'},
-            {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
+            {name: 'destination', view: destination, type: 'f32', access: 'read_write'},
+            ...flagBinding
           ],
           invocationCount: cellCount,
           declarations: sharedDeclarations,
-          body: `let zone = zones[zonesOffset + index];
+          body: `${flagGuard}let zone = zones[zonesOffset + index];
   if (zone < ZONE_COUNT) {
-    let shift = (getTotal(zone) - zoneSums[zoneSumsOffset + zone]) / f32(counts[countsOffset + zone]);
+    let area = zoneAreas[zoneAreasOffset + zone];
+    // The shift is a density, so it restores the mass of the zone: sum(a * shift) = T - M.
+    let shift = select(0.0, (getTotal(zone) - zoneSums[zoneSumsOffset + zone]) / area, area > 0.0);
     destination[destinationOffset + index] = max(destination[destinationOffset + index] + shift, 0.0);
   }`
         }),
-        ...getSumNodes(`${label}-scale`, destination),
+        ...getMassSumNodes(`${label}-scale`, destination),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-${label}-scale-apply`,
           operation: OPERATION,
-          variant: 'rescale',
+          variant: `rescale${flag ? '-guarded' : ''}`,
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},
-            {name: 'counts', view: counts, type: 'u32', access: 'read'},
+            {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
             {name: 'zoneSums', view: zoneSums, type: 'f32', access: 'read'},
-            {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
+            {name: 'destination', view: destination, type: 'f32', access: 'read_write'},
+            ...flagBinding
           ],
           invocationCount: cellCount,
           declarations: sharedDeclarations,
-          body: `let zone = zones[zonesOffset + index];
+          body: `${flagGuard}let zone = zones[zonesOffset + index];
   if (zone < ZONE_COUNT) {
     let total = getTotal(zone);
     let sum = zoneSums[zoneSumsOffset + zone];
-    // A zone whose clamped sum vanished is filled uniformly.
+    let area = zoneAreas[zoneAreasOffset + zone];
+    // A zone whose clamped mass vanished is filled uniformly.
     destination[destinationOffset + index] = select(
-      total / f32(counts[countsOffset + zone]),
+      select(0.0, total / area, area > 0.0),
       destination[destinationOffset + index] * (total / sum),
       sum > 0.0
     );
   }`
         })
       );
+      if (flag && tolerance) {
+        const change = createTransientView(graph, `${id}-${label}-change`, 'float32', cellCount);
+        const maximumChange = createTransientView(graph, `${id}-${label}-maximum`, 'float32', 1);
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-${label}-change`,
+            operation: OPERATION,
+            variant: 'change',
+            bindings: [
+              {name: 'zones', view: zones, type: 'u32', access: 'read'},
+              {name: 'totals', view: totals, type: 'f32', access: 'read'},
+              {name: 'zoneAreas', view: zoneAreas, type: 'f32', access: 'read'},
+              {name: 'source', view: source, type: 'f32', access: 'read'},
+              {name: 'destination', view: destination, type: 'f32', access: 'read'},
+              {name: 'change', view: change, type: 'f32', access: 'read_write'}
+            ],
+            invocationCount: cellCount,
+            declarations: sharedDeclarations,
+            body: `let zone = zones[zonesOffset + index];
+  var value = 0.0;
+  if (zone < ZONE_COUNT) {
+    let area = zoneAreas[zoneAreasOffset + zone];
+    // Change relative to the mean density of the zone; empty zones cannot change.
+    let reference = select(0.0, getTotal(zone) / area, area > 0.0);
+    if (reference > 0.0) {
+      value = abs(destination[destinationOffset + index] - source[sourceOffset + index]) / reference;
+    }
+  }
+  change[changeOffset + index] = value;`
+          }),
+          ...new GPUReduction({
+            id: `${id}-${label}-maximum`,
+            input: change,
+            output: maximumChange,
+            operation: 'max'
+          }).getCommandNodes(graph),
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-${label}-converged`,
+            operation: OPERATION,
+            variant: 'converged-flag',
+            bindings: [
+              {name: 'maximumChange', view: maximumChange, type: 'f32', access: 'read'},
+              {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'},
+              {name: 'flag', view: flag, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: 1,
+            body: `if (maximumChange[maximumChangeOffset] <= tolerance[toleranceOffset]) {
+    flag[flagOffset] = 1u;
+  }`
+          })
+        );
+      }
       source = destination;
+    }
+
+    if (needsConversion) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-convert`,
+          operation: OPERATION,
+          variant: `convert${cellAreas ? '-area' : ''}${props.density ? '-density' : ''}`,
+          bindings: [
+            {name: 'surface', view: finalSurface, type: 'f32', access: 'read'},
+            ...(cellAreas
+              ? [
+                  {
+                    name: 'cellAreas',
+                    view: cellAreas,
+                    type: 'f32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {name: 'output', view: output, type: 'f32', access: 'read_write'},
+            ...(props.density
+              ? [
+                  {
+                    name: 'density',
+                    view: props.density,
+                    type: 'f32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          invocationCount: cellCount,
+          body: `let value = surface[surfaceOffset + index];
+  output[outputOffset + index] = value${cellAreas ? ' * cellAreas[cellAreasOffset + index]' : ''};
+  ${props.density ? 'density[densityOffset + index] = value;' : ''}`
+        })
+      );
+    }
+    if (props.converged || props.iterationLimitReached) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-status`,
+          operation: OPERATION,
+          variant: 'status',
+          bindings: [
+            {name: 'flag', view: flag!, type: 'u32', access: 'read'},
+            ...(props.converged
+              ? [
+                  {
+                    name: 'converged',
+                    view: props.converged,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(props.iterationLimitReached
+              ? [
+                  {
+                    name: 'iterationLimitReached',
+                    view: props.iterationLimitReached,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          invocationCount: 1,
+          body: `${props.converged ? 'converged[convergedOffset] = flag[flagOffset];' : ''}
+  ${
+    props.iterationLimitReached
+      ? `iterationLimitReached[iterationLimitReachedOffset] = ${iterations > 0 ? 'select(1u, 0u, flag[flagOffset] != 0u)' : '0u'};`
+      : ''
+  }`
+        })
+      );
     }
     return nodes;
   }
