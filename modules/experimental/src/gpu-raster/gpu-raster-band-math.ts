@@ -19,6 +19,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Independently implemented, GPU-resident operations on two calibrated raster bands. */
 export type GPURasterBandMathOperation =
@@ -269,9 +270,7 @@ const OUTPUT_VALIDITY_OFFSET: u32 = ${getViewElementOffset(this.outputValidity)}
 ${leftValidityDeclaration}
 ${rightValidityDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= bitcast<f32>(0x7f7fffffu);
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {

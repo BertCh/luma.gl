@@ -3,9 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis/gpu-terrain-derivatives';
+import {getOracleGroundCellSize} from '../terrain-oracle-utils';
 
 const f32 = Math.fround;
-const METERS_PER_DEGREE = 111319.49079327357;
 const NAN_STATUS_HEIGHT = Number.NaN;
 
 /** Options shared by both oracles. */
@@ -27,16 +27,14 @@ export function getOracleCellSize(
   if (mode === 'uniform') {
     return [cellSizeX, cellSizeY];
   }
-  const rowFraction = (row + 0.5) / height;
-  const edge = northEdge + (southEdge - northEdge) * rowFraction;
-  if (mode === 'web-mercator') {
-    const scale = 1 / Math.cosh(Math.PI * (1 - 2 * edge));
-    return [f32(cellSizeX * scale), f32(cellSizeY * scale)];
-  }
-  return [
-    f32(cellSizeX * METERS_PER_DEGREE * Math.cos((edge * Math.PI) / 180)),
-    f32(cellSizeY * METERS_PER_DEGREE)
-  ];
+  const [x, y] = getOracleGroundCellSize(
+    [cellSizeX, cellSizeY, northEdge, southEdge],
+    row,
+    height,
+    mode,
+    2
+  );
+  return [f32(x), f32(y)];
 }
 
 /** Metric disc membership with the same float32 rounding steps as the kernel. */

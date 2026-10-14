@@ -4,10 +4,19 @@
 
 import {expect, it} from 'vitest';
 import {
+  getTerrainSweepGroundLineGeometry,
   getTerrainSweepLineGeometry,
-  getTerrainSweepMinorOffset
+  getTerrainSweepMinorOffset,
+  TERRAIN_SWEEP_SLOPE_SCALE
 } from '../../../src/gpu-terrain/terrain-illumination/terrain-horizon-sweep';
-import {getGPUTerrainHorizonStepDistances} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
+import {
+  getGPUTerrainHorizonDirection,
+  getGPUTerrainHorizonStepDistances
+} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
+import {
+  getTerrainGroundCellSize,
+  type GPUTerrainCellSizeMode
+} from '../../../src/gpu-terrain/terrain-grid-utils';
 import {computeTerrainHorizon, createRandom, createSmoothTerrain} from './terrain-horizon-oracle';
 import {
   computeTerrainHorizonSweepBruteForce,
@@ -102,6 +111,154 @@ it('getTerrainSweepLineGeometry derives the fixed-point slope and rejects bad in
   });
   expect(() => getTerrainSweepLineGeometry([0, 0], 4, 4)).toThrow(/non-zero/);
   expect(() => getTerrainSweepLineGeometry([1, 0], 40000, 4)).toThrow(/extents/);
+});
+
+it('getTerrainSweepGroundLineGeometry follows a 45 degree ground azimuth on a 60 N geographic grid', () => {
+  // python3 -I, WGS84 (a = 6378137, f = 1 / 298.257223563, e2 = f (2 - f), w = 1 - e2 sin^2(lat),
+  // N = a / sqrt(w), M = a (1 - e2) / w^1.5): 0.001 degree cells at 60 N are
+  // [55.80000157243614, 111.41228745777943] m. The 45 degree pixel slope is
+  // -0.5008424370927846 = -32823.209957312734 / 65536, so slopeFixed = -32823, and that line's
+  // ground azimuth is atan2(cellX, 32823 / 65536 * cellY) = 45.00018324999883 degrees. The old
+  // pixel diagonal (slopeFixed -65536) was a 26.60365263545291 degree ground ray.
+  const groundCell = getTerrainGroundCellSize('geographic', [0.001, 0.001], 60, 60, 0, 1);
+  const direction = getGPUTerrainHorizonDirection(1, 8);
+  const geometry = getTerrainSweepGroundLineGeometry(direction, groundCell, 48, 24);
+  expect(geometry).toMatchObject({xMajor: true, slopeFixed: -32823, travelSign: 1});
+  expect(geometry.stepPixelLength).toBe(Math.fround(1.1184095572334558));
+  const azimuth =
+    (Math.atan2(groundCell[0], (-geometry.slopeFixed / TERRAIN_SWEEP_SLOPE_SCALE) * groundCell[1]) *
+      180) /
+    Math.PI;
+  expect(azimuth).toBeCloseTo(45.00018324999883, 9);
+  // Square cells keep the float64 pixel geometry; axis sectors stay on their column or row.
+  for (const sector of [0, 1, 2, 3, 5]) {
+    const sectorDirection = getGPUTerrainHorizonDirection(sector, 8);
+    expect(getTerrainSweepGroundLineGeometry(sectorDirection, [30, 30], 48, 24)).toEqual(
+      getTerrainSweepLineGeometry(sectorDirection, 48, 24)
+    );
+  }
+  expect(getTerrainSweepGroundLineGeometry([0, -1], groundCell, 48, 24)).toMatchObject({
+    xMajor: false,
+    slopeFixed: 0
+  });
+  expect(getTerrainSweepGroundLineGeometry([1, 0], groundCell, 48, 24)).toMatchObject({
+    xMajor: true,
+    slopeFixed: 0
+  });
+});
+
+// Every GPU sweep fixture with non-square cells (gpu-terrain-horizon-sweep.spec.ts and
+// gpu-terrain-horizon.spec.ts). The kernel derives slopeFixed from f32 cell sizes, which differ from
+// the float64 oracle cells by about 1e-7 relative (about 0.01 of a fixed-point unit), so slopeFixed
+// may differ by one near a .5 tie. Require each sector's unrounded slope to be at least 0.05 units
+// from a tie, or else slopeFixed - 1, slopeFixed and slopeFixed + 1 to put every pixel on the same
+// line, so the GPU lines equal the oracle's whatever the rounding.
+it('sweep ground geometry fixtures stay clear of rounding ties', () => {
+  const fixtures: {
+    mode: GPUTerrainCellSizeMode;
+    cellSize: [number, number];
+    northEdge: number;
+    southEdge: number;
+    width: number;
+    height: number;
+    directionCounts: number[];
+    rowDirection?: 'south' | 'north';
+  }[] = [
+    {
+      mode: 'uniform',
+      cellSize: [10, 12],
+      northEdge: 0,
+      southEdge: 0,
+      width: 48,
+      height: 40,
+      directionCounts: [8, 16, 7]
+    },
+    {
+      mode: 'web-mercator',
+      cellSize: [20, 20],
+      northEdge: 0.3,
+      southEdge: 0.32,
+      width: 32,
+      height: 24,
+      directionCounts: [12],
+      rowDirection: 'north'
+    },
+    {
+      mode: 'geographic',
+      cellSize: [0.001, 0.001],
+      northEdge: 60.012,
+      southEdge: 59.988,
+      width: 48,
+      height: 24,
+      directionCounts: [8, 12]
+    }
+  ];
+  for (const fixture of fixtures) {
+    const referenceRow = fixture.mode === 'uniform' ? 0 : Math.floor(fixture.height / 2);
+    const [cellX, cellY] = getTerrainGroundCellSize(
+      fixture.mode,
+      fixture.cellSize,
+      fixture.northEdge,
+      fixture.southEdge,
+      referenceRow,
+      fixture.height
+    );
+    for (const directionCount of fixture.directionCounts) {
+      for (let sector = 0; sector < directionCount; sector++) {
+        const direction = getGPUTerrainHorizonDirection(
+          sector,
+          directionCount,
+          fixture.rowDirection
+        );
+        const geometry = getTerrainSweepGroundLineGeometry(
+          direction,
+          [cellX, cellY],
+          fixture.width,
+          fixture.height
+        );
+        const pixelX = direction[0] / cellX;
+        const pixelY = direction[1] / cellY;
+        const ratio = geometry.xMajor ? pixelY / pixelX : pixelX / pixelY;
+        const scaled = Math.abs(ratio * TERRAIN_SWEEP_SLOPE_SCALE);
+        if (Math.abs((scaled % 1) - 0.5) > 0.05) {
+          continue;
+        }
+        const majorExtent = geometry.xMajor ? fixture.width : fixture.height;
+        for (let major = 0; major < majorExtent; major++) {
+          const offset = getTerrainSweepMinorOffset(geometry.slopeFixed, major);
+          for (const neighbor of [geometry.slopeFixed - 1, geometry.slopeFixed + 1]) {
+            if (Math.abs(neighbor) <= TERRAIN_SWEEP_SLOPE_SCALE) {
+              expect(
+                getTerrainSweepMinorOffset(neighbor, major),
+                `${fixture.mode} ${directionCount}:${sector} at ${major}`
+              ).toBe(offset);
+            }
+          }
+        }
+      }
+    }
+  }
+});
+
+it('hull sweep equals brute force on a 60 N geographic grid', () => {
+  const width = 32;
+  const height = 24;
+  const options: SweepOracleOptions = {
+    width,
+    height,
+    elevation: createNoisyTerrain(width, height, 7),
+    directionCount: 12,
+    cellSize: [0.001, 0.001],
+    cellSizeMode: 'geographic',
+    northEdge: 60.012,
+    southEdge: 59.988,
+    maximumRadius: 12
+  };
+  const hull = computeTerrainHorizonSweepHull(options);
+  expectSameResult(hull, computeTerrainHorizonSweepBruteForce(options));
+  // The GPU spec 'sweep kernel follows ground azimuths on a 60 N geographic grid' uses this
+  // fixture and requires more than 30 angles above 5 degrees.
+  expect(hull.horizon.filter(angle => angle > 5).length).toBeGreaterThan(30);
 });
 
 it('hull sweep equals brute force on random terrain with nodata', () => {

@@ -9,6 +9,7 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer, importGraphBuffer} from '../../../src/utils/gpu-contributor-utils';
 import {
   GPU_TERRAIN_FLOW_CELL_CLASS as CELL_CLASS,
+  GPU_TERRAIN_FLOW_STREAM_UNRESOLVED,
   GPUTerrainFlow,
   getGPUTerrainFlowParameterValues,
   type GPUTerrainFlowProps,
@@ -170,6 +171,57 @@ function createFlowFixture(
   };
 }
 
+/** Float32 unit roundoff `u = 2^-24`. */
+const FLOAT32_UNIT_ROUNDOFF = 2 ** -24;
+
+/**
+ * Per-cell bound on |GPU - oracle| for D8 accumulation whose per-cell weights differ by at most
+ * `weightRelativeError` while both sides sum in the same float32 order.
+ *
+ * Both sides add a cell's own weight and then its donors in direction order, rounding after every
+ * addition. A term entering the sum at cell `c` is rounded `R(c)` times at most, where for donors
+ * `d_1..d_m` of `c`, `R(c) = max(m, max_j (m - j + 1 + R(d_j)))`. With non-negative terms the
+ * standard recursive-summation bound gives `|fl(sum) - sum| <= gamma_R * sum`,
+ * `gamma_R = R u / (1 - R u)`, on each side; the weights add `weightRelativeError * sum`. So
+ * `|GPU - oracle| <= A (1 + gamma_R) (2 gamma_R + weightRelativeError)` with `A` the oracle value.
+ */
+function getAccumulationErrorBounds(
+  oracle: TerrainFlowOracleResult,
+  width: number,
+  height: number,
+  weightRelativeError: number
+): Float64Array {
+  const cellCount = width * height;
+  const columnOffsets = [1, 1, 0, -1, -1, -1, 0, 1];
+  const rowOffsets = [0, 1, 1, 1, 0, -1, -1, -1];
+  const roundings = new Int32Array(cellCount).fill(-1);
+  const getRoundings = (cell: number): number => {
+    if (roundings[cell] >= 0) {
+      return roundings[cell];
+    }
+    const donors: number[] = [];
+    for (let direction = 0; direction < 8; direction++) {
+      const column = (cell % width) + columnOffsets[direction];
+      const row = Math.floor(cell / width) + rowOffsets[direction];
+      if (column < 0 || row < 0 || column >= width || row >= height) continue;
+      const neighbor = row * width + column;
+      if (oracle.receivers[neighbor] === cell) donors.push(neighbor);
+    }
+    let result = donors.length;
+    for (const [index, donor] of donors.entries()) {
+      result = Math.max(result, donors.length - index + getRoundings(donor));
+    }
+    roundings[cell] = result;
+    return result;
+  };
+  return Float64Array.from(oracle.accumulation, (value, cell) => {
+    if (!Number.isFinite(value)) return NaN;
+    const roundingCount = getRoundings(cell) * FLOAT32_UNIT_ROUNDOFF;
+    const gamma = roundingCount / (1 - roundingCount);
+    return Math.abs(value) * (1 + gamma) * (2 * gamma + weightRelativeError);
+  });
+}
+
 async function expectMatchesOracle(
   device: Device,
   name: string,
@@ -177,7 +229,8 @@ async function expectMatchesOracle(
   width: number,
   height: number,
   options: FlowOptions = {},
-  tolerance?: number
+  /** Relative error budget of each GPU weight; omit for bit-exact accumulation. */
+  weightRelativeError?: number
 ) {
   const settings = options.settings ?? DEFAULT_SETTINGS;
   const fixture = createFlowFixture(device, elevation, width, height, options);
@@ -201,19 +254,20 @@ async function expectMatchesOracle(
     expect(toBits(result.filled), `${name} filled`).toEqual(toBits(oracle.filled));
     expect(result.fillConverged, `${name} fillConverged`).toBe(1);
   }
-  if (tolerance === undefined) {
+  if (weightRelativeError === undefined) {
     expect(toBits(result.accumulation), `${name} accumulation`).toEqual(
       toBits(oracle.accumulation)
     );
   } else {
+    const bounds = getAccumulationErrorBounds(oracle, width, height, weightRelativeError);
     for (const [cell, value] of oracle.accumulation.entries()) {
       if (Number.isNaN(value)) {
         expect(result.accumulation[cell]).toBeNaN();
       } else {
-        expect(result.accumulation[cell], `${name} accumulation ${cell}`).toBeCloseTo(
-          value,
-          Math.max(0, -Math.ceil(Math.log10(Math.abs(value) * tolerance + 1e-30)))
-        );
+        expect(
+          Math.abs(result.accumulation[cell] - value),
+          `${name} accumulation ${cell}`
+        ).toBeLessThanOrEqual(bounds[cell]);
       }
     }
   }
@@ -385,7 +439,14 @@ it('GPUTerrainFlow weights accumulation by runoff and area', async () => {
       settings: {cellSize: [0.001, 0.001], northEdge: 50, southEdge: 49.9},
       runoff
     },
-    1e-5
+    // Area weights: the GPU evaluates the WGS84 row area in float32 (mix, sin, cos, sqrt, two
+    // divisions, five products; WGSL allows 2.5 ulp for division and inverse sqrt) while the oracle
+    // rounds a float64 area once. A python3 -I emulation with correctly rounded float32 ops
+    // (scratchpad q0ter/py/flow_area.py) gives per-row areas 0 to 3 ulps from the oracle and
+    // reproduces the GPU's 2865064 at cell 480 exactly (oracle 2865063.5), with the same summation
+    // order. The budget is 8 ulps of relative size 2^-23, i.e. 2^-20, and the summation part of
+    // the bound comes from getAccumulationErrorBounds.
+    2 ** -20
   );
 });
 
@@ -452,6 +513,12 @@ it('GPUTerrainFlow reports fill and accumulation non-convergence', async () => {
     expect(shortResult.accumulation.every(value => Number.isFinite(value))).toBe(true);
   } else {
     expect(shortResult.accumulation.some(value => Number.isNaN(value))).toBe(true);
+  }
+  // Review C-03: an unresolved (NaN) cell is never reported as "not a stream".
+  for (const [cell, value] of shortResult.accumulation.entries()) {
+    expect(shortResult.streams[cell], `streams ${cell}`).toBe(
+      Number.isNaN(value) ? GPU_TERRAIN_FLOW_STREAM_UNRESOLVED : 0
+    );
   }
   shortFixture.destroy();
 

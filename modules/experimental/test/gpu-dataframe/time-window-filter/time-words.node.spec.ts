@@ -10,6 +10,7 @@ import {
   joinTimeWords,
   splitTimeWords
 } from '../../../src/gpu-dataframe/time-window-filter';
+import {TIME_WORDS_WGSL} from '../../../src/gpu-dataframe/time-window-filter/time-words';
 
 it('splitTimeWords and joinTimeWords round-trip Int64 values', () => {
   const values = [
@@ -122,4 +123,96 @@ it('getGPUTimeWindowWordParameterValues validates its input', () => {
     })
   ).toThrow();
   expect(() => getGPUTimeWindowWordParameterValues({start: NaN, end: 1})).toThrow();
+});
+
+// Review B-07: ordering by the sign of the wrapped difference is wrong when |a - b| >= 2^63, so an
+// INT64_MIN/INT64_MAX "unbounded" window rejected pre-1970 rows. The functions below port the WGSL
+// statement for statement in uint32 arithmetic (Math.imul-free: only xor, compare and borrow
+// subtraction), and are checked against BigInt on every pair of the extreme values. The GPU spec in
+// gpu-time-window-filter-int64.spec.ts runs the real kernel with the same window edges.
+type Words = [low: number, high: number];
+
+function toWords(value: bigint): Words {
+  const {low, high} = splitTimeWords(value);
+  return [low, high];
+}
+
+function subtractWords(a: Words, b: Words): Words {
+  const borrow = a[0] < b[0] ? 1 : 0;
+  return [(a[0] - b[0]) >>> 0, (a[1] - b[1] - borrow) >>> 0];
+}
+
+function compareWords(a: Words, b: Words): number {
+  const aHigh = (a[1] ^ 0x80000000) >>> 0;
+  const bHigh = (b[1] ^ 0x80000000) >>> 0;
+  if (aHigh !== bHigh) {
+    return aHigh > bHigh ? 1 : -1;
+  }
+  if (a[0] !== b[0]) {
+    return a[0] > b[0] ? 1 : -1;
+  }
+  return 0;
+}
+
+function differenceToF32(a: Words, b: Words): number {
+  const isForward = compareWords(a, b) >= 0;
+  const magnitude = isForward ? subtractWords(a, b) : subtractWords(b, a);
+  const value = Math.fround(Math.fround(magnitude[1]) * 4294967296 + Math.fround(magnitude[0]));
+  return isForward ? value : -value;
+}
+
+/** The pre-fix rule: `!timeWordsIsNegative(a - b)`. */
+function isAtLeastBySign(a: Words, b: Words): boolean {
+  return (subtractWords(a, b)[1] & 0x80000000) === 0;
+}
+
+const EXTREMES = [
+  -(2n ** 63n),
+  -(2n ** 63n) + 1n,
+  -(2n ** 62n),
+  -1_700_000_000_000n,
+  -1n,
+  0n,
+  1n,
+  1_700_000_000_000n,
+  2n ** 62n,
+  2n ** 63n - 2n,
+  2n ** 63n - 1n
+];
+
+it('TIME_WORDS_WGSL orders Int64 words lexicographically, not by a wrapped difference', () => {
+  expect(TIME_WORDS_WGSL).toMatch(/fn timeWordsCompare\(a: vec2<u32>, b: vec2<u32>\) -> i32/);
+  const atLeast = TIME_WORDS_WGSL.slice(TIME_WORDS_WGSL.indexOf('fn isTimeWordsAtLeast'));
+  expect(atLeast.slice(0, atLeast.indexOf('\n}'))).toContain('timeWordsCompare(a, b)');
+  const difference = TIME_WORDS_WGSL.slice(TIME_WORDS_WGSL.indexOf('fn timeWordsDifference('));
+  expect(difference.slice(0, difference.indexOf('\n}'))).toContain('timeWordsDifferenceToF32');
+});
+
+it('time-word comparison is exact for every pair of extreme Int64 values', () => {
+  let signFailures = 0;
+  for (const a of EXTREMES) {
+    for (const b of EXTREMES) {
+      const expected = a > b ? 1 : a < b ? -1 : 0;
+      expect(compareWords(toWords(a), toWords(b))).toBe(expected);
+      if (isAtLeastBySign(toWords(a), toWords(b)) !== a >= b) {
+        signFailures++;
+      }
+      // Correct sign and f32 rounding of the exact difference (two roundings, as in WGSL).
+      const exact = Number(a - b);
+      const actual = differenceToF32(toWords(a), toWords(b));
+      expect(Math.sign(actual)).toBe(Math.sign(exact));
+      expect(Math.abs(actual - exact)).toBeLessThanOrEqual(Math.abs(exact) * 2 ** -22);
+    }
+  }
+  // The review's cases under the old rule: atLeast(MAX, -1), atLeast(0, MIN), atLeast(MAX, MIN)
+  // were all false.
+  const maximum = toWords(2n ** 63n - 1n);
+  const minimum = toWords(-(2n ** 63n));
+  expect(isAtLeastBySign(maximum, toWords(-1n))).toBe(false);
+  expect(isAtLeastBySign(toWords(0n), minimum)).toBe(false);
+  expect(isAtLeastBySign(maximum, minimum)).toBe(false);
+  expect(signFailures).toBeGreaterThan(0);
+  expect(compareWords(maximum, toWords(-1n))).toBe(1);
+  expect(compareWords(toWords(0n), minimum)).toBe(1);
+  expect(compareWords(maximum, minimum)).toBe(1);
 });

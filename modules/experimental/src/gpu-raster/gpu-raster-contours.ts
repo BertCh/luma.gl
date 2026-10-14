@@ -27,6 +27,7 @@ import {
   validateRasterScalarView
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterMetadata} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** One fixed contour value, or one caller-owned GPU scalar updated between graph encodings. */
 export type GPURasterContourLevel = number | GraphDataView<'float32'>;
@@ -555,9 +556,7 @@ const COUNT_OFFSET: u32 = ${getViewElementOffset(classifier.segmentCounts)}u;
 ${validityDeclaration}
 ${levelDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 fn isValidSample(index: u32, rawValue: ${getRasterShaderScalarType(classifier.input.format)}, value: f32) -> bool {
   return isFiniteValue(value)${rawFinite}${rawNoData}${validityExpression};
@@ -643,9 +642,7 @@ const VERTEX_OFFSET: u32 = ${getViewElementOffset(contours.vertices)}u;
 @group(0) @binding(3) var<storage, read_write> outputVertices: array<f32>;
 ${levelDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 fn getInterpolation(first: f32, second: f32, contourLevel: f32) -> f32 {
   let directNumerator = contourLevel - first;

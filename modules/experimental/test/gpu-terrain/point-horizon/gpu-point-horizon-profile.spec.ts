@@ -205,6 +205,33 @@ it('GPUPointHorizonProfile finds the curvature dip of a flat plane', async () =>
   }
 });
 
+it('GPUPointHorizonProfile reports NaN for settings packed for the other projection', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // A planar contributor given Web Mercator settings (worldPixelSize, originY) used to read them
+  // as a cell size; the projection tag now invalidates every eye. The planar settings still march.
+  const size = 129;
+  const config = {
+    width: size,
+    height: size,
+    values: new Float32Array(size * size),
+    observers: [[64, 64, 10]] as const,
+    model: {...PLANAR_MODEL, traversal: 'march' as const}
+  };
+  const mismatched = await runProfile(device, {
+    ...config,
+    settings: {worldPixelSize: 512 * 2 ** 10, originY: 1000, curvatureCoefficient: 1e-4}
+  });
+  expect(Array.from(mismatched.skylineAngle).every(Number.isNaN)).toBe(true);
+  const matched = await runProfile(device, {
+    ...config,
+    settings: {cellSize: [10, 10], curvatureCoefficient: 1e-4}
+  });
+  expect(Array.from(matched.skylineAngle).every(Number.isFinite)).toBe(true);
+});
+
 it('GPUPointHorizonProfile sees a wall at its angle and a higher eye lowers it', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

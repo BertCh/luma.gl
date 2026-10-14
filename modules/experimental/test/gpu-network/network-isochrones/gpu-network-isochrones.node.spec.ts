@@ -75,6 +75,48 @@ it('GPUNetworkIsochrones validates its properties', () => {
   );
 });
 
+// Review B-05: the wrapped search's convergence was invisible, so a high-diameter network was
+// silently truncated into smaller polygons.
+it('GPUNetworkIsochrones forwards converged and localIterations to its search', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'isochrones-converged'});
+  for (const withAssignments of [false, true]) {
+    const converged = createTransientView(graph, `converged-${serial++}`, 'uint32', 1);
+    const nodes = new GPUNetworkIsochrones(
+      createProps(graph, {
+        id: `search-${withAssignments}`,
+        sources: createTransientView(graph, `sources-${serial++}`, 'uint32', 2),
+        assignments: withAssignments
+          ? createTransientView(graph, `assignments-${serial++}`, 'uint32', 4)
+          : undefined,
+        maxIterations: 2,
+        localIterations: 4,
+        converged
+      })
+    ).getCommandNodes(graph);
+    const writers = nodes.filter(node =>
+      node.resources?.some(
+        resource => resource.buffer === converged && resource.usage === 'storage-read-write'
+      )
+    );
+    expect(writers.length).toBeGreaterThan(0);
+  }
+  const props = createProps(graph);
+  const flag = createTransientView(graph, `converged-${serial++}`, 'uint32', 1);
+  expect(() => new GPUNetworkIsochrones({...props, converged: flag})).toThrow(/needs sources/);
+  expect(() => new GPUNetworkIsochrones({...props, localIterations: 4})).toThrow(/needs sources/);
+  const sources = createTransientView(graph, `sources-${serial++}`, 'uint32', 2);
+  expect(
+    () =>
+      new GPUNetworkIsochrones({
+        ...props,
+        sources,
+        converged: createTransientView(graph, `converged-${serial++}`, 'uint32', 2)
+      })
+  ).toThrow(/converged must contain exactly one row/);
+  // Optional, as on GPUNetworkReachability and GPUNetworkServiceAreas.
+  expect(() => new GPUNetworkIsochrones({...props, sources})).not.toThrow();
+});
+
 it('getGPUNetworkIsochroneParameterValues packs and validates', () => {
   const values = getGPUNetworkIsochroneParameterValues({
     breakCount: 3,

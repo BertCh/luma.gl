@@ -19,6 +19,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Direction of a GPU-native raster sample classification. */
 export type GPURasterThresholdOperation = 'above' | 'below' | 'range';
@@ -282,9 +283,7 @@ const OUTPUT_OFFSET: u32 = ${getViewElementOffset(this.output)}u;
 ${validityDeclaration}
 ${thresholdDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
@@ -434,9 +433,7 @@ const BIN_COUNT: u32 = ${this.histogram.length}u;
 @group(0) @binding(1) var<storage, read_write> outputThreshold: array<f32>;
 ${domainDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(1)
 fn main() {

@@ -20,6 +20,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Canonical uint32 foreground masks or calibrated float32 neighborhood extrema. */
 export type GPURasterMorphologyMode = 'binary' | 'grayscale';
@@ -304,9 +305,7 @@ ${validityDeclaration}
 var<workgroup> neighborhoodValues: array<f32, ${tilePixelCount}>;
 var<workgroup> neighborhoodValidity: array<u32, ${tilePixelCount}>;
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 fn reflectCoordinate(value: i32, length: i32) -> i32 {
   if (length <= 1i) { return 0i; }

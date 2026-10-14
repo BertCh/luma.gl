@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getTerrainPixelDirection} from '../../../src/gpu-terrain/terrain-grid-utils';
 import {getGPUTerrainHorizonDirection} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/index';
 import {getTerrainIlluminationGroundCellSize} from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
@@ -46,18 +47,22 @@ export type HorizonOracleResult = {
 };
 
 /**
- * RVT anisotropic sky-view weight of one sector in float64:
- * `(1 - wMin) * |cos((azimuth - main) / 2)|^level + wMin`, azimuths in degrees.
+ * RVT anisotropic sky-view weight of one compass sector in float64, written like
+ * `rvt.vis.sky_view_factor_compute`: RVT direction `i` has angle `i * 360 / n` counterclockwise from
+ * north, so compass sector `d` is RVT direction `(n - d) mod n`, and the weight is
+ * `(1 - wMin) * cos((a - main) / 2) ** level + wMin` with a signed power (`0 ** 0 = 1`).
  */
 export function getAnisotropicWeightOracle(
   sector: number,
   directionCount: number,
   anisotropy: {azimuthDegrees: number; level: number; minimumWeight: number}
 ): number {
-  const halfAngle = (((sector * 360) / directionCount - anisotropy.azimuthDegrees) * Math.PI) / 360;
-  const cosine = Math.abs(Math.cos(halfAngle));
-  const power = cosine === 0 ? (anisotropy.level === 0 ? 1 : 0) : cosine ** anisotropy.level;
-  return (1 - anisotropy.minimumWeight) * power + anisotropy.minimumWeight;
+  const rvtDirection = (((directionCount - sector) % directionCount) * 360) / directionCount;
+  const halfAngle = ((rvtDirection - anisotropy.azimuthDegrees) * Math.PI) / 360;
+  return (
+    (1 - anisotropy.minimumWeight) * Math.cos(halfAngle) ** anisotropy.level +
+    anisotropy.minimumWeight
+  );
 }
 
 /** Float64 twin of `encodeGPUTerrainHorizonUnorm16`: code 0 is invalid, else 1..65535. */
@@ -131,11 +136,12 @@ export function computeTerrainHorizon(options: HorizonOracleOptions): HorizonOra
       let weightedSineSum = 0;
       let weightSum = 0;
       for (let sector = 0; sector < directionCount; sector++) {
-        // The march direction is part of the contributor contract (float32, snapped axis components).
-        const [dx, dy] = getGPUTerrainHorizonDirection(
-          sector,
-          directionCount,
-          options.rowDirection ?? 'south'
+        // The sector direction is part of the contributor contract (float32, snapped axis
+        // components). It is a ground direction: on anisotropic cells the pixel step is
+        // normalize(direction / groundCell), so the ray keeps the sector's ground azimuth.
+        const [dx, dy] = getTerrainPixelDirection(
+          getGPUTerrainHorizonDirection(sector, directionCount, options.rowDirection ?? 'south'),
+          ground
         );
         const groundStep = Math.hypot(dx * ground[0], dy * ground[1]);
         let best = -Infinity;

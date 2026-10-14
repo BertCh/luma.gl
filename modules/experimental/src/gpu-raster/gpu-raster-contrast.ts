@@ -26,6 +26,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** A fixed calibrated sample range or a caller-owned, two-row GPU-resident float32 range. */
 export type GPURasterContrastDomain = readonly [number, number] | GraphDataView<'float32'>;
@@ -473,9 +474,7 @@ ${domainDeclaration}
 ${histogramDeclaration}
 ${summaryDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {

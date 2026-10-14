@@ -83,6 +83,17 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
   different `id` props.
+- **Extent-local coordinates.** Positions, extents, seeds, sample points, and output vertices are
+  float32, whose ulp is 0.5 m at a UTM northing of 4.6e6 m and 2 m at 2e7 m in EPSG:3857. The
+  parameter packers of `GPUDistanceField`, `GPUIsolines`, `GPUIsobands` (and `GPUIsobandRings`),
+  `GPURasterSampling`, and `GPURasterProfile` take an optional float64 `localOrigin`: they subtract
+  it from the extent or grid origin in float64, seeds, points, and path vertices are uploaded
+  relative to it, and contour, band, and sample-position outputs come back relative to it. Add it
+  back on the CPU or as the layer's coordinate origin. With the raster or tile corner as origin,
+  positions keep about `1.2e-7` of their distance from it (a 2.5 m UTM raster places contour
+  vertices within 0.02 mm of a float64 reference, against 0.34 m with absolute coordinates). The
+  default `[0, 0]` keeps absolute coordinates. `GPUPolygonRasterization` follows the same rule
+  with caller-subtracted coordinates.
 - **One import per buffer.** Import a buffer once (for example with `graph.importGPUData()` or
   `GPUParameterBuffer.importToGraph()`) and pass the returned view to every contributor that reads
   it, so the graph tracks hazards on one logical handle.
@@ -111,6 +122,16 @@ applies `friction = value * scale + offset` on top of the band's own calibration
 buffer write. Results that are negative or non-finite are impassable. Relaxation uses one gate node per four
 rounds, so the unrolled loop has about a third fewer nodes (271 to 189 in the explorer, converging after 43
 of 128 iterations).
+
+Back-links across zero-friction plateaus come from a second, tie-level relaxation. It now defaults to
+`maxTieIterations = maxIterations` (it was 8) and uses the cost phase's schedule, with directional tile
+sweeps after `sweepAfterIteration`, so long or winding plateaus resolve. A link that a budget cut short
+is `GPU_COST_DISTANCE_UNRESOLVED` (`0xfffffffe`), never 0, because 0 would claim a source. That covers
+every passable cell when the cost relaxation stops at `maxIterations`, and plateau cells whose tie
+level did not converge. `GPUCostDistancePath` returns an empty path when the walk meets an unresolved
+link, and sets its optional one-row `iterationLimitReached` output. It also returns an empty path for
+links that do not form a valid forest (an invalid code, a link off the grid or into an unreached
+cell, a cycle), so it only ever reports a complete path from the target to a source.
 
 `maxIterations` defaults to 512. After `sweepAfterIteration` iterations (default 96) relaxation adds
 directional tile sweeps that carry a front along a whole row or column of tiles, so long corridors and
@@ -147,6 +168,16 @@ sort and is at most about 1.5x faster, only with 1000 or more spatially scattere
 10-60x slower when neighboring cells share a zone, because float compare-exchange atomics contend on
 one address, and its last bits can vary between runs. Counts, minimums, and maximums are exact either way.
 
+Longitude/latitude rasters set `cellSizeMode: 'geographic'` and a per-frame `settings` view
+`[cellSizeX, cellSizeY, northEdge, southEdge]` in degrees (the grid prefix of `GPUCostDistance`).
+Each cell is then weighted by its area on the WGS84 authalic sphere: `sums` are `sum(a * v)` in
+value times square meters, `means` are `sum(a * v) / sum(a)`, and the optional `weightSums` column is
+the valid area of each zone. Counts, minimums, and maximums are never weighted, and the default
+`'uniform'` mode is unchanged. Optional `variances` and `standardDeviations` are unbiased two-pass
+estimates with the `GPUZonalStatistics` convention: `sum (v - mean)^2 / (n - 1)`, or with cell areas
+as reliability weights `sum a (v - m)^2 / (V1 - V2 / V1)` (`numpy.cov(v, aweights=a, ddof=1)`). They
+add a second pass over the cells, so request them only when needed.
+
 ## `GPUDistanceField`
 
 Euclidean distance transform and nearest-seed allocation (Voronoi zones) on a raster grid, from
@@ -180,6 +211,10 @@ was exact in the measured scenes (not guaranteed).
 A seed mask value `v` is the seed ID `v - 1`: write `1` for a plain mask or `label + 1` for
 per-zone allocation. Seed point IDs default to the row index or come from `seedIds`. Rewriting
 seeds, the count, the mask, or settings never recompiles the graph.
+
+For projected grids pass `localOrigin` (for example the raster corner) to
+`getGPUDistanceFieldParameterValues` and upload `seedPositions` relative to it, so seeds near a
+cell edge snap to the same cell as in float64. `origin` and `bounds` stay absolute.
 
 ## `GPUPolygonRasterization` and `GPURasterJoin`
 
@@ -341,6 +376,11 @@ lineParameters.write(getGPUIsolinesParameterValues({width, height, levelCount: 5
 bandParameters.write(getGPUIsobandsParameterValues({width, height, breakCount: 5, extent})); // no recompile
 ```
 
+On projected rasters add `localOrigin: [extent[0], extent[1]]` to both packers. Segments,
+polyline vertices, triangles and ring vertices are then relative to it, so draw them with it as the
+layer's coordinate origin. It also keeps `GPUIsobandRings` vertex hashes within their i32 range,
+which saturates beyond `2^31 * vertexTolerance` (214,748 units at the default tolerance).
+
 `GPUIsobands` can also write the band boundary as edges: `output.edges` (`float32x4`), `edgeBands`,
 `edgeCount`, `edgeOverflow` and an optional `edgeTotalCount`. Edges are counter-clockwise with the band on
 the left; an edge shared by two cells cancels, and a zero-area cell (one or two samples exactly on the
@@ -400,6 +440,10 @@ graph.add(new GPURasterProfile({
 samplingParameters.write(getGPURasterSamplingParameterValues({width, height, extent, method: 'bicubic'}));
 profileParameters.write(getGPURasterProfileParameterValues({width, height, extent, method: 'bilinear', spacing: 25}));
 ```
+
+On projected rasters pass `localOrigin` (for example the raster corner) to either packer and
+upload `positions` and `pathPositions` relative to it; `samplePositions` come back relative to it.
+Distances are unaffected.
 
 The profile pipeline is a serial per-path walk, `GPUScan`, a per-sample binary search and sample,
 then a serial per-path cumulative pass, all in fixed order, so results are deterministic. Exactly

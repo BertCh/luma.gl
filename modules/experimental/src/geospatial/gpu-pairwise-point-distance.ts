@@ -26,10 +26,20 @@ import {
   validateRowView,
   validateSeparateBuffers
 } from './geospatial-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../gpu-spatial-analysis/contracts/spatial-context';
 
 type GPUPairwisePointDistanceBaseProps = {
   /** Prefix for generated graph-node IDs. */
   id?: string;
+  /**
+   * Coordinate space of the positions. Omitted means planar coordinates. Distances are planar
+   * Euclidean by design (the cuSpatial convention), so longitude/latitude contexts throw: project
+   * positions to a planar frame first, or use `GPUHaversineDistance` for point pairs.
+   */
+  spatialContext?: GPUSpatialContext;
 };
 
 /** Properties for Euclidean distance over aligned point rows. */
@@ -53,16 +63,23 @@ export type GPUPairwisePointDistanceProps = GPUPairwisePointDistanceBaseProps &
       }
   );
 
-/** Computes pairwise Euclidean point distance without first subtracting on the CPU. */
+/**
+ * Computes pairwise Euclidean point distance without first subtracting on the CPU.
+ *
+ * Planar only: longitude/latitude positions are rejected at construction.
+ */
 export class GPUPairwisePointDistance {
   readonly id: string;
   readonly left: GPUFloat32Positions | GPUFloat64Positions;
   readonly right: GPUFloat32Positions | GPUFloat64Positions;
   readonly output: GPUScalarRows | GPUPreciseScalarRows;
+  /** Resolved coordinate space; always planar. */
+  readonly spatialContext: GPUSpatialContext;
 
   /** Creates a distance contributor without compiling or submitting GPU work. */
   constructor(props: GPUPairwisePointDistanceProps) {
     this.id = props.id ?? 'gpu-pairwise-point-distance';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.left = props.left;
     this.right = props.right;
     this.output = props.output;

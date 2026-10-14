@@ -29,6 +29,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterMetadata} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Distinct caller-owned, equally sized dense region columns and mergeable partials. */
 export type GPURasterRegionMeasurementOutputs = {
@@ -438,9 +439,7 @@ const ROW_OFFSET: u32 = ${getViewElementOffset(rowValues)}u;
 @group(0) @binding(${locations.get('rowValues')}) var<storage, read_write> rowValues: array<f32>;
 ${validityDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
@@ -525,6 +524,7 @@ const AREA_OFFSET: u32 = ${getViewElementOffset(this.output.areas)}u;
 @group(0) @binding(${locations.get('centroidRows')}) var<storage, read_write> centroidRows: array<f32>;
 @group(0) @binding(${locations.get('regionAreas')}) var<storage, read_write> regionAreas: array<f32>;
 
+${IS_FINITE_VALUE_WGSL}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.x >= GROUP_COUNT) { return; }
@@ -536,7 +536,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
     centroidColumn = columnSums[COLUMN_SUM_OFFSET + globalId.x] / f32(count);
     centroidRow = rowSums[ROW_SUM_OFFSET + globalId.x] / f32(count);
     area = f32(count) * ${getRasterFloatLiteral(pixelArea)};
-    if (!(area == area && abs(area) <= 3.402823466e+38)) {
+    if (!isFiniteValue(area)) {
       area = bitcast<f32>(0x7fc00000u | (globalId.x & 0u));
     }
   }

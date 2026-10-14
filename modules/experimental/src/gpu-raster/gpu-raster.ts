@@ -75,7 +75,10 @@ export class GPURaster {
     ];
   }
 
-  /** Returns the pixel area in square CRS-coordinate units, without implying geodesic area. */
+  /**
+   * Returns the pixel area in square CRS-coordinate units, without implying geodesic area. On a
+   * longitude/latitude CRS this is square degrees, which is not proportional to ground area.
+   */
   getPixelArea(): number {
     const [first, second, , fourth, fifth] = this.metadata.affine;
     return Math.abs(first * fifth - second * fourth);

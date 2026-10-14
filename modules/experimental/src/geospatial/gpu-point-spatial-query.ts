@@ -21,6 +21,22 @@ import {
   type GeospatialDispatchLayout
 } from './geospatial-utils';
 import type {GPUSpatialQueryOutput} from './gpu-spatial-query-types';
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../gpu-spatial-analysis/contracts/spatial-context';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+
+/**
+ * Spatial contexts of the metric-free `bounds` and `polygon` predicates: planar coordinates, or
+ * longitude/latitude degrees with no metric (comparisons and straight edges in degree space).
+ */
+const POINT_QUERY_SELECTION_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metrics: Object.freeze(['none', 'native'] as const)
+});
 
 const POINT_QUERY_WORKGROUP_SIZE = 256;
 const QUERY_STATE_LENGTH = 12;
@@ -68,6 +84,14 @@ export type GPUPointSpatialQueryProps = {
   index?: GPUGridIndexView;
   /** Predicate applied during the narrow phase. */
   kind: GPUPointSpatialQueryKind;
+  /**
+   * Coordinate space of the positions and query. Omitted means planar coordinates. `radius`
+   * queries measure planar Euclidean distance and reject longitude/latitude: project positions to
+   * a planar frame first. `bounds` and `polygon` queries do no metric math and also accept
+   * longitude/latitude with metric `'none'`; their bounds and polygon edges are then straight in
+   * degree space, with no antimeridian wrapping.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Mutable query values.
    *
@@ -122,6 +146,8 @@ export class GPUPointSpatialQuery {
   readonly intersectedCellCount?: GraphDataView<'uint32'>;
   readonly candidateCount?: GraphDataView<'uint32'>;
   readonly dimension: 2 | 3;
+  /** Resolved coordinate space. */
+  readonly spatialContext: GPUSpatialContext;
 
   /** Creates a query contributor without compiling or submitting GPU work. */
   constructor(props: GPUPointSpatialQueryProps) {
@@ -130,6 +156,11 @@ export class GPUPointSpatialQuery {
     this.sourceIds = props.sourceIds;
     this.index = props.index;
     this.kind = props.kind;
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      this.kind === 'radius' ? GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT : POINT_QUERY_SELECTION_SUPPORT
+    );
     this.query = props.query;
     this.polygon = props.polygon;
     this.output = props.output;
@@ -272,9 +303,7 @@ const DOMAIN_MAXIMUM = vec3<f32>(${getFloat32Literal(bounds[query.dimension])}, 
 @group(0) @binding(2) var<storage, read_write> resultState: array<u32>;
 ${indexOverflowBinding}
 
-fn finite(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   if (maximum == minimum || value <= minimum) { return 0u; }
@@ -466,9 +495,7 @@ ${indexedBindings}
 ${sourceIdDeclaration}
 ${polygonBindings}
 
-fn finite(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 ${makePolygonHelpers(query)}
 
@@ -679,13 +706,13 @@ function makeQueryEnvelope(query: GPUPointSpatialQuery): string {
       )
       .join('\n  ');
     const validity = components
-      .map(component => `finite(center${component.toUpperCase()})`)
+      .map(component => `isFiniteValue(center${component.toUpperCase()})`)
       .join(' && ');
     return `${center}
   let radius = queryValues[QUERY_OFFSET + ${query.dimension}u];
   let envelopeMinimum = vec3<f32>(centerX - radius, centerY - radius, ${query.dimension === 3 ? 'centerZ - radius' : '0.0'});
   let envelopeMaximum = vec3<f32>(centerX + radius, centerY + radius, ${query.dimension === 3 ? 'centerZ + radius' : '0.0'});
-  var valid = ${validity} && finite(radius) && radius >= 0.0;`;
+  var valid = ${validity} && isFiniteValue(radius) && radius >= 0.0;`;
   }
   const minimum = components
     .map((component, componentIndex) => {
@@ -700,7 +727,7 @@ function makeQueryEnvelope(query: GPUPointSpatialQuery): string {
   const validity = components
     .map(component => {
       const upper = component.toUpperCase();
-      return `finite(minimum${upper}) && finite(maximum${upper}) && minimum${upper} <= maximum${upper}`;
+      return `isFiniteValue(minimum${upper}) && isFiniteValue(maximum${upper}) && minimum${upper} <= maximum${upper}`;
     })
     .join(' && ');
   return `${minimum}
@@ -718,12 +745,12 @@ function makeExactPredicate(query: GPUPointSpatialQuery): string {
         `let position${axis} = positions[POSITIONS_OFFSET + rowIndex * ${query.dimension}u + ${axisIndex}u];`
     )
     .join('\n  ');
-  const finitePosition = axes.map(axis => `finite(position${axis})`).join(' && ');
+  const finitePosition = axes.map(axis => `isFiniteValue(position${axis})`).join(' && ');
   if (query.kind === 'radius') {
     const centers = axes
       .map((axis, axisIndex) => `let center${axis} = queryValues[QUERY_OFFSET + ${axisIndex}u];`)
       .join('\n  ');
-    const finiteCenter = axes.map(axis => `finite(center${axis})`).join(' && ');
+    const finiteCenter = axes.map(axis => `isFiniteValue(center${axis})`).join(' && ');
     const deltas = axes
       .map(
         axis =>
@@ -767,7 +794,7 @@ function makeExactPredicate(query: GPUPointSpatialQuery): string {
   let radiusComparison = compare_fp64(squaredDistance, squaredRadius);
   // Equality is exact only when every nonzero delta contributes a nonzero squared term.
   let lostPositiveTerm = ${lostPositiveTerm};
-  let selected = ${finitePosition} && ${finiteCenter} && ${finiteDeltas} && finite(radius) && radius >= 0.0 && (radiusComparison < 0 || (radiusComparison == 0 && !lostPositiveTerm));`;
+  let selected = ${finitePosition} && ${finiteCenter} && ${finiteDeltas} && isFiniteValue(radius) && radius >= 0.0 && (radiusComparison < 0 || (radiusComparison == 0 && !lostPositiveTerm));`;
   }
   if (query.kind === 'polygon') {
     return `${positions}
@@ -782,7 +809,8 @@ function makeExactPredicate(query: GPUPointSpatialQuery): string {
     .join('\n  ');
   const validBounds = axes
     .map(
-      axis => `finite(minimum${axis}) && finite(maximum${axis}) && minimum${axis} <= maximum${axis}`
+      axis =>
+        `isFiniteValue(minimum${axis}) && isFiniteValue(maximum${axis}) && minimum${axis} <= maximum${axis}`
     )
     .join(' && ');
   const inside = axes
@@ -819,10 +847,10 @@ fn pointInPolygon(point: vec2<f32>) -> bool {
     let end = min(ringOffsets[RING_OFFSETS_OFFSET + ring + 1u], POLYGON_POSITION_COUNT);
     if (end <= first) { continue; }
     var previous = readPolygonPosition(end - 1u);
-    if (!finite(previous.x) || !finite(previous.y)) { return false; }
+    if (!isFiniteValue(previous.x) || !isFiniteValue(previous.y)) { return false; }
     for (var vertexIndex = first; vertexIndex < end; vertexIndex++) {
       let current = readPolygonPosition(vertexIndex);
-      if (!finite(current.x) || !finite(current.y)) { return false; }
+      if (!isFiniteValue(current.x) || !isFiniteValue(current.y)) { return false; }
       if (pointOnSegment(point, previous, current)) { return true; }
       if ((current.y > point.y) != (previous.y > point.y)) {
         let intersectionX = (previous.x - current.x) * (point.y - current.y) /

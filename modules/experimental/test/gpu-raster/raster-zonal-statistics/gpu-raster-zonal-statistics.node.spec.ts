@@ -9,6 +9,8 @@ import {
   GPURasterZonalStatistics,
   type GPURasterZonalStatisticsProps
 } from '../../../src/gpu-raster/raster-zonal-statistics';
+import {getRasterZonalCellArea} from '../../../src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics';
+import {computeZonalStatistics} from './raster-zonal-statistics-oracle';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const WIDTH = 4;
@@ -208,5 +210,118 @@ it('GPURasterZonalStatistics sumOrder defaults to sorted and atomic skips the so
   expectConstructorToThrow(
     () => ({sumOrder: 'fast' as never}),
     /sumOrder must be atomic or sorted/
+  );
+});
+
+// Geographic fixture: 2 x 3 cells of 10 degrees longitude, rows 60-40, 40-20 and 20-0 N.
+// Expected values from python3 -I (closed form, numpy not installed): cell area
+// R^2 dLon |sin(top) - sin(bottom)| with the WGS84 authalic R = 6371007.180918475 m; weighted
+// variance sum w (v - m)^2 / (V1 - V2 / V1), the numpy.cov(v, aweights=w, ddof=1) formula.
+const GEOGRAPHIC_SETTINGS = [10, 20, 60, 0];
+const GEOGRAPHIC_ZONES = [0, 0, 0, 1, 1, 1];
+const GEOGRAPHIC_VALUES = [1, 2, 3, 4, 5, 6];
+const GEOGRAPHIC_ROW_AREAS = [1581471169984.1543, 2130710343385.227, 2422954403438.46];
+
+it('getRasterZonalCellArea matches closed-form spherical row areas', () => {
+  for (const [row, area] of GEOGRAPHIC_ROW_AREAS.entries()) {
+    expect(getRasterZonalCellArea(GEOGRAPHIC_SETTINGS, row, 3) / area).toBeCloseTo(1, 12);
+    // Rows advancing north give the same areas.
+    expect(getRasterZonalCellArea([10, 20, 0, 60], 2 - row, 3) / area).toBeCloseTo(1, 12);
+  }
+});
+
+it('the zonal oracle reproduces python area-weighted means and reliability variances', () => {
+  const cellWeights = GEOGRAPHIC_ZONES.map((_, cell) =>
+    getRasterZonalCellArea(GEOGRAPHIC_SETTINGS, Math.floor(cell / 2), 3)
+  );
+  const weighted = computeZonalStatistics(GEOGRAPHIC_ZONES, GEOGRAPHIC_VALUES, {
+    zoneCapacity: 2,
+    cellWeights
+  });
+  expect(weighted.valueCounts).toEqual([3, 3]);
+  const expected = [
+    {weightSum: 5293652683353.535, sum: 11136544540108.145, mean: 2.1037542895717767},
+    {weightSum: 6976619150262.146, sum: 35175339811363.97, mean: 5.041889066001582}
+  ];
+  const variances = [1.047000628016599, 0.9781397620488637];
+  const deviations = [1.0232304862623078, 0.9890094853179435];
+  for (const zone of [0, 1]) {
+    expect(weighted.weightSums[zone] / expected[zone].weightSum).toBeCloseTo(1, 12);
+    expect(weighted.sums[zone] / expected[zone].sum).toBeCloseTo(1, 12);
+    expect(weighted.means[zone]).toBeCloseTo(expected[zone].mean, 12);
+    expect(weighted.variances[zone]).toBeCloseTo(variances[zone], 12);
+    expect(weighted.standardDeviations[zone]).toBeCloseTo(deviations[zone], 12);
+  }
+  // Uniform cells: plain mean and sum (v - mean)^2 / (n - 1) = 1 for 1,2,3 and 4,5,6.
+  const uniform = computeZonalStatistics(GEOGRAPHIC_ZONES, GEOGRAPHIC_VALUES, {zoneCapacity: 2});
+  expect(uniform.means).toEqual([2, 5]);
+  expect(uniform.variances).toEqual([1, 1]);
+  expect(uniform.weightSums).toEqual([3, 3]);
+});
+
+it('GPURasterZonalStatistics schedules weighted moments only when requested', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const settings = createTransientView(graph, 'settings', 'float32', 4);
+  const ids = getNodeIds(
+    createProps(graph, {
+      cellSizeMode: 'geographic',
+      settings,
+      output: {
+        means: createTransientView(graph, 'o-means', 'float32', CAPACITY),
+        weightSums: createTransientView(graph, 'o-weights', 'float32', CAPACITY),
+        variances: createTransientView(graph, 'o-variances', 'float32', CAPACITY),
+        standardDeviations: createTransientView(graph, 'o-deviations', 'float32', CAPACITY)
+      }
+    }),
+    graph
+  );
+  expect(ids).toContain('zonal-means');
+  expect(ids).toContain('zonal-deviations');
+  expect(ids).toContain('zonal-variances');
+  expect(ids).toContain('zonal-sorted-gather-weights');
+  expect(ids).toContain('zonal-variance-sorted-gather-weight-squares');
+
+  // Atomic order aggregates the same contributions without the sort.
+  const atomicGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  const atomicIds = getNodeIds(
+    createProps(atomicGraph, {
+      sumOrder: 'atomic',
+      output: {
+        standardDeviations: createTransientView(atomicGraph, 'o-deviations', 'float32', CAPACITY)
+      }
+    }),
+    atomicGraph
+  );
+  expect(atomicIds.some(id => id.includes('-sorted-'))).toBe(false);
+  expect(atomicIds).toContain('zonal-variances');
+
+  // Planar requests without moments keep the previous node set.
+  const planarGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  const planarIds = getNodeIds(createProps(planarGraph), planarGraph);
+  expect(planarIds.some(id => id.includes('deviations') || id.includes('weight'))).toBe(false);
+});
+
+it('GPURasterZonalStatistics validates geographic cell weighting', () => {
+  expectConstructorToThrow(() => ({cellSizeMode: 'geographic'}), /need settings/);
+  expectConstructorToThrow(
+    () => ({cellSizeMode: 'web-mercator' as never}),
+    /cellSizeMode must be uniform or geographic/
+  );
+  expectConstructorToThrow(
+    graph => ({settings: createTransientView(graph, 'settings', 'float32', 4)}),
+    /settings need cellSizeMode geographic/
+  );
+  expectConstructorToThrow(
+    graph => ({
+      cellSizeMode: 'geographic',
+      settings: createTransientView(graph, 'short-settings', 'float32', 3)
+    }),
+    /settings must contain 4/
+  );
+  expectConstructorToThrow(
+    graph => ({
+      output: {variances: createTransientView(graph, 'short-variances', 'float32', CAPACITY - 1)}
+    }),
+    /variances must contain zoneCapacity rows/
   );
 });

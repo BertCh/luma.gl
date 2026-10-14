@@ -244,7 +244,14 @@ Accessibility over the same directed CSR road network as `GPUNetworkReachability
   networks, `'forward'` for a point that leaves along a one-way edge, `'reverse'` for a point that
   a one-way edge arrives at. Without `candidateCapacity`, every point scans every edge, which is
   exact. With it, candidates come from `GPUNearestFeatureJoin` over the edge segments within a
-  per-frame `maxSnapDistance`, and `overflow` reports when capacity runs out.
+  per-frame `maxSnapDistance`, and `overflow` reports when capacity runs out. With
+  `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` points and nodes
+  are degrees: the closest point of an edge is found in the point's local equirectangular frame
+  (longitudes wrapped at +-180), and snap distances, `maxSnapDistance` and default edge costs are
+  great-circle meters. Edges should be road-length. With `candidateCapacity` the context is passed to
+  `GPUNearestFeatureJoin`, whose great-circle search ignores the capacity. With CSR `offsets`, edge
+  rows past `offsets[nodeCount]` (a CSR shorter than `edgeTargets`) are not part of the network:
+  every edge-source row is cleared before the expansion, so no stale row becomes a phantom edge.
 - `GPUNetworkCostMatrix` computes a bounded many-to-all cost matrix: one shortest-path search per
   row, from that row's seeds (`seedRows`, or `seedsPerRow: 2` for snapped points) to every node.
   It batches `laneCount` rows (default `recommendLaneCount()`: about 1M expanded nodes per batch,
@@ -282,7 +289,11 @@ scoring.write(encodeGPUNetworkAccessibilityParameters({threshold: 1800, decay: '
 
 Isochrone polygons from a CSR network (pgRouting `pgr_drivingDistance` with a buffer, QGIS service
 area polygons). Costs come from the caller (`costs`, for example `GPUNetworkServiceAreas.costs`) or
-from `sources`, which runs `GPUNetworkReachability` and writes `costs`.
+from `sources`, which runs `GPUNetworkReachability` and writes `costs`. With `sources`, `converged`
+(one row) reports whether that search reached a fixpoint within `maxIterations`, and
+`localIterations` sets its hops per round. A 0 means the costs, and so every polygon, are truncated
+too small. As on `GPUNetworkReachability` and `GPUNetworkServiceAreas` the flag is optional, and
+omitting it accepts that truncation unchecked.
 
 - **Raster path.** Every edge is sampled at up to `raster.maximumSamplesPerEdge` points. The cost is
   interpolated linearly from the source node along the edge weight, and the minimum (default) or
@@ -321,6 +332,9 @@ from `sources`, which runs `GPUNetworkReachability` and writes `costs`.
   On the cell path `cellOutline.byFacility` with `cellFacilities` gives each cell the facility of its
   cheapest node and outlines with groups, so rings never mix facilities (Quadbin is keyed through
   `GPUPointToCell`).
+- **Coordinates.** An optional `spatialContext` is checked at construction: the raster path is planar
+  (a longitude/latitude context with `raster` throws; project first), and the cell path needs
+  longitude/latitude (a planar context with `cellOutline` throws).
 - **Limits.** The cell path samples reached nodes only, so long edges on sparse networks drop cells. The
   rings follow the cell outline, so they have cell resolution. Three mid-latitude H3 pentagons (resolutions
   2, 3 and 5; alone, in disks, as holes and open rings) match h3-js `cellsToMultiPolygon`; the two polar
@@ -330,9 +344,10 @@ from `sources`, which runs `GPUNetworkReachability` and writes `costs`.
 
 Builds a routable network from raw linestrings. `GPULineSplit` pieces
 (see [GPU Spatial Analysis](/docs/api-reference/experimental/gpu-spatial-analysis#gpulinesplit-and-gpulinemerge))
-are the edges. Their end points are snapped by a per-frame `tolerance` (a one-row `float32` view; grid
-cells `floor(x / tolerance)`, 0 means exact), deduplicated by a stable two-pass `GPUSort`, and the node ID
-is the group rank. Props: `lines`, `intersectionCapacity`, `tolerance`, and the outputs `pieces`, `nodes`
+are the edges. Their end points are snapped by a per-frame `tolerance` (a one-row `float32` view; integer
+grid cells `floor((x - origin) / tolerance)` counted from the minimum corner of the live end points, so UTM
+northings keep exact cells; 0 means exact), deduplicated by a stable two-pass `GPUSort`, and the node ID
+is the group rank. Cells are exact up to 2^24 per axis; a wider extent sets `overflow`. Props: `lines`, `intersectionCapacity`, `tolerance`, and the outputs `pieces`, `nodes`
 (`positions`, `count`, optional `requiredCount`), `edges` (`fromNodes`, `toNodes`, `lengths`) and `csr`
 (`offsets`, `neighbors`, `weights`, optional `edgeIds`), with optional `overflow` and `uncertainCount`.
 The CSR is undirected and feeds `GPUNetworkReachability`, `GPUNetworkServiceAreas` and the other
@@ -347,6 +362,9 @@ graph.add(new GPUNetworkNoding({
 }));
 ```
 
+Planar only: the snapping cells, `tolerance` and edge lengths are Euclidean, so a longitude/latitude
+`spatialContext` throws. Project the lines to a planar frame first (for example `createGPULocalFrame`).
+
 Limits: the tolerance merges end points only (end points that straddle a grid cell boundary stay separate),
 and a line that stops near another line's interior is not connected to it. Crossings that should not
 connect (bridges) cannot be excluded. Capacities are fixed, and `overflow` reports a truncated result.
@@ -360,7 +378,10 @@ one arc per allowed turn. The arc cost is `weights[next]` plus a turn cost from 
 (`getGPUNetworkLineGraphParameterValues`), `lineOffsets`, `lineNeighbors`, `lineWeights` (sized to the
 compile-time arc capacity), `arcCount` and `overflow`. The result runs unchanged under
 `GPUNetworkReachability` and `GPUNetworkCostMatrix`; to route from an origin, seed the out-edges of the
-origin node at their own weight. `bannedTurns` is a linear scan per arc. The turn angle special-cases a
+origin node at their own weight. With a great-circle `spatialContext` positions are degrees and the turn
+angle is measured between the great-circle arrival bearing of the incoming edge and the departure
+bearing of the outgoing edge at the turn node, so turns are not skewed by the east-west stretch of
+degrees. `bannedTurns` is a linear scan per arc. The turn angle special-cases a
 zero dot product because Metal returns the wrong sign for `atan2(y, -0.0)`. Seeding helpers and node
 costs are not provided.
 
@@ -370,24 +391,41 @@ Hidden Markov model map matching of GPS tracks to a directed network (Newson and
 up to `candidateCount` (at most 8) distinct directed edges within `searchRadius` come from an edge grid
 rebuilt every encoding (`cellSize` and `bounds` are compile-time). The emission is Gaussian on the
 perpendicular distance (`sigma`) and the transition exponential on `|straight - route|` (`beta`). The route
-is the rest of the current edge, a bounded Dijkstra (it stops at `routeFactor * straight + routeSlack`,
+is the rest of the current edge, a bounded A* search (it stops at `routeFactor * straight + routeSlack`,
 exits early once every target is settled, and uses a `routeNodeBudget` node table) and the start of the
 next edge. Viterbi runs one thread per track.
 
 - Props: `points`, `trackOffsets`, the network (`nodePositions`, `offsets`, `edgeTargets`), `parameters`
   (`encodeGPUMapMatchingParameters`: `sigma`, `beta`, `searchRadius`, `routeFactor`, `routeSlack`, per
-  frame), `candidateCount`, `cellSize`, `bounds`, `entryCapacity` and `routeNodeBudget`.
+  frame), `candidateCount`, `cellSize`, `bounds`, `entryCapacity`, `routeNodeBudget` and
+  `spatialContext`.
+- Geodesic: with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` points
+  and nodes are degrees and every distance (emission, straight line, edge and route lengths, and the
+  parameters) is great-circle meters; the A* heuristic stays consistent. `cellSize` and `bounds` stay in
+  degrees, the candidate window widens in longitude by `1 / cos` of its highest latitude, and longitudes
+  are unwrapped around the grid center, so give bounds across the antimeridian (for example 179.9 to
+  180.1) for a network that crosses it.
 - Outputs: `matchedEdges` (a CSR row per point; `GPU_MAP_MATCHING_NONE` when unmatched),
   `matchedFractions`, `matchedOffsets`, `snapDistances`, `snappedPositions`, `breaks`,
-  `trackLogLikelihoods`, `matchedCount`, `breakCount` and `overflow`. A break restarts the model where no
-  transition is feasible or a point has no candidate.
+  `trackLogLikelihoods`, `matchedCount`, `breakCount`, `overflow` and `routeOverflow`. A break restarts
+  the model where no transition is feasible or a point has no candidate (`breaks` value 1). A break
+  where a route search into the point dropped nodes is a budget break (value 2): the route may exist
+  but did not fit the table. `overflow` is 1 when the edge grid or any route table dropped entries, and
+  `routeOverflow` counts the dropped route nodes (saturating at `0xffffffff`).
+- Route budget: a full node table keeps the open nodes with the best A* keys and drops the rest. A
+  search needs about as many nodes as the street blocks between two samples. On a 100 m street grid the
+  default 64 covers samples up to about 800 m apart and 128 up to about 1.1 km. At 1 km and 64 it still
+  misses routes (80 of 227 in a mimic, 171 under the old drop-in-discovery-order policy, which reported
+  nothing). Each miss is reported, so sample more densely or raise `routeNodeBudget` when `overflow` is
+  set. CSR rows past `offsets[nodeCount]` are not part of the network.
 - The route passes run per `(point, previous candidate)` work item, so Viterbi is a cheap recursion: on a
   New York scene the matching graph went from 923 to 30 ms at a budget of 64 (20 ms at 40), with identical
   results.
-- Limits: distances are planar. The bounded search is an approximation that can overestimate or miss routes
-  in dense networks, and the route table is `pointCount * k * k` floats. A two-way road needs both
-  directions, and each takes a candidate slot. Exact routes, geodesic distances and time-aware transitions
-  are not provided.
+- Limits: distances are planar unless a great-circle `spatialContext` is given, and edges are straight
+  segments in the coordinates, so on longitude/latitude they should be road-length. The bounded search is
+  an approximation that can overestimate or miss routes when samples are far apart for the budget
+  (always reported, see above), and the route table is `pointCount * k * (k + 1)` floats. A two-way road needs both directions, and each takes a candidate slot.
+  Exact routes and time-aware transitions are not provided.
 
 ### `GPUNetworkKFunction`
 
@@ -398,14 +436,17 @@ shared by every block, so `rowsPerBlock` trades only the node count of the relax
 against scratch memory. Unordered pairs below each of `bandCount`
 thresholds are counted with integer atomics and `K = 2 * pairs * L / n^2`, with `L` the per-frame
 `networkLength`. Optional envelope: `simulationCount` random patterns (Philox, an edge drawn proportional
-to its length through an integer prefix sum).
+to its length through an integer prefix sum). Only the live CSR rows `0..offsets[nodeCount]` are snapped
+to or drawn; `networkLength` is half the sum of their weights.
 
 - Props: `points`, the CSR network (`nodePositions`, `offsets`, `neighbors`, `weights`), `maxDistance`,
   `networkLength`, `maxSnapDistance`, `parameters` (`getGPUNetworkKFunctionParameterValues`: seed and
   active simulations), `bandCount` (at most `GPU_NETWORK_K_FUNCTION_MAXIMUM_BAND_COUNT`), `simulationCount`,
   `rowsPerBlock`, `candidateCapacity`. For many events pass `candidateCapacity` (with `maxSnapDistance`) so
   snapping uses the BVH join instead of scanning every edge per event; if it is too small the snap
-  candidates overflow, `overflow` is set and K silently differs.
+  candidates overflow, `overflow` is set and K silently differs. `spatialContext` is passed to
+  `GPUNetworkSnapping`: a great-circle context snaps longitude/latitude events in meters (give
+  `weights`, `maxDistance` and `networkLength` in meters too).
 - Outputs: `kValues`, optional `pairCounts`, `envelope` (min, mean and max per band), `snappedEventCount`,
   `overflow` and `converged`.
 - Counts and K are pinned to spaghetti 1.7.6. Parallel edges between the same two nodes count as one road,
@@ -471,9 +512,12 @@ bundle, and their path collapses onto the source position. Outputs:
 `pointsPerEdge` (2 to 64), the maximum `iterations` (1 to 64) and `densityResolution` are
 compile-time. When `parameters` is given, one gate node writes the indirect dispatches of every
 iteration, so iterations beyond `activeIterations` dispatch nothing (the graph has `4 + 3 * iterations`
-nodes, plus one gate with `parameters` and one for `indices`). With `geographic: true` the positions are
-longitude and latitude in degrees and longitude is scaled by the cosine of the mid-latitude of the live
-endpoints (computed on the GPU, clamped at 0.01); the output stays in degrees and endpoints are exact. The per-frame `parameters` view holds `[activeIterations, kernelRadius, lambda,
+nodes, plus one gate with `parameters` and one for `indices`). With a longitude/latitude `spatialContext`
+(or the deprecated `geographic: true`) the positions are longitude and latitude in degrees and longitude is
+scaled by the cosine of the mid-latitude of the live endpoints (computed on the GPU, clamped at 0.01); the
+output stays in degrees and endpoints are exact. Bundling measures nothing in physical units, so the
+context's metric is not used, and data spanning the antimeridian is not supported. The per-frame
+`parameters` view holds `[activeIterations, kernelRadius, lambda,
 smoothing, stepScale]`; pack it with `createGPUEdgeBundlingParameterValues`.
 
 ```ts

@@ -18,6 +18,7 @@ import {
   validateRasterScalarView
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Explicit caller-owned output buffers for nodata-aware float32 raster statistics. */
 export type GPURasterStatisticsProps = {
@@ -254,9 +255,7 @@ const VALIDITY_OFFSET: u32 = ${getViewElementOffset(resolvedValidity)}u;
 @group(0) @binding(2) var<storage, read_write> resolvedValidity: array<u32>;
 ${validityDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {

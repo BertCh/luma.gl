@@ -42,7 +42,6 @@ import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common'
 
 const OPERATION = 'GPUCostDistance';
 const DEFAULT_MAXIMUM_ITERATIONS = 512;
-const DEFAULT_MAXIMUM_TIE_ITERATIONS = 8;
 const DEFAULT_SWEEP_AFTER_ITERATION = 96;
 
 /** Number of float32 values read from {@link GPUCostDistanceProps.settings}. */
@@ -50,6 +49,14 @@ export const GPU_COST_DISTANCE_PARAMETER_LENGTH = 8;
 
 /** Sentinel written for "no back-link" (unreached or impassable) and "no band". */
 export const GPU_COST_DISTANCE_NONE = 0xffffffff;
+
+/**
+ * Back-link written when the iteration budget ran out before the link could be certified: every
+ * passable cell when the cost relaxation did not converge (its cost may still drop, and an
+ * infinite cost may still become finite), and a zero-cost plateau cell whose tie level did not
+ * converge. A converged run never writes it.
+ */
+export const GPU_COST_DISTANCE_UNRESOLVED = 0xfffffffe;
 
 /** CPU description of the settings packed by {@link getGPUCostDistanceParameterValues}. */
 export type GPUCostDistanceSettings = RasterGridSettings & {
@@ -131,9 +138,12 @@ export type GPUCostDistanceProps = {
   sweepAfterIteration?: number;
   /**
    * Number of unrolled gated tie-level iterations, 1 to `GPU_RASTER_MAXIMUM_ITERATIONS`. Compile-time.
-   * Defaults to 8. Used only when `backLinks` is requested: each iteration propagates the tie level
-   * through a whole 16x16 tile, so a zero-cost plateau needs about its tile-crossing length in
-   * iterations. A plateau deeper than the budget leaves `converged` at 0.
+   * Defaults to `maxIterations`. Used only when `backLinks` is requested. The tie relaxation uses
+   * the cost phase's schedule: plain tiled passes (one 16x16 tile of plateau per iteration), then
+   * directional tile sweeps from `sweepAfterIteration` on, so long or winding zero-cost plateaus
+   * converge. Iterations after convergence are skipped on the GPU. A plateau that the budget
+   * cannot cover leaves `converged` at 0 and its unresolved cells at
+   * `GPU_COST_DISTANCE_UNRESOLVED`.
    */
   maxTieIterations?: number;
   /** Output cost per cell, `+Infinity` when unreached or impassable. Its length must equal `width * height`. */
@@ -141,7 +151,9 @@ export type GPUCostDistanceProps = {
   /**
    * Optional output D8 code (ESRI power of two) of the move from a cell toward the next cell on a
    * least-cost path back to a source. 0 at cells reached as a source,
-   * `GPU_COST_DISTANCE_NONE` when unreached or impassable.
+   * `GPU_COST_DISTANCE_NONE` when unreached or impassable, and `GPU_COST_DISTANCE_UNRESOLVED`
+   * when an iteration budget ran out first (see that constant), so a truncated run never
+   * produces a link that reads as a source or a path that looks complete.
    *
    * Cycle-safe across zero-cost plateaus: a cell links to its smallest-direction strictly cheaper
    * tight neighbor when one exists; otherwise (it was reached only across zero-cost edges) to the
@@ -158,7 +170,8 @@ export type GPUCostDistanceProps = {
   bandCounts?: GraphDataView<'uint32'>;
   /**
    * Optional one-row output: 1 when relaxation reached a fixpoint, 0 when `maxIterations` stopped
-   * it. With `backLinks`, also 0 when `maxTieIterations` stopped the tie phase.
+   * it. With `backLinks`, also 0 when `maxTieIterations` stopped the tie phase; the affected
+   * back-links then read `GPU_COST_DISTANCE_UNRESOLVED`.
    */
   converged?: GraphDataView<'uint32'>;
   /** Optional one-row output: number of relaxation iterations executed. */
@@ -174,8 +187,8 @@ export type GPUCostDistanceProps = {
  * workgroup memory, and a GPU-written indirect dispatch switches the remaining unrolled
  * iterations off once nothing changes, so nothing is read back. Diagonal moves are allowed
  * whenever both endpoints are passable (no corner-cutting restriction). Every encoding recomputes
- * from scratch. With zero-friction plateaus, plateau cells share their cost with the source, so
- * their back-link is 0.
+ * from scratch. Zero-friction plateau cells share their cost with the source; their back-links
+ * still walk to the source (see `backLinks`).
  *
  * Non-goals: anisotropic or vertical-factor costs (slope-dependent, Tobler hiking), knight's-move
  * (16-neighbor) connectivity, corner-cutting rules, multi-tile or cross-tile seams, and an
@@ -199,7 +212,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     const cellCount = validateTerrainGrid(id, props.width, props.height);
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterIterations(id, 'maxIterations', this.maxIterations);
-    this.maxTieIterations = props.maxTieIterations ?? DEFAULT_MAXIMUM_TIE_ITERATIONS;
+    this.maxTieIterations = props.maxTieIterations ?? this.maxIterations;
     validateRasterIterations(id, 'maxTieIterations', this.maxTieIterations);
     validateTerrainSettings(id, props.settings, GPU_COST_DISTANCE_PARAMETER_LENGTH);
     for (const [name, view] of [
@@ -449,6 +462,7 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
         auxiliary,
         cellSizeMode,
         hasSeedNode,
+        sweepAfterIteration,
         costState: relaxation.state
       });
     } else if (props.converged || props.iterationCount) {
@@ -480,6 +494,12 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
             {name: 'levels', view: tie.levels, type: 'f32', access: 'read'},
             {name: 'masks', view: tie.masks, type: 'f32', access: 'read'},
             {
+              name: 'costStatus',
+              view: relaxation.state.status,
+              type: 'u32',
+              access: 'read'
+            },
+            {
               name: 'backLinks',
               view: props.backLinks,
               type: 'u32',
@@ -489,27 +509,38 @@ fn getRelaxationLimit() -> f32 { return settings[settingsOffset + 4u]; }`
           invocationCount: cellCount,
           declarations: `${getRasterGridWGSL({width, height, cellSizeMode})}
 ${EDGE_COST_WGSL}
-${STRICT_PREDECESSOR_WGSL}`,
+${STRICT_PREDECESSOR_WGSL}
+const UNRESOLVED: u32 = ${GPU_COST_DISTANCE_UNRESOLVED}u;`,
           body: `let centerAuxiliary = auxiliary[auxiliaryOffset + index];
   let centerCost = costs[costsOffset + index];
   var link = GRID_NONE;
-  if (!isNaNValue(centerAuxiliary) && isFiniteValue(centerCost)) {
-    link = 0u;
+  if (!isNaNValue(centerAuxiliary) && costStatus[costStatusOffset + 3u] == 0u) {
+    // The cost relaxation stopped at maxIterations: any cost may still drop and an infinite
+    // cost may still become finite, so no link of a passable cell is certified.
+    link = UNRESOLVED;
+  } else if (!isNaNValue(centerAuxiliary) && isFiniteValue(centerCost)) {
     let strictDirection = getStrictDirection(index, centerAuxiliary, centerCost);
     if (strictDirection != GRID_NONE) {
       link = getD8Code(strictDirection);
     } else {
       // Reached only across zero-cost edges (or a root source): link to the smallest direction
-      // one tie level lower. Level 0 without a strict link is a root, which keeps link 0.
+      // one tie level lower. Level 0 without a strict link is a root (link 0). A level the tie
+      // relaxation never reached, or one with no neighbor one level lower (a budget cut it
+      // short), is unresolved: link 0 would claim a source.
       let level = levels[levelsOffset + index];
-      if (isFiniteValue(level) && level > 0.5) {
-        let mask = u32(masks[masksOffset + index]);
-        for (var direction = 0u; direction < 8u; direction++) {
-          if (((mask >> direction) & 1u) == 0u) { continue; }
-          let neighbor = getD8Neighbor(index, direction);
-          if (neighbor != GRID_NONE && levels[levelsOffset + neighbor] == level - 1.0) {
-            link = getD8Code(direction);
-            break;
+      if (isFiniteValue(level) && level < 0.5) {
+        link = 0u;
+      } else {
+        link = UNRESOLVED;
+        if (isFiniteValue(level)) {
+          let mask = u32(masks[masksOffset + index]);
+          for (var direction = 0u; direction < 8u; direction++) {
+            if (((mask >> direction) & 1u) == 0u) { continue; }
+            let neighbor = getD8Neighbor(index, direction);
+            if (neighbor != GRID_NONE && levels[levelsOffset + neighbor] == level - 1.0) {
+              link = getD8Code(direction);
+              break;
+            }
           }
         }
       }
@@ -579,8 +610,8 @@ ${STRICT_PREDECESSOR_WGSL}`,
    *
    * Phases: `tie-prepare` writes each cell's tight equal-cost neighbor mask (as a float so it can
    * ride the relaxation's auxiliary raster) and level 0 where a strictly cheaper tight neighbor
-   * exists; `tie-roots` zeroes the level of seeds whose cost survived; a tiled min-relaxation then
-   * propagates `level + 1` across masked edges. Finally `finalize` reports `converged` only when
+   * exists; `tie-roots` zeroes the level of seeds whose cost survived; a tiled min-relaxation with
+   * the cost phase's sweep schedule then propagates `level + 1` across masked edges. Finally `finalize` reports `converged` only when
    * both the cost and the tie relaxation reached a fixpoint.
    */
   private getTieNodes<Parameters>(
@@ -590,6 +621,7 @@ ${STRICT_PREDECESSOR_WGSL}`,
       auxiliary: GraphDataView<'float32'>;
       cellSizeMode: GPUTerrainCellSizeMode;
       hasSeedNode: boolean;
+      sweepAfterIteration: number;
       costState: RasterIterationState;
     }
   ): {levels: GraphDataView<'float32'>; masks: GraphDataView<'float32'>} {
@@ -680,6 +712,7 @@ ${STRICT_PREDECESSOR_WGSL}`,
       ...createRasterTiledRelaxationNodes<Parameters>(graph, {
         ...tieProps,
         relaxation: tieRelaxation,
+        sweepAfterIteration: context.sweepAfterIteration,
         values: levels,
         auxiliary: masks,
         settings: props.settings,

@@ -45,6 +45,14 @@ const BANNED: [number, number][] = [
   [10, BASE.offsets[BASE.neighbors[10]] + 1]
 ];
 
+/** Coordinates of a line graph run; defaults to the planar grid. */
+type LineGraphCoordinates = {
+  positions: Float32Array;
+  isGreatCircle?: boolean;
+};
+
+const PLANAR_COORDINATES: LineGraphCoordinates = {positions: GRID.positions};
+
 type LineGraphResult = {
   offsets: number[];
   neighbors: number[];
@@ -57,7 +65,8 @@ async function runLineGraph(
   device: Device,
   settings: GPUNetworkLineGraphSettings,
   arcCapacity: number,
-  useBans: boolean
+  useBans: boolean,
+  coordinates: LineGraphCoordinates = PLANAR_COORDINATES
 ): Promise<LineGraphResult> {
   const graph = new GPUCommandGraph(device, {id: 'line-graph'});
   const buffers: Buffer[] = [];
@@ -99,10 +108,13 @@ async function runLineGraph(
   graph.add(
     new GPUNetworkLineGraph({
       id: 'line',
+      spatialContext: coordinates.isGreatCircle
+        ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+        : undefined,
       offsets: input('offsets', BASE.offsets, 'uint32'),
       neighbors: input('neighbors', BASE.neighbors, 'uint32'),
       weights: input('weights', BASE.weights, 'float32'),
-      nodePositions: input('positions', GRID.positions, 'float32x2'),
+      nodePositions: input('positions', coordinates.positions, 'float32x2'),
       parameters: parameters.importToGraph(graph),
       bannedTurns: input('banned', Uint32Array.from(BANNED.flat()), 'uint32'),
       lineOffsets: output('line-offsets', 'uint32', EDGE_COUNT + 1),
@@ -133,14 +145,16 @@ function expectMatchesOracle(
   result: LineGraphResult,
   settings: GPUNetworkLineGraphSettings,
   arcCapacity: number,
-  useBans: boolean
+  useBans: boolean,
+  coordinates: LineGraphCoordinates = PLANAR_COORDINATES
 ): ReturnType<typeof lineGraphOracle> {
   const oracle = lineGraphOracle(
     BASE,
-    GRID.positions,
+    coordinates.positions,
     useBans ? BANNED : [],
     settings,
-    arcCapacity
+    arcCapacity,
+    coordinates.isGreatCircle
   );
   expect(result.offsets).toEqual(Array.from(oracle.csr.offsets));
   const used = result.offsets[EDGE_COUNT];
@@ -255,4 +269,32 @@ it('GPUNetworkReachability over the line graph prices turns like the CPU Dijkstr
     }
   }
   expect(reached).toBeGreaterThan(EDGE_COUNT / 2);
+});
+
+it('GPUNetworkLineGraph prices turns from great-circle bearings on longitude/latitude', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // The grid sheared and laid onto degrees at 60 N: column steps go east 0.01 degrees, row steps
+  // north 0.005 degrees and east 0.004 degrees, so raw degree angles differ from ground angles
+  // (a column-to-row turn is about 1.19 rad on the ground, 0.90 rad in raw degrees).
+  const positions = new Float32Array(GRID.positions.length);
+  for (let node = 0; node < NODE_COUNT; node++) {
+    const x = GRID.positions[node * 2];
+    const y = GRID.positions[node * 2 + 1];
+    positions[node * 2] = 10 + 0.01 * x + 0.004 * y;
+    positions[node * 2 + 1] = 60 + 0.005 * y;
+  }
+  const coordinates = {positions, isGreatCircle: true};
+  const capacity = EDGE_COUNT * 4;
+  const result = await runLineGraph(device, TURN_SETTINGS, capacity, true, coordinates);
+  expectMatchesOracle(result, TURN_SETTINGS, capacity, true, coordinates);
+  const planar = lineGraphOracle(BASE, positions, BANNED, TURN_SETTINGS, capacity);
+  const used = result.offsets[EDGE_COUNT];
+  expect(
+    Array.from(planar.csr.weights.slice(0, used)).some(
+      (weight, arc) => Math.abs(weight - result.weights[arc]) > 0.1
+    )
+  ).toBe(true);
 });

@@ -13,6 +13,7 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUEdgeBundling';
 
@@ -122,7 +123,8 @@ fn getIterationRadius() -> f32 {
 function getEdgeHelpersWGSL(hasMask: boolean): string {
   return /* wgsl */ `
 // Strict 3.0e38 bound (finite and not near overflow), unlike the shared isFiniteValue.
-fn isFiniteValue(value: f32) -> bool { return abs(value) < 3.0e38; }
+${IS_FINITE_BITS_WGSL}
+fn isFiniteValue(value: f32) -> bool { return isFiniteBits(value) && abs(value) < 3.0e38; }
 fn getVertexPosition(vertex: u32) -> vec2<f32> {
   return vec2<f32>(
     vertexPositions[vertexPositionsOffset + vertex * 2u],

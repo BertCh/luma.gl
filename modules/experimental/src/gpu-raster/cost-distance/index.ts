@@ -5,6 +5,7 @@
 export {
   GPUCostDistance,
   GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_UNRESOLVED,
   GPU_COST_DISTANCE_PARAMETER_LENGTH,
   getGPUCostDistanceParameterValues
 } from './gpu-cost-distance';

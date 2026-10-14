@@ -18,6 +18,7 @@ import {
   RASTER_WORKGROUP_DIMENSION
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Signed 3×3 first-derivative stencil. */
 export type GPURasterGradientOperator = 'sobel' | 'scharr';
@@ -329,9 +330,7 @@ const OUTPUT_VALIDITY_OFFSET: u32 = ${getViewElementOffset(this.outputValidity)}
 @group(0) @binding(4) var<storage, read_write> outputValues: array<f32>;
 @group(0) @binding(5) var<storage, read_write> outputValidity: array<u32>;
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 fn stableMagnitude(horizontal: f32, vertical: f32) -> f32 {
   let larger = max(abs(horizontal), abs(vertical));

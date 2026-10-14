@@ -74,9 +74,9 @@ export type GPUDistanceFieldProps = {
   /** Per-frame settings with at least 8 float32 values, see `getGPUDistanceFieldParameterValues`. */
   settings: GraphDataView<'float32'>;
   /**
-   * Optional seed points in ground coordinates. Each point snaps to the cell that contains it;
-   * points outside the grid or with non-finite coordinates are ignored. The length is the
-   * compile-time seed capacity; contents are per-frame.
+   * Optional seed points in ground coordinates relative to the settings' `localOrigin`. Each
+   * point snaps to the cell that contains it; points outside the grid or with non-finite
+   * coordinates are ignored. The length is the compile-time seed capacity; contents are per-frame.
    */
   seedPositions?: GraphDataView<'float32x2'>;
   /** Optional seed ID per point row; defaults to the row index. `0xffffffff` disables a row. */
@@ -112,6 +112,14 @@ export type GPUDistanceFieldProps = {
  * Non-goals: cost-weighted (non-Euclidean) allocation, which `GPUCostDistance` covers, geodesic
  * distances on longitude/latitude grids, and polygon or line seeds (rasterize them into
  * `seedMask`).
+ *
+ * Precision: seeds snap to cells with `floor((position - origin) * (1 / cellSize))` in float32,
+ * with `position` and `origin` relative to the settings' `localOrigin`. Absolute seeds (the default
+ * origin `[0, 0]`) are quantized to the float32 ulp, 0.5 m at a UTM northing of 4.6e6 m (2 m at
+ * 2e7 m in EPSG:3857), so seeds that close to a cell edge can snap to the neighbouring cell. Set
+ * `localOrigin` to the raster or tile corner and upload seeds relative to it; they then keep about
+ * `1.2e-7` of their distance from it. Distances and allocations carry no positions, so nothing is
+ * added back.
  */
 export class GPUDistanceField implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

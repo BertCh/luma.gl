@@ -98,9 +98,19 @@ y = (originLat - lat) * kilometresPerDegree
 ```
 
 The cosine argument is converted to radians. The sign, fixed 40,000 km circumference, and mean
-latitude are part of the compatibility contract. Longitude is not implicitly wrapped at the
-antimeridian. `originLon` must be in `[-180, 180]`, `originLat` must be in `[-90, 90]`, and both
-values must be finite.
+latitude are part of the compatibility contract:
+
+- The Earth is a sphere of circumference 40,000 km, 111.111 km per degree. This is not the
+  6371008.8 m mean sphere used by `GPUHaversineDistance` (111.195 km per degree), so the two
+  differ by 0.075% for the same pair of points.
+- Both axes point from the point toward the origin: positive `x` is west of the origin and positive
+  `y` is south of it, the reverse of an east/north projection.
+
+cuSpatial does not wrap longitude, and neither does this kernel by default, so a point just across
+the antimeridian from the origin projects about 40,000 km away. Set `wrapLongitude: true` to wrap
+`originLon - lon` into `[-180, 180)` first; this option is a luma.gl addition, not cuSpatial
+behavior. `originLon` must be in `[-180, 180]`, `originLat` must be in `[-90, 90]`, and both values
+must be finite.
 
 Raw binary64 inputs preserve each origin-minus-coordinate delta through binary64 subtraction before
 rounding that delta to f32. The absolute latitude used to evaluate the midpoint cosine and the
@@ -109,8 +119,11 @@ remaining arithmetic are f32. This kernel does not claim f64-transcendental accu
 ## `GPUHaversineDistance`
 
 `GPUHaversineDistance` calculates pairwise great-circle distance from longitude/latitude degrees.
-The configurable positive `radius` defaults to `6371` km and must be finite and representable as a
-finite f32 value.
+Results are meters by default; pass `units: 'kilometers'` for kilometers. The positive `radius` is
+in the same units and defaults to the IUGG mean Earth radius `GPU_EARTH_MEAN_RADIUS_METERS`
+(6371008.8 m, or 6371.0088 km); it must be finite and representable as a finite f32 value.
+Before this change the default was kilometers on a 6371 km sphere; pass
+`units: 'kilometers', radius: 6371` to reproduce those values exactly.
 
 For angular deltas below `1e-4` radians, the implementation uses the local equirectangular limit so
 that adapters do not collapse tiny f32 trigonometric inputs to zero. Intermediate paths use the
@@ -126,7 +139,11 @@ through subtraction, but the transcendental inputs and final scalar result remai
 
 ## `GPUPairwisePointDistance`
 
-`GPUPairwisePointDistance` calculates the Euclidean distance between aligned point rows. Local
+`GPUPairwisePointDistance` calculates the planar Euclidean distance between aligned point rows.
+Like every planar kernel here (`GPUPairwisePointSegmentDistance`,
+`GPUPairwisePointLinestringNearest`, and `radius` queries of `GPUPointSpatialQuery`), it takes an
+optional `spatialContext` and throws at construction for longitude/latitude: project positions to a
+planar frame first, or use `GPUHaversineDistance` for great-circle point distances. Local
 f32 inputs write one f32 distance per row. Raw binary64 inputs write a double-single result as
 `[high, low]`; add the two limbs when reading the result on the CPU.
 
@@ -234,6 +251,10 @@ using its default zero-based generated IDs and passing its `objectIds` output as
 query's optional packed `sourceIds` view, aligned one-to-one with `positions`. Matching outputs use
 `sourceIds[rowIndex]` when supplied and the zero-based row index otherwise. `GPUGridIndex` itself
 remains a generic index and can still store arbitrary IDs for other consumers.
+
+`bounds` and `polygon` queries do no metric math, so their `spatialContext` may also be
+`{coordinateSpace: 'longitude-latitude', metric: 'none'}`; bounds and polygon edges are then
+straight lines in degree space, with no antimeridian wrapping. `radius` queries are planar only.
 
 Polygon positions use packed `float32x2` rows. `ringOffsets` contains a start offset for each ring
 plus one terminal offset; rings close implicitly and use even/odd fill semantics. Boundary points

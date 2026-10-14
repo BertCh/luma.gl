@@ -21,13 +21,22 @@ import {
   validateRowView,
   validateSeparateBuffers
 } from './geospatial-utils';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../gpu-spatial-analysis/contracts/earth';
+
+/** Output length units of {@link GPUHaversineDistance}. */
+export type GPUHaversineDistanceUnits = 'meters' | 'kilometers';
 
 type GPUHaversineDistanceBaseProps = {
   /** Prefix for generated graph-node IDs. */
   id?: string;
   /** Caller-owned f32 distance rows. */
   output: GPUScalarRows;
-  /** Sphere radius in output units. Defaults to 6371 kilometres. */
+  /** Units of `output` and of `radius`. Defaults to `'meters'`. */
+  units?: GPUHaversineDistanceUnits;
+  /**
+   * Sphere radius in `units`. Defaults to the IUGG mean Earth radius
+   * `GPU_EARTH_MEAN_RADIUS_METERS` (6371008.8 m, or 6371.0088 km).
+   */
   radius?: number;
 };
 
@@ -51,14 +60,19 @@ export type GPUHaversineDistanceProps = GPUHaversineDistanceBaseProps &
 /**
  * Computes pairwise great-circle distance for longitude/latitude degree rows.
  *
- * Trigonometric operations and the final result remain f32. Raw Float64 inputs preserve each
- * coordinate delta through a correctly rounded raw-binary64 subtraction before f32 trigonometry.
+ * Results are meters on the mean Earth sphere by default; pass `units: 'kilometers'` for
+ * kilometers. Trigonometric operations and the final result remain f32. Raw Float64 inputs preserve
+ * each coordinate delta through a correctly rounded raw-binary64 subtraction before f32
+ * trigonometry.
  */
 export class GPUHaversineDistance {
   readonly id: string;
   readonly left: GPUFloat32Positions | GPUFloat64Positions;
   readonly right: GPUFloat32Positions | GPUFloat64Positions;
   readonly output: GPUScalarRows;
+  /** Units of `output` and `radius`. */
+  readonly units: GPUHaversineDistanceUnits;
+  /** Sphere radius in `units`. */
   readonly radius: number;
 
   /** Creates a distance contributor without compiling or submitting GPU work. */
@@ -67,7 +81,15 @@ export class GPUHaversineDistance {
     this.left = props.left;
     this.right = props.right;
     this.output = props.output;
-    this.radius = props.radius ?? 6371;
+    this.units = props.units ?? 'meters';
+    if (this.units !== 'meters' && this.units !== 'kilometers') {
+      throw new Error(`${this.id} units must be meters or kilometers`);
+    }
+    this.radius =
+      props.radius ??
+      (this.units === 'meters'
+        ? GPU_EARTH_MEAN_RADIUS_METERS
+        : GPU_EARTH_MEAN_RADIUS_METERS / 1000);
     validateRowView(this.left, POSITION_FORMATS, `${this.id} left`);
     validateRowView(this.right, POSITION_FORMATS, `${this.id} right`);
     validateRowView(this.output, ['float32'], `${this.id} output`);

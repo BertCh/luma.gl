@@ -52,7 +52,12 @@ export type GPUIsobandRingsProps = {
   noDataValue?: number;
   /** Break values, see `GPUIsobandsProps.breaks`. */
   breaks: GraphDataView<'float32'>;
-  /** Per-frame parameters written with `getGPUIsobandsParameterValues`. */
+  /**
+   * Per-frame parameters written with `getGPUIsobandsParameterValues`. Ring vertices are relative
+   * to its `localOrigin`. For projected rasters set it to the raster or tile corner: besides the
+   * float32 precision, the ring assembly hashes `floor(vertex / vertexTolerance)` as an i32, which
+   * saturates beyond `2^31 * vertexTolerance` (214,748 units at the default tolerance).
+   */
   parameters: GraphDataView<'float32'>;
   /**
    * Compile-time capacity of the intermediate band boundary edge list. A ring of `n` vertices
@@ -133,7 +138,6 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
       groups: edgeBands,
       vertexTolerance: props.vertexTolerance ?? 1e-4,
       interiorSide: 'left',
-      geographic: false,
       cancelOpposingSegments: true,
       splitTouchingRings: props.splitTouchingRings,
       output: assemblyOutput

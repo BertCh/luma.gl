@@ -25,6 +25,7 @@ import {
   validateTerrainBuffersDistinct,
   validateTerrainGrid
 } from '../terrain-analysis/terrain-analysis-utils';
+import {GPU_TERRAIN_FLOW_STREAM_UNRESOLVED} from './gpu-terrain-flow';
 import {TERRAIN_FLOW_MAXIMUM_WALK_LENGTH} from './terrain-flow-passes';
 import {
   getTerrainFlowTracingWGSL,
@@ -57,11 +58,17 @@ export type GPUTerrainStreamOrderProps = {
    * `GPUTerrainFlow.flowDirections`. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
-  /** Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`. Per-frame. */
+  /**
+   * Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`,
+   * whose `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` word (accumulation round limit hit) marks a cell of
+   * unknown stream status. Per-frame.
+   */
   streams: GraphDataView<'uint32'>;
   /**
    * Strahler order per cell: 0 for non-stream and invalid cells, at least 1 on stream cells.
-   * Cells that remain unresolved when the iteration limit is hit read `0xffffffff`.
+   * Cells that remain unresolved when the iteration limit is hit read `0xffffffff`, and so do
+   * cells whose stream word is `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` and the stream cells they
+   * drain into: their order is unknown. `converged` only reports the pull rounds.
    */
   streamOrder: GraphDataView<'uint32'>;
   /** One row set to 1 when every stream cell resolved. Conservative: can be 0 when the last round finished everything. */
@@ -166,9 +173,15 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
 const SENTINEL: u32 = 0xffffffffu;
 const MAX_WALK_LENGTH: u32 = ${TERRAIN_FLOW_MAXIMUM_WALK_LENGTH}u;
 
+// Unknown stream status (GPUTerrainFlow ran out of accumulation rounds): never finalized, so the
+// cell and every stream cell downstream of it keep the unresolved sentinel.
+fn isUnresolvedStream(cell: u32) -> bool {
+  return streams[streamsOffset + cell] == ${GPU_TERRAIN_FLOW_STREAM_UNRESOLVED}u;
+}
+
 // Returns true when this thread wrote the final order of 'cell'.
 fn tryFinalize(cell: u32) -> bool {
-  if (atomicLoad(&order[orderOffset + cell]) != SENTINEL) { return false; }
+  if (atomicLoad(&order[orderOffset + cell]) != SENTINEL || isUnresolvedStream(cell)) { return false; }
   var maximumOrder = 0u;
   var maximumCount = 0u;
   for (var direction = 0u; direction < 8u; direction++) {
@@ -195,6 +208,8 @@ fn tryFinalize(cell: u32) -> bool {
     const getBody = (
       markChangedWGSL: string
     ) => `if (atomicLoad(&order[orderOffset + index]) != SENTINEL) { return; }
+  // Stays unresolved without marking a change: no round can resolve it.
+  if (isUnresolvedStream(index)) { return; }
   if (tryFinalize(index)) {
     var walk = getFlowReceiver(index, flowDirections[flowDirectionsOffset + index]);
     for (var step = 0u; step < MAX_WALK_LENGTH; step++) {

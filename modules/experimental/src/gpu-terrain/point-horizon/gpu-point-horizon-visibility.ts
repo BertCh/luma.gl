@@ -28,7 +28,10 @@ import {
   type GPUPointHorizonModelOptions,
   type ResolvedPointHorizonModel
 } from './point-horizon-march';
-import {GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH} from './point-horizon-parameters';
+import {
+  GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH,
+  POINT_HORIZON_VISIBILITY_PROJECTION_SLOT
+} from './point-horizon-parameters';
 
 /**
  * Properties for {@link GPUPointHorizonVisibility}.
@@ -187,7 +190,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
   let distance = sqrt(deltaX * deltaX + deltaY * deltaY);
   let sinA = deltaX / max(distance, 1.0e-30);
   let cosA = ${model.rowDirection === 'south' ? '-' : ''}deltaY / max(distance, 1.0e-30);`;
-    const march = getPointHorizonMarchWGSL(model);
+    const march = getPointHorizonMarchWGSL(model, POINT_HORIZON_VISIBILITY_PROJECTION_SLOT);
     const {targets} = props;
     const chunkSize = props.targetsPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
     const detailsWrite = props.details

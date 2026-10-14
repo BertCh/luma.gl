@@ -76,20 +76,45 @@ export type GPUTerrainCastShadowSettings = {
 /**
  * Packs settings into the 16-float layout read by {@link GPUTerrainCastShadow}:
  * `[cellX, cellY, zFactor, curvature, northEdge, southEdge, maximumDistance, azimuthDegrees,
- * altitudeDegrees, angularRadiusDegrees, xMajor (0/1), slopeFixed, travelSign, stepPixelLength, 0, 0]`.
+ * altitudeDegrees, angularRadiusDegrees, xMajor (0/1), slopeFixed, travelSign, stepPixelLength,
+ * groundEast, groundSouth]`.
  *
- * The digital line family of the sun direction is computed here on the CPU in float64 (direction
- * `(sin(azimuth), +-cos(azimuth))` exactly as in `getGPUTerrainHorizonDirection`, but not rounded to
- * float32), so changing the sun never recompiles the graph. `rowDirection` must match the contributor.
+ * The sun's ground direction `(sin(azimuth), -cos(azimuth))` (east, south) is stored in the last two
+ * slots, and its digital line family for square cells and south-advancing rows is computed here on
+ * the CPU in float64, so changing the sun never recompiles the graph. The values do not depend on
+ * the grid: the contributor mirrors the line for its `rowDirection: 'north'` and, on anisotropic
+ * ground cells (non-square `cellSize`, `'web-mercator'`, `'geographic'`), converts the ground
+ * direction to a pixel slope with its own `cellSizeMode` and the ground cell of row `height / 2`.
+ * The contributor is the only source of both modes, so settings and contributor cannot disagree.
  *
  * @throws If a cell size is not finite and positive, the angular radius is negative or not finite,
  * the azimuth is not finite, or `target` is too short.
  */
 export function getGPUTerrainCastShadowParameterValues(
   settings: GPUTerrainCastShadowSettings,
-  rowDirection: GPUTerrainRowDirection = 'south',
-  target: Float32Array = new Float32Array(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH)
+  target?: Float32Array
+): Float32Array;
+/**
+ * @deprecated The row direction comes from the contributor's `rowDirection`; this argument is
+ * validated and otherwise ignored. Call `getGPUTerrainCastShadowParameterValues(settings, target)`.
+ */
+export function getGPUTerrainCastShadowParameterValues(
+  settings: GPUTerrainCastShadowSettings,
+  rowDirection: GPUTerrainRowDirection,
+  target?: Float32Array
+): Float32Array;
+export function getGPUTerrainCastShadowParameterValues(
+  settings: GPUTerrainCastShadowSettings,
+  targetOrRowDirection?: Float32Array | GPUTerrainRowDirection,
+  legacyTarget?: Float32Array
 ): Float32Array {
+  let target = legacyTarget;
+  if (typeof targetOrRowDirection === 'string') {
+    validateTerrainRowDirection('Terrain cast shadow', targetOrRowDirection);
+  } else {
+    target = targetOrRowDirection;
+  }
+  target ??= new Float32Array(GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH);
   if (target.length < GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH) {
     throw new Error('Terrain cast shadow settings target must hold 16 values');
   }
@@ -104,14 +129,11 @@ export function getGPUTerrainCastShadowParameterValues(
     throw new Error('Terrain cast shadow azimuth and altitude must be finite');
   }
   const azimuth = (settings.azimuthDegrees * Math.PI) / 180;
-  const northRowSign = rowDirection === 'south' ? -1 : 1;
   const snap = (value: number) => (Math.abs(value) < 1e-9 ? 0 : value);
+  // Canonical frame: rows advance south, as in getGPUTerrainHorizonDirection(..., 'south').
+  const groundDirection: [number, number] = [snap(Math.sin(azimuth)), snap(-Math.cos(azimuth))];
   // The line geometry does not depend on the grid extent, only the line count does.
-  const geometry = getTerrainSweepLineGeometry(
-    [snap(Math.sin(azimuth)), snap(northRowSign * Math.cos(azimuth))],
-    1,
-    1
-  );
+  const geometry = getTerrainSweepLineGeometry(groundDirection, 1, 1);
   target.set([
     settings.cellSize[0],
     settings.cellSize[1],
@@ -127,8 +149,8 @@ export function getGPUTerrainCastShadowParameterValues(
     geometry.slopeFixed,
     geometry.travelSign,
     geometry.stepPixelLength,
-    0,
-    0
+    groundDirection[0],
+    groundDirection[1]
   ]);
   return target;
 }
@@ -185,7 +207,9 @@ export type GPUTerrainCastShadowProps = {
  *
  * Sun position, disk radius, cell size, z factor, curvature, and maximum distance are per-frame
  * settings; the line family is packed by the CPU settings packer, so animating time of day never
- * recompiles. The line count depends on the azimuth and is unknown at compile time, so
+ * recompiles. On anisotropic ground cells the kernel converts the packed ground direction with
+ * this contributor's `cellSizeMode` (see {@link getGPUTerrainCastShadowParameterValues}), so the
+ * sun follows its ground azimuth with no mode in the settings. The line count depends on the azimuth and is unknown at compile time, so
  * `width + height` invocations are dispatched and surplus ones exit.
  *
  * Softness comes from the physical solar disk radius. mt-image's propagated-occluder softness
@@ -304,7 +328,12 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
         id: `${id}-sweep`,
         width,
         height,
-        geometry: {kind: 'settings', index: 10},
+        geometry: {
+          kind: 'settings',
+          index: 10,
+          groundDirectionIndex: 14,
+          rowDirection: props.rowDirection ?? 'south'
+        },
         maximumRadius: this.maximumRadius,
         cellSizeMode: props.cellSizeMode ?? 'uniform',
         zFactorSign: 1,

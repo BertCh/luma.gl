@@ -300,3 +300,24 @@ function validateRasterNoDataValue(
     throw new Error(`${label} nodata must fit in ${format}`);
   }
 }
+
+/**
+ * Returns a validated float64 local origin, `[0, 0]` when omitted.
+ *
+ * Parameter packers subtract it from extents and grid origins in float64 before the float32
+ * rounding, so GPU positions are origin-relative and keep about `2^-24` of their distance from it.
+ *
+ * @internal
+ */
+export function getRasterLocalOrigin(
+  label: string,
+  localOrigin: readonly [number, number] | undefined
+): readonly [number, number] {
+  if (!localOrigin) {
+    return [0, 0];
+  }
+  if (!(Number.isFinite(localOrigin[0]) && Number.isFinite(localOrigin[1]))) {
+    throw new Error(`${label} localOrigin must be finite`);
+  }
+  return localOrigin;
+}

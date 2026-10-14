@@ -21,7 +21,10 @@ import {
   type GPUPointHorizonModelOptions,
   type ResolvedPointHorizonModel
 } from './point-horizon-march';
-import {GPU_POINT_HORIZON_PARAMETER_LENGTH} from './point-horizon-parameters';
+import {
+  GPU_POINT_HORIZON_PARAMETER_LENGTH,
+  POINT_HORIZON_PROFILE_PROJECTION_SLOT
+} from './point-horizon-parameters';
 
 /** Default number of rays per compute node of {@link GPUPointHorizonProfile}. */
 export const GPU_POINT_HORIZON_RAYS_PER_DISPATCH = 65536;
@@ -204,7 +207,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     if (bindings.length > 8) {
       throw new Error(`${id} needs more than 8 storage bindings`);
     }
-    const march = getPointHorizonMarchWGSL(model);
+    const march = getPointHorizonMarchWGSL(model, POINT_HORIZON_PROFILE_PROJECTION_SLOT);
     const rayCount = props.observers.length * model.azimuthSpan;
     const raysPerDispatch = props.raysPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
     const writes = (value: string) =>

@@ -4,6 +4,7 @@
 
 import {getGPUTerrainHorizonDirection} from '../../../src/gpu-terrain/terrain-illumination/gpu-terrain-horizon';
 import {
+  getTerrainSweepGroundLineGeometry,
   getTerrainSweepLineGeometry,
   getTerrainSweepMinorOffset,
   TERRAIN_SWEEP_SLOPE_SCALE,
@@ -20,7 +21,10 @@ export type SweepOracleOptions = {
   elevation: Float32Array;
   /** Sector count; ignored when `directions` is given. */
   directionCount: number;
-  /** Explicit pixel-space directions, overriding the sector directions. */
+  /**
+   * Explicit pixel-space directions, overriding the sector directions. Sector directions are
+   * ground azimuths, converted like the kernel with the reference row's cell size.
+   */
   directions?: readonly (readonly [number, number])[];
   /** Radius window in pixels. Defaults to the full diagonal. */
   maximumRadius?: number;
@@ -65,11 +69,33 @@ type SweepDirection = {
   geometry: TerrainSweepLineGeometry;
 };
 
-function getDirections(options: SweepOracleOptions): readonly (readonly [number, number])[] {
-  return (
-    options.directions ??
-    Array.from({length: options.directionCount}, (_, sector) =>
-      getGPUTerrainHorizonDirection(sector, options.directionCount, options.rowDirection ?? 'south')
+function getGeometries(options: SweepOracleOptions): TerrainSweepLineGeometry[] {
+  const {width, height} = options;
+  if (options.directions) {
+    return options.directions.map(direction =>
+      getTerrainSweepLineGeometry(direction, width, height)
+    );
+  }
+  // Same reference row as the kernel: row 0 in uniform mode, else row floor(height / 2).
+  const mode = options.cellSizeMode ?? 'uniform';
+  const referenceCell = getTerrainIlluminationGroundCellSize(
+    mode,
+    options.cellSize,
+    options.northEdge ?? 0,
+    options.southEdge ?? 0,
+    mode === 'uniform' ? 0 : Math.floor(height / 2),
+    height
+  );
+  return Array.from({length: options.directionCount}, (_, sector) =>
+    getTerrainSweepGroundLineGeometry(
+      getGPUTerrainHorizonDirection(
+        sector,
+        options.directionCount,
+        options.rowDirection ?? 'south'
+      ),
+      referenceCell,
+      width,
+      height
     )
   );
 }
@@ -192,15 +218,15 @@ function accumulate(
   options: SweepOracleOptions,
   solve: (direction: SweepDirection, zSign: 1 | -1, sector: number) => Float64Array
 ): SweepOracleResult {
-  const directions = getDirections(options);
-  const directionCount = directions.length;
+  const geometries = getGeometries(options);
+  const directionCount = geometries.length;
   const result = createResult(options, directionCount);
   const pixelCount = options.width * options.height;
   const sineSum = new Float64Array(pixelCount);
   const angleSum = new Float64Array(pixelCount);
   const nadirSum = new Float64Array(pixelCount);
   for (let sector = 0; sector < directionCount; sector++) {
-    const geometry = getTerrainSweepLineGeometry(directions[sector], options.width, options.height);
+    const geometry = geometries[sector];
     const zenith = solve({geometry}, 1, sector);
     const nadir = options.nadir ? solve({geometry}, -1, sector) : undefined;
     for (let pixel = 0; pixel < pixelCount; pixel++) {

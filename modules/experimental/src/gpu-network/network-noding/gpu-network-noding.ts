@@ -13,14 +13,35 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createFillNode,
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {createSortedSegmentOffsetsNode} from '../../utils/sorted-segment-offsets';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {GPULineSplit} from '../../gpu-spatial-analysis/line-split/index';
 import type {GPULineSplitPieces} from '../../gpu-spatial-analysis/line-split/index';
 import type {GPUSpatialJoinLines} from '../../gpu-spatial-analysis/spatial-join/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
 
 const OPERATION = 'GPUNetworkNoding';
+
+/** Order-preserving u32 keys of f32 values (for the atomic minimum origin) and the finite test. */
+const NODING_SNAP_WGSL = /* wgsl */ `
+fn isFiniteCoordinate(value: f32) -> bool {
+  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
+}
+fn getOrderedKey(value: f32) -> u32 {
+  let bits = bitcast<u32>(select(value, 0.0, value == 0.0));
+  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
+}
+fn getOrderedValue(key: u32) -> f32 {
+  return bitcast<f32>(select(~key, key ^ 0x80000000u, (key & 0x80000000u) != 0u));
+}`;
 
 /** Value written to node and neighbor slots that hold no node. */
 export const GPU_NETWORK_NODING_NONE = 0xffffffff;
@@ -71,15 +92,24 @@ export type GPUNetworkNodingCSR = {
 export type GPUNetworkNodingProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'network-noding'`. */
   id?: string;
+  /**
+   * Coordinates of `lines`. Planar only: snapping cells, `tolerance` and edge lengths are
+   * Euclidean, so longitude/latitude throws; project to a planar frame first (for example
+   * `createGPULocalFrame`). Omitted means native planar coordinates.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Linestrings, in input coordinate units (planar meters for a routable network). */
   lines: GPUSpatialJoinLines;
   /** Capacity of the internal intersection pair list; see `GPULineSplitProps`. */
   intersectionCapacity: number;
   /**
-   * One-row per-frame snap tolerance, at least 0. Piece end points whose tolerance cells
-   * (`floor(coordinate / tolerance)`) coincide share one node, whose position is the first such end
-   * point. 0 merges only bit-identical end points. Two end points closer than the tolerance but on
-   * opposite sides of a cell boundary stay separate nodes.
+   * One-row per-frame snap tolerance, at least 0. Piece end points whose integer tolerance cells
+   * (`floor((coordinate - origin) / tolerance)`, with `origin` the minimum corner of the live end
+   * points, computed on the GPU every encoding) coincide share one node, whose position is the
+   * first such end point. 0 merges only bit-identical end points. Two end points closer than the
+   * tolerance but on opposite sides of a cell boundary stay separate nodes. Cells are exact up to
+   * 2^24 per axis (for example 8.3 km at 0.5 mm, or 8,388 km at 0.5 m); a wider extent raises
+   * `overflow`.
    */
   tolerance: GraphDataView<'float32'>;
   /** Output pieces, the geometry of the edges. */
@@ -96,7 +126,10 @@ export type GPUNetworkNodingProps = {
   leafCapacity?: number;
   /** Optional one-row count of uncertified segment pairs; see `GPUSegmentIntersection`. */
   uncertainCount?: GraphDataView<'uint32'>;
-  /** Optional one-row flag: 1 when pieces, vertices, intersections or nodes exceeded a capacity. */
+  /**
+   * Optional one-row flag: 1 when pieces, vertices, intersections or nodes exceeded a capacity, or
+   * the end points span more than 2^24 tolerance cells on an axis.
+   */
   overflow?: GraphDataView<'uint32'>;
 };
 
@@ -116,6 +149,10 @@ export type GPUNetworkNodingProps = {
  * lines that stop within `tolerance` of another line's interior are not connected: tolerance merges
  * end points only. Bridges and tunnels that cross without connecting are not modelled.
  *
+ * Planar only: the snapping cells, `tolerance` and edge lengths are Euclidean in the input units,
+ * so longitude/latitude lines must be projected first (a `spatialContext` with longitude/latitude
+ * throws).
+ *
  * Capacity: `pieces` bounds edges and vertices, `nodes.positions` bounds nodes. When any capacity
  * overflows, edges incident to a node beyond the capacity are left out of the CSR and `overflow`
  * is set. Nothing is read back.
@@ -129,11 +166,14 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
   readonly nodeCapacity: number;
   /** Edge capacity. */
   readonly edgeCapacity: number;
+  /** Resolved spatial context, always planar. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUNetworkNodingProps) {
     this.id = props.id ?? 'network-noding';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {nodes, edges, csr, pieces} = props;
     validatePackedView(props.tolerance, ['float32'], `${id} tolerance`);
     if (props.tolerance.length < 1) {
@@ -228,51 +268,111 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       }).getCommandNodes(graph)
     );
 
-    // Snap keys per piece end point (index = 2 * edge + side).
+    // Snap keys per piece end point (index = 2 * edge + side). Cells are counted from a per-frame
+    // origin, the minimum corner of the live end points, so projected coordinates (UTM northings
+    // of millions of meters) keep exact integer cells: an end point minus the origin is exact in
+    // f32, and the quotient resolves unit cells up to 2^24 of them per axis. A larger extent in
+    // tolerance cells raises `overflow` instead of silently merging cells.
     const keysX = T('keys-x', 'uint32', endpointCount);
     const keysY = T('keys-y', 'uint32', endpointCount);
     const endpointPoints = T('endpoint-points', 'float32x2', endpointCount);
     const endpointIndices = T('endpoint-indices', 'uint32', endpointCount);
+    const snapOrigin = T('snap-origin', 'uint32', 2);
+    const snapOverflow = T('snap-overflow', 'uint32', 1);
     nodes.push(
+      createFillNode<Parameters>(graph, {
+        id: `${id}-clear-snap-origin`,
+        operation: OPERATION,
+        view: snapOrigin,
+        type: 'u32',
+        value: '0xffffffffu'
+      }),
+      createFillNode<Parameters>(graph, {
+        id: `${id}-clear-snap-overflow`,
+        operation: OPERATION,
+        view: snapOverflow,
+        type: 'u32',
+        value: '0u'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-endpoints`,
+        operation: OPERATION,
+        variant: 'endpoints',
+        bindings: [
+          {name: 'pieceCount', view: pieces.status.count, type: 'u32', access: 'read'},
+          {name: 'pieceOffsets', view: pieces.geometry.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'piecePositions', view: pieces.geometry.positions, type: 'f32', access: 'read'},
+          {name: 'endpointPoints', view: endpointPoints, type: 'f32', access: 'read_write'},
+          {name: 'endpointIndices', view: endpointIndices, type: 'u32', access: 'read_write'},
+          {name: 'snapOrigin', view: snapOrigin, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        invocationCount: endpointCount,
+        declarations: NODING_SNAP_WGSL,
+        body: `let edge = index / 2u;
+  endpointIndices[endpointIndicesOffset + index] = index;
+  var point = vec2f(0.0);
+  if (edge < pieceCount[pieceCountOffset]) {
+    var vertex = pieceOffsets[pieceOffsetsOffset + edge];
+    if ((index & 1u) == 1u) { vertex = pieceOffsets[pieceOffsetsOffset + edge + 1u] - 1u; }
+    point = vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
+    if (isFiniteCoordinate(point.x) && isFiniteCoordinate(point.y)) {
+      atomicMin(&snapOrigin[snapOriginOffset], getOrderedKey(point.x));
+      atomicMin(&snapOrigin[snapOriginOffset + 1u], getOrderedKey(point.y));
+    }
+  }
+  endpointPoints[endpointPointsOffset + index * 2u] = point.x;
+  endpointPoints[endpointPointsOffset + index * 2u + 1u] = point.y;`
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-endpoint-keys`,
         operation: OPERATION,
         variant: 'endpoint-keys',
         bindings: [
           {name: 'pieceCount', view: pieces.status.count, type: 'u32', access: 'read'},
-          {name: 'pieceOffsets', view: pieces.geometry.lineOffsets, type: 'u32', access: 'read'},
-          {name: 'piecePositions', view: pieces.geometry.positions, type: 'f32', access: 'read'},
+          {name: 'endpointPoints', view: endpointPoints, type: 'f32', access: 'read'},
           {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'},
+          {name: 'snapOrigin', view: snapOrigin, type: 'u32', access: 'read'},
+          {name: 'snapOverflow', view: snapOverflow, type: 'u32', access: 'read_write'},
           {name: 'keysX', view: keysX, type: 'u32', access: 'read_write'},
-          {name: 'keysY', view: keysY, type: 'u32', access: 'read_write'},
-          {name: 'endpointPoints', view: endpointPoints, type: 'f32', access: 'read_write'},
-          {name: 'endpointIndices', view: endpointIndices, type: 'u32', access: 'read_write'}
+          {name: 'keysY', view: keysY, type: 'u32', access: 'read_write'}
         ],
         invocationCount: endpointCount,
-        declarations: `fn snapKey(value: f32, size: f32) -> u32 {
+        declarations: `${NODING_SNAP_WGSL}
+// Integer tolerance cell of value counted from origin, or the bit pattern for tolerance 0
+// (only bit-identical end points merge). Sets isOverflow past 2^24 cells, where the f32 quotient
+// no longer resolves unit cells.
+fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) -> u32 {
+  if (!isFiniteCoordinate(value)) {
+    return 0xfffffffeu;
+  }
   if (size > 0.0) {
-    let cell = clamp(floor(value / size), -1.0e9, 1.0e9);
-    return min(u32(i32(cell) + 1073741824), 0xfffffffeu);
+    let cell = floor(max(value - origin, 0.0) / size);
+    if (!(cell < 16777216.0)) {
+      *isOverflow = true;
+      return 16777215u;
+    }
+    return u32(cell);
   }
   return min(bitcast<u32>(select(value, 0.0, value == 0.0)), 0xfffffffeu);
 }`,
-        body: `let edge = index / 2u;
-  endpointIndices[endpointIndicesOffset + index] = index;
-  var point = vec2f(0.0);
-  var keyX = 0xffffffffu;
+        body: `var keyX = 0xffffffffu;
   var keyY = 0xffffffffu;
-  if (edge < pieceCount[pieceCountOffset]) {
-    var vertex = pieceOffsets[pieceOffsetsOffset + edge];
-    if ((index & 1u) == 1u) { vertex = pieceOffsets[pieceOffsetsOffset + edge + 1u] - 1u; }
-    point = vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
+  if (index / 2u < pieceCount[pieceCountOffset]) {
+    let point = vec2f(endpointPoints[endpointPointsOffset + index * 2u], endpointPoints[endpointPointsOffset + index * 2u + 1u]);
+    let origin = vec2f(
+      getOrderedValue(snapOrigin[snapOriginOffset]),
+      getOrderedValue(snapOrigin[snapOriginOffset + 1u])
+    );
     let size = tolerance[toleranceOffset];
-    keyX = snapKey(point.x, size);
-    keyY = snapKey(point.y, size);
+    var isOverflow = false;
+    keyX = snapKey(point.x, origin.x, size, &isOverflow);
+    keyY = snapKey(point.y, origin.y, size, &isOverflow);
+    if (isOverflow) {
+      snapOverflow[snapOverflowOffset] = 1u;
+    }
   }
   keysX[keysXOffset + index] = keyX;
-  keysY[keysYOffset + index] = keyY;
-  endpointPoints[endpointPointsOffset + index * 2u] = point.x;
-  endpointPoints[endpointPointsOffset + index * 2u + 1u] = point.y;`
+  keysY[keysYOffset + index] = keyY;`
       })
     );
 
@@ -522,6 +622,7 @@ const LAST: u32 = ${endpointCount - 1}u;`,
       {name: 'headFlags', view: headFlags, type: 'u32', access: 'read'},
       {name: 'headRanks', view: headRanks, type: 'u32', access: 'read'},
       {name: 'splitOverflow', view: splitOverflow, type: 'u32', access: 'read'},
+      {name: 'snapOverflow', view: snapOverflow, type: 'u32', access: 'read'},
       {name: 'nodeCount', view: nodeOutputs.count, type: 'u32', access: 'read_write'}
     ];
     if (nodeOutputs.requiredCount) {
@@ -552,7 +653,7 @@ const LAST: u32 = ${endpointCount - 1}u;`,
         body: `let total = headRanks[headRanksOffset + LAST] + headFlags[headFlagsOffset + LAST];
   nodeCount[nodeCountOffset] = min(total, NODE_CAPACITY);
   ${nodeOutputs.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
-  ${props.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u);' : ''}`
+  ${props.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u || snapOverflow[snapOverflowOffset] != 0u);' : ''}`
       })
     );
     return nodes;

@@ -25,6 +25,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterScalarFormat, GPURasterTextureFormat} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Explicit graph-native conversion from packed raster samples into a caller-owned storage texture. */
 export type GPURasterBufferToTextureProps<
@@ -220,7 +221,7 @@ export class GPURasterBufferToTexture<
       validityConditions.push('sourceValidity[SOURCE_VALIDITY_OFFSET + pixelIndex] != 0u');
     }
     if (this.input.format === 'float32') {
-      validityConditions.push('rawSample == rawSample && abs(rawSample) <= 3.402823466e+38');
+      validityConditions.push('isFiniteValue(rawSample)');
     }
     if (this.input.noDataValue !== undefined && !Number.isNaN(this.input.noDataValue)) {
       validityConditions.push(
@@ -231,9 +232,7 @@ export class GPURasterBufferToTexture<
       ? `f32(rawSample) * ${getRasterFloatLiteral(this.input.scale ?? 1)} + ${getRasterFloatLiteral(this.input.offset ?? 0)}`
       : 'rawSample';
     if (this.applyCalibration) {
-      validityConditions.push(
-        'outputSample == outputSample && abs(outputSample) <= 3.402823466e+38'
-      );
+      validityConditions.push('isFiniteValue(outputSample)');
     }
     const validityExpression = validityConditions.join(' && ') || 'true';
     const calibratedDeclaration = this.applyCalibration
@@ -260,6 +259,7 @@ const INPUT_OFFSET: u32 = ${getViewElementOffset(this.input.storage.values)}u;
 ${sourceValidityDeclaration}
 ${outputValidityDeclaration}
 
+${IS_FINITE_VALUE_WGSL}
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (globalId.x >= WIDTH || globalId.y >= HEIGHT) { return; }

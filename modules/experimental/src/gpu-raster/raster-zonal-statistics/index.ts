@@ -7,6 +7,8 @@ export {
   GPURasterZonalStatistics
 } from './gpu-raster-zonal-statistics';
 export type {
+  GPURasterZonalStatisticsCellSizeMode,
+  GPURasterZonalStatisticsMomentOutput,
   GPURasterZonalStatisticsOutput,
   GPURasterZonalStatisticsProps,
   GPURasterZonalStatisticsSumOrder

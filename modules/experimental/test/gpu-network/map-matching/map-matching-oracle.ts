@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {NONE, type AccessibilityCSR} from '../network-accessibility/network-accessibility-oracle';
+import {PLANAR_NETWORK_METRIC, type NetworkMetricOracle} from '../network-metric-oracle';
 
 /** Parameters mirrored from `GPUMapMatchingParameters`, with the defaults resolved. */
 export type MapMatchingOracleParameters = {
@@ -25,7 +26,10 @@ type Candidate = {edge: number; fraction: number; distance: number};
 
 /**
  * Float64 Newson-Krumm Viterbi with exact bounded Dijkstra, the model `GPUMapMatching` approximates
- * only through its route node budget and f32 arithmetic.
+ * only through its route node budget and f32 arithmetic. `metric` selects planar or great-circle
+ * distances (planar by default). `searchRadius` is clamped to `2 * cellSizeInMetricUnits`, the
+ * cell size in the metric's units (on longitude/latitude, the meters of `cellSize` degrees of
+ * latitude).
  */
 export function matchOracle(
   points: Float32Array,
@@ -34,32 +38,26 @@ export function matchOracle(
   csr: AccessibilityCSR,
   parameters: MapMatchingOracleParameters,
   candidateCount: number,
-  cellSize: number
+  cellSize: number,
+  metric: NetworkMetricOracle = PLANAR_NETWORK_METRIC,
+  cellSizeInMetricUnits = cellSize
 ): MapMatchingOracleResult {
   const pointCount = points.length / 2;
-  const radius = Math.min(parameters.searchRadius, 2 * cellSize);
+  const radius = Math.min(parameters.searchRadius, 2 * cellSizeInMetricUnits);
   const node = (index: number) => [nodePositions[index * 2], nodePositions[index * 2 + 1]];
-  const lengths = Array.from(csr.neighbors, (target, edge) => {
-    const [ax, ay] = node(csr.sources[edge]);
-    const [bx, by] = node(target);
-    return Math.hypot(bx - ax, by - ay);
-  });
+  const lengths = Array.from(csr.neighbors, (target, edge) =>
+    metric.getDistance(node(csr.sources[edge]), node(target))
+  );
   const candidates: Candidate[][] = [];
   for (let point = 0; point < pointCount; point++) {
     const px = points[point * 2];
     const py = points[point * 2 + 1];
     const found: Candidate[] = [];
     for (let edge = 0; edge < csr.neighbors.length; edge++) {
-      const [ax, ay] = node(csr.sources[edge]);
-      const [bx, by] = node(csr.neighbors[edge]);
-      const dx = bx - ax;
-      const dy = by - ay;
-      const denominator = dx * dx + dy * dy;
-      const fraction =
-        denominator > 0
-          ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / denominator))
-          : 0;
-      const distance = Math.hypot(px - (ax + fraction * dx), py - (ay + fraction * dy));
+      const start = node(csr.sources[edge]);
+      const end = node(csr.neighbors[edge]);
+      const fraction = metric.getSegmentFraction([px, py], start, end);
+      const distance = metric.getDistance([px, py], metric.interpolate(start, end, fraction));
       if (distance <= radius) {
         found.push({edge, fraction, distance});
       }
@@ -108,9 +106,9 @@ export function matchOracle(
       const pointer = here.map(() => NONE);
       let isReachable = false;
       if (point > first) {
-        const straight = Math.hypot(
-          points[point * 2] - points[point * 2 - 2],
-          points[point * 2 + 1] - points[point * 2 - 1]
+        const straight = metric.getDistance(
+          [points[point * 2 - 2], points[point * 2 - 1]],
+          [points[point * 2], points[point * 2 + 1]]
         );
         const bound = straight * parameters.routeFactor + parameters.routeSlack;
         candidates[point - 1].forEach((from, fromSlot) => {

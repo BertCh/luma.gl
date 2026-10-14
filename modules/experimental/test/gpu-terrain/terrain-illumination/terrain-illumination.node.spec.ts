@@ -22,6 +22,7 @@ import {
   getGPUTerrainHorizonStepDistances,
   getTerrainHorizonSectorOutput,
   GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES,
   GPU_TERRAIN_HORIZON_PARAMETER_LENGTH,
   GPUTerrainHorizon,
   type GPUTerrainHorizonProps
@@ -38,7 +39,11 @@ import {
   getTerrainIlluminationGroundCellSize
 } from '../../../src/gpu-terrain/terrain-illumination/terrain-illumination-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
-import {getVisibleDiskFraction, integrateVisibleDiskFraction} from './terrain-horizon-oracle';
+import {
+  getAnisotropicWeightOracle,
+  getVisibleDiskFraction,
+  integrateVisibleDiskFraction
+} from './terrain-horizon-oracle';
 import {computeTextureShading} from './texture-shading-oracle';
 import {createBand} from '../terrain-test-utils';
 
@@ -100,6 +105,15 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
   expect(contributor.algorithm).toBe('march');
   expect(() => create({algorithm: 'pyramid' as never})).toThrow(/algorithm/);
   expect(() => create({algorithm: 'sweep', stepGrowth: 1.2})).toThrow(/march algorithm only/);
+  // Geographic sweeps derive their line family per frame from the reference row's cell size.
+  const geographicSweep = create({
+    id: 'geographic-sweep',
+    algorithm: 'sweep',
+    cellSizeMode: 'geographic'
+  });
+  expect(
+    geographicSweep.getCommandNodes(graph).filter(node => /-horizon-\d$/.test(node.id))
+  ).toHaveLength(8);
   const sweep = create({
     id: 'sweep-horizon',
     algorithm: 'sweep',
@@ -355,11 +369,18 @@ it('GPUTextureShading validates props and approximates a fractional Laplacian', 
 
 it('getTerrainIlluminationGroundCellSize scales Web Mercator and geographic rows', () => {
   expect(getTerrainIlluminationGroundCellSize('uniform', [3, 4], 0, 0, 2, 10)).toEqual([3, 4]);
+  // WGS84 radii of curvature at the row latitude (python3 -I, closed form, a = 6378137,
+  // f = 1 / 298.257223563, e2 = f (2 - f), w = 1 - e2 sin^2(lat), N = a / sqrt(w),
+  // M = a (1 - e2) / w^1.5): at 60 degrees N cos(lat) PI / 180 = 55800.001572436144 m and
+  // M PI / 180 = 111412.28745777943 m per degree (the equatorial sphere gave 55659.75 / 111319.49).
   const [x, y] = getTerrainIlluminationGroundCellSize('geographic', [0.001, 0.001], 60, 60, 0, 1);
-  expect(x).toBeCloseTo(111.31949 * 0.5, 3);
-  expect(y).toBeCloseTo(111.31949, 3);
+  expect(x).toBeCloseTo(55.800001572436144, 9);
+  expect(y).toBeCloseTo(111.41228745777943, 9);
+  // Normalized Web Mercator y = 0.5 is the equator: x = N(0) / a = 1, y = M(0) / a =
+  // 1 - e2 = 0.9933056200098586 (python3 -I, same formulas).
   const mercator = getTerrainIlluminationGroundCellSize('web-mercator', [10, 10], 0.5, 0.5, 0, 1);
   expect(mercator[0]).toBeCloseTo(10, 6);
+  expect(mercator[1]).toBeCloseTo(9.933056200098586, 9);
 });
 
 it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness options', () => {
@@ -463,6 +484,90 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
   expect(() =>
     getGPUTerrainHorizonParameterValues({cellSize: [2, 3], anisotropyLevel: -1})
   ).toThrow(/level/);
+  device.destroy();
+});
+
+it('anisotropic sky-view weights use RVT asvf directions, default and signed integer levels', () => {
+  // python3 -I, rvt/vis.py sky_view_factor_compute: RVT direction i has angle a_i = i * 360 / n and
+  // np.roll(height, (round(cos a * r), round(sin a * r)), axis=(0, 1)) samples north = cos a,
+  // east = -sin a, i.e. compass (360 - a) mod 360 (counterclockwise from north). Weights
+  // w_i = (1 - wm) * cos((a_i - A) / 2) ** level + wm (signed), listed per compass sector d = RVT
+  // direction (n - d) % n.
+  const expected: [number, number, number, number, number[]][] = [
+    [
+      16,
+      315,
+      4,
+      0.4,
+      [
+        0.8371320343559643, 0.9551968683423773, 1.0, 0.9551968683423773, 0.8371320343559643,
+        0.6867720211205357, 0.55, 0.45716196170148204, 0.4128679656440358, 0.40086914883560504, 0.4,
+        0.40086914883560504, 0.4128679656440358, 0.45716196170148193, 0.5499999999999999,
+        0.686772021120536
+      ]
+    ],
+    [
+      16,
+      45,
+      8,
+      0.1,
+      [
+        0.5777110386504597, 0.30559548024389227, 0.15624999999999997, 0.10816872466390426,
+        0.10041396134954021, 0.10000188854924609, 0.1, 0.10000188854924609, 0.10041396134954021,
+        0.10816872466390426, 0.15625000000000003, 0.3055954802438927, 0.5777110386504597,
+        0.8706089065429569, 1.0, 0.8706089065429569
+      ]
+    ],
+    // Odd level: RVT's signed power drops sector 1 below the minimum weight 0.2.
+    [
+      16,
+      100,
+      3,
+      0.2,
+      [
+        0.41246748505503594, 0.11097852329608822, 0.17824718835568318, 0.19896776814945358,
+        0.20052963662809076, 0.2175294469227998, 0.2787601956662583, 0.3961795350038978,
+        0.5596266658713869, 0.7391166792705333, 0.8939824562506804, 0.9858198288324129,
+        0.990901984112861, 0.907899075651571, 0.7583117383509435, 0.5794729518119288
+      ]
+    ],
+    [16, 100, 0, 0, new Array(16).fill(1)]
+  ];
+  for (const [directionCount, azimuthDegrees, level, minimumWeight, weights] of expected) {
+    for (let sector = 0; sector < directionCount; sector++) {
+      expect(
+        getAnisotropicWeightOracle(sector, directionCount, {azimuthDegrees, level, minimumWeight})
+      ).toBeCloseTo(weights[sector], 12);
+    }
+  }
+  // RVT's default 315 is compass north-east: the maximum weight is sector 2 of 16 (45 degrees).
+  // Before the RVT convention the same number put it at sector 14 (compass 315, north-west).
+  expect(GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES).toBe(315);
+  expect(expected[0][4].indexOf(Math.max(...expected[0][4]))).toBe(2);
+
+  // The kernel maps compass sectors to RVT directions and keeps the sign of odd levels.
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const output = getTerrainHorizonSectorOutput({
+    sector: 0,
+    directionCount: 16,
+    anisotropicSum: createTransientView(graph, 'w', 'float32', 16),
+    mode: 'zenith'
+  });
+  expect(output.declarations).toContain('f32((16u - sector) % 16u) * 22.5');
+  expect(output.declarations).toContain('cos((rvtDirection - mainDirection) * 0.5');
+  expect(output.declarations).toContain('fract(level * 0.5) != 0.0');
+  expect(output.declarations).not.toContain('abs(cos(');
+
+  // Levels are RVT's integer a_poly_level; the packed layout is unchanged.
+  for (const anisotropyLevel of [1.5, -1, Number.NaN]) {
+    expect(() => getGPUTerrainHorizonParameterValues({cellSize: [2, 3], anisotropyLevel})).toThrow(
+      /non-negative integer/
+    );
+  }
+  expect(
+    Array.from(getGPUTerrainHorizonParameterValues({cellSize: [2, 3], anisotropyLevel: 3}))
+  ).toEqual([2, 3, 1, 0, 0, 0, 0, 0, 315, 3, Math.fround(0.4), 0]);
   device.destroy();
 });
 

@@ -17,6 +17,9 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../../gpu-spatial-analysis/contracts/spatial-context';
+import {GEODESIC_WGSL} from '../../gpu-spatial-analysis/geometry-measures/geodesic-wgsl';
+import {resolveNetworkSpatialContext} from '../network-spatial-context';
 import {GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH} from './network-line-graph-parameters';
 
 const OPERATION = 'GPUNetworkLineGraph';
@@ -36,8 +39,14 @@ export type GPUNetworkLineGraphProps = {
   neighbors: GraphDataView<'uint32'>;
   /** Non-negative travel cost per edge. Negative or NaN edges stay impassable in the line graph. */
   weights: GraphDataView<'float32'>;
-  /** Planar node positions, one per node, used for the turn angles. */
+  /** Node positions, one per node, used for the turn angles. */
   nodePositions: GraphDataView<'float32x2'>;
+  /**
+   * Coordinates of `nodePositions`. Omitted means native planar coordinates (x east, y north).
+   * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
+   * turn angles between great-circle bearings at the turn node.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Per-frame `GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH` float32 elements written with
    * `getGPUNetworkLineGraphParameterValues`.
@@ -77,6 +86,11 @@ export type GPUNetworkLineGraphProps = {
  * `uTurnAngle` or more costing `uTurnCost` instead (a negative `uTurnCost` bans U-turns). Listed
  * banned turns are removed. Rows keep their arcs in ascending following-edge order.
  *
+ * Turn directions are planar by default. With a great-circle `spatialContext` positions are
+ * longitude and latitude degrees, and the angle is between the arrival bearing of `e` and the
+ * departure bearing of `f` at `v` (great-circle bearings), so turns are not skewed by the
+ * east-west stretch of degrees away from the equator.
+ *
  * The output is an ordinary CSR, so `GPUNetworkReachability`, `GPUNetworkCostMatrix` and the other
  * routing contributors run on it unchanged. Seed a search from an origin node `s` with the line
  * nodes `offsets[s] .. offsets[s + 1]` at cost `weights[e]`. The cost of line node `e` is then the
@@ -97,11 +111,14 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
   readonly edgeCount: number;
   /** Compile-time arc capacity. */
   readonly arcCapacity: number;
+  /** Resolved spatial context. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUNetworkLineGraphProps) {
     this.id = props.id ?? 'network-line-graph';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveNetworkSpatialContext(id, props.spatialContext);
     for (const [name, view] of [
       ['offsets', props.offsets],
       ['neighbors', props.neighbors],
@@ -179,11 +196,22 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const hasBans = Boolean(props.bannedTurns);
-    const edgeVectors = createTransientView(graph, `${id}-edge-vectors`, 'float32', 2 * edgeCount);
+    // Planar edges keep one direction; great-circle edges keep the departure direction at the
+    // tail and the arrival direction at the head, which differ along a great circle.
+    const isGeodesic = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    const edgeVectorStride = isGeodesic ? 4 : 2;
+    const edgeVectors = createTransientView(
+      graph,
+      `${id}-edge-vectors`,
+      'float32',
+      edgeVectorStride * edgeCount
+    );
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', edgeCount + 1);
     const declarations = `const NODE_COUNT: u32 = ${nodeCount}u;
 const EDGE_COUNT: u32 = ${edgeCount}u;
 const ARC_CAPACITY: u32 = ${arcCapacity}u;
+const EDGE_VECTOR_STRIDE: u32 = ${edgeVectorStride}u;
+const ARRIVAL_OFFSET: u32 = ${edgeVectorStride - 2}u;
 ${TURN_WGSL}
 ${
   hasBans
@@ -214,14 +242,8 @@ fn isAllowedTurn(fromEdge: u32, toEdge: u32) -> bool {
     return true;
   }
   if (parameters[parametersOffset + 6u] > 1.6) {
-    let a = vec2<f32>(
-      edgeVectors[edgeVectorsOffset + 2u * fromEdge],
-      edgeVectors[edgeVectorsOffset + 2u * fromEdge + 1u]
-    );
-    let b = vec2<f32>(
-      edgeVectors[edgeVectorsOffset + 2u * toEdge],
-      edgeVectors[edgeVectorsOffset + 2u * toEdge + 1u]
-    );
+    let a = getArrivalDirection(fromEdge);
+    let b = getDepartureDirection(toEdge);
     if (dot(a, a) >= 0.5 && dot(b, b) >= 0.5 && dot(a, b) > 0.0) {
       return true;
     }
@@ -254,8 +276,11 @@ fn isAllowedTurn(fromEdge: u32, toEdge: u32) -> bool {
         ],
         invocationCount: nodeCount,
         declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
-const EDGE_COUNT: u32 = ${edgeCount}u;`,
-        body: `let start = nodePositions[nodePositionsOffset + 2u * index];
+const EDGE_COUNT: u32 = ${edgeCount}u;
+${isGeodesic ? GEODESIC_WGSL : ''}`,
+        body: isGeodesic
+          ? GEODESIC_EDGE_VECTORS_WGSL
+          : `let start = nodePositions[nodePositionsOffset + 2u * index];
   let startY = nodePositions[nodePositionsOffset + 2u * index + 1u];
   let end = min(offsets[offsetsOffset + index + 1u], EDGE_COUNT);
   for (var edge = offsets[offsetsOffset + index]; edge < end; edge++) {
@@ -470,17 +495,54 @@ const ARC_CAPACITY: u32 = ${arcCapacity}u;`,
   }
 }
 
-/** Turn geometry and cost helpers, reading `edgeVectors` and `parameters`. */
+/**
+ * Edge-vectors body for longitude/latitude: per edge the unit departure direction at the tail and
+ * the unit arrival direction at the head, `(east, north)` from great-circle bearings. The arrival
+ * direction is the reverse of the bearing from the head back to the tail. Degenerate edges keep 0.
+ */
+const GEODESIC_EDGE_VECTORS_WGSL = /* wgsl */ `let start = vec2<f32>(
+    nodePositions[nodePositionsOffset + 2u * index],
+    nodePositions[nodePositionsOffset + 2u * index + 1u]
+  );
+  let end = min(offsets[offsetsOffset + index + 1u], EDGE_COUNT);
+  for (var edge = offsets[offsetsOffset + index]; edge < end; edge++) {
+    let headNode = neighbors[neighborsOffset + edge];
+    var departure = vec2<f32>(0.0);
+    var arrival = vec2<f32>(0.0);
+    if (headNode < NODE_COUNT) {
+      let head = vec2<f32>(
+        nodePositions[nodePositionsOffset + 2u * headNode],
+        nodePositions[nodePositionsOffset + 2u * headNode + 1u]
+      );
+      if (geodesicCentralAngle(start, head) > 0.0) {
+        let departureBearing = geodesicInitialBearingDegrees(start, head) * GEODESIC_DEGREES_TO_RADIANS;
+        let returnBearing = geodesicInitialBearingDegrees(head, start) * GEODESIC_DEGREES_TO_RADIANS;
+        departure = vec2<f32>(sin(departureBearing), cos(departureBearing));
+        arrival = -vec2<f32>(sin(returnBearing), cos(returnBearing));
+      }
+    }
+    edgeVectors[edgeVectorsOffset + 4u * edge] = departure.x;
+    edgeVectors[edgeVectorsOffset + 4u * edge + 1u] = departure.y;
+    edgeVectors[edgeVectorsOffset + 4u * edge + 2u] = arrival.x;
+    edgeVectors[edgeVectorsOffset + 4u * edge + 3u] = arrival.y;
+  }`;
+
+/**
+ * Turn geometry and cost helpers, reading `edgeVectors` (`EDGE_VECTOR_STRIDE` floats per edge, the
+ * arrival direction at `ARRIVAL_OFFSET`) and `parameters`.
+ */
 const TURN_WGSL = /* wgsl */ `
+fn getDepartureDirection(edge: u32) -> vec2<f32> {
+  let base = edgeVectorsOffset + EDGE_VECTOR_STRIDE * edge;
+  return vec2<f32>(edgeVectors[base], edgeVectors[base + 1u]);
+}
+fn getArrivalDirection(edge: u32) -> vec2<f32> {
+  let base = edgeVectorsOffset + EDGE_VECTOR_STRIDE * edge + ARRIVAL_OFFSET;
+  return vec2<f32>(edgeVectors[base], edgeVectors[base + 1u]);
+}
 fn getTurnAngle(fromEdge: u32, toEdge: u32) -> f32 {
-  let a = vec2<f32>(
-    edgeVectors[edgeVectorsOffset + 2u * fromEdge],
-    edgeVectors[edgeVectorsOffset + 2u * fromEdge + 1u]
-  );
-  let b = vec2<f32>(
-    edgeVectors[edgeVectorsOffset + 2u * toEdge],
-    edgeVectors[edgeVectorsOffset + 2u * toEdge + 1u]
-  );
+  let a = getArrivalDirection(fromEdge);
+  let b = getDepartureDirection(toEdge);
   if (dot(a, a) < 0.5 || dot(b, b) < 0.5) {
     return 0.0;
   }

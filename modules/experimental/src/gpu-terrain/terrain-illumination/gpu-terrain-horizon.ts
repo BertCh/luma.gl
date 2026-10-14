@@ -42,6 +42,7 @@ import {
 } from './terrain-illumination-utils';
 import {
   getTerrainGroundCellSizeWGSL,
+  TERRAIN_PIXEL_DIRECTION_WGSL,
   type GPUTerrainCellSizeMode,
   type GPUTerrainRowDirection,
   validateTerrainCellSizeMode,
@@ -54,11 +55,21 @@ export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
 /**
  * How {@link GPUTerrainHorizon} finds horizons:
  * - `'march'`: bounded ray march with bilinear samples on the baked step schedule, O(steps) per
- *   pixel and sector.
+ *   pixel and sector. Each ray is a straight pixel line along the sector's ground azimuth at the
+ *   pixel's own row, and sample distances are ground meters at that row's cell size. The cell
+ *   size is not re-evaluated along the ray: at 60 N and 30 km on a 45 degree sector the samples
+ *   lie at a true bearing of 44.75 degrees and 0.14% closer than assumed; re-scaling per row would
+ *   only reach 44.83 degrees (a rhumb line, which is not the geodesic either).
  * - `'sweep'`: exact discrete horizons on digital lines through pixel centres with upper-hull
  *   pointers (Stewart 1998 style), amortised O(1) per pixel and sector. Samples are pixel centres
  *   on a digital line whose lateral offset from the ideal ray is at most half a pixel, so values
- *   differ from the march by sampling, not by precision. `stepGrowth` must be 1.
+ *   differ from the march by sampling, not by precision. `stepGrowth` must be 1. One digital line
+ *   family has one pixel slope, so on anisotropic cells it follows each sector's ground azimuth
+ *   at the reference row (`height / 2`); other rows of a `'geographic'` tile see the azimuth
+ *   rotated by the change of cos(latitude) across the tile, worst at 45 degree sectors: at 60 N,
+ *   0.11 degrees at the edge rows of a 0.25 degree tall tile, 0.44 degrees for 1 degree, 2.3
+ *   degrees for 5 degrees (about `tan(lat) * halfSpan / 2` radians). The march converts the azimuth
+ *   at each pixel's own row and has no such term.
  */
 export type GPUTerrainHorizonAlgorithm = 'march' | 'sweep';
 
@@ -73,9 +84,10 @@ export const GPU_TERRAIN_HORIZON_PARAMETER_LENGTH = 8;
 export const GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH = 12;
 
 /**
- * Default compass azimuth of maximum anisotropic sky-view weight, degrees clockwise from north.
- * RVT's default `a_main_direction = 315` runs counterclockwise from north and corresponds to 45
- * here (`ours = (360 - rvt) mod 360`); this default is the north-west light at 315.
+ * Default direction of maximum anisotropic sky-view weight in RVT's convention: RVT's default
+ * `asvf_dir = 315`. RVT direction angles run counterclockwise from north (90 is west, 270 east),
+ * so 315 is compass azimuth 45 (north-east). See
+ * {@link GPUTerrainHorizonSettings.anisotropyAzimuthDegrees}.
  */
 export const GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES = 315;
 
@@ -149,14 +161,21 @@ export type GPUTerrainHorizonSettings = {
   /** Ground search radius in meters; `<= 0` searches the full pixel radius. Defaults to 0. */
   maximumDistance?: number;
   /**
-   * Compass azimuth of maximum weight for `anisotropicSkyViewFactor`, degrees clockwise from
-   * north. Defaults to {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES}. RVT's
-   * `a_main_direction = A` equals `(360 - A) mod 360` here.
+   * Direction of maximum weight for `anisotropicSkyViewFactor`, in RVT's convention: the same
+   * number as RVT's `asvf_dir` / `a_main_direction` means the same direction. RVT direction angles
+   * run counterclockwise from north (0 north, 90 west, 180 south, 270 east), so `A` is compass
+   * azimuth `(360 - A) mod 360`. Defaults to
+   * {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES} (315, RVT's default, which is
+   * compass north-east). This is the only counterclockwise angle in gpu-terrain: sector azimuths,
+   * sun azimuths and aspect are compass azimuths, clockwise from north.
    */
   anisotropyAzimuthDegrees?: number;
   /**
-   * Weight exponent of `anisotropicSkyViewFactor`, a finite number `>= 0` (RVT: low 4, high 8).
-   * Defaults to {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL}.
+   * Weight exponent of `anisotropicSkyViewFactor`: a non-negative integer, RVT's `a_poly_level`.
+   * RVT's presets are low (level 4, minimum weight 0.4) and high (level 8, minimum weight 0.1).
+   * The power is signed as in RVT, `cos((a - A) / 2)^level`, so an odd level gives a weight below
+   * the minimum weight on the far side of the main direction, exactly like RVT. Defaults to
+   * {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL}.
    */
   anisotropyLevel?: number;
   /**
@@ -210,8 +229,8 @@ export function getGPUTerrainHorizonParameterValues(
     if (!Number.isFinite(anisotropyAzimuth)) {
       throw new Error('Terrain horizon anisotropy azimuth must be finite');
     }
-    if (!Number.isFinite(anisotropyLevel) || anisotropyLevel < 0) {
-      throw new Error('Terrain horizon anisotropy level must be finite and non-negative');
+    if (!Number.isSafeInteger(anisotropyLevel) || anisotropyLevel < 0) {
+      throw new Error('Terrain horizon anisotropy level must be a non-negative integer');
     }
     if (
       !Number.isFinite(anisotropyMinimumWeight) ||
@@ -269,11 +288,14 @@ export function getGPUTerrainHorizonStepDistances(
 }
 
 /**
- * Returns the unit march direction in pixel space for one horizon sector.
+ * Returns the unit ground-space direction `(east, row-ward)` of one horizon sector, which is also
+ * the pixel-space march direction on square ground cells.
  *
  * Sector `d` of `directionCount` has azimuth `d * 360 / directionCount` degrees clockwise from
  * north. Columns increase east; rows increase south for `rowDirection: 'south'`. Components are
- * rounded to float32, and round-off below 1e-9 snaps to 0.
+ * rounded to float32, and round-off below 1e-9 snaps to 0. The march kernels turn it into a pixel
+ * step per row with the row's ground cell size (`getTerrainPixelDirection`), so sector azimuths are
+ * ground azimuths on anisotropic (for example geographic) grids too.
  */
 export function getGPUTerrainHorizonDirection(
   sector: number,
@@ -361,9 +383,10 @@ export type GPUTerrainHorizonProps = {
    */
   negativeOpenness?: GraphDataView<'float32'>;
   /**
-   * Optional anisotropic sky-view factor per pixel in `[0, 1]` (Kokalj and Somrak): with sector
-   * azimuth `t` and `w = (1 - wMin) * |cos((t - tMain) / 2)|^level + wMin`, it is
-   * `1 - sum(w * sin(max(h, 0))) / sum(w)`. Requires 12 settings values.
+   * Optional anisotropic sky-view factor per pixel (Kokalj and Somrak 2019, RVT `asvf`): with the
+   * sector's RVT direction angle `a = (360 - t) mod 360` for compass azimuth `t`, main direction
+   * `A` (RVT convention) and `w = (1 - wMin) * cos((a - A) / 2)^level + wMin` (signed power, as in
+   * RVT), it is `1 - sum(w * sin(max(h, 0))) / sum(w)`. Requires 12 settings values.
    */
   anisotropicSkyViewFactor?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where the center elevation is valid, else 0. */
@@ -388,7 +411,7 @@ export type TerrainHorizonSectorOutputProps = {
   angleSum?: GraphDataView<'float32'>;
   /**
    * Per-pixel weighted sum of `sin(max(h, 0))` (binding `anisotropicSum`), `'zenith'` mode. The
-   * caller's kernel must bind `settings` (`array<f32>`, 12 values, slots 8 to 10 hold azimuth,
+   * caller's kernel must bind `settings` (`array<f32>`, 12 values, slots 8 to 10 hold the RVT main direction,
    * level and minimum weight) and declare {@link TERRAIN_ILLUMINATION_WGSL_CONSTANTS}.
    */
   anisotropicSum?: GraphDataView<'float32'>;
@@ -501,23 +524,29 @@ export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputP
 }
 
 /**
- * WGSL `fn getAnisotropicWeight(sector: u32) -> f32` for `directionCount` sectors, reading
- * azimuth, level and minimum weight from `settings[8..10]`. `pow(0, level)` is guarded.
+ * WGSL `fn getAnisotropicWeight(sector: u32) -> f32` for `directionCount` sectors, reading the
+ * RVT main direction, level and minimum weight from `settings[8..10]`.
+ *
+ * RVT parity (`rvt.vis.sky_view_factor_compute`): RVT direction `i` has angle `i * 360 / n`
+ * counterclockwise from north, so compass sector `d` is RVT direction `(n - d) mod n`, and the
+ * weight is `(1 - wMin) * cos((a - A) / 2)^level + wMin` with the signed power of an integer level
+ * (`0^0 = 1`, as numpy).
  *
  * @internal
  */
 function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string {
   return `fn getAnisotropicWeight(sector: u32) -> f32 {
-  let mainAzimuth = settings[settingsOffset + 8u];
+  let mainDirection = settings[settingsOffset + 8u];
   let level = settings[settingsOffset + 9u];
   let minimumWeight = settings[settingsOffset + 10u];
-  let halfAngle = (f32(sector) * ${getWGSLFloatLiteral(360 / directionCount)} - mainAzimuth) * 0.5 * DEGREES_TO_RADIANS;
-  let cosine = abs(cos(halfAngle));
+  // Compass sector d is RVT direction (n - d) mod n; RVT angles run counterclockwise from north.
+  let rvtDirection = f32((${directionCount}u - sector) % ${directionCount}u) * ${getWGSLFloatLiteral(360 / directionCount)};
+  let cosine = cos((rvtDirection - mainDirection) * 0.5 * DEGREES_TO_RADIANS);
   var power = 1.0;
-  if (cosine <= 0.0) {
-    power = select(0.0, 1.0, level == 0.0);
-  } else {
-    power = pow(cosine, level);
+  if (level > 0.0) {
+    // pow is undefined for a zero or negative base; odd integer levels keep the sign like RVT.
+    power = select(0.0, pow(abs(cosine), level), abs(cosine) > 0.0);
+    if (cosine < 0.0 && fract(level * 0.5) != 0.0) { power = -power; }
   }
   return (1.0 - minimumWeight) * power + minimumWeight;
 }
@@ -538,9 +567,11 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * - Positive openness (Yokoyama et al. 2002): `mean(90 - h)` degrees.
  * - Negative openness: `90 - mean(h_nadir)` with `h_nadir` the horizon of the inverted terrain
  *   (z factor negated, curvature still drops), tracked in the same march loop.
- * - Anisotropic sky-view factor (Kokalj and Somrak 2019, RVT `asvf`): sector weights
- *   `(1 - wMin) * |cos((t - tMain) / 2)|^level + wMin`, where `tMain` is the compass azimuth of
- *   maximum weight (RVT's `a_main_direction = A` is `(360 - A) mod 360` here).
+ * - Anisotropic sky-view factor (Kokalj and Somrak 2019, RVT `asvf`), with RVT's weights and
+ *   direction convention: sector weights `(1 - wMin) * cos((a - A) / 2)^level + wMin`, where `a` is
+ *   the sector's RVT direction angle (counterclockwise from north, `(360 - t) mod 360` for compass
+ *   azimuth `t`), `A` is `anisotropyAzimuthDegrees` exactly as RVT's `asvf_dir`, and the power is
+ *   signed with an integer level.
  *
  * With `algorithm: 'sweep'` the per-sector march is replaced by an exact upper-hull sweep over
  * digital lines through pixel centres (one invocation per line, amortised O(1) per pixel and
@@ -1246,7 +1277,8 @@ ${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}
-${HORIZON_MARCH_SAMPLE_WGSL}`,
+${HORIZON_MARCH_SAMPLE_WGSL}
+${TERRAIN_PIXEL_DIRECTION_WGSL}`,
         body: `let pixel = index;
   let column = index % WIDTH;
   let row = index / WIDTH;
@@ -1260,7 +1292,9 @@ ${HORIZON_MARCH_SAMPLE_WGSL}`,
   let center = vec2<f32>(f32(column), f32(row));
   ${loads}
   for (var sector = FIRST_SECTOR; sector < END_SECTOR; sector++) {
-    let direction = DIRECTIONS[sector];
+    // DIRECTIONS are ground azimuths; the pixel step follows them on anisotropic cells. The ray
+    // keeps this row's cell size (see GPUTerrainHorizonAlgorithm for the along-ray error).
+    let direction = getPixelDirection(DIRECTIONS[sector], groundCell);
     let groundStep = length(direction * groundCell);
     var horizonAngle = getNaN(index);
     var nadirAngle = getNaN(index);
@@ -1387,7 +1421,8 @@ ${getTerrainGroundCellSizeWGSL(props.cellSizeMode, {
   cellSizeIndex: 0,
   northEdgeIndex: 4
 })}
-${HORIZON_MARCH_SAMPLE_WGSL}`,
+${HORIZON_MARCH_SAMPLE_WGSL}
+${TERRAIN_PIXEL_DIRECTION_WGSL}`,
     body: `let pixel = index;
   let column = index % WIDTH;
   let row = index / WIDTH;
@@ -1395,7 +1430,8 @@ ${HORIZON_MARCH_SAMPLE_WGSL}`,
   let curvature = settings[settingsOffset + 3u];
   let maximumDistance = settings[settingsOffset + 6u];
   let groundCell = getGroundCellSize(row);
-  let groundStep = length(DIRECTION * groundCell);
+  let direction = getPixelDirection(DIRECTION, groundCell);
+  let groundStep = length(direction * groundCell);
   var horizonAngle = getNaN(index);
   var nadirAngle = getNaN(index);
   if (isValidPixel(column, row) && groundStep > 0.0 && isFiniteValue(groundStep)) {
@@ -1407,7 +1443,7 @@ ${HORIZON_MARCH_SAMPLE_WGSL}`,
     var maximumNadirTangent = 0.0;
     for (var stepIndex = 0u; stepIndex < STEP_COUNT; stepIndex++) {
       let stepDistance = STEP_DISTANCES[stepIndex];
-      let position = center + DIRECTION * stepDistance;
+      let position = center + direction * stepDistance;
       if (any(position < vec2<f32>(0.0)) || any(position > limit)) { break; }
       let groundDistance = stepDistance * groundStep;
       if (maximumDistance > 0.0 && groundDistance > maximumDistance) { break; }

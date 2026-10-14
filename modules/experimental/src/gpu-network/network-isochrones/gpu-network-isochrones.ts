@@ -32,6 +32,11 @@ import type {
   GPUCellSetOutlineOutput,
   GPUCellSetOutlineRings
 } from '../../gpu-spatial-analysis/cell-set-outline/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
 import {GPUNetworkServiceAreas} from '../network-analysis/gpu-network-service-areas';
 import {GPUNetworkReachability} from '../network-reachability/gpu-network-reachability';
 import {GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH} from './network-isochrones-parameters';
@@ -53,6 +58,10 @@ const MAXIMUM_BUFFER_PIXELS_LIMIT = 16;
 const DEFAULT_MAXIMUM_SAMPLES_PER_EDGE = 64;
 const MAXIMUM_SAMPLES_PER_EDGE_LIMIT = 1024;
 const DEFAULT_UNREACHED_COST = 1e30;
+/** The raster path is planar; the cell path takes longitude/latitude. */
+const ISOCHRONES_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+  coordinateSpaces: ['planar', 'longitude-latitude']
+};
 
 /** Raster path of {@link GPUNetworkIsochrones}: splat edge costs to a raster, then isobands. */
 export type GPUNetworkIsochroneRaster = {
@@ -173,8 +182,16 @@ export type GPUNetworkIsochronesProps = {
   /** Non-negative travel cost per edge. Negative or NaN edges are skipped. */
   weights: GraphDataView<'float32'>;
   /**
+   * Optional coordinates of `nodePositions`. The raster path is planar (pixel grid, `bufferRadius`
+   * and `walkCostPerUnit` are Euclidean in the units of the extent), so a longitude/latitude
+   * context with `raster` throws: project to a planar frame first. The cell path indexes
+   * longitude/latitude degrees, so a planar context with `cellOutline` throws. Omitted keeps the
+   * positions unchecked.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * Node positions. The raster path uses them in the units of the extent (projected meters give an
-   * isotropic buffer; longitude/latitude degrees give an anisotropic one). The cell path needs
+   * isotropic buffer; longitude/latitude degrees would give an anisotropic one). The cell path needs
    * longitude/latitude degrees.
    */
   nodePositions: GraphDataView<'float32x2'>;
@@ -184,7 +201,10 @@ export type GPUNetworkIsochronesProps = {
    * nodes are `+Infinity`. Its length defines the node count.
    */
   costs: GraphDataView<'float32'>;
-  /** Optional facility nodes that start a multi-source search writing `costs`. */
+  /**
+   * Optional facility nodes that start a multi-source search writing `costs`. Pass `converged` to
+   * detect a search cut short by `maxIterations`.
+   */
   sources?: GraphDataView<'uint32'>;
   /**
    * Optional per-node facility row (index into the facilities) of the nearest facility,
@@ -208,6 +228,21 @@ export type GPUNetworkIsochronesProps = {
   /** Compile-time relaxation rounds of the search (with `sources`). Defaults to 64. */
   maxIterations?: number;
   /**
+   * Compile-time hops one workgroup chains per round of the search (with `sources`), forwarded to
+   * `GPUNetworkReachability` (default 32) or `GPUNetworkServiceAreas` (default 16). A network
+   * whose longest shortest path has `h` hops needs about `ceil(h / localIterations)` rounds.
+   */
+  localIterations?: number;
+  /**
+   * Optional one-row flag written by the search (with `sources`): 1 when it reached a fixpoint, 0
+   * when `maxIterations` (or `labelIterations`) stopped it first. A 0 means `costs` are truncated:
+   * nodes past the last round stay unreached or too costly, so every isochrone polygon is smaller
+   * than the true one. As with `GPUNetworkReachability` and `GPUNetworkServiceAreas`, omitting it
+   * accepts that truncation unchecked; pass it whenever the network diameter is not known to fit
+   * `maxIterations`. Not accepted without `sources` (the caller's costs carry their own status).
+   */
+  converged?: GraphDataView<'uint32'>;
+  /**
    * Ascending cost thresholds (isochrone times); the length is the maximum break count. The first
    * `breakCount` entries of `parameters` are active.
    */
@@ -226,7 +261,8 @@ export type GPUNetworkIsochronesProps = {
  *
  * The contributor composes existing parts. Node costs come from the caller (any producer such as
  * `GPUNetworkServiceAreas`, whose `costs` are the multi-source minimum used here) or from a
- * `GPUNetworkReachability` search over `sources`. A splat kernel then samples every edge at a
+ * `GPUNetworkReachability` search over `sources`, whose optional `converged` flag reports a search
+ * cut short by `maxIterations` (truncated costs, too-small polygons). A splat kernel then samples every edge at a
  * bounded number of points, interpolates the cost linearly from the source node along the edge
  * weight, and writes the minimum (or maximum) cost to the pixels within the walking buffer using
  * integer atomics on order-preserving float bits. Results do not depend on thread order. The
@@ -237,6 +273,7 @@ export type GPUNetworkIsochronesProps = {
  * features need a buffer. Costs of pixels in the buffer are the sample cost plus
  * `walkCostPerUnit` times the distance, which gives the standard "street cost plus walk" isochrone.
  * Edges are straight segments between node positions, so curved street geometry is approximated.
+ * A `spatialContext` makes the coordinate expectations of both paths checked at construction.
  *
  * The cell path outlines cells holding at least one reached node (cost at or below
  * `cellCostLimit`) with `GPUCellSetOutline`; `cellOutline.rings` chains the outline into closed
@@ -254,6 +291,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
   readonly nodeCount: number;
   /** Resolved raster accumulation mode, when the raster path is on. */
   readonly mode: GPUNetworkIsochronesMode;
+  /** The given spatial context, validated, or `undefined` when omitted. */
+  readonly spatialContext: GPUSpatialContext | undefined;
 
   constructor(props: GPUNetworkIsochronesProps) {
     this.id = props.id ?? DEFAULT_ID;
@@ -262,6 +301,16 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     const {raster, cellOutline} = props;
     if (!raster && !cellOutline) {
       throw new Error(`${id} needs raster or cellOutline`);
+    }
+    this.spatialContext = props.spatialContext
+      ? resolveGPUSpatialContext(id, props.spatialContext, ISOCHRONES_SPATIAL_CONTEXT_SUPPORT)
+      : undefined;
+    const coordinateSpace = this.spatialContext?.coordinateSpace;
+    if (raster && coordinateSpace === 'longitude-latitude') {
+      throw new Error(`${id} raster needs planar positions; project to a planar frame first`);
+    }
+    if (cellOutline && coordinateSpace === 'planar') {
+      throw new Error(`${id} cellOutline needs longitude-latitude positions`);
     }
     for (const [name, view] of [
       ['offsets', props.offsets],
@@ -310,10 +359,22 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       );
     }
     if (!props.sources) {
-      for (const name of ['sourceCosts', 'sourceCount', 'costLimit'] as const) {
-        if (props[name]) {
+      for (const name of [
+        'sourceCosts',
+        'sourceCount',
+        'costLimit',
+        'converged',
+        'localIterations'
+      ] as const) {
+        if (props[name] !== undefined) {
           throw new Error(`${id} ${name} needs sources`);
         }
+      }
+    }
+    if (props.converged) {
+      validatePackedUint32View(props.converged, `${id} converged`);
+      if (props.converged.length !== 1) {
+        throw new Error(`${id} converged must contain exactly one row`);
       }
     }
     if (props.assignments) {
@@ -478,6 +539,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       props.sourceCosts,
       props.sourceCount,
       props.costLimit,
+      props.converged,
       props.breaks,
       props.parameters,
       props.assignments,
@@ -502,8 +564,10 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           costLimit: props.costLimit,
           maxIterations: props.maxIterations,
           labelIterations: props.labelIterations,
+          localIterations: props.localIterations,
           assignments: props.assignments,
-          costs: props.costs
+          costs: props.costs,
+          converged: props.converged
         }).getCommandNodes(graph)
       );
     } else if (props.sources) {
@@ -518,7 +582,9 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           sourceCount: props.sourceCount,
           costLimit: props.costLimit,
           maxIterations: props.maxIterations,
-          costs: props.costs
+          localIterations: props.localIterations,
+          costs: props.costs,
+          converged: props.converged
         }).getCommandNodes(graph)
       );
     }

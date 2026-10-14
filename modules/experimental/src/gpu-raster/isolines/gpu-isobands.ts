@@ -43,9 +43,9 @@ export type GPUIsobandsOutput = {
    */
   bandClasses?: GraphDataView<'uint32'>;
   /**
-   * Triangle vertices in world coordinates, three consecutive rows per triangle, counter-clockwise.
-   * The triangle capacity is `triangleBands.length`, so this view needs `3 * triangleBands.length`
-   * rows.
+   * Triangle vertices in world coordinates relative to the parameters' `localOrigin`, three
+   * consecutive rows per triangle, counter-clockwise. The triangle capacity is
+   * `triangleBands.length`, so this view needs `3 * triangleBands.length` rows.
    */
   triangles?: GraphDataView<'float32x2'>;
   /** Band index per triangle. Its length is the triangle capacity. */
@@ -123,6 +123,13 @@ export type GPUIsobandsProps = {
  * Triangles are ordered by cell, band, piece and fan index (per-cell counts, `GPUScan`, scatter), so
  * output is deterministic. Changing breaks, `breakCount`, the extent or the band window never
  * recompiles the graph.
+ *
+ * Precision: vertices are `minX + (gridX + 0.5) * cellWidth` in float32 relative to the packer's
+ * `localOrigin`. Absolute vertices (the default origin `[0, 0]`) are quantized to the float32 ulp,
+ * 0.5 m at a UTM northing of 4.6e6 m (2 m at 2e7 m in EPSG:3857). With `localOrigin` set to the
+ * raster or tile corner, a vertex is within about `1.2e-7` of its distance from that corner of the
+ * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
+ * origin.
  */
 export class GPUIsobands implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

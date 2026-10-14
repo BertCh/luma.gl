@@ -33,6 +33,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterMetadata} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** One disjoint, already-labeled tile with local mergeable measurements and global destinations. */
 export type GPURasterCrossTile = {
@@ -972,6 +973,7 @@ fn addFloat(index:u32,value:f32){
  var previous=atomicLoad(&globalValues[${getViewElementOffset(output)}u+index]);
  loop{let next=bitcast<u32>(bitcast<f32>(previous)+value);let result=atomicCompareExchangeWeak(&globalValues[${getViewElementOffset(output)}u+index],previous,next);if(result.exchanged){break;}previous=result.old_value;}
 }
+${IS_FINITE_VALUE_WGSL}
 @compute @workgroup_size(${LINEAR_WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId:vec3<u32>){
  if(globalId.x>=${plan.candidateCount}u){return;}
@@ -979,7 +981,7 @@ fn main(@builtin(global_invocation_id) globalId:vec3<u32>){
  let count=localCounts[${getViewElementOffset(counts)}u+globalId.x];
  if(group==0xffffffffu||count==0u){return;}
  let value=localValues[${getViewElementOffset(source)}u+globalId.x]${shifted};
- if(!(value==value&&abs(value)<=3.402823466e+38)){atomicOr(&globalOverflow[${getViewElementOffset(this.overflow)}u],1u);return;}
+ if(!isFiniteValue(value)){atomicOr(&globalOverflow[${getViewElementOffset(this.overflow)}u],1u);return;}
  ${kind === 'minimum' ? `atomicMin(&globalValues[${getViewElementOffset(output)}u+group],encodeOrdered(value));` : kind === 'maximum' ? `atomicMax(&globalValues[${getViewElementOffset(output)}u+group],encodeOrdered(value));` : 'addFloat(group,value);'}
 }`,
       [Math.ceil(plan.candidateCount / LINEAR_WORKGROUP_SIZE), 1]

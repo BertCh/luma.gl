@@ -11,7 +11,8 @@ import {
   GPUMapMatching,
   GPU_MAP_MATCHING_NONE,
   encodeGPUMapMatchingParameters,
-  type GPUMapMatchingParameters
+  type GPUMapMatchingParameters,
+  type GPUMapMatchingProps
 } from '../../../src/gpu-network/map-matching/index';
 import {
   createInputBuffer,
@@ -25,6 +26,12 @@ import {
   createGridFixture,
   NONE
 } from '../network-accessibility/network-accessibility-oracle';
+import {
+  createGreatCircleNetworkMetric,
+  getHaversineDistance,
+  wrapLongitudeDelta
+} from '../network-metric-oracle';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../src/gpu-spatial-analysis/contracts/earth';
 import {matchOracle} from './map-matching-oracle';
 
 const WIDTH = 10;
@@ -117,9 +124,26 @@ type MatchResult = {
   overflow: number;
 };
 
+/** Coordinates of a matching run; defaults to the planar grid in meters. */
+type MatchFixture = {
+  points: Float32Array;
+  nodePositions: Float32Array;
+  cellSize: number;
+  bounds: {minimum: readonly [number, number]; maximum: readonly [number, number]};
+  spatialContext?: GPUMapMatchingProps['spatialContext'];
+};
+
+const PLANAR_FIXTURE: MatchFixture = {
+  points: TRACKS.points,
+  nodePositions: POSITIONS,
+  cellSize: CELL_SIZE,
+  bounds: {minimum: [-500, -500], maximum: [1000, 1000]}
+};
+
 async function runMatching(
   device: Device,
-  parameters: GPUMapMatchingParameters
+  parameters: GPUMapMatchingParameters,
+  fixture: MatchFixture = PLANAR_FIXTURE
 ): Promise<MatchResult> {
   const graph = new GPUCommandGraph(device, {id: 'map-matching'});
   const buffers: Buffer[] = [];
@@ -158,15 +182,16 @@ async function runMatching(
   graph.add(
     new GPUMapMatching({
       id: 'match',
-      points: input('points', TRACKS.points, 'float32x2'),
+      spatialContext: fixture.spatialContext,
+      points: input('points', fixture.points, 'float32x2'),
       trackOffsets: input('track-offsets', Uint32Array.from(TRACKS.offsets), 'uint32'),
-      nodePositions: input('nodes', POSITIONS, 'float32x2'),
+      nodePositions: input('nodes', fixture.nodePositions, 'float32x2'),
       offsets: input('offsets', CSR.offsets, 'uint32'),
       edgeTargets: input('targets', CSR.neighbors, 'uint32'),
       parameters: parameterBuffer.importToGraph(graph),
       candidateCount: CANDIDATE_COUNT,
-      cellSize: CELL_SIZE,
-      bounds: {minimum: [-500, -500], maximum: [1000, 1000]},
+      cellSize: fixture.cellSize,
+      bounds: fixture.bounds,
       output: {
         matchedEdges: output('edges', 'uint32', POINT_COUNT),
         matchedFractions: output('fractions', 'float32', POINT_COUNT),
@@ -299,5 +324,87 @@ it('GPUMapMatching responds to per-frame sigma, beta and radius without recompil
     {...BASE, routeFactor: 1.2, routeSlack: 5}
   ]) {
     expectMatchesOracle(await runMatching(device, parameters), parameters);
+  }
+});
+
+const METERS_PER_DEGREE = GPU_EARTH_MEAN_RADIUS_METERS * (Math.PI / 180);
+const ORIGIN_LONGITUDE = 179.997;
+const ORIGIN_LATITUDE = 60;
+
+/** Lays planar meters onto longitude/latitude at 60 N, east across the antimeridian. */
+function toLongitudeLatitude(planar: Float32Array): Float32Array {
+  const lngLats = new Float32Array(planar.length);
+  const metersPerLongitude = METERS_PER_DEGREE * Math.cos((ORIGIN_LATITUDE * Math.PI) / 180);
+  for (let index = 0; index < planar.length; index += 2) {
+    lngLats[index] = wrapLongitudeDelta(ORIGIN_LONGITUDE + planar[index] / metersPerLongitude);
+    lngLats[index + 1] = ORIGIN_LATITUDE + planar[index + 1] / METERS_PER_DEGREE;
+  }
+  return lngLats;
+}
+
+it('GPUMapMatching great-circle path matches the f64 oracle across the antimeridian', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // The planar fixture laid onto longitude/latitude: 100 m blocks, tracks and noise in meters.
+  const cellSizeDegrees = CELL_SIZE / METERS_PER_DEGREE;
+  const fixture: MatchFixture = {
+    points: toLongitudeLatitude(TRACKS.points),
+    nodePositions: toLongitudeLatitude(POSITIONS),
+    cellSize: cellSizeDegrees,
+    // Grid bounds across the antimeridian: longitudes 179.97 to 180.03.
+    bounds: {minimum: [179.97, 59.99], maximum: [180.03, 60.02]},
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+  };
+  const metric = createGreatCircleNetworkMetric();
+  for (const parameters of [BASE, {...BASE, sigma: 6, beta: 8, searchRadius: 40}]) {
+    const result = await runMatching(device, parameters, fixture);
+    const expected = matchOracle(
+      fixture.points,
+      TRACKS.offsets,
+      fixture.nodePositions,
+      CSR,
+      {
+        sigma: parameters.sigma,
+        beta: parameters.beta,
+        searchRadius: parameters.searchRadius,
+        routeFactor: parameters.routeFactor ?? 3,
+        routeSlack: parameters.routeSlack ?? 50
+      },
+      CANDIDATE_COUNT,
+      cellSizeDegrees,
+      metric,
+      CELL_SIZE
+    );
+    expect(result.overflow).toBe(0);
+    expect(result.edges.map(getRoadKey)).toEqual(expected.edges.map(getRoadKey));
+    expect(result.breaks).toEqual(expected.breaks);
+    expected.trackLogLikelihoods.forEach((value, track) => {
+      expect(result.logLikelihoods[track]).toBeCloseTo(value, 1);
+    });
+    expect(result.matchedCount).toBeGreaterThan(POINT_COUNT * 0.8);
+    result.edges.forEach((edge, point) => {
+      if (edge === GPU_MAP_MATCHING_NONE) {
+        return;
+      }
+      const source = CSR.sources[edge];
+      const target = CSR.neighbors[edge];
+      const start = [fixture.nodePositions[source * 2], fixture.nodePositions[source * 2 + 1]];
+      const end = [fixture.nodePositions[target * 2], fixture.nodePositions[target * 2 + 1]];
+      const raw = [fixture.points[point * 2], fixture.points[point * 2 + 1]];
+      const snapped = [result.positions[point * 2], result.positions[point * 2 + 1]];
+      // Snapped longitudes near 180 are f32 (1.5e-5 degrees, 0.85 m at 60 N), so the distance
+      // recomputed from the snapped position is good to about a meter; the reported one is exact.
+      expect(Math.abs(getHaversineDistance(raw, snapped) - result.distances[point])).toBeLessThan(
+        1
+      );
+      const onEdge = metric.interpolate(start, end, result.fractions[point]);
+      expect(getHaversineDistance(onEdge, snapped)).toBeLessThan(1);
+      expect(result.offsets[point]).toBeCloseTo(
+        result.fractions[point] * getHaversineDistance(start, end),
+        1
+      );
+    });
   }
 });

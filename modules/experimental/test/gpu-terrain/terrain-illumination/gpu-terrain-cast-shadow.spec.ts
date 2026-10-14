@@ -38,7 +38,11 @@ function createCastShadowFixture(
   elevation: Float32Array,
   width: number,
   height: number,
-  options: {maximumRadius?: number; rowDirection?: 'south' | 'north'} = {}
+  options: {
+    maximumRadius?: number;
+    rowDirection?: 'south' | 'north';
+    cellSizeMode?: 'uniform' | 'web-mercator' | 'geographic';
+  } = {}
 ) {
   const pixelCount = width * height;
   const graph = new GPUCommandGraph(device, {id: 'cast-shadow-test'});
@@ -63,6 +67,7 @@ function createCastShadowFixture(
     height,
     maximumRadius: options.maximumRadius,
     rowDirection: options.rowDirection,
+    cellSizeMode: options.cellSizeMode,
     elevation: {
       id: 'elevation',
       format: 'float32',
@@ -87,9 +92,8 @@ function createCastShadowFixture(
   return {
     contributor,
     async run(values: GPUTerrainCastShadowSettings): Promise<CastShadowResult> {
-      settings.write(
-        getGPUTerrainCastShadowParameterValues(values, options.rowDirection ?? 'south')
-      );
+      // The packer takes no row direction or cell size mode: the contributor owns both.
+      settings.write(getGPUTerrainCastShadowParameterValues(values));
       submitGraph(device, compiled, undefined);
       return {
         sunVisibility: await readFloat32(buffers.sunVisibility, pixelCount),
@@ -181,6 +185,79 @@ it('GPUTerrainCastShadow matches the float64 brute force along the sun line', as
   // Per-frame azimuth changes reuse the single compiled graph and really change the output.
   expect(horizons[0]).not.toEqual(horizons[1]);
   expect(horizons[2]).not.toEqual(horizons[5]);
+  fixture.destroy();
+});
+
+it('GPUTerrainCastShadow mirrors the sun line for north-advancing rows', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Only the contributor knows rowDirection 'north'; the brute force walks the north-row pixel
+  // direction (sin az, +cos az) directly, which the node spec shows is the same line family.
+  const width = 52;
+  const height = 44;
+  const random = createRandom(9);
+  const elevation = createSmoothTerrain(width, height, 3);
+  for (let index = 0; index < elevation.length; index++) {
+    elevation[index] += (random() - 0.5) * 6;
+  }
+  const fixture = createCastShadowFixture(device, elevation, width, height, {
+    rowDirection: 'north'
+  });
+  for (const azimuthDegrees of [0, 37, 135, 200, 311]) {
+    const actual = await fixture.run({
+      cellSize: [10, 10],
+      azimuthDegrees,
+      altitudeDegrees: 12,
+      angularRadiusDegrees: 0.5
+    });
+    const expected = computeTerrainHorizonSweepBruteForce({
+      width,
+      height,
+      elevation,
+      directionCount: 1,
+      directions: [getSunDirection(azimuthDegrees, 'north')],
+      cellSize: [10, 10]
+    });
+    expect(expectNaNPattern(actual.horizonAngle, expected.horizon)).toBeLessThan(2e-3);
+    expect(actual.horizonAngle.filter(angle => angle > 3).length).toBeGreaterThan(50);
+  }
+  fixture.destroy();
+});
+
+it('GPUTerrainCastShadow follows a 45 degree ground sun azimuth on a 60 N geographic grid', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // The settings packer gets no cell size mode; only the contributor is geographic. One 1000 m
+  // pillar P = (42, 2) on flat ground and the observer O = (2, 22) (true ground bearing 45.048
+  // degrees). python3 -I, WGS84 (a = 6378137, f = 1 / 298.257223563): at the reference row 12
+  // (latitude 59.9995) the 45 degree pixel slope is -32823.70774773758 / 65536, so slopeFixed =
+  // -32824 and the line from O meets P after 40 major steps. Horizon toward the sun =
+  // atan(1000 / (40 * 78.926508719586)) = 17.57561688017635 degrees (row 22 step). The square-cell
+  // line packed by the CPU (the pixel diagonal) misses P and would read 0.
+  const width = 48;
+  const height = 24;
+  const elevation = new Float32Array(width * height);
+  elevation[2 * width + 42] = 1000;
+  const fixture = createCastShadowFixture(device, elevation, width, height, {
+    maximumRadius: 46,
+    cellSizeMode: 'geographic'
+  });
+  const result = await fixture.run({
+    cellSize: [0.001, 0.001],
+    northEdge: 60.012,
+    southEdge: 59.988,
+    azimuthDegrees: 45,
+    altitudeDegrees: 10,
+    angularRadiusDegrees: 0.5
+  });
+  const observer = 22 * width + 2;
+  expect(result.horizonAngle[observer]).toBeCloseTo(17.57561688017635, 3);
+  // The whole disk is below the 17.6 degree horizon (acos(-1) / PI in f32).
+  expect(result.sunVisibility[observer]).toBeLessThan(1e-6);
   fixture.destroy();
 });
 

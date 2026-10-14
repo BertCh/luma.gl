@@ -16,6 +16,7 @@ import {
   validateDisjointGeospatialViews,
   validateRowView
 } from './geospatial-utils';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 const PRECISE_PREDICATE_WGSL = /* wgsl */ `
 // Predicate arithmetic produces normalized high/low pairs. Keep these helpers
@@ -255,7 +256,7 @@ function makePredicateHelpers(
   const pointType = raw ? 'RawPoint' : 'vec2f';
   const finitePoint = raw
     ? 'return rawPointIsFinite(point);'
-    : 'return finiteF32(point.x) && finiteF32(point.y);';
+    : 'return isFiniteValue(point.x) && isFiniteValue(point.y);';
   const relativePoint = raw
     ? `let exactZeroX = rawScalarEqual(vertex.x, point.x);
   let exactZeroY = rawScalarEqual(vertex.y, point.y);
@@ -308,9 +309,7 @@ struct EdgeClassification {
   uncertain: bool,
 }
 
-fn finiteF32(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 ${rawHelpers}
 

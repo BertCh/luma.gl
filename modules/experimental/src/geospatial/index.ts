@@ -15,7 +15,10 @@ export type {
 export {GPUSinusoidalProjection} from './gpu-sinusoidal-projection';
 export type {GPUSinusoidalProjectionProps} from './gpu-sinusoidal-projection';
 export {GPUHaversineDistance} from './gpu-haversine-distance';
-export type {GPUHaversineDistanceProps} from './gpu-haversine-distance';
+export type {
+  GPUHaversineDistanceProps,
+  GPUHaversineDistanceUnits
+} from './gpu-haversine-distance';
 export {GPUPairwisePointDistance} from './gpu-pairwise-point-distance';
 export type {GPUPairwisePointDistanceProps} from './gpu-pairwise-point-distance';
 export {GPUPairwisePointSegmentDistance} from './gpu-pairwise-point-segment-distance';

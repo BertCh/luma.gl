@@ -305,3 +305,38 @@ it('GPUNetworkKFunction results do not depend on the block size', async () => {
   expect(lanes.pairCounts).toEqual(large.pairCounts);
   expect(lanes.kValues).toEqual(large.kValues);
 });
+
+it('GPUNetworkKFunction never draws simulated events from CSR rows past offsets[nodeCount]', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Review B-03: the simulation weighted every row of `neighbors`, so a tail row with a positive
+  // weight could be drawn; its node search then ended at NODE_COUNT and emitted an out-of-range
+  // event, and the sampled length no longer matched networkLength. Long tail rows to real nodes
+  // must change nothing.
+  const tailCSR: AccessibilityCSR = {
+    offsets: GRID_CSR.offsets,
+    neighbors: Uint32Array.from([...GRID_CSR.neighbors, 0, 5, 9]),
+    weights: Float32Array.from([...GRID_CSR.weights, 400, 400, 400]),
+    sources: Uint32Array.from([...GRID_CSR.sources, 0, 0, 0])
+  };
+  const options = {
+    positions: GRID.positions,
+    points: GRID_POINTS,
+    networkLength: GRID_NETWORK_LENGTH,
+    maxDistance: 14,
+    bandCount: 9,
+    simulationCount: 4,
+    activeSimulations: 4,
+    seed: 4242,
+    maxSnapDistance: 2,
+    maxIterations: 48
+  };
+  const expected = await runKFunction(device, {...options, csr: GRID_CSR});
+  const result = await runKFunction(device, {...options, csr: tailCSR});
+  expect(result.pairCounts).toEqual(expected.pairCounts);
+  expect(result.kValues).toEqual(expected.kValues);
+  expect(result.envelope).toEqual(expected.envelope);
+  expect(result.snappedEventCount).toBe(expected.snappedEventCount);
+});

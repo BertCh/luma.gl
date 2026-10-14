@@ -123,7 +123,11 @@ function createHarness(device: Device, options: HarnessOptions) {
     get rebuildCount() {
       return compileCount - 1;
     },
-    async run(scene: IsolinesScene, levelCount: number = scene.levels.length) {
+    async run(
+      scene: IsolinesScene,
+      levelCount: number = scene.levels.length,
+      localOrigin?: readonly [number, number]
+    ) {
       rasterBuffer.write(scene.values);
       if (validityBuffer && scene.validity) {
         validityBuffer.write(scene.validity);
@@ -132,7 +136,13 @@ function createHarness(device: Device, options: HarnessOptions) {
       levels.set(scene.levels.slice(0, maximumLevelCount));
       levelsBuffer.write(levels);
       parameterBuffer.write(
-        getGPUIsolinesParameterValues({width, height, levelCount, extent: scene.extent})
+        getGPUIsolinesParameterValues({
+          width,
+          height,
+          levelCount,
+          extent: scene.extent,
+          localOrigin
+        })
       );
       submitGraph(device, compiled, undefined);
       const [count] = await readUint32(buffers.count, 1);
@@ -568,4 +578,83 @@ it('GPUIsolines stitches one very long ring and one very long open chain across 
   const snake = await harness.run(snakeScene);
   const snakeExpected = expectSegmentsMatch(snake, snakeScene, 1, 'snake');
   expectPolylinesMatch(snake, snakeExpected, 'snake');
+});
+
+it('GPUIsolines places UTM-scale vertices to sub-decimetre with a local origin', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Review C-08: a 2.5 m raster at a UTM northing of 4.6e6 m, where the float32 ulp is 0.5 m.
+  const width = 96;
+  const height = 64;
+  const cell = 2.5;
+  const origin = [500123.37, 4600456.91] as const;
+  const values = new Float32Array(width * height);
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      values[row * width + column] =
+        10 * Math.sin(0.13 * column) + 7 * Math.cos(0.11 * row) + 0.37 * column;
+    }
+  }
+  const levels = [-3.25, 0.5, 4, 11.75];
+  const extent = [
+    origin[0],
+    origin[1],
+    origin[0] + width * cell,
+    origin[1] + height * cell
+  ] as const;
+  const harness = createHarness(device, {
+    width,
+    height,
+    maximumLevelCount: levels.length,
+    segmentCapacity: 4096,
+    polylines: true
+  });
+  const actual = await harness.run({width, height, values, levels, extent}, levels.length, origin);
+  // Origin-relative outputs match the float32 oracle run on the origin-relative extent.
+  const localScene: IsolinesScene = {
+    width,
+    height,
+    values,
+    levels,
+    extent: [0, 0, width * cell, height * cell]
+  };
+  const expected = expectSegmentsMatch(actual, localScene, levels.length, 'utm');
+  expectPolylinesMatch(actual, expected, 'utm');
+  expect(actual.overflow).toBe(0);
+  expect(actual.count).toBeGreaterThan(300);
+
+  // Float64 reference from the edge ids: crossing on the raster edge, plus the float64 origin.
+  const horizontalCount = height * (width - 1);
+  const getReference = (edge: number, level: number): [number, number] => {
+    const isHorizontal = edge < horizontalCount;
+    const local = isHorizontal ? edge : edge - horizontalCount;
+    const stride = isHorizontal ? width - 1 : width;
+    const column = local % stride;
+    const row = Math.floor(local / stride);
+    const a = values[row * width + column];
+    const b = isHorizontal ? values[row * width + column + 1] : values[(row + 1) * width + column];
+    const t = (Math.fround(level) - a) / (b - a);
+    return [
+      origin[0] + (column + (isHorizontal ? t : 0) + 0.5) * cell,
+      origin[1] + (row + (isHorizontal ? 0 : t) + 0.5) * cell
+    ];
+  };
+  let maximumError = 0;
+  for (const segment of actual.segments) {
+    const level = levels[segment.level];
+    for (const [point, edge] of [
+      [segment.p0, segment.startEdge],
+      [segment.p1, segment.endEdge]
+    ] as const) {
+      const reference = getReference(edge, level);
+      maximumError = Math.max(
+        maximumError,
+        Math.abs(point[0] + origin[0] - reference[0]),
+        Math.abs(point[1] + origin[1] - reference[1])
+      );
+    }
+  }
+  expect(maximumError).toBeLessThan(0.1);
 });

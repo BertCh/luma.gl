@@ -4,11 +4,7 @@
 
 import {validatePackedView, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {
-  getTerrainGroundCellSize,
-  TERRAIN_DEGREES_TO_RADIANS_WGSL,
-  TERRAIN_METERS_PER_DEGREE_WGSL
-} from '../terrain-grid-utils';
+import {getTerrainGroundCellSize, TERRAIN_DEGREES_TO_RADIANS_WGSL} from '../terrain-grid-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /** CPU twin of the terrain ground cell size WGSL, kept under its illumination name. @internal */
@@ -19,7 +15,6 @@ export const TERRAIN_ILLUMINATION_WGSL_CONSTANTS = /* wgsl */ `
 const PI: f32 = 3.141592653589793;
 ${TERRAIN_DEGREES_TO_RADIANS_WGSL}
 const RADIANS_TO_DEGREES: f32 = 57.29577951308232;
-${TERRAIN_METERS_PER_DEGREE_WGSL}
 ${IS_FINITE_VALUE_WGSL}
 // Takes a runtime operand (unlike the shared getNaN) so the NaN is not constant-folded away.
 fn getNaN(index: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (index & 0u)); }`;

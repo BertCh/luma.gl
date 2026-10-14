@@ -30,11 +30,18 @@ import {
   validateTerrainTracingConvergedView
 } from './terrain-flow-tracing';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
+import {GPU_TERRAIN_FLOW_STREAM_UNRESOLVED} from './gpu-terrain-flow';
 
 const OPERATION = 'GPUTerrainHeightAboveDrainage';
 
 /** Value of `drainageCells` for cells with no stream downstream, and for invalid cells. */
 export const GPU_TERRAIN_DRAINAGE_NONE = 0xffffffff;
+
+/**
+ * Value of `drainageCells` for cells whose D8 path meets a `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED`
+ * stream word before a stream cell: the drainage cell is unknown, and HAND is NaN.
+ */
+export const GPU_TERRAIN_DRAINAGE_UNRESOLVED = 0xfffffffe;
 
 /**
  * Properties for {@link GPUTerrainHeightAboveDrainage}.
@@ -67,16 +74,22 @@ export type GPUTerrainHeightAboveDrainageProps = {
    * `GPUTerrainFlow.flowDirections`; grids from TauDEM or Whitebox work too. Per-frame.
    */
   flowDirections: GraphDataView<'uint32'>;
-  /** Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`. Per-frame. */
+  /**
+   * Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`,
+   * whose `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` word (accumulation round limit hit) marks a cell of
+   * unknown stream status. Per-frame.
+   */
   streams: GraphDataView<'uint32'>;
   /**
    * Elevation of a cell minus the elevation of the stream cell its D8 path reaches first, in float32
    * elevation units. 0 on stream cells. NaN for invalid cells, cells whose path ends without
-   * reaching a stream, and cells whose elevation or drainage elevation is not finite. Presence is compile-time.
+   * reaching a stream, cells whose path first meets an unresolved stream word, and cells whose
+   * elevation or drainage elevation is not finite. Presence is compile-time.
    */
   heightAboveDrainage?: GraphDataView<'float32'>;
   /**
-   * Cell index of the stream cell each cell drains to (the cell itself for stream cells), or
+   * Cell index of the stream cell each cell drains to (the cell itself for stream cells),
+   * `GPU_TERRAIN_DRAINAGE_UNRESOLVED` when the path first meets an unresolved stream word, or
    * `GPU_TERRAIN_DRAINAGE_NONE`. Presence is compile-time.
    */
   drainageCells?: GraphDataView<'uint32'>;
@@ -218,12 +231,15 @@ ${IS_FINITE_VALUE_WGSL}`,
   if (flowDirections[flowDirectionsOffset + index] != NO_CELL &&
       flowDirections[flowDirectionsOffset + reached] != NO_CELL &&
       streams[streamsOffset + reached] != 0u) {
-    drainage = reached;
+    // An unresolved stream word stops the path too: the first stream may be that cell or lie
+    // further down, so the drainage cell is unknown rather than wrong.
+    drainage = select(reached, ${GPU_TERRAIN_DRAINAGE_UNRESOLVED}u,
+      streams[streamsOffset + reached] == ${GPU_TERRAIN_FLOW_STREAM_UNRESOLVED}u);
   }
   ${
     elevation
       ? `var result = getQuietNaN();
-  if (drainage != NO_CELL) {
+  if (drainage < ${GPU_TERRAIN_DRAINAGE_UNRESOLVED}u) {
     let cellElevation = elevation[elevationOffset + index];
     let drainageElevation = elevation[elevationOffset + drainage];
     if (isFiniteValue(cellElevation) && isFiniteValue(drainageElevation)) {

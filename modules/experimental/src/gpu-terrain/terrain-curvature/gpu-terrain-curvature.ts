@@ -118,10 +118,10 @@ const CURVATURE_KINDS: readonly GPUTerrainCurvatureKind[] = [
  * CPU-side description packed by {@link getGPUTerrainCurvatureParameterValues}.
  *
  * Cell-size model: `cellSize` is in projected metres for `cellSizeMode: 'uniform'`, in equatorial
- * Web Mercator metres for `'web-mercator'` (ground size divides by `cosh(PI (1 - 2y))` of the row
- * centre, `northEdge`/`southEdge` are normalized Mercator y), and in degrees for `'geographic'`
- * (x size multiplies by cos(latitude) of the row centre, `northEdge`/`southEdge` are latitude
- * degrees, one degree is 111319.49 m). Curvatures are in 1/ground-unit (Gaussian in 1/unit^2).
+ * Web Mercator metres for `'web-mercator'` (`northEdge`/`southEdge` are normalized Mercator y), and
+ * in degrees for `'geographic'` (`northEdge`/`southEdge` are latitude degrees). Both curved modes
+ * scale each row to WGS84 ground metres at the latitude of the row centre (see
+ * `GPUTerrainCellSizeMode`). Curvatures are in 1/ground-unit (Gaussian in 1/unit^2).
  */
 export type GPUTerrainCurvatureSettings = TerrainGeomorphometryCellSettings & {
   /**

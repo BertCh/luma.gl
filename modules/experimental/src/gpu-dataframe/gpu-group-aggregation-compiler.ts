@@ -33,6 +33,7 @@ import {
   type GPUDataFrameQueryExtensionResult,
   type GPUDataFrameQueryParameters
 } from './gpu-query-compiler';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 const UINT32_BYTE_LENGTH = Uint32Array.BYTES_PER_ELEMENT;
 const MAXIMUM_UINT32 = 0xffffffff;
@@ -463,6 +464,7 @@ function addGPUGroupFiniteMaskPasses(
     const sourceMask = input.data[chunkIndex];
     const source = /* wgsl */ `
 const ELEMENT_COUNT: u32 = ${mask.length}u;
+${IS_FINITE_VALUE_WGSL}
 const VALUE_OFFSET: u32 = ${getViewElementOffset(value)}u;
 const INPUT_OFFSET: u32 = ${getViewElementOffset(sourceMask)}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(mask)}u;
@@ -478,7 +480,7 @@ fn main(
   ${getGPUAnalyticsInvocationIndexSource(graph, mask.length)}
   if (index < ELEMENT_COUNT) {
     let value = inputValues[VALUE_OFFSET + index];
-    let finite = value == value && abs(value) <= 3.402823466e+38;
+    let finite = isFiniteValue(value);
     outputMask[OUTPUT_OFFSET + index] = select(
       0u,
       1u,

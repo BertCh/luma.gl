@@ -357,15 +357,22 @@ fn tryFinalize(cell: u32) -> bool {
   return nodes;
 }
 
-/** Returns the stream mask kernel: 1 where accumulation is finite and at least the threshold. @internal */
+/**
+ * Returns the stream mask kernel: 1 where accumulation is finite and at least the threshold, 0
+ * where it is below the threshold and on invalid cells, and `unresolvedValue` on valid cells whose
+ * accumulation is still NaN (the accumulation round limit was hit). @internal
+ */
 export function createTerrainFlowStreamsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
     cellCount: number;
+    /** Canonical elevation, NaN for invalid cells. */
+    elevation: GraphDataView<'float32'>;
     accumulation: GraphDataView<'float32'>;
     streams: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
+    unresolvedValue: number;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -373,14 +380,20 @@ export function createTerrainFlowStreamsNode<Parameters>(
     operation: OPERATION,
     variant: 'streams',
     bindings: [
+      {name: 'elevation', view: props.elevation, type: 'f32', access: 'read'},
       {name: 'accumulation', view: props.accumulation, type: 'f32', access: 'read'},
       {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
       {name: 'streams', view: props.streams, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.cellCount,
     body: `let value = accumulation[accumulationOffset + index];
-  let isStream = (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u &&
-    value >= settings[settingsOffset + 5u];
-  streams[streamsOffset + index] = select(0u, 1u, isStream);`
+  let isResolved = (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u;
+  let isStream = isResolved && value >= settings[settingsOffset + 5u];
+  var stream = select(0u, 1u, isStream);
+  // A valid cell without a value was cut off by the accumulation round limit. It is usually the
+  // downstream trunk, so 0 ("not a stream") would erase the main river.
+  let isValid = (bitcast<u32>(elevation[elevationOffset + index]) & 0x7fffffffu) < 0x7f800000u;
+  if (isValid && !isResolved) { stream = ${props.unresolvedValue}u; }
+  streams[streamsOffset + index] = stream;`
   });
 }

@@ -20,6 +20,7 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '../../gpu-spatial-analysis/point-density/point-density-hexagon';
+import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUFlowAggregation';
 
@@ -95,7 +96,7 @@ export function createFlowZoneNode<Parameters>(
   const zoneSource =
     props.kind === 'hexagon'
       ? `${radiusSource}
-  let validRadius = radius > 0.0 && radius <= MAXIMUM_FLOAT;
+  let validRadius = radius > 0.0 && isFiniteValue(radius);
   if (finite && inside && validRadius) {
     let cell = getPointDensityHexagonCell(x, y, minimumX, minimumY, radius);
     if (cell.x >= 0 && cell.y >= 0 && u32(cell.x) < columns && u32(cell.y) < rows) {
@@ -116,7 +117,7 @@ export function createFlowZoneNode<Parameters>(
 const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
 const NO_ZONE: u32 = 0xffffffffu;
-const MAXIMUM_FLOAT: f32 = 3.402823466e+38;
+${IS_FINITE_VALUE_WGSL}
 ${props.kind === 'hexagon' ? GPU_POINT_DENSITY_HEXAGON_WGSL : ''}
 // Same cell formula as GPUGridBinning: inclusive bounds, maximum edge in the last cell.
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
@@ -134,7 +135,7 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   var zone = NO_ZONE;
-  let finite = x == x && y == y && abs(x) <= MAXIMUM_FLOAT && abs(y) <= MAXIMUM_FLOAT;
+  let finite = isFiniteValue(x) && isFiniteValue(y);
   let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
   let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
   let inside = maximumX >= minimumX && maximumY >= minimumY && inX && inY;
@@ -605,9 +606,10 @@ export function createFlowContributionNodes<Parameters>(
             }
           ],
           invocationCount: chunk.length,
-          declarations: `const ROW_START: u32 = ${rowStart}u;`,
+          declarations: `const ROW_START: u32 = ${rowStart}u;
+${IS_FINITE_VALUE_WGSL}`,
           body: `let weight = weights[weightsOffset + index];
-  let isFinite = weight == weight && abs(weight) <= 3.402823466e+38;
+  let isFinite = isFiniteValue(weight);
   contributions[contributionsOffset + ROW_START + index] = select(0.0, weight, isFinite);`
         })
       );

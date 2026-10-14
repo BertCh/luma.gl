@@ -171,6 +171,53 @@ it('GPUSinusoidalProjection matches cuSpatial sign, midpoint, and circumference'
   void 0;
 });
 
+it('GPUSinusoidalProjection wraps longitude deltas only when asked', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Origin [179, 0]. Expected values (python3 -I, k = 40000 / 360 km per degree):
+  // [-179, 0] is 2 degrees east across the antimeridian: unwrapped x = 358 k = 39777.777...,
+  // wrapped x = -2 k = -222.222... (east is negative x). [178, 10] needs no wrap:
+  // x = 1 * k * cos(5 deg) = 110.68829978797173, y = -10 k = -1111.111... in both modes.
+  const values = Float32Array.from([-179, 0, 178, 10]);
+  const inputBuffer = createBuffer(device, values, Buffer.STORAGE);
+  const plainBuffer = createOutputBuffer(device, values.byteLength);
+  const wrappedBuffer = createOutputBuffer(device, values.byteLength);
+  const graph = new GPUCommandGraph(device, {id: 'sinusoidal-wrap-test'});
+  const positions = importView(graph, 'wrap-positions', inputBuffer, 'float32x2', 2);
+  new GPUSinusoidalProjection({
+    id: 'plain-projection',
+    positions,
+    output: importView(graph, 'plain-output', plainBuffer, 'float32x2', 2),
+    origin: [179, 0]
+  }).addToGraph(graph);
+  new GPUSinusoidalProjection({
+    id: 'wrapped-projection',
+    positions,
+    output: importView(graph, 'wrapped-output', wrappedBuffer, 'float32x2', 2),
+    origin: [179, 0],
+    wrapLongitude: true
+  }).addToGraph(graph);
+  const compiled = graph.compile();
+  const commandEncoder = device.createCommandEncoder({id: 'sinusoidal-wrap-encoding'});
+  compiled.encode(commandEncoder, {parameters: undefined});
+  device.submit(commandEncoder.finish());
+  const plain = await readFloat32(plainBuffer, 4);
+  const wrapped = await readFloat32(wrappedBuffer, 4);
+  assertClose(plain[0], 39777.77777777778, 0.05, 'cuSpatial does not wrap');
+  assertClose(wrapped[0], -222.22222222222223, 0.02, 'wrapped delta crosses the antimeridian');
+  for (const result of [plain, wrapped]) {
+    assertClose(result[1], 0, 0.02, 'equator stays at y = 0');
+    assertClose(result[2], 110.68829978797173, 0.02, 'a nearby point is unchanged');
+    assertClose(result[3], -1111.111111111111, 0.05, 'north is negative y');
+  }
+  compiled.destroy();
+  for (const buffer of [inputBuffer, plainBuffer, wrappedBuffer]) {
+    buffer.destroy();
+  }
+});
+
 it('GPUHaversineDistance covers f32 antimeridian, polar, and radius cases', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {
@@ -206,7 +253,14 @@ it('GPUHaversineDistance covers f32 antimeridian, polar, and radius cases', asyn
   const left = importView(graph, 'left', inputBuffers[0], 'float32x2', 5);
   const right = importView(graph, 'right', inputBuffers[1], 'float32x2', 5);
   const output = importView(graph, 'output', outputBuffer, 'float32', 5);
-  new GPUHaversineDistance({id: 'f32-haversine', left, right, output}).addToGraph(graph);
+  // Kilometers keep the documented 2 km envelope readable; meters are the default.
+  new GPUHaversineDistance({
+    id: 'f32-haversine',
+    left,
+    right,
+    output,
+    units: 'kilometers'
+  }).addToGraph(graph);
   new GPUHaversineDistance({
     id: 'custom-radius-haversine',
     left: importView(graph, 'radius-left', inputBuffers[2], 'float32x2', 1),
@@ -232,7 +286,7 @@ it('GPUHaversineDistance covers f32 antimeridian, polar, and radius cases', asyn
   for (let index = 0; index < actual.length; index++) {
     const leftPoint: Point = [leftValues[index * 2], leftValues[index * 2 + 1]];
     const rightPoint: Point = [rightValues[index * 2], rightValues[index * 2 + 1]];
-    const expected = getHaversineDistance(leftPoint, rightPoint);
+    const expected = getHaversineDistance(leftPoint, rightPoint, MEAN_EARTH_RADIUS_KILOMETERS);
     assertClose(
       actual[index],
       expected,
@@ -953,7 +1007,15 @@ function getSinusoidalProjection(point: Point, origin: Point): Point {
   ];
 }
 
-function getHaversineDistance(left: Point, right: Point, radius: number = 6371): number {
+/** IUGG mean Earth radius R1 = (2a + b) / 3 of WGS84, in meters (the GPUHaversineDistance default). */
+const MEAN_EARTH_RADIUS_METERS = 6371008.8;
+const MEAN_EARTH_RADIUS_KILOMETERS = MEAN_EARTH_RADIUS_METERS / 1000;
+
+function getHaversineDistance(
+  left: Point,
+  right: Point,
+  radius: number = MEAN_EARTH_RADIUS_METERS
+): number {
   const radians = Math.PI / 180;
   const leftLongitude = left[0] * radians;
   const leftLatitude = left[1] * radians;

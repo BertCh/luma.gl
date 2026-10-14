@@ -34,7 +34,7 @@ const OPERATION = 'GPUIsolines';
 /** Caller-owned, capacity-bounded segment outputs of {@link GPUIsolines}. */
 export type GPUIsolinesOutput = {
   /**
-   * `[x0, y0, x1, y1]` world coordinates per segment. The segment capacity is `segments.length`.
+   * `[x0, y0, x1, y1]` world coordinates per segment, relative to the parameters' `localOrigin`. The segment capacity is `segments.length`.
    * The high side (`value >= level`) is on the left when walking from p0 to p1 (x right, y up).
    */
   segments: GraphDataView<'float32x4'>;
@@ -68,7 +68,7 @@ export type GPUIsolinesOutput = {
  * If the segment output overflowed, no polyline is produced and `overflow` is set.
  */
 export type GPUIsolinesPolylineOutput = {
-  /** World positions; the vertex capacity is `vertices.length`. */
+  /** World positions relative to the parameters' `localOrigin`; the capacity is `vertices.length`. */
   vertices: GraphDataView<'float32x2'>;
   /** `segments.length + 1` rows. Rows `0..polylineCount` are the vertex offsets of each polyline. */
   polylineOffsets: GraphDataView<'uint32'>;
@@ -123,6 +123,13 @@ export type GPUIsolinesProps = {
  * output is deterministic. The pipeline is count, `GPUScan`, scatter, publish, and then for
  * polylines a link pass, a fixed number of pointer-jumping rounds, scans and a gather. Changing
  * levels, `levelCount`, or the extent never recompiles.
+ *
+ * Precision: vertices are `minX + (gridX + 0.5) * cellWidth` in float32 relative to the packer's
+ * `localOrigin`. Absolute vertices (the default origin `[0, 0]`) are quantized to the float32 ulp,
+ * 0.5 m at a UTM northing of 4.6e6 m (2 m at 2e7 m in EPSG:3857). With `localOrigin` set to the
+ * raster or tile corner, a vertex is within about `1.2e-7` of its distance from that corner of the
+ * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
+ * origin.
  */
 export class GPUIsolines implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

@@ -9,15 +9,22 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import {GPUNetworkSnapping} from '../../gpu-network/network-accessibility/index';
+import {createNetworkEdgeSourceNodes} from '../../gpu-network/network-accessibility/network-edge-sources';
 import {GPUNetworkServiceAreas} from '../../gpu-network/network-analysis/index';
 import {GPUNetworkIsochrones} from '../../gpu-network/network-isochrones/index';
 import type {
   GPUNetworkIsochroneCellOutline,
   GPUNetworkIsochroneRaster
 } from '../../gpu-network/network-isochrones/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../contracts/spatial-context';
 import {GPUPointInPolygonJoin} from '../spatial-join/index';
 import type {GPUSegmentRingAssemblyOutput} from '../ring-assembly/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../contracts/earth';
 import {
   assertRecipe,
   getOrCreateView,
@@ -27,6 +34,17 @@ import {
 } from './recipe-utils';
 
 const ID = 'GPUDriveTimeCatchmentRecipe';
+
+/**
+ * Spatial contexts of {@link addDriveTimeCatchmentRecipe}: native planar coordinates (for example a
+ * `createGPULocalFrame` frame in meters), or longitude/latitude degrees with the `'none'` or
+ * `'great-circle'` metric. On longitude/latitude both snappings are great-circle (meters) either way.
+ */
+export const GPU_DRIVE_TIME_CATCHMENT_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport =
+  Object.freeze({
+    coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+    metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+  });
 
 /** Band key written for demand points that are unsnapped or beyond every break. */
 export const GPU_DRIVE_TIME_CATCHMENT_NO_BAND = 0xffffffff;
@@ -95,6 +113,10 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
       overflow?: GraphDataView<'uint32'>;
       uncertainCount?: GraphDataView<'uint32'>;
     };
+    snapping?: {
+      facilitiesOverflow?: GraphDataView<'uint32'>;
+      demandOverflow?: GraphDataView<'uint32'>;
+    };
   },
   {
     seedNodes?: GraphDataView<'uint32'>;
@@ -108,6 +130,20 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'drive-time-catchment'`. */
   id?: string;
+  /**
+   * Coordinate space of the facility, demand and node positions. Omitted means native planar:
+   * snapping compares Euclidean distances in the coordinate units (meters for a
+   * `createGPULocalFrame` frame), and `maxSnapDistance` is in those units. With
+   * `coordinateSpace: 'longitude-latitude'` (metric `'none'` or `'great-circle'`; the cell-outline
+   * isochrone path needs degrees) both snappings are great-circle: edges are ranked by great-circle
+   * distance in meters and `maxSnapDistance` is in meters, with no east-west bias at any latitude
+   * (`sphereRadius` of a great-circle context is honored, else the mean Earth radius). Travel
+   * costs (`network.weights`) are independent of positions: the snapped fraction splits the edge
+   * cost, so drive times stay in the units of the weights. Other geographic metrics (`'rhumb'`,
+   * `'ellipsoidal'`) and kilometer units throw. The resolved context is returned as
+   * `result.spatialContext`.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Road network. */
   network: GPUDriveTimeNetwork;
   /** Facility locations, snapped to the nearest edge. */
@@ -116,9 +152,16 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
   demand: GraphDataView<'float32x2'>;
   /** Optional per-demand-point value summarised per drive-time band. */
   demandValues?: GraphDataView<'float32'>;
-  /** Optional one-row per-frame maximum snap distance (needed with `candidateCapacity`). */
+  /**
+   * Optional one-row per-frame maximum snap distance (needed with `candidateCapacity`): meters on
+   * longitude/latitude, coordinate units on planar positions.
+   */
   maxSnapDistance?: GraphDataView<'float32'>;
-  /** Compile-time BVH candidate capacity of the snapping; omit for the exact all-edges scan. */
+  /**
+   * Compile-time BVH candidate capacity of the snapping; omit for the exact all-edges scan. When
+   * set, each snapping reports candidate overflow (`result.snapping`, stages `snap-facilities` and
+   * `snap-demand`): an overflow means some facilities or demand may be snapped to a farther edge.
+   */
   candidateCapacity?: number;
   /** Optional one-row cost cutoff of the service-area search. */
   costLimit?: GraphDataView<'float32'>;
@@ -137,6 +180,8 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addDriveTimeCatchmentRecipe}. */
 export type GPUDriveTimeCatchmentRecipeResult = GPURecipeResult & {
+  /** Resolved coordinate context of the positions. */
+  spatialContext: GPUSpatialContext;
   /** Facility seed nodes (`2 * facilityCount` rows, two edge endpoints per facility). */
   seedNodes: GraphDataView<'uint32'>;
   seedCosts: GraphDataView<'float32'>;
@@ -161,6 +206,14 @@ export type GPUDriveTimeCatchmentRecipeResult = GPURecipeResult & {
     overflow: GraphDataView<'uint32'>;
     uncertainCount: GraphDataView<'uint32'>;
   };
+  /**
+   * BVH candidate overflow flags of the facility and demand snapping, if `candidateCapacity` was
+   * set: 1 when a candidate search dropped edges (the snap may not be the nearest edge).
+   */
+  snapping?: {
+    facilitiesOverflow: GraphDataView<'uint32'>;
+    demandOverflow: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -178,13 +231,28 @@ export type GPUDriveTimeCatchmentRecipeResult = GPURecipeResult & {
  * polygon layout does fit the join: its offsets are GPU-written over fixed-length views, so
  * `isochrones.joinDemand` joins the demand points against the isochrone at `cellCostLimit` in the
  * coordinates of the facilities and demand (longitude/latitude). That polygon is the union of
- * cells holding reached nodes, a coarser answer than the network-space bands.
+ * cells holding reached nodes, a coarser answer than the network-space bands. The ring edges are
+ * axis-aligned cell edges in degrees, so the join evaluates containment in the degree plane exactly
+ * and is constructed with the native planar context whatever `spatialContext` says.
+ *
+ * Spatial context: see `GPUDriveTimeCatchmentRecipeProps.spatialContext`. Costs are in the units
+ * of `network.weights`; distances (`maxSnapDistance`) are meters on longitude/latitude
+ * (great-circle snapping) and coordinate units on planar positions.
+ *
+ * Status: `status.stages` reports `snap-facilities` and `snap-demand` (candidate overflow, with
+ * `candidateCapacity`), `service-areas` (convergence), `band-statistics` and, with a demand join,
+ * `isochrone-demand`.
  */
 export function addDriveTimeCatchmentRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUDriveTimeCatchmentRecipeProps
 ): GPUDriveTimeCatchmentRecipeResult {
   const id = props.id ?? 'drive-time-catchment';
+  const spatialContext = resolveGPUSpatialContext(
+    id,
+    props.spatialContext,
+    GPU_DRIVE_TIME_CATCHMENT_SPATIAL_CONTEXT_SUPPORT
+  );
   const builder = new RecipeBuilder(graph);
   const {network} = props;
   const outputs = props.outputs ?? {};
@@ -201,7 +269,8 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   assertRecipe(ID, bandCount >= 1, 'bandBreaks must not be empty');
 
   // Edge source node per CSR edge, built once and shared by both snappings (each would otherwise
-  // expand `offsets` itself) and by the demand-time adapter (instead of a binary search).
+  // expand `offsets` itself) and by the demand-time adapter (instead of a binary search). The
+  // shared gpu-network nodes write every row, so rows past offsets[nodeCount] are never stale.
   const edgeCount = network.neighbors.length;
   const edgeSources = createTransientView(
     graph,
@@ -209,23 +278,49 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     'uint32',
     Math.max(edgeCount, 1)
   );
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-edge-sources-kernel`,
-      operation: 'GPURecipeDriveTimeCatchment',
-      variant: 'edge-sources',
-      bindings: [
-        {name: 'offsets', view: network.offsets, type: 'u32', access: 'read'},
-        {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: nodeCount,
-      declarations: `const EDGE_COUNT: u32 = ${edgeCount}u;`,
-      body: `let end = min(offsets[offsetsOffset + index + 1u], EDGE_COUNT);
-  for (var edge = offsets[offsetsOffset + index]; edge < end; edge++) {
-    edgeSources[edgeSourcesOffset + edge] = index;
-  }`
-    })
-  );
+  for (const node of createNetworkEdgeSourceNodes<Parameters>(graph, {
+    id: `${id}-edge-sources-kernel`,
+    operation: 'GPURecipeDriveTimeCatchment',
+    offsets: network.offsets,
+    edgeSources,
+    nodeCount
+  })) {
+    graph.add(node);
+  }
+
+  // Longitude/latitude positions snap great-circle in meters, whatever the declared metric.
+  const snappingContext: GPUSpatialContext | undefined =
+    spatialContext.coordinateSpace === 'longitude-latitude'
+      ? {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle',
+          sphereRadius:
+            spatialContext.metric === 'great-circle'
+              ? (spatialContext.sphereRadius ?? GPU_EARTH_MEAN_RADIUS_METERS)
+              : GPU_EARTH_MEAN_RADIUS_METERS,
+          ...(spatialContext.units ? {units: spatialContext.units} : {})
+        }
+      : undefined;
+  const providedSnapping = outputs.snapping ?? {};
+  const snapping: GPUDriveTimeCatchmentRecipeResult['snapping'] =
+    props.candidateCapacity !== undefined
+      ? {
+          facilitiesOverflow: getOrCreateView(
+            graph,
+            `${id}-snap-facilities-overflow`,
+            'uint32',
+            1,
+            providedSnapping.facilitiesOverflow
+          ),
+          demandOverflow: getOrCreateView(
+            graph,
+            `${id}-snap-demand-overflow`,
+            'uint32',
+            1,
+            providedSnapping.demandOverflow
+          )
+        }
+      : undefined;
 
   // Snapping requires `edgeSources.length === edgeCount`; an edgeless network keeps `offsets`.
   const snappingEdges = edgeCount > 0 ? {edgeSources} : {offsets: network.offsets};
@@ -247,6 +342,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   builder.add(
     new GPUNetworkSnapping({
       id: `${id}-snap-facilities`,
+      spatialContext: snappingContext,
       points: props.facilities,
       nodePositions: network.nodePositions,
       ...snappingEdges,
@@ -254,6 +350,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       edgeCosts: network.weights,
       maxSnapDistance: props.maxSnapDistance,
       candidateCapacity: props.candidateCapacity,
+      overflow: snapping?.facilitiesOverflow,
       snappedEdges: getOrCreateView(
         graph,
         `${id}-facility-edges`,
@@ -398,6 +495,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   builder.add(
     new GPUNetworkSnapping({
       id: `${id}-snap-demand`,
+      spatialContext: snappingContext,
       points: props.demand,
       nodePositions: network.nodePositions,
       ...snappingEdges,
@@ -405,6 +503,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       edgeCosts: network.weights,
       maxSnapDistance: props.maxSnapDistance,
       candidateCapacity: props.candidateCapacity,
+      overflow: snapping?.demandOverflow,
       snappedEdges,
       sourceCosts,
       targetCosts
@@ -545,6 +644,7 @@ const UNREACHED: f32 = 3.0e38;`,
   );
 
   return {
+    spatialContext,
     contributors: builder.contributors,
     seedNodes,
     seedCosts,
@@ -556,6 +656,7 @@ const UNREACHED: f32 = 3.0e38;`,
     bands,
     isochroneRings: isochrones?.cellOutline?.rings?.output,
     isochroneDemand,
+    snapping,
     outputs: {
       assignments,
       nodeCosts,
@@ -563,11 +664,18 @@ const UNREACHED: f32 = 3.0e38;`,
       demandTimes,
       demandBands,
       bands,
-      ...(isochroneDemand ? {isochroneDemand} : {})
+      ...(isochroneDemand ? {isochroneDemand} : {}),
+      ...(snapping ? {snapping} : {})
     },
     intermediates: {seedNodes, seedCosts},
     status: {
       stages: [
+        ...(snapping
+          ? [
+              {stage: 'snap-facilities', status: {overflow: snapping.facilitiesOverflow}},
+              {stage: 'snap-demand', status: {overflow: snapping.demandOverflow}}
+            ]
+          : []),
         {stage: 'service-areas', status: {converged: serviceAreaConverged}},
         {stage: 'band-statistics', status: {count: bands.count, overflow: bands.overflow}},
         ...(isochroneDemand

@@ -6,6 +6,7 @@ export {
   GPU_TERRAIN_FLOW_CELL_CLASS,
   GPU_TERRAIN_FLOW_NONE,
   GPU_TERRAIN_FLOW_PARAMETER_LENGTH,
+  GPU_TERRAIN_FLOW_STREAM_UNRESOLVED,
   GPUTerrainFlow,
   getGPUTerrainFlowParameterValues
 } from './gpu-terrain-flow';
@@ -17,6 +18,7 @@ export type {
 } from './gpu-terrain-flow';
 export {
   GPU_TERRAIN_DRAINAGE_NONE,
+  GPU_TERRAIN_DRAINAGE_UNRESOLVED,
   GPUTerrainHeightAboveDrainage
 } from './gpu-terrain-height-above-drainage';
 export type {GPUTerrainHeightAboveDrainageProps} from './gpu-terrain-height-above-drainage';

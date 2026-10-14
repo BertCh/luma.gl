@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {PLANAR_NETWORK_METRIC, type NetworkMetricOracle} from '../network-metric-oracle';
+
 /** u32 "no edge" / "no node" sentinel. */
 export const NONE = 0xffffffff;
 
@@ -208,15 +210,21 @@ export type OracleSnap = {
 
 /**
  * Exhaustive nearest-edge snapping in f64: smallest distance, ties to the smallest edge row;
- * edges with an out-of-range endpoint are skipped. Edge cost defaults to the planar length.
+ * edges with an out-of-range endpoint are skipped. Edge cost defaults to the edge length. With
+ * `metric`, fractions, distances and lengths use that metric (planar by default).
  */
 export function snapOracle(
   points: ArrayLike<number>,
   positions: ArrayLike<number>,
   edgeSources: ArrayLike<number>,
   edgeTargets: ArrayLike<number>,
-  options: {edgeCosts?: ArrayLike<number>; maxSnapDistance?: number} = {}
+  options: {
+    edgeCosts?: ArrayLike<number>;
+    maxSnapDistance?: number;
+    metric?: NetworkMetricOracle;
+  } = {}
 ): OracleSnap[] {
+  const metric = options.metric ?? PLANAR_NETWORK_METRIC;
   const nodeCount = positions.length / 2;
   const limit = options.maxSnapDistance ?? Infinity;
   const result: OracleSnap[] = [];
@@ -236,18 +244,14 @@ export function snapOracle(
       if (source >= nodeCount || target >= nodeCount) {
         continue;
       }
-      const ax = positions[source * 2];
-      const ay = positions[source * 2 + 1];
-      const dx = positions[target * 2] - ax;
-      const dy = positions[target * 2 + 1] - ay;
-      const lengthSquared = dx * dx + dy * dy;
-      const fraction =
-        lengthSquared > 0
-          ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / lengthSquared))
-          : 0;
-      const distance = Math.hypot(px - (ax + fraction * dx), py - (ay + fraction * dy));
+      const start = [positions[source * 2], positions[source * 2 + 1]];
+      const end = [positions[target * 2], positions[target * 2 + 1]];
+      const fraction = metric.getSegmentFraction([px, py], start, end);
+      const distance = metric.getDistance([px, py], metric.interpolate(start, end, fraction));
       if (distance <= limit && (best.edge === NONE || distance < best.distance - 1e-9)) {
-        const edgeCost = options.edgeCosts ? options.edgeCosts[edge] : Math.sqrt(lengthSquared);
+        const edgeCost = options.edgeCosts
+          ? options.edgeCosts[edge]
+          : metric.getDistance(start, end);
         best = {
           edge,
           fraction,

@@ -13,6 +13,11 @@ export type ZonalStatisticsOracleOptions = {
   validity?: ArrayLike<number>;
   scale?: number;
   offset?: number;
+  /**
+   * Optional per-cell weights (cell areas of a geographic raster). Sums, means, weight sums and
+   * variances are then weighted; counts, minimums and maximums never are.
+   */
+  cellWeights?: ArrayLike<number>;
 };
 
 /** Per-zone reference statistics. Empty zones follow the GPU convention (NaN mean/min/max). */
@@ -23,6 +28,11 @@ export type ZonalStatisticsOracleResult = {
   means: number[];
   minimums: number[];
   maximums: number[];
+  /** Sum of the weights of valid cells (the valid count without `cellWeights`). */
+  weightSums: number[];
+  /** Reliability-weighted unbiased variance `sum w (v - m)^2 / (V1 - V2 / V1)`; NaN below 2 values. */
+  variances: number[];
+  standardDeviations: number[];
   overflow: number;
 };
 
@@ -41,6 +51,11 @@ export function computeZonalStatistics(
   const sums = new Array<number>(zoneCapacity).fill(0);
   const minimums = new Array<number>(zoneCapacity).fill(Number.NaN);
   const maximums = new Array<number>(zoneCapacity).fill(Number.NaN);
+  const weightSums = new Array<number>(zoneCapacity).fill(0);
+  const zoneValues: {value: number; weight: number}[][] = Array.from(
+    {length: zoneCapacity},
+    () => []
+  );
   let overflow = 0;
   for (let index = 0; index < zones.length; index++) {
     const zone = zones[index];
@@ -64,10 +79,49 @@ export function computeZonalStatistics(
       continue;
     }
     valueCounts[zone]++;
-    sums[zone] = Math.fround(sums[zone] + value);
+    const rawWeight = options.cellWeights ? options.cellWeights[index] : 1;
+    const weight = Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : 0;
+    weightSums[zone] += weight;
+    zoneValues[zone].push({value, weight});
+    sums[zone] = options.cellWeights
+      ? sums[zone] + weight * value
+      : Math.fround(sums[zone] + value);
     minimums[zone] = Number.isNaN(minimums[zone]) ? value : Math.min(minimums[zone], value);
     maximums[zone] = Number.isNaN(maximums[zone]) ? value : Math.max(maximums[zone], value);
   }
-  const means = sums.map((sum, zone) => (valueCounts[zone] ? sum / valueCounts[zone] : Number.NaN));
-  return {cellCounts, valueCounts, sums, means, minimums, maximums, overflow};
+  const means = sums.map((sum, zone) => {
+    if (!options.cellWeights) {
+      return valueCounts[zone] ? sum / valueCounts[zone] : Number.NaN;
+    }
+    return valueCounts[zone] && weightSums[zone] > 0 ? sum / weightSums[zone] : Number.NaN;
+  });
+  // Two-pass reliability-weighted variance, numpy.cov(v, aweights=w, ddof=1).
+  const variances = zoneValues.map((entries, zone) => {
+    const weightSum = entries.reduce((total, entry) => total + entry.weight, 0);
+    const weightSquareSum = entries.reduce((total, entry) => total + entry.weight ** 2, 0);
+    const deviationSum = entries.reduce(
+      (total, entry) =>
+        entry.weight > 0 ? total + entry.weight * (entry.value - means[zone]) ** 2 : total,
+      0
+    );
+    const denominator = options.cellWeights
+      ? weightSum !== 0
+        ? weightSum - weightSquareSum / weightSum
+        : 0
+      : entries.length - 1;
+    return entries.length >= 2 && denominator > 0 ? deviationSum / denominator : Number.NaN;
+  });
+  const standardDeviations = variances.map(Math.sqrt);
+  return {
+    cellCounts,
+    valueCounts,
+    sums,
+    means,
+    minimums,
+    maximums,
+    weightSums,
+    variances,
+    standardDeviations,
+    overflow
+  };
 }

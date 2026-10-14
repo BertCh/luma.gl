@@ -42,7 +42,7 @@ export type GPURasterSamplingProps = {
   noDataValue?: number;
   /** Optional raster validity; zero marks a nodata cell. */
   validity?: GraphDataView<'uint32'>;
-  /** Packed points in extent units. */
+  /** Packed points in extent units, relative to the parameters' `localOrigin`. */
   positions: GraphDataView<'float32x2'>;
   /** Optional one-row active point count, clamped to `positions.length`. */
   pointCount?: GraphDataView<'uint32'>;
@@ -72,9 +72,13 @@ export type GPURasterSamplingProps = {
  *
  * Rows at or beyond the active `pointCount` are written NaN and 0.
  *
- * Precision: nearest is exact. Bilinear and bicubic evaluate in f32; GPUs may contract
- * multiply-adds into FMA, so results agree with an f32 CPU oracle to a few ULP, and exactly when
- * the arithmetic is exact (dyadic coordinates).
+ * Precision: nearest is exact. Bilinear and bicubic evaluate in f32; GPUs may contract multiply-
+ * adds into FMA, so results agree with an f32 CPU oracle to a few ULP, and exactly when the
+ * arithmetic is exact (dyadic coordinates). Query positions are compared with the extent in
+ * float32 relative to the packer's `localOrigin`. Absolute positions (the default origin `[0, 0]`)
+ * are quantized to the float32 ulp, 0.5 m at a UTM northing of 4.6e6 m (2 m at 2e7 m in
+ * EPSG:3857); set `localOrigin` to the raster or tile corner and upload points relative to it to
+ * keep about `1.2e-7` of their distance from it.
  */
 export class GPURasterSampling implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

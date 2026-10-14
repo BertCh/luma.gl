@@ -16,6 +16,7 @@ import {
   validateRasterBand
 } from './raster-utils';
 import type {GPURasterBufferBand, GPURasterScalarFormat} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 const RASTER_HISTOGRAM_WORKGROUP_SIZE = 256;
 
@@ -253,10 +254,7 @@ const SOURCE_VALIDITY_OFFSET: u32 = ${getViewElementOffset(this.input.validity)}
     const validityCondition = this.input.validity
       ? 'sourceValidity[SOURCE_VALIDITY_OFFSET + pixelIndex] != 0u && '
       : '';
-    const finiteCondition =
-      this.input.format === 'float32'
-        ? 'rawSample == rawSample && abs(rawSample) <= 3.402823466e+38 && '
-        : '';
+    const finiteCondition = this.input.format === 'float32' ? 'isFiniteValue(rawSample) && ' : '';
 
     return `
 @group(0) @binding(0) var<storage, read> sourceValues: array<${scalarType}>;
@@ -267,6 +265,7 @@ const SOURCE_OFFSET: u32 = ${getViewElementOffset(values)}u;
 const RESOLVED_VALIDITY_OFFSET: u32 = ${getViewElementOffset(resolvedValidity)}u;
 const PIXEL_COUNT: u32 = ${values.length}u;
 
+${IS_FINITE_VALUE_WGSL}
 @compute @workgroup_size(${RASTER_HISTOGRAM_WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let pixelIndex = globalId.x;

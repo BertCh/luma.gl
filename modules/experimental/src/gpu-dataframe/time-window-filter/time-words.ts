@@ -13,8 +13,10 @@
  * and only then convert the difference to f32 ({@link TIME_WORDS_WGSL}). There is no epoch to
  * choose and nothing to rebase when the playhead moves days or years.
  *
- * Precision: comparisons are exact for every Int64 value. A converted difference is exact below
- * 2^24 units and rounded to f32 above (relative error below 2^-23, two roundings).
+ * Precision: comparisons are exact for every Int64 value, including the extremes (an
+ * `INT64_MIN`/`INT64_MAX` "unbounded" window): they order the words lexicographically, never by
+ * the sign of a wrapped difference. A converted difference is exact below 2^24 units and rounded to
+ * f32 above (relative error below 2^-23, two roundings), with the correct sign for any two values.
  */
 
 import type {GraphDataView, GraphVectorView} from '@luma.gl/gpgpu/gpu-core';
@@ -161,9 +163,13 @@ export function getGPUTimeWindowWordParameterValues(
 /**
  * WGSL helpers for Int64 word times stored as `vec2<u32>(low, high)`.
  *
- * - `timeWordsSubtract(a, b)`: exact two's-complement `a - b` with a borrow.
- * - `timeWordsIsNegative(d)`: sign of a difference.
- * - `timeWordsToF32(d)`: signed difference rounded to f32 (exact below 2^24).
+ * - `timeWordsSubtract(a, b)`: exact two's-complement `a - b` with a borrow, modulo 2^64.
+ * - `timeWordsIsNegative(d)`: sign bit of a wrapped difference. It is the sign of `a - b` only
+ *   when `|a - b| < 2^63`; order times with `timeWordsCompare` instead.
+ * - `timeWordsToF32(d)`: wrapped signed difference rounded to f32 (exact below 2^24), with the
+ *   same `|a - b| < 2^63` caveat; `timeWordsDifferenceToF32` has none.
+ * - `timeWordsCompare(a, b)`: exact signed order of two Int64 values, -1, 0 or 1.
+ * - `timeWordsDifferenceToF32(a, b)`: `a - b` rounded to f32 with the right sign for every pair.
  * - `isTimeWordsAtLeast(a, aFraction, b, bFraction)`: exact `a + aFraction >= b + bFraction` for
  *   fractions in `[0, 1)`. The fractions only matter when the integer parts are equal.
  * - `timeWordsDifference(a, aFraction, b, bFraction)`: `(a + aFraction) - (b + bFraction)` in f32.
@@ -190,15 +196,37 @@ fn timeWordsToF32(difference: vec2<u32>) -> f32 {
   return select(magnitude, -magnitude, negative);
 }
 
+// Signed order: high words with the sign bit flipped compare as unsigned, then the low words.
+fn timeWordsCompare(a: vec2<u32>, b: vec2<u32>) -> i32 {
+  let aHigh = a.y ^ 0x80000000u;
+  let bHigh = b.y ^ 0x80000000u;
+  if (aHigh != bHigh) {
+    return select(-1i, 1i, aHigh > bHigh);
+  }
+  if (a.x != b.x) {
+    return select(-1i, 1i, a.x > b.x);
+  }
+  return 0i;
+}
+
+// The magnitude |a - b| is below 2^64, so subtracting the smaller from the larger is exact as an
+// unsigned 64-bit value even when the signed difference overflows Int64.
+fn timeWordsDifferenceToF32(a: vec2<u32>, b: vec2<u32>) -> f32 {
+  let isForward = timeWordsCompare(a, b) >= 0i;
+  let magnitudeWords = select(timeWordsSubtract(b, a), timeWordsSubtract(a, b), isForward);
+  let magnitude = f32(magnitudeWords.y) * 4294967296.0 + f32(magnitudeWords.x);
+  return select(-magnitude, magnitude, isForward);
+}
+
 fn isTimeWordsAtLeast(a: vec2<u32>, aFraction: f32, b: vec2<u32>, bFraction: f32) -> bool {
-  let difference = timeWordsSubtract(a, b);
-  if (difference.x == 0u && difference.y == 0u) {
+  let order = timeWordsCompare(a, b);
+  if (order == 0i) {
     return aFraction >= bFraction;
   }
-  return !timeWordsIsNegative(difference);
+  return order > 0i;
 }
 
 fn timeWordsDifference(a: vec2<u32>, aFraction: f32, b: vec2<u32>, bFraction: f32) -> f32 {
-  return timeWordsToF32(timeWordsSubtract(a, b)) + (aFraction - bFraction);
+  return timeWordsDifferenceToF32(a, b) + (aFraction - bFraction);
 }
 `;

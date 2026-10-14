@@ -16,6 +16,14 @@ import {
   type GPUPointHorizonProfileProps,
   type GPUPointHorizonVisibilityProps
 } from '../../../src/gpu-terrain/point-horizon';
+import {
+  getPointHorizonMarchWGSL,
+  resolvePointHorizonModel
+} from '../../../src/gpu-terrain/point-horizon/point-horizon-march';
+import {
+  POINT_HORIZON_PROFILE_PROJECTION_SLOT,
+  POINT_HORIZON_VISIBILITY_PROJECTION_SLOT
+} from '../../../src/gpu-terrain/point-horizon/point-horizon-parameters';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 function createBand(graph: GPUCommandGraph, id: string, length: number) {
@@ -113,7 +121,7 @@ it('point horizon packers lay out settings', () => {
   expect(GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH).toBe(12);
   expect(
     Array.from(getGPUPointHorizonParameterValues({cellSize: [2, 3], curvatureCoefficient: 0.5}))
-  ).toEqual([0.5, 2, 3, 0, 0, 0, 0, 0]);
+  ).toEqual([0.5, 2, 3, 0, 0, 0, 0, 1]); // slot 7: planar projection tag
   const originY = 1000;
   const worldPixelSize = 512 * 2 ** 10;
   const mercator = getGPUPointHorizonParameterValues({
@@ -126,6 +134,7 @@ it('point horizon packers lay out settings', () => {
   expect(mercator[2]).toBe(Math.fround(Math.PI * (1 - (2 * originY) / worldPixelSize)));
   expect(mercator[3]).toBe(5000);
   expect(mercator[4]).toBe(0); // the opaque-zero guard
+  expect(mercator[7]).toBe(2); // Web Mercator projection tag
   const visibility = getGPUPointHorizonVisibilityParameterValues({
     cellSize: [10, 10],
     sigmaZ: 7,
@@ -143,11 +152,11 @@ it('point horizon packers lay out settings', () => {
     150,
     Math.fround(0.1),
     0,
-    0
+    1 // planar projection tag
   ]);
   const reused = new Float32Array(12).fill(9);
   getGPUPointHorizonParameterValues({cellSize: [1, 1]}, reused);
-  expect(Array.from(reused.slice(0, 8))).toEqual([0, 1, 1, 0, 0, 0, 0, 0]);
+  expect(Array.from(reused.slice(0, 8))).toEqual([0, 1, 1, 0, 0, 0, 0, 1]);
   expect(() => getGPUPointHorizonParameterValues({cellSize: [0, 1]})).toThrow(/cell size/);
   expect(() => getGPUPointHorizonParameterValues({worldPixelSize: 0, originY: 0})).toThrow(
     /worldPixelSize/
@@ -319,4 +328,30 @@ it('GPUPointHorizonVisibility schedules classification chunks within 8 bindings'
     create({targets: createTransientView(graph, 'bad-targets', 'float32x2' as never, 5)})
   ).toThrow(/targets/);
   device.destroy();
+});
+
+it('point horizon kernels reject settings packed for the other projection', () => {
+  // The settings shape implies the projection; the packers tag it and the kernels compare the tag
+  // with their compile-time projection, so a mismatch marks every eye invalid (NaN / no-data)
+  // instead of reading worldPixelSize as a cell size. Tag 0 (hand-written arrays) is accepted.
+  expect(POINT_HORIZON_PROFILE_PROJECTION_SLOT).toBe(7);
+  expect(POINT_HORIZON_VISIBILITY_PROJECTION_SLOT).toBe(11);
+  const options = {maximumDistance: 2000, cellSize: 30, traversal: 'march' as const};
+  const planar = resolvePointHorizonModel('planar', 16, 16, options);
+  const mercator = resolvePointHorizonModel('mercator', 16, 16, {
+    ...options,
+    projection: 'web-mercator'
+  });
+  const planarWGSL = getPointHorizonMarchWGSL(planar, POINT_HORIZON_PROFILE_PROJECTION_SLOT);
+  expect(planarWGSL).toContain('let tag = settings[settingsOffset + 7u];');
+  expect(planarWGSL).toContain('return tag == 0.0 || tag == 1.0;');
+  expect(planarWGSL).toContain('eye.valid = isInsideGrid(column, row) && isProjectionTagValid();');
+  const mercatorWGSL = getPointHorizonMarchWGSL(mercator, POINT_HORIZON_VISIBILITY_PROJECTION_SLOT);
+  expect(mercatorWGSL).toContain('let tag = settings[settingsOffset + 11u];');
+  expect(mercatorWGSL).toContain('return tag == 0.0 || tag == 2.0;');
+  // The packers tag by settings shape in both layouts.
+  expect(getGPUPointHorizonVisibilityParameterValues({worldPixelSize: 1024, originY: 0})[11]).toBe(
+    2
+  );
+  expect(getGPUPointHorizonParameterValues({cellSize: [5, 5]})[7]).toBe(1);
 });

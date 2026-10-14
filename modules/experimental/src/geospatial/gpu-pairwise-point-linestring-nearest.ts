@@ -19,12 +19,22 @@ import {
   validateMatchingRows,
   validateRowView
 } from './geospatial-utils';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../gpu-spatial-analysis/contracts/spatial-context';
 
 const NO_INDEX = 0xffffffff;
 
 type GPUPairwisePointLinestringNearestBaseProps = {
   /** Prefix for generated graph-node IDs. */
   id?: string;
+  /**
+   * Coordinate space of the positions. Omitted means planar coordinates. Nearest points and
+   * distances are planar Euclidean by design (the cuSpatial convention), so longitude/latitude
+   * contexts throw: project positions to a planar frame first.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Part offsets with one more row than `points`. */
   geometryOffsets: GraphDataView<'uint32'>;
   /** Flattened-vertex offsets with one more row than the total linestring-part count. */
@@ -74,7 +84,8 @@ export type GPUPairwisePointLinestringNearestProps =
  * singleton parts contain no segment, parts are never connected implicitly, and rings are never
  * closed implicitly. Malformed offsets or non-finite reachable positions invalidate the whole row.
  * If no segment remains, outputs are NaN and optional indices are `0xffffffff`. Equal-distance
- * ties retain the first part and segment.
+ * ties retain the first part and segment. Planar only: longitude/latitude positions are rejected
+ * at construction.
  */
 export class GPUPairwisePointLinestringNearest {
   readonly id: string;
@@ -86,10 +97,13 @@ export class GPUPairwisePointLinestringNearest {
   readonly nearestPoints?: GraphDataView<'float32x2'> | GraphDataView<'float32x4'>;
   readonly linestringIndices?: GraphDataView<'uint32'>;
   readonly segmentIndices?: GraphDataView<'uint32'>;
+  /** Resolved coordinate space; always planar. */
+  readonly spatialContext: GPUSpatialContext;
 
   /** Creates a nearest-linestring contributor without compiling or submitting GPU work. */
   constructor(props: GPUPairwisePointLinestringNearestProps) {
     this.id = props.id ?? 'gpu-pairwise-point-linestring-nearest';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.points = props.points;
     this.linestringPositions = props.linestringPositions;
     this.geometryOffsets = props.geometryOffsets;

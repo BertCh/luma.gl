@@ -562,10 +562,12 @@ const WORD_BUCKET_BODY = /* wgsl */ `let origin = vec2<u32>(params[paramsOffset]
     return;
   }
   let time = vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]);
-  let difference = timeWordsSubtract(time, origin);
-  if (timeWordsIsNegative(difference)) {
+  // Exact signed order first: the sign of a wrapped difference is wrong when |time - origin| >=
+  // 2^63. Past the check, time - origin is a non-negative value below 2^64 (unsigned words).
+  if (timeWordsCompare(time, origin) < 0i) {
     return;
   }
+  let difference = timeWordsSubtract(time, origin);
   // Exact 64-bit by 32-bit division: high word first, then the low word bit by bit.
   let quotientHigh = difference.y / width;
   var remainder = difference.y % width;

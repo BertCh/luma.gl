@@ -9,7 +9,11 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {TERRAIN_ILLUMINATION_WGSL_CONSTANTS} from './terrain-illumination-utils';
-import {getTerrainGroundCellSizeWGSL, type GPUTerrainCellSizeMode} from '../terrain-grid-utils';
+import {
+  getTerrainGroundCellSizeWGSL,
+  type GPUTerrainCellSizeMode,
+  type GPUTerrainRowDirection
+} from '../terrain-grid-utils';
 
 /** Fixed-point scale of the digital line slope: `slopeFixed = round(minor / major * 65536)`. @internal */
 export const TERRAIN_SWEEP_SLOPE_SCALE = 65536;
@@ -103,23 +107,106 @@ export function getTerrainSweepLineGeometry(
   };
 }
 
+/**
+ * Computes the digital line family that follows a ground-space unit direction `(east, row-ward)`
+ * on cells of `groundCell = [x, y]` ground meters, exactly as the sweep kernel does it in WGSL.
+ *
+ * Square cells use {@link getTerrainSweepLineGeometry} on `groundDirection` unchanged (float64 slope),
+ * so isotropic grids keep their exact geometry. Anisotropic cells use the pixel direction
+ * `groundDirection / groundCell`, rounded to float32 at each step like the kernel, and round the
+ * slope half to even like WGSL `round`.
+ *
+ * @throws If the direction or cell is zero or not finite, or an extent exceeds 32767.
+ * @internal
+ */
+/**
+ * Mirrors a line family across the row axis (negated row component), exactly as the sweep kernel
+ * does for a `'settings'` source on north-advancing rows: the slope negates, and so does the travel
+ * sign of y-major lines. CPU twin for specs and oracles.
+ *
+ * @internal
+ */
+export function getTerrainSweepMirroredLineGeometry(
+  geometry: TerrainSweepLineGeometry,
+  width: number,
+  height: number
+): TerrainSweepLineGeometry {
+  const slopeFixed = -geometry.slopeFixed + 0;
+  const majorExtent = geometry.xMajor ? width : height;
+  const minorExtent = geometry.xMajor ? height : width;
+  const lastOffset = getTerrainSweepMinorOffset(slopeFixed, majorExtent - 1);
+  return {
+    xMajor: geometry.xMajor,
+    slopeFixed,
+    travelSign: geometry.xMajor ? geometry.travelSign : geometry.travelSign === 1 ? -1 : 1,
+    firstLine: -Math.max(0, lastOffset) + 0,
+    lineCount: minorExtent + Math.abs(lastOffset),
+    stepPixelLength: geometry.stepPixelLength
+  };
+}
+
+export function getTerrainSweepGroundLineGeometry(
+  groundDirection: readonly [number, number],
+  groundCell: readonly [number, number],
+  width: number,
+  height: number
+): TerrainSweepLineGeometry {
+  const geometry = getTerrainSweepLineGeometry(groundDirection, width, height);
+  const [cellX, cellY] = groundCell.map(Math.fround);
+  if (cellX === cellY || !(cellX > 0 && cellY > 0 && Number.isFinite(cellX + cellY))) {
+    return geometry;
+  }
+  const pixelX = Math.fround(Math.fround(groundDirection[0]) / cellX);
+  const pixelY = Math.fround(Math.fround(groundDirection[1]) / cellY);
+  const xMajor = Math.abs(pixelX) >= Math.abs(pixelY);
+  const major = xMajor ? pixelX : pixelY;
+  const minor = xMajor ? pixelY : pixelX;
+  const scaled = Math.fround(minor / major) * TERRAIN_SWEEP_SLOPE_SCALE;
+  // WGSL round() rounds half to even; `+ 0` turns -0 into 0.
+  const nearest = Math.round(scaled);
+  const slopeFixed =
+    (Math.abs(scaled % 1) === 0.5 && nearest % 2 !== 0 ? nearest - 1 : nearest) + 0;
+  const majorExtent = xMajor ? width : height;
+  const minorExtent = xMajor ? height : width;
+  const lastOffset = getTerrainSweepMinorOffset(slopeFixed, majorExtent - 1);
+  return {
+    xMajor,
+    slopeFixed,
+    travelSign: major > 0 ? 1 : -1,
+    firstLine: -Math.max(0, lastOffset) + 0,
+    lineCount: minorExtent + Math.abs(lastOffset),
+    stepPixelLength: Math.fround(Math.hypot(1, slopeFixed / TERRAIN_SWEEP_SLOPE_SCALE))
+  };
+}
+
 /** Where the sweep reads its line geometry. @internal */
 export type TerrainHorizonSweepGeometrySource =
   | {
-      /** Geometry baked into the shader from a pixel-space direction (one node per sector). */
+      /**
+       * Geometry baked from a ground-space direction (one node per sector). Square reference
+       * cells use the baked geometry of `direction`; anisotropic ones convert it in the kernel to
+       * the pixel direction of the reference row, see {@link getTerrainSweepGroundLineGeometry}.
+       */
       kind: 'baked';
-      /** Pixel-space unit direction. */
+      /** Ground-space unit direction `(east, row-ward)`. */
       direction: readonly [number, number];
     }
   | {
       /**
        * Geometry read from `settings[index .. index + 3] = [xMajor (0/1), slopeFixed, travelSign,
-       * stepPixelLength]`; the line count is derived in the shader and `width + height`
-       * invocations are dispatched, surplus ones exit.
+       * stepPixelLength]`, packed for square cells and south-advancing rows from the ground
+       * direction `(east, south)` stored at `settings[groundDirectionIndex .. + 1]`. The kernel
+       * mirrors it for `rowDirection: 'north'` and converts it on anisotropic reference cells
+       * exactly like the baked source, so the packer needs neither the row direction nor the cell
+       * size mode. The line count is derived in the shader.
        */
       kind: 'settings';
       /** Settings index of `xMajor`. */
       index: number;
+      /** Settings index of the ground-space unit direction `(east, south)`. */
+      groundDirectionIndex: number;
+      /** Row direction of the grid; the packed geometry assumes `'south'`. */
+      rowDirection: GPUTerrainRowDirection;
     };
 
 /**
@@ -137,7 +224,7 @@ export type TerrainHorizonSweepNodeProps = {
   width: number;
   /** Grid height in pixels, at most 32767. */
   height: number;
-  /** Pixel-space unit direction of the sector, from `getGPUTerrainHorizonDirection`. */
+  /** Ground-space unit direction of the sector, from `getGPUTerrainHorizonDirection`. */
   direction: readonly [number, number];
   /** Radius window in pixels (the contributor's `maximumRadius`). */
   maximumRadius: number;
@@ -193,8 +280,15 @@ export type TerrainHorizonSweepKernelProps = Omit<TerrainHorizonSweepNodeProps, 
  * outside the window an exact windowed query re-walks hull chains restarted after each in-window
  * chain end (worst case O(window), typically a few steps).
  *
- * `Lref` is constant for the whole sweep: the ground step of the pixel row in `uniform` mode
- * (identical everywhere) and the ground step at row `height / 2` otherwise. The argmax is exact for
+ * One digital line family has one pixel slope, so the sweep follows the sector's ground azimuth
+ * with the pixel direction of a reference row: row 0 in `uniform` mode (every row is identical)
+ * and row `height / 2` otherwise. Square reference cells keep the baked geometry; anisotropic ones
+ * (geographic tiles, non-square `cellSize`) derive it in the kernel from the per-frame cell size,
+ * so the dispatch always covers `width + height` lines and surplus invocations exit. Rows away from
+ * the reference row see a slightly rotated ground azimuth on geographic tiles (cos(latitude)
+ * changes along the tile); see `GPUTerrainHorizonAlgorithm`.
+ *
+ * `Lref` is constant for the whole sweep: the ground step of the reference row. The argmax is exact for
  * `c = 0` in every mode and for any `c` in uniform mode; with `c != 0` and latitude-dependent
  * cells it uses the middle row's spacing. The reported angle always uses the pixel's own row
  * spacing `Lp`.
@@ -240,15 +334,47 @@ export function createTerrainHorizonSweepNode<Parameters>(
   if (width > TERRAIN_SWEEP_MAX_EXTENT || height > TERRAIN_SWEEP_MAX_EXTENT) {
     throw new Error(`${props.id} sweep extents must not exceed ${TERRAIN_SWEEP_MAX_EXTENT}`);
   }
-  const geometryWGSL = bakedGeometry
-    ? `let xMajor = ${bakedGeometry.xMajor ? 'true' : 'false'};
-  let slopeFixed: i32 = ${bakedGeometry.slopeFixed};
-  let travelSign: i32 = ${bakedGeometry.travelSign};
-  let stepPixelLength: f32 = ${getWGSLFloatLiteral(bakedGeometry.stepPixelLength)};`
-    : `let xMajor = settings[settingsOffset + ${(geometry as {index: number}).index}u] != 0.0;
-  let slopeFixed = i32(settings[settingsOffset + ${(geometry as {index: number}).index + 1}u]);
-  let travelSign = select(-1, 1, settings[settingsOffset + ${(geometry as {index: number}).index + 2}u] > 0.0);
-  let stepPixelLength = settings[settingsOffset + ${(geometry as {index: number}).index + 3}u];`;
+  const referenceRow = props.cellSizeMode === 'uniform' ? '0u' : 'HEIGHT / 2u';
+  const settingsIndex = geometry.kind === 'settings' ? geometry.index : 0;
+  const groundDirectionIndex = geometry.kind === 'settings' ? geometry.groundDirectionIndex : 0;
+  const geometryWGSL = `${
+    bakedGeometry
+      ? `var xMajor = ${bakedGeometry.xMajor ? 'true' : 'false'};
+  var slopeFixed: i32 = ${bakedGeometry.slopeFixed};
+  var travelSign: i32 = ${bakedGeometry.travelSign};
+  var stepPixelLength: f32 = ${getWGSLFloatLiteral(bakedGeometry.stepPixelLength)};
+  let groundDirection = GROUND_DIRECTION;`
+      : `var xMajor = settings[settingsOffset + ${settingsIndex}u] != 0.0;
+  var slopeFixed = i32(settings[settingsOffset + ${settingsIndex + 1}u]);
+  var travelSign = select(-1, 1, settings[settingsOffset + ${settingsIndex + 2}u] > 0.0);
+  var stepPixelLength = settings[settingsOffset + ${settingsIndex + 3}u];
+  ${geometry.kind === 'settings' && geometry.rowDirection === 'north' ? 'var' : 'let'} groundDirection = vec2<f32>(
+    settings[settingsOffset + ${groundDirectionIndex}u],
+    settings[settingsOffset + ${groundDirectionIndex + 1}u]
+  );${
+    geometry.kind === 'settings' && geometry.rowDirection === 'north'
+      ? `
+  // The packed line assumes south-advancing rows; mirror it for north-advancing rows. Negating the
+  // row component negates the slope, and the travel sign of y-major lines.
+  groundDirection.y = -groundDirection.y;
+  slopeFixed = -slopeFixed;
+  if (!xMajor) { travelSign = -travelSign; }`
+      : ''
+  }`
+  }
+  // The direction is a ground azimuth; on anisotropic cells the line follows the pixel direction
+  // of the reference row instead (CPU twin: getTerrainSweepGroundLineGeometry).
+  let referenceCell = getGroundCellSize(${referenceRow});
+  if (referenceCell.x != referenceCell.y && all(referenceCell > vec2<f32>(0.0)) &&
+      isFiniteValue(referenceCell.x + referenceCell.y) && any(groundDirection != vec2<f32>(0.0))) {
+    let pixelDirection = groundDirection / referenceCell;
+    xMajor = abs(pixelDirection.x) >= abs(pixelDirection.y);
+    let majorComponent = select(pixelDirection.y, pixelDirection.x, xMajor);
+    let minorComponent = select(pixelDirection.x, pixelDirection.y, xMajor);
+    slopeFixed = i32(round((minorComponent / majorComponent) * ${TERRAIN_SWEEP_SLOPE_SCALE}.0));
+    travelSign = select(-1, 1, majorComponent > 0.0);
+    stepPixelLength = length(vec2<f32>(1.0, f32(slopeFixed) / ${TERRAIN_SWEEP_SLOPE_SCALE}.0));
+  }`;
   const bindings: WGSLKernelBinding[] = [
     {name: 'elevationValues', view: props.elevationValues, type: 'f32', access: 'read'},
     {name: 'elevationValidity', view: props.elevationValidity, type: 'u32', access: 'read'},
@@ -262,8 +388,14 @@ export function createTerrainHorizonSweepNode<Parameters>(
     variant: `sweep-${props.cellSizeMode}`,
     bindings,
     workgroupSize: TERRAIN_SWEEP_WORKGROUP_SIZE,
-    invocationCount: bakedGeometry ? bakedGeometry.lineCount : width + height,
-    declarations: getTerrainHorizonSweepDeclarations(props),
+    // Anisotropic cells change the line count per frame, so every source dispatches the bound.
+    invocationCount: width + height,
+    declarations: `${getTerrainHorizonSweepDeclarations(props)}
+${
+  geometry.kind === 'baked'
+    ? `const GROUND_DIRECTION: vec2<f32> = vec2<f32>(${getWGSLFloatLiteral(geometry.direction[0])}, ${getWGSLFloatLiteral(geometry.direction[1])});`
+    : ''
+}`,
     body: `${geometryWGSL}
   let majorExtent = select(HEIGHT, WIDTH, xMajor);
   let minorExtent = select(WIDTH, HEIGHT, xMajor);
@@ -282,7 +414,7 @@ export function createTerrainHorizonSweepNode<Parameters>(
   let curvature = settings[settingsOffset + 3u];
   sweepMaximumDistance = settings[settingsOffset + 6u];
   sweepStepPixelLength = stepPixelLength;
-  let referenceStep = getStepLength(select(HEIGHT / 2u, 0u, ${props.cellSizeMode === 'uniform'}), xMajor, slopeFixed);
+  let referenceStep = getStepLength(${referenceRow}, xMajor, slopeFixed);
   sweepCurvature = curvature * referenceStep * referenceStep;
   var previous = NONE;
   for (var stepIndex = 0; stepIndex < sweepMajorExtent; stepIndex++) {

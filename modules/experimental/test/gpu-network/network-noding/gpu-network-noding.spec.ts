@@ -260,3 +260,52 @@ it('GPUNetworkNoding#reports node overflow and drops edges at nodes beyond the c
   expect(result.overflow).toBe(1);
   expect(result.offsets[5]).toBeLessThan(result.edgeCount * 2);
 });
+
+/**
+ * Three disjoint roads in UTM coordinates (easting about 500 000 m, northing about 4.6e6 m). The
+ * end of A and the start of B are 0.25 m apart; the start of A and the start of C share an easting
+ * and are 10 m apart in northing. All values are exact in f32 (ulp 0.03125 m at the eastings,
+ * 0.5 m at the northings).
+ */
+const UTM_LINES: Point[][] = [
+  [
+    [500000, 4600000],
+    [500100, 4600000]
+  ],
+  [
+    [500100.25, 4600000],
+    [500100.25, 4600100]
+  ],
+  [
+    [500000, 4600010],
+    [499900, 4600010]
+  ]
+];
+
+it('GPUNetworkNoding#snaps UTM-scale end points in exact cells relative to the end point origin', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // 0.5 m: origin (499900, 4600000); A's end and B's start both fall in x cell floor(200 / 0.5)
+  // = floor(200.25 / 0.5) = 400 and y cell 0, so they share one node: 6 end points, 5 nodes.
+  const snapped = await runNoding(device, UTM_LINES, {tolerance: 0.5});
+  expect(snapped.edgeCount).toBe(3);
+  expect(snapped.nodeCount).toBe(5);
+  expect(snapped.overflow).toBe(0);
+  // The shared node keeps one of the two end points as its position (the first in sort order).
+  const gapEnds = snapped.nodes.filter(
+    ([x, y]) => (x === 500100 || x === 500100.25) && y === 4600000
+  );
+  expect(gapEnds).toHaveLength(1);
+  // Some node is used by two edges: the merged end of A and start of B.
+  const nodeUses = [...snapped.from, ...snapped.to];
+  expect(nodeUses.some(node => nodeUses.filter(other => other === node).length === 2)).toBe(true);
+  // 1 mm: the 0.25 m gap and the 10 m northing gap stay separate. The former absolute f32 key
+  // clamped 4.6e6 / 0.001 cells to 1e9, so every northing shared one key and A's start merged
+  // with C's start.
+  const exact = await runNoding(device, UTM_LINES, {tolerance: 0.001});
+  expect(exact.nodeCount).toBe(6);
+  expect(exact.overflow).toBe(0);
+  // 0.01 mm: 200 m of eastings is 2e7 cells, beyond the 2^24 exact cells, so overflow is raised.
+  const tooFine = await runNoding(device, UTM_LINES, {tolerance: 0.00001});
+  expect(tooFine.overflow).toBe(1);
+});

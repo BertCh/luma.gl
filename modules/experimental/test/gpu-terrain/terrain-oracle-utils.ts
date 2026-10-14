@@ -2,8 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** Ground metres spanned by one degree of latitude (and of longitude at the equator). */
-export const ORACLE_METERS_PER_DEGREE = 111319.49079327357;
+/** WGS84 semi-major axis in metres. */
+const ORACLE_WGS84_SEMI_MAJOR_AXIS = 6378137;
+/** WGS84 first eccentricity squared `f (2 - f)` with `f = 1 / 298.257223563`. */
+const ORACLE_WGS84_ECCENTRICITY_SQUARED = (2 - 1 / 298.257223563) / 298.257223563;
+
+/**
+ * WGS84 meridional `M` and prime-vertical `N` radii of curvature in metres at a latitude:
+ * `N = a / sqrt(1 - e^2 sin^2(lat))`, `M = a (1 - e^2) / (1 - e^2 sin^2(lat))^1.5`.
+ */
+export function getOracleRadiiOfCurvature(latitudeDegrees: number): [number, number] {
+  const sinLatitude = Math.sin((latitudeDegrees * Math.PI) / 180);
+  const w = 1 - ORACLE_WGS84_ECCENTRICITY_SQUARED * sinLatitude * sinLatitude;
+  return [
+    (ORACLE_WGS84_SEMI_MAJOR_AXIS * (1 - ORACLE_WGS84_ECCENTRICITY_SQUARED)) / w ** 1.5,
+    ORACLE_WGS84_SEMI_MAJOR_AXIS / Math.sqrt(w)
+  ];
+}
 
 export type OracleCellSizeMode = 'uniform' | 'web-mercator' | 'geographic';
 
@@ -33,12 +48,19 @@ export function getOracleGroundCellSize(
   const edge =
     settings[northEdgeIndex] + (settings[northEdgeIndex + 1] - settings[northEdgeIndex]) * fraction;
   if (mode === 'web-mercator') {
-    const scale = Math.cosh(Math.PI * (1 - 2 * edge));
-    return [cellX / scale, cellY / scale];
+    // EPSG:3857: geodetic latitude = atan(sinh(PI (1 - 2y))); ground = radius * cos(lat) / a.
+    const latitude = (Math.atan(Math.sinh(Math.PI * (1 - 2 * edge))) * 180) / Math.PI;
+    const [meridional, primeVertical] = getOracleRadiiOfCurvature(latitude);
+    const cosLatitude = Math.cos((latitude * Math.PI) / 180);
+    return [
+      (cellX * primeVertical * cosLatitude) / ORACLE_WGS84_SEMI_MAJOR_AXIS,
+      (cellY * meridional * cosLatitude) / ORACLE_WGS84_SEMI_MAJOR_AXIS
+    ];
   }
+  const [meridional, primeVertical] = getOracleRadiiOfCurvature(edge);
   return [
-    cellX * ORACLE_METERS_PER_DEGREE * Math.cos((edge * Math.PI) / 180),
-    cellY * ORACLE_METERS_PER_DEGREE
+    (cellX * primeVertical * Math.cos((edge * Math.PI) / 180) * Math.PI) / 180,
+    (cellY * meridional * Math.PI) / 180
   ];
 }
 

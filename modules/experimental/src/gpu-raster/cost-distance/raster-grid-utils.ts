@@ -8,6 +8,10 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPUTerrainCellSizeMode} from '../../gpu-terrain/terrain-analysis/index';
+import {
+  getTerrainGroundScale,
+  getTerrainGroundScaleWGSL
+} from '../../gpu-terrain/terrain-grid-utils';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 
 /**
@@ -77,15 +81,12 @@ export const GPU_RASTER_D8_DIRECTIONS: readonly GPURasterD8Direction[] = [
   {code: 128, columnOffset: 1, rowOffset: -1}
 ];
 
-/** Mean equatorial meters per degree, matching `GPUTerrainDerivatives`. @internal */
-export const RASTER_METERS_PER_DEGREE = 111319.49079327357;
-
 /** Settings prefix shared by raster grid contributors: `[cellSizeX, cellSizeY, northEdge, southEdge]`. @internal */
 export const RASTER_GRID_SETTINGS_LENGTH = 4;
 
 /** CPU description of the shared settings prefix. @internal */
 export type RasterGridSettings = {
-  /** `[x, y]` cell size: meters (uniform), equatorial Web Mercator meters, or degrees (geographic). */
+  /** `[x, y]` cell size: meters (uniform), EPSG:3857 meters (web-mercator), or degrees (geographic). */
   cellSize: readonly [number, number];
   /** Top edge of row 0: normalized Web Mercator y in `[0, 1]` or latitude degrees. Defaults to 0. */
   northEdge?: number;
@@ -103,7 +104,9 @@ export function writeRasterGridSettings(target: Float32Array, settings: RasterGr
 
 /**
  * Returns ground `[x, y]` meters per cell at a continuous row coordinate (row index + 0.5 is a
- * cell center), in float64. CPU twin of the WGSL `getGroundCellSize`.
+ * cell center), in float64, with WGS84 radii of curvature at that row's latitude for the
+ * `'web-mercator'` and `'geographic'` modes (see `GPUTerrainCellSizeMode`). CPU twin of the WGSL
+ * `getGroundCellSize`.
  *
  * @internal
  */
@@ -121,14 +124,8 @@ export function getRasterGroundCellSize(
   const northEdge = settings.northEdge ?? 0;
   const southEdge = settings.southEdge ?? 0;
   const edge = northEdge + (southEdge - northEdge) * rowFraction;
-  if (cellSizeMode === 'web-mercator') {
-    const scale = 1 / Math.cosh(Math.PI * (1 - 2 * edge));
-    return [cellSizeX * scale, cellSizeY * scale];
-  }
-  return [
-    cellSizeX * RASTER_METERS_PER_DEGREE * Math.cos((edge * Math.PI) / 180),
-    cellSizeY * RASTER_METERS_PER_DEGREE
-  ];
+  const [scaleX, scaleY] = getTerrainGroundScale(cellSizeMode, edge);
+  return [cellSizeX * scaleX, cellSizeY * scaleY];
 }
 
 /**
@@ -191,18 +188,12 @@ export function getRasterGridWGSL(props: {
       ? 'return cellSize;'
       : `let rowFraction = rowCoordinate / f32(GRID_HEIGHT);
   let edge = mix(settings[settingsOffset + 2u], settings[settingsOffset + 3u], rowFraction);
-  ${
-    props.cellSizeMode === 'web-mercator'
-      ? '// cos(latitude) = 1 / cosh(PI * (1 - 2y)) for normalized Web Mercator y.\n  return cellSize / cosh(RASTER_PI * (1.0 - 2.0 * edge));'
-      : 'return cellSize * RASTER_METERS_PER_DEGREE * vec2<f32>(cos(edge * RASTER_DEGREES_TO_RADIANS), 1.0);'
-  }`;
+  ${getTerrainGroundScaleWGSL(props.cellSizeMode)}
+  return cellSize * groundScale;`;
   return /* wgsl */ `
 const GRID_WIDTH: u32 = ${props.width}u;
 const GRID_HEIGHT: u32 = ${props.height}u;
 const GRID_NONE: u32 = 0xffffffffu;
-const RASTER_PI: f32 = 3.141592653589793;
-const RASTER_DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
-const RASTER_METERS_PER_DEGREE: f32 = ${RASTER_METERS_PER_DEGREE};
 
 // Bit tests: shader compilers may fold 'value != value' away under fast-math assumptions.
 ${IS_FINITE_VALUE_WGSL}

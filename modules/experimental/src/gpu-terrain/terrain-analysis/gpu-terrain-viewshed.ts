@@ -11,6 +11,7 @@ import {
   type GraphTextureView
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPURasterBufferToTexture, type GPURasterBand} from '../../gpu-raster/index';
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../gpu-spatial-analysis/contracts/earth';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -167,7 +168,7 @@ export function getGPUTerrainVisibilityToleranceParameterValues(
  */
 export function getGPUTerrainCurvatureCoefficient(
   refractionCoefficient: number = 0.13,
-  earthRadius: number = 6371008.8
+  earthRadius: number = GPU_EARTH_MEAN_RADIUS_METERS
 ): number {
   return (1 - refractionCoefficient) / (2 * earthRadius);
 }

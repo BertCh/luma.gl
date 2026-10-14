@@ -2,14 +2,33 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../gpu-spatial-analysis/contracts/earth';
+
 /** Number of float32 values read from `GPUPointHorizonProfileProps.settings`. */
 export const GPU_POINT_HORIZON_PARAMETER_LENGTH = 8;
 
 /** Number of float32 values read from `GPUPointHorizonVisibilityProps.settings`. */
 export const GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH = 12;
 
-/** Spherical earth radius in meters used for Web Mercator great-circle distances. */
-export const GPU_POINT_HORIZON_EARTH_RADIUS = 6371008.8;
+/** Settings slot of the projection tag in the profile layout. @internal */
+export const POINT_HORIZON_PROFILE_PROJECTION_SLOT = 7;
+
+/** Settings slot of the projection tag in the visibility layout. @internal */
+export const POINT_HORIZON_VISIBILITY_PROJECTION_SLOT = 11;
+
+/**
+ * Projection tags written by the packers: the settings shape (`cellSize` or `worldPixelSize`)
+ * implies the projection, and the kernels reject a tag that disagrees with their compile-time
+ * `projection`, so mismatched settings produce NaN / no-data instead of silently misread numbers.
+ * Tag 0 (hand-written arrays) is accepted by both. @internal
+ */
+export const POINT_HORIZON_PROJECTION_TAGS = {planar: 1, 'web-mercator': 2} as const;
+
+/**
+ * Spherical earth radius in meters used for Web Mercator great-circle distances: the IUGG mean
+ * radius `GPU_EARTH_MEAN_RADIUS_METERS` (6371008.8 m).
+ */
+export const GPU_POINT_HORIZON_EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
 
 /**
  * Raster projection model of the point-horizon contributors (topology: baked into WGSL).
@@ -111,7 +130,13 @@ export type GPUPointHorizonVisibilityTolerances = {
 export type GPUPointHorizonVisibilitySettings = GPUPointHorizonSettings &
   GPUPointHorizonVisibilityTolerances;
 
-function packModelSettings(settings: GPUPointHorizonSettings, target: Float32Array): void {
+function packModelSettings(
+  settings: GPUPointHorizonSettings,
+  target: Float32Array,
+  projectionSlot: number
+): void {
+  target[projectionSlot] =
+    POINT_HORIZON_PROJECTION_TAGS['worldPixelSize' in settings ? 'web-mercator' : 'planar'];
   if ('worldPixelSize' in settings) {
     const {worldPixelSize, originY} = settings;
     if (!(Number.isFinite(worldPixelSize) && worldPixelSize > 0) || !Number.isFinite(originY)) {
@@ -137,8 +162,10 @@ function packModelSettings(settings: GPUPointHorizonSettings, target: Float32Arr
 
 /**
  * Packs profile settings into
- * `[curvatureCoefficient, cellSizeX | worldPixelSize, cellSizeY | mercatorTop, maximumDistance, 0, 0, 0, 0]`
- * (slot 4 is the always-zero opaque guard).
+ * `[curvatureCoefficient, cellSizeX | worldPixelSize, cellSizeY | mercatorTop, maximumDistance, 0,
+ * 0, 0, projectionTag]` (slot 4 is the always-zero opaque guard). The projection tag (1 planar, 2
+ * Web Mercator) comes from the settings shape; a contributor whose `projection` differs reports
+ * NaN for every ray instead of misreading the cell size.
  *
  * @throws If the cell size or world size is invalid, or `target` is too short.
  */
@@ -150,14 +177,16 @@ export function getGPUPointHorizonParameterValues(
     throw new Error('Point horizon settings target must hold 8 values');
   }
   target.fill(0, 0, GPU_POINT_HORIZON_PARAMETER_LENGTH);
-  packModelSettings(settings, target);
+  packModelSettings(settings, target, POINT_HORIZON_PROFILE_PROJECTION_SLOT);
   return target;
 }
 
 /**
  * Packs visibility settings into
  * `[curvatureCoefficient, cellSizeX | worldPixelSize, cellSizeY | mercatorTop, maximumDistance, 0,
- * toleranceDegrees, sigmaZ, skylineToleranceDegrees, targetIgnoreDistance, targetIgnoreFraction, 0, 0]`.
+ * toleranceDegrees, sigmaZ, skylineToleranceDegrees, targetIgnoreDistance, targetIgnoreFraction, 0,
+ * projectionTag]`. A contributor whose `projection` differs from the settings shape reports no-data
+ * (see {@link getGPUPointHorizonParameterValues}).
  *
  * @throws If the cell size or world size is invalid, or `target` is too short.
  */
@@ -169,7 +198,7 @@ export function getGPUPointHorizonVisibilityParameterValues(
     throw new Error('Point horizon visibility settings target must hold 12 values');
   }
   target.fill(0, 0, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);
-  packModelSettings(settings, target);
+  packModelSettings(settings, target, POINT_HORIZON_VISIBILITY_PROJECTION_SLOT);
   target[5] = settings.toleranceDegrees ?? 0.02;
   target[6] = settings.sigmaZ ?? 5;
   target[7] = settings.skylineToleranceDegrees ?? 0.05;

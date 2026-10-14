@@ -22,7 +22,9 @@ import {
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
 import {PERMUTATION_RANDOM_WGSL} from '../../gpu-spatial-analysis/permutation-inference/permutation-random';
+import type {GPUSpatialContext} from '../../gpu-spatial-analysis/contracts/spatial-context';
 import {GPUNetworkSnapping} from '../network-accessibility/index';
+import {resolveNetworkSpatialContext} from '../network-spatial-context';
 import {recommendLaneCount} from '../network-accessibility/network-accessibility-lanes';
 import {ACCESSIBILITY_NONE} from '../network-accessibility/network-accessibility-passes';
 import {GPUNetworkReachability} from '../network-reachability/index';
@@ -55,11 +57,22 @@ const DEFAULT_LOCAL_ITERATIONS = 16;
 export type GPUNetworkKFunctionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'network-k-function'`. */
   id?: string;
-  /** Planar events (for example points of interest) to snap onto the network. */
+  /**
+   * Coordinates of `points` and `nodePositions`, passed to `GPUNetworkSnapping`. Omitted means
+   * native planar coordinates. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
+   * snaps longitude/latitude events with great-circle meters; `weights`, `maxSnapDistance`,
+   * `maxDistance` and `networkLength` are then meters.
+   */
+  spatialContext?: GPUSpatialContext;
+  /** Events (for example points of interest) to snap onto the network. */
   points: GraphDataView<'float32x2'>;
-  /** Planar node positions, in the same coordinates as `points`. */
+  /** Node positions, in the same coordinates as `points`. */
   nodePositions: GraphDataView<'float32x2'>;
-  /** CSR row offsets with `nodeCount + 1` rows. The network must list both directions of every road. */
+  /**
+   * CSR row offsets with `nodeCount + 1` rows. The network must list both directions of every road.
+   * Edge rows past `offsets[nodeCount]` (a CSR shorter than `neighbors`) are not part of the
+   * network: they are never snapped to or drawn by the simulation.
+   */
   offsets: GraphDataView<'uint32'>;
   /** CSR destination node per edge. */
   neighbors: GraphDataView<'uint32'>;
@@ -75,8 +88,8 @@ export type GPUNetworkKFunctionProps = {
   maxDistance: GraphDataView<'float32'>;
   /**
    * One-row total length `L` of the network with every road counted once, that is, half of the sum
-   * of `weights` of a CSR that lists both directions. It scales K and sets the resolution of the
-   * random edge draw.
+   * of `weights` over the live rows `0..offsets[nodeCount]` of a CSR that lists both directions.
+   * It scales K and sets the resolution of the random edge draw.
    */
   networkLength: GraphDataView<'float32'>;
   /**
@@ -145,6 +158,10 @@ export type GPUNetworkKFunctionProps = {
  * envelope scales its extremes by the significance threshold, the envelope here is the plain
  * minimum, mean and maximum of the simulated K values.
  *
+ * Network distances come from `weights` only; positions are used to snap events. With a
+ * great-circle `spatialContext` events are snapped in great-circle meters on longitude/latitude
+ * positions, so `weights` should be meters too.
+ *
  * Roads that share both end nodes (parallel edges) count as one road when two events fall on them.
  * Each block adds about `maxIterations + 6` command nodes and the total is
  * `ceil((1 + simulationCount) * events / rowsPerBlock)` blocks.
@@ -170,11 +187,14 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
   readonly rowsPerBlock: number;
   /** Number of row blocks. */
   readonly blockCount: number;
+  /** Resolved spatial context of the event snapping. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUNetworkKFunctionProps) {
     this.id = props.id ?? 'network-k-function';
     this.props = props;
     const {id} = this;
+    this.spatialContext = resolveNetworkSpatialContext(id, props.spatialContext);
     for (const [name, view] of [
       ['offsets', props.offsets],
       ['neighbors', props.neighbors],
@@ -322,6 +342,7 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
     nodes.push(
       ...new GPUNetworkSnapping({
         id: `${id}-snap`,
+        spatialContext: this.spatialContext,
         points: props.points,
         nodePositions: props.nodePositions,
         offsets: props.offsets,
@@ -369,6 +390,7 @@ const EVENT_COUNT: u32 = ${eventCount}u;`,
           operation: OPERATION,
           variant: 'quantize',
           bindings: [
+            {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
             {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
             {name: 'weights', view: props.weights, type: 'f32', access: 'read'},
             {name: 'networkLength', view: props.networkLength, type: 'f32', access: 'read'},
@@ -376,10 +398,13 @@ const EVENT_COUNT: u32 = ${eventCount}u;`,
           ],
           invocationCount: edgeCount,
           declarations: `const NODE_COUNT: u32 = ${nodeCount}u;`,
+          // Rows past offsets[NODE_COUNT] (a CSR shorter than its capacity) are not edges: drawing
+          // one would emit a node past NODE_COUNT and sample length outside networkLength.
           body: `let weight = weights[weightsOffset + index];
   let networkTotal = networkLength[networkLengthOffset];
+  let isLive = index < offsets[offsetsOffset + NODE_COUNT];
   var value = 0u;
-  if (networkTotal > 0.0 && weight >= 0.0 && neighbors[neighborsOffset + index] < NODE_COUNT) {
+  if (isLive && networkTotal > 0.0 && weight >= 0.0 && neighbors[neighborsOffset + index] < NODE_COUNT) {
     value = u32(weight * (${NETWORK_K_FUNCTION_LENGTH_RANGE}.0 / networkTotal));
   }
   quantized[quantizedOffset + index] = value;`

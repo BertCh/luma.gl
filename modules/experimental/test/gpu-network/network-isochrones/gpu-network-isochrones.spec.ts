@@ -77,6 +77,8 @@ async function runRaster(
     settings: GPUNetworkIsochroneSettings;
     maximumBufferPixels?: number;
     triangleCapacity?: number;
+    maxIterations?: number;
+    localIterations?: number;
   }
 ) {
   const {csr, positions} = createScene([0, 0], 100);
@@ -99,7 +101,8 @@ async function runRaster(
     bands: output(triangleCapacity),
     count: output(1),
     overflow: output(1),
-    total: output(1)
+    total: output(1),
+    converged: output(1)
   };
   const graph = new GPUCommandGraph(device, {id: 'isochrones-raster'});
   const parameters = new GPUParameterBuffer(device, {
@@ -141,7 +144,9 @@ async function runRaster(
       ),
       costs: importGraphBuffer(graph, 'costs', out.costs, 'float32', NODE_COUNT),
       sources: importGraphBuffer(graph, 'sources', input(Uint32Array.of(0)), 'uint32', 1),
-      maxIterations: 128,
+      maxIterations: options.maxIterations ?? 128,
+      localIterations: options.localIterations,
+      converged: importGraphBuffer(graph, 'converged', out.converged, 'uint32', 1),
       breaks: breaks.importToGraph(graph),
       parameters: parameters.importToGraph(graph),
       raster: {
@@ -172,12 +177,39 @@ async function runRaster(
   const values = Float32Array.from(await readFloat32(out.values, WIDTH * HEIGHT));
   const [count] = await readUint32(out.count, 1);
   const [overflow] = await readUint32(out.overflow, 1);
+  const [converged] = await readUint32(out.converged, 1);
   const triangles = (await readFloat32(out.triangles, 6 * Math.max(count, 1))).slice(0, 6 * count);
   const bands = (await readUint32(out.bands, Math.max(count, 1))).slice(0, count);
   compiled.destroy?.();
   destroyRun(run);
-  return {csr, positions, costs, values, count, overflow, triangles, bands};
+  return {csr, positions, costs, values, count, overflow, converged, triangles, bands};
 }
+
+it('GPUNetworkIsochrones reports a search cut short by maxIterations', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Review B-05: a search stopped by its round limit truncated the costs, and with them every
+  // polygon, with no signal. One round of one local hop cannot cross the 16-hop 9 x 9 grid.
+  const settings: GPUNetworkIsochroneSettings = {
+    breakCount: BREAKS.length,
+    extent: [-100, -100, 900, 900]
+  };
+  const truncated = await runRaster(device, {
+    mode: 'min',
+    settings,
+    maxIterations: 1,
+    localIterations: 1
+  });
+  expect(truncated.converged).toBe(0);
+  const full = await runRaster(device, {mode: 'min', settings});
+  expect(full.converged).toBe(1);
+  const expectedCosts = dijkstra(full.csr, NODE_COUNT, [{node: 0, cost: 0}]);
+  expect(Array.from(full.costs)).toEqual(Array.from(expectedCosts));
+  // The truncated costs really are wrong somewhere: the flag is not a false alarm.
+  expect(Array.from(truncated.costs)).not.toEqual(Array.from(expectedCosts));
+});
 
 for (const mode of ['min', 'max'] as const) {
   it(`GPUNetworkIsochrones raster (${mode}) matches the CPU splat and the band areas`, async () => {

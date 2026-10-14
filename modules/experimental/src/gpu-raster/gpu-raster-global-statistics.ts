@@ -24,6 +24,7 @@ import {
   validateRasterValidityView
 } from './raster-utils';
 import type {GPURasterBufferBand} from './types';
+import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
 
 /** Caller-owned persistent global outputs shared by separately encoded tile and replay graphs. */
 export type GPURasterGlobalAccumulator = {
@@ -202,9 +203,7 @@ const GLOBAL_OVERFLOW_OFFSET: u32 = ${getViewElementOffset(overflow)}u;
 @group(0) @binding(${locations.get('globalExtent')}) var<storage, read_write> globalExtent: array<f32>;
 @group(0) @binding(${locations.get('globalOverflow')}) var<storage, read_write> globalOverflow: array<atomic<u32>>;
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
@@ -335,9 +334,7 @@ const OUTPUT_VALIDITY_OFFSET: u32 = ${getViewElementOffset(validity)}u;
 @group(0) @binding(${locations.get('outputValidity')}) var<storage, read_write> outputValidity: array<u32>;
 ${maskDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
@@ -470,9 +467,7 @@ const PERCENTILE: f32 = ${getRasterFloatLiteral(this.percentile)};
 @group(0) @binding(${locations.get('outputValues')}) var<storage, read_write> outputValues: array<f32>;
 ${validityDeclaration}
 
-fn isFiniteValue(value: f32) -> bool {
-  return value == value && abs(value) <= 3.402823466e+38;
-}
+${IS_FINITE_VALUE_WGSL}
 
 @compute @workgroup_size(${RASTER_WORKGROUP_DIMENSION}, ${RASTER_WORKGROUP_DIMENSION})
 fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {

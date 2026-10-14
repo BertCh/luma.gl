@@ -184,6 +184,8 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
   - `'web-mercator'`: a Web Mercator pixel window, with per-frame `worldPixelSize` and `originY`.
     The ray is a piecewise great circle on a sphere of R = 6371008.8 m. Breakpoints are baked from
     `maximumLatitude` and `segmentTolerance`, and positions are linear in pixels between them.
+  - The packers tag the settings with the projection their shape implies; a contributor whose
+    `projection` differs reports NaN (profile) or no-data (visibility) instead of misreading them.
 - **Sample distances.** Samples sit on an exact power-of-two octave lattice: within
   `[2^k, 2^(k+1))` the step is a power of two following mt-image's step rule
   `max(stepFactor·d, clamp(nearFactor·d, minimumStep, cellSize·cellSteps))`, from 20 m out to
@@ -397,7 +399,12 @@ float32 rasters, each with an optional `r32float` or `rgba32float` storage textu
   bilinear samples, z factor, earth curvature, and an optional ground `maximumDistance`. It writes
   a pixel-major horizon map (`horizon[pixel * directionCount + sector]`, degrees, sector `d` at
   azimuth `d * 360 / directionCount`), the sky-view factor `1 - mean(sin(max(h, 0)))`, and positive
-  openness `mean(90 - h)`. Sky-view-only use needs no horizon buffer. Options:
+  openness `mean(90 - h)`. Sky-view-only use needs no horizon buffer. Sector azimuths are ground
+  azimuths on any cell shape: on anisotropic cells (`'geographic'` off the equator, or a non-square
+  `cellSize`) each ray's pixel step is `normalize(groundDirection / groundCell)` at the pixel's own
+  row, so a 45 degree sector at 60 N steps about two columns per row instead of along the pixel
+  diagonal (a 26.6 degree ground ray). The cell size is not re-evaluated along a ray; at 60 N and
+  30 km that leaves a 0.25 degree bearing and 0.14% distance error. Options:
   - `algorithm: 'sweep'` replaces the per-pixel march with an exact upper-hull sweep (Stewart 1998
     style) over digital lines through pixel centres: amortised O(1) per pixel and sector, exact
     against brute force over the same samples, 4x faster at radius 256 and 36x at full-tile radius on
@@ -406,14 +413,26 @@ float32 rasters, each with an optional `r32float` or `rgba32float` storage textu
     fixed cost per pixel and sector: it wins at large radii (1024² at radius 1023: 41 ms against
     about 1300 ms; 512² at full radius: 36 against 109 ms) and loses at small ones (512² at radius
     128: 60–125 ms against about 20 ms). Prefer the march for small radii and the sweep near the
-    full tile radius.
+    full tile radius. One line family has one pixel slope, so on anisotropic cells the sweep uses
+    the ground cell of row `height / 2` for every row; on a `'geographic'` tile the other rows see
+    sectors rotated by up to about `tan(lat) * halfSpan / 2` radians (0.44 degrees at the edges of
+    a 1 degree tall tile at 60 N).
   - `horizonFormat: 'unorm16'` halves the horizon map (two 16-bit codes per `uint32`, 0.00275 degree
     steps, code 0 = nodata; `unpackGPUTerrainHorizonUnorm16` decodes on the CPU). `GPUSolarShadowMask`
     and `GPUSolarIrradiance` read it.
   - `negativeOpenness` is openness of the inverted DEM (Yokoyama), and `anisotropicSkyViewFactor` is
-    RVT's weighted SVF `1 - sum(w sin h+) / sum(w)`, `w = (1 - wMin) |cos((t - tMain)/2)|^level + wMin`.
-    `tMain` is a compass azimuth (RVT's counterclockwise `a_main_direction = A` is `360 - A` here),
-    set per frame in settings slots 8-10 (settings must then hold 12 floats).
+    RVT's weighted SVF `1 - sum(w sin h+) / sum(w)`, `w = (1 - wMin) cos((a - A)/2)^level + wMin`,
+    computed exactly as RVT's `sky_view_factor_compute`. `anisotropyAzimuthDegrees` (`A`) uses RVT's
+    direction convention, so the same number means the same direction as RVT's `asvf_dir`: angles
+    run counterclockwise from north (90 west, 270 east), and the default 315 is RVT's default, which
+    is compass north-east. `a` is each sector's RVT angle, `(360 - t) mod 360` for compass sector
+    azimuth `t`. `anisotropyLevel` is RVT's integer `a_poly_level` with RVT's signed power (presets:
+    low 4 with minimum weight 0.4, high 8 with 0.1). Settings slots 8-10 hold them per frame
+    (settings must then hold 12 floats). This is the only counterclockwise angle in gpu-terrain; sun
+    azimuths already match RVT's compass `shadow_az`.
+  - Breaking change: `anisotropyAzimuthDegrees` used to be a compass azimuth, so the default 315
+    weighted the north-west sky. It now weights the north-east sky, as RVT does. To keep a previous
+    compass azimuth `t`, pass `(360 - t) mod 360`. Non-integer levels now throw.
 - `GPUSolarShadowMask` reads the horizon map and a per-frame sun: it interpolates the horizon at
   the sun azimuth and writes `sunVisibility`, the solar-disk area fraction above the horizon (soft
   penumbra from the disk's angular radius, hard when 0). With `slope` and `aspect` from
@@ -422,7 +441,10 @@ float32 rasters, each with an optional `r32float` or `rgba32float` storage textu
 - `GPUTerrainCastShadow` casts one sun's shadow with no horizon map: an exact sweep along the
   per-frame sun azimuth gives the horizon in that direction, then the same solar-disk penumbra as
   `GPUSolarShadowMask`. The CPU settings packer computes the line geometry, so moving the sun never
-  recompiles. Use it when only one sun matters and a full horizon map is too large.
+  recompiles. The packer also stores the sun's ground direction and takes no grid modes: the
+  contributor mirrors the line for its `rowDirection: 'north'` and, on anisotropic cells, turns the
+  direction into a pixel slope with its own `cellSizeMode` and the ground cell of row `height / 2`.
+  The second packer argument (a row direction) is deprecated and ignored. Use it when only one sun matters and a full horizon map is too large.
 - `GPUSolarIrradiance` integrates a sun path over a horizon map: `sunHours` (disk-visible hours)
   and `insolation` (Wh/m², direct normal irradiance times visibility times cos incidence, plus an
   optional diffuse term scaled by the sky-view factor). `getGPUSolarIrradianceSunTable` samples
@@ -535,6 +557,11 @@ accumulation rounds). Every unrolled loop has one gate node per four rounds; rou
 inside a group are idempotent no-ops, so results and counts are unchanged and the graph has about a third
 fewer nodes.
 
+When `maxAccumulationIterations` runs out, unresolved cells keep NaN `accumulation`, and their
+`streams` word is `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` (`0xffffffff`), never 0: the unresolved cells
+are the downstream trunk, so 0 would silently drop the main river. Test `streams == 1` for "is a
+stream". `GPUTerrainHeightAboveDrainage` and `GPUTerrainStreamOrder` propagate the unresolved word.
+
 ```ts
 graph.add(new GPUTerrainFlow({
   width, height, elevation, settings: settings.importToGraph(graph), fillDepressions: true,
@@ -567,11 +594,13 @@ Products derived from `GPUTerrainFlow` outputs. Each takes ESRI D8 `flowDirectio
 for example one imported from TauDEM or Whitebox), plus `streams` or `accumulation` where needed.
 
 - `GPUTerrainHeightAboveDrainage`: HAND (Rennó et al. 2008), the height of each cell above the
-  first stream cell on its D8 path, with an optional `drainageCells` index output.
+  first stream cell on its D8 path, with an optional `drainageCells` index output. A path that
+  first meets an unresolved stream word gives NaN and `GPU_TERRAIN_DRAINAGE_UNRESOLVED`.
 - `GPUTerrainWatersheds`: labels every cell with its nearest downstream pour point (nested pour
   points give nested watersheds). Without pour points it labels drainage basins by their outlet or
   pit cell.
 - `GPUTerrainStreamOrder`: Strahler order on the stream mask, with an optional `iterationCount` output.
+  Unresolved stream words and the stream cells below them keep the unresolved order `0xffffffff`.
 - `GPUTerrainHydrologicIndices`: computes, from contributing area in m²
   (`accumulationUnits: 'area'`, any routing):
   - specific catchment area `a = A / b`;

@@ -260,6 +260,48 @@ it('sweep kernel supports north rows, Web Mercator cells, and the nadir pass', a
   }
 });
 
+it('sweep kernel follows ground azimuths on a 60 N geographic grid', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Anisotropic cells (55.8 m x 111.4 m): the kernel derives the line family from the reference
+  // row's cell size, and the oracle does the same through getTerrainSweepGroundLineGeometry. The
+  // node spec 'sweep ground geometry fixtures stay clear of rounding ties' checks that no sector of
+  // these settings is near a slopeFixed rounding tie, so f32 GPU cell sizes pick the same lines.
+  const width = 32;
+  const height = 24;
+  const elevation = createNoisyTerrain(width, height, 7);
+  const settings: GPUTerrainHorizonSettings = {
+    cellSize: [0.001, 0.001],
+    northEdge: 60.012,
+    southEdge: 59.988
+  };
+  const fixture = createSweepFixture(device, elevation, {
+    width,
+    height,
+    directionCount: 12,
+    maximumRadius: 12,
+    cellSizeMode: 'geographic',
+    output: 'horizon'
+  });
+  const actual = await fixture.run(settings);
+  const expected = computeTerrainHorizonSweepBruteForce({
+    width,
+    height,
+    elevation,
+    directionCount: 12,
+    maximumRadius: 12,
+    cellSizeMode: 'geographic',
+    cellSize: [0.001, 0.001],
+    northEdge: 60.012,
+    southEdge: 59.988
+  });
+  expect(actual.filter(angle => angle > 5).length).toBeGreaterThan(30);
+  expectCloseToOracle(actual, expected.horizon, 2e-3);
+  fixture.destroy();
+});
+
 it('sweep kernel reports exact zero on planes and analytic angles on ramps and walls', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

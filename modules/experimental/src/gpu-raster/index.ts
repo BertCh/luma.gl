@@ -240,6 +240,7 @@ export type {
 export {
   getGPUCostDistanceParameterValues,
   GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_UNRESOLVED,
   GPU_COST_DISTANCE_PARAMETER_LENGTH,
   GPU_RASTER_D8_DIRECTIONS,
   GPU_RASTER_MAXIMUM_ITERATIONS,
@@ -434,6 +435,8 @@ export {
   GPURasterZonalStatistics
 } from './raster-zonal-statistics/index';
 export type {
+  GPURasterZonalStatisticsCellSizeMode,
+  GPURasterZonalStatisticsMomentOutput,
   GPURasterZonalStatisticsOutput,
   GPURasterZonalStatisticsProps,
   GPURasterZonalStatisticsSumOrder

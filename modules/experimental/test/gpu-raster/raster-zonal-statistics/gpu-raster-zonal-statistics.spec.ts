@@ -12,6 +12,7 @@ import {
   GPURasterZonalStatistics,
   type GPURasterZonalStatisticsProps
 } from '../../../src/gpu-raster/raster-zonal-statistics';
+import {getRasterZonalCellArea} from '../../../src/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -590,3 +591,66 @@ for (const [zoneCapacity, sumOrder] of [
     destroyFixture(fixture);
   });
 }
+
+it('GPURasterZonalStatistics weights geographic cells by spherical area', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 2 x 3 cells of 10 degrees longitude, rows 60-40, 40-20 and 20-0 N; zone 0 holds 1, 2, 3 and
+  // zone 1 holds 4, 5, 6. Expected values: the oracle, pinned to python in the node spec.
+  const width = 2;
+  const height = 3;
+  const settingsValues = [10, 20, 60, 0];
+  const zones = new Uint32Array([0, 0, 0, 1, 1, 1]);
+  const values = new Float32Array([1, 2, 3, 4, 5, 6]);
+  const cellWeights = Array.from(zones, (_, cell) =>
+    getRasterZonalCellArea(settingsValues, Math.floor(cell / width), height)
+  );
+  const expected = computeZonalStatistics(zones, values, {zoneCapacity: 2, cellWeights});
+  for (const sumOrder of ['sorted', 'atomic'] as const) {
+    const graph = new GPUCommandGraph(device, {id: `zonal-geographic-${sumOrder}`});
+    const owned = [
+      createInputBuffer(device, zones),
+      createInputBuffer(device, values),
+      createInputBuffer(device, new Float32Array(settingsValues))
+    ];
+    const names = ['sums', 'means', 'weightSums', 'variances', 'standardDeviations'] as const;
+    const outputBuffers = names.map(() => createOutputBuffer(device, 2));
+    owned.push(...outputBuffers);
+    const output = Object.fromEntries(
+      names.map((name, index) => [
+        name,
+        importGraphBuffer(graph, name, outputBuffers[index], 'float32', 2)
+      ])
+    );
+    graph.add(
+      new GPURasterZonalStatistics({
+        width,
+        height,
+        zones: importGraphBuffer(graph, 'zones', owned[0], 'uint32', 6),
+        values: {
+          id: 'values',
+          format: 'float32',
+          storage: {
+            kind: 'buffer',
+            values: importGraphBuffer(graph, 'values', owned[1], 'float32', 6)
+          }
+        },
+        zoneCapacity: 2,
+        sumOrder,
+        cellSizeMode: 'geographic',
+        settings: importGraphBuffer(graph, 'settings', owned[2], 'float32', 4),
+        output
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    for (const [index, name] of names.entries()) {
+      // f32 areas (about 1e12 m^2) carry relative error near 1e-6; the 1e-4 tolerance covers it.
+      expectCloseArray(await readFloat32(outputBuffers[index], 2), expected[name]);
+    }
+    compiled.destroy();
+    for (const buffer of owned) buffer.destroy();
+  }
+});

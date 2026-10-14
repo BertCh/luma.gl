@@ -38,7 +38,7 @@ export type GPURasterProfileOutput = {
   overflow: GraphDataView<'uint32'>;
   /** Optional one-row unclamped sample count. */
   requiredCount?: GraphDataView<'uint32'>;
-  /** Sample positions; NaN at rows at or beyond `count`. */
+  /** Sample positions relative to the parameters' `localOrigin`; NaN at rows at or beyond `count`. */
   samplePositions?: GraphDataView<'float32x2'>;
   /** Planar distance along the path of each sample; NaN beyond `count`. */
   sampleDistances?: GraphDataView<'float32'>;
@@ -84,7 +84,7 @@ export type GPURasterProfileProps = {
   noDataValue?: number;
   /** Optional raster validity; zero marks a nodata cell. */
   validity?: GraphDataView<'uint32'>;
-  /** Packed path vertices in extent units. */
+  /** Packed path vertices in extent units, relative to the parameters' `localOrigin`. */
   pathPositions: GraphDataView<'float32x2'>;
   /** CSR spans: path `p` owns vertices `[pathOffsets[p], pathOffsets[p + 1])`; `pathCount + 1` rows. */
   pathOffsets: GraphDataView<'uint32'>;
@@ -119,6 +119,13 @@ export type GPURasterProfileProps = {
  *
  * Rows at or beyond `count` of the position, distance, value and path ID columns hold NaN (path IDs
  * {@link GPU_RASTER_PROFILE_NO_PATH_ID}); the cumulative columns are left unwritten there.
+ *
+ * Precision: path vertices, sample positions and the extent are float32 relative to the packer's
+ * `localOrigin`. Absolute positions (the default origin `[0, 0]`) are quantized to the float32 ulp,
+ * 0.5 m at a UTM northing of 4.6e6 m (2 m at 2e7 m in EPSG:3857). Set `localOrigin` to the raster
+ * or tile corner, upload path vertices relative to it, and add it back to sample positions on the
+ * CPU or as the layer's coordinate origin; positions then keep about `1.2e-7` of their distance
+ * from it.
  */
 export class GPURasterProfile implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

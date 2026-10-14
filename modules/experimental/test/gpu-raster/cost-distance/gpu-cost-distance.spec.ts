@@ -12,6 +12,7 @@ import {
   GPUCostDistance,
   GPUCostDistancePath,
   GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_UNRESOLVED,
   type GPUCostDistanceSettings
 } from '../../../src/gpu-raster/cost-distance';
 import type {GPUTerrainCellSizeMode} from '../../../src/gpu-terrain/terrain-analysis';
@@ -50,7 +51,8 @@ type BufferName =
   | 'ids'
   | 'count'
   | 'overflow'
-  | 'requiredCount';
+  | 'requiredCount'
+  | 'iterationLimitReached';
 
 type FixtureOptions = {
   width: number;
@@ -204,6 +206,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     buffers.count = createOutputBuffer(device, 1);
     buffers.overflow = createOutputBuffer(device, 1);
     buffers.requiredCount = createOutputBuffer(device, 1);
+    buffers.iterationLimitReached = createOutputBuffer(device, 1);
     graph.add(
       new GPUCostDistancePath({
         id: 'cdp',
@@ -216,7 +219,8 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
           count: view('count', 'uint32', 1),
           overflow: view('overflow', 'uint32', 1),
           requiredCount: view('requiredCount', 'uint32', 1)
-        }
+        },
+        iterationLimitReached: view('iterationLimitReached', 'uint32', 1)
       })
     );
   }
@@ -1065,4 +1069,82 @@ it('GPUCostDistance reports non-convergence when maxTieIterations cannot cover a
     maxTieIterations: 8
   });
   expect(covered.converged).toBe(1);
+});
+
+it('GPUCostDistance resolves a 320-cell zero-cost plateau at the default tie budget (review C-02)', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const width = 320;
+  const height = 4;
+  const friction = createUniformFriction(width, height, 3);
+  for (let column = 0; column < width; column++) friction[column] = 0;
+  const target = 300;
+  // Before C-02 the 8 tie iterations stopped near column 128 and cell 300 claimed link 0.
+  const result = await expectTieSafeBackLinks(device, {
+    width,
+    height,
+    friction,
+    sources: [0],
+    maxIterations: 64,
+    path: {target, capacity: width * height}
+  });
+  expect(result.converged).toBe(1);
+  expect(result.backLinks[target]).toBe(16);
+  expect(result.path).toEqual(Array.from({length: target + 1}, (_, index) => target - index));
+});
+
+it('GPUCostDistance marks budget-truncated back-links unresolved and the path reports it', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const width = 320;
+  const height = 4;
+  const friction = createUniformFriction(width, height, 3);
+  for (let column = 0; column < width; column++) friction[column] = 0;
+  const target = 300;
+  // Tie budget 1: levels reach at least tile 0 (columns 0-15) and never column 300.
+  const ties = createFixture(device, {
+    width,
+    height,
+    friction,
+    sources: [0],
+    maxIterations: 64,
+    maxTieIterations: 1,
+    path: {target, capacity: width * height}
+  });
+  let compiled = await run(device, ties);
+  expect((await readIterations(ties)).converged).toBe(0);
+  let links = await readUint32(ties.buffers.backLinks, width * height);
+  expect(links[0]).toBe(0);
+  expect(links[5]).toBe(16);
+  expect(links[target]).toBe(GPU_COST_DISTANCE_UNRESOLVED);
+  // Cells with a strict link (row 1 reaches the strip at cost 3) stay certified.
+  expect(links[width + 5]).not.toBe(GPU_COST_DISTANCE_UNRESOLVED);
+  expect(await readUint32(ties.buffers.count, 1)).toEqual([0]);
+  expect(await readUint32(ties.buffers.requiredCount, 1)).toEqual([0]);
+  expect(await readUint32(ties.buffers.iterationLimitReached, 1)).toEqual([1]);
+  // A target whose links are resolved still gets its full path, with the flag cleared.
+  ties.target!.write(Uint32Array.of(5));
+  submitGraph(device, compiled, undefined);
+  expect(await readUint32(ties.buffers.ids, 6)).toEqual([5, 4, 3, 2, 1, 0]);
+  expect(await readUint32(ties.buffers.iterationLimitReached, 1)).toEqual([0]);
+  compiled.destroy();
+  destroyFixture(ties);
+
+  // Cost budget 1: no passable cell is certified.
+  const costs = createFixture(device, {
+    width,
+    height,
+    friction: createUniformFriction(width, height, 1),
+    sources: [0],
+    maxIterations: 1,
+    path: {target: width + 40, capacity: width * height}
+  });
+  compiled = await run(device, costs);
+  expect((await readIterations(costs)).converged).toBe(0);
+  links = await readUint32(costs.buffers.backLinks, width * height);
+  expect(links.every(link => link === GPU_COST_DISTANCE_UNRESOLVED)).toBe(true);
+  expect(await readUint32(costs.buffers.count, 1)).toEqual([0]);
+  expect(await readUint32(costs.buffers.iterationLimitReached, 1)).toEqual([1]);
+  compiled.destroy();
+  destroyFixture(costs);
 });

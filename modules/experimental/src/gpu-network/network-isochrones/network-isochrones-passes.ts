@@ -8,6 +8,7 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../utils/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUNetworkIsochrones';
 
@@ -120,8 +121,9 @@ const MAXIMUM_BUFFER_PIXELS: u32 = ${props.maximumBufferPixels}u;
 const MAXIMUM_SAMPLES: u32 = ${props.maximumSamplesPerEdge}u;
 const COST_CEILING: f32 = ${getWGSLFloatLiteral(3.0e38)};
 
+${IS_FINITE_BITS_WGSL}
 fn isochronesIsFinite(value: f32) -> bool {
-  return value == value && abs(value) < COST_CEILING;
+  return isFiniteBits(value) && abs(value) < COST_CEILING;
 }
 
 fn isochronesFindSource(edge: u32) -> u32 {
@@ -271,8 +273,9 @@ export function createIsochronesNodeMaskNode<Parameters>(
       {name: 'mask', view: props.mask, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.costs.length,
+    declarations: IS_FINITE_BITS_WGSL,
     body: `let cost = costs[costsOffset + index];
-  let isReached = cost == cost && abs(cost) < ${getWGSLFloatLiteral(3.0e38)} && cost <= params[paramsOffset + 9u];
+  let isReached = isFiniteBits(cost) && abs(cost) < ${getWGSLFloatLiteral(3.0e38)} && cost <= params[paramsOffset + 9u];
   mask[maskOffset + index] = select(0u, 1u, isReached);`
   });
 }
@@ -362,9 +365,12 @@ fn isochronesFindCellRow(node: u32) -> u32 {
       ],
       invocationCount: props.nodeCount,
       declarations,
+      // Non-negative f32 bits order like their values; -0 folds to +0 and negative or NaN costs
+      // are skipped, the same rule as the splat path and reachability.
       body: `let row = isochronesFindCellRow(index);
-  if (row != 0xffffffffu) {
-    atomicMin(&cellMinimum[cellMinimumOffset + row], bitcast<u32>(costs[costsOffset + index]));
+  let cost = costs[costsOffset + index];
+  if (row != 0xffffffffu && cost >= 0.0) {
+    atomicMin(&cellMinimum[cellMinimumOffset + row], select(bitcast<u32>(cost), 0u, cost == 0.0));
   }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
@@ -385,7 +391,9 @@ fn isochronesFindCellRow(node: u32) -> u32 {
       invocationCount: props.nodeCount,
       declarations,
       body: `let row = isochronesFindCellRow(index);
-  if (row != 0xffffffffu && bitcast<u32>(costs[costsOffset + index]) == cellMinimum[cellMinimumOffset + row]) {
+  let cost = costs[costsOffset + index];
+  if (row != 0xffffffffu && cost >= 0.0 &&
+      select(bitcast<u32>(cost), 0u, cost == 0.0) == cellMinimum[cellMinimumOffset + row]) {
     atomicMin(&cellFacility[cellFacilityOffset + row], assignments[assignmentsOffset + index]);
   }`
     })

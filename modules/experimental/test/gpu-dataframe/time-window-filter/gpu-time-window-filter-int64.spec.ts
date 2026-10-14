@@ -224,6 +224,41 @@ it('GPUTimeWindowFilter word times are exact across a low-word wrap', async () =
   expect(results[3].ids).toEqual([]);
 });
 
+it('GPUTimeWindowFilter word windows with Int64 extreme edges keep pre-1970 rows', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Review B-07: ordering by the sign of a wrapped difference fails when |a - b| >= 2^63, so an
+  // INT64_MIN/INT64_MAX "unbounded" window rejected negative (pre-1970) times.
+  const minimum = -(2n ** 63n);
+  const maximum = 2n ** 63n - 1n;
+  const starts = [minimum, minimum + 1n, -NOW, -1n, 0n, 1n, NOW, maximum - 1n, maximum];
+  const windows: GPUTimeWordWindow[] = [
+    {start: minimum, end: maximum},
+    {start: -1n, end: maximum},
+    {start: minimum, end: 0n},
+    {start: 0n, end: maximum},
+    {start: maximum, end: maximum},
+    {start: minimum, end: minimum},
+    {start: maximum, end: minimum},
+    // Fades longer than 2^63 units: the ramps need the signed f32 difference across the whole
+    // Int64 range (row 0 sits at about 0.51 of both ramps).
+    {start: minimum, end: maximum, startFadeDuration: 1.8e19, endFadeDuration: 1.8e19}
+  ];
+  const results = await runWordFilter(device, {starts, windows, withFade: true});
+  for (const [index, timeWindow] of windows.entries()) {
+    const oracle = filterWordsOracle(starts, undefined, timeWindow);
+    expect(results[index].mask, `window ${index}`).toEqual(oracle.mask);
+    expectClose(results[index].weights, oracle.weights, 1e-6);
+  }
+  expect(results[0].mask).toEqual(new Array(starts.length).fill(1));
+  expect(results[1].mask).toEqual([0, 0, 0, 1, 1, 1, 1, 1, 1]);
+  expect(results[2].mask).toEqual([1, 1, 1, 1, 1, 0, 0, 0, 0]);
+  expect(results[6].ids).toEqual([]);
+  expect(results[7].weights[4]).toBeGreaterThan(0.5);
+});
+
 it('GPUTimeWindowFilter word times resolve 1 ms edges where float32 collapses', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) {

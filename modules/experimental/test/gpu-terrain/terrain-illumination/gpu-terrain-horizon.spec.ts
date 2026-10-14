@@ -36,6 +36,7 @@ import {
   type HorizonOracleResult
 } from './terrain-horizon-oracle';
 import {computeTerrainHorizonSweepBruteForce} from './terrain-horizon-sweep-oracle';
+import {getTerrainGroundCellSize} from '../../../src/gpu-terrain/terrain-grid-utils';
 import {expectClose} from '../terrain-test-utils';
 
 type HorizonFixture = {
@@ -277,6 +278,108 @@ it('GPUTerrainHorizon supports north rows, Web Mercator cells, and sky-view-only
   expect(skyResult.skyViewFactor).toEqual(fullResult.skyViewFactor);
   expect(skyResult.positiveOpenness).toEqual(fullResult.positiveOpenness);
   skyOnly.destroy();
+});
+
+it('GPUTerrainHorizon marches ground azimuths on a 60 degrees north geographic grid', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // 0.001 degree cells at 60 N are 55.8 m by 111.4 m; a 45 degree sector must step about two
+  // columns per row, not along the pixel diagonal (which would be a 26.6 degree ground ray).
+  const width = 32;
+  const height = 24;
+  const elevation = createSmoothTerrain(width, height, 5);
+  const settings: GPUTerrainHorizonSettings = {
+    cellSize: [0.001, 0.001],
+    northEdge: 60.012,
+    southEdge: 59.988
+  };
+  const options = {
+    width,
+    height,
+    directionCount: 8,
+    maximumRadius: 10,
+    cellSizeMode: 'geographic' as const
+  };
+  const fixture = createHorizonFixture(device, elevation, options);
+  expectOracle(
+    await fixture.run(settings),
+    computeTerrainHorizon({
+      ...options,
+      elevation,
+      stepDistances: getGPUTerrainHorizonStepDistances(10),
+      cellSize: [0.001, 0.001],
+      northEdge: 60.012,
+      southEdge: 59.988
+    })
+  );
+  fixture.destroy();
+});
+
+it('GPUTerrainHorizon march and sweep follow a 45 degree ground azimuth at 60 N', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // Independent analytic pins (the oracle above shares getTerrainPixelDirection). python3 -I with
+  // WGS84 a = 6378137, f = 1 / 298.257223563, e2 = f (2 - f), w = 1 - e2 sin^2(lat),
+  // N = a / sqrt(w), M = a (1 - e2) / w^1.5, cell = [N cos(lat), M] PI / 180 * 0.001.
+  const width = 48;
+  const height = 24;
+  const settings: GPUTerrainHorizonSettings = {
+    cellSize: [0.001, 0.001],
+    northEdge: 60.012,
+    southEdge: 59.988
+  };
+  const sector = 1; // 45 degrees of 8 sectors
+  const [cellX, cellY] = getTerrainGroundCellSize('geographic', [0.001, 0.001], 60, 60, 0, 1);
+
+  // March: a ground plane rising k = 0.5 toward true north-east has horizon atan(k) =
+  // 26.565051177077994 degrees along the 45 degree ground ray. Bilinear samples of a plane are
+  // exact; the plane uses the 60 N cell for every row, which moves the march by at most
+  // 0.003955 degrees over rows 1..23. The old pixel diagonal read 25.3819106735078 degrees.
+  const slope = 0.5;
+  const plane = Float32Array.from({length: width * height}, (_, index) => {
+    const column = index % width;
+    const north = height - 1 - Math.floor(index / width);
+    return (slope * (column * cellX + north * cellY)) / Math.SQRT2;
+  });
+  const march = createHorizonFixture(device, plane, {
+    width,
+    height,
+    directionCount: 8,
+    maximumRadius: 10,
+    cellSizeMode: 'geographic'
+  });
+  const marchHorizon = (await march.run(settings)).horizon;
+  for (let row = 1; row < height; row++) {
+    for (let column = 0; column < width - 1; column++) {
+      const angle = marchHorizon[(row * width + column) * 8 + sector];
+      expect(Math.abs(angle - 26.565051177077994)).toBeLessThan(0.01);
+    }
+  }
+  march.destroy();
+
+  // Sweep: one 1000 m pillar P = (42, 2) on flat ground and the observer O = (2, 22), whose true
+  // ground bearing to P is 45.048 degrees. At the reference row 12 (latitude 59.9995) the 45
+  // degree pixel slope is -32823.70774773758 / 65536, so slopeFixed = -32824 and the digital line
+  // from O meets P after 40 major steps (F(40) = -20). Horizon = atan(1000 / (40 * step)) with the
+  // row 22 step hypot(cellX, 32824 / 65536 * cellY) = 78.926508719586 m: 17.57561688017635
+  // degrees. The old pixel diagonal from O missed P and read 0.
+  const pillar = new Float32Array(width * height);
+  pillar[2 * width + 42] = 1000;
+  const sweep = createHorizonFixture(device, pillar, {
+    width,
+    height,
+    directionCount: 8,
+    maximumRadius: 46,
+    algorithm: 'sweep',
+    cellSizeMode: 'geographic'
+  });
+  const sweepHorizon = (await sweep.run(settings)).horizon;
+  expect(sweepHorizon[(22 * width + 2) * 8 + sector]).toBeCloseTo(17.57561688017635, 3);
+  sweep.destroy();
 });
 
 it('GPUTerrainHorizon gives identical results however the sectors are split over dispatches', async () => {
@@ -578,7 +681,9 @@ it('GPUTerrainHorizon writes negative openness and anisotropic sky-view factor m
   for (const anisotropy of [
     {azimuthDegrees: 315, level: 4, minimumWeight: 0.4},
     {azimuthDegrees: 45, level: 8, minimumWeight: 0.1},
-    {azimuthDegrees: 100, level: 0, minimumWeight: 0}
+    {azimuthDegrees: 100, level: 0, minimumWeight: 0},
+    // Odd level: RVT's signed power, some weights fall below the minimum weight.
+    {azimuthDegrees: 100, level: 3, minimumWeight: 0.2}
   ]) {
     const settings = {
       cellSize: [10, 10] as [number, number],

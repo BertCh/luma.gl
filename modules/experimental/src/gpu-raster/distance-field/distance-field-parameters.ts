@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getRasterLocalOrigin} from '../raster-utils';
+
 /** Number of float32 values read from `GPUDistanceFieldProps.settings`. */
 export const GPU_DISTANCE_FIELD_PARAMETER_LENGTH = 8;
 
@@ -17,7 +19,10 @@ export const GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION = 32768;
  * Give either `cellSize` (with an optional `origin`) or `bounds` together with `gridSize`.
  */
 export type GPUDistanceFieldSettings = {
-  /** Ground coordinate of the outer corner of cell `(0, 0)`, the minimum x and y. Defaults to `[0, 0]`. */
+  /**
+   * Ground coordinate of the outer corner of cell `(0, 0)`, the minimum x and y, in the same
+   * absolute frame as `bounds`. Defaults to `[0, 0]`.
+   */
   origin?: readonly [number, number];
   /** Positive cell size `[x, y]` in ground units. Unequal sizes give an anisotropic metric. */
   cellSize?: readonly [number, number];
@@ -30,11 +35,21 @@ export type GPUDistanceFieldSettings = {
    * {@link GPU_DISTANCE_FIELD_NONE}, and a `0` in the within-distance mask. Defaults to `Infinity`.
    */
   maxDistance?: number;
+  /**
+   * Float64 point that seed positions are uploaded relative to. The packer subtracts it from the
+   * grid origin in float64, so seeds snap to cells from origin-relative float32 values. Defaults
+   * to `[0, 0]` (absolute seeds). Pass the raster or tile corner for projected grids: absolute
+   * float32 seeds and origins are quantized to 0.5 m at a UTM northing of 4.6e6 m, so seeds within
+   * that of a cell edge snap to the wrong cell; origin-relative ones keep about `1.2e-7` of their
+   * distance from the origin (1.2 cm at 100 km).
+   */
+  localOrigin?: readonly [number, number];
 };
 
 /**
  * Packs settings into the 8-float layout read by `GPUDistanceField`:
- * `[originX, originY, cellSizeX, cellSizeY, 1 / cellSizeX, 1 / cellSizeY, maxDistance, 0]`.
+ * `[originX, originY, cellSizeX, cellSizeY, 1 / cellSizeX, 1 / cellSizeY, maxDistance, 0]`, with
+ * the origin relative to `localOrigin` (subtracted in float64).
  *
  * Seed positions map to cells with `floor((position - origin) * inverseCellSize)` in f32, so the
  * inverse is computed once here instead of dividing on the GPU. Rewriting the values between
@@ -74,9 +89,10 @@ export function getGPUDistanceFieldParameterValues(
   ) {
     throw new Error('Distance field cell size must be finite and positive');
   }
+  const [localOriginX, localOriginY] = getRasterLocalOrigin('Distance field', settings.localOrigin);
   target.fill(0, 0, GPU_DISTANCE_FIELD_PARAMETER_LENGTH);
-  target[0] = origin[0];
-  target[1] = origin[1];
+  target[0] = origin[0] - localOriginX;
+  target[1] = origin[1] - localOriginY;
   target[2] = cellSizeX;
   target[3] = cellSizeY;
   target[4] = 1 / cellSizeX;

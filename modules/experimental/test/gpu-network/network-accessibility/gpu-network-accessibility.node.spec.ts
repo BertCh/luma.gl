@@ -254,8 +254,10 @@ it('GPUNetworkSnapping schedules a scan or a BVH join and optional outputs', () 
     })
   );
   const ids = join.getCommandNodes(joinGraph).map(node => node.id);
-  expect(ids[0]).toBe('snap-edge-sources');
-  expect(ids[1]).toBe('snap-segments');
+  // The edge-source rows are cleared first, so rows past offsets[nodeCount] are never stale.
+  expect(ids[0]).toBe('snap-edge-sources-clear');
+  expect(ids[1]).toBe('snap-edge-sources');
+  expect(ids[2]).toBe('snap-segments');
   expect(ids.some(id => id.startsWith('snap-join-'))).toBe(true);
   expect(ids.at(-1)).toBe('snap-project');
 });

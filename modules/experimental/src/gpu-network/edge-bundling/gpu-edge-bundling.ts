@@ -14,6 +14,11 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
 import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../../gpu-spatial-analysis/contracts/spatial-context';
+import {
   createEdgeBundlingBoxNode,
   createEdgeBundlingBoxResetNode,
   createEdgeBundlingClearNode,
@@ -54,6 +59,15 @@ export const GPU_EDGE_BUNDLING_DEFAULTS = {
   /** Multiplier on the advection step, which is one kernel radius at scale 1. */
   stepScale: 1
 } as const;
+
+/**
+ * Coordinate spaces accepted by {@link GPUEdgeBundling}. Bundling measures nothing in physical
+ * units (every length is a fraction of the work box), so any metric of a longitude/latitude
+ * context is accepted and only selects the degree-aware work box.
+ */
+const EDGE_BUNDLING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+  coordinateSpaces: ['planar', 'longitude-latitude']
+};
 
 const MAXIMUM_FIXED_POINT_EXPONENT = 16;
 const MINIMUM_FIXED_POINT_EXPONENT = 8;
@@ -149,11 +163,20 @@ export type GPUEdgeBundlingProps = {
    */
   edgeMask?: GraphDataView<'uint32'>;
   /**
-   * Compile-time. When true, `positions` are `[longitude, latitude]` degrees and the work box
-   * scales longitude by the cosine of the mid-latitude of the live endpoints (computed on the GPU
-   * every encoding, clamped to at least 0.01), so kernel radius, advection and density are
+   * Compile-time coordinates of `positions`. Omitted means planar. With
+   * `coordinateSpace: 'longitude-latitude'`, positions are `[longitude, latitude]` degrees and the
+   * work box scales longitude by the cosine of the mid-latitude of the live endpoints (computed on
+   * the GPU every encoding, clamped to at least 0.01), so kernel radius, advection and density are
    * isotropic on the ground rather than stretched east-west. Output stays in degrees with exact
-   * endpoints. Default false (planar coordinates).
+   * endpoints. Bundling is a visual layout measured relative to the work box, so the context's
+   * metric is not used; data spanning the antimeridian is not supported.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Compile-time. Same as a longitude/latitude `spatialContext` when true. Must agree with
+   * `spatialContext` when both are given. Default false (planar coordinates).
+   *
+   * @deprecated Use `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}`.
    */
   geographic?: boolean;
   /** Compile-time control points per edge, 2 to 64. Defaults to 16. */
@@ -196,7 +219,8 @@ export type GPUEdgeBundlingProps = {
  *
  * All lengths are relative to a square work box computed on the GPU every encoding from live-edge
  * endpoints (bounding square, side padded by 5% per side), so results are scale invariant. With
- * `geographic`, longitude is first scaled by the cosine of the mid-latitude. The
+ * a longitude/latitude `spatialContext`, longitude is first scaled by the cosine of the
+ * mid-latitude. The
  * density is a storage buffer, so there is no float-renderable texture requirement or texture
  * size cap. Weights are quantized to `2^k` units, with `k` from
  * {@link getGPUEdgeBundlingFixedPointExponent}, which cannot overflow.
@@ -220,6 +244,10 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   readonly edgeCount: number;
   /** Fixed-point exponent of the density quantization. */
   readonly fixedPointExponent: number;
+  /** Resolved spatial context. */
+  readonly spatialContext: GPUSpatialContext;
+  /** True when positions are longitude/latitude degrees (degree-aware work box). */
+  readonly geographic: boolean;
 
   constructor(props: GPUEdgeBundlingProps) {
     this.id = props.id ?? 'edge-bundling';
@@ -230,6 +258,20 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       props.densityResolution ?? GPU_EDGE_BUNDLING_DEFAULTS.densityResolution;
     this.edgeCount = props.sourceVertices.length;
     const {id, pointsPerEdge, iterations, densityResolution, edgeCount} = this;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      EDGE_BUNDLING_SPATIAL_CONTEXT_SUPPORT
+    );
+    const isLongitudeLatitude = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    if (
+      props.spatialContext &&
+      props.geographic !== undefined &&
+      props.geographic !== isLongitudeLatitude
+    ) {
+      throw new Error(`${id} geographic contradicts spatialContext`);
+    }
+    this.geographic = isLongitudeLatitude || Boolean(props.geographic);
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.paths, ['float32x2'], `${id} paths`);
     for (const [name, view] of [
@@ -349,7 +391,7 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       fixedPointExponent: this.fixedPointExponent,
       iterationCount: iterations,
       boxPadding: GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
-      geographic: Boolean(props.geographic)
+      geographic: this.geographic
     };
     const inputs = {
       positions: props.positions,

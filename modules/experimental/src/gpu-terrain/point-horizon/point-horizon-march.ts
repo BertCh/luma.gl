@@ -22,6 +22,7 @@ import {
 import {getTerrainElevationNodes} from '../terrain-analysis/terrain-analysis-utils';
 import {
   GPU_POINT_HORIZON_EARTH_RADIUS,
+  POINT_HORIZON_PROJECTION_TAGS,
   type GPUPointHorizonHeightReference,
   type GPUPointHorizonProjection,
   type GPUPointHorizonRowDirection,
@@ -741,7 +742,10 @@ fn asinS(z: f32) -> f32 {
  *
  * @internal
  */
-export function getPointHorizonMarchWGSL(model: ResolvedPointHorizonModel): string {
+export function getPointHorizonMarchWGSL(
+  model: ResolvedPointHorizonModel,
+  projectionSlot: number
+): string {
   const {lattice, segments, layout} = model;
   const mercator = model.projection === 'web-mercator';
   const usePyramid = model.traversal === 'pyramid';
@@ -985,9 +989,15 @@ struct EyeState {
 
 // Eye at (column, row) in pixel-center index space: integer pixel plus f32 fraction, and the eye
 // height as an f32 (hi, lo) pair so (value - hi) - lo is exact to f32 near the eye.
+// Settings packed for the other projection (tag 1 planar, 2 Web Mercator; 0 untagged) are rejected.
+fn isProjectionTagValid() -> bool {
+  let tag = settings[settingsOffset + ${projectionSlot}u];
+  return tag == 0.0 || tag == ${POINT_HORIZON_PROJECTION_TAGS[model.projection]}.0;
+}
+
 fn makeEye(column: f32, row: f32, height: f32) -> EyeState {
   var eye: EyeState;
-  eye.valid = isInsideGrid(column, row);
+  eye.valid = isInsideGrid(column, row) && isProjectionTagValid();
   if (!eye.valid) { return eye; }
   let floorColumn = floor(column);
   let floorRow = floor(row);

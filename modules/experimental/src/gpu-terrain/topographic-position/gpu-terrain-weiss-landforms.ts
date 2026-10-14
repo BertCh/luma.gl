@@ -85,8 +85,8 @@ export type GPUTerrainWeissStandardization = 'global' | 'local';
  * CPU-side description packed by {@link getGPUTerrainWeissLandformsParameterValues}.
  *
  * Cell size model: `cellSize` is in projected metres (`'uniform'`), equatorial Web Mercator metres
- * (`'web-mercator'`, scaled by cos(latitude) per row), or degrees (`'geographic'`, 111319.49 m per
- * degree with the x size scaled by cos(latitude) per row). It only affects the slope used to split
+ * (`'web-mercator'`), or degrees (`'geographic'`), both scaled per row to WGS84 ground metres at
+ * the row latitude (see `GPUTerrainCellSizeMode`). It only affects the slope used to split
  * plains from open slopes; TPI scales are in cells.
  */
 export type GPUTerrainWeissLandformsSettings = TerrainGeomorphometryCellSettings & {

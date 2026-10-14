@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getRasterLocalOrigin} from '../raster-utils';
+
 /** Number of float32 elements in a {@link GPURasterSampling} parameter view. */
 export const GPU_RASTER_SAMPLING_PARAMETER_LENGTH = 12;
 /** Number of float32 elements in a {@link GPURasterProfile} parameter view. */
@@ -24,6 +26,14 @@ export type GPURasterSamplingSettings = {
   method?: GPURasterSamplingMethod;
   /** Nodata handling for bilinear and bicubic. Defaults to `'strict'`. */
   noDataPolicy?: GPURasterSamplingNoDataPolicy;
+  /**
+   * Float64 point that query positions (sampling points, profile path vertices) are given relative
+   * to, and that profile sample positions are written relative to. Defaults to `[0, 0]` (absolute
+   * positions). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute
+   * float32 positions are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to
+   * about `1.2e-7` of their distance from the origin (1.2 cm at 100 km).
+   */
+  localOrigin?: readonly [number, number];
 };
 
 /** Per-frame settings of {@link GPURasterProfile}. */
@@ -64,13 +74,14 @@ function packSamplingParameters(
   if (noDataPolicy !== 'strict' && noDataPolicy !== 'renormalize') {
     throw new Error(`${name} noDataPolicy ${noDataPolicy} is not supported`);
   }
+  const [originX, originY] = getRasterLocalOrigin(name, settings.localOrigin);
   const cellWidth = Math.fround((maxX - minX) / width);
   const cellHeight = Math.fround((maxY - minY) / height);
   target.fill(0, 0, GPU_RASTER_SAMPLING_PARAMETER_LENGTH);
-  target[0] = minX;
-  target[1] = minY;
-  target[2] = maxX;
-  target[3] = maxY;
+  target[0] = minX - originX;
+  target[1] = minY - originY;
+  target[2] = maxX - originX;
+  target[3] = maxY - originY;
   target[4] = cellWidth;
   target[5] = cellHeight;
   // Reciprocals are rounded from the double quotient so the GPU multiplies instead of dividing.
@@ -87,9 +98,10 @@ function packSamplingParameters(
  *
  * Layout (float32): `[minX, minY, maxX, maxY, cellWidth, cellHeight, 1 / cellWidth,
  * 1 / cellHeight, method, renormalize, 0, 0]` with method codes `nearest` 0, `bilinear` 1,
- * `bicubic` 2 and `renormalize` 1 for the `'renormalize'` policy.
+ * `bicubic` 2 and `renormalize` 1 for the `'renormalize'` policy. The extent is relative to
+ * `localOrigin`, subtracted in float64 before the float32 rounding.
  *
- * @param settings Raster size, extent, method and nodata policy.
+ * @param settings Raster size, extent, method, nodata policy and optional local origin.
  * @param target Optional destination of at least 12 elements.
  */
 export function getGPURasterSamplingParameterValues(

@@ -48,6 +48,13 @@ export const GPU_TERRAIN_FLOW_PARAMETER_LENGTH = 8;
 export const GPU_TERRAIN_FLOW_NONE = 0xffffffff;
 
 /**
+ * `streams` value of a valid cell whose accumulation is unresolved (NaN) because the accumulation
+ * round limit was hit: whether it is a stream is unknown. A converged run never writes it.
+ * {@link GPUTerrainStreamOrder} and {@link GPUTerrainHeightAboveDrainage} propagate it.
+ */
+export const GPU_TERRAIN_FLOW_STREAM_UNRESOLVED = 0xffffffff;
+
+/**
  * Per-cell classification written to `GPUTerrainFlowProps.cellClasses`.
  *
  * `draining` cells have a strictly lower neighbor. `flat`, `pit`, and `outlet` cells are terminal
@@ -259,8 +266,12 @@ export type GPUTerrainFlowProps = {
    */
   accumulation?: GraphDataView<'float32'>;
   /**
-   * 1 where accumulation is finite and at least `settings.streamThreshold`, else 0. Accumulation
-   * is computed into a transient when `accumulation` is not provided. Presence is compile-time.
+   * 1 where accumulation is finite and at least `settings.streamThreshold`; 0 below the threshold
+   * and on invalid cells; `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on valid cells whose accumulation
+   * is unresolved (NaN) because `maxAccumulationIterations` ran out, so an unresolved trunk never
+   * reads as "not a stream". Test `== 1u` for "is a stream"; `!= 0u` also counts unresolved
+   * cells. Accumulation is computed into a transient when `accumulation` is not provided.
+   * Presence is compile-time.
    */
   streams?: GraphDataView<'uint32'>;
   /** One row set to 1 when depression filling reached its fixpoint. Requires `fillDepressions`. */
@@ -312,8 +323,9 @@ export type GPUTerrainFlowProps = {
  *
  * A valid cell has a finite calibrated elevation. A boundary cell is valid and lies on the grid
  * border or next to an invalid cell: water leaves the grid there. Not converging within the
- * iteration limits leaves `fillConverged` or `accumulationConverged` at 0 and unresolved
- * accumulation cells at NaN.
+ * iteration limits leaves `fillConverged` or `accumulationConverged` at 0, unresolved
+ * accumulation cells at NaN, and their `streams` at `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED`
+ * (never 0, which would drop the downstream trunk from the stream network).
  *
  * - Flat resolution (`resolveFlats`) follows Barnes, Lehman and Mulla (2014): hop distances toward
  *   the flat's draining edge and away from its higher edge are GPU relaxations over equal-height
@@ -547,9 +559,11 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
           createTerrainFlowStreamsNode(graph, {
             id: `${id}-streams`,
             cellCount,
+            elevation,
             accumulation,
             streams: props.streams,
-            settings: props.settings
+            settings: props.settings,
+            unresolvedValue: GPU_TERRAIN_FLOW_STREAM_UNRESOLVED
           })
         );
       }
