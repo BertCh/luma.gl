@@ -29,6 +29,7 @@ import type {GPULineSplitPieces} from '../line-split/index';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {
@@ -82,6 +83,12 @@ export type GPULineClipByPolygonProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `polygons` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  polygonsSpatialContext?: GPUSpatialContext;
   /** Linestrings to clip. */
   lines: GPUPackedGeometryPort<GPULineGeometryPort>;
   /**
@@ -173,6 +180,12 @@ export class GPULineClipByPolygon implements GPUCommandNodeProducer {
   constructor(props: GPULineClipByPolygonProps) {
     this.id = props.id ?? 'line-clip-by-polygon';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'polygons',
+      props.polygonsSpatialContext,
+      this.spatialContext
+    );
     this.props = props;
     const {id} = this;
     const {lines, polygons} = props;

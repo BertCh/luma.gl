@@ -36,6 +36,7 @@ import {GPU_SPATIAL_JOIN_NO_FEATURE, type GPUNearestFeatureSource} from './spati
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 
@@ -95,6 +96,12 @@ export type GPUBufferSelectionProps = {
    * throw at construction.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `features` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  featuresSpatialContext?: GPUSpatialContext;
   /**
    * Points to test, possibly chunked; contents are per-frame and at least one row is required.
    * Optional `sourceIds` (same chunk topology) are written to `output.matches.ids`; row indices
@@ -171,6 +178,12 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       id,
       props.spatialContext,
       BUFFER_SELECTION_SPATIAL_CONTEXT_SUPPORT
+    );
+    resolveGPUSecondarySpatialContext(
+      id,
+      'features',
+      props.featuresSpatialContext,
+      this.spatialContext
     );
     const points = props.points.positions;
     const {sourceIds} = props.points;
@@ -249,6 +262,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       ...new GPUNearestFeatureJoin({
         id: `${id}-join`,
         spatialContext: this.spatialContext,
+        featuresSpatialContext: props.featuresSpatialContext,
         queries: {kind: 'points', positions: points},
         features: props.features,
         radius: props.distance,

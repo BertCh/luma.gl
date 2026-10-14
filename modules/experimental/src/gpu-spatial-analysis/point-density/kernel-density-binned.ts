@@ -36,7 +36,13 @@ import {
   GPU_KERNEL_DENSITY_BINNED_MARGIN_BANDWIDTHS,
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION
 } from './kernel-density-math';
-import {getKernelDensityResultWGSL, getWindowMassWGSL} from './kernel-density-wgsl';
+import type {GPUPolygonStudyWindowViews} from '../../analysis-core/contracts/study-window';
+import {getStudyWindowBinding} from '../../utils/study-window-wgsl';
+import {
+  getKernelDensityResultWGSL,
+  getKernelDensityStudyWindowWGSL,
+  getWindowMassWGSL
+} from './kernel-density-wgsl';
 
 const OPERATION = 'GPUKernelDensity';
 
@@ -73,6 +79,8 @@ export const GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT = Math.floor(
 /** Inputs of {@link createGPUKernelDensityBinnedNodes}. @internal */
 export type GPUKernelDensityBinnedProps = {
   id: string;
+  /** Prepared polygon window, sharing the point-weight inclusion rule. */
+  studyWindow?: GPUPolygonStudyWindowViews;
   positions: GraphDataView<'float32x2'>;
   parameters: GraphDataView<'float32'>;
   /** Included point weights (exclusion and `'diggle'` reweighting applied; 0 for excluded rows). */
@@ -162,7 +170,7 @@ export function createGPUKernelDensityBinnedNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUKernelDensityBinnedProps
 ): GPUKernelDensityBinnedNodes<Parameters> {
-  const {id, width, height, edgeCorrection, normalization} = props;
+  const {id, width, height, edgeCorrection, normalization, studyWindow} = props;
   const pointCount = props.positions.length;
   const cellCount = width * height;
   const {paddedWidth, paddedHeight, margin} = getGPUKernelDensityBinnedSize(
@@ -315,6 +323,7 @@ fn writeAxisPlan(base: u32, sigma: f32, lineLength: f32) {
       operation: OPERATION,
       variant: 'bin',
       bindings: [
+        ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
         {name: 'pointWeights', view: props.pointWeights, type: 'f32', access: 'read'},
         gridBindings('params'),
@@ -327,7 +336,7 @@ fn writeAxisPlan(base: u32, sigma: f32, lineLength: f32) {
       declarations: `override FIXED_POINT_HEADROOM_BITS: u32;
 ${gridConstants}
 ${FIXED_POINT_WGSL}
-${getFixedPointAtomicAddWGSL('words')}`,
+${getFixedPointAtomicAddWGSL('words')}${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow) : ''}`,
       constants: {FIXED_POINT_HEADROOM_BITS: getFixedPointHeadroomBits(pointCount)},
       // Linear binning splits the weight over the four cell centers around the point:
       // (1 - fx)(1 - fy), fx (1 - fy), (1 - fx) fy, fx fy. A point within half a cell of the padded
@@ -340,7 +349,7 @@ ${getFixedPointAtomicAddWGSL('words')}`,
   let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
   let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
   let position = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
-  let coordinate = (position - gridStart) / cellSize + vec2f(f32(MARGIN) - 0.5);
+  ${studyWindow ? 'if (!isInsideStudyWindow(position)) { return; }\n  ' : ''}let coordinate = (position - gridStart) / cellSize + vec2f(f32(MARGIN) - 0.5);
   if (!(coordinate.x >= 0.0 && coordinate.y >= 0.0 &&
       coordinate.x < f32(PADDED_WIDTH - 1u) && coordinate.y < f32(PADDED_HEIGHT - 1u))) {
     return;
@@ -423,6 +432,7 @@ ${kind === 'box' ? BOX_BLUR_DECLARATIONS : ''}`,
   }
 
   const finishBindings: WGSLKernelBinding[] = [
+    ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
     {name: 'smoothed', view: density, type: 'f32', access: 'read'},
     gridBindings('params'),
     {name: 'plan', view: plan, type: 'f32', access: 'read'},
@@ -443,7 +453,7 @@ ${kind === 'box' ? BOX_BLUR_DECLARATIONS : ''}`,
       ...getGate(GATE_SLOT.finish),
       declarations: `${gridConstants}
 ${GRID_COORDINATE_WGSL}
-${edgeCorrection === 'none' ? '' : getWindowMassWGSL('gaussian')}`,
+${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'uniform' ? 'gaussian' : undefined) : edgeCorrection === 'none' ? '' : getWindowMassWGSL('gaussian')}`,
       body: `let column = index % WIDTH;
   let rasterRow = index / WIDTH;
   let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
@@ -460,7 +470,7 @@ ${edgeCorrection === 'none' ? '' : getWindowMassWGSL('gaussian')}`,
     let paddedIndex = (rasterRow + MARGIN) * PADDED_WIDTH + column + MARGIN;
     total = smoothed[smoothedOffset + paddedIndex] * plan[planOffset + 1u];
   }
-  ${getKernelDensityResultWGSL(edgeCorrection, normalization)}`
+  ${getKernelDensityResultWGSL(edgeCorrection, normalization, Boolean(studyWindow))}`
     })
   );
 

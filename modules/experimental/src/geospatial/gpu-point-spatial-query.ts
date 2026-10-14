@@ -35,11 +35,18 @@ import {
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../analysis-core/contracts/spatial-context';
-import {createChangedBindingResolver} from '../utils/wgsl-kernel-nodes';
+import {createChangedBindingResolver, createFillNode} from '../utils/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../utils/wgsl-common';
+
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../analysis-core/lon-lat-ring-wgsl';
+import {type GPULonLatPolygonStatusPort, GPU_LINEAR_EDGE_MODELS} from '../analysis-core/contracts';
 
 // Kept for existing importers; the helper now lives in `utils/wgsl-kernel-nodes`.
 export {createChangedBindingResolver};
@@ -55,6 +62,7 @@ const POINT_QUERY_SELECTION_SUPPORT: GPUSpatialContextSupport = Object.freeze({
 
 const POINT_QUERY_WORKGROUP_SIZE = 256;
 const QUERY_STATE_LENGTH = 12;
+const OPERATION = 'GPUPointSpatialQuery';
 
 /** Read-only storage and domain contract consumed by {@link GPUPointSpatialQuery}. */
 export type GPUGridIndexView = {
@@ -104,9 +112,16 @@ export type GPUPointSpatialQueryProps = {
    * queries measure planar Euclidean distance and reject longitude/latitude: project positions to
    * a planar frame first. `bounds` and `polygon` queries do no metric math and also accept
    * longitude/latitude with metric `'none'`; their bounds and polygon edges are then straight in
-   * degree space, with no antimeridian wrapping.
+   * degree space. Polygon queries require linear edges. Prepare polygons that cross ±180 or enclose a pole with
+   * `GPULonLatPolygonPreparation`; optional status counters report unprepared rings.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `polygon` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame; longitude/latitude needs linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  polygonSpatialContext?: GPUSpatialContext;
   /**
    * Per-frame query values.
    *
@@ -122,6 +137,12 @@ export type GPUPointSpatialQueryProps = {
 
 /** Caller-owned outputs of {@link GPUPointSpatialQuery}: the compact IDs plus optional diagnostics. */
 export type GPUPointSpatialQueryOutput = GPUCompactOutput & {
+  /**
+   * Compact-result status plus optional polygon checks. `antimeridianUncertainCount` counts
+   * unprepared crossing rings; `poleUncertainCount` counts uncapped pole rings. Planar contexts
+   * and non-polygon queries leave these counters untouched.
+   */
+  status: GPUCompactOutput['status'] & GPULonLatPolygonStatusPort;
   /**
    * Optional packed scalar receiving the exact number of indexed cells dispatched for refinement.
    *
@@ -176,7 +197,19 @@ export class GPUPointSpatialQuery implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
-      this.kind === 'radius' ? GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT : POINT_QUERY_SELECTION_SUPPORT
+      this.kind === 'radius'
+        ? GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT
+        : {
+            ...POINT_QUERY_SELECTION_SUPPORT,
+            ...(this.kind === 'polygon' ? {edgeModels: GPU_LINEAR_EDGE_MODELS} : {})
+          }
+    );
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'polygon',
+      props.polygonSpatialContext,
+      this.spatialContext,
+      GPU_LINEAR_EDGE_MODELS
     );
     this.parameters = props.parameters;
     this.polygon = props.polygon;
@@ -192,6 +225,15 @@ export class GPUPointSpatialQuery implements GPUCommandNodeProducer {
     }
     validatePackedView(this.parameters, ['float32'], `${this.id} parameters`);
     validateCompactOutput(this.id, this.output);
+    for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+      const view = this.output.status[name];
+      if (view) {
+        validatePackedView(view, ['uint32'], `${this.id} output.status.${name}`);
+        if (view.length < 1) {
+          throw new Error(`${this.id} output.status.${name} must contain one uint32 row`);
+        }
+      }
+    }
     if (this.output.intersectedCellCount) {
       validateQueryDiagnostic(this.id, 'intersectedCellCount', this.output.intersectedCellCount);
     }
@@ -219,7 +261,7 @@ export class GPUPointSpatialQuery implements GPUCommandNodeProducer {
     validateDisjointQueryViews(this.id, this);
   }
 
-  /** Returns query preparation, indirect refinement and count finalization, for `graph.add`. */
+  /** Returns optional polygon checks, query preparation, refinement and count finalization. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -230,6 +272,8 @@ export class GPUPointSpatialQuery implements GPUCommandNodeProducer {
       this.output.ids,
       this.output.status.count,
       this.output.status.overflow,
+      this.output.status.antimeridianUncertainCount,
+      this.output.status.poleUncertainCount,
       ...(this.output.status.requiredCount ? [this.output.status.requiredCount] : []),
       ...(this.output.intersectedCellCount ? [this.output.intersectedCellCount] : []),
       ...(this.output.candidateCount ? [this.output.candidateCount] : []),
@@ -255,7 +299,41 @@ export class GPUPointSpatialQuery implements GPUCommandNodeProducer {
       'uint32',
       this.output.candidateCount ? 3 : 2
     );
+    const id = this.id;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      this.kind === 'polygon' &&
+      hasLonLatPolygonStatus(this.output.status)
+    ) {
+      const status = this.output.status;
+      for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+        const view = status[name];
+        if (view) {
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-clear-${name}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u',
+              componentCount: 1
+            })
+          );
+        }
+      }
+      nodes.push(
+        createLonLatPolygonCheckNode(graph, {
+          id: `${id}-lon-lat-polygon-check-0`,
+          operation: OPERATION,
+          positions: this.polygon!.positions,
+          ringOffsets: this.polygon!.ringOffsets,
+          status
+        })
+      );
+    }
     return [
+      ...nodes,
       createPrepareNode(this, queryState, resultState),
       createRefinementNode(this, queryState, resultState),
       createFinalizeNode(this, queryState, resultState)
@@ -907,6 +985,10 @@ function validateDisjointQueryViews(id: string, query: GPUPointSpatialQuery): vo
     ['ids', query.output.ids],
     ['status.count', query.output.status.count],
     ['status.overflow', query.output.status.overflow],
+    ...(['antimeridianUncertainCount', 'poleUncertainCount'] as const).flatMap(name => {
+      const view = query.output.status[name];
+      return view ? [[`status.${name}`, view] as [string, GraphDataView]] : [];
+    }),
     ...(query.output.status.requiredCount
       ? ([['status.requiredCount', query.output.status.requiredCount]] as [string, GraphDataView][])
       : []),

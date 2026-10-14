@@ -10,6 +10,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
+import {assertCompatibleGPUVerticalDatums} from '../../analysis-core/contracts/vertical-datum';
 import {createFillNode, createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -192,6 +193,13 @@ export type GPUTerrainPeakSnapProps = {
    */
   candidateHeights?: GraphDataView<'float32'>;
   /**
+   * Vertical datum of `candidateHeights`, for example a catalogue in a national datum. Requires
+   * `candidateHeights` and is checked against `elevation.verticalDatum` when both are declared;
+   * the library never converts. Geoid offsets up to about ±100 m exceed the default
+   * `maximumHeightChange` of 80.
+   */
+  candidateVerticalDatum?: string;
+  /**
    * Optional per-candidate search radius in ground metres, one per candidate. Non-finite or
    * non-positive entries fall back to the parameters radius. A distance-dependent rule such as
    * `min(250, 60 + 0.004 * distance)` metres (60 m plus 0.4 % of the distance to the viewer,
@@ -243,6 +251,15 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-peak-snap';
     this.props = props;
     const {id} = this;
+    if (props.candidateVerticalDatum !== undefined && !props.candidateHeights) {
+      throw new Error(`${id} candidateVerticalDatum needs candidateHeights`);
+    }
+    assertCompatibleGPUVerticalDatums(
+      id,
+      props.candidateVerticalDatum,
+      props.elevation.verticalDatum,
+      'candidate'
+    );
     const {output} = props;
     const radiusClamped = output.status?.radiusClamped;
     validateRasterGrid(id, props.grid);

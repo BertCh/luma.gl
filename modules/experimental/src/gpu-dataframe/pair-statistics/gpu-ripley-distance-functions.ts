@@ -24,6 +24,7 @@ import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogra
 import {
   getPairStatisticsInputNodes,
   getPairStatisticsSharedWGSL,
+  getPairStatisticsWindowParameterNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs,
   validatePairStatisticsRowCount
@@ -34,6 +35,18 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {
+  getStudyWindowBinding,
+  getStudyWindowWGSL,
+  getStudyWindowWGSLOptions
+} from '../../utils/study-window-wgsl';
 
 const OPERATION = 'GPURipleyDistanceFunctions';
 
@@ -85,7 +98,7 @@ export type GPURipleyDistanceFunctionsOutput = {
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask` and `parameters`
  * (window bounds, maximum distance, edge-correction mode: none, border, Kaplan-Meier, Hanisch). Compile-time: the row count,
- * `gridSize`, `referenceGrid`, `radiusCount` and which optional `output` views are present.
+ * `gridSize`, `referenceGrid`, `radiusCount`, `studyWindow` and which optional `output` views are present.
  */
 export type GPURipleyDistanceFunctionsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley-distance-functions'`. */
@@ -100,6 +113,11 @@ export type GPURipleyDistanceFunctionsProps = {
    * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Prepared valid polygon window in the same planar frame, or 'rectangle' (default).
+   * Use bounds: 'study-window' for polygons; those bounds yield NaN in rectangle mode.
+   */
+  studyWindow?: GPUStudyWindow;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -114,8 +132,9 @@ export type GPURipleyDistanceFunctionsProps = {
   gridSize: readonly [number, number];
   /**
    * `[columns, rows]` of the regular lattice of reference locations used for F: the window is cut
-   * into this many equal cells and each center is one location. Compile-time; the product must be
-   * in `[1, 2^24]`. A finer lattice reduces the sampling noise of F, which is exact in the limit.
+   * bbox into this many equal cells and each center is one location. Compile-time; the product must be
+   * in `[1, 2^24]`. Polygon windows retain only centres inside W and use this same lattice for
+   * Hanisch eroded areas, even with G-only output. A finer lattice improves both approximations.
    */
   referenceGrid: readonly [number, number];
   /**
@@ -130,12 +149,12 @@ export type GPURipleyDistanceFunctionsProps = {
 };
 
 /**
- * Ripley's distance functions of a planar point pattern in a rectangular window: the
+ * Ripley's distance functions of a planar point pattern in a rectangle or prepared polygon window: the
  * nearest-neighbor function G, the empty-space function F and their ratio J
  * (spatstat `Gest`, `Fest`, `Jest`, here without kernel smoothing).
  *
  * Definition, which the GPU result matches within the bounds below:
- * - The window is the per-frame bounds rectangle. Included events have a nonzero mask (when
+ * - The window is the per-frame bounds rectangle or prepared polygon. Included events have a nonzero mask (when
  *   given) and a finite position inside the window; `n` is their count. `d_i` is the distance
  *   from event `i` to its nearest other included event, searched through the 3x3 cell
  *   neighborhood, which covers every event within `maximumDistance`; an event with none within
@@ -154,6 +173,8 @@ export type GPURipleyDistanceFunctionsProps = {
  *   their border distance (or never, when it exceeds `maximumDistance`), so it is exact.
  * - `'hanisch'` (spatstat `"han"` for G, the Chiu-Stoyan weighting `"cs"` for F): uncensored points
  *   (`d <= b`) are weighted by `1 / |W eroded by d|` (rectangle area `(w - 2d) (h - 2d)`), and
+ *   polygons estimate this area from inside reference centres, with border-distance bins at
+ *   4 * radiusCount sub-slots and linear interpolation. Refine referenceGrid for accuracy.
  *   `G(r) = sum_{d <= r} weight / sum weight`. Weights are accumulated in 14-bit fixed point
  *   (relative error about 1e-4) and capped at 1024 times the window area ratio. A point with no
  *   neighbor within `maximumDistance` has an unknown `d`: if its border distance is at least
@@ -180,12 +201,15 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
   readonly props: GPURipleyDistanceFunctionsProps;
   /** Resolved spatial context (native planar unless the props say otherwise). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time observation window. */
+  readonly studyWindow: GPUStudyWindow;
 
   constructor(props: GPURipleyDistanceFunctionsProps) {
     this.id = props.id ?? 'ripley-distance-functions';
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH
@@ -233,17 +257,56 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize, radiusCount, referenceGrid, output} = props;
+    const {
+      positions,
+      parameters: callerParameters,
+      gridSize,
+      radiusCount,
+      referenceGrid,
+      output
+    } = props;
     validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
-      parameters,
+      callerParameters,
       props.mask,
       output.g,
       output.f,
       output.j,
       output.radii
     ]);
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
+    const windowParameters = studyWindow
+      ? getPairStatisticsWindowParameterNodes(graph, {
+          id,
+          operation: OPERATION,
+          parameters: callerParameters,
+          parameterLength: callerParameters.length,
+          window: studyWindow
+        })
+      : undefined;
+    const parameters = windowParameters?.parameters ?? callerParameters;
+    const windowOptions = studyWindow ? getStudyWindowWGSLOptions(studyWindow) : undefined;
+    const windowWGSL = windowOptions
+      ? `${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getStudyWindowWGSL(windowOptions)}`
+      : '';
     const referenceCount = referenceGrid[0] * referenceGrid[1];
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
       id,
@@ -251,24 +314,103 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
       positions,
       parameters,
       gridSize,
-      mask: props.mask
+      mask: props.mask,
+      studyWindow
     });
-    const nodes = inputs.nodes;
+    const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
     const constantsWGSL = /* wgsl */ `
 const RADIUS_COUNT: u32 = ${radiusCount}u;
 const PI: f32 = 3.14159265358979;
 `;
+    // Integer border-distance bins, then suffix counts at 4 * radiusCount + 1 thresholds.
+    const erosionCounts = studyWindow
+      ? createTransientView(graph, `${id}-hanisch-counts`, 'uint32', 4 * radiusCount + 1)
+      : undefined;
+    const windowBindings: WGSLKernelBinding[] = studyWindow
+      ? [
+          getStudyWindowBinding(studyWindow),
+          {name: 'erosionCounts', view: erosionCounts!, type: 'u32', access: 'read'}
+        ]
+      : [];
+    if (studyWindow) {
+      const borderHistogram = createTransientView(
+        graph,
+        `${id}-hanisch-histogram`,
+        'uint32',
+        4 * radiusCount + 1
+      );
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-hanisch-clear`,
+          operation: OPERATION,
+          view: borderHistogram,
+          type: 'u32',
+          value: '0u'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-hanisch-reference`,
+          operation: OPERATION,
+          variant: 'hanisch-reference',
+          bindings: [
+            getStudyWindowBinding(studyWindow),
+            {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+            {
+              name: 'borderHistogram',
+              view: borderHistogram,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: referenceCount,
+          declarations: `${getPairStatisticsSharedWGSL(gridSize)}${windowWGSL}`,
+          body: `let lattice = readLattice();
+  if (!lattice.valid || u32(parameters[parametersOffset + 5u] + 0.5) != 3u) { return; }
+  let point = vec2f(lattice.minimumX, lattice.minimumY) +
+    (vec2f(f32(index % ${referenceGrid[0]}u), f32(index / ${referenceGrid[0]}u)) + vec2f(0.5)) *
+    vec2f(lattice.maximumX - lattice.minimumX, lattice.maximumY - lattice.minimumY) /
+    vec2f(${referenceGrid[0]}.0, ${referenceGrid[1]}.0);
+  if (isInsideStudyWindow(point)) {
+    let distance = min(getStudyWindowBoundaryDistance(point, lattice.maximumDistance), lattice.maximumDistance);
+    let slot = min(u32(floor(distance / lattice.maximumDistance * ${4 * radiusCount}.0)), ${4 * radiusCount}u);
+    atomicAdd(&borderHistogram[borderHistogramOffset + slot], 1u);
+  }`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-hanisch-suffix`,
+          operation: OPERATION,
+          variant: 'hanisch-suffix',
+          bindings: [
+            {name: 'borderHistogram', view: borderHistogram, type: 'u32', access: 'read'},
+            {name: 'erosionCounts', view: erosionCounts!, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 4 * radiusCount + 1,
+          body: `var total = 0u;
+  for (var slot = index; slot <= ${4 * radiusCount}u; slot++) { total += borderHistogram[borderHistogramOffset + slot]; }
+  erosionCounts[erosionCountsOffset + index] = total;`
+        })
+      );
+    }
     // Needs the Lattice type, so only the kernels that include the shared pair-statistics WGSL.
-    const observationWGSL = /* wgsl */ `${constantsWGSL}
+    const observationWGSL = /* wgsl */ `${constantsWGSL}${windowWGSL}
 const HANISCH_SCALE: f32 = 16384.0;
 const HANISCH_CAP: f32 = 1024.0;
 
 // Fixed-point Hanisch weight |W| / |W eroded by distance| of one observation; at most 2^24.
 fn getHanischAmount(lattice: Lattice, distance: f32) -> u32 {
-  let width = lattice.maximumX - lattice.minimumX;
+  ${
+    studyWindow
+      ? `let scaled = clamp(distance / lattice.maximumDistance * ${4 * radiusCount}.0, 0.0, ${4 * radiusCount}.0);
+  let lower = u32(floor(scaled));
+  let upper = min(lower + 1u, ${4 * radiusCount}u);
+  let remaining = mix(f32(erosionCounts[erosionCountsOffset + lower]), f32(erosionCounts[erosionCountsOffset + upper]), scaled - f32(lower));
+  let total = f32(erosionCounts[erosionCountsOffset]);
+  // A cancels in |W| / (A * remaining / total).
+  let ratio = select(HANISCH_CAP, min(total / remaining, HANISCH_CAP), remaining > 0.0);`
+      : `let width = lattice.maximumX - lattice.minimumX;
   let height = lattice.maximumY - lattice.minimumY;
   let eroded = max(width - 2.0 * distance, 0.0) * max(height - 2.0 * distance, 0.0);
-  let ratio = select(HANISCH_CAP, min(width * height / eroded, HANISCH_CAP), eroded > 0.0);
+  let ratio = select(HANISCH_CAP, min(width * height / eroded, HANISCH_CAP), eroded > 0.0);`
+  }
   return u32(ratio * HANISCH_SCALE + 0.5);
 }
 
@@ -289,10 +431,11 @@ fn getCensorSlot(distance: f32, step: f32) -> u32 {
       slotCount: radiusCount,
       channelCount: CHANNEL_COUNT,
       pairOrder: 'ordered',
+      extraBindings: windowBindings,
       declarations: observationWGSL,
       focusPrologue: `var nearestDistance = lattice.maximumDistance;
     var hasNeighbor = false;
-    let borderDistance = min(min(x - lattice.minimumX, lattice.maximumX - x), min(y - lattice.minimumY, lattice.maximumY - y));
+    let borderDistance = ${studyWindow ? 'min(getStudyWindowBoundaryDistance(vec2f(x, y), lattice.maximumDistance), lattice.maximumDistance)' : 'min(min(x - lattice.minimumX, lattice.maximumX - x), min(y - lattice.minimumY, lattice.maximumY - y))'};
     let borderCount = min(u32(floor(borderDistance / lattice.maximumDistance * f32(RADIUS_COUNT))), RADIUS_COUNT);`,
       pairAction: `if (!hasNeighbor || pairDistance < nearestDistance) {
               nearestDistance = pairDistance;
@@ -342,6 +485,7 @@ fn getCensorSlot(distance: f32, step: f32) -> u32 {
         operation: OPERATION,
         variant: 'f-reference',
         bindings: [
+          ...windowBindings,
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
           // Cell-ordered `[x bits, y bits, row]` triples built for the G histogram.
           {name: 'sortedPoints', view: histogram.sortedPoints, type: 'u32', access: 'read'},
@@ -380,7 +524,7 @@ fn addReference(slot: u32, channel: u32, amount: u32) {
     let referenceRow = index / REFERENCE_COLUMNS;
     let x = lattice.minimumX + (f32(referenceColumn) + 0.5) * (lattice.maximumX - lattice.minimumX) / f32(REFERENCE_COLUMNS);
     let y = lattice.minimumY + (f32(referenceRow) + 0.5) * (lattice.maximumY - lattice.minimumY) / f32(REFERENCE_ROWS);
-    let borderDistance = min(min(x - lattice.minimumX, lattice.maximumX - x), min(y - lattice.minimumY, lattice.maximumY - y));
+    ${studyWindow ? 'if (isInsideStudyWindow(vec2f(x, y))) {\n    ' : ''}let borderDistance = ${studyWindow ? 'min(getStudyWindowBoundaryDistance(vec2f(x, y), lattice.maximumDistance), lattice.maximumDistance)' : 'min(min(x - lattice.minimumX, lattice.maximumX - x), min(y - lattice.minimumY, lattice.maximumY - y))'};
     let borderCount = min(u32(floor(borderDistance / lattice.maximumDistance * f32(RADIUS_COUNT))), RADIUS_COUNT);
     var nearestSquared = lattice.radiusSquared;
     var hasEvent = false;
@@ -425,7 +569,7 @@ fn addReference(slot: u32, channel: u32, amount: u32) {
         addReference(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));
       }
     }
-  }
+${studyWindow ? '  }\n' : ''}  }
   workgroupBarrier();
   // One global 64-bit add per nonzero accumulator and workgroup: exact, so order-independent.
   for (var word = localInvocationIndex; word < ACCUMULATOR_COUNT; word += ${REFERENCE_WORKGROUP_SIZE}u) {
@@ -467,7 +611,7 @@ fn addReference(slot: u32, channel: u32, amount: u32) {
         declarations: /* wgsl */ `${PAIR_STATISTICS_FLOAT_WGSL}
 ${constantsWGSL}
 const CELL_COUNT: u32 = ${gridSize[0] * gridSize[1]}u;
-const REFERENCE_COUNT: f32 = ${referenceCount}.0;
+${studyWindow ? '' : `const REFERENCE_COUNT: f32 = ${referenceCount}.0;`}
 const CHANNELS: u32 = ${CHANNEL_COUNT}u;
 
 // Event counts stay below 2^24, so the low word of each 64-bit accumulator is exact.
@@ -538,7 +682,7 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
   }
   return sum;
 }`,
-        body: `let nan = getQuietNaN(index);
+        body: `${studyWindow ? 'let REFERENCE_COUNT = f32(getReferencePrefix(3u, RADIUS_COUNT));\n  ' : ''}let nan = getQuietNaN(index);
   let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
   let mode = u32(parameters[parametersOffset + 5u] + 0.5);
   let border = mode == 1u;
@@ -561,7 +705,7 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
       gValue = getHanisch(false, index);
     }
   }
-  if (valid && n >= 1.0) {
+  if (valid && n >= 1.0${studyWindow ? ' && REFERENCE_COUNT > 0.0' : ''}) {
     if (border) {
       let denominator = REFERENCE_COUNT - f32(getReferencePrefix(3u, index));
       if (denominator >= 1.0) {

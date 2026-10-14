@@ -24,6 +24,7 @@ import {
 } from './pair-histogram';
 import {
   getPairStatisticsInputNodes,
+  getPairStatisticsWindowParameterNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs,
   validatePairStatisticsRowCount
@@ -43,6 +44,11 @@ import {
   validateGPUStatusPort,
   type GPUOverflowStatusPort
 } from '../../analysis-core/contracts/status';
+
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
 
 const OPERATION = 'GPUVariogram';
 
@@ -118,6 +124,13 @@ export type GPUVariogramProps = {
    * Lambert equal-area frames are rejected because this operator measures distance.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Compile-time study window, default 'rectangle'. Polygon windows are prepared with
+   * GPUStudyWindowPreparation from @luma.gl/experimental gpu-spatial-analysis and must be valid
+   * (non-self-intersecting, non-overlapping polygons) in the same planar frame. Require
+   * bounds: 'study-window' in polygon mode; that setting gives NaN statistics in rectangle mode.
+   */
+  studyWindow?: GPUStudyWindow;
   /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /** Packed observed values, one per row. Rows with a non-finite value are excluded. */
@@ -204,6 +217,8 @@ export class GPUVariogram implements GPUCommandNodeProducer {
   readonly props: GPUVariogramProps;
   /** Resolved spatial context (native planar unless the props say otherwise). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time rectangle or polygon window. */
+  readonly studyWindow: GPUStudyWindow;
   /** Number of direction sectors (1 when omnidirectional). */
   readonly directionCount: number;
 
@@ -212,6 +227,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH
@@ -275,12 +291,12 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, directionCount} = this;
-    const {positions, parameters, gridSize, lagCount, output} = props;
+    const {positions, parameters: callerParameters, gridSize, lagCount, output} = props;
     validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       props.values,
-      parameters,
+      callerParameters,
       props.mask,
       output.semivariances,
       output.pairCounts,
@@ -295,6 +311,33 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     // Channels: 0 pair count, 1 Matheron, 2 distance, [3 robust,] then the large Matheron terms.
     const largeChannel = robust ? 4 : 3;
     const channelCount = largeChannel + 1;
+    // Window lookup uses graph identity only, independent of the graph's per-frame parameter type.
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
+    const windowParameters = studyWindow
+      ? getPairStatisticsWindowParameterNodes(graph, {
+          id,
+          operation: OPERATION,
+          parameters: callerParameters,
+          parameterLength: callerParameters.length,
+          window: studyWindow
+        })
+      : undefined;
+    const parameters = windowParameters?.parameters ?? callerParameters;
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
@@ -302,10 +345,11 @@ export class GPUVariogram implements GPUCommandNodeProducer {
       parameters,
       gridSize,
       values: props.values,
-      mask: props.mask
+      mask: props.mask,
+      studyWindow
     });
     const statistics = inputs.statistics!;
-    const nodes = inputs.nodes;
+    const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
     const unit = getPairStatisticsUnitVarianceNodes<Parameters>(graph, {
       id,
       operation: OPERATION,

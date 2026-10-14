@@ -5,6 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
@@ -82,6 +83,12 @@ export const GPU_MAP_MATCHING_PARAMETER_LENGTH = 8;
  * (native planar units, or meters/kilometers for great-circle). `routeFactor` is unitless.
  */
 export type GPUMapMatchingSettings = {
+  /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
   /** GPS noise standard deviation in the context's length unit. Must be positive. */
   sigma: number;
   /** Scale in the context's length unit of `exp(-|straight - route| / beta)`. Must be positive. */
@@ -106,6 +113,12 @@ export type GPUMapMatchingSettings = {
 
 /** Packs {@link GPUMapMatchingSettings} into the `float32` words read by {@link GPUMapMatching}. */
 export function getGPUMapMatchingParameterValues(settings: GPUMapMatchingSettings): Float32Array {
+  warnGPUShortLongitudeLatitudeDistance('GPUMapMatching', settings.spatialContext, settings.sigma);
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUMapMatching',
+    settings.spatialContext,
+    settings.searchRadius
+  );
   const words = new Float32Array(GPU_MAP_MATCHING_PARAMETER_LENGTH);
   words[0] = settings.sigma;
   words[1] = settings.beta;

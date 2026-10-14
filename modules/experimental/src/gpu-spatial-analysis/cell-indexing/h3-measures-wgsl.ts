@@ -5,6 +5,14 @@
 
 // H3 cell measures use the face/IJK geometry of Uber's Apache-2.0 H3 (faceijk.c, latLng.c).
 
+/** Signed spherical excess of a unit-vector triangle, in steradians. @internal */
+export const SPHERICAL_EXCESS_WGSL = /* wgsl */ `
+fn sphericalExcessTriangle(center: vec3f, first: vec3f, second: vec3f) -> f32 {
+  let determinant = dot(center, cross(first, second));
+  return 2.0 * atan2(determinant, 1.0 + dot(first, second) + dot(second, center) + dot(center, first));
+}
+`;
+
 /**
  * WGSL for the exact spherical area, perimeter and edge lengths of an H3 cell.
  *
@@ -33,6 +41,7 @@
  * @internal
  */
 export const H3_MEASURES_WGSL = /* wgsl */ `
+${SPHERICAL_EXCESS_WGSL}
 const CELL_MEASURES_MAX_EDGES: u32 = 10u;
 
 struct CellMeasures {
@@ -151,8 +160,7 @@ fn cellMeasuresGetBoundaryMeasures(cell: vec2u) -> CellMeasures {
   for (var vertex = 0u; vertex < boundary.count; vertex++) {
     let a = boundary.units[vertex];
     let b = boundary.units[(vertex + 1u) % boundary.count];
-    let determinant = abs(dot(center, cross(a, b)));
-    area += 2.0 * atan2(determinant, 1.0 + dot(a, b) + dot(b, center) + dot(center, a));
+    area += abs(sphericalExcessTriangle(center, a, b));
     let edge = atan2(length(cross(a, b)), dot(a, b));
     measures.edges[vertex] = edge;
     perimeter += edge;

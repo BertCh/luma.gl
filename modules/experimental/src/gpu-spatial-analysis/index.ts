@@ -74,6 +74,7 @@ export * from './spatial-join/index';
 export * from './spatial-regionalization/index';
 export * from './spatial-regression/index';
 export * from './spatial-weights/index';
+export * from './study-window/index';
 export * from './track-similarity/index';
 export * from './trajectory-analysis/index';
 export * from './trajectory-encounters/index';
@@ -88,3 +89,4 @@ export {
   GPUParameterBuffer
 } from '../utils/gpu-contributor-utils';
 export type {GPUParameterBufferProps, GPUParameterFormat} from '../utils/gpu-contributor-utils';
+export * from './lon-lat-polygons/index';

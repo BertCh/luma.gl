@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  type GPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance
+} from '../../analysis-core/contracts/spatial-context';
+
 import {validateCapacity} from '../../utils/gpu-contributor-utils';
 import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
 import type {GPURasterMetadata} from '../../gpu-raster/types';
@@ -47,6 +52,12 @@ export function getRasterGridCorners(
 
 /** Per-frame settings of {@link GPUInverseDistanceWeighting}. */
 export type GPUInverseDistanceWeightingSettings = {
+  /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Search radius in position units. `Infinity` searches the whole index domain, except with the
    * `'modified-shepard'` taper, which needs a finite radius.
@@ -106,6 +117,11 @@ export function getGPUInverseDistanceWeightingParameterValues(
   if (taper === 'modified-shepard' && !Number.isFinite(settings.searchRadius)) {
     throw new Error('Inverse distance weighting taper needs a finite searchRadius');
   }
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUInverseDistanceWeighting',
+    settings.spatialContext,
+    settings.searchRadius
+  );
   target.set(getRasterGridCorners('getGPUInverseDistanceWeightingParameterValues', grid), 0);
   target[4] = settings.searchRadius;
   target[5] = settings.power ?? 2;

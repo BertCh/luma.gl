@@ -168,6 +168,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
       'GPULineClipByPolygon',
       'GPUSharedPaths',
       'GPURectangleClip',
+      'GPULonLatPolygonPreparation',
       'GPULinearReferencing',
       'GPULineLocate'
     ],
@@ -331,6 +332,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     operators: [
       'GPUPointDensity',
       'GPUKernelDensity',
+      'GPUStudyWindowPreparation',
       'GPULineDensity',
       'GPULineLengthPerPolygon',
       'GPUInverseDistanceWeighting',

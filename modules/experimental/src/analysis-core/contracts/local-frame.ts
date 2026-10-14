@@ -30,6 +30,11 @@ export type GPULocalFrameProps = {
   sphereRadius?: number;
   /** Frame identity carried by `spatialContext.frame.id`. Defaults to one derived from kind and origin. */
   id?: string;
+  /**
+   * Horizontal datum of the origin and projected positions, copied to spatialContext.datum.
+   * The frame id is unchanged by it.
+   */
+  datum?: string;
 };
 
 /**
@@ -93,6 +98,9 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
   if (!(sphereRadius > 0) || !Number.isFinite(sphereRadius)) {
     throw new Error('createGPULocalFrame sphereRadius must be positive');
   }
+  if (props.datum !== undefined && (typeof props.datum !== 'string' || props.datum.trim() === '')) {
+    throw new Error('createGPULocalFrame datum must be a non-empty string');
+  }
   const equidistant = kind === 'azimuthal-equidistant';
   const transform = equidistant
     ? createAzimuthalEquidistant(originLongitude, originLatitude, sphereRadius)
@@ -103,6 +111,7 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
   const spatialContext: GPUSpatialContext = Object.freeze({
     ...GPU_PLANAR_SPATIAL_CONTEXT,
     units: 'meters',
+    ...(props.datum !== undefined ? {datum: props.datum} : {}),
     frame: Object.freeze({
       id: props.id ?? `${frameKind}(${originLongitude},${originLatitude}${radiusSuffix})`,
       kind: frameKind,

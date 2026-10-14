@@ -4,12 +4,18 @@
 
 import {
   GraphVectorView,
+  createTransientView,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  createFillNode,
+  createPublishNode,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import type {GPUFloat32Positions} from '../../utils/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
@@ -18,13 +24,22 @@ import {
   validateGraphViewsBelongToGraph,
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
+import {
+  validateGPUStatusPort,
+  type GPULonLatPolygonStatusPort
+} from '../../analysis-core/contracts/index';
 import {
   resolveGPURegionSpatialContext,
+  validateGPURegionSecondarySpatialContext,
   type GPURegionMaskOutput,
-  type GPURegionShape
+  type GPURegionShape,
+  type GPURegionSelection
 } from './region-statistics-types';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../../analysis-core/lon-lat-ring-wgsl';
 import {IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 
@@ -41,9 +56,17 @@ export type GPURegionMaskProps = {
   /**
    * Coordinate space of `positions` and `region`. Omitted means native planar. Longitude/latitude
    * is accepted: rectangle and lasso tests are topological, with straight edges in degree space
-   * and no antimeridian handling.
+   * (linear edges only). Prepare polygons that cross ±180 or enclose a pole with
+   * `GPULonLatPolygonPreparation`; optional status counters report unprepared rings.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `region` in position coordinates when declared separately from `spatialContext`.
+   * Must be compatible (datum, coordinate space, metric, units, planar frame), with linear
+   * longitude/latitude edges. Omitted means `spatialContext` describes both inputs.
+   * Screen-space selections cannot declare a region context.
+   */
+  regionSpatialContext?: GPUSpatialContext;
   /** Packed 2D world positions. The topology is compile-time. */
   positions: GPUFloat32Positions;
   /** Rectangle or lasso polygon, optionally in screen space. Shape contents are per-frame. */
@@ -74,6 +97,12 @@ export class GPURegionMask implements GPUCommandNodeProducer {
       this.id,
       props.spatialContext,
       props.region.kind
+    );
+    validateGPURegionSecondarySpatialContext(
+      this.id,
+      props.regionSpatialContext,
+      this.spatialContext,
+      props.region
     );
     const {id} = this;
     const {positions, region, output} = props;
@@ -111,7 +140,12 @@ export class GPURegionMask implements GPUCommandNodeProducer {
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.mask, output.status.overflow],
+      [
+        output.mask,
+        output.status.overflow,
+        output.status.antimeridianUncertainCount,
+        output.status.poleUncertainCount
+      ],
       getRegionInputs(props)
     );
     if (output.mask.buffer === output.status.overflow.buffer) {
@@ -119,7 +153,7 @@ export class GPURegionMask implements GPUCommandNodeProducer {
     }
   }
 
-  /** Returns the overflow node followed by one mask node per nonempty position chunk. */
+  /** Returns optional polygon checks, overflow, then one mask node per nonempty position chunk. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -127,11 +161,24 @@ export class GPURegionMask implements GPUCommandNodeProducer {
     const {positions, region} = props;
     const outputMask = props.output.mask;
     const {overflow} = props.output.status;
-    validateGraphViewsBelongToGraph(id, graph, [outputMask, overflow, ...getRegionInputs(props)]);
+    validateGraphViewsBelongToGraph(id, graph, [
+      outputMask,
+      overflow,
+      props.output.status.antimeridianUncertainCount,
+      props.output.status.poleUncertainCount,
+      ...getRegionInputs(props)
+    ]);
     const isPolygon = region.kind === 'polygon';
     const shape = region.kind === 'rectangle' ? region.bounds : region.vertices;
     const vertexCapacity = region.kind === 'polygon' ? region.vertices.length : 0;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes = getRegionLonLatPolygonCheckNodes(
+      graph,
+      id,
+      'GPURegionMask',
+      this.spatialContext,
+      region,
+      props.output.status
+    );
 
     const overflowBindings: WGSLKernelBinding[] = [
       {name: 'overflow', view: overflow, type: 'u32', access: 'read_write'}
@@ -272,4 +319,87 @@ function getRegionInputs(props: GPURegionMaskProps): (GraphDataView | GraphVecto
     ...(region.kind === 'rectangle' ? [region.bounds] : [region.vertices, region.vertexCount]),
     ...(region.screenTransform ? [region.screenTransform] : [])
   ];
+}
+
+/** Builds optional world-space lasso diagnostics without reading the active vertex count. @internal */
+export function getRegionLonLatPolygonCheckNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  operation: string,
+  spatialContext: GPUSpatialContext,
+  region: GPURegionSelection,
+  status?: GPULonLatPolygonStatusPort
+): GPUCommandNode<Parameters>[] {
+  if (
+    spatialContext.coordinateSpace !== 'longitude-latitude' ||
+    region.kind !== 'polygon' ||
+    region.screenTransform ||
+    !status ||
+    !hasLonLatPolygonStatus(status)
+  ) {
+    return [];
+  }
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+    const view = status[name];
+    if (view)
+      nodes.push(
+        createFillNode(graph, {
+          id: `${id}-clear-${name}`,
+          operation,
+          view,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        })
+      );
+  }
+  const ringOffsets = createTransientView(graph, `${id}-lasso-ring-offsets`, 'uint32', 2);
+  const startOffset = graph.createDataView(ringOffsets.buffer, {format: 'uint32', length: 1});
+  const endOffset = graph.createDataView(ringOffsets.buffer, {
+    format: 'uint32',
+    length: 1,
+    byteOffset: 4
+  });
+  nodes.push(
+    createFillNode(graph, {
+      id: `${id}-lasso-ring-start`,
+      operation,
+      view: startOffset,
+      type: 'u32',
+      value: '0u',
+      componentCount: 1
+    })
+  );
+  // Reuse the bounded publish primitive for [0, min(vertexCount, capacity)]. Its IDs view
+  // supplies only the capacity: without compactIds it is neither bound nor written.
+  const capacity = graph.createDataView(region.vertices.buffer, {
+    format: 'uint32',
+    length: region.vertices.length,
+    byteOffset: region.vertices.byteOffset
+  });
+  nodes.push(
+    createPublishNode(graph, {
+      id: `${id}-lasso-ring-end`,
+      operation,
+      requiredCount: region.vertexCount,
+      output: {
+        ids: capacity,
+        status: {
+          count: endOffset,
+          overflow: createTransientView(graph, `${id}-lasso-check-overflow`, 'uint32', 1)
+        }
+      }
+    })
+  );
+  nodes.push(
+    createLonLatPolygonCheckNode(graph, {
+      id: `${id}-lon-lat-polygon-check-0`,
+      operation,
+      positions: region.vertices,
+      ringOffsets,
+      status
+    })
+  );
+  return nodes;
 }

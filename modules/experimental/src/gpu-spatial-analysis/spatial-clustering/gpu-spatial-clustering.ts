@@ -137,7 +137,7 @@ export type GPUSpatialClusteringProps = {
    * representable values is about `M * 1.2e-7` (UTM northings of about 5e6 have 0.5 m spacing), so
    * an `epsilon` below a few spacings is unreliable. Subtract a local origin from the coordinates
    * before upload (and from `bounds`) to keep the representable spacing far below `epsilon`.
-   * Geographic float32 longitudes carry about 1e-5 degrees (1 m) of spacing at 180 degrees.
+   * See "Precision of longitude/latitude positions" for the 10·Q ≈ 17 m distance warning threshold.
    */
   spatialContext?: GPUSpatialContext;
   /** Packed points, one row per point. Compile-time length; per-frame contents. */

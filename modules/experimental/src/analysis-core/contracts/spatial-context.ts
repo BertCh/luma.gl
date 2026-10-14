@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {log} from '@luma.gl/core';
 import {
   GPU_EARTH_AUTHALIC_RADIUS_METERS,
   GPU_EARTH_MEAN_RADIUS_METERS,
@@ -18,6 +19,9 @@ export type GPUSpatialCoordinateSpace =
 
 /** Metric applied to coordinates, kept separate from their coordinate space. */
 export type GPUSpatialMetric = 'none' | 'native' | 'great-circle' | 'rhumb' | 'ellipsoidal';
+
+/** How polygon and line edges between longitude/latitude vertices are interpreted. */
+export type GPUSpatialEdgeModel = 'linear' | 'great-circle';
 
 /**
  * Units of metric results. `'native'` is meaningful only for a native planar metric; a planar
@@ -38,6 +42,20 @@ export type GPUSpatialContext = {
   units?: GPUSpatialUnit;
   sphereRadius?: number;
   ellipsoid?: GPUSpatialEllipsoid;
+  /**
+   * Longitude/latitude only. Omitted means 'linear' (straight in degrees, RFC 7946).
+   * 'great-circle' means minor great-circle arcs on the context sphere.
+   */
+  edgeModel?: GPUSpatialEdgeModel;
+  /**
+   * Geodetic datum of longitude/latitude positions or of a planar frame's source. Recommended
+   * EPSG geographic codes: 'EPSG:4326' (WGS84), 'EPSG:4269' (NAD83), 'EPSG:4267' (NAD27),
+   * 'EPSG:4258' (ETRS89). Free ids such as 'GCJ-02' and 'BD-09' are allowed.
+   * Absent means undeclared, never defaulted. The library checks declarations where two contexts
+   * meet and never converts; two-input operators check their second side through an optional
+   * `<side>SpatialContext` prop (see `resolveGPUSecondarySpatialContext`).
+   */
+  datum?: string;
   /** Grid family when `coordinateSpace` is `discrete-grid`, for example `h3` or `quadbin`. */
   gridFamily?: string;
   /** Fixed grid resolution when required by an operation. */
@@ -84,6 +102,23 @@ export function validateGPUSpatialContext(id: string, context: GPUSpatialContext
   if (!allowedMetrics[coordinateSpace]?.includes(metric)) {
     // Spatial analysis does not silently reinterpret or reproject coordinates.
     throw new Error(`${id} metric ${metric} is incompatible with ${coordinateSpace}`);
+  }
+  if (context.edgeModel !== undefined) {
+    if (context.edgeModel !== 'linear' && context.edgeModel !== 'great-circle') {
+      throw new Error(`${id} edgeModel must be linear or great-circle`);
+    }
+    if (coordinateSpace !== 'longitude-latitude') {
+      throw new Error(`${id} edgeModel needs a longitude-latitude coordinate space`);
+    }
+    if (metric === 'ellipsoidal') {
+      throw new Error(`${id} ellipsoidal contexts take ellipsoidalEdgeModel, not edgeModel`);
+    }
+  }
+  if (
+    context.datum !== undefined &&
+    (typeof context.datum !== 'string' || context.datum.trim() === '')
+  ) {
+    throw new Error(`${id} datum must be a non-empty string`);
   }
   if (
     metric === 'native' &&
@@ -144,6 +179,8 @@ export type GPUSpatialContextSupport = {
   coordinateSpaces: readonly GPUSpatialCoordinateSpace[];
   /** Accepted metrics. Omitted accepts every metric valid for an accepted coordinate space. */
   metrics?: readonly GPUSpatialMetric[];
+  /** Accepted edge models. Omitted accepts any (point operators). */
+  edgeModels?: readonly GPUSpatialEdgeModel[];
   /**
    * Accepted metrics per coordinate space, narrowing `metrics`. A space without an entry accepts
    * what `metrics` accepts. Failure reads `<id> <space> positions need the <list> metric`.
@@ -175,6 +212,23 @@ export const GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Obje
   coordinateSpaces: Object.freeze(['planar'] as const),
   metrics: Object.freeze(['none', 'native'] as const)
 });
+
+/** Support value for consumers that interpret polygon edges as straight in degrees. */
+export const GPU_LINEAR_EDGE_MODELS = Object.freeze(['linear'] as const);
+
+/** Returns the declared edge model, defaulting to linear (always linear for valid planar contexts). */
+export function getGPUEdgeModel(context: GPUSpatialContext): GPUSpatialEdgeModel {
+  return context.edgeModel ?? 'linear';
+}
+
+/**
+ * Trims and uppercases a datum key, mapping WGS84, WGS 84, EPSG:4326 and EPSG:6326 to EPSG:4326.
+ * No other aliases are applied: a loud mismatch beats a silent pass.
+ */
+export function getGPUDatumKey(datum: string): string {
+  const key = datum.trim().toUpperCase();
+  return ['WGS84', 'WGS 84', 'EPSG:4326', 'EPSG:6326'].includes(key) ? 'EPSG:4326' : key;
+}
 
 /**
  * Validates an operation's spatial context against what it supports and returns the context to use.
@@ -221,6 +275,15 @@ export function resolveGPUSpatialContext(
   if (support.measure === 'area' && frameKind === 'local-azimuthal-equidistant') {
     throw new Error(
       `${id} measures area; project into a lambert-equal-area frame, not azimuthal-equidistant`
+    );
+  }
+  if (
+    support.edgeModels &&
+    resolved.coordinateSpace === 'longitude-latitude' &&
+    !support.edgeModels.includes(getGPUEdgeModel(resolved))
+  ) {
+    throw new Error(
+      `${id} needs ${support.edgeModels.join(' or ')} edges; prepare polygons with GPULonLatPolygonPreparation`
     );
   }
   return resolved;
@@ -356,6 +419,58 @@ export function getGPUEllipsoid(context: GPUSpatialContext): GPUSpatialEllipsoid
 }
 
 /**
+ * Worst-case float32 spacing of a lon/lat position as a ground length in the context's unit:
+ * 2^-16 degrees (|longitude| >= 128) on getGPUSphereRadius (great-circle, rhumb) or the
+ * ellipsoid semi-major axis (ellipsoidal; /1000 for kilometers). 0 for non-lon/lat or metric 'none'.
+ */
+export function getGPULongitudeLatitudeQuantum(context: GPUSpatialContext): number {
+  if (context.coordinateSpace !== 'longitude-latitude') {
+    return 0;
+  }
+  let radius: number;
+  if (context.metric === 'great-circle' || context.metric === 'rhumb') {
+    radius = getGPUSphereRadius(context);
+  } else if (context.metric === 'ellipsoidal') {
+    radius = getGPUEllipsoid(context).semiMajorAxis / (context.units === 'kilometers' ? 1000 : 1);
+  } else {
+    return 0;
+  }
+  return ((2 ** -16 * Math.PI) / 180) * radius;
+}
+
+/** Number of float32 longitude/latitude quanta below which a positive distance is short. */
+export const GPU_SHORT_LONGITUDE_LATITUDE_DISTANCE_FACTOR = 10;
+
+/** Pure: finite distance > 0 and < factor * quantum. */
+export function isGPUShortLongitudeLatitudeDistance(
+  context: GPUSpatialContext,
+  distance: number
+): boolean {
+  const quantum = getGPULongitudeLatitudeQuantum(context);
+  return (
+    quantum > 0 &&
+    Number.isFinite(distance) &&
+    distance > 0 &&
+    distance < GPU_SHORT_LONGITUDE_LATITUDE_DISTANCE_FACTOR * quantum
+  );
+}
+
+/** log.warn once per operation (probe.gl dedups by message). */
+export function warnGPUShortLongitudeLatitudeDistance(
+  operation: string,
+  context: GPUSpatialContext | undefined,
+  distance: number | undefined
+): void {
+  if (
+    context !== undefined &&
+    distance !== undefined &&
+    isGPUShortLongitudeLatitudeDistance(context, distance)
+  ) {
+    log.warn(`${operation} distance is too short for float32 lon/lat; use createGPULocalFrame`)();
+  }
+}
+
+/**
  * Length unit of a context's metric results: `context.units` when declared, else `'native'` for
  * planar coordinates and `'meters'` for geographic metrics. Feeds {@link GPUMeasureDescription}.
  */
@@ -384,8 +499,28 @@ export function getGPUSpatialContextCompatibility(
       reason: `coordinate spaces differ (${source.coordinateSpace} and ${target.coordinateSpace})`
     };
   }
+  if (
+    source.datum !== undefined &&
+    target.datum !== undefined &&
+    getGPUDatumKey(source.datum) !== getGPUDatumKey(target.datum)
+  ) {
+    return {compatible: false, reason: `datums differ (${source.datum} and ${target.datum})`};
+  }
   if (source.metric !== 'none' && target.metric !== 'none' && source.metric !== target.metric) {
     return {compatible: false, reason: `metrics differ (${source.metric} and ${target.metric})`};
+  }
+  if (
+    source.coordinateSpace === 'longitude-latitude' &&
+    target.coordinateSpace === 'longitude-latitude'
+  ) {
+    const sourceEdgeModel = getGPUEdgeModel(source);
+    const targetEdgeModel = getGPUEdgeModel(target);
+    if (sourceEdgeModel !== targetEdgeModel) {
+      return {
+        compatible: false,
+        reason: `edge models differ (${sourceEdgeModel} and ${targetEdgeModel})`
+      };
+    }
   }
   if (
     source.units &&
@@ -430,6 +565,39 @@ export function assertCompatibleGPUSpatialContexts(
   if ('reason' in compatibility) {
     throw new Error(`${id} incompatible spatial contexts: ${compatibility.reason}`);
   }
+}
+
+/**
+ * Resolves the optional context of an operation's second input (its polygon, feature or raster
+ * side), named `<sideName>SpatialContext` after the operation's prop for that input. Omitted returns
+ * `primary`, so one context still describes both inputs. When given, it is validated, checked
+ * against `edgeModels` when it is longitude/latitude, then checked for compatibility with `primary`
+ * (datum, coordinate space, metric, units, frame id). Messages start with
+ * `${id} ${sideName}SpatialContext`.
+ */
+export function resolveGPUSecondarySpatialContext(
+  id: string,
+  sideName: string,
+  context: GPUSpatialContext | undefined,
+  primary: GPUSpatialContext,
+  edgeModels?: readonly GPUSpatialEdgeModel[]
+): GPUSpatialContext {
+  if (context === undefined) {
+    return primary;
+  }
+  const label = `${id} ${sideName}SpatialContext`;
+  validateGPUSpatialContext(label, context);
+  if (
+    edgeModels &&
+    context.coordinateSpace === 'longitude-latitude' &&
+    !edgeModels.includes(getGPUEdgeModel(context))
+  ) {
+    throw new Error(
+      `${label} needs ${edgeModels.join(' or ')} edges; prepare polygons with GPULonLatPolygonPreparation`
+    );
+  }
+  assertCompatibleGPUSpatialContexts(label, context, primary);
+  return context;
 }
 
 /** Planar `'native'` units are undeclared, so they match a planar frame declared in meters. */

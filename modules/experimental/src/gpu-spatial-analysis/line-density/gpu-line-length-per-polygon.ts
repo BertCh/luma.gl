@@ -31,6 +31,9 @@ import {
 } from '../../utils/wgsl-kernel-nodes';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  GPU_LINEAR_EDGE_MODELS,
+  type GPULonLatPolygonStatusPort,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/index';
@@ -47,11 +50,17 @@ import type {
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
 
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../../analysis-core/lon-lat-ring-wgsl';
+
 const OPERATION = 'GPULineLengthPerPolygon';
 
 /** Planar/native, or longitude-latitude with the great-circle metric. */
 const LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  edgeModels: GPU_LINEAR_EDGE_MODELS,
   measure: 'distance'
 });
 
@@ -73,8 +82,11 @@ export type GPULineLengthPerPolygonOutput = {
   /**
    * One-row status scalar: `overflow` receives `1` when any capacity overflowed (candidate pairs,
    * the BVH, or the per-pair crossing bound), in which case lengths can be low, else `0`.
+   * `antimeridianUncertainCount` counts unprepared crossing rings; `poleUncertainCount` counts
+   * uncapped pole rings. Both optional counters are rewritten every lon/lat encoding and left
+   * untouched in planar contexts.
    */
-  status: GPUOverflowStatusPort;
+  status: GPUOverflowStatusPort & GPULonLatPolygonStatusPort;
 };
 
 /**
@@ -107,8 +119,17 @@ export type GPULineLengthPerPolygonProps = GPULineGeometryFields & {
    * Planar/native (default when omitted) or longitude-latitude with the `'great-circle'` metric
    * (positions in degrees, piece lengths in the context's length unit, meters by default). Replaces
    * the former `coordinateSystem` and `radius` props. Other contexts throw at construction.
+   * Edges must be linear. Prepare polygons that cross ±180 or enclose a pole with
+   * `GPULonLatPolygonPreparation`; optional status counters report unprepared rings.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `polygons` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Longitude/latitude must use linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  polygonsSpatialContext?: GPUSpatialContext;
   /**
    * Compile-time capacity of (segment, polygon) bounding-box candidate pairs, at most
    * {@link getGPULineLengthPerPolygonMaximumPairCapacity} (16777216 on a default device). Default
@@ -176,6 +197,13 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       props.spatialContext,
       LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT
     );
+    resolveGPUSecondarySpatialContext(
+      id,
+      'polygons',
+      props.polygonsSpatialContext,
+      this.spatialContext,
+      LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT.edgeModels
+    );
     const spherical = this.spatialContext.coordinateSpace === 'longitude-latitude';
     this.coordinateSystem = spherical ? 'spherical' : 'planar';
     this.radius = getGPUGreatCircleRadius(this.spatialContext) ?? 1;
@@ -238,9 +266,25 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     if (overflow.length < 1) {
       throw new Error(`${id} output.status.overflow must contain one uint32 row`);
     }
+    for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+      const view = status[name];
+      if (view) {
+        validatePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        if (view.length < 1) {
+          throw new Error(`${id} output.status.${name} must contain one uint32 row`);
+        }
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [lengths, weightedLengths, segmentCounts, overflow],
+      [
+        lengths,
+        weightedLengths,
+        segmentCounts,
+        overflow,
+        status.antimeridianUncertainCount,
+        status.poleUncertainCount
+      ],
       [
         props.positions,
         props.lineOffsets,
@@ -253,7 +297,7 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns the segment build, candidate join, ring clip, per-pair finish and sorted sum nodes. */
+  /** Returns optional polygon checks, segment build, candidate join, clip and sorted sum nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -270,7 +314,9 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       output.lengths,
       output.weightedLengths,
       output.segmentCounts,
-      output.status.overflow
+      output.status.overflow,
+      output.status.antimeridianUncertainCount,
+      output.status.poleUncertainCount
     ]);
     validateMaximumCount(
       id,
@@ -286,6 +332,36 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     const rowCount = props.positions.length;
     const lineCount = props.lineOffsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      hasLonLatPolygonStatus(output.status)
+    ) {
+      const status = output.status;
+      for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+        const view = status[name];
+        if (view) {
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-clear-${name}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u',
+              componentCount: 1
+            })
+          );
+        }
+      }
+      nodes.push(
+        createLonLatPolygonCheckNode(graph, {
+          id: `${id}-lon-lat-polygon-check-0`,
+          operation: OPERATION,
+          positions: polygons.positions,
+          ringOffsets: polygons.ringOffsets,
+          status
+        })
+      );
+    }
 
     // One two-vertex segment feature per vertex row; non-segments are NaN so they never match.
     const segmentPositions = createTransientView(

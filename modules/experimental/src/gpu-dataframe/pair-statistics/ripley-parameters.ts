@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validatePairStatisticsBounds} from './pair-statistics-parameters';
+import {
+  validatePairStatisticsBounds,
+  type GPUPairStatisticsBounds
+} from './pair-statistics-parameters';
 
 /** Number of float32 elements in a `GPURipley` parameter buffer. */
 export const GPU_RIPLEY_PARAMETER_LENGTH = 8;
@@ -25,7 +28,7 @@ export const GPU_RIPLEY_EDGE_CORRECTION = {
   none: 0,
   /** Border (reduced-sample) correction. */
   border: 1,
-  /** Ripley (1977) isotropic correction for a rectangular window. */
+  /** Ripley (1977) isotropic correction for rectangle or polygon windows. */
   isotropic: 2
 } as const;
 
@@ -41,8 +44,9 @@ export type GPURipleySettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` observation window. Rows outside it, or with a non-finite
    * coordinate, are excluded. Its area is the study area of the estimators.
+   * Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots.
    */
-  bounds: readonly [number, number, number, number];
+  bounds: GPUPairStatisticsBounds;
   /**
    * Largest radius: radius `b` is `maximumDistance * (b + 1) / radiusCount`. Keep it well below
    * the shorter window side (spatstat's default is a quarter): K is unbiased at any radius, but
@@ -85,7 +89,7 @@ export function getGPURipleyParameterValues(
     throw new Error('GPURipley seed must be a uint32');
   }
   target.set([
-    ...settings.bounds,
+    ...(settings.bounds === 'study-window' ? [NaN, NaN, NaN, NaN] : settings.bounds),
     settings.maximumDistance,
     GPU_RIPLEY_EDGE_CORRECTION[edgeCorrection],
     0,

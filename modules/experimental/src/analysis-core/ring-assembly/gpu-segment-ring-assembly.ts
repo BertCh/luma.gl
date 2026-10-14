@@ -196,8 +196,10 @@ export type GPUSegmentRingAssemblyProps = {
    * context (metric `'none'`) scales x differences by `cos(y)` when comparing turn angles at
    * shared vertices (degrees), so a turn is judged on the ground and not in stretched degrees;
    * the factor is clamped at 0.01 near the poles. This replaces the former `geographic` flag,
-   * which defaulted to true: omitting the context is now planar. Antimeridian-crossing rings are
-   * not unwrapped. Only turn comparison is affected; `vertexTolerance` stays in position units.
+   * which defaulted to true: omitting the context is now planar. The output context preserves the
+   * input `edgeModel` for longitude/latitude; an omitted model stays omitted. Prepare global or
+   * antimeridian-crossing rings with `GPULonLatPolygonPreparation` before polygon consumers.
+   * Only turn comparison is affected; `vertexTolerance` stays in position units.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -255,14 +257,18 @@ export type GPUSegmentRingAssemblyProps = {
  *
  * Limits: matching is geometric, so shared vertices must agree within the tolerance (exact for
  * Quadbin, within f32 round-off for H3); rings that span the antimeridian keep the longitudes of
- * the input; area uses f32 arithmetic relative to each ring's first vertex.
+ * the input. Prepare global or antimeridian-crossing rings with `GPULonLatPolygonPreparation`
+ * before polygon consumers. Area uses f32 arithmetic relative to each ring's first vertex.
  */
 export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSegmentRingAssemblyProps;
-  /** Resolved spatial context: planar, or longitude-latitude for cos(latitude) turn comparison. */
+  /**
+   * Resolved input and output context: planar, or longitude/latitude for cos(latitude) turn
+   * comparison. Preserves the input longitude/latitude `edgeModel`, including its omission.
+   */
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUSegmentRingAssemblyProps) {

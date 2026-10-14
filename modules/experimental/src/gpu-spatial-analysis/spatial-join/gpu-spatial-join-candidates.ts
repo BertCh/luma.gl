@@ -37,6 +37,7 @@ import {type GPUSpatialJoinGeometry} from './spatial-join-types';
 
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {GPUCompactPairPort} from '../../analysis-core/contracts/index';
@@ -74,6 +75,12 @@ export type GPUSpatialJoinCandidatesProps = {
    * here is planar. For great-circle candidates use `GPUSpatialPredicateJoin` with `dwithin`.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `right` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  rightSpatialContext?: GPUSpatialContext;
   /** Left features. Their bounding boxes probe the right-hand tree. */
   left: GPUSpatialJoinGeometry;
   /** Right features, indexed by a BVH unless `prepared` supplies one. */
@@ -132,6 +139,7 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    resolveGPUSecondarySpatialContext(id, 'right', props.rightSpatialContext, this.spatialContext);
     validateSpatialJoinGeometry(id, 'left', props.left);
     validateSpatialJoinGeometry(id, 'right', props.right);
     this.leftCount = getSpatialJoinFeatureCount(props.left);

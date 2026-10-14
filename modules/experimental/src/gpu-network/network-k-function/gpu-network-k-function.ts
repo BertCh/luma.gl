@@ -157,13 +157,21 @@ export type GPUNetworkKFunctionProps = {
    * directions of a road, in the context's length unit.
    */
   topology: GPUNetworkTopology & {nodePositions: GraphDataView<'float32x2'>};
-  /** Optional one-row maximum snap distance in the context's length unit. Events farther from every edge are excluded. */
+  /**
+   * Optional one-row maximum snap distance in the context's length unit. Events farther from every edge are excluded.
+   * On longitude/latitude this distance arrives as a GPU view, so no short-distance warning is possible;
+   * below about 17 m use createGPULocalFrame (see Precision of longitude/latitude positions).
+   */
   maximumSnapDistance?: GraphDataView<'float32'>;
   /** Optional compile-time candidate capacity of `GPUNetworkSnapping`. Requires `maximumSnapDistance`. */
   candidateCapacity?: number;
   /** Compile-time. Morton-sort edges before the BVH build of the snapping candidate search. */
   spatialSort?: boolean;
-  /** One-row largest distance `d_max` in the context's length unit: the distance bands span `[0, d_max]`. */
+  /**
+   * One-row largest distance `d_max` in the context's length unit: the distance bands span `[0, d_max]`.
+   * On longitude/latitude this distance arrives as a GPU view, so no short-distance warning is possible;
+   * below about 17 m use createGPULocalFrame (see Precision of longitude/latitude positions).
+   */
   maximumDistance: GraphDataView<'float32'>;
   /**
    * One-row total length `L` in the context's length unit with every road counted once, that is, half of the sum

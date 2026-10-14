@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  assertCompatibleGPUVerticalDatums,
+  type GPUTerrainHeightReference
+} from '../../analysis-core/contracts/vertical-datum';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -78,7 +82,10 @@ export const GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH = 10;
 export type GPUTerrainViewshedSettings = {
   /** Observer `[column, row]` in pixel-center index space; fractional values allowed. */
   observer: readonly [number, number];
-  /** Eye height above the terrain in elevation units. Defaults to 1.7. */
+  /**
+   * Eye height above terrain, or absolute eye elevation with `heightReference: 'absolute'`.
+   * In elevation-band units. Defaults to 1.7; set explicitly in absolute mode.
+   */
   observerHeight?: number;
   /** Height added to every target cell. Defaults to 0. */
   targetHeight?: number;
@@ -92,6 +99,8 @@ export type GPUTerrainViewshedSettings = {
  * Packs viewshed settings into
  * `[observerColumn, observerRow, observerHeight, targetHeight, maximumDistance, cellSizeX, cellSizeY,
  * curvatureCoefficient, northEdge, southEdge]`.
+ * `observerHeight` is an absolute eye elevation when the contributor uses `heightReference: 'absolute'`;
+ * otherwise it is added to bilinear ground. `targetHeight` is always added to target ground.
  * Cell sizes and row edges always come from `grid`, in world units (meters or degrees), regardless
  * of cellSizeMode. Edges are the top of row 0 and bottom of the last row, including point-pixel
  * half-row offsets. The kernel converts cell sizes to ground meters according to cellSizeMode.
@@ -245,6 +254,16 @@ export type GPUTerrainViewshedProps = {
   cellSizeMode?: GPURasterCellSizeMode;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
+  /**
+   * Compile-time eye reference. `'ground'` (default) adds the observer height to bilinear ground.
+   * `'absolute'` uses the observer height itself in the elevation band's units and vertical datum,
+   * without sampling ground under the observer; no-data ground is allowed, but the eye must be
+   * inside the grid. Set the height explicitly in absolute mode: the 1.7 default is meaningless.
+   * An eye below ground hides most targets. Targets always remain ground-relative.
+   */
+  heightReference?: GPUTerrainHeightReference;
+  /** Vertical datum of absolute observer heights; requires `heightReference: 'absolute'`. */
+  observerVerticalDatum?: string;
   /** Per-frame parameters with at least 10 float32 values, see {@link getGPUTerrainViewshedParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned outputs. */
@@ -278,15 +297,15 @@ export type GPUTerrainViewshedProps = {
  *
  * Every target cell marches the straight line to the observer at one-pixel steps with bilinear
  * elevation samples and is hidden if any sample rises above the observer-to-target sight line.
- * Precedence: no data (observer outside the grid or invalid, or target invalid), out of range,
- * then visibility. The cost is O(width * height * max(width, height)) samples for an unlimited
+ * Precedence: no data (observer outside the grid, invalid observer ground in ground mode, or
+ * target invalid), out of range, then visibility. The cost is O(width * height * max(width, height)) samples for an unlimited
  * radius: crop tiles of 1024^2 and larger around the observer or set `maximumDistance` to avoid GPU
  * watchdog timeouts, or use `traversal: 'pyramid'`.
  *
  * With `toleranceParameters` (mt-image `integrity/viewshed.ts` uses 2 m plus 1 m per km), targets within the
  * band of the sight line get the code `marginal` and the last stretch before the target can be
  * ignored. With neither `traversal: 'pyramid'` nor `toleranceParameters` the generated kernel is the
- * original one.
+ * original one in ground mode.
  */
 export class GPUTerrainViewshed implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -300,6 +319,21 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-viewshed';
     this.props = props;
     const {id} = this;
+    if (
+      props.heightReference !== undefined &&
+      props.heightReference !== 'ground' &&
+      props.heightReference !== 'absolute'
+    ) {
+      throw new Error(`${id} heightReference must be 'ground' or 'absolute'`);
+    }
+    if (props.observerVerticalDatum !== undefined && props.heightReference !== 'absolute') {
+      throw new Error(`${id} observerVerticalDatum needs heightReference absolute`);
+    }
+    assertCompatibleGPUVerticalDatums(
+      id,
+      props.observerVerticalDatum,
+      props.elevation.verticalDatum
+    );
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
@@ -396,7 +430,7 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-viewshed`,
           operation: 'GPUTerrainViewshed',
-          variant: `line-of-sight${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
+          variant: `line-of-sight${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}${props.heightReference === 'absolute' ? '-absolute' : ''}`,
           bindings: [
             {
               name: 'elevationValues',
@@ -458,12 +492,11 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let observerInside = isFiniteValue(observer.x) && isFiniteValue(observer.y) &&
     observer.x >= 0.0 && observer.y >= 0.0 &&
     observer.x <= f32(WIDTH - 1u) && observer.y <= f32(HEIGHT - 1u);
-  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));
-  if (!observerInside || observerSample.y == 0.0 || !isValidPixel(column, row)) {
+${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  if (!observerInside || ${props.heightReference === 'absolute' ? '' : 'observerSample.y == 0.0 || '}!isValidPixel(column, row)) {
     visibilityValues[visibilityValuesOffset + index] = NO_DATA;
     return;
   }
-  let observerElevation = observerSample.x + observerHeight;
+  let observerElevation = ${props.heightReference === 'absolute' ? 'observerHeight' : 'observerSample.x + observerHeight'};
   let delta = vec2<f32>(f32(column), f32(row)) - observer;
   let targetDistance = length(delta * cellSize);
   if (maxDistance > 0.0 && targetDistance > maxDistance) {
@@ -568,7 +601,7 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-viewshed`,
         operation: 'GPUTerrainViewshed',
-        variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'tolerance'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
+        variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'tolerance'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}${props.heightReference === 'absolute' ? '-absolute' : ''}`,
         bindings,
         invocationCount: width * height,
         declarations:
@@ -601,13 +634,12 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let observerInside = isFiniteValue(observer.x) && isFiniteValue(observer.y) &&
     observer.x >= 0.0 && observer.y >= 0.0 &&
     observer.x <= f32(WIDTH - 1u) && observer.y <= f32(HEIGHT - 1u);
-  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));
-  if (!observerInside || observerSample.y == 0.0 || !isValidPixel(column, row)) {
+${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  if (!observerInside || ${props.heightReference === 'absolute' ? '' : 'observerSample.y == 0.0 || '}!isValidPixel(column, row)) {
     visibilityValues[visibilityValuesOffset + index] = NO_DATA;
     return;
   }
   let result = traceSightLine(
-    observer, vec2<f32>(f32(column), f32(row)), observerSample.x + observerHeight,
+    observer, vec2<f32>(f32(column), f32(row)), ${props.heightReference === 'absolute' ? 'observerHeight' : 'observerSample.x + observerHeight'},
     getElevation(column, row) + targetHeight, cellSize, curvature, maxDistance, toleranceValues);
   visibilityValues[visibilityValuesOffset + index] = result.code;`
       })

@@ -83,9 +83,9 @@ export type GPUDotDensityMask = {
 /** Caller-owned outputs shared by {@link GPUDotDensity} and {@link GPURandomPointsInPolygon}. */
 export type GPUDotDensityOutput = {
   /**
-   * Dot positions, capacity rows. Rows past `dots.count` are NaN. A dot of a feature that failed to
-   * triangulate or has zero area, or whose mask attempts all failed, is NaN too (and counted in
-   * `status.failedCount`), so it occupies its slot but is not drawn.
+   * Dot positions, capacity rows. Rows past `dots.count` are NaN. Zero-area features get no slots.
+   * A dot of a feature that failed to triangulate, or whose mask attempts all failed, is NaN
+   * (and counted in `status.failedCount`), so it occupies its slot but is not drawn.
    */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -105,7 +105,8 @@ export type GPUDotDensityOutput = {
     /**
      * Optional one-row count of dots that could not be placed: dots of features whose polygons
      * failed to triangulate (or overflowed the triangulation work budget) or whose area is zero or
-     * not finite, plus dots whose mask attempts all failed. Zero means every dot was placed.
+     * not finite, plus dots whose mask attempts all failed. Zero-area features contribute their
+     * clamped requested count here, but consume no output slots. Zero means every dot was placed.
      */
     failedCount?: GraphDataView<'uint32'>;
   };
@@ -233,8 +234,8 @@ function getDotSamplingInputs(config: DotSamplingConfig): GraphDataView[] {
  * Builds the shared dot sampling nodes:
  * `triangulation` (GPUPolygonTriangulation) -> `triangle-areas` -> `feature-triangles` (triangle
  * range and validity per feature) -> feature area sums -> `cumulative-areas` (per-feature inclusive
- * prefix of fixed-point areas) -> `counts` (dots per slot) -> slot prefix scan -> `total` ->
- * `locate` (slot, rank and triangle range per dot, feature IDs, categories) -> `clear-failed` ->
+ * prefix of fixed-point areas) -> `clear-failed` -> `counts` (dots per slot) -> slot prefix scan ->
+ * `total` -> `locate` (slot, rank and triangle range per dot, feature IDs, categories) ->
  * `sample` (area-weighted triangle, then uniform point in the triangle) -> `publish`.
  *
  * @internal
@@ -282,11 +283,12 @@ export function getDotSamplingNodes<Parameters>(
     'uint32',
     Math.max(3 * triangleCount, 1)
   );
-  const polygonValid = createTransientView(
+  const polygonValid = createTransientView(graph, `${id}-polygon-valid`, 'uint32', polygonCount);
+  const polygonTriangleOffsets = createTransientView(
     graph,
-    `${id}-polygon-valid`,
+    `${id}-polygon-triangle-offsets`,
     'uint32',
-    Math.max(polygonCount, 1)
+    polygonCount + 1
   );
   const triangleAreas = createTransientView(
     graph,
@@ -326,7 +328,11 @@ export function getDotSamplingNodes<Parameters>(
       featureOffsets: config.featureOffsets,
       polygonOffsets: config.polygonOffsets,
       ringOffsets: config.ringOffsets,
-      output: {indices: triangleIndices, valid: polygonValid}
+      output: {
+        indices: triangleIndices,
+        valid: polygonValid,
+        triangleOffsets: polygonTriangleOffsets
+      }
     }).getCommandNodes(graph)
   );
 
@@ -339,19 +345,26 @@ export function getDotSamplingNodes<Parameters>(
       bindings: [
         {name: 'polygonPositions', view: config.positions, type: 'f32', access: 'read'},
         {name: 'triangleIndices', view: triangleIndices, type: 'u32', access: 'read'},
+        {name: 'polygonTriangleOffsets', view: polygonTriangleOffsets, type: 'u32', access: 'read'},
         {name: 'triangleAreas', view: triangleAreas, type: 'f32', access: 'read_write'}
       ],
       invocationCount: Math.max(triangleCount, 1),
       declarations: /* wgsl */ `
-const TRIANGLE_COUNT: u32 = ${triangleCount}u;
 fn readVertex(vertex: u32) -> vec2<f32> {
   return vec2<f32>(polygonPositions[polygonPositionsOffset + 2u * vertex], polygonPositions[polygonPositionsOffset + 2u * vertex + 1u]);
 }`,
       body: /* wgsl */ `
   var area = 0.0;
-  if (index < TRIANGLE_COUNT) {
+  if (index < polygonTriangleOffsets[polygonTriangleOffsetsOffset + ${polygonCount}u]) {
     let base = triangleIndicesOffset + 3u * index;
-    let first = readVertex(triangleIndices[base]);
+    let firstIndex = triangleIndices[base];
+    let secondIndex = triangleIndices[base + 1u];
+    let thirdIndex = triangleIndices[base + 2u];
+    if (firstIndex == secondIndex && firstIndex == thirdIndex) {
+      triangleAreas[triangleAreasOffset + index] = 0.0;
+      return;
+    }
+    let first = readVertex(firstIndex);
     // Edge vectors from one vertex keep the cross product accurate far from the origin.
     let edgeOne = readVertex(triangleIndices[base + 1u]) - first;
     let edgeTwo = readVertex(triangleIndices[base + 2u]) - first;
@@ -362,8 +375,8 @@ fn readVertex(vertex: u32) -> vec2<f32> {
   );
 
   // 3. Triangle range [offsets[f], offsets[f + 1]) of every feature and whether all of its polygons
-  // triangulated. The slice of polygon p starts at triangle ringOffsets[polygonOffsets[p]] +
-  // 2 * polygonOffsets[p] - 4 * p (the index prefix of GPUPolygonTriangulation divided by 3).
+  // triangulated. GPU-computed offsets exclude degenerate rings and empty polygons, preserving
+  // the same area-reduction order as the geometry with those entries removed.
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-feature-triangles`,
@@ -371,8 +384,7 @@ fn readVertex(vertex: u32) -> vec2<f32> {
       variant: 'feature-triangles',
       bindings: [
         {name: 'featureOffsets', view: config.featureOffsets, type: 'u32', access: 'read'},
-        {name: 'polygonOffsets', view: config.polygonOffsets, type: 'u32', access: 'read'},
-        {name: 'ringOffsets', view: config.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'polygonTriangleOffsets', view: polygonTriangleOffsets, type: 'u32', access: 'read'},
         {name: 'polygonValid', view: polygonValid, type: 'u32', access: 'read'},
         {
           name: 'featureTriangleOffsets',
@@ -388,8 +400,7 @@ const FEATURE_COUNT: u32 = ${featureCount}u;
 const POLYGON_COUNT: u32 = ${polygonCount}u;
 const TRIANGLE_COUNT: u32 = ${triangleCount}u;
 fn getTriangleStart(polygon: u32) -> u32 {
-  let ringPrefix = polygonOffsets[polygonOffsetsOffset + polygon];
-  return min(ringOffsets[ringOffsetsOffset + ringPrefix] + 2u * ringPrefix - 4u * polygon, TRIANGLE_COUNT);
+  return min(polygonTriangleOffsets[polygonTriangleOffsetsOffset + polygon], TRIANGLE_COUNT);
 }`,
       body: /* wgsl */ `
   let firstPolygon = min(featureOffsets[featureOffsetsOffset + index], POLYGON_COUNT);
@@ -452,6 +463,17 @@ fn getTriangleStart(polygon: u32) -> u32 {
     })
   );
 
+  nodes.push(
+    createFillNode<Parameters>(graph, {
+      id: `${id}-clear-failed`,
+      operation,
+      view: failedCount,
+      type: 'u32',
+      value: '0u',
+      componentCount: 1
+    })
+  );
+
   // 7. Dots per slot: ceil(value * dotsPerUnit - u) (dot density) or the integer count.
   nodes.push(
     createFillNode<Parameters>(graph, {
@@ -483,6 +505,8 @@ fn getTriangleStart(polygon: u32) -> u32 {
       variant: 'counts',
       bindings: [
         sourceBinding,
+        {name: 'featureAreas', view: featureAreas, type: 'f32', access: 'read'},
+        {name: 'failed', view: failedCount, type: 'atomic<u32>', access: 'read_write'},
         {
           name: 'parameters',
           view: config.parameters,
@@ -505,7 +529,8 @@ fn getTriangleStart(polygon: u32) -> u32 {
       invocationCount: slotCount,
       declarations: `${PHILOX_WGSL}
 ${IS_NAN_BITS_WGSL}
-const SLOT_LIMIT: u32 = ${slotLimit}u;`,
+const SLOT_LIMIT: u32 = ${slotLimit}u;
+const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
       body:
         config.source.kind === 'values'
           ? /* wgsl */ `
@@ -530,6 +555,10 @@ const SLOT_LIMIT: u32 = ${slotLimit}u;`,
       }
     }
   }
+  if (featureAreas[featureAreasOffset + index / CATEGORY_COUNT] == 0.0) {
+    atomicAdd(&failed[failedOffset], dots);
+    dots = 0u;
+  }
   slotCounts[slotCountsOffset + index] = dots;
   if (clamped) {
     clampFlag[clampFlagOffset] = 1u;
@@ -540,6 +569,10 @@ const SLOT_LIMIT: u32 = ${slotLimit}u;`,
   if (dots > SLOT_LIMIT) {
     dots = SLOT_LIMIT;
     clampFlag[clampFlagOffset] = 1u;
+  }
+  if (featureAreas[featureAreasOffset + index / CATEGORY_COUNT] == 0.0) {
+    atomicAdd(&failed[failedOffset], dots);
+    dots = 0u;
   }
   slotCounts[slotCountsOffset + index] = dots;`
     })
@@ -635,16 +668,6 @@ const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
   );
 
   // 10. Area-weighted triangle, then a uniform point inside it.
-  nodes.push(
-    createFillNode<Parameters>(graph, {
-      id: `${id}-clear-failed`,
-      operation,
-      view: failedCount,
-      type: 'u32',
-      value: '0u',
-      componentCount: 1
-    })
-  );
   const sampleBindings: WGSLKernelBinding[] = [
     {
       name: 'polygonPositions',

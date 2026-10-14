@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {GPUCalendarBuckets} from '../../gpu-dataframe/calendar-buckets/index';
+import {
+  GPUCalendarBuckets,
+  type GPUCalendarBucketsTimeZone
+} from '../../gpu-dataframe/calendar-buckets/index';
 import {GPUColorScale} from '../../gpu-dataframe/column-classification/index';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import type {
@@ -234,6 +237,11 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   mask?: GraphDataView<'uint32'>;
   /** Optional per-event UTC offset in minutes. */
   utcOffsets?: GraphDataView<'sint32'>;
+  /**
+   * Time zone transition table, mutually exclusive with `utcOffsets`. With an `'hour'` step,
+   * local-time slices on transition days are 0 h or 2 h long, so use UTC for hourly cubes.
+   */
+  timeZone?: GPUCalendarBucketsTimeZone;
   /** `getGPUCalendarBucketsParameterValues` view (`sint32`). */
   calendarParameters: GraphDataView<'sint32'>;
   /** Time slices of the cube. */
@@ -335,6 +343,11 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpaceTimeHotSpotsRecipeProps
 ): GPUSpaceTimeHotSpotsRecipeResult {
+  assertRecipe(
+    ID,
+    props.utcOffsets === undefined || props.timeZone === undefined,
+    'pass utcOffsets or timeZone, not both'
+  );
   const id = props.id ?? 'space-time-hot-spots';
   const builder = new RecipeBuilder(graph);
   const outputOverrides = props.outputs ?? {};
@@ -416,6 +429,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       timestamps: props.timestamps,
       mask: props.mask,
       utcOffsets: props.utcOffsets,
+      timeZone: props.timeZone,
       parameters: props.calendarParameters,
       output: {
         year: calendarYear,

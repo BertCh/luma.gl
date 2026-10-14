@@ -9,6 +9,8 @@ import {GPUClassBreaks, GPUColorScale} from '../../gpu-dataframe/column-classifi
 import type {GPUClassBreaksProps} from '../../gpu-dataframe/column-classification/index';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  GPU_LINEAR_EDGE_MODELS,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
@@ -25,6 +27,7 @@ import {
   type GPUPointInPolygonBoundaryRule
 } from '../spatial-join/gpu-point-in-polygon-join';
 import {GPUZonalStatistics} from '../zonal-statistics/index';
+import {GPULonLatPolygonPreparation} from '../lon-lat-polygons';
 import {
   assertRecipe,
   getOrCreateView,
@@ -107,11 +110,25 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
    * Coordinate context of the points and polygons. Omitted means native planar. The mapped
    * statistics (count, sum, mean, minimum, maximum) are topological, so a `longitude-latitude`
    * context is accepted: containment is tested with straight polygon edges in degrees (not
-   * geodesics) and polygons crossing the antimeridian must be split. The recipe maps no area
+   * geodesics). Set `prepare: true` or prepare with `GPULonLatPolygonPreparation` for
+   * polygons crossing the antimeridian or great-circle edges. The recipe maps no area
    * statistic (no density), so no spherical area is needed. The resolved context is returned as
    * `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `polygons` declared separately; must match `spatialContext` in datum, coordinate
+   * space, metric, units and planar frame. Omitted means one context describes both inputs.
+   * Longitude/latitude needs linear edges unless `prepare` is true: this context feeds preparation,
+   * then prepared edges are compared with the primary context resolved to linear edges.
+   */
+  polygonsSpatialContext?: GPUSpatialContext;
+  /** Prepare longitude/latitude polygons on the GPU before containment. Defaults to false. */
+  prepare?: boolean;
+  /** Maximum prepared vertices; required with `prepare: true`. */
+  preparedPositionCapacity?: number;
+  /** Per-frame getGPULonLatPolygonPreparationParameterValues view; required with preparation. */
+  preparationParameters?: GraphDataView<'float32'>;
   /** Points in the coordinates of `spatialContext` (planar unless declared otherwise). */
   points: GPUPointGeometryPort;
   /** Per-point values. Required unless `statistic` is `'count'`. */
@@ -126,7 +143,7 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addPointsInPolygonsChoroplethRecipe}. */
 export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
-  /** Resolved coordinate context of the points and polygons. */
+  /** Resolved coordinate context; prepared polygon edges are linear. */
   spatialContext: GPUSpatialContext;
   /** Number of polygon features, the row count of every per-feature output. */
   featureCount: number;
@@ -157,6 +174,9 @@ export type GPUPointsInPolygonsChoroplethRecipeResult = GPURecipeResult & {
  * Points-in-polygons choropleth recipe: points to a per-polygon statistic to class breaks to
  * colors.
  *
+ * With `prepare: true`, `GPULonLatPolygonPreparation` precedes containment, preserving feature
+ * rows and publishing `polygon-preparation` diagnostics in `status.stages`.
+ *
  * Chain: `GPUZonalStatistics` (or `GPUPointInPolygonJoin` -> dense `GPUGroupStatistics`) ->
  * `GPUClassBreaks` -> `GPUColorScale`. Features with no points keep NaN (mean, minimum, maximum)
  * or 0 (count, sum); NaN rows are no-data in the color scale and are skipped by the class breaks.
@@ -174,17 +194,102 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
   props: GPUPointsInPolygonsChoroplethRecipeProps
 ): GPUPointsInPolygonsChoroplethRecipeResult {
   const id = props.id ?? 'choropleth-recipe';
-  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+  let spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+  if (!props.prepare) {
+    resolveGPUSecondarySpatialContext(
+      id,
+      'polygons',
+      props.polygonsSpatialContext,
+      spatialContext,
+      GPU_LINEAR_EDGE_MODELS
+    );
+  }
+  if (props.prepare) {
+    if (spatialContext.coordinateSpace !== 'longitude-latitude') {
+      throw new Error(`${id} prepare needs a longitude-latitude spatialContext`);
+    }
+    if (props.preparedPositionCapacity === undefined) {
+      throw new Error(`${id} prepare needs preparedPositionCapacity`);
+    }
+    if (!Number.isInteger(props.preparedPositionCapacity) || props.preparedPositionCapacity < 1) {
+      throw new Error(`${id} preparedPositionCapacity must be a positive integer`);
+    }
+    if (!props.preparationParameters) {
+      throw new Error(`${id} prepare needs preparationParameters`);
+    }
+  }
+
   const statistic = props.statistic ?? 'count';
   const backend = props.backend ?? 'zonal';
   const providedOutputs = props.outputs ?? {};
   const {polygons, points} = props;
   // Rows are features: feature source IDs never index the outputs.
-  const polygonRows = {...polygons, sourceIds: undefined};
+  let polygonRows = {...polygons, sourceIds: undefined};
   const featureCount = polygons.featureOffsets.length - 1;
   assertRecipe(ID, featureCount >= 1, 'needs at least one feature');
   assertRecipe(ID, statistic === 'count' || props.values, `statistic ${statistic} needs values`);
   const builder = new RecipeBuilder(graph);
+  const preparationStages: Array<GPURecipeStatusPort['stages'][number]> = [];
+  if (props.prepare) {
+    const prepared = {
+      positions: getOrCreateView(
+        graph,
+        `${id}-prepare-positions`,
+        'float32x2',
+        props.preparedPositionCapacity!
+      ),
+      featureOffsets: getOrCreateView(
+        graph,
+        `${id}-prepare-features`,
+        'uint32',
+        polygonRows.featureOffsets.length
+      ),
+      polygonOffsets: getOrCreateView(
+        graph,
+        `${id}-prepare-polygons`,
+        'uint32',
+        2 * polygonRows.polygonOffsets.length - 1
+      ),
+      ringOffsets: getOrCreateView(
+        graph,
+        `${id}-prepare-rings`,
+        'uint32',
+        2 * polygonRows.ringOffsets.length - 1
+      ),
+      status: {
+        overflow: getOrCreateView(graph, `${id}-prepare-overflow`, 'uint32', 1),
+        requiredCount: getOrCreateView(graph, `${id}-prepare-required-count`, 'uint32', 1),
+        invalidCount: getOrCreateView(graph, `${id}-prepare-invalid-count`, 'uint32', 1),
+        approximation: getOrCreateView(graph, `${id}-prepare-approximation`, 'uint32', 1)
+      }
+    };
+    const preparation = builder.add(
+      new GPULonLatPolygonPreparation({
+        ...polygonRows,
+        id: `${id}-prepare`,
+        spatialContext: props.polygonsSpatialContext ?? spatialContext,
+        parameters: props.preparationParameters!,
+        output: prepared
+      })
+    );
+    if (props.polygonsSpatialContext !== undefined) {
+      resolveGPUSecondarySpatialContext(
+        id,
+        'polygons',
+        preparation.spatialContext,
+        spatialContext.coordinateSpace === 'longitude-latitude'
+          ? {...spatialContext, edgeModel: 'linear'}
+          : spatialContext,
+        GPU_LINEAR_EDGE_MODELS
+      );
+    }
+    polygonRows = {...polygonRows, ...prepared};
+    spatialContext =
+      props.polygonsSpatialContext === undefined
+        ? preparation.spatialContext
+        : {...spatialContext, edgeModel: 'linear'};
+    preparationStages.push({stage: 'polygon-preparation', status: prepared.status});
+  }
   const counts = getOrCreateView(
     graph,
     `${id}-counts`,
@@ -235,7 +340,7 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
     builder.add(
       new GPUZonalStatistics({
         id: `${id}-zonal`,
-        spatialContext,
+        spatialContext: getPointInPolygonContainmentContext(spatialContext),
         features: polygonRows,
         positions: points.positions,
         values: statistic === 'count' ? undefined : props.values,
@@ -326,6 +431,7 @@ export function addPointsInPolygonsChoroplethRecipe<Parameters>(
             ]
     }
   };
+  result.status.stages = [...preparationStages, ...result.status.stages];
   const {color} = props;
   if (color) {
     const providedColorOutputs = providedOutputs.color ?? {};

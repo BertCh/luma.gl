@@ -4,6 +4,7 @@
 
 import {
   resolveGPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
@@ -278,6 +279,11 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
       this.maximumDistance = geodesicRadius * maximumAngle * (1 - 1e-6);
       this.geodesic = {radius: geodesicRadius, maximumDistance: this.maximumDistance, wrapColumns};
     }
+    warnGPUShortLongitudeLatitudeDistance(
+      'GPUTrajectoryEncounters',
+      this.spatialContext,
+      this.maximumDistance
+    );
     this.columns = Math.max(
       1,
       Math.floor((Math.fround(maxX) - Math.fround(minX)) / props.cellSize)

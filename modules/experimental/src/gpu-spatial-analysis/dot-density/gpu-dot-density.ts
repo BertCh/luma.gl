@@ -90,12 +90,13 @@ export type GPUDotDensityProps = GPUPolygonGeometryFields & {
  * `(1 - w)^maximumAttempts` for a mean weight `w` over the feature.
  *
  * Dots are ordered by slot (feature, then category) and by rank within a slot, with offsets from an
- * exclusive prefix scan. A dot that cannot be placed keeps its slot with a NaN position and is
- * counted in `output.failedCount`: that happens when one of the feature's polygons failed to
- * triangulate (self-intersecting rings, a shell with fewer than three vertices, or the
- * triangulation work budget exceeded: the whole feature is then reported, not just the bad
- * polygon), when the feature has zero or non-finite area, and when all mask attempts miss. A
- * feature with no requested dots reports nothing.
+ * exclusive prefix scan. Empty polygons and degenerate rings are skipped on the GPU using
+ * {@link GPUPolygonTriangulation}'s exact first-vertex fan rule. A degenerate shell makes its whole
+ * polygon empty. Features with zero total area get zero slots and report their clamped requested
+ * counts in `output.status.failedCount`. Other placement failures keep a NaN slot and increment
+ * that counter: untriangulable polygons, exceeded work budgets, non-finite areas and exhausted
+ * mask attempts. A feature with no requested dots reports nothing. Removing degenerate geometry
+ * while retaining feature rows leaves triangle selection and Philox draws unchanged.
  *
  * Coordinates: positions are sampled uniformly in coordinate space, so the context must be
  * planar/native (`spatialContext`); longitude/latitude throws because dots would be uniform in

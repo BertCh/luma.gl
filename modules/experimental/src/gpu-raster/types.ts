@@ -28,6 +28,14 @@ type GPURasterBandMetadata<Format extends GPURasterScalarFormat> = {
   scale?: number;
   /** Explicit source-domain calibration offset. Defaults to zero. */
   offset?: number;
+  /**
+   * Vertical datum of height values: `'ellipsoidal'` (`GPU_ELLIPSOIDAL_VERTICAL_DATUM`) means
+   * heights above the reference ellipsoid (GNSS, drones, ICESat-2); geoid or national datum IDs
+   * include `'EPSG:5773'` (EGM96), `'EPSG:3855'` (EGM2008), and `'EPSG:5703'` (NAVD88).
+   * Descriptive only: operators compare declared observer/candidate datums and never convert.
+   * Derived bands do not inherit it. Absent means undeclared.
+   */
+  verticalDatum?: string;
 };
 
 /** Borrowed, packed, row-major storage-buffer representation of one raster band. */

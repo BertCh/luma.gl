@@ -19,6 +19,7 @@ import {
 import {getPairHistogramNodes, validatePairHistogramShape} from './pair-histogram';
 import {
   getPairStatisticsInputNodes,
+  getPairStatisticsWindowParameterNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs,
   validatePairStatisticsRowCount
@@ -29,6 +30,19 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
+
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {
+  getStudyWindowBinding,
+  getStudyWindowWGSL,
+  getStudyWindowWGSLOptions
+} from '../../utils/study-window-wgsl';
 
 const OPERATION = 'GPURipley';
 
@@ -86,6 +100,13 @@ export type GPURipleyProps = {
    * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Compile-time study window, default 'rectangle'. Polygon windows are prepared with
+   * GPUStudyWindowPreparation from @luma.gl/experimental gpu-spatial-analysis and must be valid
+   * (non-self-intersecting, non-overlapping polygons) in the same planar frame. Require
+   * bounds: 'study-window' in polygon mode; that setting gives NaN statistics in rectangle mode.
+   */
+  studyWindow?: GPUStudyWindow;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -112,12 +133,12 @@ export type GPURipleyProps = {
 
 /**
  * Ripley's K, Besag's L and the annulus pair-correlation function of a planar point pattern in a
- * rectangular window (spatstat `Kest`, `Lest`, `pcf` for rectangle windows), from one
+ * rectangle or prepared polygon window (spatstat `Kest`, `Lest`, `pcf`), from one
  * deterministic pass over every ordered pair within the per-frame maximum distance.
  *
  * Definition, which the GPU result matches within the bounds below:
- * - The window is the per-frame bounds rectangle with area `A`. Included rows have a nonzero mask
- *   (when given) and a finite position inside the window. `n` is the included row count.
+ * - The window is the per-frame bounds rectangle or prepared polygon with area `A`. Included rows
+ *   have a nonzero mask (when given) and a finite position inside the window. `n` is the included row count.
  * - Each ordered pair `(i, j)`, `i != j`, with `d_ij <= maximumDistance` (f32 `sqrt(dx^2 + dy^2)`)
  *   falls in annulus `a = clamp(ceil(d / maximumDistance * radiusCount) - 1, 0, radiusCount - 1)`,
  *   so it counts toward `K(r_b)` exactly for `b >= a`.
@@ -135,8 +156,8 @@ export type GPURipleyProps = {
  *   the prefix sums in the finishing kernel.
  * - `'isotropic'` (Ripley 1977): each pair is weighted `e_ij = 1 / f` where `f` is the fraction of
  *   the circle centered at `i` with radius `d_ij` that lies inside the window, computed exactly
- *   for a rectangle from the arcs cut off by each side, minus the overlap of arcs of adjacent sides
- *   (the corner is inside the circle). `f` is floored at `1 / GPU_RIPLEY_WEIGHT_CAP` (cap 100, the
+ *   for polygons by an oriented-edge fan sum, and for a rectangle from the arcs cut off by each
+ *   side, minus the overlap of arcs of adjacent sides (the corner is inside the circle). `f` is floored at `1 / GPU_RIPLEY_WEIGHT_CAP` (cap 100, the
  *   `maxweight = 100` default of spatstat.explore `edge.Ripley`), so `e_ij <= 100`.
  *   `K(r) = A / (n (n - 1)) * sum_{d_ij <= r} e_ij`. The arc formula is exact for a center inside
  *   the rectangle at every radius, not only up to half the shorter side: the arcs cut off by two
@@ -156,7 +177,7 @@ export type GPURipleyProps = {
  * plus the f32 error of the weight itself. Results are bitwise reproducible.
  *
  * Monte Carlo CSR envelopes are provided by {@link GPURipleyEnvelope}; cross-type and
- * inhomogeneous K are not implemented. The window is the bounds rectangle (no polygon windows).
+ * inhomogeneous K are not implemented. Polygon windows support holes and disjoint components.
  */
 export class GPURipley implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -165,12 +186,15 @@ export class GPURipley implements GPUCommandNodeProducer {
   readonly props: GPURipleyProps;
   /** Resolved spatial context (native planar unless the props say otherwise). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time rectangle or polygon window. */
+  readonly studyWindow: GPUStudyWindow;
 
   constructor(props: GPURipleyProps) {
     this.id = props.id ?? 'ripley';
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     validatePairStatisticsInputs(id, {...props, parameterLength: GPU_RIPLEY_PARAMETER_LENGTH});
     const {radiusCount, output} = props;
     validateCapacity(id, 'radiusCount', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
@@ -207,11 +231,11 @@ export class GPURipley implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize, radiusCount, output} = props;
+    const {positions, parameters: callerParameters, gridSize, radiusCount, output} = props;
     validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
-      parameters,
+      callerParameters,
       props.mask,
       output.k,
       output.l,
@@ -220,15 +244,43 @@ export class GPURipley implements GPUCommandNodeProducer {
       output.pairCounts,
       output.radii
     ]);
+    // Window lookup uses graph identity only, independent of the graph's per-frame parameter type.
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
+    const windowParameters = studyWindow
+      ? getPairStatisticsWindowParameterNodes(graph, {
+          id,
+          operation: OPERATION,
+          parameters: callerParameters,
+          parameterLength: callerParameters.length,
+          window: studyWindow
+        })
+      : undefined;
+    const parameters = windowParameters?.parameters ?? callerParameters;
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
       positions,
       parameters,
       gridSize,
-      mask: props.mask
+      mask: props.mask,
+      studyWindow
     });
-    const nodes = inputs.nodes;
+    const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
     const constantsWGSL = /* wgsl */ `
 const RADIUS_COUNT: u32 = ${radiusCount}u;
 const ISOTROPIC_SCALE: f32 = ${ISOTROPIC_SCALE}.0;
@@ -239,6 +291,11 @@ const RAW_PAIRS: bool = ${Boolean(output.pairCounts)};
 const PI: f32 = 3.14159265358979;
 const HALF_PI: f32 = 1.57079632679490;
 `;
+    const windowWGSL = studyWindow
+      ? `${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
+      : '';
     const histogram = getPairHistogramNodes<Parameters>(graph, {
       id: `${id}-histogram`,
       operation: OPERATION,
@@ -250,7 +307,8 @@ const HALF_PI: f32 = 1.57079632679490;
       slotCount: radiusCount,
       channelCount: CHANNEL_COUNT,
       pairOrder: 'ordered',
-      declarations: /* wgsl */ `${constantsWGSL}
+      extraBindings: studyWindow ? [getStudyWindowBinding(studyWindow)] : undefined,
+      declarations: /* wgsl */ `${constantsWGSL}${windowWGSL}
 // Angle of the arc of a circle of radius d (centered at distance h from a side line) outside it.
 fn getSideAngle(h: f32, d: f32) -> f32 {
   if (d > h) {
@@ -274,16 +332,23 @@ fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f
   return min(1.0 / max(inside, 1.0 / WEIGHT_CAP), WEIGHT_CAP);
 }`,
       focusPrologue: `let mode = u32(readParameter(5u) + 0.5);
-    let left = x - lattice.minimumX;
+    ${
+      studyWindow
+        ? `var boundaryDistance = lattice.maximumDistance;
+    if (mode == 1u || mode == 2u) {
+      boundaryDistance = getStudyWindowBoundaryDistance(vec2f(x, y), lattice.maximumDistance);
+    }`
+        : `let left = x - lattice.minimumX;
     let bottom = y - lattice.minimumY;
     let right = lattice.maximumX - x;
-    let top = lattice.maximumY - y;
+    let top = lattice.maximumY - y;`
+    }
     var borderCount = 0u;
     // Border estimator: pairs of this focus below its border count, tallied in a register and
     // added once per focus instead of once per pair (integer sums, so the result is identical).
     var borderPairs = 0u;
     if (mode == 1u) {
-      let borderDistance = min(min(left, right), min(bottom, top));
+      let borderDistance = ${studyWindow ? 'min(boundaryDistance, lattice.maximumDistance)' : 'min(min(left, right), min(bottom, top))'};
       borderCount = min(u32(floor(borderDistance / lattice.maximumDistance * f32(RADIUS_COUNT))), RADIUS_COUNT);
     }`,
       pairAction: `let scaled = pairDistance / lattice.maximumDistance * f32(RADIUS_COUNT);
@@ -297,7 +362,15 @@ fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f
                 borderPairs++;
               }
             } else if (mode == 2u) {
-              accumulate(annulus, 4u, quantizePairAmount(getIsotropicWeight(left, bottom, right, top, pairDistance) * ISOTROPIC_SCALE));
+              ${
+                studyWindow
+                  ? `var weight = 1.0;
+              if (boundaryDistance < pairDistance) {
+                weight = 1.0 / max(getStudyWindowCircleFraction(vec2f(x, y), pairDistance), 1.0 / WEIGHT_CAP);
+              }
+              accumulate(annulus, 4u, quantizePairAmount(weight * ISOTROPIC_SCALE));`
+                  : 'accumulate(annulus, 4u, quantizePairAmount(getIsotropicWeight(left, bottom, right, top, pairDistance) * ISOTROPIC_SCALE));'
+              }
             }`,
       focusEpilogue: `if (mode == 1u) {
       accumulate(borderCount, 1u, borderPairs);
@@ -307,6 +380,7 @@ fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f
     nodes.push(...histogram.nodes);
 
     const finishBindings: WGSLKernelBinding[] = [
+      ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
       {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
       {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
       {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
@@ -327,7 +401,7 @@ fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f
         variant: 'finish',
         bindings: finishBindings,
         invocationCount: radiusCount,
-        declarations: /* wgsl */ `${PAIR_STATISTICS_FLOAT_WGSL}
+        declarations: /* wgsl */ `${PAIR_STATISTICS_FLOAT_WGSL}${windowWGSL}
 ${constantsWGSL}
 const CELL_COUNT: u32 = ${gridSize[0] * gridSize[1]}u;
 
@@ -358,8 +432,12 @@ fn getPrefix(channel: u32, last: u32) -> vec2<u32> {
   return sum;
 }`,
         body: `let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
-  let area = (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
-    (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]);
+  let area = ${
+    studyWindow
+      ? 'studyWindowSummaryValue(4u)'
+      : `(parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
+    (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u])`
+  };
   let mode = u32(parameters[parametersOffset + 5u] + 0.5);
   var kValue = getQuietNaN(index);
   if (n >= 2.0 && isFiniteFloat(area) && area > 0.0) {

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_LINEAR_EDGE_MODELS,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts';
 import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
@@ -67,11 +72,13 @@ export type GPUPolygonRasterizationOutput = {
  *
  * Per-frame (no recompile): the contents of `parameters` and of every polygon buffer. Topology
  * (needs a new graph): the `grid` size, `crossingCapacity`, every view length, and whether
- * `output.boundary` and `output.status.crossingCount` are present.
+ * `output.boundary` and `output.status.crossingCount` are present, and `spatialContext`.
  */
 export type GPUPolygonRasterizationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'polygon-rasterization'`. */
   id?: string;
+  /** Planar by default; longitude/latitude accepts metric 'none' and linear edges. */
+  spatialContext?: GPUSpatialContext;
   /** Raster grid: its width and height size the kernels. */
   grid: GPURasterMetadata;
   /**
@@ -91,7 +98,8 @@ export type GPUPolygonRasterizationProps = {
   /**
    * Maximum (edge, raster row) crossings per encoding. A ring crosses each row its interior covers
    * at least twice, so a safe size is about `2 * (rows spanned) * (rings per row)` summed over
-   * polygons; read `output.status.crossingCount` to size it. Compile-time.
+   * polygons; read `output.status.crossingCount` to size it. Longitude/latitude grids straddling
+   * ±180 can count each edge twice. Compile-time.
    */
   crossingCapacity: number;
   /** Caller-owned outputs. */
@@ -133,12 +141,18 @@ export type GPUPolygonRasterizationProps = {
  * span (up to `width` cells). The boundary pass costs O(cells touched by edges + rows spanned).
  * Every sort and scan always runs over the full capacity, so oversizing it costs time.
  *
+ * Longitude/latitude contexts use linear edges and per-frame longitude copies shifted by ±360
+ * degrees for grids straddling ±180. Prepare crossing or pole rings with
+ * `GPULonLatPolygonPreparation` first. Only wrapped input positions are stored.
+ *
  * Precision: coordinates and the raster placement are float32. Use raster-local or tile-local coordinates.
  * A non-finite vertex drops its two edges, which can corrupt only the rows of its own polygon.
  */
 export class GPUPolygonRasterization implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Validated coordinate and edge model declaration. */
+  readonly spatialContext: GPUSpatialContext;
   /** Validated properties. */
   readonly props: GPUPolygonRasterizationProps;
   /** Number of features, `featureOffsets.length - 1`. */
@@ -152,6 +166,11 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
 
   constructor(props: GPUPolygonRasterizationProps) {
     this.id = props.id ?? 'polygon-rasterization';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
+      coordinateSpaces: ['planar', 'longitude-latitude'],
+      metrics: ['none', 'native'],
+      edgeModels: GPU_LINEAR_EDGE_MODELS
+    });
     this.props = props;
     const {id} = this;
     const {output} = props;
@@ -238,6 +257,16 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
       crossingCount
     ]);
     const vertexCount = polygonPositions.length;
+    const longitudeLatitude = this.spatialContext.coordinateSpace === 'longitude-latitude';
+    const edgeCount = longitudeLatitude ? vertexCount * 3 : vertexCount;
+    const vertexIndex = longitudeLatitude ? `index % ${vertexCount}u` : 'index';
+    const longitudeShiftSource = longitudeLatitude
+      ? `let longitudeShift = f32(i32(index / ${vertexCount}u) - 1) * 360.0;`
+      : '';
+    const shiftedPosition = (vertex: string) =>
+      longitudeLatitude
+        ? `loadPosition(${vertex}) + vec2<f32>(longitudeShift, 0.0)`
+        : `loadPosition(${vertex})`;
     const capacity = props.crossingCapacity;
     const cellCount = width * height;
     const rowStride = width + 1;
@@ -291,9 +320,9 @@ const CAPACITY: u32 = ${capacity}u;`,
     );
 
     // 1. Per edge: ring, next vertex, polygon, and crossed row count.
-    const edgeCounts = createTransientView(graph, `${id}-edge-counts`, 'uint32', vertexCount);
-    const edgeNext = createTransientView(graph, `${id}-edge-next`, 'uint32', vertexCount);
-    const edgePolygons = createTransientView(graph, `${id}-edge-polygons`, 'uint32', vertexCount);
+    const edgeCounts = createTransientView(graph, `${id}-edge-counts`, 'uint32', edgeCount);
+    const edgeNext = createTransientView(graph, `${id}-edge-next`, 'uint32', edgeCount);
+    const edgePolygons = createTransientView(graph, `${id}-edge-polygons`, 'uint32', edgeCount);
     const rowRangeSource = `${POLYGON_RASTER_EXTENT_WGSL}
 fn getRowThreshold(y: f32, rasterExtent: RasterExtent) -> u32 {
   // Smallest row whose center line is at or above y.
@@ -310,7 +339,7 @@ fn isFinitePosition(position: vec2<f32>) -> bool {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-edges`,
         operation: OPERATION,
-        variant: 'edges',
+        variant: longitudeLatitude ? 'edges-longitude-latitude' : 'edges',
         bindings: [
           {name: 'positions', view: polygonPositions, type: 'f32', access: 'read'},
           {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
@@ -321,7 +350,7 @@ fn isFinitePosition(position: vec2<f32>) -> bool {
           {name: 'edgeNext', view: edgeNext, type: 'u32', access: 'read_write'},
           {name: 'edgePolygons', view: edgePolygons, type: 'u32', access: 'read_write'}
         ],
-        invocationCount: vertexCount,
+        invocationCount: edgeCount,
         declarations: `${declarations}
 ${rowRangeSource}
 ${getOffsetRangeSearchSource('findRing', 'ringOffsets', ringCount)}
@@ -330,21 +359,32 @@ ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
         body: `var next = ${NO_EDGE};
   var polygon = ${NO_EDGE};
   var count = 0u;
-  let ring = findRing(index);
+  ${longitudeShiftSource}
+  let ring = findRing(${vertexIndex});
   if (ring != ${NO_EDGE}) {
     polygon = findPolygon(ring);
   }
   if (polygon != ${NO_EDGE} && findFeature(polygon) != ${NO_EDGE}) {
     let ringStart = ringOffsets[ringOffsetsOffset + ring];
     let ringEnd = ringOffsets[ringOffsetsOffset + ring + 1u];
-    next = select(index + 1u, ringStart, index + 1u >= ringEnd);
-    let start = loadPosition(index);
-    let end = loadPosition(next);
+    next = select(${vertexIndex} + 1u, ringStart, ${vertexIndex} + 1u >= ringEnd);
+    let start = ${shiftedPosition(vertexIndex)};
+    let end = ${shiftedPosition('next')};
     let rasterExtent = getRasterExtent();
     if (rasterExtent.valid && isFinitePosition(start) && isFinitePosition(end)) {
       let low = getRowThreshold(min(start.y, end.y), rasterExtent);
       let high = getRowThreshold(max(start.y, end.y), rasterExtent);
       count = high - min(low, high);
+      ${
+        longitudeLatitude
+          ? `// Select longitude strips, retaining off-grid crossings to preserve even-odd parity.
+      let gridMaximumX = rasterExtent.origin.x + f32(WIDTH) * rasterExtent.cellSize.x;
+      if (gridMaximumX <= longitudeShift - 180.0 || rasterExtent.origin.x >= longitudeShift + 180.0) {
+        count = 0u;
+        next = ${NO_EDGE};
+      }`
+          : ''
+      }
     } else {
       next = ${NO_EDGE};
     }
@@ -358,7 +398,7 @@ ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
     );
 
     // 2. Slot ranges, total, overflow, and emission.
-    const edgeOffsets = createTransientView(graph, `${id}-edge-offsets`, 'uint32', vertexCount);
+    const edgeOffsets = createTransientView(graph, `${id}-edge-offsets`, 'uint32', edgeCount);
     nodes.push(
       ...new GPUScan({
         id: `${id}-edge-scan`,
@@ -386,7 +426,7 @@ ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
         operation: OPERATION,
         counts: edgeCounts,
         offsets: edgeOffsets,
-        rowCount: vertexCount,
+        rowCount: edgeCount,
         total: total
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -406,7 +446,7 @@ const CAPACITY: u32 = ${capacity}u;`,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-emit`,
         operation: OPERATION,
-        variant: 'emit',
+        variant: longitudeLatitude ? 'emit-longitude-latitude' : 'emit',
         bindings: [
           {name: 'positions', view: polygonPositions, type: 'f32', access: 'read'},
           {name: 'extent', view: extent, type: 'f32', access: 'read'},
@@ -417,7 +457,7 @@ const CAPACITY: u32 = ${capacity}u;`,
           {name: 'primary', view: primary, type: 'u32', access: 'read_write'},
           {name: 'secondary', view: secondary, type: 'u32', access: 'read_write'}
         ],
-        invocationCount: vertexCount,
+        invocationCount: edgeCount,
         declarations: `${declarations}
 ${rowRangeSource}`,
         body: `let count = edgeCounts[edgeCountsOffset + index];
@@ -427,8 +467,9 @@ ${rowRangeSource}`,
   let next = edgeNext[edgeNextOffset + index];
   let polygon = edgePolygons[edgePolygonsOffset + index];
   let rasterExtent = getRasterExtent();
-  let first = loadPosition(index);
-  let second = loadPosition(next);
+  ${longitudeShiftSource}
+  let first = ${shiftedPosition(vertexIndex)};
+  let second = ${shiftedPosition('next')};
   // Orient bottom to top so both traversal directions compute bitwise identical crossings.
   let lower = select(second, first, first.y < second.y);
   let upper = select(first, second, first.y < second.y);
@@ -591,14 +632,14 @@ ${getOffsetRangeSearchSource('findFeature', 'featureOffsets', featureCount)}`,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-boundary`,
           operation: OPERATION,
-          variant: 'boundary',
+          variant: longitudeLatitude ? 'boundary-longitude-latitude' : 'boundary',
           bindings: [
             {name: 'positions', view: polygonPositions, type: 'f32', access: 'read'},
             {name: 'extent', view: extent, type: 'f32', access: 'read'},
             {name: 'edgeNext', view: edgeNext, type: 'u32', access: 'read'},
             {name: 'boundaryOut', view: boundary, type: 'atomic<u32>', access: 'read_write'}
           ],
-          invocationCount: vertexCount,
+          invocationCount: edgeCount,
           declarations: `${declarations}
 ${POLYGON_RASTER_EXTENT_WGSL}
 // Cell padding that keeps the marking conservative under float32 rounding: a fixed part plus
@@ -616,8 +657,9 @@ fn clampCell(value: f32, limit: u32) -> i32 {
     return;
   }
   let rasterExtent = getRasterExtent();
-  let startPosition = loadPosition(index);
-  let endPosition = loadPosition(next);
+  ${longitudeShiftSource}
+  let startPosition = ${shiftedPosition(vertexIndex)};
+  let endPosition = ${shiftedPosition('next')};
   // Edge in cell units.
   let start = (startPosition - rasterExtent.origin) / rasterExtent.cellSize;
   let end = (endPosition - rasterExtent.origin) / rasterExtent.cellSize;

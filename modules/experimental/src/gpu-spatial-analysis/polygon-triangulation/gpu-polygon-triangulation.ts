@@ -10,7 +10,11 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createFillNode,
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../utils/wgsl-kernel-nodes';
 import {
   GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES,
   getMonotoneTriangulationNodes,
@@ -33,22 +37,25 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 
+import {getPolygonTriangulationLayoutNodes} from './polygon-triangulation-layout';
+
 const OPERATION = 'GPUPolygonTriangulation';
 
 /** Default `maximumWork` of {@link GPUPolygonTriangulation}: about 4 million elementary steps. */
 export const GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK = 4_000_000;
 
 /**
- * Number of `uint32` index slots {@link GPUPolygonTriangulation} writes for a layout: exactly
- * `3 * (vertices + 2 * holes - 2)` per polygon, which sums to
- * `3 * (vertexCount + 2 * ringCount - 4 * polygonCount)`.
+ * Safe index capacity for a layout that may contain empty polygons or degenerate rings.
+ * With at least one polygon, reserve `3 * max(0, vertexCount + 2 * ringCount - 4)` rows:
+ * only one non-empty polygon can be assumed from host lengths. GPU-computed triangle offsets
+ * give the used slices; non-degenerate polygons retain `vertices + 2 * holes - 2` triangles.
  */
 export function getPolygonTriangulationIndexCount(
   vertexCount: number,
   ringCount: number,
   polygonCount: number
 ): number {
-  return Math.max(0, 3 * (vertexCount + 2 * ringCount - 4 * polygonCount));
+  return polygonCount > 0 ? Math.max(0, 3 * (vertexCount + 2 * ringCount - 4)) : 0;
 }
 
 /**
@@ -114,32 +121,36 @@ export function validatePolygonTriangulationScratch(
 /** Caller-owned outputs of {@link GPUPolygonTriangulation}. */
 export type GPUPolygonTriangulationOutput = {
   /**
-   * Triangle indices, at least {@link getPolygonTriangulationIndexCount} rows.
-   * Polygon `p` owns the slice starting at
-   * `3 * (ringOffsets[polygonOffsets[p]] + 2 * polygonOffsets[p] - 4 * p)`, a prefix that is
-   * computed from the offsets, so no count pass is needed. Indices refer to rows of
-   * `positions`. Slots a polygon does not use (collinear or duplicate vertices dropped,
-   * or a failed polygon) hold the degenerate triangle `(first, first, first)` of that polygon, so
-   * drawing the whole buffer is always safe.
+   * Triangle indices; {@link getPolygonTriangulationIndexCount} gives a safe capacity.
+   * Polygon `p` starts at `3 * triangleOffsets[p]`. Degenerate rings are excluded before
+   * computing slices; non-degenerate layouts retain their original slice offsets. Indices refer
+   * to rows of `positions`. Unused polygon slots hold `(first, first, first)`; spare capacity is
+   * zeroed. Smaller legacy buffers are accepted, with insufficient slices flagged invalid.
+   * When there are no positions, the used triangle count is zero and nothing should be drawn.
    */
   indices: GraphDataView<'uint32'>;
   /**
    * Flag per polygon, `polygonCount` rows: 1 when the triangulation completed, 0 when
-   * it failed (shell with fewer than three vertices, self-intersecting or otherwise
-   * untriangulable rings, scratch overflow, or `maximumWork` exceeded). A failed polygon's slice
+   * it failed (self-intersecting or otherwise untriangulable rings, scratch overflow, or
+   * `maximumWork` exceeded). Empty polygons and degenerate shells complete with zero triangles.
+   * A failed polygon's slice
    * is entirely degenerate. The polygons of feature `f` are
    * `[featureOffsets[f], featureOffsets[f + 1])`.
    */
   valid: GraphDataView<'uint32'>;
   /** Optional count of real (non-degenerate padding) triangles per polygon, `polygonCount` rows. */
   triangleCount?: GraphDataView<'uint32'>;
+  /** Optional per-polygon triangle slice offsets, `polygonCount + 1` rows including the terminal. */
+  triangleOffsets?: GraphDataView<'uint32'>;
 };
 
 /**
  * Properties for {@link GPUPolygonTriangulation}: the four-level layout of
  * {@link GPUPolygonGeometryFields} (`positions`, `featureOffsets`, `polygonOffsets`,
- * `ringOffsets`). Every polygon needs a shell of at least three vertices; the first ring of a
- * polygon is the shell and later rings are holes. Rings close implicitly, a repeated first vertex
+ * `ringOffsets`). The first ring is the shell and later rings are holes. Rings with fewer than
+ * three vertices or only exact-zero first-vertex fan orientations are skipped. An uncertified
+ * orientation is retained. A degenerate shell makes the entire polygon empty. Empty polygon and
+ * ring slots are accepted directly from clipping. Rings close implicitly, a repeated first vertex
  * is tolerated. Winding of either kind is accepted. Triangulation runs per polygon, so a
  * multipolygon feature contributes one slice per polygon and `output.valid` and
  * `output.triangleCount` have one row per polygon.
@@ -236,8 +247,8 @@ const Z_ORDER_HASH_MINIMUM_VERTICES = 80;
  * on f32 rounding. Polygons above 80 vertices use Earcut's z-order hash
  * ({@link GPUPolygonTriangulationProps.useZOrderHash}), so ear tests visit only nearby vertices.
  *
- * Output is bounded without a count pass: exactly `3 * (vertices + 2 * holes - 2)` indices per
- * polygon, see {@link GPUPolygonTriangulationOutput.indices}. Like Earcut the result is not a
+ * GPU layout preparation counts non-degenerate rings and scans polygon slices: exactly
+ * `3 * (vertices + 2 * holes - 2)` indices per non-empty polygon, see {@link GPUPolygonTriangulationOutput.indices}. Like Earcut the result is not a
  * Delaunay triangulation and may contain slivers.
  *
  * **Limits.** Earcut's work is budgeted by `maximumWork`; a larger polygon is retried by the
@@ -245,8 +256,7 @@ const Z_ORDER_HASH_MINIMUM_VERTICES = 80;
  * 32 bytes without the z-order hash) and must fit one storage binding: at most
  * {@link getGPUPolygonTriangulationMaximumNodeCount} scratch nodes (4793490 on a default device;
  * 8388608 with `useZOrderHash: false`), see {@link getPolygonTriangulationNodeCount}.
- * Polygons need at least three shell vertices and no empty rings, otherwise the index slices of
- * later polygons shift. Holes with fewer than three vertices are ignored.
+ * Empty polygons, degenerate shells and degenerate holes contribute no triangle slots.
  */
 export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -277,20 +287,26 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
     }
     this.polygonCount = props.polygonOffsets.length - 1;
     this.ringCount = props.ringOffsets.length - 1;
-    if (this.polygonCount < 1) {
-      throw new Error(`${id} geometry must contain at least one polygon`);
-    }
-    if (props.positions.length < 1) {
-      throw new Error(`${id} geometry must contain at least one vertex`);
-    }
     this.indexCount = getPolygonTriangulationIndexCount(
       props.positions.length,
       this.ringCount,
       this.polygonCount
     );
     validatePackedView(output.indices, ['uint32'], `${id} output.indices`);
-    if (output.indices.length < this.indexCount) {
-      throw new Error(`${id} output.indices needs at least ${this.indexCount} rows`);
+    // Preserve acceptance of legacy buffers for non-degenerate layouts. The GPU checks each
+    // actual slice; callers handling empty polygons should use the safe capacity helper.
+    const minimumIndexCount = Math.max(
+      0,
+      3 * (props.positions.length + 2 * this.ringCount - 4 * this.polygonCount)
+    );
+    if (output.indices.length < minimumIndexCount) {
+      throw new Error(`${id} output.indices needs at least ${minimumIndexCount} rows`);
+    }
+    if (output.triangleOffsets) {
+      validatePackedView(output.triangleOffsets, ['uint32'], `${id} output.triangleOffsets`);
+      if (output.triangleOffsets.length !== this.polygonCount + 1) {
+        throw new Error(`${id} triangleOffsets length mismatch`);
+      }
     }
     validatePackedView(output.valid, ['uint32'], `${id} output.valid`);
     if (output.valid.length !== this.polygonCount) {
@@ -321,8 +337,17 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
 
   private getViews(): (GraphDataView | undefined)[] {
     const {positions, featureOffsets, polygonOffsets, ringOffsets, output} = this.props;
-    const {indices, valid, triangleCount} = output;
-    return [positions, featureOffsets, polygonOffsets, ringOffsets, indices, valid, triangleCount];
+    const {indices, valid, triangleCount, triangleOffsets} = output;
+    return [
+      positions,
+      featureOffsets,
+      polygonOffsets,
+      ringOffsets,
+      indices,
+      valid,
+      triangleCount,
+      triangleOffsets
+    ];
   }
 
   /**
@@ -360,10 +385,32 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
     const useMonotone =
       (props.largePolygonMethod ?? 'monotone') === 'monotone' &&
       vertexCount <= getGPUPolygonTriangulationMonotoneMaximumVertexCount(graph.device);
+    const triangleOffsets =
+      output.triangleOffsets ??
+      createTransientView(graph, `${id}-polygon-triangle-offsets`, 'uint32', polygonCount + 1);
+    const {nodes, layout} = getPolygonTriangulationLayoutNodes(graph, {
+      id,
+      positions: props.positions,
+      polygonOffsets: props.polygonOffsets,
+      ringOffsets: props.ringOffsets,
+      triangleOffsets
+    });
+    nodes.push(
+      createFillNode(graph, {
+        id: `${id}-clear-indices`,
+        operation: OPERATION,
+        view: output.indices,
+        type: 'u32',
+        value: '0u'
+      })
+    );
+    if (polygonCount === 0) {
+      return nodes;
+    }
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
-      {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
+      {name: 'ringOffsets', view: layout.ringOffsets, type: 'u32', access: 'read'},
+      {name: 'polygonOffsets', view: layout.polygonOffsets, type: 'u32', access: 'read'},
       {name: 'indices', view: output.indices, type: 'u32', access: 'read_write'},
       {name: 'valid', view: output.valid, type: 'u32', access: 'read_write'},
       {name: 'scratch', view: scratch, type: 'u32', access: 'read_write'}
@@ -383,7 +430,6 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
     if (routing) {
       bindings.push({name: 'routing', view: routing, type: 'u32', access: 'read_write'});
     }
-    const nodes: GPUCommandNode<Parameters>[] = [];
     let monotoneNodes: GPUCommandNode<Parameters>[] = [];
     if (routing) {
       const monotoneProps = {
@@ -393,6 +439,7 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
         polygonOffsets: props.polygonOffsets,
         ringOffsets: props.ringOffsets,
         routing,
+        layout,
         output,
         capacity: Math.max(1, Math.min(props.monotoneMaximumVertices ?? vertexCount, vertexCount)),
         minimumVertices:
@@ -425,6 +472,7 @@ ${EXACT_GEOMETRY_WGSL}
 ${getTriangulationWGSL({
   vertexCount,
   polygonCount,
+  ringCount,
   indexLength: output.indices.length,
   nodeCount,
   useZOrderHash,
@@ -449,6 +497,7 @@ ${getTriangulationWGSL({
 function getTriangulationWGSL(options: {
   vertexCount: number;
   polygonCount: number;
+  ringCount: number;
   indexLength: number;
   nodeCount: number;
   useZOrderHash: boolean;
@@ -467,7 +516,7 @@ const USE_Z_HASH: bool = ${options.useZOrderHash};
 const Z_HASH_MINIMUM_VERTICES: u32 = ${Z_ORDER_HASH_MINIMUM_VERTICES}u;
 const WORK_LIMIT: u32 = ${options.maximumWork}u;
 const NONE: u32 = 0xffffffffu;
-${options.routingPass === 'first' ? getSizeRouteWGSL(options.minimumVertices) : ''}
+${options.routingPass === 'first' ? getSizeRouteWGSL(options.minimumVertices, true) : ''}
 var<private> nodeBase: u32;
 var<private> nodeCursor: u32;
 var<private> nodeLimit: u32;
@@ -1118,7 +1167,7 @@ fn eliminateHoles(ringFirst: u32, ringLast: u32, outerIn: u32) -> u32 {
   for (var ring = ringFirst + 1u; ring < ringLast; ring++) {
     let start = ringOffsets[ringOffsetsOffset + ring];
     let end = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
-    if (end < start + 3u) { continue; }
+    if (ringOffsets[ringOffsetsOffset + ${options.ringCount + 1}u + ring] == 0u) { continue; }
     let list = linkedList(start, end - start, false);
     if (list == NONE || failed) { continue; }
     scratch[scratchOffset + 4u * (nodeBase + queued) + 3u] = getLeftmost(list);
@@ -1154,9 +1203,7 @@ fn baseNodeOf(polygon: u32) -> i32 {
   return 2 * (vertexPrefix + 2 * (ringPrefix - i32(polygon))) + 8 * i32(polygon);
 }
 fn baseSlotOf(polygon: u32) -> i32 {
-  let ringPrefix = i32(polygonOffsets[polygonOffsetsOffset + polygon]);
-  let vertexPrefix = i32(ringOffsets[ringOffsetsOffset + u32(ringPrefix)]);
-  return 3 * (vertexPrefix + 2 * ringPrefix - 4 * i32(polygon));
+  return 3 * i32(polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT + 1u + polygon]);
 }
 
 fn triangulatePolygon(polygon: u32) {
@@ -1180,11 +1227,20 @@ fn triangulatePolygon(polygon: u32) {
   let ringFirst = polygonOffsets[polygonOffsetsOffset + polygon];
   let ringLast = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
   let shellStart = ringOffsets[ringOffsetsOffset + ringFirst];
-  let shellEnd = min(ringOffsets[ringOffsetsOffset + ringFirst + 1u], VERTEX_COUNT);
+  var shellEnd = shellStart;
+  if (ringLast > ringFirst) {
+    shellEnd = min(ringOffsets[ringOffsetsOffset + ringFirst + 1u], VERTEX_COUNT);
+  }
   let padVertex = shellStart;
-  let polygonEnd = min(ringOffsets[ringOffsetsOffset + ringLast], VERTEX_COUNT);
-  hashed = USE_Z_HASH && polygonEnd > shellStart + Z_HASH_MINIMUM_VERTICES;
-  if (ringLast <= ringFirst || shellEnd < shellStart + 3u || triangleSlots == 0u ||
+  let liveVertices = polygonOffsets[polygonOffsetsOffset + 2u * (POLYGON_COUNT + 1u) + polygon];
+  let liveRings = polygonOffsets[polygonOffsetsOffset + 3u * POLYGON_COUNT + 2u + polygon];
+  hashed = USE_Z_HASH && liveVertices > Z_HASH_MINIMUM_VERTICES;
+  if (liveRings == 0u) {
+    valid[validOffset + polygon] = 1u;
+    ${options.writeTriangleCount ? 'triangleCount[triangleCountOffset + polygon] = 0u;' : ''}
+    return;
+  }
+  if (baseSlotOf(polygon + 1u) > i32(INDEX_LENGTH) || triangleSlots == 0u ||
       nodeLimit < nodeBase + ringLast - ringFirst) {
     failed = true;
   } else {
@@ -1203,7 +1259,7 @@ fn triangulatePolygon(polygon: u32) {
         hashMinimum = low;
         hashScale = select(0.0, 32767.0 / extent, extent > 0.0);
       }
-      if (ringLast - ringFirst > 1u) { outerNode = eliminateHoles(ringFirst, ringLast, outerNode); }
+      if (liveRings > 1u) { outerNode = eliminateHoles(ringFirst, ringLast, outerNode); }
       clipEars(outerNode);
     }
   }

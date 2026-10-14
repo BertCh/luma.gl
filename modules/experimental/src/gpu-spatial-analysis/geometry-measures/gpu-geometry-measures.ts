@@ -28,6 +28,7 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   getGPUAreaUnit,
+  getGPUEdgeModel,
   resolveGPUSpatialContext,
   getGPULengthUnits,
   getGPUAuthalicSphereRadius,
@@ -57,6 +58,7 @@ const OPERATION = 'GPUGeometryMeasures';
 
 // No measure declaration: this operator outputs both lengths and areas.
 const GEOMETRY_MEASURES_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  edgeModels: Object.freeze(['linear', 'great-circle'] as const),
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
   metricsByCoordinateSpace: Object.freeze({
     planar: Object.freeze(['none', 'native'] as const),
@@ -93,7 +95,8 @@ export type GPUGeometryMeasuresOutput = {
   extremeVertices?: GraphDataView<'uint32x4'>;
   /**
    * Optional status. `invalidCount` receives the exact number of polygon features rejected because
-   * a ring encloses a pole or has an edge spanning 180 degrees of longitude (geographic contexts).
+   * a ring has ambiguous edges, spans more than 360 degrees, or encloses a pole without a pole cap.
+   * Explicit same-pole edges retain their raw longitude step and are accepted.
    * Rejected features report NaN `areas` and `centroids`; lengths, bounds and
    * vertex counts stay valid. Written every encoding.
    */
@@ -188,22 +191,18 @@ export type GPUGeometryMeasuresProps = GPUGeometryMeasuresSharedProps &
  * then costs a chain of 16k vertices instead of 1M. Such features can differ from the serial
  * walk by f32 summation order only; all other features are unchanged bit for bit.
  *
- * **Geographic modes.** Areas are shoelace areas in the Lambert cylindrical equal-area projection
- * (`x` = longitude in radians, `y` = sine of latitude), the Chamberlain-Duquette formula turf uses:
- * exact for longitude/latitude boxes, and edges are straight in that projection rather than
- * geodesics, which matters only for long edges. `'wgs84'` replaces latitude by authalic latitude
- * and the radius by the authalic radius (exact equal-area mapping of the ellipsoid). Polygon
- * centroids are area-weighted in the same projection; line centroids are length-weighted
- * longitude/latitude midpoints. Rings that enclose a pole or span 180 degrees of longitude per
- * edge have no well-defined interior: they are detected (see **Invalid geographic polygons**),
- * not measured.
+ * **Geographic modes.** With linear edges, spherical area uses Chamberlain-Duquette (turf
+ * parity), an approximation of degree-straight edges with second-order error in latitude span.
+ * With `edgeModel: 'great-circle'` and metric `'great-circle'`, area uses signed spherical excess
+ * on the context sphere (`sphere-polygon`). Perimeter uses great-circle chords in both modes.
+ * Ellipsoidal modes retain `ellipsoidalEdgeModel`. Polygon centroids use the straight Lambert
+ * equal-area edges even when area follows great circles or ellipsoidal geodesics.
  *
- * **Invalid geographic polygons.** Longitude steps are wrapped per edge, so a ring that crosses
- * the antimeridian (an edge with a longitude difference above 180 degrees, such as Fiji's
- * 179 to -179) is measured correctly. A ring whose wrapped steps sum to +-360 degrees encloses a
- * pole, and an edge whose wrapped step reaches 180 degrees (or whose raw step is a full 360)
- * is ambiguous; features owning such a ring report NaN area and centroid and are counted in
- * `output.status.invalidCount`. Split such polygons at the antimeridian or project them first.
+ * **Invalid geographic polygons.** Non-pole edges take wrapped longitude steps; edges along
+ * the same pole take their raw step, so explicitly capped Antarctica rings are valid. Ambiguous
+ * edges, rings wider than 360 degrees, and unprepared pole-winding rings report NaN area and
+ * centroid and increment `output.status.invalidCount`. Great-circle edges through a pole or
+ * between antipodal endpoints are ambiguous. Prepare global rings with `GPULonLatPolygonPreparation`.
  *
  * **Measure model.** {@link GPUGeometryMeasures.measures} describes the length and area models and
  * units of the outputs: the context's length unit and its square for areas.
@@ -244,7 +243,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly coordinateSystem: GPUGeometryCoordinateSystem;
   /** Resolved sphere radius for lengths, in the context's length unit. */
   readonly radius: number;
-  /** Authalic radius used for spherical areas, in the context's length unit. */
+  /** Area radius: context sphere for great-circle edges, authalic sphere for linear edges. */
   readonly areaRadius: number;
   /** Resolved ring size above which a feature is measured cooperatively (0 disables). */
   readonly cooperativeRingRows: number;
@@ -264,7 +263,10 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     );
     this.measures = describeGeometryMeasures(this.coordinateSystem, this.spatialContext);
     this.radius = getGPUSphereRadius(this.spatialContext);
-    this.areaRadius = getGPUAuthalicSphereRadius(this.spatialContext);
+    this.areaRadius =
+      getGPUEdgeModel(this.spatialContext) === 'great-circle'
+        ? this.radius
+        : getGPUAuthalicSphereRadius(this.spatialContext);
     this.cooperativeRingRows = props.cooperativeRingRows ?? COOPERATIVE_RING_ROWS;
     const {id} = this;
     const {status, ...output} = props.output ?? {};
@@ -372,6 +374,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       isPolygon,
       isPoint: props.geometryType === 'points',
       coordinateSystem: this.coordinateSystem,
+      greatCircleEdges: getGPUEdgeModel(this.spatialContext) === 'great-circle',
       radius: this.radius,
       areaRadius: this.areaRadius,
       ellipsoid: getGPUEllipsoid(this.spatialContext),
@@ -554,7 +557,10 @@ function describeGeometryMeasures(
   const lengthUnits = getGPULengthUnits(spatialContext);
   return {
     lengthModel: lengthModels[coordinateSystem],
-    areaModel: areaModels[coordinateSystem],
+    areaModel:
+      coordinateSystem === 'spherical' && getGPUEdgeModel(spatialContext) === 'great-circle'
+        ? 'sphere-polygon'
+        : areaModels[coordinateSystem],
     lengthUnits,
     areaUnits: getGPUAreaUnit(lengthUnits)
   };

@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  assertCompatibleGPUVerticalDatums,
+  type GPUTerrainHeightReference
+} from '../../analysis-core/contracts/vertical-datum';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -66,7 +70,10 @@ export const GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH = 12;
  * `k = 1 / 7`.
  */
 export type GPUTerrainLineOfSightSettings = {
-  /** Eye height above the terrain in elevation units. Defaults to 1.7. */
+  /**
+   * Eye height above terrain, or absolute eye elevation with `heightReference: 'absolute'`.
+   * In elevation-band units. Defaults to 1.7; set explicitly in absolute mode.
+   */
   observerHeight?: number;
   /** Height added to the target elevation. Defaults to 0. */
   targetHeight?: number;
@@ -88,6 +95,8 @@ export type GPUTerrainLineOfSightSettings = {
  * Packs line-of-sight settings into the 12 float32 values
  * `[observerHeight, targetHeight, maximumDistance, cellSizeX, cellSizeY, curvatureCoefficient,
  * toleranceMeters, tolerancePerKilometer, targetIgnoreDistance, targetIgnoreFraction, northEdge, southEdge]`.
+ * `observerHeight` is an absolute eye elevation when the contributor uses `heightReference: 'absolute'`;
+ * otherwise it is added to bilinear ground. `targetHeight` is always added to target ground.
  * Cell sizes and row edges always come from `grid`, in world units (meters or degrees), regardless
  * of cellSizeMode. Edges are the top of row 0 and bottom of the last row, including point-pixel
  * half-row offsets. The kernel converts cell sizes to ground meters according to cellSizeMode.
@@ -223,11 +232,25 @@ export type GPUTerrainLineOfSightProps = {
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
   /**
+   * Compile-time eye reference. `'ground'` (default) adds the observer height to bilinear ground.
+   * `'absolute'` uses the observer height itself in the elevation band's units and vertical datum,
+   * without sampling ground under the observer; no-data ground is allowed, but the eye must be
+   * inside the grid. Set the height explicitly in absolute mode: the 1.7 default is meaningless.
+   * An eye below ground hides most targets. Targets always remain ground-relative.
+   */
+  heightReference?: GPUTerrainHeightReference;
+  /** Vertical datum of absolute observer heights; requires `heightReference: 'absolute'`. */
+  observerVerticalDatum?: string;
+  /**
    * One row `[observerColumn, observerRow, targetColumn, targetRow]` per pair, in pixel-center
    * index space; fractional values allowed.
    */
   pairs: GraphDataView<'float32x4'>;
-  /** Optional rows `[observerHeight, targetHeight]` per pair, overriding the settings. */
+  /**
+   * Optional rows `[observerHeight, targetHeight]` per pair, overriding the settings.
+   * Observer heights are absolute eye elevations with `heightReference: 'absolute'`;
+   * target heights always remain ground-relative.
+   */
   pairHeights?: GraphDataView<'float32x2'>;
   /** Per-frame parameters, see {@link getGPUTerrainLineOfSightParameterValues}. */
   parameters: GraphDataView<'float32'>;
@@ -272,6 +295,21 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-line-of-sight';
     this.props = props;
     const {id} = this;
+    if (
+      props.heightReference !== undefined &&
+      props.heightReference !== 'ground' &&
+      props.heightReference !== 'absolute'
+    ) {
+      throw new Error(`${id} heightReference must be 'ground' or 'absolute'`);
+    }
+    if (props.observerVerticalDatum !== undefined && props.heightReference !== 'absolute') {
+      throw new Error(`${id} observerVerticalDatum needs heightReference absolute`);
+    }
+    assertCompatibleGPUVerticalDatums(
+      id,
+      props.observerVerticalDatum,
+      props.elevation.verticalDatum
+    );
     const {output} = props;
     validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
@@ -373,7 +411,7 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-line-of-sight`,
         operation: 'GPUTerrainLineOfSight',
-        variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'march'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
+        variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'march'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}${props.heightReference === 'absolute' ? '-absolute' : ''}`,
         bindings,
         invocationCount: props.pairs.length,
         declarations: `${getTerrainSightLineWGSL({
@@ -410,14 +448,13 @@ fn isInsideGrid(position: vec2<f32>) -> bool {
     settings[settingsOffset + 8u], settings[settingsOffset + 9u]);
   let observerInside = isInsideGrid(observer);
   let targetInside = isInsideGrid(targetPosition);
-  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));
-  let targetSample = sampleElevation(select(vec2<f32>(0.0), targetPosition, targetInside));
+${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  let targetSample = sampleElevation(select(vec2<f32>(0.0), targetPosition, targetInside));
   var code = NO_DATA;
   // A runtime-dependent bit pattern: WGSL rejects constant-evaluated NaN.
   var clearance = bitcast<f32>(0x7fc00000u | (index & 0u));
-  if (observerInside && targetInside && observerSample.y != 0.0 && targetSample.y != 0.0) {
+  if (observerInside && targetInside && ${props.heightReference === 'absolute' ? '' : 'observerSample.y != 0.0 && '}targetSample.y != 0.0) {
     let result = traceSightLine(
-      observer, targetPosition, observerSample.x + observerHeight, targetSample.x + targetHeight,
+      observer, targetPosition, ${props.heightReference === 'absolute' ? 'observerHeight' : 'observerSample.x + observerHeight'}, targetSample.x + targetHeight,
       cellSize, curvature, maxDistance, tolerance);
     code = result.code;
     if (result.code != OUT_OF_RANGE) {

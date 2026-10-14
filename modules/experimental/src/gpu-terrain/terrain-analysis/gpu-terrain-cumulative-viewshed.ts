@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  assertCompatibleGPUVerticalDatums,
+  type GPUTerrainHeightReference
+} from '../../analysis-core/contracts/vertical-datum';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -88,9 +92,22 @@ export type GPUTerrainCumulativeViewshedProps = {
   cellSizeMode?: GPURasterCellSizeMode;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
+  /**
+   * Compile-time eye reference. `'ground'` (default) adds the observer height to bilinear ground.
+   * `'absolute'` uses the observer height itself in the elevation band's units and vertical datum,
+   * without sampling ground under the observer; no-data ground is allowed, but the eye must be
+   * inside the grid. Set the height explicitly in absolute mode: the 1.7 default is meaningless.
+   * An eye below ground hides most targets. Targets always remain ground-relative.
+   */
+  heightReference?: GPUTerrainHeightReference;
+  /** Vertical datum of absolute observer heights; requires `heightReference: 'absolute'`. */
+  observerVerticalDatum?: string;
   /** Observers as `[column, row]` in pixel-center index space; fractional values allowed. */
   observers: GraphDataView<'float32x2'>;
-  /** Optional eye height per observer overriding `parameters` (one value per observer). */
+  /**
+   * Optional eye height per observer overriding `parameters` (one value per observer).
+   * Absolute eye elevations with `heightReference: 'absolute'`, otherwise heights above ground.
+   */
   observerHeights?: GraphDataView<'float32'>;
   /**
    * Per-frame parameters in the 12-float line-of-sight layout: this contributor uses the packer
@@ -158,6 +175,21 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     this.id = props.id ?? 'terrain-cumulative-viewshed';
     this.props = props;
     const {id} = this;
+    if (
+      props.heightReference !== undefined &&
+      props.heightReference !== 'ground' &&
+      props.heightReference !== 'absolute'
+    ) {
+      throw new Error(`${id} heightReference must be 'ground' or 'absolute'`);
+    }
+    if (props.observerVerticalDatum !== undefined && props.heightReference !== 'absolute') {
+      throw new Error(`${id} observerVerticalDatum needs heightReference absolute`);
+    }
+    assertCompatibleGPUVerticalDatums(
+      id,
+      props.observerVerticalDatum,
+      props.elevation.verticalDatum
+    );
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
@@ -368,7 +400,7 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-batch-${batch}`,
           operation,
-          variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'march'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
+          variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'march'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}${props.heightReference === 'absolute' ? '-absolute' : ''}`,
           bindings: [
             ...bindings,
             {
@@ -417,12 +449,16 @@ fn isInsideGrid(position: vec2<f32>) -> bool {
   if (!isInsideGrid(observer) || !isValidPixel(column, row)) {
     return;
   }
-  let observerSample = sampleElevation(observer);
+${
+  props.heightReference === 'absolute'
+    ? ''
+    : `  let observerSample = sampleElevation(observer);
   if (observerSample.y == 0.0) {
     return;
   }
-  let result = traceSightLine(
-    observer, vec2<f32>(f32(column), f32(row)), observerSample.x + observerHeight,
+`
+}  let result = traceSightLine(
+    observer, vec2<f32>(f32(column), f32(row)), ${props.heightReference === 'absolute' ? 'observerHeight' : 'observerSample.x + observerHeight'},
     getElevation(column, row) + targetHeight, cellSize, curvature, maxDistance, tolerance);
   if (result.code == VISIBLE) {
     atomicAdd(&visibleCount[visibleCountOffset + pixel], 1u);

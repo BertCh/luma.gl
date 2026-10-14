@@ -24,6 +24,7 @@ import {
 import {GPURipley} from './gpu-ripley';
 import {
   getPairStatisticsSharedWGSL,
+  getPairStatisticsWindowParameterNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs,
   validatePairStatisticsRowCount
@@ -33,6 +34,19 @@ import {
   GPU_RIPLEY_PARAMETER_LENGTH,
   GPU_RIPLEY_SEED_SLOT
 } from './ripley-parameters';
+
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {
+  STUDY_WINDOW_BOUNDARY_CELL_BIT,
+  getStudyWindowBinding,
+  getStudyWindowWGSL,
+  getStudyWindowWGSLOptions
+} from '../../utils/study-window-wgsl';
 
 const OPERATION = 'GPURipleyEnvelope';
 
@@ -71,6 +85,11 @@ export type GPURipleyEnvelopeOutput = {
    * criticalMaximumDeviation, pValue, rank]` (`GPU_RIPLEY_ENVELOPE_STATISTICS_LENGTH` rows).
    */
   statistics?: GraphDataView<'float32'>;
+  /**
+   * Total failed polygon draws over all simulations; one uint32 word, cleared each encoding.
+   * An empty sampler or unusable window marks every capacity row unplaced.
+   */
+  unplacedCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -79,7 +98,7 @@ export type GPURipleyEnvelopeOutput = {
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask`, `parameters` (window
  * bounds, maximum distance, edge correction and the Monte Carlo `seed`) and `observedK`.
  * Compile-time: the row count, `gridSize`, `radiusCount`, `simulationCount`, `rank`, `statistic`
- * and which `output` views are present.
+ * `studyWindow`, `maximumAttempts` and which `output` views are present.
  */
 export type GPURipleyEnvelopeProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'ripley-envelope'`. */
@@ -92,6 +111,11 @@ export type GPURipleyEnvelopeProps = {
    * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Prepared valid polygon window in the same planar frame, or 'rectangle' (default).
+   * Use bounds: 'study-window' for polygons; those bounds yield NaN in rectangle mode.
+   */
+  studyWindow?: GPUStudyWindow;
   /**
    * The observed packed planar points (the same view given to the observed {@link GPURipley}).
    * The row count is the capacity of every simulated pattern.
@@ -114,6 +138,8 @@ export type GPURipleyEnvelopeProps = {
    * 0.01 global test, 39 give 0.025.
    */
   simulationCount: number;
+  /** Maximum polygon rejection attempts per row. Compile-time integer in [1, 256], default 32. */
+  maximumAttempts?: number;
   /**
    * Which sorted simulated value bounds the pointwise envelope and, for the global envelope, which
    * ranked maximum deviation sets the half-width. Compile-time integer at least 1, default 1.
@@ -134,14 +160,15 @@ export type GPURipleyEnvelopeProps = {
 
 /**
  * Monte Carlo complete-spatial-randomness (CSR) envelopes of Ripley's K, Besag's L or `L(r) - r`
- * for a planar point pattern in a rectangular window (spatstat `envelope(Kest, nsim, nrank)` and
+ * for a planar point pattern in a rectangle or prepared polygon window (spatstat `envelope(Kest, nsim, nrank)` and
  * the global envelope of Ripley 1981 / Baddeley et al. 2014), entirely on the GPU.
  *
  * Definition:
  * - `n` is the observed included row count (nonzero mask, finite position inside the window, the
  *   `GPURipley` inclusion rule), counted on the GPU. Each of the `simulationCount` simulations is a
  *   binomial CSR pattern: `n` independent uniform points in the window (conditional on `n`), drawn
- *   with Philox4x32-10 keyed by the per-frame uint32 `seed` with counter `(row, simulationIndex, 0, 0)`
+ *   with Philox4x32-10 keyed by the per-frame uint32 `seed`. Rectangle draws use counter
+ *   `(row, simulationIndex, 0, 0)`
  *   (the simulation index is a GPU counter word, so every simulation shares one set of pipelines);
  *   word `x` gives the x coordinate and `y` the y coordinate. Draws are a pure function of
  *   `(seed, simulationIndex, row)` and reproduce exactly (CPU mirror: `getPhilox4x32`).
@@ -161,8 +188,9 @@ export type GPURipleyEnvelopeProps = {
  *   `(1 + #{j: T_j >= T_obs}) / (s_valid + 1)`, the maximum absolute deviation (MAD) test. Radii
  *   with NaN are skipped per curve, so use an edge correction that is defined at every radius
  *   (`'isotropic'` or `'none'`; `'border'` is NaN once no point is r from the boundary).
- * - The window is the bounds rectangle: a bounding box of an irregular study area makes every
- *   pattern look clustered. The theoretical value assumes the plug-in edge-corrected K is unbiased
+ * - Polygon CSR draws choose equal-area sampler cells and reject boundary-cell points outside W,
+ *   with counter (row, simulationIndex, attempt, 0). Exhausted draws are masked and reported in
+ *   unplacedCount. The theoretical value assumes the plug-in edge-corrected K is unbiased
  *   under CSR, true for `'isotropic'` and approximately for `'border'`; `'none'` is biased low at
  *   large radii but the simulations share the bias, so the pointwise envelope remains valid.
  * - Undefined results (`n < 2`, fewer than `rank` finite simulated values at a radius) are NaN.
@@ -179,6 +207,8 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
   readonly props: GPURipleyEnvelopeProps;
   /** Resolved spatial context (native planar unless the props say otherwise). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time observation window. */
+  readonly studyWindow: GPUStudyWindow;
   /** Resolved `rank`. */
   readonly rank: number;
   /** Resolved statistic scale. */
@@ -189,9 +219,20 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     validatePairStatisticsInputs(id, {...props, parameterLength: GPU_RIPLEY_PARAMETER_LENGTH});
     const {radiusCount, simulationCount, output} = props;
     validateCapacity(id, 'radiusCount', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
+    const maximumAttempts = props.maximumAttempts ?? 32;
+    if (!Number.isInteger(maximumAttempts) || maximumAttempts < 1 || maximumAttempts > 256) {
+      throw new Error(`${id} maximumAttempts must be an integer in [1, 256]`);
+    }
+    if (output.unplacedCount) {
+      validatePackedView(output.unplacedCount, ['uint32'], `${id} output.unplacedCount`);
+      if (output.unplacedCount.length < 1) {
+        throw new Error(`${id} output.unplacedCount must hold 1 row`);
+      }
+    }
     this.rank = props.rank ?? 1;
     validateCapacity(id, 'rank', this.rank);
     validateCapacity(
@@ -235,7 +276,8 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
       !output.globalLower &&
       !output.globalUpper &&
       !output.theoretical &&
-      !output.statistics
+      !output.statistics &&
+      !output.unplacedCount
     ) {
       throw new Error(`${id} output needs at least one view`);
     }
@@ -247,7 +289,8 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
         output.globalLower,
         output.globalUpper,
         output.theoretical,
-        output.statistics
+        output.statistics,
+        output.unplacedCount
       ],
       [props.positions, props.parameters, props.mask, props.observedK]
     );
@@ -258,11 +301,18 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rank, statistic} = this;
-    const {positions, parameters, gridSize, radiusCount, simulationCount, output} = props;
+    const {
+      positions,
+      parameters: callerParameters,
+      gridSize,
+      radiusCount,
+      simulationCount,
+      output
+    } = props;
     validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
-      parameters,
+      callerParameters,
       props.mask,
       props.observedK,
       output.lower,
@@ -270,10 +320,57 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
       output.globalLower,
       output.globalUpper,
       output.theoretical,
-      output.statistics
+      output.statistics,
+      output.unplacedCount
     ]);
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
+    const windowParameters = studyWindow
+      ? getPairStatisticsWindowParameterNodes(graph, {
+          id,
+          operation: OPERATION,
+          parameters: callerParameters,
+          parameterLength: callerParameters.length,
+          window: studyWindow
+        })
+      : undefined;
+    const parameters = windowParameters?.parameters ?? callerParameters;
+    const windowOptions = studyWindow ? getStudyWindowWGSLOptions(studyWindow) : undefined;
+    const windowWGSL = windowOptions
+      ? `${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getStudyWindowWGSL(windowOptions)}`
+      : '';
     const rows = positions.length;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...(windowParameters?.nodes ?? [])];
+    const unplacedCount =
+      output.unplacedCount ??
+      (studyWindow ? createTransientView(graph, `${id}-unplaced-count`, 'uint32', 1) : undefined);
+    if (unplacedCount) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-unplaced-clear`,
+          operation: OPERATION,
+          view: unplacedCount,
+          type: 'u32',
+          value: '0u'
+        })
+      );
+    }
 
     // Observed included row count n, with the exact GPURipley inclusion rule.
     const count = createTransientView(graph, `${id}-count`, 'uint32', 1);
@@ -290,6 +387,7 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
         operation: OPERATION,
         variant: 'count',
         bindings: [
+          ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
           ...(props.mask
@@ -298,12 +396,12 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
           {name: 'count', view: count, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: rows,
-        declarations: getPairStatisticsSharedWGSL(gridSize),
+        declarations: getPairStatisticsSharedWGSL(gridSize) + windowWGSL,
         body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   let included = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
-  if (included && isPointValid(lattice, x, y)) {
+  if (included && isPointValid(lattice, x, y)${studyWindow ? ' && isInsideStudyWindow(vec2f(x, y))' : ''}) {
     atomicAdd(&count[countOffset], 1u);
   }`
       })
@@ -354,6 +452,17 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
           operation: OPERATION,
           variant: 'simulate',
           bindings: [
+            ...(studyWindow
+              ? [
+                  getStudyWindowBinding(studyWindow),
+                  {
+                    name: 'unplacedCount',
+                    view: unplacedCount!,
+                    type: 'atomic<u32>' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
             // Read as words: the seed slot holds uint32 bits, the other slots float32 bits.
             {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
             {name: 'count', view: count, type: 'u32', access: 'read'},
@@ -362,10 +471,35 @@ export class GPURipleyEnvelope implements GPUCommandNodeProducer {
             {name: 'mask', view: simulatedMask, type: 'u32', access: 'read_write'}
           ],
           invocationCount: rows,
-          declarations: /* wgsl */ `${PHILOX_WGSL}
+          declarations: /* wgsl */ `${PHILOX_WGSL}${windowWGSL}
 const SEED_SLOT: u32 = ${GPU_RIPLEY_SEED_SLOT}u;
 const PURPOSE: u32 = ${PHILOX_PURPOSES.ripleyEnvelopeSimulation.id}u;`,
-          body: `let inside = index < count[countOffset];
+          body: studyWindow
+            ? `let cellCount = studyWindow[studyWindowOffset + ${windowOptions!.layout.sampleCellCount}u];
+  let usable = isStudyWindowUsable() && cellCount > 0u;
+  let inside = index < count[countOffset] || !usable;
+  var point = vec2f(0.0);
+  var placed = false;
+  if (inside && usable) {
+    for (var attempt = 0u; attempt < ${props.maximumAttempts ?? 32}u; attempt++) {
+      let words = philox4x32(vec4<u32>(index, simulationIndex[simulationIndexOffset], attempt, 0u),
+        vec2<u32>(parameters[parametersOffset + SEED_SLOT], PURPOSE));
+      // Integer modulo: bias below cellCount / 2^32 (<= 2^-12), where a 24-bit float draw would
+      // give cells unequal shares of up to 1 / 256 at 2^16 cells.
+      let selected = words.x % cellCount;
+      let cell = studyWindow[studyWindowOffset + ${windowOptions!.layout.sampleCells}u + selected];
+      let placement = getStudyWindowSampleCell(cell);
+      point = placement.xy + vec2f(philoxUnitFloat(words.y), philoxUnitFloat(words.z)) * placement.zw;
+      placed = (cell & ${STUDY_WINDOW_BOUNDARY_CELL_BIT}u) == 0u;
+      if (!placed) { placed = isInsideStudyWindow(point); }
+      if (placed) { break; }
+    }
+  }
+  if (inside && !placed) { atomicAdd(&unplacedCount[unplacedCountOffset], 1u); }
+  positions[positionsOffset + index * 2u] = point.x;
+  positions[positionsOffset + index * 2u + 1u] = point.y;
+  mask[maskOffset + index] = select(0u, 1u, placed);`
+            : `let inside = index < count[countOffset];
   var x = 0.0;
   var y = 0.0;
   if (inside) {
@@ -387,6 +521,8 @@ const PURPOSE: u32 = ${PHILOX_PURPOSES.ripleyEnvelopeSimulation.id}u;`,
         ...new GPURipley({
           id: `${id}-sim-${simulation}`,
           positions: simulatedPositions,
+          spatialContext: this.spatialContext,
+          studyWindow: this.studyWindow,
           parameters,
           gridSize,
           radiusCount,

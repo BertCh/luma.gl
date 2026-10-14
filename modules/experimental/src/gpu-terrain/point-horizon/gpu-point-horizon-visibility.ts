@@ -28,6 +28,7 @@ import {
   getPointHorizonMarchWGSL,
   resolvePointHorizonModel,
   validatePointHorizonRows,
+  validatePointHorizonVerticalDatum,
   type GPUPointHorizonModelOptions,
   type ResolvedPointHorizonModel
 } from './point-horizon-march';
@@ -113,6 +114,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
       firstAzimuth: 0,
       azimuthSpan: 720
     });
+    validatePointHorizonVerticalDatum(id, props, props.elevation, this.model.heightReference);
     validateRasterParameters(id, props.parameters, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);
     validatePointHorizonRows(id, 'observers', props.observers, 'float32x4');
     validatePointHorizonRows(id, 'targets', props.targets, 'float32x4');

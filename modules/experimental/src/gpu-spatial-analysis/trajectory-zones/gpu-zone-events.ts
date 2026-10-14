@@ -30,6 +30,7 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -201,6 +202,12 @@ export type GPUZoneEventsProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
+   * Context of `zones` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  zonesSpatialContext?: GPUSpatialContext;
+  /**
    * Tagged trajectory geometry: `positions` are packed planar rows sorted by track and then time,
    * `timestamps` are non-decreasing inside each track (`float32` relative to an application epoch,
    * or `uint32x2` Int64 `(low, high)` words; differences are exact before the f32 round), and
@@ -304,6 +311,12 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'zones',
+      props.zonesSpatialContext,
+      this.spatialContext
+    );
     const {tracks, zones, output} = props;
     validatePackedView(tracks.positions, ['float32x2'], `${id} tracks.positions`);
     validatePackedView(tracks.timestamps, ['float32', 'uint32x2'], `${id} tracks.timestamps`);

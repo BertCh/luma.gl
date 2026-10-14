@@ -3,10 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUGridIndexView, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import type {GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPUOverflowStatusPort,
+  GPULonLatPolygonStatusPort
+} from '../../analysis-core/contracts/index';
 import type {GPUCompactOutput} from '../../utils/gpu-contributor-types';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  GPU_LINEAR_EDGE_MODELS,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
@@ -115,12 +120,21 @@ export type GPURegionMaskOutput = {
   /**
    * `overflow`: one row, 1 when the region input was truncated (lasso vertex count above capacity,
    * or a pick-region overflow), else 0.
+   * `antimeridianUncertainCount` counts unprepared crossing rings; `poleUncertainCount` counts
+   * uncapped pole rings. These optional counters are rewritten for world-space lon/lat lassos
+   * only; planar, screen-space and non-polygon selections leave them untouched.
    */
-  status: GPUOverflowStatusPort;
+  status: GPUOverflowStatusPort & GPULonLatPolygonStatusPort;
 };
 
 /** Caller-owned outputs of `GPURegionStatistics`. */
 export type GPURegionStatisticsOutput = {
+  /**
+   * Optional world-space lon/lat lasso diagnostics: `antimeridianUncertainCount` counts
+   * unprepared crossing rings; `poleUncertainCount` counts uncapped pole rings. Both are
+   * rewritten each encoding; planar, screen-space and non-polygon selections leave them untouched.
+   */
+  status?: GPULonLatPolygonStatusPort;
   /** Packed summary of `8 + binCount` uint32 words, see {@link GPU_REGION_STATISTICS_SUMMARY_LAYOUT}. */
   summary: GraphDataView<'uint32'>;
   /** Optional 0/1 source-aligned selection mask for highlighting. Not allowed with `kind: 'mask'`. */
@@ -231,10 +245,12 @@ export type GPURegionStatisticsResult = {
 /**
  * Spatial contexts accepted by region selections. Rectangle, lasso and pick selections are
  * topological tests, so they work on planar coordinates or on longitude/latitude degrees (edges
- * are straight lines in degree space, with no antimeridian handling). Radius selections measure a
- * planar distance and reject longitude/latitude, see {@link resolveGPURegionSpatialContext}.
+ * are straight lines in degree space). Prepare polygons that cross ±180 or enclose a pole with
+ * `GPULonLatPolygonPreparation`; optional status counters report unprepared rings. Radius selections
+ * measure a planar distance and reject longitude/latitude, see {@link resolveGPURegionSpatialContext}.
  */
 export const GPU_REGION_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  edgeModels: GPU_LINEAR_EDGE_MODELS,
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
   metrics: Object.freeze(['none', 'native'] as const)
 });
@@ -268,4 +284,28 @@ export function resolveGPURegionSpatialContext(
     throw new Error(`${id} radius regions need planar coordinates`);
   }
   return resolved;
+}
+
+/** Validates a separately declared region context only for regions in position coordinates. @internal */
+export function validateGPURegionSecondarySpatialContext(
+  id: string,
+  context: GPUSpatialContext | undefined,
+  primary: GPUSpatialContext,
+  region: GPURegionSelection
+): void {
+  if (
+    context !== undefined &&
+    (region.kind === 'pick-region' ||
+      region.kind === 'mask' ||
+      ('screenTransform' in region && region.screenTransform !== undefined))
+  ) {
+    throw new Error(`${id} regionSpatialContext needs a region in position coordinates`);
+  }
+  resolveGPUSecondarySpatialContext(
+    id,
+    'region',
+    context,
+    primary,
+    GPU_REGION_SPATIAL_CONTEXT_SUPPORT.edgeModels
+  );
 }

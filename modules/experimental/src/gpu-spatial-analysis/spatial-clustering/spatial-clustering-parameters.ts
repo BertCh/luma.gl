@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  type GPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance
+} from '../../analysis-core/contracts/spatial-context';
+
 /** Number of float32 elements in a spatial-clustering parameter buffer. */
 export const GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH = 8;
 
@@ -14,9 +19,15 @@ const MAXIMUM_MINIMUM_POINTS = 2 ** 24;
 /**
  * CPU settings of the per-frame parameters of one {@link GPUSpatialClustering}.
  *
- * Distances use the same planar units as the positions.
+ * Distances use planar position units or the longitude/latitude context's length unit.
  */
 export type GPUSpatialClusteringSettings = {
+  /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Inclusive `[minX, minY, maxX, maxY]` extent of the data. Points outside it, or with a
    * non-finite coordinate, are excluded and labeled noise. Bounds should cover the data: they
@@ -70,6 +81,11 @@ export function getGPUSpatialClusteringParameterValues(
       `Spatial clustering minimumPoints must be an integer from 1 to ${MAXIMUM_MINIMUM_POINTS}`
     );
   }
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUSpatialClustering',
+    settings.spatialContext,
+    settings.epsilon
+  );
   target.set([...settings.bounds, settings.epsilon, settings.minimumPoints, 0, 0]);
   return target;
 }

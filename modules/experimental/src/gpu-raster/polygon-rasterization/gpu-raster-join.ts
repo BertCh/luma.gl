@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GPU_LINEAR_EDGE_MODELS,
+  resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -102,6 +108,15 @@ export type GPURasterJoinOutput = {
 export type GPURasterJoinProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'raster-join'`. */
   id?: string;
+  /** Planar by default; longitude/latitude accepts metric 'none' and linear edges. */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `zones` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame; longitude/latitude needs linear edges.
+   * Declares the context zones were rasterized in, e.g. `GPUPolygonRasterization.spatialContext`.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  zonesSpatialContext?: GPUSpatialContext;
   /** Raster grid: its width and height size the kernels. */
   grid: GPURasterMetadata;
   /**
@@ -141,17 +156,36 @@ export type GPURasterJoinProps = {
  * `boundaryCounts`, in `unassignedBoundaryCount`, and per point in `pointBoundaryMask`, so callers
  * can bound the error or re-join those points exactly.
  *
+ * Longitude/latitude contexts declare linear edges and metric 'none'. Use the same context for
+ * the upstream `GPUPolygonRasterization`; this contributor consumes its zone raster. Points must
+ * already use the grid's longitude branch. Prepare crossing or pole polygons with
+ * `GPULonLatPolygonPreparation` before rasterization.
+ *
  * Cost per encoding: two passes over the points plus, for `sums`, the radix sort, scan, gather,
  * and one 256-thread workgroup per zone of the shared sorted reduction.
  */
 export class GPURasterJoin implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Validated coordinate and edge model declaration. */
+  readonly spatialContext: GPUSpatialContext;
   /** Validated properties. */
   readonly props: GPURasterJoinProps;
 
   constructor(props: GPURasterJoinProps) {
     this.id = props.id ?? 'raster-join';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
+      coordinateSpaces: ['planar', 'longitude-latitude'],
+      metrics: ['none', 'native'],
+      edgeModels: GPU_LINEAR_EDGE_MODELS
+    });
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'zones',
+      props.zonesSpatialContext,
+      this.spatialContext,
+      GPU_LINEAR_EDGE_MODELS
+    );
     this.props = props;
     const {id} = this;
     const {output} = props;

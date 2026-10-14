@@ -20,6 +20,14 @@ import {
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {createSegmentSumNode, getSortKeyBits} from '../../utils/sorted-segment-sums';
+import type {GPUPolygonStudyWindowViews} from '../../analysis-core/contracts/study-window';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {
+  getStudyWindowBinding,
+  getStudyWindowWGSL,
+  getStudyWindowWGSLOptions
+} from '../../utils/study-window-wgsl';
 
 /**
  * Number of leading float32 parameter slots shared by every pair-statistics contributor:
@@ -71,6 +79,8 @@ export type PairStatisticsInputProps = {
   values?: GraphDataView<'float32'>;
   /** Optional row selection: nonzero includes the row. */
   mask?: GraphDataView<'uint32'>;
+  /** Polygon inclusion filter; parameters must come from getPairStatisticsWindowParameterNodes. */
+  studyWindow?: GPUPolygonStudyWindowViews;
 };
 
 /** Views produced by {@link getPairStatisticsInputNodes}. @internal */
@@ -258,12 +268,64 @@ ${PAIR_STATISTICS_FLOAT_WGSL}
 }
 
 /**
+ * Copies every per-frame parameter slot bit for bit (including uint32 seeds stored as float bits),
+ * replacing slots 0-3 with the prepared polygon bbox.
+ * Unusable windows write NaN bounds so the unchanged lattice excludes every row. Consumers must
+ * validate the window views against the graph, prepend these nodes, and bind the returned parameters
+ * to every downstream kernel (including getPairStatisticsInputNodes). The caller's view is untouched.
+ *
+ * @internal
+ */
+export function getPairStatisticsWindowParameterNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    parameters: GraphDataView<'float32'>;
+    parameterLength: number;
+    window: GPUPolygonStudyWindowViews;
+  }
+): {nodes: GPUCommandNode<Parameters>[]; parameters: GraphDataView<'float32'>} {
+  const parameters = createTransientView(
+    graph,
+    `${props.id}-window-parameters`,
+    'float32',
+    props.parameterLength
+  );
+  return {
+    parameters,
+    nodes: [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${props.id}-window-parameters`,
+        operation: props.operation,
+        variant: 'window-parameters',
+        bindings: [
+          {name: 'sourceParameters', view: props.parameters, type: 'u32', access: 'read'},
+          getStudyWindowBinding(props.window),
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: props.parameterLength,
+        declarations: `${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getStudyWindowWGSL(getStudyWindowWGSLOptions(props.window))}`,
+        body: `var value = sourceParameters[sourceParametersOffset + index];
+  if (index < 4u) {
+    value = select(0x7fc00000u, bitcast<u32>(studyWindowSummaryValue(index)), isStudyWindowUsable());
+  }
+  parameters[parametersOffset + index] = value;`
+      })
+    ]
+  };
+}
+
+/**
  * Builds the shared front end of the pair-statistics contributors: per-row validity and cell keys, the
  * cell index (counts, exclusive offsets and a stable sort of rows by cell) and, with `values`, the
  * global value moments.
  *
  * A row is included when its mask is nonzero (if any), its value is finite (if any) and its
- * position is finite and inside the per-frame bounds. Moments come from fixed-order two-level
+ * position is finite and inside the per-frame bounds and optional polygon window. Moments come
+ * from fixed-order two-level
  * workgroup tree sums (no float atomics): first the mean, then the sum of squared centered values.
  * Minimum and maximum use integer atomics on order-preserving keys, so all of it is bitwise
  * reproducible.
@@ -274,7 +336,7 @@ export function getPairStatisticsInputNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: PairStatisticsInputProps
 ): PairStatisticsInputs<Parameters> {
-  const {id, operation, positions, values, parameters, gridSize, mask} = props;
+  const {id, operation, positions, values, parameters, gridSize, mask, studyWindow} = props;
   const rows = positions.length;
   const cellCount = gridSize[0] * gridSize[1];
   const sharedWGSL = getPairStatisticsSharedWGSL(gridSize);
@@ -296,6 +358,7 @@ export function getPairStatisticsInputNodes<Parameters>(
       operation,
       variant: 'cell-keys',
       bindings: [
+        ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
         {name: 'positions', view: positions, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         ...(values
@@ -332,13 +395,18 @@ export function getPairStatisticsInputNodes<Parameters>(
           : [])
       ],
       invocationCount: rows,
-      declarations: sharedWGSL,
+      declarations: studyWindow
+        ? `${sharedWGSL}
+${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
+        : sharedWGSL,
       body: `let lattice = readLattice();
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
   let included = ${mask ? 'mask[maskOffset + index] != 0u' : 'true'};
   ${values ? 'let value = values[valuesOffset + index];' : ''}
-  let valid = included && ${values ? 'isFiniteFloat(value) &&' : ''} isPointValid(lattice, x, y);
+  let valid = included && ${values ? 'isFiniteFloat(value) &&' : ''} isPointValid(lattice, x, y)${studyWindow ? ' && isInsideStudyWindow(vec2f(x, y))' : ''};
   var key = CELL_COUNT;
   if (valid) {
     key = getCellRow(lattice, y) * lattice.columns + getCellColumn(lattice, x);

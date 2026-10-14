@@ -10,6 +10,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
+import {assertCompatibleGPUVerticalDatums} from '../../analysis-core/contracts/vertical-datum';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -301,6 +302,12 @@ export type GPUPointHorizonModelOptions = {
   rowDirection?: GPUPointHorizonRowDirection;
   /** Eye height model. Defaults to `'ground'`. */
   heightReference?: GPUPointHorizonHeightReference;
+  /**
+   * Vertical datum of absolute observer heights. Requires `heightReference: 'absolute'` and is
+   * checked against `elevation.verticalDatum` when both are declared. The library never converts;
+   * see the gpu-terrain documentation's "Heights and datums" section.
+   */
+  observerVerticalDatum?: string;
   /** Sample traversal. Defaults to `'pyramid'`. */
   traversal?: GPUPointHorizonTraversal;
   /**
@@ -365,6 +372,19 @@ export type ResolvedPointHorizonModel = {
 
 /** First block size of the internal pyramid. */
 const PYRAMID_FIRST_BLOCK_SIZE = 4;
+
+/** Validates declared observer and elevation datums against the resolved height model. @internal */
+export function validatePointHorizonVerticalDatum(
+  id: string,
+  options: GPUPointHorizonModelOptions,
+  elevation: GPURasterBand,
+  heightReference: GPUPointHorizonHeightReference
+): void {
+  if (options.observerVerticalDatum !== undefined && heightReference === 'ground') {
+    throw new Error(`${id} observerVerticalDatum needs heightReference absolute`);
+  }
+  assertCompatibleGPUVerticalDatums(id, options.observerVerticalDatum, elevation.verticalDatum);
+}
 
 /**
  * Validates and defaults the model options.

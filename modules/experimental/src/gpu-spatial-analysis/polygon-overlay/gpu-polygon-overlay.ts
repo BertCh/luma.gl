@@ -37,6 +37,7 @@ import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {GPUSegmentRingAssembly} from '../../analysis-core/ring-assembly/index';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -155,6 +156,12 @@ export type GPUPolygonOverlayProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `right` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  rightSpatialContext?: GPUSpatialContext;
   left: PackedPolygons;
   /** Required except for `dissolve`, which unions every polygon in `left`. */
   right?: PackedPolygons;
@@ -261,6 +268,15 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
   constructor(props: GPUPolygonOverlayProps) {
     this.id = props.id ?? 'polygon-overlay';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    if (props.rightSpatialContext !== undefined && !props.right) {
+      throw new Error(`${this.id} rightSpatialContext needs right`);
+    }
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'right',
+      props.rightSpatialContext,
+      this.spatialContext
+    );
     this.props = props;
     this.fillRule = props.fillRule ?? 'even-odd';
     const {id} = this;

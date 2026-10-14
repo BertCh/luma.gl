@@ -20,6 +20,7 @@ import {
   PRECISION_WGSL,
   resolvePointHorizonModel,
   validatePointHorizonRows,
+  validatePointHorizonVerticalDatum,
   type GPUPointHorizonModelOptions,
   type ResolvedPointHorizonModel
 } from './point-horizon-march';
@@ -124,6 +125,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     this.model = resolvePointHorizonModel(id, props.grid, props);
+    validatePointHorizonVerticalDatum(id, props, props.elevation, this.model.heightReference);
     const {output} = props;
     if (!output.tangent && !output.skylineAngle && !output.distance) {
       throw new Error(`${id} requires at least one output`);

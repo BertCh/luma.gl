@@ -26,7 +26,11 @@ import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
 import {H3_NEIGHBOR_WGSL} from '../cell-topology/h3-neighbor-wgsl';
 import {QUADBIN_TOPOLOGY_WGSL} from '../cell-topology/cell-topology-wgsl';
-import {GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT} from '../../analysis-core/contracts/spatial-context';
+import {
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+  type GPUSpatialContext,
+  type GPUSpatialEdgeModel
+} from '../../analysis-core/contracts/spatial-context';
 import {GPUSegmentRingAssembly} from '../../analysis-core/ring-assembly/index';
 import type {
   GPUSegmentRingAssemblyInteriorSide,
@@ -165,9 +169,10 @@ export type GPUCellSetOutlineRings = {
  * rings (`GPUSegmentRingAssembly`).
  *
  * Consumes H3 or Quadbin cell keys only, so it takes no `spatialContext`. Its output segments are
- * longitude/latitude degrees (straight edges between cell vertices, the
- * `GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT` convention); the cells are not positions, so there is
- * nothing to validate or project.
+ * longitude/latitude degrees, with great-circle edges for H3 and linear edges for Quadbin,
+ * declared by `edgeModel` and `outputSpatialContext`. Prepare global or antimeridian-crossing
+ * rings with `GPULonLatPolygonPreparation` before linear consumers. The cells are not positions,
+ * so there is nothing to validate or project.
  */
 export class GPUCellSetOutline implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -176,6 +181,10 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
   readonly props: GPUCellSetOutlineProps;
   /** Candidate edge slots per cell: {@link GPU_CELL_SET_OUTLINE_MAXIMUM_EDGES} for the family. */
   readonly edgeSlots: number;
+  /** Boundary edges: great-circle arcs for H3; linear in degrees for Quadbin. */
+  readonly edgeModel: GPUSpatialEdgeModel;
+  /** Longitude/latitude context of output segments and rings, including the family's edge model. */
+  readonly outputSpatialContext: GPUSpatialContext;
   /**
    * Side of each emitted segment that is inside the cell set: H3 boundaries run counter-clockwise
    * (`'left'`), Quadbin edges run clockwise (`'right'`).
@@ -190,6 +199,11 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
       throw new Error(`${id} family must be 'h3' or 'quadbin'`);
     }
     this.edgeSlots = GPU_CELL_SET_OUTLINE_MAXIMUM_EDGES[props.family];
+    this.edgeModel = props.family === 'h3' ? 'great-circle' : 'linear';
+    this.outputSpatialContext = {
+      ...GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+      edgeModel: this.edgeModel
+    };
     this.interiorSide = props.family === 'h3' ? 'left' : 'right';
     const {output} = props;
     validatePackedView(props.cells, ['uint32x2'], `${id} cells`);
@@ -416,7 +430,7 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
           normalizeWinding: props.rings.normalizeWinding,
           interiorSide: this.interiorSide,
           // Outline segments are longitude/latitude degrees: compare turns with cos(latitude).
-          spatialContext: GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+          spatialContext: this.outputSpatialContext,
           output: props.rings.output
         }).getCommandNodes(graph)
       : [];

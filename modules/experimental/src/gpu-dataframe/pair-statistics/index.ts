@@ -89,3 +89,5 @@ export type {
   GPURipleyDistanceEdgeCorrection,
   GPURipleyDistanceFunctionsSettings
 } from './ripley-distance-parameters';
+
+export type {GPUPairStatisticsBounds} from './pair-statistics-parameters';

@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {getStudyWindowWGSL, getStudyWindowWGSLOptions} from '../../utils/study-window-wgsl';
+import type {GPUPolygonStudyWindowViews} from '../../analysis-core/contracts/study-window';
 import {ERFC_VALUE_WGSL} from '../../utils/wgsl-common';
 import {
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION,
@@ -113,12 +117,14 @@ fn getWindowMass(point: vec2f, windowMin: vec2f, windowMax: vec2f, bandwidth: f3
  * by the exact gather and the binned finish so the NaN rules cannot diverge. The caller defines
  * `valid: bool`, `total: f32`, `cellOffset`, `windowMin`, `windowMax: vec2f` and `bandwidth: f32`,
  * and declares the `weightSum` binding for `'probability'` and {@link getWindowMassWGSL} for edge
- * correction.
+ * correction. With `polygonWindow`, the caller instead defines absolute `center: vec2f` and
+ * declares the study-window queries; inclusion has exactly one call site in this tail.
  * @internal
  */
 export function getKernelDensityResultWGSL(
   edgeCorrection: GPUKernelDensityEdgeCorrection,
-  normalization: GPUKernelDensityNormalization
+  normalization: GPUKernelDensityNormalization,
+  polygonWindow = false
 ): string {
   return `var result = total;
   if (!valid) {
@@ -128,12 +134,12 @@ export function getKernelDensityResultWGSL(
     edgeCorrection === 'none'
       ? ''
       : `if (valid) {
-    if (!(all(cellOffset >= windowMin) && all(cellOffset <= windowMax))) {
+    if (!(${polygonWindow ? 'isInsideStudyWindow(center)' : 'all(cellOffset >= windowMin) && all(cellOffset <= windowMax)'})) {
       result = getNaN();
     }${
       edgeCorrection === 'uniform'
         ? ` else {
-      let mass = getWindowMass(cellOffset, windowMin, windowMax, bandwidth);
+      let mass = ${polygonWindow ? 'getStudyWindowKernelMass(center, bandwidth)' : 'getWindowMass(cellOffset, windowMin, windowMax, bandwidth)'};
       result = select(getNaN(), total / mass, mass > 1e-6);
     }`
         : ''
@@ -149,4 +155,13 @@ export function getKernelDensityResultWGSL(
       : ''
   }
   valuesOut[valuesOutOffset + index] = result;`;
+}
+
+/** Study-window queries and their exact topology dependencies, each declared once. @internal */
+export function getKernelDensityStudyWindowWGSL(
+  views: GPUPolygonStudyWindowViews,
+  kernel?: GPUKernelDensityKernel
+): string {
+  // EXACT_ORIENTATION_WGSL already includes IS_FINITE_BITS_WGSL.
+  return `${EXACT_ORIENTATION_WGSL}${EXACT_GEOMETRY_WGSL}${getStudyWindowWGSL(getStudyWindowWGSLOptions(views, kernel))}`;
 }

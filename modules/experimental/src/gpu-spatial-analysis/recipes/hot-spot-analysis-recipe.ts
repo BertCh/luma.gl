@@ -22,6 +22,8 @@ import {GET_QUIET_NAN_SEEDED_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-
 import {GPUCellAggregation} from '../cell-aggregation/index';
 import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
+import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
+import {GPULonLatPolygonPreparation} from '../lon-lat-polygons';
 import {GPUCellCover} from '../cell-cover/index';
 import {GPUCellGeometry, GPUCellMeasures, GPUPointToCell} from '../cell-indexing/index';
 import {getCellTopologyStride} from '../cell-topology/index';
@@ -29,6 +31,8 @@ import {
   GPU_DEFAULT_INFERENCE_ALTERNATIVE,
   GPU_EARTH_AUTHALIC_RADIUS_METERS,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  GPU_LINEAR_EDGE_MODELS,
   type GPUInferenceAlternative,
   type GPUInferenceMetadata,
   type GPUMultipleTestingMethod,
@@ -116,6 +120,13 @@ export type GPUHotSpotPointsSource = {
   resolution: number;
   /** Study area whose cells are the analysis rows. */
   studyArea: GPUHotSpotStudyArea;
+  /**
+   * Context of `studyArea` declared separately; must match `spatialContext` in datum, coordinate
+   * space, metric, units and planar frame. Omitted means one context describes both inputs.
+   * Longitude/latitude needs linear edges unless `prepare` is true: this context feeds preparation,
+   * then prepared edges are compared with the primary context resolved to linear edges.
+   */
+  studyAreaSpatialContext?: GPUSpatialContext;
   /** Rows of the study table (and of every per-cell output): an upper bound on the study cells. */
   cellCapacity: number;
   /**
@@ -271,7 +282,7 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
     studyArea?: {
       status?: {
         requiredCount?: GPUStatusScalar;
-        /** Features rejected for a bounding box wider than 180 degrees of longitude. */
+        /** Features rejected for an unsplit non-pole antimeridian-crossing edge. */
         invalidCount?: GPUStatusScalar;
         /** Features reaching beyond the latitude limit of the cover. */
         uncertainCount?: GPUStatusScalar;
@@ -304,6 +315,14 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
 > & {
   /** Prefix for every node and transient ID. Defaults to `'hot-spot-recipe'`. */
   id?: string;
+  /** Study-area polygon context (points source); defaults to longitude/latitude with metric none. */
+  spatialContext?: GPUSpatialContext;
+  /** Prepare longitude/latitude polygons on the GPU before containment. Defaults to false. */
+  prepare?: boolean;
+  /** Maximum prepared vertices; required with `prepare: true`. */
+  preparedPositionCapacity?: number;
+  /** Per-frame getGPULonLatPolygonPreparationParameterValues view; required with preparation. */
+  preparationParameters?: GraphDataView<'float32'>;
   /** Where the rows come from. */
   source: GPUHotSpotPointsSource | GPUHotSpotLatticeSource;
   /**
@@ -460,6 +479,9 @@ function getDiskNeighborCount(family: GPUCellFamily, rings: number): number {
  * Hot spot analysis recipe: points on a study area, or a raster, to Getis-Ord Gi* hot and cold
  * spots, optionally confirmed by conditional permutation and colored by class breaks.
  *
+ * With `prepare: true`, `GPULonLatPolygonPreparation` precedes the study-area cover and adds
+ * `study-area-preparation` diagnostics to `status.stages`.
+ *
  * Chain (points source): `GPUCellCover` (study-area cells) -> `GPUCellAggregation` (sorted unique
  * study table) and `GPUPointToCell` (H3 only) -> `GPUCellAggregation` (sorted point table) -> a
  * join kernel (binary search of each study key in the point table; empty cells get 0) -> area
@@ -492,6 +514,27 @@ export function addHotSpotAnalysisRecipe<Parameters>(
   props: GPUHotSpotAnalysisRecipeProps
 ): GPUHotSpotAnalysisRecipeResult {
   const id = props.id ?? 'hot-spot-recipe';
+  const spatialContext = props.spatialContext ?? {
+    coordinateSpace: 'longitude-latitude',
+    metric: 'none'
+  };
+  if (props.prepare) {
+    if (spatialContext.coordinateSpace !== 'longitude-latitude') {
+      throw new Error(`${id} prepare needs a longitude-latitude spatialContext`);
+    }
+    if (props.preparedPositionCapacity === undefined) {
+      throw new Error(`${id} prepare needs preparedPositionCapacity`);
+    }
+    if (!Number.isInteger(props.preparedPositionCapacity) || props.preparedPositionCapacity < 1) {
+      throw new Error(`${id} preparedPositionCapacity must be a positive integer`);
+    }
+    if (!props.preparationParameters) {
+      throw new Error(`${id} prepare needs preparationParameters`);
+    }
+  }
+  if (props.prepare && props.source.kind !== 'points') {
+    throw new Error(`${id} prepare needs a points source`);
+  }
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
@@ -624,16 +667,87 @@ export function addHotSpotAnalysisRecipe<Parameters>(
         )
       }
     };
+    let studyArea = source.studyArea;
+    const primaryContext = resolveGPUSpatialContext(id, spatialContext, {
+      coordinateSpaces: ['longitude-latitude'],
+      metrics: ['none', 'great-circle']
+    });
+    if (!props.prepare) {
+      resolveGPUSecondarySpatialContext(
+        id,
+        'studyArea',
+        source.studyAreaSpatialContext,
+        primaryContext,
+        GPU_LINEAR_EDGE_MODELS
+      );
+    }
+    let coverContext = getPointInPolygonContainmentContext(primaryContext);
+    if (props.prepare) {
+      const prepared = {
+        positions: getOrCreateView(
+          graph,
+          `${id}-prepare-positions`,
+          'float32x2',
+          props.preparedPositionCapacity!
+        ),
+        featureOffsets: getOrCreateView(
+          graph,
+          `${id}-prepare-features`,
+          'uint32',
+          studyArea.featureOffsets.length
+        ),
+        polygonOffsets: getOrCreateView(
+          graph,
+          `${id}-prepare-polygons`,
+          'uint32',
+          2 * studyArea.polygonOffsets.length - 1
+        ),
+        ringOffsets: getOrCreateView(
+          graph,
+          `${id}-prepare-rings`,
+          'uint32',
+          2 * studyArea.ringOffsets.length - 1
+        ),
+        status: {
+          overflow: getOrCreateView(graph, `${id}-prepare-overflow`, 'uint32', 1),
+          requiredCount: getOrCreateView(graph, `${id}-prepare-required-count`, 'uint32', 1),
+          invalidCount: getOrCreateView(graph, `${id}-prepare-invalid-count`, 'uint32', 1),
+          approximation: getOrCreateView(graph, `${id}-prepare-approximation`, 'uint32', 1)
+        }
+      };
+      const preparation = builder.add(
+        new GPULonLatPolygonPreparation({
+          ...studyArea,
+          id: `${id}-prepare`,
+          spatialContext: source.studyAreaSpatialContext ?? coverContext,
+          parameters: props.preparationParameters!,
+          output: prepared
+        })
+      );
+      if (source.studyAreaSpatialContext !== undefined) {
+        resolveGPUSecondarySpatialContext(
+          id,
+          'studyArea',
+          preparation.spatialContext,
+          {...primaryContext, edgeModel: 'linear'},
+          GPU_LINEAR_EDGE_MODELS
+        );
+      }
+      studyArea = {...studyArea, ...prepared};
+      coverContext = getPointInPolygonContainmentContext(preparation.spatialContext);
+      stages.push({stage: 'study-area-preparation', status: prepared.status});
+    }
     builder.add(
       new GPUCellCover({
         id: `${id}-cover`,
         family: source.family,
         resolution: source.resolution,
         containment: 'center',
-        positions: source.studyArea.positions,
-        featureOffsets: source.studyArea.featureOffsets,
-        polygonOffsets: source.studyArea.polygonOffsets,
-        ringOffsets: source.studyArea.ringOffsets,
+        spatialContext: coverContext,
+        positions: studyArea.positions,
+        featureOffsets: studyArea.featureOffsets,
+        polygonOffsets: studyArea.polygonOffsets,
+        ringOffsets: studyArea.ringOffsets,
         candidateCapacity: source.studyArea.candidateCapacity,
         output: cover
       })

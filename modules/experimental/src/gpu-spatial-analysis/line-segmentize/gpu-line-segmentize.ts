@@ -27,7 +27,8 @@ import {
   createLineOffsetsPublishNode,
   createLinePrefixNode,
   createSegmentizeCountNode,
-  createSegmentizeEmitNode
+  createSegmentizeEmitNode,
+  createSegmentizeSourceRowsNode
 } from './line-segmentize-kernels';
 import {GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} from './line-segmentize-parameters';
 import {type GPULineCoordinateSystem, type GPULineGeometryOutput} from './line-segmentize-types';
@@ -74,6 +75,11 @@ export type GPULineSegmentizeProps = {
    */
   maximumPieceCount?: number;
   /**
+   * Compile-time, default false: each line is a ring that closes implicitly: the closing edge is densified and no vertex is repeated.
+   * A bit-exact repeated closing row is dropped. Other repeated input vertices are preserved.
+   */
+  closedLines?: boolean;
+  /**
    * Per-frame packed float32 view of at least {@link GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH} elements
    * written with `getGPULineSegmentizeParameterValues`.
    */
@@ -88,7 +94,9 @@ export type GPULineSegmentizeProps = {
  *
  * Every input segment of length `L` is split into
  * `clamp(ceil(L / maximumSegmentLength), 1, maximumPieceCount)` equal pieces; input vertices
- * are always kept. A planar context lerps; a great-circle longitude/latitude context treats
+ * are kept, except a repeated closing row when `closedLines` is true. Closed lines densify
+ * their implicit last-to-first edge without repeating the first vertex. A planar context lerps;
+ * a great-circle longitude/latitude context treats
  * positions as degrees, measures haversine lengths times the sphere radius (meters by default), and slerps interior points evenly in angle along the
  * great circle. Spherical output longitudes are unwrapped so each line stays continuous across
  * the antimeridian (values may leave `[-180, 180]`), which deck.gl `PathLayer` handles with
@@ -129,6 +137,9 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
     this.maximumPieceCount =
       props.maximumPieceCount ?? GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECE_COUNT;
     const {id} = this;
+    if (props.closedLines !== undefined && typeof props.closedLines !== 'boolean') {
+      throw new Error(`${id} closedLines must be a boolean`);
+    }
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rowCount = props.positions.length;
     if (rowCount < 1) {
@@ -162,7 +173,8 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
 
   /**
    * Returns the optional prefix node, the count node, the scan nodes, the emit node, the publish
-   * node and an optional source-line-index node.
+   * node, an optional source-row node (closed spherical rings with every vertex column), and an
+   * optional source-line-index node.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -186,6 +198,9 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
       coordinateSystem === 'spherical'
         ? createTransientView(graph, `${id}-row-shifts`, 'float32', rowCount)
         : undefined;
+    const separateSourceRows = Boolean(
+      props.closedLines && rowShifts && rowMeasures && output.sourceRows
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (rowMeasures || rowShifts) {
       nodes.push(
@@ -196,6 +211,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
           lineOffsets: props.lineOffsets,
           coordinateSystem,
           radius,
+          closedLines: props.closedLines,
           rowMeasures,
           rowShifts
         })
@@ -211,7 +227,8 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         coordinateSystem,
         radius,
         maximumPieceCount: this.maximumPieceCount,
-        counts
+        counts,
+        closedLines: props.closedLines
       }),
       ...new GPUScan({
         id: `${id}-scan`,
@@ -221,6 +238,8 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
       }).getCommandNodes(graph),
       createSegmentizeEmitNode<Parameters>(graph, {
         id: `${id}-emit`,
+        closedLines: props.closedLines,
+        lineOffsets: props.lineOffsets,
         operation: OPERATION,
         positions: props.positions,
         coordinateSystem,
@@ -230,7 +249,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         rowMeasures,
         rowShifts,
         outputPositions: output.positions,
-        outputSourceRows: output.sourceRows,
+        outputSourceRows: separateSourceRows ? undefined : output.sourceRows,
         outputMeasures: output.measures
       }),
       createLineOffsetsPublishNode<Parameters>(graph, {
@@ -249,6 +268,17 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
         lineCountOutput: output.status.lineCount
       })
     );
+    if (separateSourceRows && output.sourceRows) {
+      nodes.push(
+        createSegmentizeSourceRowsNode(graph, {
+          id: `${id}-source-rows`,
+          operation: OPERATION,
+          counts,
+          starts,
+          outputSourceRows: output.sourceRows
+        })
+      );
+    }
     if (output.sourceLineIndices) {
       nodes.push(
         createIdentitySourceLineIndicesNode<Parameters>(graph, {

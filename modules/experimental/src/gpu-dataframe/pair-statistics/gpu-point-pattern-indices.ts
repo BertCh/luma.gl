@@ -20,6 +20,7 @@ import {
 import {
   createPairStatisticsClearNode,
   getPairStatisticsInputNodes,
+  getPairStatisticsWindowParameterNodes,
   getPairStatisticsSharedWGSL,
   getPairStatisticsSortedPointsNodes,
   getPairStatisticsTotalSumNodes,
@@ -38,6 +39,18 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
+import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../utils/exact-geometry-wgsl';
+import {
+  getStudyWindowBinding,
+  getStudyWindowWGSL,
+  getStudyWindowWGSLOptions
+} from '../../utils/study-window-wgsl';
 
 const OPERATION = 'GPUPointPatternIndices';
 
@@ -161,6 +174,8 @@ export type GPUPointPatternIndicesOutput = {
   clarkEvans?: GraphDataView<'float32'>;
   /** Optional caller-owned quadrat counts, `columns * rows` rows, row-major (`row * columns + column`). */
   quadratCounts?: GraphDataView<'uint32'>;
+  /** Window area per row-major quadrat, rescaled to the polygon area; plain cell area for rectangles. */
+  quadratAreas?: GraphDataView<'float32'>;
   /**
    * Optional caller-owned quadrat summary `[quadratCount, mean, variance, varianceToMeanRatio,
    * chiSquare, degreesOfFreedom, pValue]` (`GPU_QUADRAT_STATISTICS_LENGTH` rows).
@@ -188,6 +203,10 @@ export type GPUPointPatternIndicesProps = {
    * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
+  /** Prepared valid polygon in the same planar frame, or 'rectangle' (default).
+   * Polygon parameters require bounds: 'study-window' and an explicit 'guard' or 'none' correction.
+   */
+  studyWindow?: GPUStudyWindow;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -205,19 +224,23 @@ export type GPUPointPatternIndicesProps = {
   mask?: GraphDataView<'uint32'>;
   /**
    * Compile-time `[columns, rows]` of the quadrat tiling of the per-frame bounds. Required with
-   * `output.quadratCounts` or `output.quadratStatistics`; `columns * rows` is at most 65536.
+   * `output.quadratCounts`, `output.quadratAreas` or `output.quadratStatistics`; `columns * rows` is at most 65536.
    */
   quadratGrid?: readonly [number, number];
+  /** Midpoint samples per quadrat axis (default 16). Positive integer; count * samples² <= 2^24.
+   * Polygon quadrat areas are lattice approximations; increase this for narrow boundary features.
+   */
+  quadratSamples?: number;
   /** Caller-owned output views. At least one is required. */
   output: GPUPointPatternIndicesOutput;
 };
 
 /**
  * Clark-Evans nearest-neighbor index and quadrat-count dispersion statistics of a planar point
- * pattern in a rectangular window (pointpats `PointPattern` / ArcGIS Average Nearest Neighbor).
+ * pattern in a rectangle or prepared polygon window (pointpats `PointPattern` / ArcGIS Average Nearest Neighbor).
  *
  * Definition, which the GPU result matches within the bounds below:
- * - The window is the per-frame bounds rectangle with area `A`. Included rows have a nonzero mask
+ * - The window is the per-frame bounds rectangle or prepared polygon with area `A`. Included rows have a nonzero mask
  *   (when given) and a finite position inside the window. `n` is the included row count.
  * - Nearest neighbor: for each included row, the included row with the smallest f32 squared
  *   distance `dx * dx + dy * dy`, ties to the smallest row index, found by an expanding ring search
@@ -240,8 +263,11 @@ export type GPUPointPatternIndicesProps = {
  *   `standardError = 0.26136 sqrt(A) / n` (pointpats, ArcGIS Average Nearest Neighbor). The
  *   `pValue` is the normal-theory p-value of `z` for the per-frame `alternative` (`'two-sided'`
  *   default; `'greater'` tests for regularity, `'lesser'` for clustering). The rectangular
- *   window is assumed to be the study area: a bounding box of an irregular region overstates `A`
- *   and so makes patterns look clustered.
+ *   window is assumed to be the study area. Polygon windows require explicit 'none' or 'guard'.
+ *   'guard' averages nearest-neighbor distances only over included points at least guardDistance
+ *   from any boundary; neighbors still include every included point. Its expectation is
+ *   `0.5 sqrt(A / n)` and standard error `0.26136 sqrt(A / (n * focusCount))`. Zero focus
+ *   points give NaN statistics. Recommend `guardDistance >= 2 / sqrt(n / A)`.
  * - Quadrats: the window splits into `columns x rows` equal rectangles (a point on the maximum
  *   edge belongs to the last one). With `m` quadrats and counts `c_q` (sum `n`): `mean = n / m`,
  *   sample `variance = sum (c_q - mean)^2 / (m - 1)`, `varianceToMeanRatio = variance / mean`
@@ -254,6 +280,9 @@ export type GPUPointPatternIndicesProps = {
  *   up to 100 degrees of freedom and the Wilson-Hilferty approximation (absolute error below 2e-4)
  *   above. The test assumes expected counts of about 5 or more per quadrat.
  *
+ * Polygon quadrats sample a quadratSamples² midpoint lattice, normalize the sampled areas to A,
+ * drop zero-area quadrats and use expected counts n * area / A. The variance row is the sum
+ * of squared residuals / df; the ratio row is chiSquare / df. Equal areas retain the rectangle formula.
  * Counts, ids and `n` are exact. Distances have f32 rounding only; quadrat counts are exact.
  */
 export class GPUPointPatternIndices implements GPUCommandNodeProducer {
@@ -263,12 +292,15 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
   readonly props: GPUPointPatternIndicesProps;
   /** Resolved spatial context (native planar unless the props say otherwise). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time study window. */
+  readonly studyWindow: GPUStudyWindow;
 
   constructor(props: GPUPointPatternIndicesProps) {
     this.id = props.id ?? 'point-pattern-indices';
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     const {output} = props;
     const rows = validatePairStatisticsInputs(id, {
       ...props,
@@ -276,7 +308,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
     });
     const wantsNearest =
       output.nearestNeighborDistances || output.nearestNeighborIds || output.clarkEvans;
-    const wantsQuadrats = output.quadratCounts || output.quadratStatistics;
+    const wantsQuadrats = output.quadratCounts || output.quadratStatistics || output.quadratAreas;
     if (!wantsNearest && !wantsQuadrats) {
       throw new Error(`${id} output needs at least one view`);
     }
@@ -316,6 +348,22 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
           `${id} quadratGrid must be two positive integers with columns * rows <= ${GPU_QUADRAT_MAXIMUM_COUNT}`
         );
       }
+      const quadratSamples = props.quadratSamples ?? 16;
+      if (
+        !Number.isInteger(quadratSamples) ||
+        quadratSamples < 1 ||
+        quadratSamples ** 2 * quadratGrid[0] * quadratGrid[1] > 16777216
+      ) {
+        throw new Error(
+          `${id} quadratSamples squared times the quadrat count must be at most 16777216`
+        );
+      }
+      if (output.quadratAreas) {
+        validatePackedView(output.quadratAreas, ['float32'], `${id} output.quadratAreas`);
+        if (output.quadratAreas.length !== quadratGrid[0] * quadratGrid[1]) {
+          throw new Error(`${id} output.quadratAreas must hold columns * rows rows`);
+        }
+      }
       if (output.quadratCounts) {
         validatePackedUint32View(output.quadratCounts, `${id} output.quadratCounts`);
         if (output.quadratCounts.length !== quadratGrid[0] * quadratGrid[1]) {
@@ -331,7 +379,9 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
         }
       }
     } else if (props.quadratGrid) {
-      throw new Error(`${id} quadratGrid needs output.quadratCounts or output.quadratStatistics`);
+      throw new Error(
+        `${id} quadratGrid needs output.quadratCounts, output.quadratAreas or output.quadratStatistics`
+      );
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -340,6 +390,7 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
         output.nearestNeighborIds,
         output.clarkEvans,
         output.quadratCounts,
+        output.quadratAreas,
         output.quadratStatistics
       ],
       [props.positions, props.parameters, props.mask]
@@ -351,18 +402,50 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, parameters, gridSize, output} = props;
+    const {positions, parameters: callerParameters, gridSize, output} = props;
     validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
-      parameters,
+      callerParameters,
       props.mask,
       output.nearestNeighborDistances,
       output.nearestNeighborIds,
       output.clarkEvans,
       output.quadratCounts,
+      output.quadratAreas,
       output.quadratStatistics
     ]);
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
+    const windowParameters = studyWindow
+      ? getPairStatisticsWindowParameterNodes(graph, {
+          id,
+          operation: OPERATION,
+          parameters: callerParameters,
+          parameterLength: callerParameters.length,
+          window: studyWindow
+        })
+      : undefined;
+    const parameters = windowParameters?.parameters ?? callerParameters;
+    const windowWGSL = studyWindow
+      ? `${EXACT_ORIENTATION_WGSL}
+${EXACT_GEOMETRY_WGSL}
+${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
+      : '';
     const rows = positions.length;
     const cellCount = gridSize[0] * gridSize[1];
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
@@ -371,9 +454,10 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
       positions,
       parameters,
       gridSize,
-      mask: props.mask
+      mask: props.mask,
+      studyWindow
     });
-    const nodes = inputs.nodes;
+    const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
     const sharedWGSL = getPairStatisticsSharedWGSL(gridSize);
 
     if (output.nearestNeighborDistances || output.nearestNeighborIds || output.clarkEvans) {
@@ -537,20 +621,21 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
             operation: OPERATION,
             variant: 'clark-evans',
             bindings: [
+              ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
               {name: 'total', view: total, type: 'f32', access: 'read'},
               {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
               {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
               {name: 'clarkEvans', view: output.clarkEvans, type: 'f32', access: 'read_write'}
             ],
             invocationCount: 1,
-            declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
+            declarations: `${PAIR_STATISTICS_FLOAT_WGSL}${windowWGSL}
 ${ERFC_VALUE_WGSL}
 ${NORMAL_P_VALUE_WGSL}
 const CELL_COUNT: u32 = ${cellCount}u;`,
             body: `let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
   let width = parameters[parametersOffset + 2u] - parameters[parametersOffset];
   let height = parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u];
-  let area = width * height;
+  let area = ${studyWindow ? 'studyWindowSummaryValue(4u)' : 'width * height'};
   let correction = u32(parameters[parametersOffset + 5u] + 0.5);
   let alternative = u32(parameters[parametersOffset + 6u] + 0.5);
   let nan = getQuietNaN(index);
@@ -571,7 +656,7 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
       expected += (0.0514 + 0.041 / sqrt(n)) * perimeter / n;
       standardError = sqrt(0.0703 * area / (n * n) + 0.037 * perimeter * sqrt(area) / (n * n * sqrt(n)));
     }
-    ratio = observed / expected;
+    ${studyWindow ? 'if (correction == 1u) { expected = nan; standardError = nan; }' : ''}${studyWindow ? '\n    ' : ''}ratio = observed / expected;
     zScore = (observed - expected) / standardError;
     pValue = getNormalPValue(zScore, alternative);
   }
@@ -584,10 +669,95 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
   clarkEvans[clarkEvansOffset + 6u] = pValue;`
           })
         );
+        // Keep legacy rectangle kernels byte-identical. The per-frame guard pass overwrites
+        // the summary only for code 2, and never changes nearest-neighbor outputs.
+        const guardTerms = createTransientView(graph, `${id}-guard-terms`, 'float32', rows);
+        const guardFocus = createTransientView(graph, `${id}-guard-focus`, 'float32', rows);
+        const guardTotal = createTransientView(graph, `${id}-guard-total`, 'float32', 1);
+        const guardCount = createTransientView(graph, `${id}-guard-count`, 'float32', 1);
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-guard-terms`,
+            operation: OPERATION,
+            variant: 'guard-terms',
+            bindings: [
+              {name: 'positions', view: positions, type: 'f32', access: 'read'},
+              {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+              {name: 'distances', view: distances, type: 'f32', access: 'read'},
+              {name: 'guardTerms', view: guardTerms, type: 'f32', access: 'read_write'},
+              {name: 'guardFocus', view: guardFocus, type: 'f32', access: 'read_write'},
+              ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : [])
+            ],
+            invocationCount: rows,
+            declarations: `${PAIR_STATISTICS_FLOAT_WGSL}${windowWGSL}`,
+            body: `let distance = distances[distancesOffset + index];
+  let guardDistance = parameters[parametersOffset + 7u];
+  var focus = false;
+  if (parameters[parametersOffset + 5u] == 2.0 && isFiniteFloat(distance) &&
+      isFiniteFloat(guardDistance) && guardDistance > 0.0) {
+    let point = vec2f(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
+    let boundaryDistance = ${
+      studyWindow
+        ? 'getStudyWindowBoundaryDistance(point, guardDistance)'
+        : `min(min(point.x - parameters[parametersOffset], parameters[parametersOffset + 2u] - point.x),
+      min(point.y - parameters[parametersOffset + 1u], parameters[parametersOffset + 3u] - point.y))`
+    };
+    focus = boundaryDistance >= guardDistance;
+  }
+  guardTerms[guardTermsOffset + index] = select(0.0, distance, focus);
+  guardFocus[guardFocusOffset + index] = select(0.0, 1.0, focus);`
+          }),
+          ...getPairStatisticsTotalSumNodes<Parameters>(graph, {
+            id: `${id}-guard-sum`,
+            operation: OPERATION,
+            input: guardTerms,
+            output: guardTotal
+          }),
+          ...getPairStatisticsTotalSumNodes<Parameters>(graph, {
+            id: `${id}-guard-count-sum`,
+            operation: OPERATION,
+            input: guardFocus,
+            output: guardCount
+          }),
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-guard-clark-evans`,
+            operation: OPERATION,
+            variant: 'guard-clark-evans',
+            bindings: [
+              {name: 'guardTotal', view: guardTotal, type: 'f32', access: 'read'},
+              {name: 'guardCount', view: guardCount, type: 'f32', access: 'read'},
+              {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+              {name: 'clarkEvans', view: output.clarkEvans, type: 'f32', access: 'read_write'},
+              ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : [])
+            ],
+            invocationCount: 1,
+            declarations: `${PAIR_STATISTICS_FLOAT_WGSL}${windowWGSL}
+${ERFC_VALUE_WGSL}
+${NORMAL_P_VALUE_WGSL}`,
+            body: `if (parameters[parametersOffset + 5u] != 2.0) { return; }
+  let count = clarkEvans[clarkEvansOffset];
+  let focusCount = guardCount[guardCountOffset];
+  let area = ${studyWindow ? 'studyWindowSummaryValue(4u)' : '(parameters[parametersOffset + 2u] - parameters[parametersOffset]) * (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u])'};
+  let nan = getQuietNaN(index);
+  for (var row = 1u; row < 7u; row++) { clarkEvans[clarkEvansOffset + row] = nan; }
+  if (count >= 2.0 && focusCount > 0.0 && isFiniteFloat(area) && area > 0.0) {
+    let observed = guardTotal[guardTotalOffset] / focusCount;
+    let expected = 0.5 * sqrt(area / count);
+    let standardError = 0.26136 * sqrt(area / (count * focusCount));
+    let zScore = (observed - expected) / standardError;
+    clarkEvans[clarkEvansOffset + 1u] = observed;
+    clarkEvans[clarkEvansOffset + 2u] = expected;
+    clarkEvans[clarkEvansOffset + 3u] = observed / expected;
+    clarkEvans[clarkEvansOffset + 4u] = standardError;
+    clarkEvans[clarkEvansOffset + 5u] = zScore;
+    clarkEvans[clarkEvansOffset + 6u] = getNormalPValue(zScore, u32(parameters[parametersOffset + 6u] + 0.5));
+  }`
+          })
+        );
       }
     }
 
-    if (output.quadratCounts || output.quadratStatistics) {
+    if (output.quadratCounts || output.quadratStatistics || output.quadratAreas) {
       const [quadratColumns, quadratRows] = props.quadratGrid!;
       const quadratCount = quadratColumns * quadratRows;
       const counts =
@@ -626,6 +796,102 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
   }`
         })
       );
+      const areaSamples = studyWindow
+        ? createTransientView(graph, `${id}-quadrat-area-samples`, 'uint32', quadratCount)
+        : undefined;
+      const areaTotals = studyWindow
+        ? createTransientView(graph, `${id}-quadrat-area-totals`, 'uint32', 3)
+        : undefined;
+      if (studyWindow && areaSamples && areaTotals) {
+        const quadratSamples = props.quadratSamples ?? 16;
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-quadrat-area-samples`,
+            operation: OPERATION,
+            variant: 'quadrat-area-samples',
+            bindings: [
+              getStudyWindowBinding(studyWindow),
+              {name: 'areaSamples', view: areaSamples, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: quadratCount,
+            declarations: windowWGSL,
+            body: `let minimum = vec2f(studyWindowSummaryValue(0u), studyWindowSummaryValue(1u));
+  let size = (vec2f(studyWindowSummaryValue(2u), studyWindowSummaryValue(3u)) - minimum) / vec2f(${quadratColumns}.0, ${quadratRows}.0);
+  let cell = vec2f(f32(index % ${quadratColumns}u), f32(index / ${quadratColumns}u));
+  var count = 0u;
+  for (var sample = 0u; sample < ${quadratSamples ** 2}u; sample++) {
+    let fraction = (vec2f(f32(sample % ${quadratSamples}u), f32(sample / ${quadratSamples}u)) + vec2f(0.5)) / ${quadratSamples}.0;
+    let point = minimum + (cell + fraction) * size;
+    if (isInsideStudyWindow(point)) { count++; }
+  }
+  areaSamples[areaSamplesOffset + index] = count;`
+          }),
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-quadrat-area-totals`,
+            operation: OPERATION,
+            variant: 'quadrat-area-totals',
+            bindings: [
+              {name: 'areaSamples', view: areaSamples, type: 'u32', access: 'read'},
+              {name: 'areaTotals', view: areaTotals, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: 1,
+            body: `var total = 0u;
+  var count = 0u;
+  var equal = true;
+  for (var quadrat = 0u; quadrat < ${quadratCount}u; quadrat++) {
+    let samples = areaSamples[areaSamplesOffset + quadrat];
+    total += samples;
+    count += select(0u, 1u, samples > 0u);
+    equal = equal && samples == areaSamples[areaSamplesOffset];
+  }
+  areaTotals[areaTotalsOffset] = total;
+  areaTotals[areaTotalsOffset + 1u] = count;
+  areaTotals[areaTotalsOffset + 2u] = select(0u, 1u, equal);`
+          })
+        );
+      }
+      if (output.quadratAreas) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-quadrat-areas`,
+            operation: OPERATION,
+            variant: 'quadrat-areas',
+            bindings: [
+              {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+              {name: 'quadratAreas', view: output.quadratAreas, type: 'f32', access: 'read_write'},
+              ...(studyWindow && areaSamples && areaTotals
+                ? [
+                    getStudyWindowBinding(studyWindow),
+                    {
+                      name: 'areaSamples',
+                      view: areaSamples,
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    },
+                    {
+                      name: 'areaTotals',
+                      view: areaTotals,
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    }
+                  ]
+                : [])
+            ],
+            invocationCount: quadratCount,
+            declarations: `${PAIR_STATISTICS_FLOAT_WGSL}${windowWGSL}`,
+            body: studyWindow
+              ? `let total = areaTotals[areaTotalsOffset];
+  var area = getQuietNaN(index);
+  if (total > 0u && isStudyWindowUsable()) {
+    area = f32(areaSamples[areaSamplesOffset + index]) * studyWindowSummaryValue(4u) / f32(total);
+  }
+  quadratAreas[quadratAreasOffset + index] = area;`
+              : `quadratAreas[quadratAreasOffset + index] =
+    (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
+    (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]) / ${quadratCount}.0;`
+          })
+        );
+      }
       if (output.quadratStatistics) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
@@ -634,6 +900,22 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
             variant: 'quadrat-statistics',
             bindings: [
               {name: 'quadratCounts', view: counts, type: 'u32', access: 'read'},
+              ...(areaSamples && areaTotals
+                ? [
+                    {
+                      name: 'areaSamples',
+                      view: areaSamples,
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    },
+                    {
+                      name: 'areaTotals',
+                      view: areaTotals,
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    }
+                  ]
+                : []),
               {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
               {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
               {
@@ -650,7 +932,42 @@ ${NORMAL_P_VALUE_WGSL}
 ${CHI_SQUARE_P_VALUE_WGSL}
 const CELL_COUNT: u32 = ${cellCount}u;
 const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
-            body: `let nan = getQuietNaN(index);
+            body: studyWindow
+              ? `let nan = getQuietNaN(index);
+  let m = f32(areaTotals[areaTotalsOffset + 1u]);
+  let total = f32(areaTotals[areaTotalsOffset]);
+  let equalAreas = areaTotals[areaTotalsOffset + 2u] != 0u;
+  let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
+  let mean = select(nan, n / m, m > 0.0);
+  var squares = 0.0;
+  var chiSquare = 0.0;
+  for (var quadrat = 0u; quadrat < QUADRAT_COUNT; quadrat++) {
+    let samples = areaSamples[areaSamplesOffset + quadrat];
+    if (samples > 0u) {
+      let expected = select(n * f32(samples) / total, mean, equalAreas);
+      let centered = f32(quadratCounts[quadratCountsOffset + quadrat]) - expected;
+      squares += centered * centered;
+      chiSquare += centered * centered / expected;
+    }
+  }
+  let variance = select(nan, squares / (m - 1.0), m > 1.0);
+  var ratio = select(nan, chiSquare / (m - 1.0), m > 1.0 && n > 0.0);
+  if (equalAreas) {
+    // Preserve the legacy operations exactly when every quadrat has the same positive area.
+    ratio = select(nan, variance / mean, m > 1.0 && mean > 0.0);
+    chiSquare = (m - 1.0) * ratio;
+  }
+  if (!(m > 1.0 && n > 0.0)) { chiSquare = nan; }
+  quadratStatistics[quadratStatisticsOffset] = m;
+  quadratStatistics[quadratStatisticsOffset + 1u] = mean;
+  quadratStatistics[quadratStatisticsOffset + 2u] = variance;
+  quadratStatistics[quadratStatisticsOffset + 3u] = ratio;
+  quadratStatistics[quadratStatisticsOffset + 4u] = chiSquare;
+  quadratStatistics[quadratStatisticsOffset + 5u] = m - 1.0;
+  quadratStatistics[quadratStatisticsOffset + 6u] = select(nan,
+    getChiSquarePValue(chiSquare, m - 1.0, u32(parameters[parametersOffset + 6u] + 0.5)),
+    isFiniteFloat(chiSquare));`
+              : `let nan = getQuietNaN(index);
   let m = f32(QUADRAT_COUNT);
   let n = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]);
   let mean = n / m;

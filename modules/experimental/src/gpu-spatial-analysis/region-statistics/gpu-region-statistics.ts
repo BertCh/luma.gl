@@ -31,7 +31,11 @@ import {
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {GPUPickRegionMask} from './gpu-pick-region-mask';
-import {GPURegionMask, REGION_STATISTICS_WGSL_HELPERS} from './gpu-region-mask';
+import {
+  GPURegionMask,
+  REGION_STATISTICS_WGSL_HELPERS,
+  getRegionLonLatPolygonCheckNodes
+} from './gpu-region-mask';
 import {
   getGridCandidateNodes,
   getGridMaskScatterNode,
@@ -41,6 +45,7 @@ import {
 import {
   GPU_REGION_STATISTICS_HEADER_LENGTH,
   resolveGPURegionSpatialContext,
+  validateGPURegionSecondarySpatialContext,
   type GPURegionHistogramProps,
   type GPURegionPolygon,
   type GPURegionRadius,
@@ -50,6 +55,7 @@ import {
   type GPURegionStatisticsOutput
 } from './region-statistics-types';
 
+import {validateGPUStatusPort} from '../../analysis-core/contracts';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 /** Workgroup size of the counting kernel: lane 0 publishes one global atomic per workgroup. */
@@ -70,11 +76,19 @@ export type GPURegionStatisticsProps = {
   id?: string;
   /**
    * Coordinate space of `positions` and of the region. Omitted means native planar. Rectangle,
-   * lasso and pick regions also accept longitude/latitude (straight edges in degree space, no
-   * antimeridian handling). A `'radius'` region is a planar distance and throws in
-   * longitude/latitude at construction; project positions to a planar frame first.
+   * lasso and pick regions also accept longitude/latitude with linear edges in degree space.
+   * Prepare polygons that cross ±180 or enclose a pole with `GPULonLatPolygonPreparation`;
+   * optional status counters report unprepared rings. A `'radius'` region is a planar distance
+   * and throws in longitude/latitude at construction; project positions to a planar frame first.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `region` in position coordinates when declared separately from `spatialContext`.
+   * Must be compatible (datum, coordinate space, metric, units, planar frame), with linear
+   * longitude/latitude edges. Omitted means `spatialContext` describes both inputs.
+   * Screen-space, pick-region and mask selections cannot declare a region context.
+   */
+  regionSpatialContext?: GPUSpatialContext;
   /** Region input: a shape, a pick-region result or a caller-computed mask. */
   region: GPURegionSelection;
   /** Packed 2D positions. Required for `rectangle`, `polygon`, and `radius`. */
@@ -121,6 +135,12 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       id,
       props.spatialContext,
       props.region.kind
+    );
+    validateGPURegionSecondarySpatialContext(
+      this.id,
+      props.regionSpatialContext,
+      this.spatialContext,
+      props.region
     );
     const {region: selection, positions, values, sourceIds, histogram} = props;
     const {mask: outputMask, selectedRows: output, summary, drawInstanceCount} = props.output;
@@ -207,6 +227,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} output.drawInstanceCount requires output.selectedRows`);
       }
     }
+    if (props.output.status) validateGPUStatusPort(`${id} output.status`, props.output.status);
     if (props.spatialIndex) {
       validateGridIndexProps(id, {...props, spatialIndex: props.spatialIndex});
     }
@@ -219,13 +240,15 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         output?.status.count,
         output?.status.overflow,
         output?.status.requiredCount,
-        drawInstanceCount
+        drawInstanceCount,
+        props.output.status?.antimeridianUncertainCount,
+        props.output.status?.poleUncertainCount
       ],
       getStatisticsInputs(props)
     );
   }
 
-  /** Returns selection, count, reduction, histogram, compaction, and summary nodes in order. */
+  /** Returns optional polygon checks, selection, reductions, compaction and summary nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -240,9 +263,18 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       output?.status.overflow,
       output?.status.requiredCount,
       drawInstanceCount,
+      props.output.status?.antimeridianUncertainCount,
+      props.output.status?.poleUncertainCount,
       ...getStatisticsInputs(props)
     ]);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes = getRegionLonLatPolygonCheckNodes(
+      graph,
+      id,
+      OPERATION,
+      this.spatialContext,
+      selection,
+      props.output.status
+    );
     const regionOverflow = createTransientView(graph, `${id}-region-overflow`, 'uint32', 1);
     const {spatialIndex} = props;
     const needsSourceMask = !spatialIndex || Boolean(outputMask || output);
@@ -301,6 +333,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
             ...new GPURegionMask({
               id: `${id}-region`,
               spatialContext: this.spatialContext,
+              regionSpatialContext: props.regionSpatialContext,
               positions: positions as GPUFloat32Positions,
               region: selection,
               output: {mask: mask as GraphDataView<'uint32'>, status: {overflow: regionOverflow}}
@@ -312,6 +345,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
             ...new GPURegionMask({
               id: `${id}-region`,
               spatialContext: this.spatialContext,
+              regionSpatialContext: props.regionSpatialContext,
               positions: positions as GPUFloat32Positions,
               region: selection,
               output: {mask: mask as GraphDataView<'uint32'>, status: {overflow: regionOverflow}}

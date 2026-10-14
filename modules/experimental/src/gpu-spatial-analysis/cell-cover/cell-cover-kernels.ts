@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
 import {dggs} from '@luma.gl/shadertools';
 import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../../utils/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
@@ -140,16 +141,18 @@ fn coverSegmentHitsRect(a: vec2f, b: vec2f, lo: vec2f, hi: vec2f) -> bool {
 `;
 
 const POLYGON_WGSL = /* wgsl */ `${COMMON_WGSL}
+${LON_LAT_RING_WGSL}
 struct CoverFeatureInfo {
   bounds: vec4f,
   vertexCount: u32,
   vertexBegin: u32,
   vertexEnd: u32,
-  hasNonFinite: bool
+  hasNonFinite: bool,
+  hasCrossingEdge: bool
 }
 
 fn coverGetFeatureInfo(feature: u32) -> CoverFeatureInfo {
-  var info = CoverFeatureInfo(vec4f(1e30, 1e30, -1e30, -1e30), 0u, 0u, 0u, false);
+  var info = CoverFeatureInfo(vec4f(1e30, 1e30, -1e30, -1e30), 0u, 0u, 0u, false, false);
   var isFirstRing = true;
   let firstPolygon = featureOffsets[featureOffsetsOffset + feature];
   let endPolygon = featureOffsets[featureOffsetsOffset + feature + 1u];
@@ -169,6 +172,8 @@ fn coverGetFeatureInfo(feature: u32) -> CoverFeatureInfo {
       }
       for (var vertex = firstVertex; vertex < endVertex; vertex++) {
         let p = coverGetVertex(vertex);
+        let next = coverGetVertex(select(vertex + 1u, firstVertex, vertex + 1u == endVertex));
+        info.hasCrossingEdge = info.hasCrossingEdge || lonLatIsCrossingEdge(p, next);
         if (coverIsFinite(p)) {
           info.bounds = vec4f(min(info.bounds.xy, p), max(info.bounds.zw, p));
         } else {
@@ -288,22 +293,21 @@ const PI: f32 = 3.14159265358979;
 `;
 }
 
-/** Per-feature status counter updates over `bounds`; defines `isAntimeridian`. */
+/** Per-feature status counter updates over `bounds`; defines `hasCrossingEdge`. */
 function getCoverStatusSource(
   family: CellCoverKernelContext['family'],
   status: {invalidCount?: GraphDataView<'uint32'>; uncertainCount?: GraphDataView<'uint32'>}
 ): string {
-  // A feature wider than 180 degrees of longitude is an antimeridian crossing in planar
-  // longitude/latitude (or a world-spanning ring): it gets no candidates and is counted invalid.
+  // Unsplit crossing edges get no candidates; split full-width features remain valid.
   // A feature reaching the latitudes the lattice clamps to loses polar cells: counted uncertain.
   const invalidStatement = status.invalidCount
-    ? 'if (isAntimeridian) { atomicAdd(&invalidCount[invalidCountOffset], 1u); }'
+    ? 'if (hasCrossingEdge) { atomicAdd(&invalidCount[invalidCountOffset], 1u); }'
     : '';
   const polarLatitude = family === 'h3' ? CELL_COVER_H3_MAXIMUM_LATITUDE : 85.051129;
   const uncertainStatement = status.uncertainCount
-    ? `if (!isAntimeridian && bounds.x <= bounds.z && (bounds.w > ${getWGSLFloatLiteral(polarLatitude)} || bounds.y < -${getWGSLFloatLiteral(polarLatitude)})) { atomicAdd(&uncertainCount[uncertainCountOffset], 1u); }`
+    ? `if (!hasCrossingEdge && bounds.x <= bounds.z && (bounds.w > ${getWGSLFloatLiteral(polarLatitude)} || bounds.y < -${getWGSLFloatLiteral(polarLatitude)})) { atomicAdd(&uncertainCount[uncertainCountOffset], 1u); }`
     : '';
-  return `let isAntimeridian = bounds.x <= bounds.z && (bounds.z - bounds.x) > 180.0;
+  return `let hasCrossingEdge = info.hasCrossingEdge;
   ${invalidStatement}
   ${uncertainStatement}`;
 }
@@ -330,7 +334,7 @@ export function createCoverCountNode<Parameters>(
   } = {}
 ): GPUCommandNode<Parameters> {
   const {resolution, candidateCapacity, family} = context;
-  const antimeridianSource = getCoverStatusSource(family, status);
+  const crossingSource = getCoverStatusSource(family, status);
   const capacityPlusOne = candidateCapacity + 1;
   // Flag word 5 of the scanline range table: bit 0 marks a non-finite vertex (bounding box only).
   const nonFiniteSource = context.scanline
@@ -355,10 +359,12 @@ fn coverClampCount(width: u32, height: u32) -> u32 {
   let rangeBase = rangesOffset + index * RANGE_STRIDE;
   var count = 0u;
   ${nonFiniteSource}
-  ${antimeridianSource}
-  if (!isAntimeridian && bounds.x <= bounds.z && bounds.y <= bounds.w) {
-    let x0 = quadbinGetTileX(bounds.x, RESOLUTION);
-    let x1 = quadbinGetTileX(bounds.z, RESOLUTION);
+  ${crossingSource}
+  if (!hasCrossingEdge && bounds.x <= bounds.z && bounds.y <= bounds.w) {
+    // Point indexing wraps +180 to column zero; bounds must retain the easternmost column.
+    let lastColumn = (1u << RESOLUTION) - 1u;
+    let x0 = select(quadbinGetTileX(bounds.x, RESOLUTION), lastColumn, bounds.x >= 180.0);
+    let x1 = select(quadbinGetTileX(bounds.z, RESOLUTION), lastColumn, bounds.z >= 180.0);
     let y0 = quadbinGetTileY(bounds.w, RESOLUTION);
     let y1 = quadbinGetTileY(bounds.y, RESOLUTION);
     if (x1 >= x0 && y1 >= y0) {
@@ -386,8 +392,8 @@ fn coverToCount(value: f32) -> u32 {
   ${nonFiniteSource}
   let originLat = max(bounds.y - LATTICE_SPACING, -MAXIMUM_LATITUDE);
   let endLat = min(bounds.w + LATTICE_SPACING, MAXIMUM_LATITUDE);
-  ${antimeridianSource}
-  if (!isAntimeridian && bounds.x <= bounds.z && bounds.y <= bounds.w && originLat <= endLat) {
+  ${crossingSource}
+  if (!hasCrossingEdge && bounds.x <= bounds.z && bounds.y <= bounds.w && originLat <= endLat) {
     // Longitude spacing from the most equatorward latitude of the band, where a degree of longitude
     // is longest: a spacing taken from the poleward edge is too coarse for the rows nearer the
     // equator and loses cells there.

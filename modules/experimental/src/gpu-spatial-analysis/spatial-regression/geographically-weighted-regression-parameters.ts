@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  type GPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance
+} from '../../analysis-core/contracts/spatial-context';
+
 /**
  * Largest predictor count (columns of `predictors`, without the intercept) of
  * `GPUGeographicallyWeightedRegression`: 11, a design of 12 columns with the intercept (it was 7).
@@ -224,6 +229,12 @@ export type GPUGeographicallyWeightedRegressionBandwidthMode =
 
 /** CPU description of the per-frame parameters of `GPUGeographicallyWeightedRegression`. */
 export type GPUGeographicallyWeightedRegressionSettings = {
+  /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Weight kernel. Defaults to `'bisquare'`. */
   kernel?: GPUGeographicallyWeightedRegressionKernel;
   /** Meaning of the ladder values. Defaults to `'fixed'`. */
@@ -301,6 +312,13 @@ export function getGPUGeographicallyWeightedRegressionParameterValues(
   for (let index = 0; index < bandwidths.length; index++) {
     if (!Number.isFinite(bandwidths[index])) {
       throw new Error('GWR bandwidths must be finite');
+    }
+    if (mode === GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE.fixed) {
+      warnGPUShortLongitudeLatitudeDistance(
+        'GPUGeographicallyWeightedRegression',
+        settings.spatialContext,
+        bandwidths[index]
+      );
     }
     target[GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_PARAMETER_HEADER_LENGTH + index] =
       bandwidths[index];

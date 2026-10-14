@@ -43,6 +43,34 @@ const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
  * the catalogue makes additions reviewable without importing any contributor constructor.
  */
 const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
+  GPULonLatPolygonPreparation: {
+    inputs: ['polygons', 'parameters'],
+    outputs: ['polygons', 'attributes'],
+    coordinateModels: ['spherical'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'capacity-bounded',
+    semantics: 'approximate',
+    deterministic: true,
+    status: [...BOUNDED_STATUS, 'invalidCount', 'approximation'],
+    contract: 'GPULonLatPolygonPreparationOutput',
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/lon-lat-polygons/gpu-lon-lat-polygon-preparation.spec.ts`
+  },
+  GPUStudyWindowPreparation: {
+    inputs: ['polygons'],
+    outputs: ['attributes', 'summary'],
+    coordinateModels: ['planar'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'exact',
+    deterministic: true,
+    status: [],
+    contract: 'GPUPolygonGeometryFields',
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/study-window/gpu-study-window-preparation.spec.ts`
+  },
   GPUTerrainPeakProminence: {
     package: '@luma.gl/experimental/gpu-terrain',
     inputs: ['surface'],

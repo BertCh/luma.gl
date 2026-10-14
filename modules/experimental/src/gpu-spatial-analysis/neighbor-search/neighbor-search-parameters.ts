@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  type GPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance
+} from '../../analysis-core/contracts/spatial-context';
+
 import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/index';
 
 /** Number of float32 elements in a {@link GPUNeighborSearch} parameter view. */
@@ -83,6 +88,12 @@ export type GPUNeighborSearchKernel = keyof typeof GPU_NEIGHBOR_SEARCH_KERNEL;
 /** Per-frame settings of {@link GPUNeighborSearch}, packed by {@link getGPUNeighborSearchParameterValues}. */
 export type GPUNeighborSearchSettings = {
   /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and queries outside it (or
    * with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it
    * must cover every point of interest (count the dropped rows with `invalidCount`). For a
@@ -149,6 +160,11 @@ export function getGPUNeighborSearchParameterValues(
   if (!(kernel in GPU_NEIGHBOR_SEARCH_KERNEL)) {
     throw new Error(`GPUNeighborSearch unknown kernel ${kernel}`);
   }
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUNeighborSearch',
+    settings.spatialContext,
+    settings.radius
+  );
   values[0] = minimumX;
   values[1] = minimumY;
   values[2] = maximumX;

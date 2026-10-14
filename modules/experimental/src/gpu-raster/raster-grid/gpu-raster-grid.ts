@@ -57,6 +57,12 @@ export type GPURasterBandOptions = {
   scale?: number;
   /** Calibration offset. Defaults to zero. */
   offset?: number;
+  /**
+   * Vertical datum of height values, such as `'ellipsoidal'` or `'EPSG:5773'` (EGM96).
+   * Descriptive only: operators compare declared datums and never convert. Absent means
+   * undeclared; derived bands do not inherit it.
+   */
+  verticalDatum?: string;
 };
 
 /**
@@ -85,6 +91,7 @@ export function makeGPURasterBand<Format extends GPURasterScalarFormat>(
     ...(options.validity ? {validity: options.validity} : {}),
     ...(options.noDataValue !== undefined ? {noDataValue: options.noDataValue} : {}),
     ...(options.scale !== undefined ? {scale: options.scale} : {}),
-    ...(options.offset !== undefined ? {offset: options.offset} : {})
+    ...(options.offset !== undefined ? {offset: options.offset} : {}),
+    ...(options.verticalDatum !== undefined ? {verticalDatum: options.verticalDatum} : {})
   } as GPURasterBufferBand<Format>;
 }

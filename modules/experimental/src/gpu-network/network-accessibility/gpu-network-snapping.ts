@@ -138,6 +138,8 @@ export type GPUNetworkSnappingProps = {
    * Optional one-row per-frame maximum snap distance in the context's length unit.
    * Points farther from every edge snap to none.
    * Required with `candidateCapacity`.
+   * On longitude/latitude this distance arrives as a GPU view, so no short-distance warning is possible;
+   * below about 17 m use createGPULocalFrame (see Precision of longitude/latitude positions).
    */
   maximumSnapDistance?: GraphDataView<'float32'>;
   /**

@@ -216,6 +216,7 @@ export type GPUNeighborSearchProps = {
  *   conservative spherical lower bound of the distance to every unvisited cell exceeds the K-th
  *   distance, so results do not depend on `gridSize`; a looser bound only costs speed (queries near
  *   the poles or narrow longitude spans scan more cells). Points with latitude beyond +-90 are invalid.
+ *   See "Precision of longitude/latitude positions" for the 10·Q ≈ 17 m distance warning threshold.
  * - Point and query rows that are not valid never take part. Report them with `invalidCount`.
  * - kNN: the `k` valid targets with the smallest `(d^2, id)` (ties go to the lowest ID), optionally
  *   only those with `d <= radius`. Fewer valid targets give a shorter row.

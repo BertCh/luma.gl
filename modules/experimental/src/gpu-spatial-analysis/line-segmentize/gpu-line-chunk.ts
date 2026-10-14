@@ -19,6 +19,7 @@ import {
   getGPUGreatCircleRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {createLinePrefixNode} from './line-segmentize-kernels';
@@ -47,6 +48,8 @@ export const GPU_LINE_CHUNK_PARAMETER_LENGTH = 4;
 
 /** CPU description of the per-frame parameters of `GPULineChunk`. */
 export type GPULineChunkSettings = {
+  /** Context of the lengths; a lon/lat context warns when the length is below float32 resolution. */
+  spatialContext?: GPUSpatialContext;
   /** `'chunk'` mode: piece length in position (or sphere-radius) units. */
   chunkLength?: number;
   /** `'substring'` mode: start distance from each line's first vertex, clamped to the line. */
@@ -78,6 +81,11 @@ export function getGPULineChunkParameterValues(
     throw new Error('Line chunk settings must be numbers and chunkLength non-negative');
   }
   target.set([chunkLength, Math.max(startMeasure, -3.4e38), endMeasure, 0]);
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPULineChunk',
+    settings.spatialContext,
+    settings.chunkLength
+  );
   return target;
 }
 

@@ -102,6 +102,8 @@ export const MONOTONE_PIECE_STRIDE = 8;
 
 /** Compile-time sizes baked into the kernels. */
 export type MonotoneSizes = {
+  /** Offsets include GPU-computed slices and ring activity flags. */
+  preparedLayout?: boolean;
   /** Rows of `positions`. */
   vertexCount: number;
   polygonCount: number;
@@ -121,6 +123,7 @@ const NONE: u32 = 0xffffffffu;
 const OVERFLOW_BIT: u32 = 0x80000000u;
 const VERTEX_COUNT: u32 = ${sizes.vertexCount}u;
 const POLYGON_COUNT: u32 = ${sizes.polygonCount}u;
+const PREPARED_LAYOUT: bool = ${Boolean(sizes.preparedLayout)};
 const RING_COUNT: u32 = ${sizes.ringCount}u;
 const CAPACITY: u32 = ${sizes.capacity}u;
 const INDEX_LENGTH: u32 = ${sizes.indexLength}u;
@@ -230,6 +233,9 @@ fn orderedKey(x: f32) -> u32 {
 /** Slice arithmetic shared with the Earcut kernel: first index slot of polygon `p`. */
 export const MONOTONE_SLICE_WGSL = /* wgsl */ `
 fn baseSlotOf(polygon: u32) -> i32 {
+  if (PREPARED_LAYOUT) {
+    return 3 * i32(polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT + 1u + polygon]);
+  }
   let ringPrefix = i32(polygonOffsets[polygonOffsetsOffset + polygon]);
   let vertexPrefix = i32(ringOffsets[ringOffsetsOffset + u32(ringPrefix)]);
   return 3 * (vertexPrefix + 2 * ringPrefix - 4 * i32(polygon));
@@ -258,18 +264,25 @@ export type MonotoneKernelSource = {declarations: string; body: string};
  * R0, the size routing, is part of the Earcut kernel (the first pass): `sizeRouteOf(polygon)` is 1
  * for polygons with at least `minimumVertices` vertices over all rings, which skip Earcut and take
  * the monotone path, and 0 otherwise. The declarations need `polygonOffsets`, `ringOffsets` and a
- * `VERTEX_COUNT` constant in the module.
+ * `VERTEX_COUNT` constant in the module. With `preparedLayout`, it reads the GPU-classified live
+ * vertex count from the appended polygon metadata and also needs `POLYGON_COUNT`.
  */
-export function getSizeRouteWGSL(minimumVertices: number): string {
+export function getSizeRouteWGSL(minimumVertices: number, preparedLayout: boolean = false): string {
   return /* wgsl */ `
 const MONOTONE_MINIMUM_VERTICES: u32 = ${minimumVertices}u;
 fn sizeRouteOf(polygon: u32) -> u32 {
+  ${
+    preparedLayout
+      ? `let count = polygonOffsets[polygonOffsetsOffset + 2u * (POLYGON_COUNT + 1u) + polygon];
+  return select(0u, 1u, count >= MONOTONE_MINIMUM_VERTICES);`
+      : `
   let firstRing = polygonOffsets[polygonOffsetsOffset + polygon];
   let endRing = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
   if (endRing <= firstRing) { return 0u; }
   let first = min(ringOffsets[ringOffsetsOffset + firstRing], VERTEX_COUNT);
   let end = min(ringOffsets[ringOffsetsOffset + endRing], VERTEX_COUNT);
-  return select(0u, 1u, end >= first + MONOTONE_MINIMUM_VERTICES);
+  return select(0u, 1u, end >= first + MONOTONE_MINIMUM_VERTICES);`
+  }
 }
 `;
 }
@@ -358,6 +371,7 @@ fn isFiniteBits(x: f32) -> bool { return (bitcast<u32>(x) & 0x7f800000u) != 0x7f
     return;
   }
   jInfo[info + 1u] = polygon;
+  ${sizes.preparedLayout ? 'if (ringOffsets[ringOffsetsOffset + RING_COUNT + 1u + ring] == 0u) { return; }' : ''}
   let ringBegin = ringOffsets[ringOffsetsOffset + ring];
   let ringEnd = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
   let point = vertexAt(row);

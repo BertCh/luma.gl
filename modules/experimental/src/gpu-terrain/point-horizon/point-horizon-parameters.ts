@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPURasterMetadata} from '../../gpu-raster/index';
+import type {GPUTerrainHeightReference} from '../../analysis-core/contracts/vertical-datum';
 import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS
@@ -63,8 +64,9 @@ export type GPUPointHorizonRowDirection = 'south' | 'north';
 /**
  * Eye and target height model. `'ground'` (default): the eye is the bilinear ground at the
  * observer plus its height row value. `'absolute'`: the height value is the eye elevation itself.
+ * Alias of the shared {@link GPUTerrainHeightReference}.
  */
-export type GPUPointHorizonHeightReference = 'ground' | 'absolute';
+export type GPUPointHorizonHeightReference = GPUTerrainHeightReference;
 
 /**
  * Sample traversal. `'march'` evaluates every sample of the distance lattice. `'pyramid'` (default)

@@ -42,7 +42,7 @@ export type GPURandomPointsInPolygonProps = GPUPolygonGeometryFields & {
    * Other contexts throw at construction.
    */
   spatialContext?: GPUSpatialContext;
-  /** Number of points to place in each feature, one row per feature. */
+  /** Requested points per feature. Zero-area features get no slots and report failed requests. */
   counts: GraphDataView<'uint32'>;
   /** Per-frame uint32 parameters written with `getGPUDotDensityParameterValues`. */
   parameters: GraphDataView<'uint32'>;
@@ -59,7 +59,8 @@ export type GPURandomPointsInPolygonProps = GPUPolygonGeometryFields & {
 
 /**
  * Places `counts[feature]` uniformly random points inside each polygon feature (holes excluded),
- * optionally thinned by a weight raster.
+ * optionally thinned by a weight raster. Empty polygons and degenerate rings are skipped on the
+ * GPU; zero-area features produce zero points and report requests in `output.status.failedCount`.
  *
  * Point `j` of feature `f` is drawn from `philox((f, j, attempt, 0), (seed, 7))` exactly as in
  * {@link GPUDotDensity}: an area-weighted triangle of the GPU triangulation, then a uniform point in

@@ -12,6 +12,7 @@ export type {
   GPUCardinalityPort,
   GPUInvalidStatusPort,
   GPUIterationStatusPort,
+  GPULonLatPolygonStatusPort,
   GPUOverflowStatusPort,
   GPURecipeStageStatusPort,
   GPURecipeStatusPort,
@@ -48,6 +49,7 @@ export type {
   GPUSpatialContextCompatibility,
   GPUSpatialContextSupport,
   GPUSpatialCoordinateSpace,
+  GPUSpatialEdgeModel,
   GPUSpatialEllipsoid,
   GPUSpatialMetric,
   GPUSpatialUnit,
@@ -62,9 +64,17 @@ export type {
 export {
   assertCompatibleGPUSpatialContexts,
   getGPUSpatialContextCompatibility,
+  GPU_LINEAR_EDGE_MODELS,
+  getGPUEdgeModel,
+  getGPUDatumKey,
+  getGPULongitudeLatitudeQuantum,
+  GPU_SHORT_LONGITUDE_LATITUDE_DISTANCE_FACTOR,
+  isGPUShortLongitudeLatitudeDistance,
+  warnGPUShortLongitudeLatitudeDistance,
   GPU_PLANAR_SPATIAL_CONTEXT,
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   validateGPUSpatialContext,
   getGPUAreaUnit,
   getGPUSphereRadius,
@@ -92,6 +102,27 @@ export {
 export type {GPULocalFrame, GPULocalFrameKind, GPULocalFrameProps} from './local-frame';
 
 export {createGPULocalFrame} from './local-frame';
+
+export type {GPUTerrainHeightReference} from './vertical-datum';
+export {
+  GPU_ELLIPSOIDAL_VERTICAL_DATUM,
+  assertCompatibleGPUVerticalDatums
+} from './vertical-datum';
+
+export type {
+  GPURectangleStudyWindow,
+  GPUStudyWindowSlabViews,
+  GPUPolygonStudyWindowViews,
+  GPUPolygonStudyWindow,
+  GPUStudyWindow
+} from './study-window';
+export {
+  GPU_STUDY_WINDOW_SUMMARY_LENGTH,
+  GPU_STUDY_WINDOW_SUMMARY,
+  GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN,
+  GPU_STUDY_WINDOW_FLAG_EMPTY,
+  resolveGPUStudyWindow
+} from './study-window';
 
 export type {
   GPUSpatialParameterArray,

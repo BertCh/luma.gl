@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts';
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../../analysis-core/lon-lat-ring-wgsl';
+import {createFillNode} from '../../utils/wgsl-kernel-nodes';
+
 import {
   createTransientView,
   GPUScan,
@@ -31,10 +38,13 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
+  GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport,
-  getGPUSphereRadius
+  getGPUSphereRadius,
+  warnGPUShortLongitudeLatitudeDistance
 } from '../../analysis-core/contracts/spatial-context';
 import {
   createBoundsNode,
@@ -110,6 +120,7 @@ const MAXIMUM_STORAGE_BUFFERS = 8;
  */
 const SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: ['planar', 'longitude-latitude'],
+  edgeModels: GPU_LINEAR_EDGE_MODELS,
   metrics: ['none', 'native', 'great-circle']
 } as const);
 
@@ -196,8 +207,12 @@ export type GPUSpatialPredicateJoinOutput = {
    * `pairs.leftIds.length` when both are given. `weights.distances` is not supported.
    */
   weights?: GPUSpatialWeights;
-  /** Completeness scalars. */
-  status?: {
+  /**
+   * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
+   * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
+   * with `GPULonLatPolygonPreparation`. Both fields are left untouched in planar contexts.
+   */
+  status?: GPULonLatPolygonStatusPort & {
     /** One-row flag: 1 when the BVH, candidate, or pair capacity overflowed. Required for `'inner'` without `pairs`. */
     overflow?: GraphDataView<'uint32'>;
     /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
@@ -282,21 +297,31 @@ export type GPUSpatialPredicateJoinProps = {
    *   lines in longitude/latitude for distance, intersection and containment alike (the same edge
    *   model as the network snapping contributors); the point-to-segment foot is found in the local
    *   equirectangular frame of the point, accurate for edges of road length, so densify long edges
-   *   first. A polygon that
-   *   spans the antimeridian is not split.
+   *   first.
    * - `{coordinateSpace: 'longitude-latitude', metric: 'none'}`, every predicate except `dwithin`:
    *   topology in the degree plane, as GEOS and PostGIS `geometry` do for coordinates in degrees.
-   *   There is no metric, so no distances are involved; polygons are not split at the antimeridian
-   *   and a polygon that spans it is a 358-degree-wide polygon. `dwithin` with this metric throws.
+   *   There is no metric, so no distances are involved. `dwithin` with this metric throws.
+   *
+   * Prepare polygons that cross ±180 or enclose a pole with `GPULonLatPolygonPreparation`;
+   * optional status counters report unprepared rings on both polygon sides. Longitude/latitude
+   * requires `edgeModel: 'linear'` (the default); great-circle edges require preparation.
    *
    * Any other combination throws at construction.
    */
   spatialContext?: GPUSpatialContext;
   /**
+   * Context of `right` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Longitude/latitude must use linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  rightSpatialContext?: GPUSpatialContext;
+  /**
    * Distance for `'dwithin'` (inclusive). Required for it, ignored otherwise. Planar distance in
    * coordinate units, or meters with a great-circle `spatialContext`.
    *
-   * A number is compile-time. A one-row float32 view makes the distance per-frame: it is read on
+   * A number is compile-time; short great-circle distances warn to use `createGPULocalFrame`
+   * because of float32 longitude/latitude precision. A one-row float32 view makes the distance per-frame: it is read on
    * every encoding by the candidate probe (box expansion), the exact kernel and the workgroup
    * kernel, so moving a slider is a buffer write with no recompile and the results are identical to
    * the same number given at compile time. A negative, NaN or infinite value selects nothing.
@@ -535,6 +560,13 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         : SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT
     );
     this.spatialContext = context;
+    resolveGPUSecondarySpatialContext(
+      id,
+      'right',
+      views.rightSpatialContext,
+      this.spatialContext,
+      SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT.edgeModels
+    );
     if (context.coordinateSpace === 'longitude-latitude') {
       if (predicate === 'dwithin' && context.metric !== 'great-circle') {
         throw new Error(`${id} longitude-latitude dwithin needs metric 'great-circle'`);
@@ -542,6 +574,13 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       if (predicate !== 'dwithin' && context.metric !== 'none') {
         throw new Error(`${id} ${predicate} needs metric 'none' on longitude-latitude`);
       }
+    }
+    if (predicate === 'dwithin' && typeof views.distance === 'number') {
+      warnGPUShortLongitudeLatitudeDistance(
+        'GPUSpatialPredicateJoin',
+        this.spatialContext,
+        views.distance
+      );
     }
     if (context.metric === 'great-circle') {
       if (context.units === 'kilometers') {
@@ -759,7 +798,9 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       unmatched?.status.requiredCount,
       overflow,
       candidateCount,
-      uncertainCount
+      uncertainCount,
+      this.views.antimeridianUncertainCount,
+      this.views.poleUncertainCount
     ];
   }
 
@@ -794,6 +835,43 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} requires prepared to be added to the graph first`);
     }
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      hasLonLatPolygonStatus(views)
+    ) {
+      for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+        const view = views[name];
+        if (view) {
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-clear-${name}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u',
+              componentCount: 1
+            })
+          );
+        }
+      }
+      for (const [polygonIndex, polygons] of [left, right]
+        .filter(geometry => geometry.kind === 'polygons')
+        .entries()) {
+        nodes.push(
+          createLonLatPolygonCheckNode(graph, {
+            id: `${id}-lon-lat-polygon-check-${polygonIndex}`,
+            operation: OPERATION,
+            positions: polygons.positions,
+            ringOffsets: polygons.ringOffsets,
+            status: {
+              antimeridianUncertainCount: views.antimeridianUncertainCount,
+              poleUncertainCount: views.poleUncertainCount
+            }
+          })
+        );
+      }
+    }
+
     const isAnti = how === 'anti';
 
     // Per-side feature-to-ring tables (polygons) and bounds. A prepared right side brings its own.

@@ -158,7 +158,11 @@ export type GPULinearReferencingProps = GPULineGeometryFields & {
    * {@link getGPULinearReferencingMaximumPlanarPositionCount} (8388608).
    */
   queryPositions: GraphDataView<'float32x2'>;
-  /** Per-frame search radius, one float32 row. NaN, negative or infinite matches nothing. */
+  /**
+   * Per-frame search radius, one float32 row. NaN, negative or infinite matches nothing.
+   * On longitude/latitude this distance arrives as a GPU view, so no short-distance warning is possible;
+   * below about 17 m use createGPULocalFrame (see Precision of longitude/latitude positions).
+   */
   radius: GraphDataView<'float32'>;
   /**
    * Maximum `(point, segment)` bounding-box candidates per encoding. Required for `'planar'`;

@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts';
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../../analysis-core/lon-lat-ring-wgsl';
+import {createFillNode} from '../../utils/wgsl-kernel-nodes';
+
 import {
   createTransientView,
   type GPUBVH,
@@ -68,9 +75,11 @@ import {
 } from './nearest-types';
 
 import {
+  GPU_LINEAR_EDGE_MODELS,
   getGPUGreatCircleRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {assert, type Device} from '@luma.gl/core';
@@ -78,6 +87,7 @@ import {assert, type Device} from '@luma.gl/core';
 /** Planar or great-circle contexts suitable for distance measurements in their length unit. */
 const NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
   ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  edgeModels: GPU_LINEAR_EDGE_MODELS,
   measure: 'distance'
 } as const);
 
@@ -128,8 +138,12 @@ export type GPUNearestFeatureJoinOutput = {
   featureCounts?: GraphDataView<'uint32'>;
   /** Optional compact stable IDs of points with a feature within the radius. */
   matches?: GPUCompactOutput;
-  /** Completeness scalars. */
-  status: {
+  /**
+   * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
+   * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
+   * with `GPULonLatPolygonPreparation`. Both fields are left untouched in planar contexts.
+   */
+  status: GPULonLatPolygonStatusPort & {
     /**
      * One-row flag: 1 when BVH leaf, candidate, `matches` or (neighbors mode) tie capacity
      * overflowed.
@@ -198,12 +212,21 @@ export type GPUNearestFeatureJoinProps = {
    *   pair across the antimeridian or near a pole is measured the short way round.
    *   Edges are straight in longitude/latitude (longitude differences wrapped at +-180), the same
    *   edge model as the planar-in-degrees containment and crossing tests, so densify long edges;
-   *   foot points are on the edge and longitudes are wrapped to +-180. A polygon that spans the
-   *   antimeridian is not split. Positions are float32, so distances carry the coordinate
-   *   quantization (about 1 m at longitude 100).
+   *   foot points are on the edge and longitudes are wrapped to +-180. Prepare polygons that
+   *   cross ±180 or enclose a pole with `GPULonLatPolygonPreparation`; optional status counters
+   *   report unprepared rings on both polygon sides. Longitude/latitude requires `edgeModel: 'linear'`
+   *   (the default); great-circle edges require preparation. Positions are float32, so distances
+   *   carry the coordinate quantization (about 1 m at longitude 100).
    * - Any other longitude/latitude metric throws at construction.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `features` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Longitude/latitude must use linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  featuresSpatialContext?: GPUSpatialContext;
   /**
    * Query geometry, one query per row. Points may be chunked (their optional `sourceIds`, with the
    * same chunk topology, are the IDs written to `output.matches`); line and polygon queries
@@ -313,7 +336,8 @@ export type GPUNearestFeatureJoinProps = {
 
 /** Flat internal view of the props that the node builders read. */
 type NearestFeatureJoinViews = Omit<GPUNearestFeatureJoinProps, 'queries' | 'output'> &
-  Omit<GPUNearestFeatureJoinOutput, 'status'> & {
+  Omit<GPUNearestFeatureJoinOutput, 'status'> &
+  GPULonLatPolygonStatusPort & {
     /** Point queries, possibly chunked. */
     points?: GPUFloat32Positions;
     /** Line or polygon queries. */
@@ -337,7 +361,9 @@ function getNearestFeatureJoinViews(props: GPUNearestFeatureJoinProps): NearestF
     sourceIds: queries.kind === 'points' ? queries.sourceIds : undefined,
     featureIds: props.features.sourceIds,
     overflow: status.overflow,
-    candidateCount: status.candidateCount
+    candidateCount: status.candidateCount,
+    antimeridianUncertainCount: status.antimeridianUncertainCount,
+    poleUncertainCount: status.poleUncertainCount
   };
 }
 
@@ -398,6 +424,13 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
       id,
       views.spatialContext,
       NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT
+    );
+    resolveGPUSecondarySpatialContext(
+      id,
+      'features',
+      views.featuresSpatialContext,
+      this.spatialContext,
+      NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT.edgeModels
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     this.mode = views.neighborIds ? 'neighbors' : 'nearest-feature';
@@ -630,41 +663,84 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
         getGPUNearestFeatureJoinMaximumNodeTableWordCount(graph.device)
       );
     }
-    if (this.mode === 'neighbors') {
-      return getNearestNeighborNodes<Parameters>(graph, {
-        id: this.id,
-        operation: OPERATION,
-        queries: views.points
-          ? {kind: 'points', points: views.points}
-          : {kind: 'geometry', geometry: views.queries!},
-        queryCount: this.queryCount,
-        features: views.features,
-        featureCount: this.featureCount,
-        k: this.k,
-        capacity: this.neighborCapacity,
-        leafCapacity: this.leafCapacity,
-        spatialSort: this.spatialSort,
-        spatialSortCurve: views.spatialSortCurve,
-        prepared: views.prepared,
-        maxDistance: views.radius,
-        featureIds: views.featureIds,
-        neighborIds: views.neighborIds!,
-        neighborCounts: views.neighborCounts!,
-        neighborDistances: views.neighborDistances,
-        neighborFootPoints: views.neighborFootPoints,
-        neighborSegmentIndices: views.neighborSegmentIndices,
-        neighborQueryPoints: views.neighborQueryPoints,
-        exclusive: views.exclusive,
-        queryIds: views.queryIds,
-        onAttribute: views.onAttribute,
-        overflow: views.overflow,
-        sphereRadius: this.sphereRadius,
-        querySort: this.querySort
-      }).nodes;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      hasLonLatPolygonStatus(views)
+    ) {
+      for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+        const view = views[name];
+        if (view) {
+          nodes.push(
+            createFillNode(graph, {
+              id: `${this.id}-clear-${name}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u',
+              componentCount: 1
+            })
+          );
+        }
+      }
+      for (const [polygonIndex, polygons] of [views.queries, views.features]
+        .filter(geometry => geometry?.kind === 'polygons')
+        .entries()) {
+        nodes.push(
+          createLonLatPolygonCheckNode(graph, {
+            id: `${this.id}-lon-lat-polygon-check-${polygonIndex}`,
+            operation: OPERATION,
+            positions: polygons.positions,
+            ringOffsets: polygons.ringOffsets,
+            status: {
+              antimeridianUncertainCount: views.antimeridianUncertainCount,
+              poleUncertainCount: views.poleUncertainCount
+            }
+          })
+        );
+      }
     }
-    return this.sphereRadius === undefined
-      ? this.getNearestFeatureNodes(graph)
-      : this.getGreatCircleNearestFeatureNodes(graph);
+    if (this.mode === 'neighbors') {
+      nodes.push(
+        ...getNearestNeighborNodes<Parameters>(graph, {
+          id: this.id,
+          operation: OPERATION,
+          queries: views.points
+            ? {kind: 'points', points: views.points}
+            : {kind: 'geometry', geometry: views.queries!},
+          queryCount: this.queryCount,
+          features: views.features,
+          featureCount: this.featureCount,
+          k: this.k,
+          capacity: this.neighborCapacity,
+          leafCapacity: this.leafCapacity,
+          spatialSort: this.spatialSort,
+          spatialSortCurve: views.spatialSortCurve,
+          prepared: views.prepared,
+          maxDistance: views.radius,
+          featureIds: views.featureIds,
+          neighborIds: views.neighborIds!,
+          neighborCounts: views.neighborCounts!,
+          neighborDistances: views.neighborDistances,
+          neighborFootPoints: views.neighborFootPoints,
+          neighborSegmentIndices: views.neighborSegmentIndices,
+          neighborQueryPoints: views.neighborQueryPoints,
+          exclusive: views.exclusive,
+          queryIds: views.queryIds,
+          onAttribute: views.onAttribute,
+          overflow: views.overflow,
+          sphereRadius: this.sphereRadius,
+          querySort: this.querySort
+        }).nodes
+      );
+    } else {
+      nodes.push(
+        ...(this.sphereRadius === undefined
+          ? this.getNearestFeatureNodes(graph)
+          : this.getGreatCircleNearestFeatureNodes(graph))
+      );
+    }
+    return nodes;
   }
 
   /**
@@ -1140,6 +1216,8 @@ function getOutputs(
     props.featureCounts,
     props.overflow,
     props.candidateCount,
+    props.antimeridianUncertainCount,
+    props.poleUncertainCount,
     props.neighborIds,
     props.neighborCounts,
     props.neighborDistances,

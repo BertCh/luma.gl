@@ -4,7 +4,8 @@
 
 import {
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
-  type GPUSpatialContext
+  type GPUSpatialContext,
+  type GPUSpatialEdgeModel
 } from '../../analysis-core/contracts/spatial-context';
 import {
   type GPUCommandGraph,
@@ -131,12 +132,15 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
   readonly props: GPUCellGeometryProps;
   /** Boundary stride per cell. */
   readonly maximumVertexCount: number;
+  /** Boundary edges: great-circle arcs for H3, S2 and A5; linear in degrees otherwise. */
+  readonly edgeModel: GPUSpatialEdgeModel;
 
   /**
-   * Context of the decoded `centers` and `boundaries` (longitude/latitude, no metric). The class
-   * has no `spatialContext` prop: its input is cell identifiers, which carry no coordinates.
+   * Context of the decoded `centers` and `boundaries` (longitude/latitude, no metric), including
+   * the family's `edgeModel`. The class has no `spatialContext` prop: its input is cell identifiers,
+   * which carry no coordinates.
    */
-  readonly outputSpatialContext: GPUSpatialContext = GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT;
+  readonly outputSpatialContext: GPUSpatialContext;
 
   constructor(props: GPUCellGeometryProps) {
     this.id = props.id ?? 'cell-geometry';
@@ -147,6 +151,14 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
         `${id} family must be one of ${Object.keys(GPU_CELL_GEOMETRY_VERTEX_COUNTS).join(', ')}`
       );
     }
+    this.edgeModel =
+      props.family === 'h3' || props.family === 's2' || props.family === 'a5'
+        ? 'great-circle'
+        : 'linear';
+    this.outputSpatialContext = {
+      ...GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
+      edgeModel: this.edgeModel
+    };
     if (props.wordOrder && props.wordOrder !== 'little-endian' && props.wordOrder !== 'high-low') {
       throw new Error(`${id} wordOrder must be 'little-endian' or 'high-low'`);
     }

@@ -8,6 +8,8 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
+import {SPHERICAL_EXCESS_WGSL} from '../cell-indexing/h3-measures-wgsl';
 import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   GPU_WGS84_ELLIPSOID,
@@ -28,8 +30,8 @@ export type GPUGeometryCoordinateSystem = 'planar' | 'spherical' | 'wgs84' | 'ge
  * Words per feature or group in the internal stats column:
  * `[length, signedArea, area, centroidX, centroidY, minX, minY, maxX, maxY, vertexCount, featureCount,
  * argMinX, argMinY, argMaxX, argMaxY, invalidRingCount]` (the extremes are vertex rows, `0xffffffff`
- * when empty; `invalidRingCount` is the number of geographic polygon rings that enclose a pole or
- * have an ambiguous edge, per feature only) stored as u32 words (floats as their bit patterns), so the integer counts are never
+ * when empty; `invalidRingCount` counts geographic rings with ambiguous edges, width above 360
+ * degrees or unprepared pole winding, per feature only) stored as u32 words (floats as their bit patterns), so the integer counts are never
  * reinterpreted as subnormal floats that a GPU may flush to zero.
  *
  * @internal
@@ -261,6 +263,8 @@ export type FeatureMeasuresNodeProps = {
   /** Features are point sets: no edges, centroid is the vertex mean. */
   isPoint?: boolean;
   coordinateSystem: GPUGeometryCoordinateSystem;
+  /** Use spherical excess for great-circle polygon edges. */
+  greatCircleEdges?: boolean;
   radius: number;
   /** Spherical area radius in the context's length unit. */
   areaRadius: number;
@@ -360,12 +364,19 @@ export function createFeatureMeasuresNode<Parameters>(
     geodesic:
       'getGeodeticFromAuthalic(asin(clamp(getSinAuthalic(sin(origin.y * GEODESIC_DEGREES_TO_RADIANS)) + centroid.y, -1.0, 1.0))) * GEODESIC_RADIANS_TO_DEGREES'
   }[coordinateSystem];
-  const edgeCrossSource = isGeodesic
-    ? `var edgeCross = cross;
+  const edgeCrossSource = props.greatCircleEdges
+    ? `var edgeCross = 0.0;
+      if (IS_POLYGON && vertex > 0u && vertex + 1u < rowCount) {
+        // The ring's first vertex anchors a signed fan, including concave rings.
+        edgeCross = 2.0 * sphericalExcessTriangle(
+          geodesicUnitVector(firstPosition), geodesicUnitVector(position), geodesicUnitVector(nextPosition));
+      }`
+    : isGeodesic
+      ? `var edgeCross = cross;
       if (IS_POLYGON) {
         edgeCross = getGeodesicEdgeCross(position, areaX, areaY, nextPosition, nextAreaX, nextAreaY, origin);
       }`
-    : 'let edgeCross = cross;';
+      : 'let edgeCross = cross;';
   const commonDeclarations = `
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const RING_COUNT: u32 = ${props.ringOffsets ? props.ringOffsets.length - 1 : props.positions.length}u;
@@ -409,13 +420,10 @@ ${WGS84_WGSL}`
     : ''
 }
 
-// A ring whose wrapped longitude steps sum beyond this encloses a pole (net winding of 360 degrees).
-const POLE_WINDING_LIMIT: f32 = 180.0;
-
-// A polygon edge spanning half the globe (shortest way is ambiguous) or a full turn (360 degrees,
-// which wraps to a zero-length step) has no well-defined interior side.
-fn isAmbiguousLongitudeStep(rawStep: f32, wrappedStep: f32) -> bool {
-  return abs(wrappedStep) >= 179.99 || abs(rawStep) >= 359.99;
+${LON_LAT_RING_WGSL}
+${props.greatCircleEdges ? SPHERICAL_EXCESS_WGSL : ''}
+fn isAmbiguousEdge(first: vec2<f32>, second: vec2<f32>) -> bool {
+  return ${props.greatCircleEdges ? 'lonLatIsAmbiguousGreatCircleEdge' : 'lonLatIsAmbiguousLinearEdge'}(first, second);
 }
 
 fn getPosition(row: u32) -> vec2<f32> {
@@ -599,6 +607,8 @@ ${getCooperativeSource({
     var ringMomentX = vec2<f32>(0.0);
     var ringMomentY = vec2<f32>(0.0);
     var ringWinding = 0.0;
+    var ringMinimumLongitude = 0.0;
+    var ringMaximumLongitude = 0.0;
     var ringAmbiguousEdges = 0u;
     let firstPosition = getPosition(rowBegin);
     // Local display coordinates (degrees for geographic, longitudes unwrapped along the ring).
@@ -650,7 +660,7 @@ ${getCooperativeSource({
       var nextLocal = nextPosition - origin;
       if (IS_GEOGRAPHIC) {
         nextLocal = vec2<f32>(
-          local.x + geodesicWrapLongitudeDelta(nextPosition.x - position.x),
+          local.x + lonLatRingStep(position, nextPosition),
           nextPosition.y - origin.y
         );
       }
@@ -664,10 +674,10 @@ ${getCooperativeSource({
       }
       let nextAreaY = getAreaY(nextPosition, origin);
       if (IS_POLYGON && IS_GEOGRAPHIC) {
-        let rawStep = nextPosition.x - position.x;
-        let wrappedStep = geodesicWrapLongitudeDelta(rawStep);
-        ringWinding += wrappedStep;
-        ringAmbiguousEdges += select(0u, 1u, isAmbiguousLongitudeStep(rawStep, wrappedStep));
+        ringWinding += lonLatRingStep(position, nextPosition);
+        ringMinimumLongitude = min(ringMinimumLongitude, ringWinding);
+        ringMaximumLongitude = max(ringMaximumLongitude, ringWinding);
+        ringAmbiguousEdges += select(0u, 1u, isAmbiguousEdge(position, nextPosition));
       }
       let edgeLength = getEdgeLength(position, nextPosition);
       addCompensated(&lengthSum, edgeLength);
@@ -684,7 +694,7 @@ ${getCooperativeSource({
       areaX = nextAreaX;
       areaY = nextAreaY;
     }
-    if (IS_POLYGON && IS_GEOGRAPHIC && (abs(ringWinding) > POLE_WINDING_LIMIT || ringAmbiguousEdges > 0u)) {
+    if (IS_POLYGON && IS_GEOGRAPHIC && (lonLatIsPoleWinding(ringWinding) || ringMaximumLongitude - ringMinimumLongitude > 360.0 || ringAmbiguousEdges > 0u)) {
       invalidRings += 1u;
     }
     var ringFactor = 1.0;

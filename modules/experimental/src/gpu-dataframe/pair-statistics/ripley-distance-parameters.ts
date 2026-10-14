@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validatePairStatisticsBounds} from './pair-statistics-parameters';
+import {
+  validatePairStatisticsBounds,
+  type GPUPairStatisticsBounds
+} from './pair-statistics-parameters';
 
 /** Number of float32 elements in a `GPURipleyDistanceFunctions` parameter buffer. */
 export const GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH = 8;
@@ -30,9 +33,10 @@ const EDGE_CORRECTION_CODES: Record<GPURipleyDistanceEdgeCorrection, number> = {
 export type GPURipleyDistanceFunctionsSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` observation window. Events outside it, or with a
-   * non-finite coordinate, are excluded. The reference lattice of F covers this rectangle.
+   * non-finite coordinate, are excluded. Use 'study-window' for a prepared polygon; its bbox supplies the reference lattice.
+   * Only reference centres inside the window count. Rectangle mode with these NaN bounds is undefined.
    */
-  bounds: readonly [number, number, number, number];
+  bounds: GPUPairStatisticsBounds;
   /** Largest radius: radius `b` is `maximumDistance * (b + 1) / radiusCount`. */
   maximumDistance: number;
   /**
@@ -73,7 +77,7 @@ export function getGPURipleyDistanceFunctionsParameterValues(
     );
   }
   target.set([
-    ...settings.bounds,
+    ...(settings.bounds === 'study-window' ? [NaN, NaN, NaN, NaN] : settings.bounds),
     settings.maximumDistance,
     EDGE_CORRECTION_CODES[edgeCorrection],
     0,

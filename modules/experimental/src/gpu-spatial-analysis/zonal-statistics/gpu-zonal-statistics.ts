@@ -23,11 +23,14 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {
   validateGPUStatusPort,
+  GPU_LINEAR_EDGE_MODELS,
+  type GPULonLatPolygonStatusPort,
   type GPUPackedGeometryPort,
   type GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
@@ -49,9 +52,15 @@ import {
 } from './zonal-statistics-passes';
 import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../../analysis-core/lon-lat-ring-wgsl';
+
 const OPERATION = 'GPUZonalStatistics';
 /** Planar points and polygons, or longitude/latitude degrees with caller-supplied areas. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  edgeModels: GPU_LINEAR_EDGE_MODELS,
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
   metricsByCoordinateSpace: Object.freeze({
     planar: Object.freeze(['none', 'native'] as const),
@@ -205,8 +214,11 @@ export type GPUZonalStatisticsOutput = {
    * graph transient when its own output view is absent. Compile-time.
    */
   extentStatistic?: GPUZonalStatisticsExtentStatistic;
-  /** Optional GPU status scalars of the membership join. */
-  status?: {
+  /**
+   * Optional membership status. `antimeridianUncertainCount` counts unprepared crossing rings;
+   * `poleUncertainCount` counts uncapped pole rings. Planar and feature-row inputs leave both untouched.
+   */
+  status?: GPULonLatPolygonStatusPort & {
     /**
      * One row: 1 when the join overflowed a BVH leaf or candidate capacity, otherwise 0. Always 0
      * for `kind: 'feature-rows'`.
@@ -240,7 +252,8 @@ export type GPUZonalStatisticsProps = {
    * `longitude-latitude` with the `none` metric are accepted; other spaces throw.
    * Membership is a point-in-polygon test in the coordinates as given, so in longitude/latitude
    * it is topological with straight edges
-   * in degrees (not geodesics) and polygons crossing the antimeridian must be split. Areas are
+   * in degrees (not geodesics). Prepare polygons that cross ±180 or enclose a pole with
+   * `GPULonLatPolygonPreparation`; the optional status fields report unprepared rings. Areas are
    * where the space matters: planar polygon area in degrees squared is wrong, so with a
    * longitude/latitude context `densities`, `weightedDensities` and `featureAreas` from the GPU
    * area are rejected at construction; pass spherical `areas` (square meters from
@@ -249,6 +262,13 @@ export type GPUZonalStatisticsProps = {
    * this area-frame restriction. Counts, sums, means, extrema and variances are unaffected.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `features` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Longitude/latitude must use linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  featuresSpatialContext?: GPUSpatialContext;
   /** Point positions. Required for `kind: 'polygons'`, ignored for `kind: 'feature-rows'`. */
   positions?: GPUFloat32Positions;
   /**
@@ -305,7 +325,9 @@ function getOutputViews(output: GPUZonalStatisticsOutput) {
   return [
     ...OUTPUT_NAMES.map(name => output[name]),
     output.status?.overflow,
-    output.status?.uncertainCount
+    output.status?.uncertainCount,
+    output.status?.antimeridianUncertainCount,
+    output.status?.poleUncertainCount
   ];
 }
 
@@ -525,6 +547,13 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       props.spatialContext,
       features.kind === 'polygons' && this.plan.needGPUAreas ? AREA_SUPPORT : SUPPORT
     );
+    resolveGPUSecondarySpatialContext(
+      id,
+      'features',
+      props.featuresSpatialContext,
+      this.spatialContext,
+      SUPPORT.edgeModels
+    );
     if (this.plan.needValueStatistics && !values) {
       throw new Error(`${id} value statistics require values`);
     }
@@ -591,7 +620,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns membership, preparation, area, aggregation, finalize and extent nodes in order.
+   * Returns optional polygon checks, membership, preparation, aggregation and extent nodes.
    *
    * @throws If any view belongs to another graph.
    */
@@ -614,6 +643,38 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     ]);
     const sortedSums = sumOrder === 'sorted' && (plan.needSums || plan.needWeightSums);
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      features.kind === 'polygons' &&
+      hasLonLatPolygonStatus(output.status)
+    ) {
+      const status = output.status!;
+      for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+        const view = status[name];
+        if (view) {
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-clear-${name}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u',
+              componentCount: 1
+            })
+          );
+        }
+      }
+      nodes.push(
+        createLonLatPolygonCheckNode(graph, {
+          id: `${id}-lon-lat-polygon-check-0`,
+          operation: OPERATION,
+          positions: features.positions,
+          ringOffsets: features.ringOffsets,
+          status
+        })
+      );
+    }
+
     const uint32Rows = (name: string, view: GraphDataView<'uint32'> | undefined, needed: boolean) =>
       view ??
       (needed ? createTransientView(graph, `${id}-${name}`, 'uint32', featureCount) : undefined);
@@ -655,6 +716,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         ...new GPUPointInPolygonJoin({
           id: `${id}-join`,
           spatialContext: getPointInPolygonContainmentContext(this.spatialContext),
+          polygonsSpatialContext: props.featuresSpatialContext,
           points: {kind: 'points', positions: props.positions!},
           // No `sourceIds`: the join must write feature rows, which index the outputs.
           polygons: {

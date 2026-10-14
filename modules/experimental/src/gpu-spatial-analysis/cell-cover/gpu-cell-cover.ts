@@ -16,6 +16,7 @@ import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index
 import {
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT,
+  GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -108,9 +109,9 @@ export type GPUCellCoverOutput = {
      */
     candidateCount?: GraphDataView<'uint32'>;
     /**
-     * Optional one-row scalar receiving the number of features rejected because their bounding box
-     * is wider than 180 degrees of longitude (an antimeridian crossing, or an edge with a
-     * longitude difference above 180 degrees). Rejected features produce no cells.
+     * Optional one-row scalar receiving the number of features with a non-pole edge whose raw
+     * longitude difference exceeds 180 degrees (crossing the antimeridian, not split).
+     * Rejected features produce no cells; pre-split multipolygons are accepted.
      */
     invalidCount?: GraphDataView<'uint32'>;
     /**
@@ -216,10 +217,13 @@ const EDGE_SLAB_DEFAULT_WORK = 4_000_000;
  * Polyfills polygon features with Quadbin or H3 cells.
  *
  * Geometry is planar in longitude/latitude degrees (like `h3.polygonToCells` and turf) and rings
- * are even-odd (holes by nesting). Polygons must not cross the antimeridian: a feature whose
- * bounding box is wider than 180 degrees of longitude (which includes any edge with a longitude
- * difference above 180) gets no cells and is counted in `output.status.invalidCount`; split such
- * polygons at +-180 first. Features reaching beyond the latitude limit (H3 lattices are clamped to
+ * are even-odd (holes by nesting). Only linear edges are accepted. A feature with a non-pole
+ * edge whose raw longitude difference exceeds 180 degrees gets no cells and increments
+ * `output.status.invalidCount`; prepare it with `GPULonLatPolygonPreparation` first. Pre-split
+ * multipolygons and same-pole edges are accepted. Full-width features enumerate full-width
+ * lattices: with `candidateEnumeration: 'bounds'`, provision `candidateCapacity` accordingly
+ * and inspect `candidateCount` and `candidateOverflow`. Empty rings contribute no bounds.
+ * Features reaching beyond the latitude limit (H3 lattices are clamped to
  * 89 degrees, Quadbin to the Web Mercator limit) lose their polar cells and are counted in
  * `output.status.uncertainCount`. Pipeline: per-feature
  * candidate count, optional scanline enumeration (see `candidateEnumeration`), exclusive scan,
@@ -274,7 +278,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext ?? GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
-      GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
+      {...GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT, edgeModels: GPU_LINEAR_EDGE_MODELS}
     );
     if (props.family !== 'quadbin' && props.family !== 'h3') {
       throw new Error(`${id} family must be 'quadbin' or 'h3'`);

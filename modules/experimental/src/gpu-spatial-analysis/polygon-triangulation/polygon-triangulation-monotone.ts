@@ -21,6 +21,7 @@ import {
   getStorageBindingElementLimit,
   validateMaximumCount
 } from '../../utils/gpu-contributor-utils';
+import type {PolygonTriangulationLayout} from './polygon-triangulation-layout';
 import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 import {
   getPolygonEdgeSlabBindings,
@@ -125,6 +126,8 @@ export type MonotoneTriangulationProps = {
   positions: GraphDataView<'float32x2'>;
   polygonOffsets: GraphDataView<'uint32'>;
   ringOffsets: GraphDataView<'uint32'>;
+  /** Optional prepared offsets and degeneracy flags from the public triangulator. @internal */
+  layout?: PolygonTriangulationLayout;
   /**
    * Routing word per polygon, `polygonCount` rows: 0 Earcut only, 1 size-routed (Earcut skipped),
    * 2 Earcut failed, 3 overflowed the capacity, 4 the monotone path failed (Earcut fallback pass).
@@ -184,6 +187,7 @@ const PIECE_WORKGROUP_SIZE = 64;
 
 function getSizes(props: MonotoneTriangulationProps): MonotoneSizes {
   return {
+    preparedLayout: Boolean(props.layout),
     vertexCount: props.positions.length,
     polygonCount: props.polygonOffsets.length - 1,
     ringCount: props.ringOffsets.length - 1,
@@ -222,7 +226,9 @@ export function getMonotoneTriangulationNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: MonotoneTriangulationProps
 ): GPUCommandNode<Parameters>[] {
-  const {id, operation, positions, polygonOffsets, ringOffsets, routing, output} = props;
+  const {id, operation, positions, routing, output} = props;
+  const polygonOffsets = props.layout?.polygonOffsets ?? props.polygonOffsets;
+  const ringOffsets = props.layout?.ringOffsets ?? props.ringOffsets;
   const sizes = getSizes(props);
   const {vertexCount, polygonCount, ringCount, capacity} = sizes;
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -410,8 +416,8 @@ export function getMonotoneTriangulationNodes<Parameters>(
     operation,
     owner: 'polygon',
     positions,
-    polygonOffsets,
-    ringOffsets,
+    polygonOffsets: props.polygonOffsets,
+    ringOffsets: props.ringOffsets,
     gate: {counts: routedCounts, minimum: 1}
   });
   nodes.push(...slabNodes.nodes);

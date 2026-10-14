@@ -300,6 +300,10 @@ export function createLineTailNode<Parameters>(
 export type PolygonStageInputs = {
   id: string;
   operation: string;
+  /** Optional integer turns; longitude is reconstructed only in registers. */
+  positionTurns?: GraphDataView<'sint32'>;
+  /** Whole-turn copy subtracted while reading a wrapped source. Default zero. */
+  longitudeCopy?: number;
   /** Boundary index: 0 left, 1 right, 2 bottom, 3 top. */
   boundary: number;
   positions: GraphDataView<'float32x2'>;
@@ -358,14 +362,31 @@ function getStageDeclarations(props: PolygonStageInputs): string {
   return `const BOUNDARY: u32 = ${props.boundary}u;
 const LINE_COUNT: u32 = ${props.ringOffsets.length - 1}u;
 const INPUT_ROWS: u32 = ${props.positions.length}u;
-${POLYGON_STAGE_WGSL}`;
+${
+  props.positionTurns
+    ? POLYGON_STAGE_WGSL.replace(
+        'positions[positionsOffset + 2u * row],',
+        `positions[positionsOffset + 2u * row] + 360.0 * f32(positionTurns[positionTurnsOffset + row] - ${props.longitudeCopy ?? 0}i),`
+      )
+    : POLYGON_STAGE_WGSL
+}`;
 }
 
 function getStageBindings(props: PolygonStageInputs): WGSLKernelBinding[] {
   return [
     {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
     {name: 'lineOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
-    {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'}
+    {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+    ...(props.positionTurns
+      ? [
+          {
+            name: 'positionTurns',
+            view: props.positionTurns,
+            type: 'i32' as const,
+            access: 'read' as const
+          }
+        ]
+      : [])
   ];
 }
 
@@ -401,6 +422,8 @@ export function createPolygonStageEmitNode<Parameters>(
   props: PolygonStageInputs & {
     starts: GraphDataView<'uint32'>;
     outputPositions: GraphDataView<'float32x2'>;
+    /** Wrapped output paired with integer turns, including intermediate clip stages. */
+    outputTurns?: GraphDataView<'sint32'>;
   }
 ): GPUCommandNode<Parameters> {
   const capacity = props.outputPositions.length;
@@ -411,15 +434,43 @@ export function createPolygonStageEmitNode<Parameters>(
     bindings: [
       ...getStageBindings(props),
       {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
-      {name: 'outPositions', view: props.outputPositions, type: 'f32', access: 'read_write'}
+      {name: 'outPositions', view: props.outputPositions, type: 'f32', access: 'read_write'},
+      ...(props.outputTurns
+        ? [
+            {
+              name: 'outputTurns',
+              view: props.outputTurns,
+              type: 'i32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [])
     ],
     invocationCount: props.positions.length,
     declarations: `${getStageDeclarations(props)}
 const CAPACITY: u32 = ${capacity}u;
 fn writeVertex(slot: u32, p: vec2<f32>) {
   if (slot < CAPACITY) {
-    outPositions[outPositionsOffset + 2u * slot] = p.x;
+    ${
+      props.outputTurns
+        ? `let turn = select(i32(floor((p.x + 180.0) / 360.0)), 0i, abs(p.x) <= 180.0);
+    outPositions[outPositionsOffset + 2u * slot] = p.x - 360.0 * f32(turn);
+    outputTurns[outputTurnsOffset + slot] = turn;`
+        : 'outPositions[outPositionsOffset + 2u * slot] = p.x;'
+    }
     outPositions[outPositionsOffset + 2u * slot + 1u] = p.y;
+  }
+}
+fn writeKeptVertex(slot: u32, row: u32, position: vec2<f32>) {
+  ${
+    props.positionTurns && props.outputTurns
+      ? `if (slot < CAPACITY) {
+    // Copy the original bits; reconstructing then wrapping a kept vertex loses precision.
+    outPositions[outPositionsOffset + 2u * slot] = positions[positionsOffset + 2u * row];
+    outPositions[outPositionsOffset + 2u * slot + 1u] = positions[positionsOffset + 2u * row + 1u];
+    outputTurns[outputTurnsOffset + slot] = positionTurns[positionTurnsOffset + row] - ${props.longitudeCopy ?? 0}i;
+  }`
+      : 'writeVertex(slot, position);'
   }
 }`,
     body: `let previous = getRingPrevious(index);
@@ -435,7 +486,7 @@ fn writeVertex(slot: u32, p: vec2<f32>) {
       writeVertex(slot, getIntersection(previous.xy, end));
       slot += 1u;
     }
-    writeVertex(slot, end);
+    writeKeptVertex(slot, index, end);
   } else if (startInside) {
     writeVertex(slot, getIntersection(previous.xy, end));
   }`
@@ -487,7 +538,7 @@ const CAPACITY: u32 = ${props.capacity}u;`,
   });
 }
 
-/** Publishes the polygon result: count, overflow, unclamped total and ring count. @internal */
+/** Publishes count, accumulated overflow, required count (exact or supplied bound) and ring count. @internal */
 export function createPolygonPublishNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -499,6 +550,8 @@ export function createPolygonPublishNode<Parameters>(
     count: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     requiredCount?: GraphDataView<'uint32'>;
+    /** Stage-flags word holding a caller-computed resize bound; defaults to the final total (3). */
+    requiredCountIndex?: number;
     lineCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -527,7 +580,7 @@ export function createPolygonPublishNode<Parameters>(
   }
   countOut[countOutOffset] = min(finalTotal, ${props.capacity}u);
   overflowOut[overflowOutOffset] = select(0u, 1u, overflow);
-  ${props.requiredCount ? 'totalOut[totalOutOffset] = finalTotal;' : ''}
+  ${props.requiredCount ? `totalOut[totalOutOffset] = stageFlags[stageFlagsOffset + ${props.requiredCountIndex ?? 3}u];` : ''}
   ${props.lineCount ? `lineCountOut[lineCountOutOffset] = ${props.ringCount}u;` : ''}`
   });
 }

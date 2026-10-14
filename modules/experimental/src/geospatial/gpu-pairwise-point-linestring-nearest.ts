@@ -28,6 +28,7 @@ import {
 import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../analysis-core/contracts/spatial-context';
 
@@ -42,6 +43,12 @@ type GPUPairwisePointLinestringNearestBaseProps = {
    * contexts throw: project positions to a planar frame first.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `linestrings` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  linestringsSpatialContext?: GPUSpatialContext;
   /** Feature-to-line offsets with one more row than `queryPositions`. */
   featureOffsets: GraphDataView<'uint32'>;
   /** Line-to-vertex offsets with one more row than the total line count. */
@@ -124,6 +131,12 @@ export class GPUPairwisePointLinestringNearest implements GPUCommandNodeProducer
   constructor(props: GPUPairwisePointLinestringNearestProps) {
     this.id = props.id ?? 'gpu-pairwise-point-linestring-nearest';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'linestrings',
+      props.linestringsSpatialContext,
+      this.spatialContext
+    );
     this.queryPositions = props.queryPositions;
     this.positions = props.positions;
     this.featureOffsets = props.featureOffsets;

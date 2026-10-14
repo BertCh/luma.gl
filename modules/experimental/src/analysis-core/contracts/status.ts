@@ -28,6 +28,14 @@ export type GPUUncertaintyStatusPort = {
   uncertainCount?: GPUStatusScalar;
 };
 
+/** Lon/lat polygon rings a degree-plane consumer could not interpret (results may be wrong there). */
+export type GPULonLatPolygonStatusPort = {
+  /** Rings with an edge whose raw longitude step exceeds 180 (antimeridian crossing, not split). */
+  antimeridianUncertainCount?: GPUStatusScalar;
+  /** Rings whose wrapped longitude steps sum to +-360 (enclose a pole, not capped). */
+  poleUncertainCount?: GPUStatusScalar;
+};
+
 /** Input validity diagnostics. */
 export type GPUInvalidStatusPort = {
   /** Number of input rows rejected by validation. */
@@ -77,7 +85,7 @@ export type GPURecipeStatusPort = {
 /** Validates the format and scalar shape of every present status field. */
 export function validateGPUStatusPort(
   id: string,
-  status: Partial<GPUBoundedResultStatusPort>
+  status: Partial<GPUBoundedResultStatusPort> & GPULonLatPolygonStatusPort
 ): void {
   for (const [name, scalar] of Object.entries(status)) {
     if (!scalar) {

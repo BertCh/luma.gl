@@ -26,6 +26,7 @@ import {
 import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
 import {
   getPairStatisticsInputNodes,
+  getPairStatisticsWindowParameterNodes,
   getPairStatisticsTotalSumNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs,
@@ -46,6 +47,11 @@ import {
   validateGPUStatusPort,
   type GPUOverflowStatusPort
 } from '../../analysis-core/contracts/status';
+
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
 
 const OPERATION = 'GPUSpatialCorrelogram';
 
@@ -147,6 +153,13 @@ export type GPUSpatialCorrelogramProps = {
    * Lambert equal-area frames are rejected because this operator measures distance.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Compile-time study window, default 'rectangle'. Polygon windows are prepared with
+   * GPUStudyWindowPreparation from @luma.gl/experimental gpu-spatial-analysis and must be valid
+   * (non-self-intersecting, non-overlapping polygons) in the same planar frame. Require
+   * bounds: 'study-window' in polygon mode; that setting gives NaN statistics in rectangle mode.
+   */
+  studyWindow?: GPUStudyWindow;
   /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
   positions: GraphDataView<'float32x2'>;
   /** Packed analysis values, one per row. Rows with a non-finite value are excluded. */
@@ -215,6 +228,8 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
   readonly props: GPUSpatialCorrelogramProps;
   /** Resolved spatial context (native planar unless the props say otherwise). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time rectangle or polygon window. */
+  readonly studyWindow: GPUStudyWindow;
   /** Band layout. */
   readonly bandMode: GPUSpatialCorrelogramBandMode;
 
@@ -223,6 +238,7 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH
@@ -294,12 +310,12 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, bandMode} = this;
-    const {positions, parameters, gridSize, bandCount, output} = props;
+    const {positions, parameters: callerParameters, gridSize, bandCount, output} = props;
     validatePairStatisticsRowCount(id, graph.device, positions.length);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       props.values,
-      parameters,
+      callerParameters,
       props.mask,
       output.moransI,
       output.zScores,
@@ -313,6 +329,33 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     ]);
     const rows = positions.length;
     const cumulative = bandMode === 'cumulative';
+    // Window lookup uses graph identity only, independent of the graph's per-frame parameter type.
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
+    const windowParameters = studyWindow
+      ? getPairStatisticsWindowParameterNodes(graph, {
+          id,
+          operation: OPERATION,
+          parameters: callerParameters,
+          parameterLength: callerParameters.length,
+          window: studyWindow
+        })
+      : undefined;
+    const parameters = windowParameters?.parameters ?? callerParameters;
     const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
@@ -320,10 +363,11 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       parameters,
       gridSize,
       values: props.values,
-      mask: props.mask
+      mask: props.mask,
+      studyWindow
     });
     const statistics = inputs.statistics!;
-    const nodes = inputs.nodes;
+    const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
     const unit = getPairStatisticsUnitVarianceNodes<Parameters>(graph, {
       id,
       operation: OPERATION,

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validatePairStatisticsBounds} from './pair-statistics-parameters';
+import {
+  validatePairStatisticsBounds,
+  type GPUPairStatisticsBounds
+} from './pair-statistics-parameters';
 
 /** Number of float32 elements in a `GPUSpatialCorrelogram` parameter buffer. */
 export const GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH = 8;
@@ -30,8 +33,9 @@ export type GPUSpatialCorrelogramSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate
    * or value, are excluded. The extent also sizes the neighbor-search lattice.
+   * Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots.
    */
-  bounds: readonly [number, number, number, number];
+  bounds: GPUPairStatisticsBounds;
   /** Upper distance of the last band. Band `b` ends at `maximumDistance * (b + 1) / bandCount`. */
   maximumDistance: number;
   /** Variance assumption of the z-scores and p-values. Defaults to `'randomization'`. */
@@ -62,7 +66,7 @@ export function getGPUSpatialCorrelogramParameterValues(
     throw new Error('GPUSpatialCorrelogram varianceAssumption must be normality or randomization');
   }
   target.set([
-    ...settings.bounds,
+    ...(settings.bounds === 'study-window' ? [NaN, NaN, NaN, NaN] : settings.bounds),
     settings.maximumDistance,
     assumption === 'randomization' ? 1 : 0,
     0,

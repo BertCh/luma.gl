@@ -236,6 +236,8 @@ export type GPUTrackSimilarityProps = {
    * Per-frame Frechet decision threshold in the context's length unit, one float32 row.
    * Required with `output.frechetWithin`. NaN,
    * negative or infinite values decide 0.
+   * On longitude/latitude this distance arrives as a GPU view, so no short-distance warning is possible;
+   * below about 17 m use createGPULocalFrame (see Precision of longitude/latitude positions).
    */
   frechetEpsilon?: GraphDataView<'float32'>;
   /**

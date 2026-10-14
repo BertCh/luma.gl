@@ -216,7 +216,8 @@ export type GPUTrajectoryMetricsProps = GPUTrajectoryGeometryFields & {
  * Headings are initial
  * bearings expressed counterclockwise from east (`pi / 2 - bearing`) in `(-pi, pi]`. Stop `centroids` are arithmetic means of
  * the coordinates, so a dwell that straddles the antimeridian or a pole has a meaningless centroid
- * in great-circle mode. Positions are f32 degrees (about 1 m resolution at mid-latitudes).
+ * in great-circle mode. On lon/lat, a stop speed threshold is affected by float32 position noise
+ * ≈ quantum / sampling interval; use a local frame (see Precision of longitude/latitude positions).
  *
  * Non-goals: ellipsoidal (Vincenty) distances; map
  * matching; trajectory simplification; resampling; tracks given as unsorted rows (sort upstream

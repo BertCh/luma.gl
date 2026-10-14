@@ -4,6 +4,12 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuSpatial.
 
 import {
+  GPU_LINEAR_EDGE_MODELS,
+  resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  type GPUSpatialContext
+} from '../analysis-core/contracts';
+import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -69,6 +75,14 @@ export type GPUPointInPolygonClassification =
 type GPUPairwisePointInPolygonBaseProps = {
   /** Prefix for generated graph-node IDs. */
   id?: string;
+  /** Planar by default; longitude/latitude accepts metric 'none' and linear edges. */
+  spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `polygons` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame; longitude/latitude needs linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  polygonsSpatialContext?: GPUSpatialContext;
   /**
    * Feature-to-polygon offsets with `queryPositions.length + 1` entries.
    *
@@ -103,6 +117,9 @@ export type GPUPairwisePointInPolygonProps = GPUPairwisePointInPolygonBaseProps 
 /**
  * Classifies one point against one polygon or multipolygon per row.
  *
+ * Longitude/latitude contexts declare linear degree-plane containment. Prepare crossing or pole
+ * rings with `GPULonLatPolygonPreparation`; this predicate does not shift longitude copies.
+ *
  * `featureOffsets` maps point rows to polygons, `polygonOffsets` maps polygons to rings, and
  * `ringOffsets` maps rings to flattened vertices. Rings close implicitly. Rings within one polygon
  * use even/odd fill semantics, while polygons within one multipolygon are unioned. Non-finite
@@ -113,6 +130,8 @@ export type GPUPairwisePointInPolygonProps = GPUPairwisePointInPolygonBaseProps 
  */
 export class GPUPairwisePointInPolygon implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Validated coordinate and edge model declaration. */
+  readonly spatialContext: GPUSpatialContext;
   readonly queryPositions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
   readonly positions: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
   readonly featureOffsets: GraphDataView<'uint32'>;
@@ -123,6 +142,18 @@ export class GPUPairwisePointInPolygon implements GPUCommandNodeProducer {
   /** Creates a predicate contributor without compiling or submitting GPU work. */
   constructor(props: GPUPairwisePointInPolygonProps) {
     this.id = props.id ?? 'gpu-pairwise-point-in-polygon';
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
+      coordinateSpaces: ['planar', 'longitude-latitude'],
+      metrics: ['none', 'native'],
+      edgeModels: GPU_LINEAR_EDGE_MODELS
+    });
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'polygons',
+      props.polygonsSpatialContext,
+      this.spatialContext,
+      GPU_LINEAR_EDGE_MODELS
+    );
     this.queryPositions = props.queryPositions;
     this.positions = props.positions;
     this.featureOffsets = props.featureOffsets;

@@ -34,6 +34,7 @@ import {
 import {GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH} from './geometry-predicates-parameters';
 import {
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 
@@ -126,6 +127,12 @@ export type GPUGeometryPredicatesProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
+   * Context of `other` when declared separately from `spatialContext`. Must be compatible in
+   * datum, coordinate space, metric, units and planar frame.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  otherSpatialContext?: GPUSpatialContext;
+  /**
    * Point, linestring or polygon/multipolygon features in the GeoArrow layout of
    * `GPUSpatialPredicateJoin`. Each output column has one `uint32` row per feature, holding `0` or
    * `1` for the boolean columns.
@@ -187,6 +194,15 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   constructor(props: GPUGeometryPredicatesProps) {
     this.id = props.id ?? 'geometry-predicates';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    if (props.otherSpatialContext !== undefined && !props.other) {
+      throw new Error(`${this.id} otherSpatialContext needs other`);
+    }
+    resolveGPUSecondarySpatialContext(
+      this.id,
+      'other',
+      props.otherSpatialContext,
+      this.spatialContext
+    );
     this.props = props;
     const {id} = this;
     const {geometry} = props;

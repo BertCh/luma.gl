@@ -252,7 +252,7 @@ fn accumulateRange(
     var nextLocal = nextPosition - origin;
     if (IS_GEOGRAPHIC) {
       nextLocal = vec2<f32>(
-        local.x + geodesicWrapLongitudeDelta(nextPosition.x - position.x),
+        local.x + lonLatRingStep(position, nextPosition),
         nextPosition.y - origin.y
       );
     }
@@ -265,10 +265,8 @@ fn accumulateRange(
     }
     let nextAreaY = getAreaY(nextPosition, origin);
     if (IS_POLYGON && IS_GEOGRAPHIC) {
-      let rawStep = nextPosition.x - position.x;
-      let wrappedStep = geodesicWrapLongitudeDelta(rawStep);
-      (*acc).winding += wrappedStep;
-      (*acc).ambiguousEdges += select(0u, 1u, isAmbiguousLongitudeStep(rawStep, wrappedStep));
+      (*acc).winding += lonLatRingStep(position, nextPosition);
+      (*acc).ambiguousEdges += select(0u, 1u, isAmbiguousEdge(position, nextPosition));
     }
     let edgeLength = getEdgeLength(position, nextPosition);
     addCompensated(&(*acc).lengthSum, edgeLength);
@@ -290,7 +288,7 @@ fn accumulateRange(
 // Folds a finished ring into the feature (the serial kernel's end-of-ring step).
 fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, RingAccumulators>, ringIndex: u32, rowCount: u32) {
   (*feature).vertexCount += rowCount;
-  if (IS_POLYGON && IS_GEOGRAPHIC && (abs((*ring).winding) > POLE_WINDING_LIMIT || (*ring).ambiguousEdges > 0u)) {
+  if (IS_POLYGON && IS_GEOGRAPHIC && (lonLatIsPoleWinding((*ring).winding) || (*ring).boundsMax.x - (*ring).boundsMin.x > 360.0 || (*ring).ambiguousEdges > 0u)) {
     (*feature).invalidRings += 1u;
   }
   addCompensated(&(*feature).lengthSum, (*ring).lengthSum.x);
@@ -372,7 +370,7 @@ fn getLongitudeStep(rowBegin: u32, vertex: u32, origin: vec2<f32>) -> f32 {
   if (vertex == 0u) {
     return geodesicWrapLongitudeDelta(current.x - origin.x);
   }
-  return geodesicWrapLongitudeDelta(current.x - getPosition(rowBegin + vertex - 1u).x);
+  return lonLatRingStep(getPosition(rowBegin + vertex - 1u), current);
 }
 
 // Measures one cooperative feature with the whole workgroup. Called from uniform control flow.

@@ -4,6 +4,8 @@
 
 import {
   defineGPUSpatialParameterSchema,
+  type GPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance,
   packGPUSpatialParameterValues
 } from '../../analysis-core/contracts/index';
 
@@ -48,6 +50,8 @@ export const GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA = defineGPUSpatialParameterS
 
 /** CPU description of the per-frame parameters of `GPULineSegmentize`. */
 export type GPULineSegmentizeSettings = {
+  /** Context of the lengths; a lon/lat context warns when the length is below float32 resolution. */
+  spatialContext?: GPUSpatialContext;
   /**
    * Largest output segment length, in position units (`'planar'`) or sphere-radius units
    * (`'spherical'`, meters by default). `0` or `Infinity` disables densification.
@@ -57,6 +61,8 @@ export type GPULineSegmentizeSettings = {
 
 /** CPU description of the per-frame parameters of `GPUGreatCircleArcs`. */
 export type GPUGreatCircleArcsSettings = {
+  /** Context of the lengths; a lon/lat context warns when the length is below float32 resolution. */
+  spatialContext?: GPUSpatialContext;
   /**
    * Largest arc segment length in sphere-radius units (meters by default). `0` or `Infinity` lets
    * `minimumSegments` alone decide the resolution.
@@ -104,6 +110,11 @@ export function getGPULineSegmentizeParameterValues(
       maximumSegmentLength: getMaximumSegmentLength(settings.maximumSegmentLength, name)
     })
   );
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPULineSegmentize',
+    settings.spatialContext,
+    settings.maximumSegmentLength
+  );
   return target;
 }
 
@@ -131,6 +142,11 @@ export function getGPUGreatCircleArcsParameterValues(
       maximumSegmentLength: getMaximumSegmentLength(settings.maximumSegmentLength, name),
       minimumSegments
     })
+  );
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUGreatCircleArcs',
+    settings.spatialContext,
+    settings.maximumSegmentLength
   );
   return target;
 }

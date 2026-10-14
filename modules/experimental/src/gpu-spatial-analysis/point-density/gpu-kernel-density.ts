@@ -31,6 +31,11 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/index';
+import {
+  resolveGPUStudyWindow,
+  type GPUStudyWindow
+} from '../../analysis-core/contracts/study-window';
+import {getStudyWindowBinding} from '../../utils/study-window-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../utils/wgsl-common';
 import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
 import type {GPURasterMetadata} from '../../gpu-raster/types';
@@ -52,6 +57,7 @@ import {
 } from './kernel-density-binned';
 import {
   getKernelDensityResultWGSL,
+  getKernelDensityStudyWindowWGSL,
   getKernelValueWGSL,
   getWindowMassWGSL
 } from './kernel-density-wgsl';
@@ -88,9 +94,10 @@ export type GPUKernelDensitySettings = {
   bandwidth: number;
   /**
    * Study window `[minX, minY, maxX, maxY]` of the edge correction. Defaults to the ordered rectangle of the output grid. Ignored
-   * without edge correction.
+   * without edge correction. Use `'study-window'` with a polygon `studyWindow`; it writes NaN
+   * rectangle slots, so a rectangle-mode operator with edge correction yields NaN cells.
    */
-  window?: GPUKernelDensityWindow;
+  window?: GPUKernelDensityWindow | 'study-window';
 };
 
 /**
@@ -135,16 +142,21 @@ export function getGPUKernelDensityParameterValues(
     Math.max(startY, endY)
   ];
   if (
-    window.length !== 4 ||
-    !window.every(Number.isFinite) ||
-    window[0] >= window[2] ||
-    window[1] >= window[3]
+    window !== 'study-window' &&
+    (window.length !== 4 ||
+      !window.every(Number.isFinite) ||
+      window[0] >= window[2] ||
+      window[1] >= window[3])
   ) {
     throw new Error('Kernel density window must be finite [minX, minY, maxX, maxY]');
   }
   target.set(corners, 0);
   target[4] = settings.bandwidth;
-  target.set(window, 5);
+  if (window === 'study-window') {
+    target.fill(Number.NaN, 5, 9);
+  } else {
+    target.set(window, 5);
+  }
   return target;
 }
 
@@ -207,6 +219,13 @@ export type GPUKernelDensityProps = {
    * planar frame with the same unit on both axes. Longitude/latitude throws at construction.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Compile-time study window, default `'rectangle'` (the per-frame parameter rectangle).
+   * A prepared polygon must be valid, share this operator's planar frame, and be added to the
+   * graph first. Requires `'uniform'` or `'diggle'` edge correction. Window queries use absolute
+   * frame coordinates; outside points are excluded and outside cell centers produce NaN.
+   */
+  studyWindow?: GPUStudyWindow;
   /** Packed point positions in the same units as the grid and bandwidth. */
   positions: GraphDataView<'float32x2'>;
   /**
@@ -259,7 +278,8 @@ export type GPUKernelDensityProps = {
    *   preserves the point total better but is noisier near the edge.
    * - `'none'`: the plain kernel sum; the window is ignored.
    *
-   * With `'uniform'` or `'diggle'` the window is `parameters.window` (the grid rectangle by default),
+   * With `'uniform'` or `'diggle'` the window is the polygon `studyWindow` when supplied,
+   * otherwise `parameters.window` (the grid rectangle by default),
    * points outside it are excluded, and cells whose center is outside it are NaN.
    */
   edgeCorrection?: GPUKernelDensityEdgeCorrection;
@@ -327,10 +347,11 @@ export type GPUKernelDensityProps = {
  * and smooths the bin counts with a kernel measured in cells.
  *
  * Edge correction (`edgeCorrection`) divides by, or reweights with, the kernel mass `e(u)` inside
- * the rectangular study window. The mass is closed form: a product of normal-CDF differences for the
+ * the study window. For rectangles the mass is closed form: normal-CDF differences for the
  * gaussian, and an exact inclusion-exclusion of four disk-clipped quadrant integrals for the
- * compact kernels (no quadrature). Windows are rectangles; an irregular study area still needs a
- * mask or a polygon window, which is not implemented.
+ * compact kernels (no quadrature). A prepared polygon `studyWindow` uses an oriented fan
+ * decomposition of the kernel integral (2e-5 relative accuracy). It must be valid and in the
+ * same planar frame as the KDE; window queries use absolute frame coordinates.
  *
  * Implementation: every encoding rebuilds a `GPUGridIndex` over the points, ranks the IDs inside
  * each index cell ascending, computes per-point weights (exclusion, and `w_i / e(x_i)` for
@@ -360,6 +381,8 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
   readonly props: GPUKernelDensityProps;
   /** Resolved coordinate and metric contract (planar/native). */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved compile-time study window. */
+  readonly studyWindow: GPUStudyWindow;
   /** Resolved kernel. */
   readonly kernel: GPUKernelDensityKernel;
   /** Resolved edge correction. */
@@ -382,8 +405,14 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
+    this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
     this.kernel = props.kernel ?? 'gaussian';
     this.edgeCorrection = props.edgeCorrection ?? 'uniform';
+    if (this.studyWindow !== 'rectangle' && this.edgeCorrection === 'none') {
+      throw new Error(
+        `${id} studyWindow is ignored without edge correction; set edgeCorrection to 'uniform' or 'diggle'`
+      );
+    }
     this.normalization = props.normalization ?? 'intensity';
     this.binnedPadding =
       props.binnedPadding ??
@@ -775,6 +804,23 @@ const POINT_COUNT: u32 = ${pointCount}u;`,
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, kernel, edgeCorrection, normalization, method} = this;
     const {output, grid, indexBounds} = props;
+    // The handle only looks up graph identity; it never invokes parameter-dependent callbacks.
+    const studyWindow =
+      this.studyWindow === 'rectangle'
+        ? undefined
+        : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
+    if (studyWindow) {
+      validateGraphViewsBelongToGraph(id, graph, [
+        studyWindow.edges,
+        studyWindow.summary,
+        studyWindow.slabs.params,
+        studyWindow.slabs.slabOffsets,
+        studyWindow.slabs.slabEntries,
+        studyWindow.sampleCells,
+        studyWindow.sampleCellCount,
+        studyWindow.packed
+      ]);
+    }
     const needsExact = method !== 'binned';
     const {width, height} = grid;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -830,6 +876,7 @@ const POINT_COUNT: u32 = ${pointCount}u;`,
     const domainConstants = getDomainConstantsWGSL(indexBounds);
     const hasEdgeCorrection = edgeCorrection !== 'none';
     const weightBindings: WGSLKernelBinding[] = [
+      ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       ...(props.weights
         ? [{name: 'inputWeights', view: props.weights, type: 'f32', access: 'read'} as const]
@@ -853,7 +900,7 @@ const POINT_COUNT: u32 = ${pointCount}u;`,
         invocationCount: pointCount,
         declarations: `${domainConstants}
 ${GRID_COORDINATE_WGSL}
-${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
+${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'diggle' ? kernel : undefined) : edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
         body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
   let bandwidth = ${bandwidthExpression};
   let windowMin = vec2f(params[paramsOffset + 5u], params[paramsOffset + 6u]) - gridStart;
@@ -864,13 +911,13 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
     all(position >= DOMAIN_MIN) && all(position <= DOMAIN_MAX) &&
     isFiniteValue(weight) && weight >= 0.0;
   let relative = position - gridStart;
-  ${hasEdgeCorrection ? 'included = included && all(relative >= windowMin) && all(relative <= windowMax);' : ''}
+  ${studyWindow ? 'included = included && isInsideStudyWindow(position);' : hasEdgeCorrection ? 'included = included && all(relative >= windowMin) && all(relative <= windowMax);' : ''}
   var corrected = select(0.0, weight, included);
   ${rawWeights !== pointWeights ? 'rawWeights[rawWeightsOffset + index] = corrected;' : ''}
   ${
     edgeCorrection === 'diggle'
       ? `if (included) {
-    let mass = getWindowMass(relative, windowMin, windowMax, bandwidth);
+    let mass = ${studyWindow ? 'getStudyWindowKernelMass(position, bandwidth)' : 'getWindowMass(relative, windowMin, windowMax, bandwidth)'};
     corrected = select(0.0, weight / mass, mass > 1e-6);
   }`
       : ''
@@ -912,6 +959,7 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
             positions: props.positions,
             parameters: props.parameters,
             pointWeights,
+            studyWindow,
             bandwidthBindings,
             bandwidthExpression,
             weightSum,
@@ -928,9 +976,15 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
       nodes.push(...binned.planNodes);
     }
     if (exactIndex) {
+      // Separate polygon finish keeps the gather within eight storage bindings even with a
+      // GPU bandwidth rule and probability normalization.
+      const gathered = studyWindow
+        ? createTransientView(graph, `${id}-gathered`, 'float32', this.cellCount)
+        : undefined;
       nodes.push(
         this.getGatherNode(graph, {
           exactIndex,
+          gathered,
           pointWeights,
           bandwidthBindings,
           bandwidthExpression,
@@ -938,6 +992,37 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
           gate: binned?.exactGate
         })
       );
+      if (studyWindow && gathered) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-polygon-finish`,
+            operation: OPERATION,
+            variant: `polygon-finish-${kernel}-${edgeCorrection}-${normalization}`,
+            bindings: [
+              {name: 'gathered', view: gathered, type: 'f32', access: 'read'},
+              {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
+              ...bandwidthBindings,
+              getStudyWindowBinding(studyWindow),
+              ...(normalization === 'probability' && weightSum
+                ? [{name: 'weightSum', view: weightSum, type: 'f32', access: 'read'} as const]
+                : []),
+              {name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'}
+            ],
+            invocationCount: this.cellCount,
+            workgroupSize: 64,
+            ...binned?.exactGate,
+            declarations: `${GRID_COORDINATE_WGSL}${getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'uniform' ? kernel : undefined)}`,
+            body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+  let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let cellSize = (gridEnd - gridStart) / vec2f(${width}.0, ${height}.0);
+  let center = gridStart + (vec2f(f32(index % ${width}u), f32(index / ${width}u)) + vec2f(0.5)) * cellSize;
+  let bandwidth = ${bandwidthExpression};
+  let total = gathered[gatheredOffset + index];
+  let valid = isFiniteValue(total) && isStudyWindowUsable();
+  ${getKernelDensityResultWGSL(edgeCorrection, normalization, true)}`
+          })
+        );
+      }
     }
     if (binned) {
       nodes.push(...binned.bodyNodes);
@@ -951,6 +1036,7 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
     inputs: {
       exactIndex: {cellOffsets: GraphDataView<'uint32'>; sortedIds: GraphDataView<'uint32'>};
       pointWeights: GraphDataView<'float32'>;
+      gathered?: GraphDataView<'float32'>;
       bandwidthBindings: WGSLKernelBinding[];
       bandwidthExpression: string;
       weightSum?: GraphDataView<'float32'>;
@@ -960,7 +1046,9 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
       };
     }
   ): GPUCommandNode<Parameters> {
-    const {id, props, cellCount, kernel, edgeCorrection, normalization} = this;
+    const {id, props, cellCount, kernel} = this;
+    const edgeCorrection = inputs.gathered ? 'none' : this.edgeCorrection;
+    const normalization = inputs.gathered ? 'intensity' : this.normalization;
     const {output, grid, indexGridSize, indexBounds} = props;
     const {width, height} = grid;
     const {pointWeights, bandwidthBindings, bandwidthExpression, weightSum, gate} = inputs;
@@ -976,7 +1064,7 @@ ${edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
       ...(normalization === 'probability' && weightSum
         ? [{name: 'weightSum', view: weightSum, type: 'f32', access: 'read'} as const]
         : []),
-      {name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'}
+      {name: 'valuesOut', view: inputs.gathered ?? output.values, type: 'f32', access: 'read_write'}
     ];
     const supportRadiusFactor = kernel === 'gaussian' ? GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION : 1;
     const visit = `let pointWeight = pointWeights[pointWeightsOffset + sample];

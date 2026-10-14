@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validatePairStatisticsBounds} from './pair-statistics-parameters';
+import {
+  validatePairStatisticsBounds,
+  type GPUPairStatisticsBounds
+} from './pair-statistics-parameters';
 
 /** Number of float32 elements in a `GPUVariogram` parameter buffer. */
 export const GPU_VARIOGRAM_PARAMETER_LENGTH = 8;
@@ -20,8 +23,9 @@ export type GPUVariogramSettings = {
   /**
    * Inclusive `[minX, minY, maxX, maxY]` extent. Rows outside it, or with a non-finite coordinate
    * or value, are excluded. The extent also sizes the neighbor-search lattice.
+   * Use `'study-window'` with a compile-time polygon window; it writes NaN bounds slots.
    */
-  bounds: readonly [number, number, number, number];
+  bounds: GPUPairStatisticsBounds;
   /** Largest lag: pairs farther apart are ignored. Lag bins split `[0, maximumDistance]`. */
   maximumDistance: number;
   /**
@@ -54,6 +58,12 @@ export function getGPUVariogramParameterValues(
   if (!Number.isFinite(azimuthOffset)) {
     throw new Error('GPUVariogram azimuthOffset must be finite');
   }
-  target.set([...settings.bounds, settings.maximumDistance, azimuthOffset, 0, 0]);
+  target.set([
+    ...(settings.bounds === 'study-window' ? [NaN, NaN, NaN, NaN] : settings.bounds),
+    settings.maximumDistance,
+    azimuthOffset,
+    0,
+    0
+  ]);
   return target;
 }

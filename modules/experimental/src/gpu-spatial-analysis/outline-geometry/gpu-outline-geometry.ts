@@ -11,6 +11,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPUSphereRadius,
   resolveGPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
@@ -60,6 +61,12 @@ export type GPUOutlineGeometryType =
 /** CPU description of the per-frame parameters of {@link GPUOutlineGeometry}. */
 export type GPUOutlineGeometrySettings = {
   /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
+  /**
    * Offset distance, in position units (planar context) or in the context's `units` on its sphere
    * (longitude/latitude context, meters by default). Must be non-negative; `0` draws nothing visible.
    */
@@ -87,6 +94,11 @@ export function getGPUOutlineGeometryParameterValues(
   if (!Number.isFinite(settings.distance) || settings.distance < 0) {
     throw new Error('Outline geometry distance must be a non-negative finite number');
   }
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUOutlineGeometry',
+    settings.spatialContext,
+    settings.distance
+  );
   target.set([settings.distance, 0, 0, 0]);
   return target;
 }

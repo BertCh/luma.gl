@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts';
+import {
+  createLonLatPolygonCheckNode,
+  hasLonLatPolygonStatus
+} from '../../analysis-core/lon-lat-ring-wgsl';
+import {createFillNode} from '../../utils/wgsl-kernel-nodes';
+
 import {
   createTransientView,
   type GPUBVH,
@@ -13,7 +20,9 @@ import {
 import {GPU_POINT_IN_POLYGON_CLASSIFICATION} from '../../geospatial/gpu-pairwise-point-in-polygon';
 import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
 import {
+  GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
@@ -70,17 +79,24 @@ const OPERATION = 'GPUPointInPolygonJoin';
 /**
  * The spatial context to give a `GPUPointInPolygonJoin` for an operation resolved with `context`:
  * a longitude/latitude context becomes containment-only (`metric: 'none'`, polygon edges straight
- * in degrees); any other context is passed through unchanged.
+ * in degrees). The declared edge model and datum are preserved so unsupported edges still fail
+ * validation; any other context is passed through unchanged.
  */
 export function getPointInPolygonContainmentContext(context: GPUSpatialContext): GPUSpatialContext {
   return context.coordinateSpace === 'longitude-latitude'
-    ? {coordinateSpace: 'longitude-latitude', metric: 'none'}
+    ? {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'none',
+        ...(context.edgeModel === undefined ? {} : {edgeModel: context.edgeModel}),
+        ...(context.datum === undefined ? {} : {datum: context.datum})
+      }
     : context;
 }
 
 /** Planar coordinates, or longitude/latitude with no metric (topological containment). */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  edgeModels: GPU_LINEAR_EDGE_MODELS,
   metrics: Object.freeze(['none', 'native'] as const)
 });
 
@@ -105,8 +121,12 @@ export type GPUPointInPolygonJoinOutput = {
   featureCounts?: GraphDataView<'uint32'>;
   /** Optional compact stable IDs of points that joined a feature (unspecified order). */
   matches?: GPUCompactOutput;
-  /** Completeness scalars. */
-  status: {
+  /**
+   * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
+   * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
+   * with `GPULonLatPolygonPreparation`. Both fields are left untouched in planar contexts.
+   */
+  status: GPULonLatPolygonStatusPort & {
     /** One-row flag: 1 when BVH leaf, candidate, or `matches` capacity overflowed. */
     overflow: GraphDataView<'uint32'>;
     /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
@@ -183,9 +203,18 @@ export type GPUPointInPolygonJoinProps = {
    * geodesics. `{coordinateSpace: 'longitude-latitude', metric: 'none'}` is therefore accepted and
    * behaves exactly like planar. A longitude/latitude context with any metric (for example
    * `'great-circle'`) throws at construction because there are no geodesic edges; project to a
-   * planar frame first.
+   * planar frame first. Prepare polygons that cross ±180 or enclose a pole with
+   * `GPULonLatPolygonPreparation`; optional status counters report unprepared rings.
+   * Longitude/latitude requires `edgeModel: 'linear'` (the default); great-circle edges require preparation.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `polygons` when declared separately from `spatialContext`. Must be compatible
+   * with `spatialContext` (datum, coordinate space, metric, units, planar frame).
+   * Longitude/latitude must use linear edges.
+   * Omitted means `spatialContext` describes both inputs.
+   */
+  polygonsSpatialContext?: GPUSpatialContext;
   /**
    * Compile-time. When true, features are reordered along a Hilbert curve (see `spatialSortCurve`) of their bound
    * centers before the BVH build, so leaves that are close in space are close in the tree and
@@ -341,6 +370,13 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       throw new Error(`${id} needs metric 'none' on longitude-latitude`);
     }
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+    resolveGPUSecondarySpatialContext(
+      id,
+      'polygons',
+      props.polygonsSpatialContext,
+      this.spatialContext,
+      SUPPORT.edgeModels
+    );
     if (
       props.boundaryRule !== undefined &&
       !['half-open', 'closed', 'open'].includes(props.boundaryRule)
@@ -376,6 +412,35 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
     const pointCount = points.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (
+      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+      hasLonLatPolygonStatus(status)
+    ) {
+      for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+        const view = status[name];
+        if (view) {
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-clear-${name}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u',
+              componentCount: 1
+            })
+          );
+        }
+      }
+      nodes.push(
+        createLonLatPolygonCheckNode(graph, {
+          id: `${id}-lon-lat-polygon-check-0`,
+          operation: OPERATION,
+          positions: polygons.positions,
+          ringOffsets: polygons.ringOffsets,
+          status
+        })
+      );
+    }
 
     if (props.prepared && !props.prepared.isDeclaredIn(graph)) {
       throw new Error(`${id} requires prepared to be added to the graph first`);
@@ -832,6 +897,8 @@ function getOutputs(
     status.overflow,
     status.candidateCount,
     status.uncertainCount,
+    status.antimeridianUncertainCount,
+    status.poleUncertainCount,
     matches?.ids,
     matches?.status.count,
     matches?.status.overflow,

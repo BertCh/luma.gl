@@ -20,11 +20,15 @@ import type {
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
+  resolveGPUSecondarySpatialContext,
+  GPU_LINEAR_EDGE_MODELS,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
+import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
 import {GPUSpatialLag} from '../spatial-weights/index';
 import type {GPUSpatialWeights, GPUSpatialWeightsOutput} from '../spatial-weights/index';
+import {GPULonLatPolygonPreparation} from '../lon-lat-polygons';
 import {
   assertRecipe,
   createTransientSpatialWeights,
@@ -87,10 +91,31 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
    * areas). `longitude-latitude` requires metric `'great-circle'` and declares a raster whose
    * `parameters` are in degrees: areas become spherical cell areas on the authalic sphere in the
    * context's length unit squared (square meters by default), so weights are ground-area shares.
-   * The polygon rasterization stage itself only tests cell centers in the coordinates as given (straight edges in degrees; split polygons at the
-   * antimeridian). The resolved context is returned as `result.spatialContext`.
+   * Polygon rasterization tests cell centers with straight edges in degrees. Set `prepare: true`
+   * or prepare with `GPULonLatPolygonPreparation` for antimeridian crossings or great-circle edges.
+   * The resolved context is returned as `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Context of `source` declared separately; must match `spatialContext` in datum, coordinate
+   * space, metric, units and planar frame. Omitted means one context describes both inputs.
+   * Longitude/latitude needs linear edges unless `prepare` is true: this context feeds preparation,
+   * then prepared edges are compared with the primary context resolved to linear edges.
+   */
+  sourceSpatialContext?: GPUSpatialContext;
+  /**
+   * Context of `target` declared separately; must match `spatialContext` in datum, coordinate
+   * space, metric, units and planar frame. Omitted means one context describes both inputs.
+   * Longitude/latitude needs linear edges unless `prepare` is true: this context feeds preparation,
+   * then prepared edges are compared with the primary context resolved to linear edges.
+   */
+  targetSpatialContext?: GPUSpatialContext;
+  /** Prepare longitude/latitude polygons on the GPU before containment. Defaults to false. */
+  prepare?: boolean;
+  /** Maximum prepared vertices per zone system; required with `prepare: true`. */
+  preparedPositionCapacity?: number;
+  /** Per-frame getGPULonLatPolygonPreparationParameterValues view; required with preparation. */
+  preparationParameters?: GraphDataView<'float32'>;
   /**
    * `getGPUPolygonRasterizationParameterValues(grid)` view: per-frame origin and cell size of the
    * raster (degrees on a longitude/latitude raster).
@@ -183,6 +208,8 @@ export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
  * `sourceAnchorCells` rescues them. Default change: intensive weights now use the `'overlap'`
  * denominator, so a target only partly covered by sources is the mean of what covers it.
  *
+ * With `prepare: true`, each zone system is prepared before rasterization; feature rows are
+ * preserved and `source-preparation` / `target-preparation` diagnostics join `status.stages`.
  * Spatial context: `spatialContext` is resolved once and handed to the areal stage; see
  * `GPUChangeOfSupportRecipeProps.spatialContext`.
  */
@@ -192,6 +219,36 @@ export function addChangeOfSupportRecipe<Parameters>(
 ): GPUChangeOfSupportRecipeResult {
   const id = props.id ?? 'change-of-support-recipe';
   const spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
+  if (!props.prepare) {
+    resolveGPUSecondarySpatialContext(
+      id,
+      'source',
+      props.sourceSpatialContext,
+      spatialContext,
+      GPU_LINEAR_EDGE_MODELS
+    );
+    resolveGPUSecondarySpatialContext(
+      id,
+      'target',
+      props.targetSpatialContext,
+      spatialContext,
+      GPU_LINEAR_EDGE_MODELS
+    );
+  }
+  if (props.prepare) {
+    if (spatialContext.coordinateSpace !== 'longitude-latitude') {
+      throw new Error(`${id} prepare needs a longitude-latitude spatialContext`);
+    }
+    if (props.preparedPositionCapacity === undefined) {
+      throw new Error(`${id} prepare needs preparedPositionCapacity`);
+    }
+    if (!Number.isInteger(props.preparedPositionCapacity) || props.preparedPositionCapacity < 1) {
+      throw new Error(`${id} preparedPositionCapacity must be a positive integer`);
+    }
+    if (!props.preparationParameters) {
+      throw new Error(`${id} prepare needs preparationParameters`);
+    }
+  }
   const geographic = spatialContext.coordinateSpace === 'longitude-latitude';
   const {grid} = props;
   const cellCount = grid.width * grid.height;
@@ -235,8 +292,72 @@ export function addChangeOfSupportRecipe<Parameters>(
       outputs.status?.rasterRequiredCount?.[1]
     )
   ];
+  const preparationStages: Array<GPURecipeStatusPort['stages'][number]> = [];
   const zones = [props.source, props.target].map((system, index) => {
     const name = index === 0 ? 'source' : 'target';
+    let rasterContext = getPointInPolygonContainmentContext(spatialContext);
+    if (props.prepare) {
+      const prepared = {
+        positions: getOrCreateView(
+          graph,
+          `${id}-${name}-prepare-positions`,
+          'float32x2',
+          props.preparedPositionCapacity!
+        ),
+        featureOffsets: getOrCreateView(
+          graph,
+          `${id}-${name}-prepare-features`,
+          'uint32',
+          system.featureOffsets.length
+        ),
+        polygonOffsets: getOrCreateView(
+          graph,
+          `${id}-${name}-prepare-polygons`,
+          'uint32',
+          2 * system.polygonOffsets.length - 1
+        ),
+        ringOffsets: getOrCreateView(
+          graph,
+          `${id}-${name}-prepare-rings`,
+          'uint32',
+          2 * system.ringOffsets.length - 1
+        ),
+        status: {
+          overflow: getOrCreateView(graph, `${id}-${name}-prepare-overflow`, 'uint32', 1),
+          requiredCount: getOrCreateView(
+            graph,
+            `${id}-${name}-prepare-required-count`,
+            'uint32',
+            1
+          ),
+          invalidCount: getOrCreateView(graph, `${id}-${name}-prepare-invalid-count`, 'uint32', 1),
+          approximation: getOrCreateView(graph, `${id}-${name}-prepare-approximation`, 'uint32', 1)
+        }
+      };
+      const preparation = builder.add(
+        new GPULonLatPolygonPreparation({
+          ...system,
+          id: `${id}-${name}-prepare`,
+          spatialContext: props[`${name}SpatialContext`] ?? rasterContext,
+          parameters: props.preparationParameters!,
+          output: prepared
+        })
+      );
+      if (props[`${name}SpatialContext`] !== undefined) {
+        resolveGPUSecondarySpatialContext(
+          id,
+          name,
+          preparation.spatialContext,
+          spatialContext.coordinateSpace === 'longitude-latitude'
+            ? {...spatialContext, edgeModel: 'linear'}
+            : spatialContext,
+          GPU_LINEAR_EDGE_MODELS
+        );
+      }
+      system = {...system, ...prepared};
+      rasterContext = getPointInPolygonContainmentContext(preparation.spatialContext);
+      preparationStages.push({stage: `${name}-preparation`, status: prepared.status});
+    }
     const raster = getOrCreateView(
       graph,
       `${id}-${name}-zones`,
@@ -248,6 +369,7 @@ export function addChangeOfSupportRecipe<Parameters>(
       new GPUPolygonRasterization({
         id: `${id}-${name}-raster`,
         grid,
+        spatialContext: rasterContext,
         parameters: props.parameters,
         positions: system.positions,
         featureOffsets: system.featureOffsets,
@@ -373,6 +495,7 @@ export function addChangeOfSupportRecipe<Parameters>(
       rasterOverflow,
       rasterRequiredCount,
       stages: [
+        ...preparationStages,
         {
           stage: 'source-rasterization',
           status: {overflow: rasterOverflow[0], requiredCount: rasterRequiredCount[0]}

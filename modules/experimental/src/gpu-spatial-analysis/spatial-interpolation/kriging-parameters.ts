@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  type GPUSpatialContext,
+  warnGPUShortLongitudeLatitudeDistance
+} from '../../analysis-core/contracts/spatial-context';
+
 import {validateCapacity} from '../../utils/gpu-contributor-utils';
 import type {GPURasterMetadata} from '../../gpu-raster/types';
 import {getRasterGridCorners} from './spatial-interpolation-parameters';
@@ -12,6 +17,12 @@ export const GPU_KRIGING_PARAMETER_LENGTH = 12;
 
 /** Per-frame settings of {@link GPUKriging}. */
 export type GPUKrigingSettings = {
+  /**
+   * Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32
+   * quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not
+   * change the packed values.
+   */
+  spatialContext?: GPUSpatialContext;
   /** Search radius in position units. `Infinity` searches the whole index domain. */
   searchRadius: number;
   /**
@@ -87,6 +98,16 @@ export function getGPUKrigingParameterValues(
   ] as const) {
     validateCapacity('Kriging', name, count, 0);
   }
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUKriging',
+    settings.spatialContext,
+    settings.searchRadius
+  );
+  warnGPUShortLongitudeLatitudeDistance(
+    'GPUKriging',
+    settings.spatialContext,
+    settings.variogram.range
+  );
   target.fill(0);
   target.set(getRasterGridCorners('getGPUKrigingParameterValues', grid), 0);
   target[4] = settings.searchRadius;
